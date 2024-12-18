@@ -1,0 +1,11 @@
+{
+	"bundleDependencies": true,
+	"name": "ex-exports-TL-object",
+	"version": "0.0.0",
+	"exports": {
+		"import": "./index.mjs",
+		"node": "./file.js",
+		"require": "./dir/extra.js",
+		"default": "./dir/extra.mjs"
+	}
+}

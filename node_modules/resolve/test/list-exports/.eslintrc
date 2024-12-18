@@ -1,0 +1,14 @@
+{
+	"root": true,
+
+	"extends": "@ljharb/eslint-config/node/10",
+
+	"overrides": [
+		{
+			"files": "since.js",
+			"rules": {
+				"no-console": 0,
+			},
+		},
+	],
+}

@@ -1,0 +1,32 @@
+[package]
+name = "remux-web"
+version = "0.1.0"
+authors = ["lostb1t <coding-mosses0z@icloud.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+daisy_rsx = "0.1.14"
+dioxus = { version = "0.6.1", features = ["router"] }
+eyre = "0.6.12"
+reqwest = { version = "0.12.9", features = ["json"] }
+serde = "1.0.216"
+
+[features]
+default = ["web"]
+web = ["dioxus/web"]
+desktop = ["dioxus/desktop"]
+mobile = ["dioxus/mobile"]
+
+[profile]
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"
