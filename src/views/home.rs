@@ -28,7 +28,11 @@ fn Media() -> Element {
                     for media in list {
                         // render every story with the StoryListing component
                         // StoryListing { story: story.clone() }
-                        "{media.name}"
+                        daisy_rsx::Card {
+                            daisy_rsx::CardHeader {
+                                title: "{media.name}"
+                            }
+                        }
                     }
                 }
             }

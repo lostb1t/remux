@@ -9,9 +9,12 @@ edition = "2021"
 [dependencies]
 daisy_rsx = "0.1.14"
 dioxus = { version = "0.6.1", features = ["router"] }
+dioxus-logger = "0.6.1"
 eyre = "0.6.12"
 reqwest = { version = "0.12.9", features = ["json"] }
 serde = "1.0.216"
+strum = "0.26.3"
+strum_macros = "0.26.4"
 
 [features]
 default = ["web"]
