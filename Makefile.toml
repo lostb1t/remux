@@ -1,0 +1,15 @@
+[tasks.generate-jf-client]
+script = { file = "scripts/generate_jf_client.sh" }
+
+[tasks.serve-web]
+env = { "RUSTFLAGS" = "--cfg getrandom_backend=\"wasm_js\"" }
+command = "dx"
+args = ["serve", "--platform", "web"]
+
+[tasks.watch-tailwind]
+command = "npx"
+args = ["tailwindcss", "-i", "./input.css", "-o", "./public/tailwind.css", "--watch"]
+#watch = true
+
+[tasks.run-web]
+run_task = { name = ["watch-tailwind", "serve-web"], fork = true, parallel = true }

@@ -1,6 +1,8 @@
 use crate::components;
 use dioxus::prelude::*;
 use crate::clients;
+// use jellyfin_api;
+use jellyfin_api;
 
 use daisy_rsx;
 
@@ -17,6 +19,7 @@ pub fn Home() -> Element {
 fn Media() -> Element {
     // Fetch the top 10 stories on Hackernews
     let media = use_resource(move || clients::remux::get_media());
+    // let media = use_resource(move || jellyfin_api::Client);
 
     // check if the future is resolved
     match &*media.read_unchecked() {
@@ -24,13 +27,16 @@ fn Media() -> Element {
             // if it is, render the stories
             rsx! {
                 div {
+                    class: "carousel w-full",
                     // iterate over the stories with a for loop
                     for media in list {
-                        // render every story with the StoryListing component
-                        // StoryListing { story: story.clone() }
-                        daisy_rsx::Card {
-                            daisy_rsx::CardHeader {
-                                title: "{media.name}"
+                        div {
+                            class: "carousel-item",
+                            daisy_rsx::Card {
+                                class: "w-28",
+                                daisy_rsx::CardHeader {
+                                    title: "{media.name}"
+                                }
                             }
                         }
                     }
@@ -43,7 +49,7 @@ fn Media() -> Element {
         }
         None => {
             // if the future is not resolved yet, render a loading message
-            rsx! {"Loading itmediaems"}
+            rsx! {"Loading items"}
         }
     }
 }

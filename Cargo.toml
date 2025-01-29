@@ -8,13 +8,22 @@ edition = "2021"
 
 [dependencies]
 daisy_rsx = "0.1.14"
-dioxus = { version = "0.6.1", features = ["router"] }
-dioxus-logger = "0.6.1"
+dioxus = { version = "0.6.2", features = ["router"] }
+dioxus-logger = "0.6.2"
 eyre = "0.6.12"
 reqwest = { version = "0.12.9", features = ["json"] }
 serde = "1.0.216"
+serde_json = "1.0.137"
 strum = "0.26.3"
 strum_macros = "0.26.4"
+jellyfin_api = { path = "jellyfin_api" }
+getrandom = { version = "0.2.15", features = ["js"] }
+
+# [patch.crates-io]
+# # rand = { version = "0.9" }
+# # rand = "0.9"
+# # getrandom = { version = "0.3", features = ["wasm_js"] }
+# getrandom = { version = "0.2.15", features = ["js"] }
 
 [features]
 default = ["web"]
