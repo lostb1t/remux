@@ -3,8 +3,9 @@ use dioxus::prelude::*;
 use crate::clients;
 // use jellyfin_api;
 use jellyfin_api;
-
+use remux_web::hooks::*;
 use daisy_rsx;
+use dioxus_logger::tracing::{info};
 
 #[component]
 pub fn Home() -> Element {
@@ -17,6 +18,9 @@ pub fn Home() -> Element {
 
 #[component]
 fn Media() -> Element {
+    let mut app = use_app();
+
+    info!("{:?}", &app.user);
     // Fetch the top 10 stories on Hackernews
     let media = use_resource(move || clients::remux::get_media());
     // let media = use_resource(move || jellyfin_api::Client);

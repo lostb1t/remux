@@ -5,6 +5,8 @@ use jellyfin_api::Client;
 
 use components::Navbar;
 use views::{Home, Settings};
+// use crate::hooks::*;
+use remux_web::hooks::*;
 
 mod clients;
 mod components;
@@ -51,18 +53,18 @@ fn main() {
 // struct Settings {
 // }
 
-pub fn use_client() -> Client {
-    use_context::<Client>()
-}
+
 
 #[component]
 fn JellyFinProvider(children: Element) -> Element {
     let client = use_client();
+    let mut app = use_app();
+    //let user = use_user();
 
     use_future(move || {
         to_owned![client];
         async move {
-            client
+            let result = client
                 .authenticate_user_by_name()
                 .body(
                     jellyfin_api::types::AuthenticateUserByName::builder()
@@ -71,6 +73,11 @@ fn JellyFinProvider(children: Element) -> Element {
                 )
                 .send()
                 .await;
+            // info!("{:?}", &result);
+            app.user.set(Some(result.unwrap().into_inner()));
+            // dbg!(&result);
+            // info!("{:?}", &result);
+            
             // jellyfin_api::builder::AuthenticateUserByName("sjoerd", "password").await.unwrap()
         }
     });
@@ -80,8 +87,11 @@ fn JellyFinProvider(children: Element) -> Element {
     }
 }
 
+
+
 #[component]
 fn App() -> Element {
+    info!("App starting");
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(reqwest::header::AUTHORIZATION, reqwest::header::HeaderValue::from_static("MediaBrowser Client=\"Android TV\", Device=\"Nvidia Shield\", DeviceId=\"ZQ9YQHHrUzk24vV\", Version=\"10.10.5\""));
     let rclient = reqwest::ClientBuilder::new()
@@ -92,6 +102,8 @@ fn App() -> Element {
     let client =
         jellyfin_api::Client::new_with_client("https://jellyfin.sjoerdarendsen.dev", rclient);
     use_context_provider(|| client);
+    use_context_provider(|| AppState::default());
+    //let user = use_context_provider(|| Signal::new(None));
 
     // client.authenticate_user_by_name()
     //     .body(body)
