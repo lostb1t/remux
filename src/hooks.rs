@@ -14,5 +14,14 @@ pub fn use_app() -> AppState {
 }
 
 pub fn use_client() -> Client {
-    use_context::<Client>()
+    let mut app = use_app();
+    let client = use_context::<Client>();
+
+    if app.user.read().is_none() {
+        info!("User is not authenticated");
+    } else {
+        info!("User is already authenticated");
+    }
+
+    client
 }
