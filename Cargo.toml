@@ -16,8 +16,16 @@ serde = "1.0.216"
 serde_json = "1.0.137"
 strum = "0.26.3"
 strum_macros = "0.26.4"
-jellyfin_api = { path = "jellyfin_api" }
 getrandom = { version = "0.2.15", features = ["js"] }
+dyn-clone = "1.0.18"
+async-trait = "0.1.86"
+tokio = { version = "1.43", features = ["io-util", "time"] }
+tokio_with_wasm = { version = "0.7.4", features = ["time"] }
+dioxus-motion = { version = "0.3.1", optional = true, default-features = false }
+proc-macro2 = "1.0.93"
+dioxus-components = "0.0.0"
+serde_derive = "1.0.219"
+
 
 # [patch.crates-io]
 # # rand = { version = "0.9" }
@@ -27,7 +35,7 @@ getrandom = { version = "0.2.15", features = ["js"] }
 
 [features]
 default = ["web"]
-web = ["dioxus/web"]
+web = ["dioxus/web", "dioxus-motion/web", "dioxus-motion/transitions"]
 desktop = ["dioxus/desktop"]
 mobile = ["dioxus/mobile"]
 

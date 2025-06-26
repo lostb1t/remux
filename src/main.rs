@@ -1,18 +1,21 @@
 use dioxus::prelude::*;
+use dioxus_motion::prelude::*;
+use dioxus_motion::transitions::page_transitions::AnimatedOutlet;
 use dioxus_logger::tracing::{info, Level};
-use jellyfin_api;
-use jellyfin_api::Client;
+
 
 use components::Navbar;
-use views::{Home, Settings};
+//use remux_web::server::{Jellyfin, Server, Servers};
+use views::{Home, settings::Settings,};
 // use crate::hooks::*;
-use remux_web::hooks::*;
+//use remux_web::hooks::*;
 
 mod clients;
 mod components;
 mod views;
+mod addons;
 
-#[derive(Debug, Clone, Routable, PartialEq)]
+#[derive(Debug, Clone, Routable, PartialEq, MotionTransitions)]
 #[rustfmt::skip]
 enum Route {
     #[layout(Navbar)]
@@ -20,6 +23,8 @@ enum Route {
     Home {},
     #[route("/settings")]
     Settings {},
+  //  #[route("/settings/server/create")]
+  //  SettingsServersAdd {},
     // #[route("/blog/:id")]
     // Blog { id: i32 },
 }
@@ -53,31 +58,54 @@ fn main() {
 // struct Settings {
 // }
 
+// #[component]
+// fn ServersProvider(children: Element) -> Element {
+//     let client = use_client();
+//     let mut app = use_app();
+//     //let user = use_user();
 
+//     use_future(move || {
+//         to_owned![client];
+//         async move {
+//             let result = client
+//                 .authenticate_user_by_name()
+//                 .body(
+//                     jellyfin_api::types::AuthenticateUserByName::builder()
+//                         .pw("myfmor-6viXpo-vidhyr".to_string())
+//                         .username("sarendsen".to_string()),
+//                 )
+//                 .send()
+//                 .await;
+//             // info!("{:?}", &result);
+//             app.user.set(Some(result.unwrap().into_inner()));
+//             // dbg!(&result);
+//             // info!("{:?}", &result);
+
+//             // jellyfin_api::builder::AuthenticateUserByName("sjoerd", "password").await.unwrap()
+//         }
+//     });
+
+//     rsx! {
+//         {children}
+//     }
+// }
 
 #[component]
-fn JellyFinProvider(children: Element) -> Element {
-    let client = use_client();
-    let mut app = use_app();
+fn ServerProvider(children: Element) -> Element {
+   // let mut servers = use_servers();
+    // let mut app = use_app();
     //let user = use_user();
 
     use_future(move || {
-        to_owned![client];
+        // to_owned![servers];
         async move {
-            let result = client
-                .authenticate_user_by_name()
-                .body(
-                    jellyfin_api::types::AuthenticateUserByName::builder()
-                        .pw("myfmor-6viXpo-vidhyr".to_string())
-                        .username("sarendsen".to_string()),
-                )
-                .send()
-                .await;
-            // info!("{:?}", &result);
-            app.user.set(Some(result.unwrap().into_inner()));
+            info!("CServer provider");
+            
+            // // use_context_provider(move || servers.clone());
+            //servers.set(s);
             // dbg!(&result);
             // info!("{:?}", &result);
-            
+
             // jellyfin_api::builder::AuthenticateUserByName("sjoerd", "password").await.unwrap()
         }
     });
@@ -88,21 +116,34 @@ fn JellyFinProvider(children: Element) -> Element {
 }
 
 
+// #[derive(Clone, Copy)]
+// struct App {
+//     servers: Signal<Servers>,
+// }
 
 #[component]
 fn App() -> Element {
     info!("App starting");
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(reqwest::header::AUTHORIZATION, reqwest::header::HeaderValue::from_static("MediaBrowser Client=\"Android TV\", Device=\"Nvidia Shield\", DeviceId=\"ZQ9YQHHrUzk24vV\", Version=\"10.10.5\""));
-    let rclient = reqwest::ClientBuilder::new()
-        .default_headers(headers) // Add this line to the generated code
-        .build()
-        .unwrap();
-    //let client = jellyfin_api::Client::new("https://jellyfin.sjoerdarendsen.dev");
-    let client =
-        jellyfin_api::Client::new_with_client("https://jellyfin.sjoerdarendsen.dev", rclient);
-    use_context_provider(|| client);
-    use_context_provider(|| AppState::default());
+
+    // let mut jf = Jellyfin {
+    //   host: "https://jellyfin.sjoerdarendsen.dev".to_string(),
+    //   username: "sarendsen".to_string(),
+    //   password: "myfmor-6viXpo-vidhyr".to_string(),
+    //   auth_token: None,
+    //   client: None
+    // };
+
+    // //let servers: Servers = vec![Box::new(jf)];
+
+    // let servers = async {
+    //     jf.connect();
+    //     let servers: Servers = vec![Box::new(jf)];
+    //     Signal::new(servers)
+    // };
+
+    // let servers: Servers = vec![];
+   // use_context_provider(|| Signal::new(Servers::default()));
+   // use_context_provider(|| AppState::default());
     //let user = use_context_provider(|| Signal::new(None));
 
     // client.authenticate_user_by_name()
@@ -111,19 +152,32 @@ fn App() -> Element {
     //     .await;
     // use_context_provider(|| client);
 
+    // let test = use_context_provider(move || async move {
+    //     Signal::new(Servers::default())
+    //     // let mut jf = Jellyfin {
+    //     //     host: "https://jellyfin.sjoerdarendsen.dev".to_string(),
+    //     //     username: "sarendsen".to_string(),
+    //     //     password: "myfmor-6viXpo-vidhyr".to_string(),
+    //     //     auth_token: None,
+    //     //     client: None,
+    //     // };
+    //     // jf.connect().await;
+    //     // Signal::new(vec![jf])
+    // });
+    // let servers = use_future(move || async move {
+    //     let mut jf = Jellyfin {
+    //         host: "https://jellyfin.sjoerdarendsen.dev".to_string(),
+    //         username: "sarendsen".to_string(),
+    //         password: "myfmor-6viXpo-vidhyr".to_string(),
+    //         auth_token: None,
+    //         client: None,
+    //     };
+    //     jf.connect().await;
+    //     vec![jf]
+    // });
+
     // use_context_provider(move || async move {
-    //     let client = jellyfin_api::Client::new("https://jellyfin.sjoerdarendsen.dev");
-    //     client
-    //         .authenticate_user_by_name()
-    //         .body(
-    //             jellyfin_api::types::AuthenticateUserByName::builder()
-    //                 .pw("sjoerd".to_string())
-    //                 .username("password".to_string()),
-    //         )
-    //         .send()
-    //         .await;
-    //     client
-    //     // jellyfin_api::builder::AuthenticateUserByName("sjoerd", "password").await.unwrap()
+    //     servers.clone()
     // });
 
     // let auth = use_future(move || async move {
@@ -172,7 +226,7 @@ fn App() -> Element {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
         document::Link { rel: "stylesheet", href: DAISY_CSS }
 
-        JellyFinProvider {
+        ServerProvider {
             Router::<Route> {}
         }
     }
