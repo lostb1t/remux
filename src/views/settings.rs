@@ -10,6 +10,15 @@ pub fn Settings() -> Element {
     rsx! {
         div {
             h1 { "Settings" }
+            SettingsSection {
+                title: "User & Account",
+
+                    SettingRow { icon: "👤", label: "Addons", to: Route::SettingsAddonsView {} }
+
+                
+            }
+
+
             ul {
                 li {
                     Link { class: "p-3", to: Route::SettingsAddonsView {}, "Addons" }
@@ -73,6 +82,52 @@ pub fn SettingsAddonsView() -> Element {
                 }
                 components::Button { variant: "primary", "Add" }
             }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct SettingRowProps {
+    pub icon: &'static str,
+    pub label: &'static str,
+    pub to: Route
+}
+
+#[component]
+pub fn SettingRow(props: SettingRowProps) -> Element {
+    let content = rsx!(
+        div {
+            class: "flex items-center justify-between px-4 py-3 bg-zinc-900 rounded-lg hover:bg-zinc-800 transition",
+            div { class: "flex items-center space-x-3",
+                span { class: "text-xl", "{props.icon}" }
+                span { class: "text-white font-medium", "{props.label}" }
+            }
+            
+        }
+    );
+
+        rsx!(Link { to: props.to, class: "block", {content} })
+
+
+
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct SettingsSectionProps {
+    pub title: &'static str,
+    children: Element,
+}
+
+#[component]
+pub fn SettingsSection(props: SettingsSectionProps) -> Element {
+    rsx! {
+        div {
+            class: "space-y-2",
+            span {
+                class: "text-xs text-zinc-400 uppercase tracking-widest px-1",
+                "{props.title}"
+            }
+            div { class: "space-y-1", {props.children} }
         }
     }
 }
