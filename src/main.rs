@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use dioxus::prelude::*;
 use dioxus_motion::prelude::*;
 use dioxus_motion::transitions::page_transitions::AnimatedOutlet;
@@ -6,7 +7,7 @@ use dioxus_logger::tracing::{info, Level};
 
 use components::Navbar;
 //use remux_web::server::{Jellyfin, Server, Servers};
-use views::{Home, settings::Settings,};
+use views::{Home, settings::Settings, settings::SettingsAddonsView};
 // use crate::hooks::*;
 //use remux_web::hooks::*;
 
@@ -14,17 +15,18 @@ mod clients;
 mod components;
 mod views;
 mod addons;
+mod settings;
 
 #[derive(Debug, Clone, Routable, PartialEq, MotionTransitions)]
 #[rustfmt::skip]
-enum Route {
+pub enum Route {
     #[layout(Navbar)]
     #[route("/")]
     Home {},
     #[route("/settings")]
     Settings {},
-  //  #[route("/settings/server/create")]
-  //  SettingsServersAdd {},
+   #[route("/settings/addons")]
+   SettingsAddonsView {},
     // #[route("/blog/:id")]
     // Blog { id: i32 },
 }
@@ -32,7 +34,6 @@ enum Route {
 const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
-const DAISY_CSS: &str = "https://cdn.jsdelivr.net/npm/daisyui@4.12.23/dist/full.min.css";
 
 fn main() {
     dioxus_logger::init(Level::INFO).expect("logger failed to init");
@@ -224,7 +225,6 @@ fn App() -> Element {
         document::Link { rel: "icon", href: FAVICON }
         document::Link { rel: "stylesheet", href: MAIN_CSS }
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
-        document::Link { rel: "stylesheet", href: DAISY_CSS }
 
         ServerProvider {
             Router::<Route> {}

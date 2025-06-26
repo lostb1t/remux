@@ -4,3 +4,5 @@ pub use hero::Hero;
 mod navbar;
 pub use navbar::Navbar;
 pub use daisy_rsx::*;
+mod button;
+pub use button::Button;

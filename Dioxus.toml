@@ -2,6 +2,7 @@
 
 # App (Project) Name
 name = "remux-web"
+asset_dir = "assets"
 
 [web.app]
 
