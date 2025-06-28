@@ -6,7 +6,8 @@ use dioxus_logger::tracing::{info, Level};
 
 
 use components::Navbar;
-//use remux_web::server::{Jellyfin, Server, Servers};
+use components::{video::VideoPlayerState};
+//use remux_web::server::{Video, Server, Servers};
 use views::{Home, settings::Settings, settings::SettingsAddonsView};
 // use crate::hooks::*;
 //use remux_web::hooks::*;
@@ -143,7 +144,7 @@ fn App() -> Element {
     // };
 
     // let servers: Servers = vec![];
-   // use_context_provider(|| Signal::new(Servers::default()));
+    use_context_provider(|| Signal::new(VideoPlayerState::default()));
    // use_context_provider(|| AppState::default());
     //let user = use_context_provider(|| Signal::new(None));
 

@@ -1,8 +1,11 @@
-mod hero;
+pub mod hero;
 pub use hero::Hero;
-
+pub mod video;
+pub use video::VideoPlayer;
 mod navbar;
 pub use navbar::Navbar;
-pub use daisy_rsx::*;
 mod button;
 pub use button::Button;
+
+pub mod media_row;
+pub use media_row::*;

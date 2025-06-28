@@ -80,7 +80,7 @@ pub fn SettingsAddonsView() -> Element {
                     oninput: move |e| new_addon.set(e.value().clone()),
                     placeholder: "New addon name"
                 }
-                components::Button { variant: "primary", "Add" }
+                components::Button { "Add" }
             }
         }
     }

@@ -25,6 +25,8 @@ pub enum MediaType {
     Movie,
     #[strum(to_string = "series")]
     Series,
+    #[strum(to_string = "tv")]
+    Tv,
     #[default]
     Unknown,
 }
@@ -41,9 +43,9 @@ pub enum ResourceType {
 #[serde(rename_all = "camelCase")]
 pub struct Resource {
     pub name: String,
-    #[serde(default)]
+    //#[serde(default)]
     pub types: Option<Vec<MediaType>>,
-    #[serde(default)] 
+    //#[serde(default)] 
     pub id_prefixes: Option<Vec<String>>,
     pub type_: ResourceType
 }
@@ -55,6 +57,7 @@ impl<'de> Deserialize<'de> for Resource {
     {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
+        #[serde(remote = "Resource")]
         struct ResourceFull {
             name: String,
             type_: ResourceType,
@@ -66,9 +69,11 @@ impl<'de> Deserialize<'de> for Resource {
         #[serde(untagged)]
         enum ResourceHelper {
             Simple(String),
-            Full(ResourceFull),
+            #[serde(with = "ResourceFull")]
+            Full(Resource),
         }
 
+        
         Ok(match ResourceHelper::deserialize(deserializer)? {
             ResourceHelper::Simple(name) => Resource {
                 name: name.clone(),
@@ -76,12 +81,7 @@ impl<'de> Deserialize<'de> for Resource {
                 types: None,
                 id_prefixes: None,
             },
-            ResourceHelper::Full(full) => Resource {
-                name: full.name.clone(),
-                type_: ResourceType::from_str(&full.name.clone()).unwrap(),
-                types: full.types,
-                id_prefixes: full.id_prefixes,
-            },
+            ResourceHelper::Full(full) => full,
         })
     }
 }

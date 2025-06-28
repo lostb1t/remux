@@ -14,8 +14,9 @@ use tokio_with_wasm::alias as tokio;
 #[component]
 pub fn Home() -> Element {
     rsx! {
-        // components::Hero {}
         // components::Button { "Click me" }
         //Media {}
+        components::Hero { }
+        components::MediaRow {}
     }
 }
