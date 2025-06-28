@@ -23,11 +23,14 @@ mod settings;
 pub enum Route {
     #[layout(Navbar)]
     #[route("/")]
+    #[transition(SlideLeft)]
     Home {},
     #[route("/settings")]
+    #[transition(SlideLeft)]
     Settings {},
-   #[route("/settings/addons")]
-   SettingsAddonsView {},
+    #[route("/settings/addons")]
+    SettingsAddonsView {},
+   // #[end_layout]
     // #[route("/blog/:id")]
     // Blog { id: i32 },
 }
@@ -226,7 +229,23 @@ fn App() -> Element {
         document::Link { rel: "icon", href: FAVICON }
         document::Link { rel: "stylesheet", href: MAIN_CSS }
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
-
+document::Meta {
+            name: "viewport",
+            content: "viewport-fit=cover, user-scalable=no, width=device-width, initial-scale=1, maximum-scale=1",
+        }
+        document::Meta {
+            name: "mobile-web-app-capable",
+            content: "yes",
+        }
+        document::Meta {
+            name: "apple-mobile-web-app-capable",
+            content: "yes",
+        }
+                document::Meta {
+            name: "apple-mobile-web-app-status-bar-style",
+            content: "black-translucent",
+        }
+        
         ServerProvider {
             Router::<Route> {}
         }

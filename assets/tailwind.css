@@ -36,9 +36,6 @@
 .left-4 {
   left: calc(var(--spacing) * 4);
 }
-.z-0 {
-  z-index: 0;
-}
 .z-10 {
   z-index: 10;
 }
@@ -108,9 +105,6 @@
 .w-10 {
   width: calc(var(--spacing) * 10);
 }
-.w-20 {
-  width: calc(var(--spacing) * 20);
-}
 .w-24 {
   width: calc(var(--spacing) * 24);
 }
@@ -119,12 +113,6 @@
 }
 .w-28 {
   width: calc(var(--spacing) * 28);
-}
-.w-30 {
-  width: calc(var(--spacing) * 30);
-}
-.w-40 {
-  width: calc(var(--spacing) * 40);
 }
 .w-96 {
   width: calc(var(--spacing) * 96);
@@ -192,9 +180,6 @@
 }
 .gap-3 {
   gap: calc(var(--spacing) * 3);
-}
-.gap-4 {
-  gap: calc(var(--spacing) * 4);
 }
 .space-y-1 {
   :where(& > :not(:last-child)) {
@@ -331,6 +316,9 @@
 .px-4 {
   padding-inline: calc(var(--spacing) * 4);
 }
+.px-\[env\(safe-area-inset-left\)\] {
+  padding-inline: env(safe-area-inset-left);
+}
 .py-1 {
   padding-block: calc(var(--spacing) * 1);
 }
@@ -343,15 +331,11 @@
 .py-3 {
   padding-block: calc(var(--spacing) * 3);
 }
+.pt-\[env\(safe-area-inset-top\)\] {
+  padding-top: env(safe-area-inset-top);
+}
 .pb-3 {
   padding-bottom: calc(var(--spacing) * 3);
-}
-.pb-4 {
-  padding-bottom: calc(var(--spacing) * 4);
-}
-.text-2xl {
-  font-size: var(--text-2xl);
-  line-height: var(--tw-leading, var(--text-2xl--line-height));
 }
 .text-4xl {
   font-size: var(--text-4xl);
@@ -542,8 +526,6 @@
     --text-lg--line-height: calc(1.75 / 1.125);
     --text-xl: 1.25rem;
     --text-xl--line-height: calc(1.75 / 1.25);
-    --text-2xl: 1.5rem;
-    --text-2xl--line-height: calc(2 / 1.5);
     --text-4xl: 2.25rem;
     --text-4xl--line-height: calc(2.5 / 2.25);
     --font-weight-medium: 500;

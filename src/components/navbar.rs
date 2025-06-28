@@ -11,18 +11,18 @@ pub fn Navbar() -> Element {
     rsx! {
         //document::Link { rel: "stylesheet", href: NAVBAR_CSS }
 
-      //  div {
+      // div {
      //       id: "navbar",
      //       class: "btm-nav",
      //       Link {
-     //           to: Route::Home {},
+     //          to: Route::Home {},
      //           "Home"
-      //      }
-      //      Link {
-      //          to: Route::Settings { },
+     //       }
+     //       Link {
+     //           to: Route::Settings { },
       //           "Settings"
-       //     }
-       // }
+      //      }
+      //  }
         div {
             class: "flex justify-center bg-base-300",
             div {

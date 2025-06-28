@@ -8,7 +8,7 @@ edition = "2021"
 
 [dependencies]
 daisy_rsx = "0.1.14"
-dioxus = { version = "0.6.2", features = ["router"] }
+dioxus = { version = "0.6.3", features = ["router"] }
 dioxus-logger = "0.6.2"
 eyre = "0.6.12"
 reqwest = { version = "0.12.9", features = ["json"] }
@@ -21,7 +21,7 @@ dyn-clone = "1.0.18"
 async-trait = "0.1.86"
 tokio = { version = "1.43", features = ["io-util", "time"] }
 tokio_with_wasm = { version = "0.7.4", features = ["time"] }
-dioxus-motion = { version = "0.3.1", optional = true, default-features = false }
+dioxus-motion = { version = "0.3.0", optional = true, default-features = false }
 proc-macro2 = "1.0.93"
 dioxus-components = "0.0.0"
 serde_derive = "1.0.219"
