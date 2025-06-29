@@ -1,9 +1,8 @@
-use dioxus::prelude::*;
-use dioxus_logger::tracing::{debug, info};
+use crate::components;
 use crate::settings::{use_settings, Addon};
 use crate::Route;
-use crate::components;
-
+use dioxus::prelude::*;
+use dioxus_logger::tracing::{debug, info};
 
 #[component]
 pub fn Settings() -> Element {
@@ -15,7 +14,7 @@ pub fn Settings() -> Element {
 
                     SettingRow { icon: "👤", label: "Addons", to: Route::SettingsAddonsView {} }
 
-                
+
             }
 
 
@@ -90,7 +89,7 @@ pub fn SettingsAddonsView() -> Element {
 pub struct SettingRowProps {
     pub icon: &'static str,
     pub label: &'static str,
-    pub to: Route
+    pub to: Route,
 }
 
 #[component]
@@ -102,14 +101,11 @@ pub fn SettingRow(props: SettingRowProps) -> Element {
                 span { class: "text-xl", "{props.icon}" }
                 span { class: "text-white font-medium", "{props.label}" }
             }
-            
+
         }
     );
 
-        rsx!(Link { to: props.to, class: "block", {content} })
-
-
-
+    rsx!(Link { to: props.to, class: "block", {content} })
 }
 
 #[derive(Props, Clone, PartialEq)]

@@ -6,3 +6,7 @@ pub use home::Home;
 
 pub mod settings;
 pub use settings::Settings;
+
+pub mod media;
+pub mod login;
+pub use login::*;

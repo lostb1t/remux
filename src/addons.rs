@@ -1,5 +1,3 @@
-
-
 //use crate::sdks::jellyfin;
 //use axum::Json;
 //use base64::{Engine as _, engine::general_purpose::URL_SAFE};
@@ -8,15 +6,14 @@ use eyre::Result;
 //use futures_util::future::try_join_all;
 //use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
 use reqwest;
-use reqwest::Client;
 use reqwest::header;
+use reqwest::Client;
 //use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use serde::{Deserialize, Serialize};
-use strum_macros;
 use dioxus_logger::tracing::{debug, error, info};
 use serde::Deserializer;
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-
+use strum_macros;
 
 #[derive(Default, strum_macros::Display, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -31,7 +28,9 @@ pub enum MediaType {
     Unknown,
 }
 
-#[derive(strum_macros::Display, strum_macros::EnumString, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    strum_macros::Display, strum_macros::EnumString, Debug, Clone, PartialEq, Serialize, Deserialize,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ResourceType {
     Stream,
@@ -45,9 +44,9 @@ pub struct Resource {
     pub name: String,
     //#[serde(default)]
     pub types: Option<Vec<MediaType>>,
-    //#[serde(default)] 
+    //#[serde(default)]
     pub id_prefixes: Option<Vec<String>>,
-    pub type_: ResourceType
+    pub type_: ResourceType,
 }
 
 impl<'de> Deserialize<'de> for Resource {
@@ -73,7 +72,6 @@ impl<'de> Deserialize<'de> for Resource {
             Full(Resource),
         }
 
-        
         Ok(match ResourceHelper::deserialize(deserializer)? {
             ResourceHelper::Simple(name) => Resource {
                 name: name.clone(),
@@ -85,7 +83,6 @@ impl<'de> Deserialize<'de> for Resource {
         })
     }
 }
-
 
 // Example code that deserializes and serializes the model.
 // extern crate serde;
@@ -144,8 +141,6 @@ impl Addon {
             manifest,
         })
     }
-    
-    
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -157,10 +152,9 @@ pub struct Catalog {
     pub name: String,
     #[serde(rename = "metas")]
     pub items: Option<Vec<CatalogItem>>,
-
     // we need a global id
     //pub uuid: Some(String)
-   // pub addon_manifest: Option<Manifest>,
+    // pub addon_manifest: Option<Manifest>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -36,17 +36,16 @@ pub struct ButtonProps {
 
     #[props(default)]
     variant: ButtonVariant,
-    
+
     #[props(default)]
     size: ButtonSize,
-    
+
     //#[props(extends = GlobalAttributes)]
     #[props(extends = button, extends = GlobalAttributes)]
     attr: Vec<Attribute>,
-    
-    onclick: Option<EventHandler<MouseEvent>>
-}
 
+    onclick: Option<EventHandler<MouseEvent>>,
+}
 
 #[component]
 pub fn Button(props: ButtonProps) -> Element {

@@ -6,7 +6,7 @@ use std::{thread, time};
 #[derive(PartialEq, Props, Clone)]
 pub struct VideoPlayerProps {
     pub src: String,
-  //  pub r#type: String,
+    //  pub r#type: String,
     // pub fullscreen: true,
 }
 
@@ -14,31 +14,31 @@ pub struct VideoPlayerProps {
 pub fn VideoPlayer(props: VideoPlayerProps) -> Element {
     let mut player = use_video_player();
     rsx! {
-div {
-class: "fixed inset-0 bg-black z-50",
-            div {
-                class: "absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2",
+    div {
+    class: "fixed inset-0 bg-black z-50",
+                div {
+                    class: "absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2",
 
-            video {
-                id: "videoplayer",
-                controls: true,
-                preload: "none",
-                autoplay: false,
-                poster: "https://vjs.zencdn.net/v/oceans.png",
-                source { src: "{props.src}" }
-            }
-            button {
-                class: "btn mb-10",
-                onclick: move |_| async move {
-                  player.with_mut(|s| s.src = None)
-                },
-                "Close"
-            }
-            button {
-                class: "btn mb-10",
-                onclick: move |_| async move {
-                    let mut eval = document::eval(
-                            r#"
+                video {
+                    id: "videoplayer",
+                    controls: true,
+                    preload: "none",
+                    autoplay: false,
+                    poster: "https://vjs.zencdn.net/v/oceans.png",
+                    source { src: "{props.src}" }
+                }
+                button {
+                    class: "btn mb-10",
+                    onclick: move |_| async move {
+                      player.with_mut(|s| s.src = None)
+                    },
+                    "Close"
+                }
+                button {
+                    class: "btn mb-10",
+                    onclick: move |_| async move {
+                        let mut eval = document::eval(
+                                r#"
                                                                         function fullScreen() {
                                                                             //let elem = document.querySelector("video");
                                                                             let elem = document.querySelector('#videoplayer');
@@ -51,22 +51,22 @@ class: "fixed inset-0 bg-black z-50",
                                                                         fullScreen();
                                                                         //
                                                                         "#,
-                        )
-                        .await.unwrap();
-                },
-                "Fullscreen"
+                            )
+                            .await.unwrap();
+                    },
+                    "Fullscreen"
+                }
             }
         }
-    }
-  }
+      }
 }
 
 #[derive(Clone, Default)]
 pub struct VideoPlayerState {
-   // pub media: Option<Media>,w
-   // pub stream: Option<MediaStream>,
+    // pub media: Option<Media>,w
+    // pub stream: Option<MediaStream>,
     pub state: Option<String>,
-    pub src: Option<String>
+    pub src: Option<String>,
 }
 
 pub fn use_video_player() -> Signal<VideoPlayerState> {
@@ -79,7 +79,7 @@ pub fn VideoPlayerCallback() -> Element {
     // debug!("{:?}", video_player_state.read());
     //let state = use_signal::<VideoPlayerState>(|| VideoPlayerState::default());
     //0let state = video_player_state.read();
-    
+
     // let create_eval = use_eval(cx);
     // let mut eval = create_eval(
     //     r#"
@@ -116,7 +116,6 @@ pub fn VideoPlayerCallback() -> Element {
                 //r#type: "application/x-mpegURL".to_string()
             }
         }
-        
     } else {
         rsx! {}
     }

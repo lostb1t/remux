@@ -1,8 +1,8 @@
+use crate::components::video::VideoPlayerCallback;
 use crate::Route;
 use dioxus::prelude::*;
 use dioxus_elements::div;
 use dioxus_motion::prelude::*;
-use crate::components::video::{VideoPlayerCallback};
 
 //const NAVBAR_CSS: Asset = asset!("/assets/styling/navbar.css");
 

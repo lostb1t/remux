@@ -1,38 +1,41 @@
 #![allow(warnings)]
 use dioxus::prelude::*;
+use dioxus_logger::tracing::{info, Level};
 use dioxus_motion::prelude::*;
 use dioxus_motion::transitions::page_transitions::AnimatedOutlet;
-use dioxus_logger::tracing::{info, Level};
 
-
+use components::video::VideoPlayerState;
 use components::Navbar;
-use components::{video::VideoPlayerState};
 //use remux_web::server::{Video, Server, Servers};
-use views::{Home, settings::Settings, settings::SettingsAddonsView};
+use views::{media::MediaDetailView,settings::Settings, settings::SettingsAddonsView, Home};
+
 // use crate::hooks::*;
 //use remux_web::hooks::*;
 
-mod clients;
-mod components;
-mod views;
 mod addons;
+mod sdks;
+mod components;
+mod hooks;
+mod media;
 mod settings;
+mod views;
+mod server;
 
 #[derive(Debug, Clone, Routable, PartialEq, MotionTransitions)]
 #[rustfmt::skip]
 pub enum Route {
     #[layout(Navbar)]
     #[route("/")]
-    #[transition(SlideLeft)]
+    #[transition(Fade)]
     Home {},
+    #[transition(Fade)]
+    #[route("/media/{:media_type}/:id")]
+    MediaDetailView { media_type: media::MediaType, id: u32 },
     #[route("/settings")]
-    #[transition(SlideLeft)]
+    #[transition(Fade)]
     Settings {},
     #[route("/settings/addons")]
     SettingsAddonsView {},
-   // #[end_layout]
-    // #[route("/blog/:id")]
-    // Blog { id: i32 },
 }
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");
@@ -97,7 +100,7 @@ fn main() {
 
 #[component]
 fn ServerProvider(children: Element) -> Element {
-   // let mut servers = use_servers();
+    // let mut servers = use_servers();
     // let mut app = use_app();
     //let user = use_user();
 
@@ -105,7 +108,7 @@ fn ServerProvider(children: Element) -> Element {
         // to_owned![servers];
         async move {
             info!("CServer provider");
-            
+
             // // use_context_provider(move || servers.clone());
             //servers.set(s);
             // dbg!(&result);
@@ -119,7 +122,6 @@ fn ServerProvider(children: Element) -> Element {
         {children}
     }
 }
-
 
 // #[derive(Clone, Copy)]
 // struct App {
@@ -148,7 +150,7 @@ fn App() -> Element {
 
     // let servers: Servers = vec![];
     use_context_provider(|| Signal::new(VideoPlayerState::default()));
-   // use_context_provider(|| AppState::default());
+    // use_context_provider(|| AppState::default());
     //let user = use_context_provider(|| Signal::new(None));
 
     // client.authenticate_user_by_name()
@@ -225,29 +227,29 @@ fn App() -> Element {
     //use_context_provider(|| client);
 
     rsx! {
-        // Global app resources
-        document::Link { rel: "icon", href: FAVICON }
-        document::Link { rel: "stylesheet", href: MAIN_CSS }
-        document::Link { rel: "stylesheet", href: TAILWIND_CSS }
-document::Meta {
-            name: "viewport",
-            content: "viewport-fit=cover, user-scalable=no, width=device-width, initial-scale=1, maximum-scale=1",
+            // Global app resources
+            document::Link { rel: "icon", href: FAVICON }
+            document::Link { rel: "stylesheet", href: MAIN_CSS }
+            document::Link { rel: "stylesheet", href: TAILWIND_CSS }
+    document::Meta {
+                name: "viewport",
+                content: "viewport-fit=cover, user-scalable=no, width=device-width, initial-scale=1, maximum-scale=1",
+            }
+            document::Meta {
+                name: "mobile-web-app-capable",
+                content: "yes",
+            }
+            document::Meta {
+                name: "apple-mobile-web-app-capable",
+                content: "yes",
+            }
+                    document::Meta {
+                name: "apple-mobile-web-app-status-bar-style",
+                content: "black-translucent",
+            }
+
+            ServerProvider {
+                Router::<Route> {}
+            }
         }
-        document::Meta {
-            name: "mobile-web-app-capable",
-            content: "yes",
-        }
-        document::Meta {
-            name: "apple-mobile-web-app-capable",
-            content: "yes",
-        }
-                document::Meta {
-            name: "apple-mobile-web-app-status-bar-style",
-            content: "black-translucent",
-        }
-        
-        ServerProvider {
-            Router::<Route> {}
-        }
-    }
 }

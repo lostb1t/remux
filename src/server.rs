@@ -1,165 +1,133 @@
 use async_trait::async_trait;
+use anyhow::{Result};
 use dioxus_logger::tracing::info;
-use dyn_clone::DynClone;
-use eyre::Result;
-use jellyfin_api;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
+use bon::Builder;
+use bon::bon;
+use bon::builder;
 use std::sync::Arc;
 
-// pub type Servers = Vec<Box<dyn Server>>;
-//pub type Servers = Vec<Box<dyn Server>>;
-pub type Servers = Vec<Jellyfin>;
+use crate::sdks::core::endpoint::Endpoint;
+
+use crate::sdks::jellyfin::{self, AuthenticationResult};
+use crate::sdks::core::RestClient;
 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Session {
-    pub id: String,
-    pub media: Option<Media>,
-    pub user_name: String
-}
-
-impl PartialEq<Session> for Session {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Media {
-    //pub id: String,
+pub struct Catalog {
     pub id: String,
     pub name: String,
-    pub poster_path: String
 }
 
-impl From<jellyfin_api::types::SessionInfoDto> for Session {
-    fn from(value: jellyfin_api::types::SessionInfoDto) -> Self {
-        //info!("{:?}", value);
-        Session {
-            id: value.id.unwrap(),
-            media: match value.now_playing_item {
-              Some(v) => Some(v.into()),
-              None => None
-            },
-            user_name: value.user_name.unwrap(),
-        }
-    }
-}
-
-impl From<jellyfin_api::types::BaseItemDto> for Media {
-    fn from(value: jellyfin_api::types::BaseItemDto) -> Self {
-        Media {
-            id: format!("{}", value.id.unwrap()),
-            name: value.name.unwrap(),
-            poster_path: format!("/Items/{}/Images/Primary", value.id.unwrap())
-        }
-    }
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-pub trait Server: DynClone {
+#[async_trait(?Send)]
+pub trait Server {
     fn host(&self) -> String;
     fn id(&self) -> String;
-    fn name(&self) -> String;
-    fn poster_url(&self, media: &Media) -> String;
+   // fn name(&self) -> String;
+    //fn poster_url(&self, media: &Media) -> String;
     async fn connect(&mut self) -> Result<()>;
-    async fn sessions(&self) -> Result<Vec<Session>>;
+    async fn get_catalogs(&self) -> Result<Vec<Catalog>>;
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone)]
 pub struct Jellyfin {
     pub host: String,
     pub username: String,
     pub password: String,
     pub id: String,
-    pub name: String,
-    pub auth_token: Option<String>,
-    pub client: Arc<Option<jellyfin_api::Client>>,
+   // pub name: String,
+    pub access_token: String,
+    pub client: RestClient,
+    //pub user_id: String,
 }
 
-impl PartialEq<Jellyfin> for Jellyfin {
+//#[bon::buildable]
+
+impl PartialEq for Jellyfin {
     fn eq(&self, other: &Self) -> bool {
-        self.host() == other.host()
+        self.host == other.host
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[async_trait(?Send)]
 impl Server for Jellyfin {
     fn host(&self) -> String {
         self.host.clone()
     }
-    
+
     fn id(&self) -> String {
         self.id.clone()
     }
-    
-   fn name(&self) -> String {
-        self.name.clone()
-   }
-   
-   fn poster_url(&self, media: &Media) -> String {
-      format!("{}{}", self.host, media.poster_path)
-   }
+
+    //fn name(&self) -> String {
+    //    self.name.clone()
+   // }
+
+   // fn poster_url(&self, media: &Media) -> String {
+   //     format!("{}{}", self.host, media.poster_path)
+   // }
 
     async fn connect(&mut self) -> Result<()> {
-        info!("Connecting to Jellyfin");
-        let mut headers = reqwest::header::HeaderMap::new();
-        let auth_header = "MediaBrowser Client=\"Remux\", Device=\"device\", DeviceId=\"ZQ9YQHHrUzk24vV\", Version=\"10.10.5\"";
-        headers.insert(reqwest::header::AUTHORIZATION, reqwest::header::HeaderValue::from_str(&auth_header).unwrap());
-        let rclient = reqwest::ClientBuilder::new()
-            .default_headers(headers) // Add this line to the generated code
-            .build()
-            .unwrap();
-          let client =
-          jellyfin_api::Client::new_with_client(self.host.as_str(), rclient);
-        // let client = jellyfin_api::Client::new("https://jellyfin.sjoerdarendsen.dev");
-        let result = client
-            .authenticate_user_by_name()
-            .body(
-                jellyfin_api::types::AuthenticateUserByName::builder()
-                    .pw(self.password.clone())
-                    .username(self.username.clone()),
-            )
-            .send()
-            .await;
-        self.auth_token = Some(result.unwrap().into_inner().access_token.unwrap());
-        // info!("{:?}", &result);
-        // app.user.set(Some(result.unwrap().into_inner()));
-
-        let mut headers = reqwest::header::HeaderMap::new();
-        let auth_header = format!("MediaBrowser Client=\"Remux\", Device=\"device\", DeviceId=\"ZQ9YQHHrUzk24vV\", Version=\"10.10.5\", Token=\"{}\"", self.auth_token.clone().unwrap().as_str());
-        headers.insert(reqwest::header::AUTHORIZATION, reqwest::header::HeaderValue::from_str(&auth_header).unwrap());
-        let rclient = reqwest::ClientBuilder::new()
-            .default_headers(headers) // Add this line to the generated code
-            .build()
-            .unwrap();
-        //let client = jellyfin_api::Client::new("https://jellyfin.sjoerdarendsen.dev");
-        let client =
-            jellyfin_api::Client::new_with_client(self.host.as_str(), rclient);
-        self.client = Some(client);
+        info!("Connecting to Jellyfin...");
+        //let (auth_token, user_id) = Self::authenticate(&self.host, &self.username, &self.password).await?;
+        //self.client = Self::create_client(&self.host, &auth_token, &user_id)?;
+        //self.auth_token = auth_token;
+        //self.user_id = user_id;
         Ok(())
     }
 
-    async fn sessions(&self) -> Result<Vec<Session>> {
-        let result = self.client.clone().unwrap().get_sessions().send().await;
-        //   let result = spawn(async move {
-        //     self.client.clone().unwrap().get_sessions().send().await
-        // }).await?;
-        // info!("{:?}", &result);
-        Ok(convert_vec(result.unwrap().into_inner()))
-        // app.user.set(Some(result.unwrap().into_inner()));
-
-        // Ok(vec![Session {
-        //     id: "1363626".to_string(),
-        // }])
+    async fn get_catalogs(&self) -> Result<Vec<Catalog>> {
+        Ok(vec![]) // Placeholder
     }
 }
 
-fn convert_vec<T, U>(v: Vec<T>) -> Vec<U>
-where
-    T: Into<U>,
-{
-    v.into_iter().map(Into::into).collect()
+#[bon]
+impl Jellyfin {
+    #[builder]
+    pub async fn new(host: String, username: String, password: String) -> Result<Jellyfin> {
+      
+       // let name = self.name().ok_or_else(|| eyre!("missing name"))?;
+        let res = Jellyfin::authenticate(&host, &username, &password).await?;
+        let access_token = res.access_token.expect("Expect access token");
+        let id = res.server_id.expect("Expect access token");
+        let client = Jellyfin::create_client(&host, &access_token, &res.user.unwrap().id.unwrap())?;
+        
+        Ok(Jellyfin {
+            host,
+            username,
+            password,
+            id,
+          //  name: res.name,
+            access_token,
+            client,
+           // user_id,
+        })
+    }
+
+    fn anon_auth_header() -> &'static str {
+        "Emby Client=\"Remux\", Device=\"Samsung Galaxy SIII\", DeviceId=\"xxx\", Version=\"1.0.0.0\""
+    }
+
+    async fn authenticate(host: &str, username: &str, password: &str) -> Result<AuthenticationResult> {
+        let client = RestClient::new(host)?.header("Authorization", Self::anon_auth_header());
+
+        let endpoint = jellyfin::AuthenticateUserByName::builder()
+            .username(username.to_string())
+            .password(password.to_string())
+            .build();
+
+        Ok(endpoint.query(&client).await?)
+    }
+
+    fn create_client(host: &str, token: &str, user_id: &str) -> Result<RestClient> {
+        let auth_header = format!(
+            "Emby UserId=\"{}\", Token=\"{}\", Client=\"Android\", Device=\"Samsung Galaxy SIII\", DeviceId=\"xxx\", Version=\"1.0.0.0\"",
+            user_id, token
+        );
+        Ok(RestClient::new(host)?.header("Authorization", &auth_header))
+    }
+
+    pub async fn reconnect(&mut self) -> Result<()> {
+        self.connect().await
+    }
 }
