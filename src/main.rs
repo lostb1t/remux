@@ -23,7 +23,7 @@ mod server;
 
 #[derive(Debug, Clone, Routable, PartialEq, MotionTransitions)]
 #[rustfmt::skip]
-pub enum Routee {
+pub enum Route {
     #[layout(Navbar)]
     #[route("/")]
     #[transition(Fade)]
