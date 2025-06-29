@@ -23,19 +23,20 @@ mod server;
 
 #[derive(Debug, Clone, Routable, PartialEq, MotionTransitions)]
 #[rustfmt::skip]
-pub enum Route {
+pub enum Routee {
     #[layout(Navbar)]
     #[route("/")]
     #[transition(Fade)]
     Home {},
-    #[transition(Fade)]
     #[route("/media/{:media_type}/:id")]
+    #[transition(Fade)]
     MediaDetailView { media_type: media::MediaType, id: u32 },
     #[route("/settings")]
     #[transition(Fade)]
     Settings {},
     #[route("/settings/addons")]
-    SettingsAddonsView {},
+    SettingsAddonsView {}
+   // #[end_layout]
 }
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");
