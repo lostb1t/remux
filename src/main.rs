@@ -7,26 +7,26 @@ use dioxus_motion::transitions::page_transitions::AnimatedOutlet;
 use components::video::VideoPlayerState;
 use components::Navbar;
 //use remux_web::server::{Video, Server, Servers};
-use views::{media::MediaDetailView,settings::Settings, settings::SettingsAddonsView, Home};
+use views::{media::MediaDetailView, settings::Settings, settings::SettingsAddonsView, Home};
 
 // use crate::hooks::*;
 //use remux_web::hooks::*;
 
 mod addons;
-mod sdks;
 mod components;
 mod hooks;
 mod media;
+mod sdks;
+mod server;
 mod settings;
 mod views;
-mod server;
 
 #[derive(Debug, Clone, Routable, PartialEq, MotionTransitions)]
 #[rustfmt::skip]
 pub enum Route {
     #[layout(Navbar)]
     #[route("/")]
-    #[transition(Fade)]
+    #[transition(SlideRight)]
     Home {},
     #[route("/media/{:media_type}/:id")]
     #[transition(Fade)]
@@ -228,29 +228,21 @@ fn App() -> Element {
     //use_context_provider(|| client);
 
     rsx! {
-            // Global app resources
-            document::Link { rel: "icon", href: FAVICON }
-            document::Link { rel: "stylesheet", href: MAIN_CSS }
-            document::Link { rel: "stylesheet", href: TAILWIND_CSS }
-    document::Meta {
-                name: "viewport",
-                content: "viewport-fit=cover, user-scalable=no, width=device-width, initial-scale=1, maximum-scale=1",
-            }
-            document::Meta {
-                name: "mobile-web-app-capable",
-                content: "yes",
-            }
-            document::Meta {
-                name: "apple-mobile-web-app-capable",
-                content: "yes",
-            }
-                    document::Meta {
-                name: "apple-mobile-web-app-status-bar-style",
-                content: "black-translucent",
-            }
-
-            ServerProvider {
-                Router::<Route> {}
-            }
+        // Global app resources
+        document::Link { rel: "icon", href: FAVICON }
+        document::Link { rel: "stylesheet", href: MAIN_CSS }
+        document::Link { rel: "stylesheet", href: TAILWIND_CSS }
+        document::Meta {
+            name: "viewport",
+            content: "viewport-fit=cover, user-scalable=no, width=device-width, initial-scale=1, maximum-scale=1",
         }
+        document::Meta { name: "mobile-web-app-capable", content: "yes" }
+        document::Meta { name: "apple-mobile-web-app-capable", content: "yes" }
+        document::Meta {
+            name: "apple-mobile-web-app-status-bar-style",
+            content: "black-translucent",
+        }
+
+        ServerProvider { Router::<Route> {} }
+    }
 }

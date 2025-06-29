@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, error, info};
-use dioxus_sdk::storage::use_persistent;
+use dioxus_storage::use_persistent;
 use serde::{Deserialize, Serialize};
 
 //use crate::addons::{Addon};
