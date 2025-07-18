@@ -15,6 +15,13 @@
 
 </details>
 
+<details>
+<summary> Desktop Layout </summary>
+  
+![Desktop](desktop.png)
+
+</details>
+
 ### Development
 
 1. Install npm: https://docs.npmjs.com/downloading-and-installing-node-js-and-npm
