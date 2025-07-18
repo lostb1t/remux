@@ -8,9 +8,10 @@
   <p><i>An *experimental* web client for Jellyfin written in Rust </i></p>
 </div>
 
+<details>
 <summary> Mobile Layout </summary>
   
-![Mobile](assets/mobile.png)
+![Mobile](mobile.png)
 
 </details>
 
