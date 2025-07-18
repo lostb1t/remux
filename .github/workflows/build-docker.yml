@@ -2,7 +2,8 @@ name: Build & Push to GitHub Packages
 
 on:
   push:
-    branches: [main]
+    #branches: [main]
+     workflow_dispatch:
 
 jobs:
   docker-build:
