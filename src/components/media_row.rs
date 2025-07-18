@@ -149,7 +149,8 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
     let server = crate::hooks::consume_server().expect("missing server");
     let scroll_size: usize = 5;
     let title = props.title.clone().unwrap_or_else(|| "Unknown".to_string());
-    let mut scroll_to = use_signal(|| scroll_size);
+    // let mut scroll_to = use_signal(|| scroll_size);
+    let mut scroll_to = use_signal(|| 0);
     let list_id = use_memo(|| rand::thread_rng().gen::<u32>().to_string());
 
     let query = props.query.clone();
@@ -201,7 +202,10 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                                 let list_id = list_id.clone();
                                 move |_| {
                                     let current = *scroll_to.read();
-                                    let target = current + scroll_size;
+                                    let mut target = current + scroll_size;
+                                    if target <= scroll_size {
+                                        target += scroll_size;
+                                    }
                                     debug!(?list_id, ?current, ?target, "on next");
                                     //crate::utils::scroll_to_index(format!("{}-{}", list_id(), target));
                                     scroll_to.set(target);
@@ -217,13 +221,17 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                     super::CarouselList {
                         items: items.clone(),
                         index: scroll_to,
+                        class: "pl-6 scroll-pl-6 gap-x-2",
                         on_load_more: Some(EventHandler::new(move |_| {
                             if !*media_items().is_loading.read() {
                                 media_items().load_next();
                             }
                         })),
-                        render_item: move |i: &media::Media| rsx! {
+                        render_item: move |i: &media::Media, idx: String| rsx! {
+                            div {
+                                id: idx,
                             super::MediaCard { item: i.clone() }
+                            }
                         }
                     }
                 },
@@ -236,8 +244,11 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                                 media_items().load_next();
                             }
                         })),
-                        render_item: move |i: &media::Media| rsx! {
+                        render_item: move |i: &media::Media, idx: String| rsx! {
+                            div {
+                                id: idx,
                             super::MediaCard { item: i.clone() }
+                            }
                         },
                     }
                 },

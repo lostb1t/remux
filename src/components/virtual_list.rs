@@ -17,7 +17,7 @@ pub enum ScrollDirection {
 pub struct PaginatedListProps<T, F>
 where
     T: Clone + PartialEq + 'static,
-    F: Fn(&T) -> Element + Clone + 'static,
+    F: Fn(&T, String) -> Element + Clone + 'static,
 {
     pub items: Vec<T>,
     pub render_item: F,
@@ -35,7 +35,7 @@ where
     pub index: Option<Signal<usize>>,
 }
 
-impl<T: PartialEq + Clone + 'static, F: Fn(&T) -> Element + Clone + 'static> PartialEq
+impl<T: PartialEq + Clone + 'static, F: Fn(&T, String) -> Element + Clone + 'static> PartialEq
     for PaginatedListProps<T, F>
 {
     fn eq(&self, other: &Self) -> bool {
@@ -54,7 +54,7 @@ impl<T: PartialEq + Clone + 'static, F: Fn(&T) -> Element + Clone + 'static> Par
 pub fn PaginatedList<T, F>(props: PaginatedListProps<T, F>) -> Element
 where
     T: Clone + PartialEq + 'static,
-    F: Fn(&T) -> Element + Clone + 'static,
+    F: Fn(&T, String) -> Element + Clone + 'static,
 {
     let mut scroll_ref = use_signal(|| None as Option<Rc<MountedData>>);
     let on_load_more = props.on_load_more.clone();
@@ -62,7 +62,7 @@ where
     let scroll_direction = props.scroll_direction;
     let index = props.index.clone();
 
-    // debug!(" index: {:?}", index.as_ref().map(|signal| *signal.read()));
+    debug!(?index, ?trigger_offset, "PaginatedList");
 
     // use_effect(move || {
     //     if let Some(target) = props.index.as_ref().map(|s| *s.read()) {
@@ -88,19 +88,16 @@ where
 
     use_effect(move || {
         let target = index.as_ref().map(|s| *s.read());
-        // debug!("Scrolling to index (effect): {:?}", target);
+        
         if let Some(target) = target {
             if let Some(scroll_node) = scroll_ref() {
+                // debug!(?target, "SCROLLINNNGGGGGG");
                 let el = scroll_node.as_web_event();
-                if let Some(child) = el
-                    .query_selector(&format!("#item-{}", target))
-                    .ok()
-                    .flatten()
-                {
+                if let Some(child) = el.query_selector(&format!("#item-{}", target)).ok().flatten() {
                     let child_el = child.dyn_ref::<web_sys::HtmlElement>().unwrap();
                     let scroll_top = child_el.offset_top();
                     let scroll_left = child_el.offset_left();
-                    // debug!(?scroll_top, "Scrolling to item offset");
+                    // debug!(?scroll_top, "SCROLLING to item offset");
                     let mut options = ScrollToOptions::new();
                     match scroll_direction {
                         ScrollDirection::Vertical => options.top(scroll_top as f64),
@@ -138,7 +135,7 @@ where
                             ScrollDirection::Horizontal => el.scroll_width() as f32,
                             ScrollDirection::Vertical => el.scroll_height() as f32,
                         };
-                        debug!(?scroll_pos, ?max_scroll, ?trigger_offset, "tracking scroll");
+                        // debug!(?scroll_pos, ?max_scroll, ?trigger_offset, "tracking scroll");
                         if max_scroll - scroll_pos < trigger_offset {
                             if let Some(cb) = &on_load_more {
                                 cb.call(());
@@ -155,7 +152,8 @@ where
 
     let base_class = match scroll_direction {
         ScrollDirection::Vertical => "flex flex-row flex-wrap items-start content-start overflow-y-auto no-scrollbar scroll-smooth max-h-screen gap-x-4 gap-y-4",
-        ScrollDirection::Horizontal => "pl-6 scroll-pl-6 flex overflow-x-auto no-scrollbar scroll-smooth gap-x-2 snap-x snap-mandatory",
+        // ScrollDirection::Horizontal => "pl-6 scroll-pl-6 flex overflow-x-auto no-scrollbar scroll-smooth gap-x-2 snap-x snap-mandatory",
+        ScrollDirection::Horizontal => "flex overflow-x-auto no-scrollbar scroll-smooth snap-x snap-mandatory",
     };
 
     let class = if let Some(extra) = &props.class {
@@ -175,10 +173,8 @@ where
 
             {props.items.iter().enumerate().map(|(i, item)| {
                 rsx!(
-                    div {
-                        id: "item-{i}",
-                        {(props.render_item)(item)}
-                    }
+                    
+                  {(props.render_item)(item, format!("item-{}", i))}
                 )
             })}
 
@@ -190,16 +186,18 @@ where
 pub struct CarouselListProps<T, F>
 where
     T: Clone + PartialEq + 'static,
-    F: Fn(&T) -> Element + Clone + 'static,
+    F: Fn(&T, String) -> Element + Clone + 'static,
 {
     pub items: Vec<T>,
     pub index: Signal<usize>,
     pub render_item: F,
     #[props(default)]
     pub on_load_more: Option<EventHandler<()>>,
+    #[props(default = "".to_string())]
+    pub class: String,
 }
 
-impl<T: PartialEq + Clone + 'static, F: Fn(&T) -> Element + Clone + 'static> PartialEq
+impl<T: PartialEq + Clone + 'static, F: Fn(&T, String) -> Element + Clone + 'static> PartialEq
     for CarouselListProps<T, F>
 {
     fn eq(&self, other: &Self) -> bool {
@@ -211,27 +209,26 @@ impl<T: PartialEq + Clone + 'static, F: Fn(&T) -> Element + Clone + 'static> Par
 pub fn CarouselList<T, F>(props: CarouselListProps<T, F>) -> Element
 where
     T: Clone + PartialEq + 'static,
-    F: Fn(&T) -> Element + Clone + 'static,
+    F: Fn(&T, String) -> Element + Clone + 'static,
 {
     let render = props.render_item.clone();
     let items = props.items.clone();
+
+    let base_class =
+        "overflow-x-auto flex snap-x snap-mandatory scroll-smooth no-scrollbar".to_string();
 
     rsx! {
         PaginatedList {
             items: items.clone(),
             on_load_more: props.on_load_more.clone(),
-            class: "overflow-x-auto flex gap-x-2 snap-x snap-mandatory scroll-smooth no-scrollbar".to_string(),
+            class: format!("{} {}", base_class, props.class),
             index: Some(props.index.clone()),
-            render_item: move |item: &T| {
-                let idx = items.iter().position(|x| x == item).unwrap_or(0);
-                rsx! {
-                    div {
-                        class: "flex-shrink-0 snap-start",
-                        // id: "carousel-{idx}",
-                        {(render)(item)}
-                    }
-                }
-            },
+            render_item: render
+            // render_item: move |item: &T, idx: String| {
+            //     rsx! {
+            //         {(render)(item, format!("item-{}", idx))}
+            //     }
+            // },
         }
     }
 }

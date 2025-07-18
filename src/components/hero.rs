@@ -43,11 +43,7 @@ pub fn HeroList(props: HeroListProps) -> Element {
     let server = hooks::consume_server().expect("missing server");
     let query = props.query.clone();
     let mut index = use_signal(|| 0_usize);
-    let mut scroll_ref = use_signal(|| None as Option<Rc<MountedData>>);
-    let mut genres_open = use_signal(|| false);
-    let mut home_filter = hooks::use_home_filter();
 
-    // debug!("Hero: RENEDER: {:?}", &query);
     let media_items = {
         let server = server.clone();
         let query = query.clone();
@@ -56,6 +52,7 @@ pub fn HeroList(props: HeroListProps) -> Element {
             let server = server.clone();
             let mut paged_query = query.clone();
             paged_query.offset = offset as u32;
+            // paged_query.limit = 1;
             debug!("Hero: Fetching items with offset: {}", paged_query.offset);
             async move { Ok(crate::server::get_media_cached(server, &paged_query).await?) }
         })
@@ -69,91 +66,35 @@ pub fn HeroList(props: HeroListProps) -> Element {
     }
 
     let scroll_to_index = {
+        let mut index = index.clone();
         move |i: usize| {
-            let id = format!("hero-{}", i);
-            debug!("Scrolling to id: {}", id);
-            crate::utils::scroll_to_index(id);
+            index.set(i);
         }
     };
 
-    let track_index_from_scroll: Rc<dyn Fn()> = Rc::new({
-        let scroll_ref = scroll_ref.clone();
-        let index = index.clone();
-        let media_items = media_items.clone();
-
-        move || {
-            if let Some(ref scroll_node) = scroll_ref() {
-                let el = scroll_node.as_web_event();
-                let scroll_ref_clone = scroll_ref.clone();
-                let mut index = index.clone();
-                let media_items = media_items.clone();
-
-                let listener = Closure::<dyn FnMut(_)>::new(move |_event: web_sys::Event| {
-                    if let Some(ref scroll_node) = scroll_ref_clone() {
-                        let el = scroll_node.as_web_event();
-                        let scroll_left = el.scroll_left() as f64;
-                        let width = el.client_width() as f64;
-
-                        if width > 0.0 {
-                            let new_index = (scroll_left / width).round() as usize;
-                            if index() != new_index {
-                                index.set(new_index);
-                                debug!("scroll: updating index to {}", new_index);
-                            }
-
-                            let total = media_items().items.read().len();
-                            let has_more = *media_items().has_more.read();
-                            if has_more && new_index + 1 >= total.saturating_sub(2) {
-                                debug!(
-                                    "scroll: fetching next page at index {}",
-                                    *media_items().is_loading.read()
-                                );
-                                if !*media_items().is_loading.read() {
-                                    media_items().load_next();
-                                    //media_items().trigger_load_next.set(true);
-                                }
-                            }
-                        }
-                    }
-                });
-
-                el.add_event_listener_with_callback("scroll", listener.as_ref().unchecked_ref())
-                    .unwrap();
-                listener.forget();
-            }
-        }
-    });
-
-    let hero_items = list.iter().enumerate().map(|(i, item)| {
-        rsx! {
-            div { id: "hero-{i}", class: "flex-shrink-0 w-full snap-start",
-                HeroItem { item: item.clone() }
-            }
-        }
-    });
-
     rsx! {
         div { class: "relative",
-            div {
-                id: "hero-scroll",
-                class: "pb-10 overflow-x-auto flex snap-x snap-mandatory scroll-smooth no-scrollbar",
-                style: "scrollbar-width: none; -ms-overflow-style: none;",
-                onmounted: move |el| {
-                    scroll_ref.set(Some(el.data()));
-                    (track_index_from_scroll)();
+            components::CarouselList {
+                items: list.clone(),
+                index: index.clone(),
+                on_load_more: Some(EventHandler::new(move |_| {
+                    if !*media_items().is_loading.read() {
+                        media_items().load_next();
+                    }
+                })),
+                render_item: move |item: &media::Media, idx: String| rsx! {
+                    div {
+                        id: idx,
+                        class: "flex-shrink-0 w-full snap-start",
+                        HeroItem { item: item.clone() }
+                    }
                 },
-                {hero_items}
             }
-
-            div { class: "absolute z-50 bottom-7 w-full flex justify-center items-center",
-                PaginationDots {
-                    list_len: list.len(),
-                    index,
-                    max_dots: 10,
-                    scroll_to_index: Callback::new(move |i| {
-                        scroll_to_index(i);
-                    }),
-                }
+            PaginationDots {
+                list_len: list.len(),
+                index: index.clone(),   
+                max_dots: 10,
+                scroll_to_index: Callback::new(scroll_to_index.clone()),
             }
         }
     }
@@ -242,12 +183,12 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                     media_type: item.media_type.clone(),
                     id: item.id.clone(),
                 },
-                class: "absolute inset-0 w-full h-full z-0 block",
+                class: "absolute inset-0 w-full h-full block",
 
                 FadeInImage {
                     src: backdrop_url,
                     alt: item.title.clone(),
-                    class: "absolute inset-0 w-full object-cover h-full z-0",
+                    class: "absolute inset-0 w-full object-cover h-full",
                     attr: vec![],
                 }
                 div { class: "absolute bottom-0 left-0 right-0 h-1/2 bg-gradient-to-t from-neutral-900 via-neutral-900/100 to-transparent pointer-events-none" }
