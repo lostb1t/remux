@@ -5,7 +5,7 @@
    
 <div align="center">
   <h1><b>Remux</b></h1>
-  <p><i>An *experimental* web client for Jellyfin written in Rust </i></p>
+  <p><i>An *VERY experimental* web client for Jellyfin written in Rust </i></p>
 </div>
 
 <details>

@@ -257,7 +257,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
 
             // Foreground content (text + play)
-            div { class: "absolute bottom-0 w-full lg:min-w-md lg:max-w-md z-10 flex flex-col justify-center p-6 space-y-4",
+            div { class: "absolute bottom-0 w-full lg:min-w-md lg:max-w-md flex flex-col justify-center p-6 space-y-4",
 
                 Link {
                     to: Route::MediaDetailView {
