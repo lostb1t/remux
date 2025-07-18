@@ -57,30 +57,57 @@ where
     F: Fn(&T) -> Element + Clone + 'static,
 {
     let mut scroll_ref = use_signal(|| None as Option<Rc<MountedData>>);
-
     let on_load_more = props.on_load_more.clone();
     let trigger_offset = props.trigger_offset;
     let scroll_direction = props.scroll_direction;
+    let index = props.index.clone();
 
-    debug!(" index: {:?}", props.index.as_ref().map(|signal| *signal.read()));
+    // debug!(" index: {:?}", index.as_ref().map(|signal| *signal.read()));
+
+    // use_effect(move || {
+    //     if let Some(target) = props.index.as_ref().map(|s| *s.read()) {
+    //         debug!("Scrolling to index (effect): {}", target);
+    //         if let Some(scroll_node) = scroll_ref() {
+    //             let el = scroll_node.as_web_event();
+    //             let child_id = format!("item-{}", target);
+    //             if let Some(child) = el
+    //                 .dyn_ref::<web_sys::Element>()
+    //                 .unwrap()
+    //                 .query_selector(&format!("#{}", child_id))
+    //                 .ok()
+    //                 .flatten()
+    //             {
+    //                 let _ = child.scroll_into_view_with_scroll_into_view_options(
+    //                     web_sys::ScrollIntoViewOptions::new()
+    //                         .behavior(web_sys::ScrollBehavior::Smooth),
+    //                 );
+    //             }
+    //         }
+    //     }
+    // });
 
     use_effect(move || {
-        if let Some(target) = props.index.as_ref().map(|s| *s.read()) {
-            debug!("Scrolling to index (effect): {}", target);
+        let target = index.as_ref().map(|s| *s.read());
+        // debug!("Scrolling to index (effect): {:?}", target);
+        if let Some(target) = target {
             if let Some(scroll_node) = scroll_ref() {
                 let el = scroll_node.as_web_event();
-                let child_id = format!("item-{}", target);
                 if let Some(child) = el
-                    .dyn_ref::<web_sys::Element>()
-                    .unwrap()
-                    .query_selector(&format!("#{}", child_id))
+                    .query_selector(&format!("#item-{}", target))
                     .ok()
                     .flatten()
                 {
-                    let _ = child.scroll_into_view_with_scroll_into_view_options(
-                        web_sys::ScrollIntoViewOptions::new()
-                            .behavior(web_sys::ScrollBehavior::Smooth),
-                    );
+                    let child_el = child.dyn_ref::<web_sys::HtmlElement>().unwrap();
+                    let scroll_top = child_el.offset_top();
+                    let scroll_left = child_el.offset_left();
+                    // debug!(?scroll_top, "Scrolling to item offset");
+                    let mut options = ScrollToOptions::new();
+                    match scroll_direction {
+                        ScrollDirection::Vertical => options.top(scroll_top as f64),
+                        ScrollDirection::Horizontal => options.left(scroll_left as f64),
+                    };
+                    options.behavior(ScrollBehavior::Smooth);
+                    el.scroll_to_with_scroll_to_options(&options);
                 }
             }
         }
@@ -100,8 +127,12 @@ where
                     if let Some(ref scroll_node) = scroll_ref_clone() {
                         let el = scroll_node.as_web_event();
                         let scroll_pos = match scroll_direction {
-                            ScrollDirection::Horizontal => el.scroll_left() as f32 + el.client_width() as f32,
-                            ScrollDirection::Vertical => el.scroll_top() as f32 + el.client_height() as f32,
+                            ScrollDirection::Horizontal => {
+                                el.scroll_left() as f32 + el.client_width() as f32
+                            }
+                            ScrollDirection::Vertical => {
+                                el.scroll_top() as f32 + el.client_height() as f32
+                            }
                         };
                         let max_scroll = match scroll_direction {
                             ScrollDirection::Horizontal => el.scroll_width() as f32,
@@ -141,7 +172,7 @@ where
                 scroll_ref.set(Some(el.data()));
                 (track_scroll)();
             },
-            
+
             {props.items.iter().enumerate().map(|(i, item)| {
                 rsx!(
                     div {
@@ -150,7 +181,7 @@ where
                     }
                 )
             })}
-        
+
         }
     }
 }
@@ -175,7 +206,6 @@ impl<T: PartialEq + Clone + 'static, F: Fn(&T) -> Element + Clone + 'static> Par
         self.items == other.items && self.index == other.index
     }
 }
-
 
 #[component]
 pub fn CarouselList<T, F>(props: CarouselListProps<T, F>) -> Element

@@ -184,19 +184,19 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
 
                     if props.scroll_direction == components::ScrollDirection::Horizontal {
                         super::Paginator {
-                            has_prev: *scroll_to.read() > scroll_size,
+                            // has_prev: *scroll_to.read() > scroll_size,
                             has_next: *media_items().has_more.read(),
-                            on_prev: Some(EventHandler::new({
-                                debug!("PREV");
-                                let list_id = list_id.clone();
-                                move |_| {
-                                    let current = *scroll_to.read() as usize;
-                                    let target = current.saturating_sub(scroll_size);
-                                    debug!(?list_id, ?current, ?target, "on prev");
-                                    //crate::utils::scroll_to_index(format!("{}-{}", list_id(), target));
-                                    scroll_to.set(target);
-                                }
-                            })),
+                            // on_prev: Some(EventHandler::new({
+                            //     debug!("PREV");
+                            //     let list_id = list_id.clone();
+                            //     move |_| {
+                            //         let current = *scroll_to.read() as usize;
+                            //         let target = current.saturating_sub(scroll_size);
+                            //         debug!(?list_id, ?current, ?target, "on prev");
+                            //         //crate::utils::scroll_to_index(format!("{}-{}", list_id(), target));
+                            //         scroll_to.set(target);
+                            //     }
+                            // })),
                             on_next: Some(EventHandler::new({
                                 let list_id = list_id.clone();
                                 move |_| {
