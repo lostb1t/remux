@@ -1,0 +1,25 @@
+[application]
+
+# App (Project) Name
+name = "remux"
+asset_dir = "public"
+
+
+[web.app]
+out_dir = "docs"
+title = "remux-web"
+
+# include `assets` in web platform
+[web.resource]
+
+# Additional CSS style files
+style = []
+
+# Additional JavaScript files
+script = []
+
+[web.resource.dev]
+
+# Javascript code file
+# serve: [dev-server] only
+script = []

@@ -1,0 +1,32 @@
+[tasks.serve-web]
+#env = { "RUSTFLAGS" = "--cfg getrandom_backend=\"wasm_js\"" }
+command = "dx"
+# args = ["serve", "--platform", "web", "--port", "4000", "--addr", "0.0.0.0"]
+args = ["serve", "--platform", "web", "--port", "4000", "--addr", "0.0.0.0", "--hot-reload", "true"]
+
+[tasks.watch-tailwind]
+command = "sh"
+args = ["-c", "npx tailwindcss -i ./input.css -o ./assets/tailwind.css --watch > /dev/null 2>&1"]
+#watch = true
+
+[tasks.dev]
+run_task = { name = ["watch-tailwind", "serve-web"], fork = true, parallel = true }
+# run_task = { name = ["watch-tailwind", "serve-web"], parallel = true }
+
+[tasks.build-web]
+command = "dx"
+args = ["build", "--platform", "web", "--release"]
+
+[tasks.build-image]
+command = "docker"
+args = ["buildx", "build", "-t", "ghcr.io/lostb1t/remux:latest", ".", "--push"]
+
+[tasks.deploy]
+dependencies = ["build-web"]
+script = [
+  "rm -rf ./docs/",
+  "mv ./target/dx/remux/release/web/public/ ./docs/",
+  "git add ./docs",
+	"git commit -am \"wip\"",
+	"git push origin main"
+]

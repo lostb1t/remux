@@ -1,0 +1,17 @@
+
+
+html, body {
+    color: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overscroll-behavior-x: none;
+}
+
+#hero-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.img-gray {
+  
+  /* or to blue */
+  filter: invert(1) sepia(1) saturate(0) hue-rotate(0deg);
+}

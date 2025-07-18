@@ -1,0 +1,34 @@
+{
+  "name": "Remux",
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/test-images/png/main/202105/ia-forrest.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/test-images/png/main/202105/ia-forrest.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/test-images/png/main/202105/ia-forrest.png",
+      "type": "image/png",
+      "sizes": "any",
+      "purpose": "any"
+    }
+  ],
+  "start_url": "/",
+  "id": "/",
+  "display": "standalone",
+  "display_override": ["window-control-overlay", "standalone"],
+  "scope": "/",
+  "theme_color": "#000000",
+  "background_color": "#ffffff",
+  "short_name": "Remux",
+  "description": "Remux, the awesome sauce",
+  "dir": "ltr",
+  "lang": "en",
+  "orientation": "portrait"
+}
