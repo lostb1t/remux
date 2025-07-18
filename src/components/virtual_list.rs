@@ -1,0 +1,207 @@
+use dioxus::prelude::*;
+use dioxus::web::WebEventExt;
+use dioxus_logger::tracing::{debug, info};
+use std::rc::Rc;
+use wasm_bindgen::prelude::Closure;
+use wasm_bindgen::JsCast;
+use web_sys::{ScrollBehavior, ScrollToOptions};
+
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum ScrollDirection {
+    Vertical,
+    #[default]
+    Horizontal,
+}
+
+#[derive(Props, Clone)]
+pub struct PaginatedListProps<T, F>
+where
+    T: Clone + PartialEq + 'static,
+    F: Fn(&T) -> Element + Clone + 'static,
+{
+    pub items: Vec<T>,
+    pub render_item: F,
+    #[props(default)]
+    pub on_load_more: Option<EventHandler<()>>,
+    #[props(default = 1000.0)]
+    pub trigger_offset: f32,
+    #[props(default)]
+    pub class: Option<String>,
+    #[props(optional)]
+    pub list_ref: Option<Signal<Option<MountedData>>>,
+    #[props(default = ScrollDirection::Horizontal)]
+    pub scroll_direction: ScrollDirection,
+    #[props(default)]
+    pub index: Option<Signal<usize>>,
+}
+
+impl<T: PartialEq + Clone + 'static, F: Fn(&T) -> Element + Clone + 'static> PartialEq
+    for PaginatedListProps<T, F>
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items
+            && self.on_load_more == other.on_load_more
+            && self.trigger_offset == other.trigger_offset
+            && self.class == other.class
+            && self.list_ref == other.list_ref
+            && self.scroll_direction == other.scroll_direction
+            && self.index == other.index
+    }
+}
+
+/// A vertical, lazily loading paginated list.
+#[component]
+pub fn PaginatedList<T, F>(props: PaginatedListProps<T, F>) -> Element
+where
+    T: Clone + PartialEq + 'static,
+    F: Fn(&T) -> Element + Clone + 'static,
+{
+    let mut scroll_ref = use_signal(|| None as Option<Rc<MountedData>>);
+
+    let on_load_more = props.on_load_more.clone();
+    let trigger_offset = props.trigger_offset;
+    let scroll_direction = props.scroll_direction;
+
+    debug!(" index: {:?}", props.index.as_ref().map(|signal| *signal.read()));
+
+    use_effect(move || {
+        if let Some(target) = props.index.as_ref().map(|s| *s.read()) {
+            debug!("Scrolling to index (effect): {}", target);
+            if let Some(scroll_node) = scroll_ref() {
+                let el = scroll_node.as_web_event();
+                let child_id = format!("item-{}", target);
+                if let Some(child) = el
+                    .dyn_ref::<web_sys::Element>()
+                    .unwrap()
+                    .query_selector(&format!("#{}", child_id))
+                    .ok()
+                    .flatten()
+                {
+                    let _ = child.scroll_into_view_with_scroll_into_view_options(
+                        web_sys::ScrollIntoViewOptions::new()
+                            .behavior(web_sys::ScrollBehavior::Smooth),
+                    );
+                }
+            }
+        }
+    });
+
+    let track_scroll = {
+        let scroll_ref = scroll_ref.clone();
+        let scroll_direction = scroll_direction;
+        move || {
+            if let Some(ref scroll_node) = scroll_ref() {
+                let el = scroll_node.as_web_event();
+                let scroll_ref_clone = scroll_ref.clone();
+                let on_load_more = on_load_more.clone();
+                let trigger_offset = trigger_offset;
+                let scroll_direction = scroll_direction;
+                let listener = Closure::<dyn FnMut(_)>::new(move |_event: web_sys::Event| {
+                    if let Some(ref scroll_node) = scroll_ref_clone() {
+                        let el = scroll_node.as_web_event();
+                        let scroll_pos = match scroll_direction {
+                            ScrollDirection::Horizontal => el.scroll_left() as f32 + el.client_width() as f32,
+                            ScrollDirection::Vertical => el.scroll_top() as f32 + el.client_height() as f32,
+                        };
+                        let max_scroll = match scroll_direction {
+                            ScrollDirection::Horizontal => el.scroll_width() as f32,
+                            ScrollDirection::Vertical => el.scroll_height() as f32,
+                        };
+                        debug!(?scroll_pos, ?max_scroll, ?trigger_offset, "tracking scroll");
+                        if max_scroll - scroll_pos < trigger_offset {
+                            if let Some(cb) = &on_load_more {
+                                cb.call(());
+                            }
+                        }
+                    }
+                });
+                el.add_event_listener_with_callback("scroll", listener.as_ref().unchecked_ref())
+                    .unwrap();
+                listener.forget();
+            }
+        }
+    };
+
+    let base_class = match scroll_direction {
+        ScrollDirection::Vertical => "flex flex-row flex-wrap items-start content-start overflow-y-auto no-scrollbar scroll-smooth max-h-screen gap-x-4 gap-y-4",
+        ScrollDirection::Horizontal => "pl-6 scroll-pl-6 flex overflow-x-auto no-scrollbar scroll-smooth gap-x-2 snap-x snap-mandatory",
+    };
+
+    let class = if let Some(extra) = &props.class {
+        format!("{} {}", base_class, extra)
+    } else {
+        base_class.to_string()
+    };
+
+    rsx! {
+        div {
+            class: "{class}",
+            style: "scrollbar-width: none; -ms-overflow-style: none;",
+            onmounted: move |el| {
+                scroll_ref.set(Some(el.data()));
+                (track_scroll)();
+            },
+            
+            {props.items.iter().enumerate().map(|(i, item)| {
+                rsx!(
+                    div {
+                        id: "item-{i}",
+                        {(props.render_item)(item)}
+                    }
+                )
+            })}
+        
+        }
+    }
+}
+
+#[derive(Props, Clone)]
+pub struct CarouselListProps<T, F>
+where
+    T: Clone + PartialEq + 'static,
+    F: Fn(&T) -> Element + Clone + 'static,
+{
+    pub items: Vec<T>,
+    pub index: Signal<usize>,
+    pub render_item: F,
+    #[props(default)]
+    pub on_load_more: Option<EventHandler<()>>,
+}
+
+impl<T: PartialEq + Clone + 'static, F: Fn(&T) -> Element + Clone + 'static> PartialEq
+    for CarouselListProps<T, F>
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items && self.index == other.index
+    }
+}
+
+
+#[component]
+pub fn CarouselList<T, F>(props: CarouselListProps<T, F>) -> Element
+where
+    T: Clone + PartialEq + 'static,
+    F: Fn(&T) -> Element + Clone + 'static,
+{
+    let render = props.render_item.clone();
+    let items = props.items.clone();
+
+    rsx! {
+        PaginatedList {
+            items: items.clone(),
+            on_load_more: props.on_load_more.clone(),
+            class: "overflow-x-auto flex gap-x-2 snap-x snap-mandatory scroll-smooth no-scrollbar".to_string(),
+            index: Some(props.index.clone()),
+            render_item: move |item: &T| {
+                let idx = items.iter().position(|x| x == item).unwrap_or(0);
+                rsx! {
+                    div {
+                        class: "flex-shrink-0 snap-start",
+                        // id: "carousel-{idx}",
+                        {(render)(item)}
+                    }
+                }
+            },
+        }
+    }
+}

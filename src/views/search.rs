@@ -21,12 +21,15 @@ pub fn SearchView(props: SearchViewProps) -> Element {
     let query = props.query.clone();
 
     rsx! {
-        div { class: "",
-            components::MediaList {
-                key: "search-{query.clone()}",
-                title: Some("Search Results".to_string()),
-                orientation: components::Orientation::Vertical,
-                query: MediaQuery::builder().limit(100).search_query(query.clone()).build(),
+        div { 
+            div {
+                h2 { class: "text-xl font-bold mb-2", "Search Results" }
+                components::GenericMediaList {
+                    key: "search-{query.clone()}",
+                    scroll_direction: components::ScrollDirection::Vertical,
+                    query: MediaQuery::builder().search_query(query.clone()).build(),
+                }
+                
             }
         }
     }

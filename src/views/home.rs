@@ -115,7 +115,8 @@ pub fn Home() -> Element {
                     }
 
                     for (col , query) in media_results.iter().skip(1) {
-                        components::MediaList {
+                        // components::MediaList {
+                         components::GenericMediaList {
                             key: "{query.key()}",
                             title: Some(col.title.clone()),
                             query: query.clone(),

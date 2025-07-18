@@ -1,3 +1,4 @@
+use crate::components;
 use crate::hooks;
 use crate::media;
 use crate::sdks;
@@ -8,6 +9,7 @@ use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, info};
 use dioxus_router::prelude::*;
 use rand::Rng;
+use std::rc::Rc;
 use std::sync::Arc;
 use web_sys::{ScrollBehavior, ScrollLogicalPosition, ScrollToOptions};
 
@@ -22,137 +24,6 @@ pub enum Orientation {
 impl Default for Orientation {
     fn default() -> Self {
         Self::Horizontal
-    }
-}
-
-#[derive(Clone, PartialEq, Props)]
-pub struct MediaListProps {
-    pub title: Option<String>,
-    pub query: server::MediaQuery,
-    #[props(default)]
-    pub orientation: Orientation,
-}
-
-#[component]
-pub fn MediaList(props: MediaListProps) -> Element {
-    let server = hooks::consume_server().expect("missing server");
-    let query = props.query.clone();
-    let scroll_size = 5;
-    let title = props.title.clone().unwrap_or_else(|| "Unknown".to_string());
-
-    let media_items = {
-        let server = server.clone();
-        let query = query.clone();
-        let title = title.clone();
-
-        utils::use_paginated_resource(10, move |limit, offset| {
-            let server = server.clone();
-            let mut paged_query = query.clone();
-            paged_query.offset = offset as u32;
-            debug!(
-                "{}: Fetching items with offset: {}",
-                title, paged_query.offset
-            );
-            async move { Ok(crate::server::get_media_cached(server, &paged_query).await?) }
-        })
-        .suspend()?
-    };
-
-    let items = media_items().items.read().clone();
-    let mut scroll_to = use_signal(|| 0);
-    let list_id = use_memo(|| rand::thread_rng().gen::<u32>().to_string());
-
-    rsx! {
-        div { class: "px-0 min-w-full",
-            div {
-                if let Some(title) = props.title.clone() {
-                    div { class: "flex items-center justify-between mb-2",
-                        h3 {
-                            class: {
-                                if props.orientation == Orientation::Horizontal {
-                                    "pl-6 text-xl w-full font-bold text-white"
-                                } else {
-                                    "text-xl w-full font-bold text-white"
-                                }
-                            },
-                            "{title}"
-                        }
-                        if props.orientation == Orientation::Horizontal {
-                            Paginator {
-                                has_prev: *scroll_to.read() > 0,
-                                has_next: media_items().has_more.read().clone(),
-                                on_prev: Some(
-                                    EventHandler::new(move |_| {
-                                        let current = *scroll_to.read();
-                                        let target = current - scroll_size;
-                                        debug!("scrolling to prev: {}", target);
-                                        crate::utils::scroll_to_index(format!("{}-{}", list_id(), target));
-                                        scroll_to.set(target);
-                                    }),
-                                ),
-                                on_next: Some(
-                                    EventHandler::new(move |_| {
-                                        let current = *scroll_to.read();
-                                        let target = current + scroll_size;
-                                        debug!("scrolling to next: {}", target);
-                                        crate::utils::scroll_to_index(format!("{}-{}", list_id(), target));
-                                        scroll_to.set(target);
-                                    }),
-                                ),
-                            }
-                        }
-                    }
-                }
-            }
-
-            div {
-                class: match props.orientation {
-                    Orientation::Horizontal => {
-                        "flex pl-6 scroll-pl-6 snap-x gap-3 mb-2 scroll-smooth no-scrollbar w-full min-w-full overflow-x-auto overflow-hidden"
-                    }
-                    Orientation::Vertical => "flex flex-wrap gap-4 w-full h-full min-w-full",
-                },
-                style: "scrollbar-width: none; -ms-overflow-style: none;",
-
-                for (idx , i) in items.iter().enumerate() {
-                    div { id: "{list_id}-{idx}", class: "snap-start",
-                        super::Card {
-                            image: server.image_url(&i, media::ImageType::Poster),
-                            to: Route::MediaDetailView {
-                                media_type: i.media_type.clone(),
-                                id: i.id.clone(),
-                            },
-                            if let Some(progress) = i.progress() {
-
-
-                                div { class: "w-full h-full absolute inset-0 flex flex-col justify-end",
-                                    div { class: "absolute bottom-0 left-0 w-full p-2",
-                                        super::ProgressBar { progress }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                div {
-                    onvisible: {
-                        move |evt| {
-                            let data = evt.data();
-                            if let Ok(is_intersecting) = data.is_intersecting() {
-                                if is_intersecting {
-                                    info!("intersecting: {}", is_intersecting);
-                                    if !*media_items().is_loading.read() {
-                                        media_items().load_next();
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    class: "w-full h-6 -mr-[200px]",
-                }
-            }
-        }
     }
 }
 
@@ -216,6 +87,160 @@ pub fn Paginator(props: PaginatorProps) -> Element {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct MediaCardProps {
+    pub item: media::Media,
+}
+
+pub fn MediaCard(props: MediaCardProps) -> Element {
+    let server = crate::hooks::consume_server().expect("missing server");
+    let image = server.image_url(&props.item, media::ImageType::Poster);
+
+    rsx! {
+        super::Card {
+            image: image,
+            to: Route::MediaDetailView {
+                media_type: props.item.media_type.clone(),
+                id: props.item.id.clone(),
+            },
+            if let Some(progress) = props.item.progress() {
+                div { class: "w-24 h-full absolute inset-0 justify-end",
+                    div { class: "absolute bottom-0 left-0 w-full",
+                        super::ProgressBar { progress }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// use crate::{media, server, utils, Route};
+use dioxus::prelude::*;
+// use dioxus_logger::tracing::debug;
+// use rand::Rng;
+
+// #[derive(PartialEq, Clone)]
+// pub enum Orientation {
+//     Horizontal,
+//     Vertical,
+// }
+
+// impl Default for Orientation {
+//     fn default() -> Self {
+//         Self::Horizontal
+//     }
+// }
+
+#[derive(Clone, PartialEq, Props)]
+pub struct GenericMediaListProps {
+    pub title: Option<String>,
+    pub query: server::MediaQuery,
+    #[props(default)]
+    pub scroll_direction: components::ScrollDirection,
+}
+
+#[component]
+pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
+    let server = crate::hooks::consume_server().expect("missing server");
+    let scroll_size: usize = 5;
+    let title = props.title.clone().unwrap_or_else(|| "Unknown".to_string());
+    let mut scroll_to = use_signal(|| scroll_size);
+    let list_id = use_memo(|| rand::thread_rng().gen::<u32>().to_string());
+
+    let query = props.query.clone();
+    let media_items = {
+        let server = server.clone();
+        let query = query.clone();
+        let title = title.clone();
+
+        utils::use_paginated_resource(10, move |_, offset| {
+            let mut paged_query = query.clone();
+            paged_query.offset = offset as u32;
+            let server = server.clone();
+            debug!("{title}: Fetching offset {}", paged_query.offset);
+            async move { Ok(server::get_media_cached(server.clone(), &paged_query).await?) }
+        })
+        .suspend()?
+    };
+
+    let items = media_items().items.read().clone();
+
+    rsx! {
+        div { class: "px-0 min-w-full",
+            if let Some(title) = props.title.clone() {
+                div { class: "flex items-center justify-between mb-2",
+                    h3 {
+                        class: match props.scroll_direction {
+                            components::ScrollDirection::Horizontal => "pl-6 text-xl w-full font-bold text-white",
+                            components::ScrollDirection::Vertical => "text-xl w-full font-bold text-white",
+                        },
+                        "{title}"
+                    }
+
+                    if props.scroll_direction == components::ScrollDirection::Horizontal {
+                        super::Paginator {
+                            has_prev: *scroll_to.read() > scroll_size,
+                            has_next: *media_items().has_more.read(),
+                            on_prev: Some(EventHandler::new({
+                                debug!("PREV");
+                                let list_id = list_id.clone();
+                                move |_| {
+                                    let current = *scroll_to.read() as usize;
+                                    let target = current.saturating_sub(scroll_size);
+                                    debug!(?list_id, ?current, ?target, "on prev");
+                                    //crate::utils::scroll_to_index(format!("{}-{}", list_id(), target));
+                                    scroll_to.set(target);
+                                }
+                            })),
+                            on_next: Some(EventHandler::new({
+                                let list_id = list_id.clone();
+                                move |_| {
+                                    let current = *scroll_to.read();
+                                    let target = current + scroll_size;
+                                    debug!(?list_id, ?current, ?target, "on next");
+                                    //crate::utils::scroll_to_index(format!("{}-{}", list_id(), target));
+                                    scroll_to.set(target);
+                                }
+                            })),
+                        }
+                    }
+                }
+            }
+
+            match props.scroll_direction {
+                components::ScrollDirection::Horizontal => rsx! {
+                    super::CarouselList {
+                        items: items.clone(),
+                        index: scroll_to,
+                        on_load_more: Some(EventHandler::new(move |_| {
+                            if !*media_items().is_loading.read() {
+                                media_items().load_next();
+                            }
+                        })),
+                        render_item: move |i: &media::Media| rsx! {
+                            super::MediaCard { item: i.clone() }
+                        }
+                    }
+                },
+                components::ScrollDirection::Vertical => rsx! {
+                    super::PaginatedList {
+                        scroll_direction: props.scroll_direction,
+                        items: items.clone(),
+                        on_load_more: Some(EventHandler::new(move |_| {
+                            if !*media_items().is_loading.read() {
+                                media_items().load_next();
+                            }
+                        })),
+                        render_item: move |i: &media::Media| rsx! {
+                            super::MediaCard { item: i.clone() }
+                        },
+                    }
+                },
             }
         }
     }

@@ -43,7 +43,8 @@ pub struct CardProps {
 #[component]
 pub fn Card(props: CardProps) -> Element {
     let content = rsx! {
-        div { class: "flex-none relative shrink-0 {image_class(&props.variant)} {props.class}",
+        div { 
+            class: "flex-none relative shrink-0 {image_class(&props.variant)} {props.class}",
             // ..props.extra,
             super::FadeInImage {
                 src: "{props.image}",
@@ -57,7 +58,7 @@ pub fn Card(props: CardProps) -> Element {
 
     match &props.to {
         Some(route) => rsx! {
-            Link { to: route.clone(), class: "w-full h-full", {content} }
+            Link { to: route.clone(), class: "", {content} }
         },
         None => content,
     }
