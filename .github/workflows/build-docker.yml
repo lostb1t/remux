@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY_IMAGE: lostb1t/remux
+  REGISTRY_IMAGE: ghcr.io/lostb1t/remux
 
 jobs:
   build:
