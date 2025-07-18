@@ -59,9 +59,7 @@ pub struct MediaQuery {
     pub parent: Option<media::Media>,
     pub for_catalog: Option<media::Media>,
     pub genres: Option<Vec<media::Genre>>,
-
     //pub is_favorite: Option<bool>,
-    
 }
 
 impl MediaQuery {

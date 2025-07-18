@@ -21,12 +21,28 @@ args = ["build", "--platform", "web", "--release"]
 command = "docker"
 args = ["buildx", "build", "-t", "ghcr.io/lostb1t/remux:latest", ".", "--push"]
 
+#[tasks.deploy]
+#run_task = { name = ["fmt", "deploy-web"] }
+
+[tasks.fmt]
+script = [
+  "cargo fmt",
+  "dx fmt"
+]
+
 [tasks.deploy]
 dependencies = ["build-web"]
 script = [
   "rm -rf ./docs/",
   "mv ./target/dx/remux/release/web/public/ ./docs/",
   "git add ./docs",
+	"git commit -m \"Update docs\"",
+	"git push origin main"
+]
+
+[tasks.push]
+dependencies = ["fmt"]
+script = [
 	"git commit -am \"wip\"",
 	"git push origin main"
 ]

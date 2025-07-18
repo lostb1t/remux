@@ -20,37 +20,39 @@ pub fn Settings() -> Element {
         div {
             h1 { "Settings" }
             ul {
-           //   title: "Content",
-           li {
-                SettingRow {
-                    icon: "👤",
-                    label: "Catalogs",
-                    to: Route::SettingsCatalogView {},
-                }}
+                //   title: "Content",
                 li {
-                  "Filter watched"
-                components::Switch {
-    enabled: settings.read().filter_watched,
-    on_toggle: move |new_state| {
-      let mut s = settings();
-      s.filter_watched = !settings.read().filter_watched;
-      settings.set(s);
-    }
-}}
-li {
-                a {
-                    //   icon: "👤",
-                    onclick: {
-                        move |_| {
-                            server.set(None);
-                            config.set(None);
-                            nav.push(Route::LoginView {});
-                        }
-                    },
-                    "Logout"
-                                // to: Route::SettingsCatalogqView {},
+                    SettingRow {
+                        icon: "👤",
+                        label: "Catalogs",
+                        to: Route::SettingsCatalogView {},
+                    }
                 }
-              }
+                li {
+                    "Filter watched"
+                    components::Switch {
+                        enabled: settings.read().filter_watched,
+                        on_toggle: move |new_state| {
+                            let mut s = settings();
+                            s.filter_watched = !settings.read().filter_watched;
+                            settings.set(s);
+                        },
+                    }
+                }
+                li {
+                    a {
+                        //   icon: "👤",
+                        onclick: {
+                            move |_| {
+                                server.set(None);
+                                config.set(None);
+                                nav.push(Route::LoginView {});
+                            }
+                        },
+                        "Logout"
+                                        // to: Route::SettingsCatalogqView {},
+                    }
+                }
             }
         }
     }

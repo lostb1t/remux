@@ -7,10 +7,10 @@ COPY . .
 RUN dx bundle --release --platform web
 
 from debian:bookworm-slim as release
-RUN apt update \
-    && apt install -y openssl ca-certificates \
-    && apt clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+#RUN apt update \
+#    && apt install -y openssl ca-certificates \
+#    && apt clean \
+#    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 COPY --from=builder /app/target/dx/remux/release/web /app
 

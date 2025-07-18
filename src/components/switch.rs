@@ -25,14 +25,12 @@ pub fn Switch(props: SwitchProps) -> Element {
     };
 
     rsx! {
-       switch::Switch {
+        switch::Switch {
             class: "{switch_class} {props.class.clone().unwrap_or_default()}",
             checked: props.enabled,
             on_checked_change: move |new_state| props.on_toggle.call(new_state),
             aria_label: "Toggle switch",
-            switch::SwitchThumb {
-                class: "{thumb_class}"
-            }
+            switch::SwitchThumb { class: "{thumb_class}" }
         }
     }
 }

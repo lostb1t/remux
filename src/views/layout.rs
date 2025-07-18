@@ -52,8 +52,8 @@ pub fn MainLayout() -> Element {
 
         div { class: "md:hidden", components::BottomNavbar {} }
         if *player.visible.read() {
-        components::VideoPlayer {}
-      }
+            components::VideoPlayer {}
+        }
     }
 }
 
