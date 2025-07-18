@@ -72,57 +72,6 @@ fn main() {
     dioxus::launch(App);
 }
 
-// #[derive(Clone, Copy)]
-// struct Session {
-//     client: jellyfin_api::Client,
-//     user: Option<jellyfin_api::types::User>
-// }
-
-// impl Session {
-//   fn from_storage() -> Self {
-//     Self {
-//       client: jellyfin_api::Client::new("https://jellyfin.sjoerdarendsen.dev"),
-//       user: None
-//     }
-//   }
-// }
-
-// #[derive(Clone, Copy)]
-// struct Settings {
-// }
-
-// #[component]
-// fn ServersProvider(children: Element) -> Element {
-//     let client = use_client();
-//     let mut app = use_app();
-//     //let user = use_user();
-
-//     use_future(move || {
-//         to_owned![client];
-//         async move {
-//             let result = client
-//                 .authenticate_user_by_name()
-//                 .body(
-//                     jellyfin_api::types::AuthenticateUserByName::builder()
-//                         .pw("myfmor-6viXpo-vidhyr".to_string())
-//                         .username("sarendsen".to_string()),
-//                 )
-//                 .send()
-//                 .await;
-//             // info!("{:?}", &result);
-//             app.user.set(Some(result.unwrap().into_inner()));
-//             // dbg!(&result);
-//             // info!("{:?}", &result);
-
-//             // jellyfin_api::builder::AuthenticateUserByName("sjoerd", "password").await.unwrap()
-//         }
-//     });
-
-//     rsx! {
-//         {children}
-//     }
-// }
-
 #[derive(Props, Clone, PartialEq)]
 pub struct LoadingProps {
     #[props(optional)]
