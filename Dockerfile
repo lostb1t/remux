@@ -18,5 +18,5 @@ WORKDIR /app
 ENV PORT=80
 ENV IP=0.0.0.0
 
-CMD ["./server"]
+CMD ["./remux"]
 #CMD ["dx", "serve", "--release"]
