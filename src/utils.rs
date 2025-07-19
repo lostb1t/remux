@@ -1,6 +1,5 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use dioxus_logger::tracing;
 use dioxus_logger::tracing::{debug, info, trace, Level};
 use image::codecs::png::PngEncoder;
 use image::io::Reader as ImageReader;
@@ -199,7 +198,6 @@ pub fn image_to_base64_png(img: &RgbaImage) -> String {
     format!("data:image/png;base64,{}", base64)
 }
 
-#[tracing::instrument(level = "debug")]
 pub async fn fetch_and_trim_base64(url: &str) -> Option<String> {
     let response = reqwest::get(url).await.ok()?;
     let bytes = response.bytes().await.ok()?;

@@ -10,7 +10,7 @@ use dioxus_logger::tracing::{debug, error, info};
 //     Select, SelectGroup, SelectGroupLabel, SelectItemIndicator, SelectList, SelectOption,
 //     SelectTrigger,
 // };
-use dioxus_router::prelude::*;
+//use dioxus_router::prelude::*;
 use tracing_subscriber::field::debug;
 
 #[derive(PartialEq, Props, Clone)]

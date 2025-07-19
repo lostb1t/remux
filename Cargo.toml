@@ -8,9 +8,8 @@ edition = "2021"
 
 [dependencies]
 #remux-macros = { path = "./remux-macros" }
-#dioxus = { version = "0.7.0-alpha.2", features = ["router"] }
-dioxus = { version = "0.7.0-alpha.2", default-features = false, features = ["router"] }
-dioxus-logger = "0.7.0-alpha.2"
+dioxus = { version = "0.7.0-alpha.3", default-features = false, features = ["router"] }
+dioxus-logger = "0.7.0-alpha.3"
 eyre = "0.6"
 reqwest = { version = "0.12", default-features = false, features = ["json","rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -24,10 +23,11 @@ async-trait = "0.1.86"
 proc-macro2 = "1.0.93"
 #dioxus-primitives = "0.0.0"
 serde_derive = "1.0.219"
+dioxus-primitives = { git = "https://github.com/DioxusLabs/components"}
+#dioxus-liveview = { git = "https://github.com/ealmloff/dioxus-liveview", branch = "0.7" }
 dioxus_storage = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
 dioxus-time = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
 dioxus-sdk = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
-dioxus-primitives = { git = "https://github.com/DioxusLabs/components"}
 anyhow = "1.0.98"
 url = "2.5.4"
 bon = { version = "3" }
@@ -40,7 +40,7 @@ bytes = "1.10.1"
 serde_with = { version = "3.13.0", features = ["macros"] }
 derive_more = { version = "2", features = ["debug"] }
 thiserror = "2.0.12"
-dioxus-free-icons = { git = "https://github.com/Michaelschnabel-DM/dioxus-free-icons", features = ["feather", "hero-icons-outline", "hero-icons-solid", "font-awesome-solid", "ionicons"]}
+dioxus-free-icons = { git = "https://github.com/lostb1t/dioxus-free-icons", features = ["feather", "hero-icons-outline", "hero-icons-solid", "font-awesome-solid", "ionicons"]}
 #dioxus-free-icons = { version = "0.9", features = ["feather"] }
 serde_urlencoded = "0.7.1"
 urlencoding = "2.1.3"
@@ -56,12 +56,14 @@ web-sys = { version = "0.3.77", features = ["Element", "HtmlCollection","Window"
 gloo-timers = "0.3.0"
 features = "0.10.0"
 futures = "0.3.31"
-console_error_panic_hook = "0.1.7"
+#console_error_panic_hook = "0.1.7"
 once_cell = "1.21.3"
 cached = { version = "0.55.1", features = ["async"] }
-daisy_rsx = "0.1.42"
+#daisy_rsx = "0.1.42"
 serde-querystring = "0.3.0"
 ordered-float = { version = "5", features = ["serde"] }
+icondata = "0.6.0"
+
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 rand = { version = "0.9", features = ["std", "os_rng"] }
@@ -74,13 +76,12 @@ wasm-bindgen = "0.2"
 getrandom = { version = "0.3" }
 rand = { version = "0.9" }
 uuid = { version = "1.17.0", features = ["v4"] }
-# tokio = { version = "1.46", features = ["io-util", "time"] }
+#tokio = { version = "1.46", features = ["full"] }
 
 [features]
 default = ["web"]
-#web = ["dioxus/web", "dioxus-motion/web", "dioxus-motion/transitions"]
 web = ["dioxus/web"]
-#web = ["dioxus/web", "getrandom/wasm_js", "dioxus-motion/web", "dioxus-motion/transitions"]
+#server = ["dioxus/server"]
 desktop = ["dioxus/desktop"]
 mobile = ["dioxus/mobile"]
 

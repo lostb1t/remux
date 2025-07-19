@@ -13,7 +13,7 @@ use dioxus_free_icons::icons::io_icons::{
     IoAirplane, IoEye, IoEyeOutline, IoHeart, IoHeartOutline,
 };
 use dioxus_logger::tracing::{debug, info, trace, Level};
-use dioxus_router::prelude::*;
+//use dioxus_router::prelude::*;
 use rand::Rng;
 use tracing_subscriber::field::debug;
 use web_sys;

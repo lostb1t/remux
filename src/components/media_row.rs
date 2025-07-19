@@ -7,7 +7,7 @@ use crate::utils;
 use crate::Route;
 use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, info};
-use dioxus_router::prelude::*;
+//use dioxus_router::prelude::*;
 use rand::Rng;
 use std::rc::Rc;
 use std::sync::Arc;

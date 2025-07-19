@@ -7,7 +7,6 @@ use crate::server::MediaQuery;
 use crate::Route;
 use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, info};
-use dioxus_router::prelude::*;
 
 #[derive(PartialEq, Props, Clone)]
 pub struct SearchViewProps {

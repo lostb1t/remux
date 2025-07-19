@@ -7,7 +7,7 @@ use bon::builder;
 use bon::Builder;
 //use derive_builder;
 use dioxus::prelude::*;
-use dioxus_logger::tracing;
+//use dioxus_logger::tracing;
 use dioxus_logger::tracing::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -265,7 +265,6 @@ impl Server for JellyfinServer {
         Ok(())
     }
 
-    #[tracing::instrument()]
     async fn get_stream_url(
         &self,
         item: media::Media,
@@ -309,7 +308,6 @@ impl Server for JellyfinServer {
         Ok(vec![])
     }
 
-    #[tracing::instrument()]
     async fn get_genres(&self) -> Result<Vec<media::Genre>> {
         let endpoint = sdks::jellyfin::ItemsFiltersEndpoint::builder()
             .include_item_types(vec![
@@ -336,7 +334,6 @@ impl Server for JellyfinServer {
         Ok(genres)
     }
 
-    #[tracing::instrument(level = "debug")]
     async fn get_media_details(&self, id: String) -> Result<Option<media::Media>> {
         let endpoint = sdks::jellyfin::ItemsEndpoint::builder()
             .include_item_types(vec![])
@@ -351,7 +348,6 @@ impl Server for JellyfinServer {
         }
     }
 
-    #[tracing::instrument()]
     async fn get_media(&self, q: &MediaQuery) -> Result<Vec<media::Media>> {
         let endpoint =
             sdks::jellyfin::ItemsEndpoint::builder()
@@ -395,7 +391,6 @@ impl Server for JellyfinServer {
         res.items.into_iter().map(|s| s.try_into()).collect()
     }
 
-    #[tracing::instrument()]
     async fn nextup(&self, item: &media::Media) -> Result<Vec<media::Media>> {
         debug!("READING NEXTUP");
         let endpoint = sdks::jellyfin::NextUpEndpoint::builder()
@@ -408,8 +403,6 @@ impl Server for JellyfinServer {
         res.items.into_iter().map(|s| s.try_into()).collect()
     }
 
-    // todo: rename to catogs
-    #[tracing::instrument(level = "debug")]
     async fn get_catalogs(&self) -> Result<Vec<media::Media>> {
         let endpoint = sdks::jellyfin::ItemsEndpoint::builder()
             .include_item_types(vec![sdks::jellyfin::ItemType::BoxSet])

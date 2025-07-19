@@ -6,7 +6,7 @@ use crate::sdks;
 use crate::server;
 use crate::Route;
 use dioxus_logger::tracing::{debug, info};
-use dioxus_router::prelude::*;
+//use dioxus_router::prelude::*;
 use std::sync::Arc;
 //use dioxus_lazy::
 

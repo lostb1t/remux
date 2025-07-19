@@ -31,6 +31,12 @@ mod settings;
 mod utils;
 mod views;
 
+
+//#[server]
+//pub async fn placeholder() -> () {
+//()
+//}
+
 //pub static DEVICE_CAPABILITIES: OnceCell<Arc<capabilities::Capabilities>> = OnceCell::new();
 
 #[derive(Debug, Clone, Routable, PartialEq)]
