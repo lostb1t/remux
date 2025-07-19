@@ -9,9 +9,9 @@ RUN dx bundle --release --platform web
 #from debian:bookworm-slim as release
 FROM ghcr.io/static-web-server/static-web-server:2-debian
 
-COPY --from=builder /app/target/dx/remux/release/web /public
+COPY --from=builder /app/target/dx/remux/release/web/public /public
 
-WORKDIR /app
+#WORKDIR /app
 ENV PORT=80
 ENV IP=0.0.0.0
 
