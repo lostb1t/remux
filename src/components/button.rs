@@ -5,6 +5,9 @@ use dioxus::prelude::*;
 use dioxus_free_icons::icons::fa_solid_icons::FaPlay;
 use dioxus_free_icons::Icon;
 use dioxus_logger::tracing::{debug, error, info};
+use gloo_timers::future::sleep;
+
+use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ButtonVariant {
@@ -109,8 +112,12 @@ pub fn PlayButton(props: PlayButtonProps) -> Element {
         to_owned![server, media_item];
         use_resource(move || {
         to_owned![server, media_item];
-       // debug!("NEXTUP");
-        async move { server.nextup(&media_item).await }
+
+
+        async move { 
+
+
+          server.nextup(&media_item).await }
     })
     };
 
