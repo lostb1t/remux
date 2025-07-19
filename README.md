@@ -36,7 +36,7 @@ For fun and learning Rust. And ofcourse the usual delusions of "i can do it bett
 What makes this different.
 
 - A more family orientated client. Most users just want that netflix experience.
-- multiple servers support. It has a pluggable source system. So while only jellyfin is currently supported im also planning support for stremio
+- Multiple providers support. It has a pluggable source system. So while only jellyfin is currently supported im also planning support for stremio
 
 ### Docker
  
