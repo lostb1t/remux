@@ -92,8 +92,9 @@ pub struct PlayButtonProps {
 
 #[component]
 pub fn PlayButton(props: PlayButtonProps) -> Element {
+    let server = hooks::consume_server().expect("uhu");
     let mut sheet_open = use_signal(|| false);
-    let media_item = &props.media_item.clone();
+    let mut media_item = props.media_item.clone();
     let mut player = super::use_video_player();
     let is_movie_or_episode = matches!(
         media_item.media_type,
@@ -101,7 +102,22 @@ pub fn PlayButton(props: PlayButtonProps) -> Element {
     );
     let has_multiple_sources = media_item.media_sources.len() > 1;
     let should_show_sheet = is_movie_or_episode && has_multiple_sources;
-    //debug!(?media_item.media_sources, "sourcds");
+    //let should_show_sheet = is_movie_or_episode && has_multiple_sources;
+    
+    let nextup_items = {
+      
+        to_owned![server, media_item];
+        use_resource(move || {
+        to_owned![server, media_item];
+       // debug!("NEXTUP");
+        async move { server.nextup(&media_item).await }
+    })
+    };
+
+
+    
+                    
+    
     rsx! {
 
         Button {
@@ -109,6 +125,14 @@ pub fn PlayButton(props: PlayButtonProps) -> Element {
             onclick: {
                 to_owned![player, media_item];
                 move |_| {
+                  if media_item.is_series() {
+                        let i = nextup_items.read();
+                        if let Some(Ok(items)) = i.as_ref() {
+                            if let Some(first) = items.first() {
+                                media_item = first.clone();
+                            }
+                        }
+                    }
                     if should_show_sheet {
                         sheet_open.set(true);
                     } else {

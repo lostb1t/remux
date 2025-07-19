@@ -28,21 +28,12 @@ pub fn play_shaka(id: &str, url: &str) {
 #[component]
 pub fn VideoPlayer() -> Element {
     let mut player = use_video_player();
-    // let state = player.read();
     let server = hooks::consume_server().expect("uhu");
     let caps = hooks::use_caps();
     let mut is_loading = use_signal(|| true);
-
-    // let is_visible = *state.visible.read();
-    //let media_item = player.media.read().clone().unwrap();
-    //let media_source = player.source.read().clone();
-    //let status = player.status.read().clone();
-    debug!("remder");
     let visible = *player.visible.read();
     let media = player.media.read().clone();
-    //let source = player.source.read().clone();
 
-    debug!("render");
 
     if !visible || media.is_none() {
         debug!("not visible or no media");

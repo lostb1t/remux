@@ -271,7 +271,6 @@ impl Server for JellyfinServer {
         source: Option<media::MediaSource>,
         cap: capabilities::Capabilities,
     ) -> Result<String> {
-        debug!("getstreamurl");
         //info!("{:?}",cap.to_device_profile() );
         let endpoint = sdks::jellyfin::PlaybackInfo::builder()
             .item_id(item.id.clone())
