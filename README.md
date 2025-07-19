@@ -44,6 +44,8 @@ Theres a docker image avaiable at: ghcr.io/lostb1t/remux:latest
 
 ### Development
 
+Make sure you have installed [Rust](https://www.rust-lang.org/tools/install)
+
 1. Install the Tailwind CSS CLI: https://tailwindcss.com/docs/installation/tailwind-cli
 2. Install cargo make: `cargo install --force cargo-make`
 3. run dev: `cargo make dev`
