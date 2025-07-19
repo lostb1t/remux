@@ -29,6 +29,15 @@ So i suggest using some jellyfin plugins to create some cool ones.
 
 You can manage the home screen from the settings.
 
+### Why another one?
+
+For fun. And thr usuall delusions of "i can do better"
+
+What makes this different.
+
+- A more family orientated client. Most users just want that netflix experience.
+- multiple servers support. It has a pluggable source system. So while only jellyfin is currently supported im also planning support for stremio
+
 ### Docker
  
 Theres a docker image avaiable at: ghcr.io/lostb1t/remux:latest
