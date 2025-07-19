@@ -52,7 +52,7 @@ pub fn Home() -> Element {
     match &*catalogs {
         Ok(data) => {
             let merged = settings().add_catalogs(data.clone()).catalogs;
-
+//debug!(?merged, "yo");
             let media_results = use_resource(use_reactive!(|home_filter| {
                 let server = server.clone();
                 let home_filter = home_filter.clone();
@@ -68,7 +68,8 @@ pub fn Home() -> Element {
                     let genres = home_filter.genre.read().as_ref().map(|g| vec![g.clone()]);
 
                     let futures = merged.iter().filter(|x| x.enabled).map(|col| {
-                        let query = MediaQuery::builder()
+
+                       let query = MediaQuery::builder()
                             .limit(15)
                             .maybe_genres(genres.clone())
                             .types(media_types.clone())

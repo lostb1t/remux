@@ -8,11 +8,6 @@ use image::ImageEncoder;
 use image::{DynamicImage, GenericImageView, RgbaImage};
 use reqwest::get;
 use std::io::Cursor;
-use web_sys;
-
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::wasm_bindgen;
-
 use anyhow::Result;
 use dioxus::prelude::*;
 use std::cell::RefCell;
@@ -118,20 +113,6 @@ where
     })
 }
 
-// Scroll logic utility
-pub fn scroll_to_index(id: String) {
-    //info!("SCROLLLINNGG to index: {}", id);
-    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-        if let Some(elem) = document.get_element_by_id(&format!("{}", id)) {
-            //debug!("found target");
-            let mut options = web_sys::ScrollIntoViewOptions::new();
-            options.behavior(web_sys::ScrollBehavior::Smooth);
-            options.block(web_sys::ScrollLogicalPosition::Nearest);
-            options.inline(web_sys::ScrollLogicalPosition::Start);
-            elem.scroll_into_view_with_scroll_into_view_options(&options);
-        }
-    }
-}
 
 fn is_white_or_transparent(pixel: image::Rgba<u8>) -> bool {
     let [r, g, b, a] = pixel.0;
@@ -211,18 +192,6 @@ pub async fn fetch_and_trim_base64(url: &str) -> Option<String> {
 
     let trimmed = trim_image(&img);
     Some(image_to_base64_png(&trimmed))
-}
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_name = playHls)]
-    pub fn play_hls(id: &str, url: &str);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn play_hls(_id: &str, _url: &str) {
-    // no-op for native builds
 }
 
 pub trait TryIntoVec<U> {

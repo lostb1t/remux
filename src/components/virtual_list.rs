@@ -1,11 +1,11 @@
 use dioxus::prelude::*;
-use dioxus::web::WebEventExt;
 use dioxus_logger::tracing::{debug, info};
 use tracing_subscriber::field::debug;
 use std::rc::Rc;
+
+use dioxus::web::WebEventExt;
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::JsCast;
-// use web_sys::Element;
 use web_sys::{ScrollBehavior, ScrollToOptions};
 
 fn find_last_partially_visible_index(

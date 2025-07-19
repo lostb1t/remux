@@ -381,6 +381,7 @@ pub struct Media {
     pub id: String,
     pub title: String,
     pub media_type: MediaType,
+    #[builder(default)]
     pub external_ids: ExternalIds,
     // #[builder(default = None)]
     pub description: Option<String>,
@@ -391,6 +392,7 @@ pub struct Media {
     pub thumb: Option<String>,
     pub backdrop: Option<String>,
     pub logo: Option<String>,
+    #[builder(default)]
     pub genres: Vec<String>,
     pub index_number: Option<i32>,
     pub user_data: Option<UserData>,

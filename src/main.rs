@@ -148,28 +148,6 @@ fn ServerProvider(children: Element) -> Element {
     }
 }
 
-pub fn inject_play_hls() {
-    document::eval(
-        r#"
-        window.playHls = function(videoId, sourceUrl) {
-                            console.log("gonna play");
-            const video = document.getElementById(videoId);
-            if (!video) return;
-
-            if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                video.src = sourceUrl;
-            } else if (window.Hls) {
-                const hls = new Hls();
-                hls.loadSource(sourceUrl);
-                hls.attachMedia(video);
-            } else {
-                console.error("HLS.js is not supported in this browser");
-            }
-        };
-    "#,
-    );
-}
-
 const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 const MANIFEST: Asset = asset!("/assets/manifest.json");

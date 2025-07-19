@@ -385,14 +385,13 @@ impl Server for JellyfinServer {
                     },
                 ))
                 .build();
-        //debug!("endpojnt: {:?}", endpoint);
+        //debug!(?q, ?endpoint, "media");
 
         let res = endpoint.query(&self.client).await?;
         res.items.into_iter().map(|s| s.try_into()).collect()
     }
 
     async fn nextup(&self, item: &media::Media) -> Result<Vec<media::Media>> {
-        debug!("READING NEXTUP");
         let endpoint = sdks::jellyfin::NextUpEndpoint::builder()
             .user_id(self.user_id.clone().unwrap())
             .series_id(item.id.clone())
@@ -416,28 +415,26 @@ impl Server for JellyfinServer {
             .into_iter()
             .filter_map(|s| s.try_into().ok())
             .collect();
-        catalogs.push(media::Media {
-            id: "latest".to_string(),
-            title: "Latest".to_string(),
-            media_type: media::MediaType::Catalog,
-            ..Default::default()
-        });
-
-        catalogs.push(media::Media {
-            id: "favorites".to_string(),
-            title: "Favorites".to_string(),
-            media_type: media::MediaType::Catalog,
-            ..Default::default()
-        });
+        catalogs.push(media::Media::builder()
+            .id("latest".to_string())
+            .title("Latest".to_string())
+            .media_type(media::MediaType::Catalog)
+            .build()
+        );
+        catalogs.push(media::Media::builder()
+            .id("favorites".to_string())
+            .title("Favorites".to_string())
+            .media_type(media::MediaType::Catalog)
+            .build()
+        );
         catalogs.insert(
             1,
-            media::Media {
-                id: "continue_watching".to_string(),
-                title: "Continue Watching".to_string(),
-                media_type: media::MediaType::Catalog,
-                card_variant: components::CardVariant::Landscape,
-                ..Default::default()
-            },
+            media::Media::builder()
+            .id("continue_watching".to_string())
+            .title("Continue Watching".to_string())
+            .media_type(media::MediaType::Catalog)
+            .card_variant(components::CardVariant::Landscape)
+            .build()
         );
         Ok(catalogs)
     }

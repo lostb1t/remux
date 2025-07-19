@@ -6,29 +6,20 @@ use crate::utils;
 use crate::views;
 use crate::Route;
 use chrono::Datelike;
-use dioxus::events::{ScrollBehavior, ScrollLogicalPosition, ScrollToOptions};
-use dioxus::html::geometry::PixelsVector2D;
 use dioxus::prelude::*;
 use dioxus_free_icons::icons::io_icons::{
     IoAirplane, IoEye, IoEyeOutline, IoHeart, IoHeartOutline,
 };
 use dioxus_logger::tracing::{debug, info, trace, Level};
-//use dioxus_router::prelude::*;
 use rand::Rng;
 use tracing_subscriber::field::debug;
 use web_sys;
 
 use dioxus_free_icons::Icon;
-//use web_sys::Node;
-use dioxus::web::WebEventExt;
 use dioxus_time::use_debounce;
 use std::rc::Rc;
 use std::time::Duration;
-use web_sys::wasm_bindgen::closure::Closure;
-use web_sys::wasm_bindgen::JsCast;
 
-// use futures_timer::Delay;
-// use std::time::{Duration, Instant};
 
 #[derive(Clone, PartialEq, Props)]
 pub struct HeroListProps {
