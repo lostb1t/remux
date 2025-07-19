@@ -73,7 +73,7 @@ pub fn HeroList(props: HeroListProps) -> Element {
     };
 
     rsx! {
-        div { class: "relative",
+        div { class: "relative mb-2",
             components::CarouselList {
                 items: list.clone(),
                 index: index.clone(),
@@ -82,13 +82,19 @@ pub fn HeroList(props: HeroListProps) -> Element {
                         media_items().load_next();
                     }
                 })),
-                render_item: move |item: &media::Media, idx: String| rsx! {
+                render_item: move |item: &media::Media| rsx! {
                     div {
-                        id: idx,
                         class: "flex-shrink-0 w-full snap-start",
                         HeroItem { item: item.clone() }
                     }
                 },
+                // render_item: move |item: &media::Media, idx: String| rsx! {
+                //     div {
+                //         id: idx,
+                //         class: "flex-shrink-0 w-full snap-start",
+                //         HeroItem { item: item.clone() }
+                //     }
+                // },
             }
             PaginationDots {
                 list_len: list.len(),
@@ -352,7 +358,6 @@ pub fn PaginationDots(props: PaginationDotsProps) -> Element {
     let mut start = current_index.saturating_sub(half);
     let mut end = (start + max_dots).min(total_items);
 
-    // Shift window if we're near the end
     if end - start < max_dots && total_items >= max_dots {
         start = total_items - max_dots;
         end = total_items;

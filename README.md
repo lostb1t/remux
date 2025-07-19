@@ -22,13 +22,14 @@
 
 </details>
 
+The home screen is heavily reliant on collections. You can manage them from the settings.
+
 ### Docker
  
 Theres a docker image avaiable at: ghcr.io/lostb1t/remux:latest
 
 ### Development
 
-1. Install npm: https://docs.npmjs.com/downloading-and-installing-node-js-and-npm
-2. Install the Tailwind CSS CLI: https://tailwindcss.com/docs/installation
-3. Install cargo make: `cargo install --force cargo-make`
-4. run dev: `cargo make dev`
+1. Install the Tailwind CSS CLI: https://tailwindcss.com/docs/installation/tailwind-cli
+2. Install cargo make: `cargo install --force cargo-make`
+3. run dev: `cargo make dev`

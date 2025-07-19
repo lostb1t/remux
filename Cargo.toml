@@ -52,7 +52,7 @@ image = "0.25.6"
 base64 = "0.22.1"
 tracing-subscriber = "0.3.19"
 serde_qs = "1.0.0-rc.3"
-web-sys = { version = "0.3.77", features = ["Window", "Navigator"]}
+web-sys = { version = "0.3.77", features = ["Element", "HtmlCollection","Window", "Navigator"]}
 gloo-timers = "0.3.0"
 features = "0.10.0"
 futures = "0.3.31"

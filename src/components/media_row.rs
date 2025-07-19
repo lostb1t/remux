@@ -221,18 +221,21 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                     super::CarouselList {
                         items: items.clone(),
                         index: scroll_to,
-                        class: "pl-6 scroll-pl-6 gap-x-2",
+                        class: "pl-6 gap-x-2",
                         on_load_more: Some(EventHandler::new(move |_| {
                             if !*media_items().is_loading.read() {
                                 media_items().load_next();
                             }
                         })),
-                        render_item: move |i: &media::Media, idx: String| rsx! {
-                            div {
-                                id: idx,
+                        render_item: move |i: &media::Media| rsx! {
                             super::MediaCard { item: i.clone() }
-                            }
                         }
+                        // render_item: move |i: &media::Media, idx: String| rsx! {
+                        //     div {
+                        //         id: idx,
+                        //     super::MediaCard { item: i.clone() }
+                        //     }
+                        // }
                     }
                 },
                 components::ScrollDirection::Vertical => rsx! {
@@ -244,12 +247,16 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                                 media_items().load_next();
                             }
                         })),
-                        render_item: move |i: &media::Media, idx: String| rsx! {
-                            div {
-                                id: idx,
+                        render_item: move |i: &media::Media| rsx! {
                             super::MediaCard { item: i.clone() }
-                            }
+                            
                         },
+                        // render_item: move |i: &media::Media, idx: String| rsx! {
+                        //     div {
+                        //         id: idx,
+                        //     super::MediaCard { item: i.clone() }
+                        //     }
+                        // },
                     }
                 },
             }
