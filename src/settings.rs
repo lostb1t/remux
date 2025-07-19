@@ -18,6 +18,12 @@ pub struct Addon {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Setting {
+    pub value: String,
+    pub locked: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Settings {
     pub addons: Vec<Addon>,
     pub catalogs: Vec<crate::media::Media>,

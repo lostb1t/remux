@@ -4,21 +4,14 @@ use components::video::VideoPlayerState;
 use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, error, info, trace, Level};
 use rand::rand_core::le;
-//use dioxus_motion::prelude::*;
-//use dioxus_motion::transitions::page_transitions::AnimatedOutlet;
 use std::sync::Arc;
-//use remux_web::server::{Video, Server, Servers};
 use views::{
     media::MediaDetailViewTransition as MediaDetailView, settings::Settings,
     settings::SettingsAddonsView, settings::SettingsCatalogView, AuthenticatedLayout,
     HomeTransitionView as Home, LoginView, MainLayout, SafeSpaceLayout, SearchView,
     UnauthenticatedLayout,
 };
-// use dioxus_provider::global::init_global_providers;
 use std::cell::OnceCell;
-
-// use crate::hooks::*;
-//use remux_web::hooks::*;
 
 mod addons;
 mod capabilities;
@@ -31,29 +24,18 @@ mod settings;
 mod utils;
 mod views;
 
-
-//#[server]
-//pub async fn placeholder() -> () {
-//()
-//}
-
-//pub static DEVICE_CAPABILITIES: OnceCell<Arc<capabilities::Capabilities>> = OnceCell::new();
-
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
 pub enum Route {
     #[layout(UnauthenticatedLayout)]
       #[route("/login")]
-      //#[transition(SlideRight)]
       LoginView {},
 
     #[layout(AuthenticatedLayout)]
         #[layout(MainLayout)]
             #[route("/")]
-            //#[transition(SlideRight)]
             Home {},
             #[route("/media/:media_type/:id")]
-        // #[transition(SlideRight)]
             MediaDetailView { media_type: media::MediaType, id: String },
          
             #[layout(SafeSpaceLayout)]
@@ -63,18 +45,10 @@ pub enum Route {
                 Settings {},
                 #[route("/settings/catalog")]
                 SettingsCatalogView {}
-  //  #[end_layout]
-  //  #[layout(UnauthenticatedLayout)]
-  //  #[route("/login")]
-  //  #[transition(Fade)]
-  //  LoginView {},
 }
 
 fn main() {
-    // init_logging();
-    // console_error_panic_hook::set_once();
     dioxus_logger::init(Level::DEBUG).expect("logger failed to init");
-    // init_global_providers();
     dioxus::launch(App);
 }
 
@@ -108,7 +82,6 @@ pub fn Loading(props: LoadingProps) -> Element {
     }
 }
 
-// static SERVER: GlobalSignal<Option<Arc<dyn server::Server>>> = Global::new(|| None);
 
 #[component]
 fn ServerProvider(children: Element) -> Element {
@@ -116,8 +89,7 @@ fn ServerProvider(children: Element) -> Element {
     let nav = use_navigator();
     let mut config = hooks::use_server_config();
     let mut is_ready = use_signal(|| false);
-    //debug!("RENDER {:?}, {:?}", server.peek(), config.peek());
-    //debug!(?server.peek(), ?config.peek(),"RENDER");
+
     if server().is_none() && config().is_none() {
         debug!("Server and Config is missing, routing to login");
         nav.push(Route::LoginView {});

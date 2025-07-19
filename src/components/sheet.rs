@@ -10,6 +10,8 @@ use tracing_subscriber::field::debug;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlElement;
 
+
+/// Component that acts as an bottom sheet (mobile style) on small screens. And as a modal on larger
 #[component]
 pub fn Sheet(open: Signal<bool>, title: Option<String>, children: Element) -> Element {
     let mut is_rendered = use_signal(|| false);

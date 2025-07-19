@@ -5,3 +5,4 @@ target
 *.log
 node_modules
 README.md
+Makefile.toml

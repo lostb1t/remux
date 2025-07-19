@@ -19,7 +19,7 @@ args = ["build", "--platform", "web", "--release"]
 
 [tasks.build-image]
 command = "docker"
-args = ["buildx", "build", "-t", "ghcr.io/lostb1t/remux:latest", ".", "--push"]
+args = ["buildx", "build", "-t", "ghcr.io/lostb1t/remux:latest", ".", "--load"]
 
 #[tasks.deploy]
 #run_task = { name = ["fmt", "deploy-web"] }
