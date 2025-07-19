@@ -31,6 +31,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
+          flavor: |
+            latest=true
           #tags: |
           #  latest
 
@@ -98,8 +100,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
-          tags: |
-            latest
+          flavor: |
+            latest=true
 
       - name: Create and push manifest list
         working-directory: ${{ runner.temp }}/digests
