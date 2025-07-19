@@ -8,6 +8,8 @@
   <p><i>A *VERY experimental* web client for Jellyfin written in Rust </i></p>
 </div>
 
+Hosted version at: https://app.remux.media
+
 <details>
 <summary> Mobile Layout </summary>
   
@@ -22,7 +24,8 @@
 
 </details>
 
-The home screen is heavily reliant on collections. You can manage them from the settings.
+The home screen is heavily reliant on collections. 
+You can manage them from the settings.
 
 ### Docker
  
