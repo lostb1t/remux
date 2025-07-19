@@ -31,7 +31,7 @@ You can manage the home screen from the settings.
 
 ### Why another one?
 
-For fun. And thr usuall delusions of "i can do better"
+For fun and learning Rust. And ofcourse the usual delusions of "i can do it better".
 
 What makes this different.
 
