@@ -33,8 +33,8 @@ jobs:
           images: ${{ env.REGISTRY_IMAGE }}
           flavor: |
             latest=true
-          #tags: |
-          #  latest
+          tags: |
+            latest
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -102,6 +102,8 @@ jobs:
           images: ${{ env.REGISTRY_IMAGE }}
           flavor: |
             latest=true
+          tags: |
+            latest
 
       - name: Create and push manifest list
         working-directory: ${{ runner.temp }}/digests
