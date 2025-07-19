@@ -29,7 +29,7 @@ So i suggest using some jellyfin plugins to create some cool ones.
 
 You can manage the home screen from the settings.
 
-### Why another one?
+### Why another client?
 
 For fun and learning Rust. And ofcourse the usual delusions of "i can do it better".
 
