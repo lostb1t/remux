@@ -10,6 +10,8 @@
 
 Hosted version at: https://app.remux.media
 
+This only works for Jellyfin servers that are behind a reverse proxy and have HTTPS set up correctly. If your server runs over HTTP, you must host it yourself.
+
 <details>
 <summary> Mobile Layout </summary>
   
