@@ -36,7 +36,6 @@ pub fn AuthenticatedLayout() -> Element {
 pub fn MainLayout() -> Element {
     let mut player = components::use_video_player();
     rsx! {
-        // add spacing to the bittom for the navbar
         div { class: "pb-[calc(2rem+env(safe-area-inset-bottom))] md:pb-[env(safe-area-inset-bottom)] min-h-screen flex w-full",
 
             // Sidebar with fixed width on lg+
@@ -45,8 +44,8 @@ pub fn MainLayout() -> Element {
             // Main content fills the rest
             div { 
                 // class: "flex-auto min-w-0 pb-10 lg:pb-6 md:ml-50 md:w-[calc(100%-13rem)] ",
-                class: "flex-auto h-screen min-w-0 pb-10 lg:pb-6",
-                // AnimatedOutlet::<Route> {}
+                class: "flex-auto min-h-screen min-w-0 pb-10 lg:pb-6",
+
                 LoadingProvider { Outlet::<Route> {} }
             }
         }
@@ -62,7 +61,7 @@ pub fn MainLayout() -> Element {
 #[component]
 pub fn SafeSpaceLayout() -> Element {
     rsx! {
-        div { class: "sidebar-offset pt-[env(safe-area-inset-top)] m-6", Outlet::<Route> {} }
+        div { class: "sidebar-offset pt-[env(safe-area-inset-top)] p-6", Outlet::<Route> {} }
     }
 }
 

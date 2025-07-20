@@ -9,7 +9,7 @@ pub fn Sidebar() -> Element {
 
     rsx! {
 
-        nav { class: "min-h-screen w-full bg-neutral-900/70 backdrop-blur-[80px] text-white flex flex-col items-start px-3 py-4 gap-3 text-sm",
+        nav { class: "min-h-screen w-full bg-neutral-800/50 backdrop-blur-[80px] text-white flex flex-col items-start px-3 py-4 gap-3 text-sm",
             form {
                 onsubmit: move |evt| {
                     if !query().is_empty() {

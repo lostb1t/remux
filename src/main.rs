@@ -241,7 +241,9 @@ window.playShaka = async function(videoId, sourceUrl) {
             }
 
             div { class: "bg-neutral-900 min-h-screen",
-            Router::<Route> {}
-        }
+                Router::<Route> {}
+            }
+
+
         }
 }

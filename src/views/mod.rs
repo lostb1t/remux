@@ -29,7 +29,7 @@ pub fn Loading(children: Element) -> Element {
             onvisible: move |el| {
                 loaded.set(true);
             },
-            class: if !*loaded.read() { "transition-opacity duration-2000 opacity-100 fixed inset-0 bg-neutral-900/100 z-40" } else { "transition-opacity duration-2000 opacity-0 fixed inset-0 bg-neutral-900/100 z-40 pointer-events-none" },
+            class: if !*loaded.read() { "sidebar-offset transition-opacity duration-2000 opacity-100 fixed inset-0 bg-neutral-900/100 z-40" } else { "sidebar-offset transition-opacity duration-2000 opacity-0 fixed inset-0 bg-neutral-900/100 z-40 pointer-events-none" },
         }
         {children}
     }
