@@ -11,7 +11,7 @@ pub fn BottomNavbar() -> Element {
     let navigator = use_navigator();
 
     rsx! {
-        div { class: "fixed bottom-3 left-0 w-full z-100",
+        div { class: "fixed bottom-3 left-0 w-full z-70",
             div { class: "flex justify-center",
                 ul { class: "flex px-4 py-2 gap-3 rounded-lg bg-neutral-700 shadow-md items-center",
 

@@ -114,7 +114,8 @@ pub fn Home() -> Element {
                             query: first_query.clone(),
                         }
                     }
-
+                    div {
+                      class: "space-y-4",
                     for (col , query) in media_results.iter().skip(1) {
                         // components::MediaList {
                          components::GenericMediaList {
@@ -123,6 +124,7 @@ pub fn Home() -> Element {
                             query: query.clone(),
                         }
                     }
+                  }
                 }
             } else {
                 rsx! {
