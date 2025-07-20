@@ -106,25 +106,16 @@ pub fn PlayButton(props: PlayButtonProps) -> Element {
     let has_multiple_sources = media_item.media_sources.len() > 1;
     let should_show_sheet = is_movie_or_episode && has_multiple_sources;
     //let should_show_sheet = is_movie_or_episode && has_multiple_sources;
-    
+
     let nextup_items = {
-      
         to_owned![server, media_item];
         use_resource(move || {
-        to_owned![server, media_item];
+            to_owned![server, media_item];
 
-
-        async move { 
-
-
-          server.nextup(&media_item).await }
-    })
+            async move { server.nextup(&media_item).await }
+        })
     };
 
-
-    
-                    
-    
     rsx! {
 
         Button {

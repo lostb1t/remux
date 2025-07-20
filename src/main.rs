@@ -54,8 +54,8 @@ fn main() {
 
 #[derive(Props, Clone, PartialEq)]
 pub struct LoadingProps {
-    #[props(optional)]
-    class: Option<String>,
+    #[props(default = "".to_string())]
+    class: String,
     pub children: Element,
     #[props(default = false)]
     transparant: bool,
@@ -71,7 +71,7 @@ pub fn Loading(props: LoadingProps) -> Element {
     rsx! {
         div { id: "loading",
                //class: "fixed inset-0 z-40 flex items-center justify-center",
-           class: "sidebar-offset fixed inset-0 z-100 flex items-center justify-center {bg}",
+           class: "fixed inset-0 z-100 flex items-center justify-center {props.class} {bg}",
 
             div { role: "status", class: "flex flex-col items-center gap-2",
 

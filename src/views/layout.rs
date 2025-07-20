@@ -14,10 +14,7 @@ fn LoadingProvider(children: Element) -> Element {
         SuspenseBoundary {
             fallback: |context: SuspenseContext| rsx! {
                 div {
-                    // class: "opacity-100 transition-opacity duration-10000",
-                    // "LOADING"
-                
-                    crate::Loading { class: "bg-base-100/100" }
+                    crate::Loading { class: "sidebar-offset bg-base-100/100" }
                 }
             },
             {children}

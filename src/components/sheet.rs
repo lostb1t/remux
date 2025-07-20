@@ -145,7 +145,7 @@ pub fn Sheet(open: Signal<bool>, title: Option<String>, children: Element) -> El
     rsx! {
 
         div {
-            class: "fixed inset-0 z-50 flex items-end sm:items-center justify-center",
+            class: "sidebar-offset fixed inset-0 z-50 flex items-end sm:items-center justify-center",
             role: "dialog",
 
             div {
