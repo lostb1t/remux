@@ -79,7 +79,7 @@ pub fn MediaDetailView(props: MediaDetailViewProps) -> Element {
     rsx! {
         match &*item.read_unchecked() {
             Ok(Some(data)) => rsx! {
-                div { class: "fixed mt-6 ml-4 flex items-center gap-2 z-10 pt-[env(safe-area-inset-top)] px-[env(safe-area-inset-left)]",
+                div { class: "sidebar-offset fixed top-6 left-4 flex items-center gap-2 z-10 pt-[env(safe-area-inset-top)] px-[env(safe-area-inset-left)]",
                     button {
                         onclick: move |_| {
                             navigator.go_back();
@@ -180,7 +180,7 @@ pub fn MediaDetailSeason(props: MediaDetailSeasonProps) -> Element {
     //     *episodes.read().as_ref().unwrap().clone()
     // };
     rsx! {
-        div { class: "p-4 space-y-4",
+        div { class: "sidebar-offset p-4 space-y-4",
             select {
                 class: "bg-gray-800 text-white px-3 py-2 rounded",
                 onchange: move |evt| {

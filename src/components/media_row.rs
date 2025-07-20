@@ -109,7 +109,7 @@ pub fn MediaCard(props: MediaCardProps) -> Element {
                 id: props.item.id.clone(),
             },
             if let Some(progress) = props.item.progress() {
-                div { class: "w-24 h-full absolute inset-0 justify-end",
+                div { class: "w-24 absolute inset-0 justify-end",
                     div { class: "absolute bottom-0 left-0 w-full",
                         super::ProgressBar { progress }
                     }
@@ -172,11 +172,12 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
     let items = media_items().items.read().clone();
 
     rsx! {
-        div { class: "px-0 min-w-full",
+        div { class: "px-0 overflow-x-visible sidebar-offset",
             if let Some(title) = props.title.clone() {
                 div { class: "flex items-center justify-between mb-2",
                     h3 {
                         class: match props.scroll_direction {
+                            // components::ScrollDirection::Horizontal => "sidebar-offset  pl-6 text-xl w-full font-bold text-white",
                             components::ScrollDirection::Horizontal => "pl-6 text-xl w-full font-bold text-white",
                             components::ScrollDirection::Vertical => "text-xl w-full font-bold text-white",
                         },
@@ -221,7 +222,7 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                     super::CarouselList {
                         items: items.clone(),
                         index: scroll_to,
-                        class: "pl-6 gap-x-2",
+                        class: "overflow-y-hidden overflow-x-visible pl-6 gap-x-2",
                         on_load_more: Some(EventHandler::new(move |_| {
                             if !*media_items().is_loading.read() {
                                 media_items().load_next();
@@ -230,12 +231,6 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                         render_item: move |i: &media::Media| rsx! {
                             super::MediaCard { item: i.clone() }
                         }
-                        // render_item: move |i: &media::Media, idx: String| rsx! {
-                        //     div {
-                        //         id: idx,
-                        //     super::MediaCard { item: i.clone() }
-                        //     }
-                        // }
                     }
                 },
                 components::ScrollDirection::Vertical => rsx! {
@@ -251,12 +246,6 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                             super::MediaCard { item: i.clone() }
                             
                         },
-                        // render_item: move |i: &media::Media, idx: String| rsx! {
-                        //     div {
-                        //         id: idx,
-                        //     super::MediaCard { item: i.clone() }
-                        //     }
-                        // },
                     }
                 },
             }

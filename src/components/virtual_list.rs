@@ -108,34 +108,12 @@ where
     let mut index = props.index.clone();
     let mut last_index_set_by_scroll = use_signal(|| 0);
 
-    debug!(
-        ?index,
-        ?last_index_set_by_scroll,
-        ?trigger_offset,
-        "PaginatedList"
-    );
-
-    // use_effect(move || {
-    //     if let Some(target) = props.index.as_ref().map(|s| *s.read()) {
-    //         debug!("Scrolling to index (effect): {}", target);
-    //         if let Some(scroll_node) = scroll_ref() {
-    //             let el = scroll_node.as_web_event();
-    //             let child_id = format!("item-{}", target);
-    //             if let Some(child) = el
-    //                 .dyn_ref::<web_sys::Element>()
-    //                 .unwrap()
-    //                 .query_selector(&format!("#{}", child_id))
-    //                 .ok()
-    //                 .flatten()
-    //             {
-    //                 let _ = child.scroll_into_view_with_scroll_into_view_options(
-    //                     web_sys::ScrollIntoViewOptions::new()
-    //                         .behavior(web_sys::ScrollBehavior::Smooth),
-    //                 );
-    //             }
-    //         }
-    //     }
-    // });
+    // debug!(
+    //     ?index,
+    //     ?last_index_set_by_scroll,
+    //     ?trigger_offset,
+    //     "PaginatedList"
+    // );
 
     use_effect(move || {
         let target = index.read();
@@ -190,7 +168,7 @@ where
                         // if let Ok(html_el) = el.dyn_into::<web_sys::HtmlElement>() {
 
                         if let Some(i) = find_last_partially_visible_index(&el, scroll_direction) {
-                            debug!(?i, "Found last partially visible index");
+                            // debug!(?i, "Found last partially visible index");
                             last_index_set_by_scroll.set(i);
                             index.set(i);
                         }
@@ -215,7 +193,7 @@ where
     };
 
     let base_class = match scroll_direction {
-        ScrollDirection::Vertical => "flex flex-row flex-wrap items-start content-start overflow-y-auto no-scrollbar scroll-smooth max-h-screen gap-x-4 gap-y-4",
+        ScrollDirection::Vertical => "flex flex-row flex-wrap items-start content-start overflow-y-auto no-scrollbar scroll-smooth gap-x-4 gap-y-4",
         // ScrollDirection::Horizontal => "pl-6 scroll-pl-6 flex overflow-x-auto no-scrollbar scroll-smooth gap-x-2 snap-x snap-mandatory",
         ScrollDirection::Horizontal => "flex overflow-x-auto no-scrollbar scroll-smooth snap-mandatory",
     };
@@ -229,7 +207,8 @@ where
     rsx! {
         div {
             class: "{class}",
-            style: "scrollbar-width: none; -ms-overflow-style: none;",
+            // style: "scrollbar-width: none; -ms-overflow-style: none;",
+            style: "scrollbar-width: none;",
             onmounted: move |el| {
                 scroll_ref.set(Some(el.data()));
                 (track_scroll)();

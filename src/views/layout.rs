@@ -37,16 +37,17 @@ pub fn MainLayout() -> Element {
     let mut player = components::use_video_player();
     rsx! {
         // add spacing to the bittom for the navbar
-        div { class: "pb-[calc(2rem+env(safe-area-inset-bottom))] md:pb-[env(safe-area-inset-bottom)] flex w-full",
+        div { class: "pb-[calc(2rem+env(safe-area-inset-bottom))] md:pb-[env(safe-area-inset-bottom)] min-h-screen flex w-full",
 
             // Sidebar with fixed width on lg+
-            div { class: "hidden md:block w-50 z-50 flex-none h-screen", components::Sidebar {} }
+            div { class: "hidden fixed md:block w-50 z-30 flex-none min-h-screen", components::Sidebar {} }
 
             // Main content fills the rest
-            div { class: "flex-auto min-w-0 pb-10 lg:pb-6",
+            div { 
+                // class: "flex-auto min-w-0 pb-10 lg:pb-6 md:ml-50 md:w-[calc(100%-13rem)] ",
+                class: "flex-auto h-screen min-w-0 pb-10 lg:pb-6",
                 // AnimatedOutlet::<Route> {}
                 LoadingProvider { Outlet::<Route> {} }
-                        // }
             }
         }
 
@@ -57,10 +58,11 @@ pub fn MainLayout() -> Element {
     }
 }
 
+/// Offset for sidebar and add safe area
 #[component]
 pub fn SafeSpaceLayout() -> Element {
     rsx! {
-        div { class: "pt-[env(safe-area-inset-top)] m-6", Outlet::<Route> {} }
+        div { class: "sidebar-offset pt-[env(safe-area-inset-top)] m-6", Outlet::<Route> {} }
     }
 }
 
@@ -75,11 +77,11 @@ pub fn HomeMenu() -> Element {
     let has_genre = genre.read().is_some();
 
     rsx! {
-        div { class: "absolute mt-6 ml-6 flex items-center gap-2 z-10 pt-[env(safe-area-inset-top)] px-[env(safe-area-inset-left)]",
+        div { class: "sidebar-offset absolute left-6 top-6 flex items-center gap-2 z-10 pt-[env(safe-area-inset-top)] px-[env(safe-area-inset-left)]",
 
             button {
-                class: "px-4 py-1.5 rounded border-white/50  bg-black/40 text-sm font-semibold backdrop-blur-sm hover:bg-white/10",
-                class: if is_movie { "bg-white/40 text-black/90" } else { "text-white/80" },
+                class: "px-4 py-1.5 rounded border-white/50 text-sm font-semibold backdrop-blur-sm hover:bg-white/10",
+                class: if is_movie { "bg-white/40 text-black/90" } else { "bg-black/40  text-white/80" },
                 onclick: move |_| {
                     home_filter
                         .media_type

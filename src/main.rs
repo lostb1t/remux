@@ -71,7 +71,7 @@ pub fn Loading(props: LoadingProps) -> Element {
     rsx! {
         div { id: "loading",
                //class: "fixed inset-0 z-40 flex items-center justify-center",
-           class: "fixed inset-0 z-100 flex items-center justify-center {bg}",
+           class: "sidebar-offset fixed inset-0 z-100 flex items-center justify-center {bg}",
 
             div { role: "status", class: "flex flex-col items-center gap-2",
 

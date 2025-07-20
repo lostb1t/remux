@@ -87,7 +87,7 @@ pub fn VideoPlayer() -> Element {
 
     rsx! {
         div {
-            class: "fixed pt-[env(safe-area-inset-top)] inset-0 w-screen h-screen bg-black z-80",
+            class: "fixed pt-[env(safe-area-inset-top)] inset-0 w-screen min-h-screen bg-black z-80",
             id: "Gidrocontsinet",
             // Close button
             button {

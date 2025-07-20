@@ -1,4 +1,9 @@
-@tailwind base;
+/* @tailwind base;
 @tailwind components;
-@tailwind utilities;
+@tailwind utilities; */
 @import "tailwindcss";
+@layer utilities {
+  .sidebar-offset {
+    @apply md:ml-[12.5rem] md:w-[calc(100%-14rem)];
+  }
+}

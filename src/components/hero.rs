@@ -20,7 +20,6 @@ use dioxus_time::use_debounce;
 use std::rc::Rc;
 use std::time::Duration;
 
-
 #[derive(Clone, PartialEq, Props)]
 pub struct HeroListProps {
     pub title: Option<String>,
@@ -89,7 +88,7 @@ pub fn HeroList(props: HeroListProps) -> Element {
             }
             PaginationDots {
                 list_len: list.len(),
-                index: index.clone(),   
+                index: index.clone(),
                 max_dots: 10,
                 scroll_to_index: Callback::new(scroll_to_index.clone()),
             }
@@ -168,7 +167,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
     rsx! {
         div {
-            class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-[65vh] lg:max-h-[65vh] h-full w-full text-white overflow-hidden",
+            class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-150 lg:max-h-150 w-full text-white overflow-hidden",
             onvisible: move |evt| {
                 let data = evt.data();
                 if let Ok(is_intersecting) = data.is_intersecting() {
@@ -195,7 +194,8 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
 
             // Foreground content (text + play)
-            div { class: "absolute bottom-0 w-full lg:min-w-md lg:max-w-md flex flex-col justify-center p-6 space-y-4",
+            div { 
+                class: "sidebar-offset absolute w-full bottom-0 lg:min-w-md lg:max-w-md flex flex-col justify-center p-6 space-y-4",
 
                 Link {
                     to: Route::MediaDetailView {
@@ -296,9 +296,9 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                 } else {
                     components::PlayButton { class: "w-full", media_item: item.clone() }
                 }
-            
+
             }
-        
+
 
 
 
@@ -310,7 +310,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
         // Description
         if props.detail {
-            div { class: "px-6 space-y-4 flex flex-col",
+            div { class: "sidebar-offset px-6 space-y-4 flex flex-col",
 
                 if item.description.is_some() {
                     Link {
@@ -375,7 +375,7 @@ pub fn PaginationDots(props: PaginationDotsProps) -> Element {
     });
 
     rsx! {
-        div { class: "flex justify-center items-center",
+        div { class: "sidebar-offset flex justify-center items-center",
             {pagination_dots.collect::<Vec<_>>().into_iter()}
         }
     }
@@ -425,7 +425,7 @@ pub fn TagsDisplay(props: TagsDisplayProps) -> Element {
                             "{rating.format_score()}"
                         }
                     }
-                
+
                 }
             }) })}
         }

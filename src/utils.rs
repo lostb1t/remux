@@ -30,11 +30,12 @@ impl Default for AppHost {
 
         let mut storage =
             use_synced_storage::<LocalStorage, Option<String>>("device_id".to_string(), || None);
+        let id = storage.peek().clone();
 
-        let id = if let Some(id) = storage.read().clone() {
+        let id = if let Some(id) = id {
             id
         } else {
-            let mut storage = storage.clone();
+            // let mut storage = storage.clone();
             let id = Uuid::new_v4().to_string();
             storage.set(Some(id.clone()));
             id
@@ -45,7 +46,12 @@ impl Default for AppHost {
                 .unwrap_or(env!("CARGO_PKG_VERSION"))
                 .to_owned(),
             device_id: id,
-            device_name: whoami::devicename(),
+            // device_name: format!("{} ({})", whoami::devicename(), whoami::platform()),
+            device_name: whoami::devicename()
+                .split_whitespace()
+                .next()
+                .unwrap_or("Unknown")
+                .to_string(),
             is_touch: {
                 let window = web_sys::window().unwrap();
                 let navigator = window.navigator();
