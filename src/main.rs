@@ -153,6 +153,8 @@ const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 const MANIFEST: Asset = asset!("/assets/manifest.json");
 const SW: Asset = asset!("/assets/sw.js");
 
+pub static APP_HOST: GlobalSignal<utils::AppHost> = GlobalSignal::new(|| utils::AppHost::default());
+
 #[component]
 fn App() -> Element {
     info!("App starting");
@@ -165,22 +167,10 @@ fn App() -> Element {
 
     use_context_provider(|| views::home::HomeFilter::default());
     use_context_provider(|| VideoPlayerState::default());
-    //use_context_provider::<Signal<Vec<views::TopNavItem>>>(|| Signal::new(vec![]));
-
-    // use_context_provider(|| Signal::new(vec![]));
-
     use_context_provider(|| Signal::new(None::<Arc<dyn server::Server>>));
-
-    pub fn is_touch() -> bool {
-        let window = web_sys::window().unwrap();
-        let navigator = window.navigator();
-        navigator.max_touch_points() > 0
-    }
-    use_context_provider(|| {
-        Signal::new(hooks::AppState {
-            is_touch: is_touch(),
-        })
-    });
+    // use_context_provider(|| {
+    //     Signal::new(hooks::AppHost::default())
+    // });
 
     rsx! {
             // document::Link { rel: "icon", href: FAVICON }

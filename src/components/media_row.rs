@@ -41,8 +41,8 @@ pub struct PaginatorProps {
 
 #[component]
 pub fn Paginator(props: PaginatorProps) -> Element {
-    let app = hooks::use_app();
-    let is_touch = app.read().is_touch;
+    let app = crate::APP_HOST.peek();
+    let is_touch = app.is_touch;
 
     if is_touch {
         return rsx! {};

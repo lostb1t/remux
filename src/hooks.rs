@@ -10,21 +10,27 @@ use dioxus_storage::{use_synced_storage, LocalStorage};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use uuid::Uuid;
+use whoami;
 
 // static COUNT: GlobalSignal<i32> = Global::new(|| 0);
 
-#[derive(Clone, Copy, Default)]
-pub struct AppState {
-    pub is_touch: bool,
-    //pub user: Signal<Option<jellyfin_api::types::AuthenticationResult>>,
-}
+// impl AppHost {
+//     pub fn new(device_id: Option<String>, device_name: Option<String>) -> Self {
+//         Self {
+//             is_touch,
+//             device_id,
+//             device_name,
+//         }
+//     }
+// }
 
 //#[derive(Clone)]
 //pub struct TmdbClientW(pub TmdbClient);
 
-pub fn use_app() -> Signal<AppState> {
-    consume_context()
-}
+// pub fn use_app() -> crate {
+//     consume_context()
+// }
 
 //pub fn use_top_nav() -> Signal<Vec<views::TopNavItem>> {
 //    consume_context()

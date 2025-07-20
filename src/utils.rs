@@ -1,18 +1,59 @@
+use anyhow::Result;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, info, trace, Level};
+use dioxus_storage::{use_synced_storage, LocalStorage};
 use image::codecs::png::PngEncoder;
 use image::io::Reader as ImageReader;
 use image::ColorType;
 use image::ImageEncoder;
 use image::{DynamicImage, GenericImageView, RgbaImage};
 use reqwest::get;
-use std::io::Cursor;
-use anyhow::Result;
-use dioxus::prelude::*;
 use std::cell::RefCell;
 use std::future::Future;
+use std::io::Cursor;
 use std::rc::Rc;
+use uuid::Uuid;
+
+#[derive(Clone, Debug)]
+pub struct AppHost {
+    pub is_touch: bool,
+    pub device_id: String,
+    pub device_name: String,
+    pub remux_version: String,
+}
+
+impl Default for AppHost {
+    fn default() -> Self {
+        // use dioxus_storage::{use_synced_storage, LocalStorage};
+
+        let mut storage =
+            use_synced_storage::<LocalStorage, Option<String>>("device_id".to_string(), || None);
+
+        let id = if let Some(id) = storage.read().clone() {
+            id
+        } else {
+            let mut storage = storage.clone();
+            let id = Uuid::new_v4().to_string();
+            storage.set(Some(id.clone()));
+            id
+        };
+
+        Self {
+            remux_version: option_env!("REMUX_VERSION")
+                .unwrap_or(env!("CARGO_PKG_VERSION"))
+                .to_owned(),
+            device_id: id,
+            device_name: whoami::devicename(),
+            is_touch: {
+                let window = web_sys::window().unwrap();
+                let navigator = window.navigator();
+                navigator.max_touch_points() > 0
+            },
+        }
+    }
+}
 
 pub trait ResultLogExt<T, E> {
     fn on_err<F: FnOnce(&E)>(self, f: F) -> Self;
@@ -112,7 +153,6 @@ where
         }
     })
 }
-
 
 fn is_white_or_transparent(pixel: image::Rgba<u8>) -> bool {
     let [r, g, b, a] = pixel.0;

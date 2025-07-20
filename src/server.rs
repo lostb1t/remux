@@ -107,7 +107,7 @@ impl ServerConfig {
             ServerKind::Jellyfin => Box::new(JellyfinServer::from_config(self)) as Box<dyn Server>,
         }
     }
-}
+}  
 
 #[async_trait(?Send)]
 pub trait Server: Debug {
@@ -414,26 +414,28 @@ impl Server for JellyfinServer {
             .into_iter()
             .filter_map(|s| s.try_into().ok())
             .collect();
-        catalogs.push(media::Media::builder()
-            .id("latest".to_string())
-            .title("Latest".to_string())
-            .media_type(media::MediaType::Catalog)
-            .build()
+        catalogs.push(
+            media::Media::builder()
+                .id("latest".to_string())
+                .title("Latest".to_string())
+                .media_type(media::MediaType::Catalog)
+                .build(),
         );
-        catalogs.push(media::Media::builder()
-            .id("favorites".to_string())
-            .title("Favorites".to_string())
-            .media_type(media::MediaType::Catalog)
-            .build()
+        catalogs.push(
+            media::Media::builder()
+                .id("favorites".to_string())
+                .title("Favorites".to_string())
+                .media_type(media::MediaType::Catalog)
+                .build(),
         );
         catalogs.insert(
             1,
             media::Media::builder()
-            .id("continue_watching".to_string())
-            .title("Continue Watching".to_string())
-            .media_type(media::MediaType::Catalog)
-            .card_variant(components::CardVariant::Landscape)
-            .build()
+                .id("continue_watching".to_string())
+                .title("Continue Watching".to_string())
+                .media_type(media::MediaType::Catalog)
+                .card_variant(components::CardVariant::Landscape)
+                .build(),
         );
         Ok(catalogs)
     }
@@ -467,8 +469,14 @@ impl JellyfinServer {
         Self::new(config.host, config.username, config.password)
     }
 
-    fn anon_auth_header() -> &'static str {
-        "Emby Client=\"Remux\", Device=\"Samsung Galaxy SIII\", DeviceId=\"xxx\", Version=\"1.0.0.0\""
+    fn anon_auth_header() -> String {
+        let app = crate::APP_HOST.peek();
+        format!(
+            "Emby Client=\"Remux\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
+            app.device_name,
+            app.device_id,
+            app.remux_version
+        )
     }
 
     async fn authenticate(
@@ -476,7 +484,7 @@ impl JellyfinServer {
         username: &str,
         password: &str,
     ) -> Result<AuthenticationResult> {
-        let client = RestClient::new(host)?.header("Authorization", Self::anon_auth_header());
+        let client = RestClient::new(host)?.header("Authorization", &Self::anon_auth_header());
 
         let endpoint = jellyfin::AuthenticateUserByName::builder()
             .username(username.to_string())
@@ -487,9 +495,14 @@ impl JellyfinServer {
     }
 
     fn create_client(host: &str, token: &str, user_id: &str) -> Result<RestClient> {
+        let app = crate::APP_HOST.peek();
         let auth_header = format!(
-            "Emby UserId=\"{}\", Token=\"{}\", Client=\"Android\", Device=\"Samsung Galaxy SIII\", DeviceId=\"xxx\", Version=\"1.0.0.0\"",
-            user_id, token
+            "Emby UserId=\"{}\", Token=\"{}\", Client=\"Remux\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
+            user_id,
+            token,
+            app.device_name,
+            app.device_id,
+            app.remux_version
         );
         Ok(RestClient::new(host)?.header("Authorization", &auth_header))
     }
