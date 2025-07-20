@@ -8,10 +8,6 @@
   <p><i>A *VERY experimental* web client for Jellyfin written in Rust </i></p>
 </div>
 
-Hosted version at: https://app.remux.media
-
-This only works for Jellyfin servers that are behind a reverse proxy and have HTTPS set up correctly. If your server runs over HTTP, you must host it yourself.
-
 <details>
 <summary> Mobile Layout </summary>
   
@@ -25,6 +21,12 @@ This only works for Jellyfin servers that are behind a reverse proxy and have HT
 ![Desktop](desktop.png)
 
 </details>
+
+Hosted version at: https://app.remux.media
+
+This only works for Jellyfin servers that are behind a reverse proxy and have HTTPS set up correctly. If your server runs over HTTP, you must host it yourself.
+
+### Catalogs
 
 The home screen is heavily reliant on collections. 
 So i suggest using some jellyfin plugins to create some cool ones.
