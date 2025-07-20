@@ -42,9 +42,12 @@ What makes this different.
 - A more family orientated client. Most users just want that netflix experience.
 - Multiple providers support. It has a pluggable source system. So while only jellyfin is currently supported im also planning support for stremio
 
-### Docker
+### Selfhosting
  
 Theres a docker image avaiable at: ghcr.io/lostb1t/remux:latest
+
+There are currently no binaries distributed. They will be
+added in the future.
 
 ### Development
 
