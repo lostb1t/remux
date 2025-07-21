@@ -104,6 +104,7 @@ pub fn MediaCard(props: MediaCardProps) -> Element {
     let image = match &props.card_variant {
       components::CardVariant::Landscape => server.image_url(&props.item, media::ImageType::Thumb),
       components::CardVariant::Square => server.image_url(&props.item, media::ImageType::Poster),
+      components::CardVariant::Hero => server.image_url(&props.item, media::ImageType::Poster),
       _ => server.image_url(&props.item, media::ImageType::Poster),
       
     };
