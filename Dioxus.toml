@@ -28,3 +28,4 @@ script = []
 [bundle]
 identifier = "remux"
 publisher = "remux"
+icon = ["logo.png"]

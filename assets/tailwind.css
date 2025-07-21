@@ -340,6 +340,9 @@
   .mt-6 {
     margin-top: calc(var(--spacing) * 6);
   }
+  .mt-\[100vh\] {
+    margin-top: 100vh;
+  }
   .mr-6 {
     margin-right: calc(var(--spacing) * 6);
   }
@@ -462,6 +465,9 @@
   }
   .min-h-\[90vh\] {
     min-height: 90vh;
+  }
+  .min-h-\[200vh\] {
+    min-height: 200vh;
   }
   .min-h-screen {
     min-height: 100vh;
@@ -846,8 +852,20 @@
       background-color: color-mix(in oklab, var(--color-neutral-800) 50%, transparent);
     }
   }
+  .bg-neutral-800\/70 {
+    background-color: color-mix(in srgb, oklch(26.9% 0 0) 70%, transparent);
+    @supports (color: color-mix(in lab, red, red)) {
+      background-color: color-mix(in oklab, var(--color-neutral-800) 70%, transparent);
+    }
+  }
   .bg-neutral-900 {
     background-color: var(--color-neutral-900);
+  }
+  .bg-neutral-900\/70 {
+    background-color: color-mix(in srgb, oklch(20.5% 0 0) 70%, transparent);
+    @supports (color: color-mix(in lab, red, red)) {
+      background-color: color-mix(in oklab, var(--color-neutral-900) 70%, transparent);
+    }
   }
   .bg-neutral-900\/100 {
     background-color: var(--color-neutral-900);
@@ -1326,14 +1344,54 @@
       max-height: calc(var(--spacing) * 42);
     }
   }
+  .lg\:max-h-100 {
+    @media (width >= 64rem) {
+      max-height: calc(var(--spacing) * 100);
+    }
+  }
   .lg\:max-h-150 {
     @media (width >= 64rem) {
       max-height: calc(var(--spacing) * 150);
     }
   }
+  .lg\:max-h-200 {
+    @media (width >= 64rem) {
+      max-height: calc(var(--spacing) * 200);
+    }
+  }
+  .lg\:max-h-\[65vh\] {
+    @media (width >= 64rem) {
+      max-height: 65vh;
+    }
+  }
+  .lg\:max-h-\[70vh\] {
+    @media (width >= 64rem) {
+      max-height: 70vh;
+    }
+  }
+  .lg\:min-h-100 {
+    @media (width >= 64rem) {
+      min-height: calc(var(--spacing) * 100);
+    }
+  }
   .lg\:min-h-150 {
     @media (width >= 64rem) {
       min-height: calc(var(--spacing) * 150);
+    }
+  }
+  .lg\:min-h-200 {
+    @media (width >= 64rem) {
+      min-height: calc(var(--spacing) * 200);
+    }
+  }
+  .lg\:min-h-\[65vh\] {
+    @media (width >= 64rem) {
+      min-height: 65vh;
+    }
+  }
+  .lg\:min-h-\[70vh\] {
+    @media (width >= 64rem) {
+      min-height: 70vh;
     }
   }
   .lg\:max-w-md {
