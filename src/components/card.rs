@@ -2,13 +2,14 @@ use crate::Route;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum_macros::Display as EnumDisplay;
-use strum_macros::EnumString;
+use strum_macros::{EnumString,EnumIter};
 
-#[derive(Clone, Hash, EnumDisplay, Serialize, Deserialize, EnumString, Debug, Eq, PartialEq)]
+#[derive(Clone, Hash, EnumDisplay, Serialize, Deserialize,EnumIter, EnumString, Debug, Eq, PartialEq)]
 pub enum CardVariant {
     Poster,
     Square,
     Landscape,
+    Hero
 }
 
 impl Default for CardVariant {
@@ -20,8 +21,9 @@ impl Default for CardVariant {
 fn image_class(variant: &CardVariant) -> &'static str {
     match variant {
         CardVariant::Poster => "w-25 aspect-[2/3]",
-        CardVariant::Square => "aspect-square",
-        CardVariant::Landscape => "w-35 aspect-video",
+        CardVariant::Square => "w-45 h-45 aspect-square",
+        CardVariant::Landscape => "w-55 aspect-video",
+        CardVariant::Hero => "w-[calc(100vw-2.5rem)] max-h-110 max-w-100 aspect-[2/3]",
     }
 }
 
@@ -44,11 +46,11 @@ pub struct CardProps {
 pub fn Card(props: CardProps) -> Element {
     let content = rsx! {
         div { 
-            class: "flex-none relative shrink-0 {image_class(&props.variant)} {props.class}",
+            class: "flex-none rounded-lg relative shrink-0 {image_class(&props.variant)} {props.class}",
             // ..props.extra,
             super::FadeInImage {
                 src: "{props.image}",
-                //alt: "{props.title}",
+
                 class: "rounded-lg w-full h-auto object-cover",
             }
             {props.children}

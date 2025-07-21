@@ -26,6 +26,6 @@ script = []
 
 
 [bundle]
-identifier = "remux"
+identifier = "com.github.remux"
 publisher = "remux"
-icon = ["logo.png"]
+icon = ["app-icon.png"]

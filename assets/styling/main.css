@@ -1,4 +1,7 @@
 
+:root {
+  --layout-padding: 1.5rem;
+}
 
 html, body {
     color: #ffffff;

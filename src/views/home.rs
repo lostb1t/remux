@@ -122,6 +122,7 @@ pub fn Home() -> Element {
                             key: "{query.key()}",
                             title: Some(col.title.clone()),
                             query: query.clone(),
+                            card_variant: col.card_variant.clone()
                         }
                     }
                   }

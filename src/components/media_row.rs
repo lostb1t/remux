@@ -95,15 +95,24 @@ pub fn Paginator(props: PaginatorProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 pub struct MediaCardProps {
     pub item: media::Media,
+    #[props(default)]
+    pub card_variant: components::CardVariant,
 }
 
 pub fn MediaCard(props: MediaCardProps) -> Element {
     let server = crate::hooks::consume_server().expect("missing server");
-    let image = server.image_url(&props.item, media::ImageType::Poster);
+    let image = match &props.card_variant {
+      components::CardVariant::Landscape => server.image_url(&props.item, media::ImageType::Thumb),
+      components::CardVariant::Square => server.image_url(&props.item, media::ImageType::Poster),
+      _ => server.image_url(&props.item, media::ImageType::Poster),
+      
+    };
+
 
     rsx! {
         super::Card {
             image: image,
+            variant: props.card_variant,
             to: Route::MediaDetailView {
                 media_type: props.item.media_type.clone(),
                 id: props.item.id.clone(),
@@ -140,6 +149,8 @@ use dioxus::prelude::*;
 pub struct GenericMediaListProps {
     pub title: Option<String>,
     pub query: server::MediaQuery,
+    #[props(default)]
+    pub card_variant: components::CardVariant,
     #[props(default)]
     pub scroll_direction: components::ScrollDirection,
 }
@@ -229,7 +240,7 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                             }
                         })),
                         render_item: move |i: &media::Media| rsx! {
-                            super::MediaCard { item: i.clone() }
+                            super::MediaCard { card_variant: props.card_variant.clone(), item: i.clone() }
                         }
                     }
                 },

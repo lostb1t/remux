@@ -8,6 +8,9 @@ use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, info};
 use dioxus_primitives::switch::{Switch, SwitchThumb};
 use tracing_subscriber::field::debug;
+use std::str::FromStr;
+use strum::IntoEnumIterator;
+
 
 #[component]
 pub fn Settings() -> Element {
@@ -162,8 +165,6 @@ pub fn SettingsCatalogView() -> Element {
     let server = hooks::consume_server().expect("missing server");
     let mut new_catalog = use_signal(|| String::new());
 
-    // debug!("SettingsCatalogView: {:?}", settings());
-
     let server_catalogs = use_resource(move || {
         let server = server.clone();
         async move { server.get_catalogs().await }
@@ -175,22 +176,22 @@ pub fn SettingsCatalogView() -> Element {
     let catalogs = match server_catalogs.as_ref() {
         Ok(data) => settings().add_catalogs(data.clone()).catalogs,
         Err(_) => {
-            return rsx!(
-                div { "Failed to load catalogs" }
-            )
+            return rsx!(div { "Failed to load catalogs" });
         }
     };
 
     if catalogs != settings().catalogs {
         settings.write().catalogs = catalogs.clone();
-    };
+    }
 
     rsx! {
         div { class: "space-y-4 p-4",
             h1 { class: "text-2xl font-bold", "Manage Catalogs" }
 
             ul { class: "space-y-2",
-                for (i , catalog) in catalogs.iter().enumerate() {
+                for (i, catalog) in catalogs.iter().enumerate() {
+                    {let catalog = catalog.clone();
+rsx!{
                     li {
                         key: "{i}",
                         class: "flex items-center justify-between px-4 py-3 bg-zinc-900 rounded-lg hover:bg-zinc-800 transition space-x-2",
@@ -198,6 +199,28 @@ pub fn SettingsCatalogView() -> Element {
                         span { class: "text-white font-medium", "{catalog.title}" }
 
                         div { class: "flex items-center space-x-2",
+
+                            select {
+                                class: "bg-gray-800 text-white px-3 py-2 rounded",
+                                onchange: move |evt| {
+                                    let mut updated = catalog.clone();
+                                    let id = evt.value().clone();
+                                    updated.card_variant = components::CardVariant::from_str(&id).unwrap();
+//debug!(?updated, "uoho");
+                                    let mut s = settings.read().clone();
+                                    s = s.update_catalog(updated);
+                                    //debug!(?s.catalogs, "uoho");
+                                    settings.set(s);
+                                },
+                                for card in components::CardVariant::iter() {
+                                    option {
+                                        value: "{card}",
+                                        selected: catalog.card_variant == card,
+                                        "{card}"
+                                    }
+                                }
+                            }
+
                             button {
                                 onclick: move |_| {
                                     let mut s = settings.read().clone();
@@ -209,6 +232,7 @@ pub fn SettingsCatalogView() -> Element {
                                 class: "text-sm px-2 py-1 bg-zinc-700 rounded hover:bg-zinc-600",
                                 "↑"
                             }
+
                             button {
                                 onclick: move |_| {
                                     let mut s = settings.read().clone();
@@ -234,11 +258,7 @@ pub fn SettingsCatalogView() -> Element {
                                     let catalog = catalog.clone();
                                     move |new_state| {
                                         let mut current = settings.read().clone();
-                                        if let Some(existing) = current
-                                            .catalogs
-                                            .iter_mut()
-                                            .find(|c| c.id == catalog.id)
-                                        {
+                                        if let Some(existing) = current.catalogs.iter_mut().find(|c| c.id == catalog.id) {
                                             existing.enabled = new_state;
                                             settings.set(current);
                                         }
@@ -257,8 +277,11 @@ pub fn SettingsCatalogView() -> Element {
                             }
                         }
                     }
+                  }
                 }
             }
+          }
         }
     }
 }
+

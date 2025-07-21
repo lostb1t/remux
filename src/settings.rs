@@ -58,6 +58,13 @@ impl Settings {
     //         // version_auto_select: other.version_auto_select,
     //     }
     // }
+    pub fn update_catalog(mut self, updated: media::Media) -> Self {
+    if let Some(existing) = self.catalogs.iter_mut().find(|c| c.id == updated.id) {
+        *existing = updated;
+    }
+    self
+}
+
 
     pub fn add_catalogs(mut self, other: Vec<media::Media>) -> Self {
         for other_cat in &other {
