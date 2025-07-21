@@ -35,9 +35,11 @@ jobs:
             target
           key: ${{ runner.os }}-cargo
 
-      - name: Install Dioxus CLI
-        run: cargo install dioxus-cli@0.7.0-alpha.3
-
+      - name: Install Dioxus CLI (only if needed)
+        run: |
+          if ! command -v dx >/dev/null || ! dx --version | grep -q "0.7.0-alpha.3"; then
+            cargo install --force dioxus-cli@0.7.0-alpha.3
+          fi
       - name: Install dependencies (Linux only)
         if: matrix.os == 'linux'
         run: |
