@@ -26,7 +26,7 @@ jobs:
           override: true
 
       - name: Install Dioxus CLI
-        run: cargo install dioxus-cli@0.7.0-alpha32
+        run: cargo install dioxus-cli@0.7.0-alpha.3
 
       - name: Install dependencies (Linux only)
         if: matrix.os == 'linux'
