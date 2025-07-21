@@ -81,10 +81,8 @@ uuid = { version = "1.17.0", features = ["v4"] }
 default = ["web"]
 web = ["dioxus/web", "whoami/web", "whoami/web-sys"]
 server = ["dioxus/server"]
-desktop = ["dioxus/desktop"]
+desktop = ["dioxus/desktop", "dep:whoami"]
 mobile = ["dioxus/mobile"]
-
-[profile]
 
 [profile.wasm-dev]
 inherits = "dev"
@@ -98,11 +96,6 @@ inherits = "dev"
 
 
 [patch.crates-io]
-dioxus-geolocation = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
-dioxus-notification = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
 dioxus-sdk = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
 dioxus_storage = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
-dioxus-sync = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
 dioxus-time = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
-dioxus-util = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
-dioxus-window = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }

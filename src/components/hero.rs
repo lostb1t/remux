@@ -232,7 +232,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
                 //   div {
                 //     class: "w-full",
-                if props.detail {
+                //if props.detail {
 
                     div { class: "flex w-full gap-2 items-center",
 
@@ -260,7 +260,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                             super::ToggleIcon {
                                 width: 18,
                                 height: 18,
-                                fill: "black",
+                                fill: "white",
                                 icon: IoHeartOutline,
                                 icon_active: IoHeart,
                                 active: *is_favorite.read(),
@@ -286,16 +286,16 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                             super::ToggleIcon {
                                 width: 18,
                                 height: 18,
-                                fill: "black",
+                                fill: "white",
                                 icon: IoEye,
                                 icon_active: IoEyeOutline,
                                 active: *is_watched.read(),
                             }
                         }
                     }
-                } else {
-                    components::PlayButton { class: "w-full", media_item: item.clone() }
-                }
+              //  } else {
+               //     components::PlayButton { class: "w-full", media_item: item.clone() }
+                //}
 
             }
 

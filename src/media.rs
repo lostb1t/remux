@@ -24,7 +24,9 @@ use std::hash::{Hash, Hasher};
 use strum_macros::Display as EnumDisplay;
 use strum_macros::EnumString;
 
-#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct Rating {
     pub source: RatingSource,
     pub score: u32, // Changed to u32 for simplicity. scale of 0 - 100
@@ -64,7 +66,7 @@ pub enum RatingSource {
     // Custom,
 }
 
-#[derive(Debug, Clone, PartialEq, EnumDisplay)]
+#[derive(Debug, Clone, Eq, PartialEq, EnumDisplay)]
 pub enum Guid {
     // Local(String),
     Tmdb(String),
@@ -203,7 +205,7 @@ pub fn placeholder_image(width: u32, height: u32) -> Option<String> {
 // #[derive(PartialEq, Clone, Debug, Default, Queryable, Selectable)]
 // #[diesel(table_name = crate::schema::media)]
 // #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-#[derive(PartialEq, Default, Hash, Clone, Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Default, Hash, Clone, Debug, Serialize, Deserialize)]
 // #[builder(setter(into))]
 pub struct ExternalIds {
     // tmdb is always required
@@ -266,7 +268,7 @@ impl From<sdks::jellyfin::MediaStreamType> for MediaStreamType {
     }
 }
 
-#[derive(Builder, Serialize, Hash, PartialEq, Deserialize, Debug, Clone)]
+#[derive(Builder, Serialize, Hash, Eq, PartialEq, Deserialize, Debug, Clone)]
 pub struct MediaSource {
     pub id: String,
     pub name: String,
@@ -296,7 +298,7 @@ impl TryFrom<sdks::jellyfin::MediaSourceInfo> for MediaSource {
     }
 }
 
-#[derive(Builder, Serialize, Hash, PartialEq, Deserialize, Debug, Clone)]
+#[derive(Builder, Serialize, Hash, Eq, PartialEq, Deserialize, Debug, Clone)]
 pub struct MediaStream {
     pub index: Option<i32>,
     pub title: Option<String>,
@@ -317,7 +319,7 @@ impl TryFrom<sdks::jellyfin::MediaStream> for MediaStream {
     }
 }
 
-#[derive(Debug, Clone, Hash, Copy)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Copy)]
 pub enum ImageType {
     Poster,
     Backdrop,
@@ -325,7 +327,7 @@ pub enum ImageType {
     Logo,
 }
 
-#[derive(Default, PartialEq, Hash, Clone, Debug)]
+#[derive(Default, Eq, PartialEq, Hash, Clone, Debug)]
 //#[builder(setter(into))]
 pub struct Genre {
     pub id: String,
@@ -352,7 +354,7 @@ impl TryFrom<sdks::jellyfin::BaseItemDto> for Genre {
 //     pub is_watched: bool,
 // }
 
-#[derive(Debug, Clone, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct UserData {
     pub playback_position_ticks: i64,
@@ -375,7 +377,7 @@ impl From<sdks::jellyfin::UserItemDataDto> for UserData {
 }
 
 // TODO: lazy load images: https://stackoverflow.com/questions/59683330/implementing-a-lazy-load-in-by-way-of-enum-type-in-rust#59685305
-#[derive(Builder, Default, Hash, Serialize, Deserialize, PartialEq, Clone, Debug)]
+#[derive(Builder, Default, Eq, Hash, Serialize, Deserialize, PartialEq, Clone, Debug)]
 //#[builder(setter(into))]
 pub struct Media {
     pub id: String,
@@ -408,6 +410,7 @@ pub struct Media {
     #[builder(default = true)]
     pub enabled: bool,
 }
+
 use chrono::Duration;
 impl Media {
     pub fn is_series(&self) -> bool {

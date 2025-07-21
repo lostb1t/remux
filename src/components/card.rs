@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::Display as EnumDisplay;
 use strum_macros::EnumString;
 
-#[derive(Clone, Hash, EnumDisplay, Serialize, Deserialize, EnumString, Debug, PartialEq)]
+#[derive(Clone, Hash, EnumDisplay, Serialize, Deserialize, EnumString, Debug, Eq, PartialEq)]
 pub enum CardVariant {
     Poster,
     Square,
@@ -49,7 +49,7 @@ pub fn Card(props: CardProps) -> Element {
             super::FadeInImage {
                 src: "{props.image}",
                 //alt: "{props.title}",
-                class: "rounded w-full h-auto object-cover",
+                class: "rounded-lg w-full h-auto object-cover",
             }
             {props.children}
                 //div { class: "absolute inset-0 h-full w-full pointer-events-none", {props.children} }

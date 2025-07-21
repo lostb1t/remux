@@ -775,9 +775,6 @@
   .bg-green-600 {
     background-color: var(--color-green-600);
   }
-  .bg-neutral-300 {
-    background-color: var(--color-neutral-300);
-  }
   .bg-neutral-600 {
     background-color: var(--color-neutral-600);
   }
@@ -1091,6 +1088,11 @@
   }
   .transition-opacity {
     transition-property: opacity;
+    transition-timing-function: var(--tw-ease, var(--default-transition-timing-function));
+    transition-duration: var(--tw-duration, var(--default-transition-duration));
+  }
+  .transition-transform {
+    transition-property: transform, translate, scale, rotate;
     transition-timing-function: var(--tw-ease, var(--default-transition-timing-function));
     transition-duration: var(--tw-duration, var(--default-transition-duration));
   }

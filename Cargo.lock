@@ -7546,28 +7546,3 @@ dependencies = [
  "syn 2.0.104",
  "winnow 0.7.12",
 ]
-
-[[patch.unused]]
-name = "dioxus-geolocation"
-version = "0.7.0-alpha.3"
-source = "git+https://github.com/ealmloff/dioxus-std?branch=0.7#75c7258270649bd47945de592ef7d30b0ad42c2d"
-
-[[patch.unused]]
-name = "dioxus-notification"
-version = "0.7.0-alpha.3"
-source = "git+https://github.com/ealmloff/dioxus-std?branch=0.7#75c7258270649bd47945de592ef7d30b0ad42c2d"
-
-[[patch.unused]]
-name = "dioxus-sync"
-version = "0.7.0-alpha.3"
-source = "git+https://github.com/ealmloff/dioxus-std?branch=0.7#75c7258270649bd47945de592ef7d30b0ad42c2d"
-
-[[patch.unused]]
-name = "dioxus-util"
-version = "0.7.0-alpha.3"
-source = "git+https://github.com/ealmloff/dioxus-std?branch=0.7#75c7258270649bd47945de592ef7d30b0ad42c2d"
-
-[[patch.unused]]
-name = "dioxus-window"
-version = "0.7.0-alpha.3"
-source = "git+https://github.com/ealmloff/dioxus-std?branch=0.7#75c7258270649bd47945de592ef7d30b0ad42c2d"

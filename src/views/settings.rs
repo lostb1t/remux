@@ -4,7 +4,7 @@ use crate::server;
 use crate::settings::{use_settings, Addon};
 use crate::Route;
 use dioxus::prelude::*;
-use dioxus::web::WebEventExt;
+//use dioxus::web::WebEventExt;
 use dioxus_logger::tracing::{debug, info};
 use dioxus_primitives::switch::{Switch, SwitchThumb};
 use tracing_subscriber::field::debug;

@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use dioxus_free_icons::icons::fa_solid_icons::FaPlay;
 use dioxus_free_icons::Icon;
 use dioxus_logger::tracing::{debug, error, info};
-use gloo_timers::future::sleep;
+//use gloo_timers::future::sleep;
 
 use std::time::Duration;
 
@@ -62,10 +62,10 @@ pub struct ButtonProps {
 #[component]
 pub fn Button(props: ButtonProps) -> Element {
     let class = match props.variant {
-        ButtonVariant::Primary => "p-3 rounded-md bg-white text-black text-xs font-semibold border border-gray-300 ",
-        ButtonVariant::Secondary => "p-3 rounded bg-neutral-300 text-black text-sm font-bold border border-gray-300 ",
-        ButtonVariant::Outline => "px-3 py-3 rounded border border-gray-300 hover:bg-gray-100 text-sm font-semibold",
-        _ => "px-3 py-3 rounded bg-white text-black border border-gray-300 hover:bg-gray-100 text-sm font-semibold",
+        ButtonVariant::Primary => "p-3 rounded-lg bg-white text-black text-xs font-semibold border border-gray-300 ",
+        ButtonVariant::Secondary => "p-3 rounded-lg bg-neutral-800 text-white text-sm font-bold",
+        ButtonVariant::Outline => "p-3 rounded-lg border border-gray-300 hover:bg-gray-100 text-sm font-semibold",
+        _ => "p-3 rounded-lg bg-white text-black border border-gray-300 hover:bg-gray-100 text-sm font-semibold",
     };
 
     rsx!(

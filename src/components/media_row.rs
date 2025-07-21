@@ -11,7 +11,7 @@ use dioxus_logger::tracing::{debug, info};
 use rand::Rng;
 use std::rc::Rc;
 use std::sync::Arc;
-use web_sys::{ScrollBehavior, ScrollLogicalPosition, ScrollToOptions};
+//use web_sys::{ScrollBehavior, ScrollLogicalPosition, ScrollToOptions};
 
 use super::FadeInImage;
 
@@ -219,7 +219,7 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
 
             match props.scroll_direction {
                 components::ScrollDirection::Horizontal => rsx! {
-                    super::CarouselList {
+                    super::PaginatedList {
                         items: items.clone(),
                         index: scroll_to,
                         class: "overflow-y-hidden overflow-x-visible pl-6 gap-x-2",
