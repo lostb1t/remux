@@ -2,7 +2,7 @@
 
 # App (Project) Name
 name = "remux"
-asset_dir = "public"
+#asset_dir = "public"
 
 
 [web.app]
@@ -23,3 +23,8 @@ script = []
 # Javascript code file
 # serve: [dev-server] only
 script = []
+
+
+[bundle]
+identifier = "remux"
+publisher = "remux"
