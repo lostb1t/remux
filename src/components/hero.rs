@@ -63,7 +63,7 @@ pub fn HeroList(props: HeroListProps) -> Element {
     };
 
     rsx! {
-        div { class: "relative mb-2",
+        div { class: "relative mb-6",
             components::CarouselList {
                 items: list.clone(),
                 index: index.clone(),

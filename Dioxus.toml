@@ -7,7 +7,7 @@ name = "remux"
 
 [web.app]
 out_dir = "docs"
-title = "remux-web"
+title = "remux"
 
 # include `assets` in web platform
 [web.resource]
@@ -27,5 +27,5 @@ script = []
 
 [bundle]
 identifier = "com.github.remux"
-publisher = "remux"
+publisher = "lostb1t"
 icon = ["app-icon.png"]

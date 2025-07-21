@@ -46,7 +46,7 @@ pub struct CardProps {
 pub fn Card(props: CardProps) -> Element {
     let content = rsx! {
         div { 
-            class: "flex-none rounded-lg relative shrink-0 {image_class(&props.variant)} {props.class}",
+            class: "flex-none relative shrink-0 {image_class(&props.variant)} {props.class}",
            super::FadeInImage {
                 src: "{props.image}",
 

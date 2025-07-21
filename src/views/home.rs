@@ -115,7 +115,7 @@ pub fn Home() -> Element {
                         }
                     }
                     div {
-                      class: "space-y-4",
+                      class: "space-y-6",
                     for (col , query) in media_results.iter().skip(1) {
                         // components::MediaList {
                          components::GenericMediaList {
