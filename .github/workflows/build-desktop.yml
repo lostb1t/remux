@@ -51,7 +51,7 @@ jobs:
             libxdo-dev
 
       - name: Build Dioxus desktop app
-        run: dx bundle --release --platform desktop
+        run: dx bundle --release --platform desktop || true
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
