@@ -44,7 +44,8 @@ jobs:
           sudo apt-get install -y \
             libx11-dev \
             libgtk-3-dev \
-            libwebkit2gtk-4.1-dev
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev
 
       - name: Build Dioxus desktop app
         run: dx build --release --platform desktop
