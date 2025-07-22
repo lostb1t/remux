@@ -40,11 +40,19 @@ jobs:
             target
           key: ${{ runner.os }}-cargo
 
-      - name: Install Dioxus CLI (only if needed)
+      - name: Install Dioxus CLI if not present
+        shell: bash
         run: |
-          if ! command -v dx >/dev/null || ! dx --version | grep -q "0.7.0-alpha.3"; then
-            cargo install --force dioxus-cli@0.7.0-alpha.3
+          if ! command -v dx >/dev/null || [[ "$(dx --version 2>/dev/null)" != *"0.7.0-alpha.3"* ]]; then
+            cargo install dioxus-cli@0.7.0-alpha.3
           fi
+
+      - name: Install Windows dependencies
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          choco install -y webview2-runti
+
       - name: Install dependencies (Linux only)
         if: matrix.os == 'linux'
         run: |
