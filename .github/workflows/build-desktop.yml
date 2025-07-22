@@ -64,6 +64,7 @@ jobs:
             libxdo-dev
 
       - name: Build Dioxus desktop app
+        shell: pwsh
         run: |
           $env:RUST_LOG = "debug"
           dx bundle --release --platform desktop
