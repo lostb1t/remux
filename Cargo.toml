@@ -40,7 +40,7 @@ bytes = "1.10.1"
 serde_with = { version = "3.13.0", features = ["macros"] }
 derive_more = { version = "2", features = ["debug"] }
 thiserror = "2.0.12"
-dioxus-free-icons = { git = "https://github.com/lostb1t/dioxus-free-icons", features = ["feather", "hero-icons-outline", "hero-icons-solid", "font-awesome-solid", "ionicons"]}
+dioxus-free-icons = { git = "https://github.com/lostb1t/dioxus-free-icons", features = ["ionicons"]}
 #dioxus-free-icons = { version = "0.9", features = ["feather"] }
 serde_urlencoded = "0.7.1"
 urlencoding = "2.1.3"
