@@ -51,7 +51,7 @@ jobs:
 
       - name: Install Dioxus CLI
         run: |
-          export RUST_LOG=debug
+          $env:RUST_LOG = "debug"
           cargo binstall --force --no-confirm dioxus-cli@0.7.0-alpha.3
 
       - name: Install dependencies (Linux only)
