@@ -20,6 +20,11 @@ jobs:
             runner: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
+
+      - name: Set git config for long paths
+        if: matrix.os == 'windows-latest'
+        run: |
+          git config --system core.longpaths true
       - name: Checkout repo
         uses: actions/checkout@v4
 
