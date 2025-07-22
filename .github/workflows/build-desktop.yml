@@ -17,7 +17,7 @@ jobs:
             runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
           - os: windows
-            runner: windows-latest
+            runner: windows-2022
             target: x86_64-pc-windows-msvc
     steps:
       - name: Checkout repo
