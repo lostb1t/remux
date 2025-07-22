@@ -50,7 +50,7 @@ jobs:
           fi
 
       - name: Install Dioxus CLI
-        run: cargo binstall --no-confirm dioxus-cli@0.7.0-alpha.3
+        run: cargo binstall --force --no-confirm dioxus-cli@0.7.0-alpha.3
 
       - name: Install dependencies (Linux only)
         if: matrix.os == 'linux'
