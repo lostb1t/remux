@@ -34,9 +34,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
+            ${{ runner.os == 'Windows' && 'C:\\Users\\runneradmin\\.cargo\\registry' || '~/.cargo/registry' }}
+            ${{ runner.os == 'Windows' && 'C:\\Users\\runneradmin\\.cargo\\git' || '~/.cargo/git' }}
+            ${{ runner.os == 'Windows' && 'C:\\Users\\runneradmin\\.cargo\\bin' || '~/.cargo/bin' }}
             target
           key: ${{ runner.os }}-cargo
 
@@ -50,7 +50,9 @@ jobs:
           fi
 
       - name: Install Dioxus CLI
-        run: cargo binstall --force --no-confirm dioxus-cli@0.7.0-alpha.3
+        run: |
+          export RUST_LOG=debug
+          cargo binstall --force --no-confirm dioxus-cli@0.7.0-alpha.3
 
       - name: Install dependencies (Linux only)
         if: matrix.os == 'linux'
