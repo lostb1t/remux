@@ -63,6 +63,10 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libxdo-dev
 
+      - name: Run cargo metadata manually
+        run: |
+          cargo metadata --format-version 1 --no-deps
+
       - name: Build Dioxus desktop app
         run: |
           dx bundle --release --platform desktop
