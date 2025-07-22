@@ -149,7 +149,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                     return None;
                 };
                 let logo_url = server.image_url(&item, media::ImageType::Logo);
-                utils::fetch_and_trim_base64(&logo_url).await
+                utils::fetch_and_trim_base64(&logo_url.unwrap()).await
             }
         })
     };
@@ -182,7 +182,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                 class: "absolute inset-0 w-full h-full block",
 
                 FadeInImage {
-                    src: backdrop_url,
+                    src: backdrop_url.unwrap(),
                     alt: item.title.clone(),
                     class: "absolute inset-0 w-full object-cover h-full",
                     attr: vec![],

@@ -101,14 +101,22 @@ pub struct MediaCardProps {
 
 pub fn MediaCard(props: MediaCardProps) -> Element {
     let server = crate::hooks::consume_server().expect("missing server");
-    let image = match &props.card_variant {
-      components::CardVariant::Landscape => server.image_url(&props.item, media::ImageType::Thumb),
-      components::CardVariant::Square => server.image_url(&props.item, media::ImageType::Poster),
-      components::CardVariant::Hero => server.image_url(&props.item, media::ImageType::Poster),
-      _ => server.image_url(&props.item, media::ImageType::Poster),
-      
+    let image_type = match &props.card_variant {
+      components::CardVariant::Landscape => media::ImageType::Thumb,
+      components::CardVariant::Square => media::ImageType::Poster,
+      components::CardVariant::Hero => media::ImageType::Poster,
+      _ => media::ImageType::Poster,
     };
 
+    
+    
+    let mut title = None;
+    let image = if let Some(image) = server.image_url(&props.item, image_type) {
+       image
+    } else {
+       title = Some(props.item.title.clone());
+       server.image_url(&props.item, media::ImageType::Backdrop).unwrap()
+    };
 
     rsx! {
         super::Card {
@@ -119,12 +127,23 @@ pub fn MediaCard(props: MediaCardProps) -> Element {
                 id: props.item.id.clone(),
             },
             if let Some(progress) = props.item.progress() {
-                div { class: "w-24 absolute inset-0 justify-end",
+                div { class: "w-24 p-4 absolute inset-0 justify-end",
                     div { class: "absolute bottom-0 left-0 w-full",
                         super::ProgressBar { progress }
                     }
                 }
             }
+                        if let Some(title) = title {
+            div {
+              class: "absolute top-2 left-4 justify-end font-semibold text
+              -lg
+              ",
+              h4
+              {
+              "{title}"
+            }
+            }
+          }
         }
     }
 }
@@ -190,8 +209,8 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                     h3 {
                         class: match props.scroll_direction {
                             // components::ScrollDirection::Horizontal => "sidebar-offset  pl-6 text-xl w-full font-bold text-white",
-                            components::ScrollDirection::Horizontal => "pl-6 text-xl w-full font-bold text-white",
-                            components::ScrollDirection::Vertical => "text-xl w-full font-bold text-white",
+                            components::ScrollDirection::Horizontal => "pl-6 text-xl w-full font-semibold text-white",
+                            components::ScrollDirection::Vertical => "text-xl w-full font-semibold text-white",
                         },
                         "{title}"
                     }

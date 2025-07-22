@@ -258,7 +258,7 @@ where
     let items = props.items.clone();
 
     let base_class =
-        "overflow-x-auto flex snap-x snap-mandatory scroll-smooth no-scrollbar".to_string();
+        "overflow-x-auto snap-x snap-mandatory scroll-smooth no-scrollbar".to_string();
 
     rsx! {
         PaginatedList {

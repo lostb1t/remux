@@ -119,7 +119,7 @@ pub trait Server: Debug {
     fn user_id(&self) -> Option<String>;
     fn into_config(&self) -> ServerConfig;
     // fn name(&self) -> String;
-    fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> String;
+    fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> Option<String>;
     async fn connect(&mut self) -> Result<()>;
     async fn get_stream_url(
         &self,
@@ -191,7 +191,7 @@ impl Server for JellyfinServer {
         }
     }
 
-    fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> String {
+    fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> Option<String> {
         // debug!("IMAGE URL: {:?}", media_item);
         // debug!("IMAGE type: {:?}", image_type);
         //  let tag = match image_type {
@@ -200,6 +200,17 @@ impl Server for JellyfinServer {
         //     media::ImageType::Logo => media_item.logo.as_deref(),
 
         //};
+        
+        let tag = match image_type {
+             media::ImageType::Poster => media_item.poster.as_deref(),
+             media::ImageType::Backdrop => media_item.backdrop.as_deref(),
+             media::ImageType::Logo => media_item.logo.as_deref(),
+             media::ImageType::Thumb => media_item.thumb.as_deref(),
+        };
+        //debug!(?tag, "yo");
+        if tag.is_none() {
+          return None;
+        }
 
         let it = match image_type {
             media::ImageType::Poster => "Primary",
@@ -208,13 +219,13 @@ impl Server for JellyfinServer {
             media::ImageType::Thumb => "Thumb",
         };
 
-        format!(
+        Some(format!(
             "{}/Items/{}/Images/{}",
             self.host,
             media_item.id,
             it.to_string(),
             // tag
-        )
+        ))
     }
 
     //fn name(&self) -> String {

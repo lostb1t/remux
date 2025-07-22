@@ -327,6 +327,16 @@ pub enum ImageType {
     Logo,
 }
 
+
+// #[builder(setter(into))]
+#[derive(PartialEq, Eq, Default, Hash, Clone, Debug, Serialize, Deserialize)]
+pub struct Images {
+    pub poster: Option<String>,
+    pub backdrop: Option<String>,
+    pub thumb: Option<String>,
+    pub logo: Option<String>,
+}
+
 #[derive(Default, Eq, PartialEq, Hash, Clone, Debug)]
 //#[builder(setter(into))]
 pub struct Genre {
@@ -344,6 +354,8 @@ impl TryFrom<sdks::jellyfin::BaseItemDto> for Genre {
         })
     }
 }
+
+
 
 // #[derive(Debug, Clone, Hash, PartialEq, Serialize, Deserialize)]
 // #[serde(rename_all = "PascalCase")]
@@ -405,6 +417,9 @@ pub struct Media {
     pub ratings: Vec<Rating>,
     #[builder(default)]
     pub media_sources: Vec<MediaSource>,
+    
+    //#[builder(default)]
+    //pub images: Images;
 
     // for catalogs/collections
     #[builder(default = true)]
@@ -413,6 +428,8 @@ pub struct Media {
 
 use chrono::Duration;
 impl Media {
+  
+
     pub fn is_series(&self) -> bool {
         self.media_type == MediaType::Series
     }
@@ -478,6 +495,9 @@ impl TryFrom<sdks::jellyfin::BaseItemDto> for Media {
                     .unwrap_or_default()
                     .first()
                     .cloned(),
+            )
+            .maybe_thumb(
+                item.image_tags.clone().unwrap_or_default().thumb
             )
             .maybe_runtime_seconds(item.run_time_ticks.map(|ticks| ticks / 10_000_000))
             .maybe_logo(item.image_tags.unwrap().logo)

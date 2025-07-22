@@ -32,9 +32,8 @@ pub fn FadeInImage(props: FadeInImageProps) -> Element {
         },
         props.class.as_deref().unwrap_or("")
     );
-
+    
     rsx! {
-
         img {
             loading: "lazy",
             src: "{props.src}",

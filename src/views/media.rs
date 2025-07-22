@@ -208,7 +208,7 @@ pub fn MediaDetailSeason(props: MediaDetailSeasonProps) -> Element {
                                     // {info!("Rendering episode: {:?}", episode)}
                                     components::Card {
                                         //title: episode.title.clone(),
-                                        image: server.image_url(&episode, media::ImageType::Poster),
+                                        image: server.image_url(&episode, media::ImageType::Poster).unwrap(),
                                         variant: components::CardVariant::Landscape,
                                         to: Route::MediaDetailView {
                                             media_type: episode.media_type.clone(),
