@@ -7,6 +7,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::time::Duration;
 use tokio::time::sleep;
+#[cfg(target_arch = "wasm32")]
 use tokio_with_wasm::alias as tokio;
 
 /// Component that acts as an bottom sheet (mobile style) on small screens. And as a modal on larger
