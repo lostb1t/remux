@@ -43,9 +43,8 @@ jobs:
       - name: Install Dioxus CLI if not present
         shell: bash
         run: |
-          if ! command -v dx >/dev/null || [[ "$(dx --version 2>/dev/null)" != *"0.7.0-alpha.3"* ]]; then
-            cargo install dioxus-cli@0.7.0-alpha.3
-          fi
+          cargo install cargo-binstall || true
+          cargo binstall --no-confirm dioxus-cli@0.7.0-alpha.3
 
       - name: Install Windows dependencies
         if: matrix.os == 'windows'
@@ -64,7 +63,7 @@ jobs:
             libxdo-dev
 
       - name: Build Dioxus desktop app
-        run: dx bundle --release --platform desktop || true
+        run: dx bundle --release --platform desktop
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
