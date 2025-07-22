@@ -1,6 +1,6 @@
 [package]
 name = "remux"
-version = "0.0.0-dev"
+version = "0.0.0"
 authors = ["lostb1t <coding-mosses0z@icloud.com>"]
 edition = "2021"
 
