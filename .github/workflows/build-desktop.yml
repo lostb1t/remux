@@ -40,11 +40,17 @@ jobs:
             target
           key: ${{ runner.os }}-cargo
 
-      - name: Install Dioxus CLI if not present
+      - name: Install cargo-binstall
         shell: bash
         run: |
-          cargo install cargo-binstall || true
-          cargo binstall --no-confirm dioxus-cli@0.7.0-alpha.3
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            pwsh -Command "Set-ExecutionPolicy Unrestricted -Scope Process; iex (iwr 'https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1').Content"
+          else
+            curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          fi
+
+      - name: Install Dioxus CLI
+        run: cargo binstall --no-confirm dioxus-cli@0.7.0-alpha.3
 
       - name: Install dependencies (Linux only)
         if: matrix.os == 'linux'
