@@ -51,7 +51,6 @@ jobs:
 
       - name: Install Dioxus CLI
         run: |
-          $env:RUST_LOG = "debug"
           cargo binstall --force --no-confirm dioxus-cli@0.7.0-alpha.3
 
       - name: Install dependencies (Linux only)
@@ -65,7 +64,9 @@ jobs:
             libxdo-dev
 
       - name: Build Dioxus desktop app
-        run: dx bundle --release --platform desktop
+        run: |
+          $env:RUST_LOG = "debug"
+          dx bundle --release --platform desktop
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
