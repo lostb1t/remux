@@ -1,8 +1,8 @@
+use crate::sdks::core::{CommaSeparatedList, Endpoint, QueryParams};
+use bon::Builder;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-use bon::Builder;
 use std::collections::HashMap;
-use crate::sdks::core::{CommaSeparatedList, Endpoint, QueryParams};
 
 #[derive(Debug, Clone)]
 pub struct ManifestEndpoint;
@@ -69,7 +69,7 @@ pub struct CatalogEndpoint {
     pub kind: String,
     #[serde(skip)]
     pub id: String,
-    
+
     pub search: Option<String>,
     pub genre: Option<String>,
     pub skip: Option<u32>,
@@ -84,7 +84,7 @@ impl Endpoint for CatalogEndpoint {
     }
 
     fn parameters(&self) -> QueryParams {
-      self.into()
+        self.into()
     }
 }
 

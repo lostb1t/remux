@@ -34,7 +34,6 @@ pub fn VideoPlayer() -> Element {
     let visible = *player.visible.read();
     let media = player.media.read().clone();
 
-
     if !visible || media.is_none() {
         debug!("not visible or no media");
         return rsx! {};

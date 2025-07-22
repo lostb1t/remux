@@ -127,7 +127,9 @@ where
                 scroll_data.set(Some(el.data()));
             },
             onscroll: on_scroll,
-            {props.items.iter().map(|item| rsx! { {(props.render_item)(item)} })}
+            {props.items.iter().map(|item| rsx! {
+                {(props.render_item)(item)}
+            })}
         }
     }
 }

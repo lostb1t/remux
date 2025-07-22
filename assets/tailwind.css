@@ -1404,19 +1404,9 @@
       max-height: calc(var(--spacing) * 140);
     }
   }
-  .lg\:max-h-150 {
-    @media (width >= 64rem) {
-      max-height: calc(var(--spacing) * 150);
-    }
-  }
   .lg\:min-h-140 {
     @media (width >= 64rem) {
       min-height: calc(var(--spacing) * 140);
-    }
-  }
-  .lg\:min-h-150 {
-    @media (width >= 64rem) {
-      min-height: calc(var(--spacing) * 150);
     }
   }
   .lg\:max-w-md {

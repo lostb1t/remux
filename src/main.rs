@@ -5,6 +5,7 @@ use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, error, info, trace, Level};
 use dioxus_storage::set_dir;
 use rand::rand_core::le;
+use std::cell::OnceCell;
 use std::sync::Arc;
 use views::{
     media::MediaDetailViewTransition as MediaDetailView, settings::Settings,
@@ -12,12 +13,12 @@ use views::{
     HomeTransitionView as Home, LoginView, MainLayout, SafeSpaceLayout, SearchView,
     UnauthenticatedLayout,
 };
-use std::cell::OnceCell;
 
 mod addons;
 mod capabilities;
 mod components;
 mod hooks;
+mod js_bindings;
 mod media;
 mod sdks;
 mod server;
@@ -84,7 +85,6 @@ pub fn Loading(props: LoadingProps) -> Element {
         }
     }
 }
-
 
 #[component]
 fn ServerProvider(children: Element) -> Element {

@@ -102,25 +102,25 @@ pub struct MediaCardProps {
 pub fn MediaCard(props: MediaCardProps) -> Element {
     let server = crate::hooks::consume_server().expect("missing server");
     let image_type = match &props.card_variant {
-      components::CardVariant::Landscape => media::ImageType::Thumb,
-      components::CardVariant::Square => media::ImageType::Poster,
-      components::CardVariant::Hero => media::ImageType::Poster,
-      _ => media::ImageType::Poster,
+        components::CardVariant::Landscape => media::ImageType::Thumb,
+        components::CardVariant::Square => media::ImageType::Poster,
+        components::CardVariant::Hero => media::ImageType::Poster,
+        _ => media::ImageType::Poster,
     };
 
-    
-    
     let mut title = None;
     let image = if let Some(image) = server.image_url(&props.item, image_type) {
-       image
+        image
     } else {
-       title = Some(props.item.title.clone());
-       server.image_url(&props.item, media::ImageType::Backdrop).unwrap_or_default()
+        title = Some(props.item.title.clone());
+        server
+            .image_url(&props.item, media::ImageType::Backdrop)
+            .unwrap_or_default()
     };
 
     rsx! {
         super::Card {
-            image: image,
+            image,
             variant: props.card_variant,
             to: Route::MediaDetailView {
                 media_type: props.item.media_type.clone(),
@@ -133,17 +133,13 @@ pub fn MediaCard(props: MediaCardProps) -> Element {
                     }
                 }
             }
-                        if let Some(title) = title {
-            div {
-              class: "absolute top-2 left-4 justify-end font-semibold text
+            if let Some(title) = title {
+                div { class: "absolute top-2 left-4 justify-end font-semibold text
               -lg
               ",
-              h4
-              {
-              "{title}"
+                    h4 { "{title}" }
+                }
             }
-            }
-          }
         }
     }
 }
@@ -209,8 +205,12 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                     h3 {
                         class: match props.scroll_direction {
                             // components::ScrollDirection::Horizontal => "sidebar-offset  pl-6 text-xl w-full font-bold text-white",
-                            components::ScrollDirection::Horizontal => "pl-6 text-xl w-full font-semibold text-white",
-                            components::ScrollDirection::Vertical => "text-xl w-full font-semibold text-white",
+                            components::ScrollDirection::Horizontal => {
+                                "pl-6 text-xl w-full font-semibold text-white"
+                            }
+                            components::ScrollDirection::Vertical => {
+                                "text-xl w-full font-semibold text-white"
+                            }
                         },
                         "{title}"
                     }
@@ -230,19 +230,21 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                             //         scroll_to.set(target);
                             //     }
                             // })),
-                            on_next: Some(EventHandler::new({
-                                let list_id = list_id.clone();
-                                move |_| {
-                                    let current = *scroll_to.read();
-                                    let mut target = current + scroll_size;
-                                    if target <= scroll_size {
-                                        target += scroll_size;
+                            on_next: Some(
+                                //crate::utils::scroll_to_index(format!("{}-{}", list_id(), target));
+                                EventHandler::new({
+                                    let list_id = list_id.clone();
+                                    move |_| {
+                                        let current = *scroll_to.read();
+                                        let mut target = current + scroll_size;
+                                        if target <= scroll_size {
+                                            target += scroll_size;
+                                        }
+                                        debug!(? list_id, ? current, ? target, "on next");
+                                        scroll_to.set(target);
                                     }
-                                    debug!(?list_id, ?current, ?target, "on next");
-                                    //crate::utils::scroll_to_index(format!("{}-{}", list_id(), target));
-                                    scroll_to.set(target);
-                                }
-                            })),
+                                }),
+                            ),
                         }
                     }
                 }
@@ -254,28 +256,33 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                         items: items.clone(),
                         index: scroll_to,
                         class: "overflow-y-hidden overflow-x-visible pl-6 gap-x-2",
-                        on_load_more: Some(EventHandler::new(move |_| {
-                            if !*media_items().is_loading.read() {
-                                media_items().load_next();
-                            }
-                        })),
+                        on_load_more: Some(
+                            EventHandler::new(move |_| {
+                                if !*media_items().is_loading.read() {
+                                    media_items().load_next();
+                                }
+                            }),
+                        ),
+
                         render_item: move |i: &media::Media| rsx! {
                             super::MediaCard { card_variant: props.card_variant.clone(), item: i.clone() }
-                        }
+                        },
                     }
                 },
                 components::ScrollDirection::Vertical => rsx! {
                     super::PaginatedList {
                         scroll_direction: props.scroll_direction,
                         items: items.clone(),
-                        on_load_more: Some(EventHandler::new(move |_| {
-                            if !*media_items().is_loading.read() {
-                                media_items().load_next();
-                            }
-                        })),
+                        on_load_more: Some(
+                            EventHandler::new(move |_| {
+                                if !*media_items().is_loading.read() {
+                                    media_items().load_next();
+                                }
+                            }),
+                        ),
                         render_item: move |i: &media::Media| rsx! {
                             super::MediaCard { item: i.clone() }
-                            
+        
                         },
                     }
                 },

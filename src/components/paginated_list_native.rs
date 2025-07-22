@@ -105,14 +105,11 @@ where
         div {
             class: "overflow-x-hidden relative w-full h-full",
             style: "transform: translateX(-{index()}00%); transition: transform 0.3s ease-in-out;",
-        
-            div {
-                class: "flex gap-2 pl-6",
+            onpointerdown: on_pointer_down,
+            onpointerup: on_pointer_up,
+            div { class: "flex gap-2 pl-6",
                 {props.items.iter().map(|item| rsx! {
-                    div {
-                        class: "w-26 shrink-0",
-                        {(props.render_item)(item)}
-                    }
+                    div { class: "w-26 shrink-0", {(props.render_item)(item)} }
                 })}
             }
         }

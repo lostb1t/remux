@@ -20,7 +20,7 @@ pub fn SearchView(props: SearchViewProps) -> Element {
     let query = props.query.clone();
 
     rsx! {
-        div { 
+        div {
             div {
                 h2 { class: "text-xl font-bold mb-2", "Search Results" }
                 components::GenericMediaList {
@@ -28,7 +28,7 @@ pub fn SearchView(props: SearchViewProps) -> Element {
                     scroll_direction: components::ScrollDirection::Vertical,
                     query: MediaQuery::builder().search_query(query.clone()).build(),
                 }
-                
+            
             }
         }
     }

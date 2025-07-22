@@ -36,10 +36,12 @@ pub fn MainLayout() -> Element {
         div { class: "pb-[calc(2rem+env(safe-area-inset-bottom))] md:pb-[env(safe-area-inset-bottom)] min-h-screen flex w-full",
 
             // Sidebar with fixed width on lg+
-            div { class: "hidden fixed md:block w-50 z-30 flex-none min-h-screen", components::Sidebar {} }
+            div { class: "hidden fixed md:block w-50 z-30 flex-none min-h-screen",
+                components::Sidebar {}
+            }
 
             // Main content fills the rest
-            div { 
+            div {
                 // class: "flex-auto min-w-0 pb-10 lg:pb-6 md:ml-50 md:w-[calc(100%-13rem)] ",
                 class: "flex-auto min-h-screen min-w-0 pb-10 lg:pb-6",
 

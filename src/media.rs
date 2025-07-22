@@ -24,8 +24,6 @@ use std::hash::{Hash, Hasher};
 use strum_macros::Display as EnumDisplay;
 use strum_macros::EnumString;
 
-
-
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct Rating {
     pub source: RatingSource,
@@ -327,7 +325,6 @@ pub enum ImageType {
     Logo,
 }
 
-
 // #[builder(setter(into))]
 #[derive(PartialEq, Eq, Default, Hash, Clone, Debug, Serialize, Deserialize)]
 pub struct Images {
@@ -354,8 +351,6 @@ impl TryFrom<sdks::jellyfin::BaseItemDto> for Genre {
         })
     }
 }
-
-
 
 // #[derive(Debug, Clone, Hash, PartialEq, Serialize, Deserialize)]
 // #[serde(rename_all = "PascalCase")]
@@ -417,7 +412,7 @@ pub struct Media {
     pub ratings: Vec<Rating>,
     #[builder(default)]
     pub media_sources: Vec<MediaSource>,
-    
+
     //#[builder(default)]
     //pub images: Images;
 
@@ -428,8 +423,6 @@ pub struct Media {
 
 use chrono::Duration;
 impl Media {
-  
-
     pub fn is_series(&self) -> bool {
         self.media_type == MediaType::Series
     }
@@ -496,9 +489,7 @@ impl TryFrom<sdks::jellyfin::BaseItemDto> for Media {
                     .first()
                     .cloned(),
             )
-            .maybe_thumb(
-                item.image_tags.clone().unwrap_or_default().thumb
-            )
+            .maybe_thumb(item.image_tags.clone().unwrap_or_default().thumb)
             .maybe_runtime_seconds(item.run_time_ticks.map(|ticks| ticks / 10_000_000))
             .maybe_logo(item.image_tags.unwrap().logo)
             .maybe_user_data(item.user_data.map(|x| x.into()))

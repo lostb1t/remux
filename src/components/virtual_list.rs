@@ -214,12 +214,17 @@ where
                 (track_scroll)();
             },
 
-            {props.items.iter().map(|item| {
-                rsx!(
-                  {(props.render_item)(item)}
-                )
-            })}
-
+            {
+                props
+                    .items
+                    .iter()
+                    .map(|item| {
+                        rsx! {
+                            {(props.render_item)(item)}
+                        }
+                    })
+            }
+        
         }
     }
 }
@@ -266,7 +271,7 @@ where
             on_load_more: props.on_load_more.clone(),
             class: format!("{} {}", base_class, props.class),
             index: props.index.clone(),
-            render_item: render
+            render_item: render,
         }
     }
 }

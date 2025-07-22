@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing_subscriber::field::debug;
 //use derive_more::Debug;
+use super::{ConnectionStatus, MediaQuery, Server, ServerConfig, ServerKind};
 use crate::capabilities;
 use crate::components;
 use crate::media;
@@ -22,14 +23,6 @@ use crate::sdks::core::RestClient;
 use crate::sdks::jellyfin::{self, AuthenticationResult};
 use crate::utils::TryIntoVec;
 use derive_more::with_trait::Debug;
-use super::{
-    Server,
-    ServerConfig,
-    ServerKind,
-    ConnectionStatus,
-    MediaQuery
-};
-
 
 #[derive(Clone, Debug)]
 pub struct JellyfinServer {
@@ -86,16 +79,16 @@ impl Server for JellyfinServer {
         }
     }
 
-    fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> Option<String> {    
+    fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> Option<String> {
         let tag = match image_type {
-             media::ImageType::Poster => media_item.poster.as_deref(),
-             media::ImageType::Backdrop => media_item.backdrop.as_deref(),
-             media::ImageType::Logo => media_item.logo.as_deref(),
-             media::ImageType::Thumb => media_item.thumb.as_deref(),
+            media::ImageType::Poster => media_item.poster.as_deref(),
+            media::ImageType::Backdrop => media_item.backdrop.as_deref(),
+            media::ImageType::Logo => media_item.logo.as_deref(),
+            media::ImageType::Thumb => media_item.thumb.as_deref(),
         };
         //debug!(?tag, "yo");
         if tag.is_none() {
-          return None;
+            return None;
         }
 
         let it = match image_type {
@@ -370,9 +363,7 @@ impl JellyfinServer {
         let app = crate::APP_HOST.peek();
         format!(
             "Emby Client=\"Remux\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
-            app.device_name,
-            app.device_id,
-            app.remux_version
+            app.device_name, app.device_id, app.remux_version
         )
     }
 
@@ -408,4 +399,3 @@ impl JellyfinServer {
         self.connect().await
     }
 }
-

@@ -123,7 +123,7 @@ pub fn PlayButton(props: PlayButtonProps) -> Element {
             onclick: {
                 to_owned![player, media_item];
                 move |_| {
-                  if media_item.is_series() {
+                    if media_item.is_series() {
                         let i = nextup_items.read();
                         if let Some(Ok(items)) = i.as_ref() {
                             if let Some(first) = items.first() {

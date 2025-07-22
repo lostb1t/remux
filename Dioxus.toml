@@ -28,4 +28,7 @@ script = []
 [bundle]
 identifier = "com.github.remux"
 publisher = "lostb1t"
-icon = ["app-icon.png"]
+icon = [
+    "icons/app-icon.png",
+    "icons/icons.icns",
+]

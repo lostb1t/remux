@@ -1,17 +1,16 @@
+use crate::sdks::core::ApiError;
+use crate::sdks::core::RestClient;
 use crate::{
     capabilities::Capabilities,
     media::{self, Media, MediaSource},
     server::{ConnectionStatus, MediaQuery, Server, ServerConfig, ServerKind},
     APP_HOST,
 };
-use derive_more::with_trait::Debug;
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use std::sync::Arc;
-use crate::sdks::core::ApiError;
-use crate::sdks::core::RestClient;
+use derive_more::with_trait::Debug;
 use serde::{Deserialize, Serialize};
-
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct Addon {

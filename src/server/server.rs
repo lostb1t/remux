@@ -23,7 +23,6 @@ use crate::sdks::jellyfin::{self, AuthenticationResult};
 use crate::utils::TryIntoVec;
 use derive_more::with_trait::Debug;
 
-
 #[derive(Builder, Serialize, Deserialize, Debug, Clone)]
 pub struct Catalog {
     pub id: String,
@@ -105,10 +104,12 @@ impl ServerConfig {
     // }
     pub fn into_server(self) -> Box<dyn Server> {
         match self.kind {
-            ServerKind::Jellyfin => Box::new(super::JellyfinServer::from_config(self)) as Box<dyn Server>,
+            ServerKind::Jellyfin => {
+                Box::new(super::JellyfinServer::from_config(self)) as Box<dyn Server>
+            }
         }
     }
-}  
+}
 
 #[async_trait(?Send)]
 pub trait Server: Debug {
@@ -192,5 +193,3 @@ pub async fn get_media_cached(
     //debug!("Fetching  for user: {:?}", server.user_id());
     Ok(server.get_media(query).await?)
 }
-
-

@@ -66,24 +66,25 @@ pub fn HeroList(props: HeroListProps) -> Element {
             components::CarouselList {
                 items: list.clone(),
                 index: index.clone(),
-                on_load_more: Some(EventHandler::new(move |_| {
-                    if !*media_items().is_loading.read() {
-                        media_items().load_next();
-                    }
-                })),
+                on_load_more: Some(
+                    EventHandler::new(move |_| {
+                        if !*media_items().is_loading.read() {
+                            media_items().load_next();
+                        }
+                    }),
+                ),
                 render_item: move |item: &media::Media| rsx! {
-                    div {
-                        class: "flex-shrink-0 w-full snap-start",
+                    div { class: "flex-shrink-0 w-full snap-start",
                         HeroItem { item: item.clone() }
                     }
                 },
-                // render_item: move |item: &media::Media, idx: String| rsx! {
-                //     div {
-                //         id: idx,
-                //         class: "flex-shrink-0 w-full snap-start",
-                //         HeroItem { item: item.clone() }
-                //     }
-                // },
+                        // render_item: move |item: &media::Media, idx: String| rsx! {
+            //     div {
+            //         id: idx,
+            //         class: "flex-shrink-0 w-full snap-start",
+            //         HeroItem { item: item.clone() }
+            //     }
+            // },
             }
             PaginationDots {
                 list_len: list.len(),
@@ -193,7 +194,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
 
             // Foreground content (text + play)
-            div { 
+            div {
                 class: "sidebar-offset absolute w-full bottom-0 lg:min-w-md lg:max-w-md flex flex-col justify-center p-6 space-y-4",
 
                 Link {
@@ -211,8 +212,8 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                                 src: logo,
                                 //src:  logo_url,
                                 class: "w-full max-h-24 lg:max-h-42 object-contain",
-                            //class: "invert brightness-0",
-                            //attr: vec![],
+                                //class: "invert brightness-0",
+                                //attr: vec![],
                             }
                         },
                         Some(None) => rsx! {
@@ -233,71 +234,68 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                 //     class: "w-full",
                 //if props.detail {
 
-                    div { class: "flex w-full gap-2 items-center",
+                div { class: "flex w-full gap-2 items-center",
 
-                        components::PlayButton {
-                            class: "flex-1 h-10 p-0",
-                            media_item: item.clone(),
-                        }
+                    components::PlayButton { class: "flex-1 h-10 p-0", media_item: item.clone() }
 
-                        components::Button {
-                            variant: components::ButtonVariant::Secondary,
-                            onclick: {
+                    components::Button {
+                        variant: components::ButtonVariant::Secondary,
+                        onclick: {
+                            to_owned![item, server];
+                            move |_| {
                                 to_owned![item, server];
-                                move |_| {
-                                    to_owned![item, server];
-                                    let fav = is_favorite();
-                                    is_favorite.set(!fav);
-                                    spawn(async move {
-                                        server.is_favorite(!fav, &item).await;
-                                    });
-                                }
-                            },
-                            //   class: "flex-none",
-                            class: "flex-none flex items-center justify-center w-10 h-10",
-                            //if let Some(data) = item.user_data {
-                            super::ToggleIcon {
-                                width: 18,
-                                height: 18,
-                                fill: "white",
-                                icon: IoHeartOutline,
-                                icon_active: IoHeart,
-                                active: *is_favorite.read(),
+                                let fav = is_favorite();
+                                is_favorite.set(!fav);
+                                spawn(async move {
+                                    server.is_favorite(!fav, &item).await;
+                                });
                             }
-                        }
-
-                        components::Button {
-                            variant: components::ButtonVariant::Secondary,
-                            onclick: {
-                                to_owned![item, server];
-                                move |_| {
-                                    to_owned![item, server];
-                                    spawn(async move {
-                                        let watched = is_watched();
-                                        is_watched.set(!watched);
-                                        server.is_watched(!watched, &item).await;
-                                    });
-                                }
-                            },
-                            //   class: "flex-none",
-                            class: "flex-none w-10 h-10 flex items-center justify-center",
-                            //if let Some(data) = item.user_data {
-                            super::ToggleIcon {
-                                width: 18,
-                                height: 18,
-                                fill: "white",
-                                icon: IoEye,
-                                icon_active: IoEyeOutline,
-                                active: *is_watched.read(),
-                            }
+                        },
+                        //   class: "flex-none",
+                        class: "flex-none flex items-center justify-center w-10 h-10",
+                        //if let Some(data) = item.user_data {
+                        super::ToggleIcon {
+                            width: 18,
+                            height: 18,
+                            fill: "white",
+                            icon: IoHeartOutline,
+                            icon_active: IoHeart,
+                            active: *is_favorite.read(),
                         }
                     }
-              //  } else {
-               //     components::PlayButton { class: "w-full", media_item: item.clone() }
-                //}
+
+                    components::Button {
+                        variant: components::ButtonVariant::Secondary,
+                        onclick: {
+                            to_owned![item, server];
+                            move |_| {
+                                to_owned![item, server];
+                                spawn(async move {
+                                    let watched = is_watched();
+                                    is_watched.set(!watched);
+                                    server.is_watched(!watched, &item).await;
+                                });
+                            }
+                        },
+                        //   class: "flex-none",
+                        class: "flex-none w-10 h-10 flex items-center justify-center",
+                        //if let Some(data) = item.user_data {
+                        super::ToggleIcon {
+                            width: 18,
+                            height: 18,
+                            fill: "white",
+                            icon: IoEye,
+                            icon_active: IoEyeOutline,
+                            active: *is_watched.read(),
+                        }
+                    }
+                }
+                        //  } else {
+            //     components::PlayButton { class: "w-full", media_item: item.clone() }
+            //}
 
             }
-
+        
 
 
 
@@ -425,6 +423,7 @@ pub fn TagsDisplay(props: TagsDisplayProps) -> Element {
                         }
                     }
 
+    
                 }
             }) })}
         }

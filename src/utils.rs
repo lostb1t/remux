@@ -9,12 +9,17 @@ use image::io::Reader as ImageReader;
 use image::ColorType;
 use image::ImageEncoder;
 use image::{DynamicImage, GenericImageView, RgbaImage};
+use rand::Rng;
 use reqwest::get;
 use std::cell::RefCell;
 use std::future::Future;
 use std::io::Cursor;
 use std::rc::Rc;
 use uuid::Uuid;
+
+pub fn generate_id() -> String {
+    format!("{:06}", rand::thread_rng().gen::<u32>() % 1_000_000)
+}
 
 #[derive(Clone, Debug)]
 pub struct AppHost {

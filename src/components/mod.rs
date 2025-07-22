@@ -21,15 +21,15 @@ pub use media_row::*;
 pub mod bottom_navbar;
 pub use bottom_navbar::*;
 
-#[cfg(target_arch = "wasm32")]
-pub mod sheet;
-#[cfg(target_arch = "wasm32")]
-pub use sheet::*;
+//#[cfg(target_arch = "wasm32")]
+//pub mod sheet;
+//#[cfg(target_arch = "wasm32")]
+//pub use sheet::*;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub mod sheet_native;
-#[cfg(not(target_arch = "wasm32"))]
-pub use sheet_native::*;
+//#[cfg(not(target_arch = "wasm32"))]
+pub mod sheet_eval;
+//#[cfg(not(target_arch = "wasm32"))]
+pub use sheet_eval::*;
 
 pub mod image;
 pub use image::*;
@@ -46,21 +46,21 @@ pub use list::*;
 pub mod switch;
 pub use switch::*;
 
-#[cfg(target_arch = "wasm32")]
-pub mod virtual_list;
-#[cfg(target_arch = "wasm32")]
-pub use virtual_list::*;
+//#[cfg(target_arch = "wasm32")]
+//pub mod virtual_list;
+//#[cfg(target_arch = "wasm32")]
+//pub use virtual_list::*;
 
 // #[cfg(not(target_arch = "wasm32"))]
-// pub mod paginated_list_native;
+//pub mod paginated_list_native;
 // #[cfg(not(target_arch = "wasm32"))]
-// pub use paginated_list_native::*;
+//pub use paginated_list_native::*;
 // #[cfg(not(target_arch = "wasm32"))]
-// pub use paginated_list_native::PaginatedList as CarouselList;
+//pub use paginated_list_native::PaginatedList as CarouselList;
 
-#[cfg(not(target_arch = "wasm32"))]
+//#[cfg(not(target_arch = "wasm32"))]
 pub mod paginated_list_eval;
-#[cfg(not(target_arch = "wasm32"))]
+//#[cfg(not(target_arch = "wasm32"))]
 pub use paginated_list_eval::*;
-#[cfg(not(target_arch = "wasm32"))]
+//#[cfg(not(target_arch = "wasm32"))]
 pub use paginated_list_eval::PaginatedList as CarouselList;

@@ -2,14 +2,16 @@ use crate::Route;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use strum_macros::Display as EnumDisplay;
-use strum_macros::{EnumString,EnumIter};
+use strum_macros::{EnumIter, EnumString};
 
-#[derive(Clone, Hash, EnumDisplay, Serialize, Deserialize,EnumIter, EnumString, Debug, Eq, PartialEq)]
+#[derive(
+    Clone, Hash, EnumDisplay, Serialize, Deserialize, EnumIter, EnumString, Debug, Eq, PartialEq,
+)]
 pub enum CardVariant {
     Poster,
     Square,
     Landscape,
-    Hero
+    Hero,
 }
 
 impl Default for CardVariant {
@@ -45,8 +47,7 @@ pub struct CardProps {
 #[component]
 pub fn Card(props: CardProps) -> Element {
     let content = rsx! {
-        div { 
-            class: "overflow-hidden relative {image_class(&props.variant)} {props.class}",
+        div { class: "overflow-hidden relative {image_class(&props.variant)} {props.class}",
             super::FadeInImage {
                 src: "{props.image}",
                 class: "rounded-lg w-full h-full object-cover",
@@ -54,7 +55,7 @@ pub fn Card(props: CardProps) -> Element {
             {props.children}
         }
     };
-   // return content;
+    // return content;
     match &props.to {
         Some(route) => rsx! {
             Link { to: route.clone(), class: "", {content} }
