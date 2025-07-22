@@ -31,4 +31,5 @@ publisher = "lostb1t"
 icon = [
     "icons/icon.png",
     "icons/icon.icns",
+    "icons/icon.ico",
 ]

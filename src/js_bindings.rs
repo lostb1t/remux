@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use_js!("assets/remux.js"::*);
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ScrollInfo {
     pub scroll_top: f64,
