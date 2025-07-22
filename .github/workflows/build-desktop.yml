@@ -83,7 +83,7 @@ jobs:
 
       - name: Build Dioxus desktop app
         run: |
-          dx bundle --release --platform desktop --verbose --trace
+          dx bundle --release --platform desktop
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
