@@ -13,7 +13,6 @@ use dioxus_free_icons::icons::io_icons::{
 use dioxus_logger::tracing::{debug, info, trace, Level};
 use rand::Rng;
 use tracing_subscriber::field::debug;
-use web_sys;
 
 use dioxus_free_icons::Icon;
 use dioxus_time::use_debounce;
@@ -167,7 +166,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
     rsx! {
         div {
-            class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-150 lg:max-h-150 w-full text-white overflow-hidden",
+            class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-140 lg:max-h-140 w-full text-white overflow-hidden",
             onvisible: move |evt| {
                 let data = evt.data();
                 if let Ok(is_intersecting) = data.is_intersecting() {

@@ -103,22 +103,18 @@ where
 
     rsx! {
         div {
-            class: "{base_class} {full_class}",
-            onpointerdown: on_pointer_down,
-            onpointerup: on_pointer_up,
-
-            {props.items.iter().enumerate().map(|(i, item)| {
-                let transform = transforms.get(&i).unwrap_or(&"translateX(0%)".to_string()).clone();
-                rsx! {
+            class: "overflow-x-hidden relative w-full h-full",
+            style: "transform: translateX(-{index()}00%); transition: transform 0.3s ease-in-out;",
+        
+            div {
+                class: "flex gap-2 pl-6",
+                {props.items.iter().map(|item| rsx! {
                     div {
-                        key: "{i}",
-                        class: "absolute top-0 left-0 w-full h-full transition-transform duration-300 ease-in-out",
-                        style: "transform: {transform};",
+                        class: "w-26 shrink-0",
                         {(props.render_item)(item)}
                     }
-                }
-            })}
+                })}
+            }
         }
     }
 }
-

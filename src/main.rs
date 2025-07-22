@@ -49,7 +49,6 @@ pub enum Route {
 }
 
 fn main() {
-    #[cfg(not(target_arch = "wasm32"))]
     set_dir!();
 
     dioxus_logger::init(Level::DEBUG).expect("logger failed to init");

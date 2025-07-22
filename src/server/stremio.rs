@@ -13,7 +13,7 @@ use crate::sdks::core::RestClient;
 use serde::{Deserialize, Serialize};
 
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Addon {
     // pub name: String,
     pub enabled: bool,
@@ -25,14 +25,16 @@ pub struct Addon {
 
 #[derive(Clone, Debug)]
 pub struct StremioServer {
-    // pub host: String,
-    // pub status: ConnectionStatus,
+    pub host: String,
+    pub status: ConnectionStatus,
     pub addons: Vec<Addon>,
 }
 
 impl StremioServer {
-    pub fn new() -> Self {
+    pub fn new(host: String) -> Self {
         Self {
+            status: ConnectionStatus::Success,
+            host: host,
             addons: vec![Addon {
                 client: RestClient::new("https://v3-cinemeta.strem.io").unwrap(),
                 enabled: true,
@@ -63,7 +65,8 @@ impl Server for StremioServer {
     fn into_config(&self) -> ServerConfig {
         ServerConfig {
             kind: ServerKind::Jellyfin, // You’ll want to add `Stremio` to `ServerKind`
-            host: self.host.clone(),
+            // host: self.host.clone(),
+            host: "".to_string(),
             username: "".to_string(),
             password: "".to_string(),
         }
@@ -106,16 +109,17 @@ impl Server for StremioServer {
     }
 
     async fn get_catalogs(&self) -> Result<Vec<Media>> {
-        let endpoint = crate::sdks::stremio::ManifestEndpoint;
-        let manifest = self.client.request(&endpoint).await?;
-        let catalogs = manifest.catalogs.into_iter().map(|c| {
-            media::Media::builder()
-                .id(c.id.clone())
-                .title(c.name)
-                .media_type(c.kind.parse().unwrap_or(media::MediaType::Movie))
-                .build()
-        }).collect::<Result<Vec<_>, _>>()?;
-        Ok(catalogs)
+        // let endpoint = crate::sdks::stremio::ManifestEndpoint;
+        // let manifest = self.client.query(&endpoint).await?;
+        // let catalogs = manifest.catalogs.into_iter().map(|c| {
+        //     media::Media::builder()
+        //         .id(c.id.clone())
+        //         .title(c.name)
+        //         .media_type(c.kind.parse().unwrap_or(media::MediaType::Movie))
+        //         .build()
+        // }).collect::<Result<Vec<_>, _>>()?;
+        // Ok(catalogs)
+        Ok(vec![])
     }
 
     async fn get_genres(&self) -> Result<Vec<media::Genre>> {
@@ -123,27 +127,28 @@ impl Server for StremioServer {
     }
 
     async fn get_media(&self, q: &MediaQuery) -> Result<Vec<Media>> {
-        let catalog_id = q.for_catalog.as_ref().ok_or_else(|| anyhow!("Missing catalog"))?.id.clone();
-        let kind = q.types.first().unwrap_or(&media::MediaType::Movie).to_string();
-        let endpoint = crate::sdks::stremio::CatalogEndpoint::builder()
-            .id(catalog_id)
-            .kind(q.types.clone().try_into_vec().unwrap())
-            .maybe_search(q.search_query.clone())
-            // .genre(q.genres.as_ref().and_then(|g| g.first()).map(|g| g.name.clone()))
-            .skip(q.offset)
-            .build();
-        let res = self.client.query(&endpoint).await?;
-        let items = res.metas.into_iter().map(|m| {
-            media::Media::builder()
-                .id(m.id)
-                .name(m.name)
-                .kind(m.kind.parse().unwrap_or(media::MediaType::Movie))
-                .poster(m.poster)
-                .backdrop(m.background)
-                .logo(m.logo)
-                .build()
-        }).collect::<Result<Vec<_>, _>>()?;
-        Ok(items)
+        // let catalog_id = q.for_catalog.as_ref().ok_or_else(|| anyhow!("Missing catalog"))?.id.clone();
+        // let kind = q.types.first().unwrap_or(&media::MediaType::Movie).to_string();
+        // let endpoint = crate::sdks::stremio::CatalogEndpoint::builder()
+        //     .id(catalog_id)
+        //     .kind(q.types.clone().try_into_vec().unwrap())
+        //     .maybe_search(q.search_query.clone())
+        //     // .genre(q.genres.as_ref().and_then(|g| g.first()).map(|g| g.name.clone()))
+        //     .skip(q.offset)
+        //     .build();
+        // let res = self.client.query(&endpoint).await?;
+        // let items = res.metas.into_iter().map(|m| {
+        //     media::Media::builder()
+        //         .id(m.id)
+        //         .name(m.name)
+        //         .kind(m.kind.parse().unwrap_or(media::MediaType::Movie))
+        //         .poster(m.poster)
+        //         .backdrop(m.background)
+        //         .logo(m.logo)
+        //         .build()
+        // }).collect::<Result<Vec<_>, _>>()?;
+        // Ok(items)
+        Ok(vec![]) // Not applicable to Stremio
     }
 
     async fn nextup(&self, _item: &Media) -> Result<Vec<Media>> {
@@ -151,20 +156,21 @@ impl Server for StremioServer {
     }
 
     async fn get_media_details(&self, id: String) -> Result<Option<Media>> {
-        let kind = media::MediaType::Movie.to_string(); // fallback
-        let endpoint = crate::sdks::stremio::MetaEndpointBuilder::default()
-            .id(id.clone())
-            .kind(kind)
-            .build()?;
-        let res = self.client.request(&endpoint).await?;
-        let meta = res.meta;
-        Ok(Some(media::Media::builder()
-            .id(meta.id)
-            .name(meta.name)
-            .kind(meta.kind.parse().unwrap_or(media::MediaType::Movie))
-            .poster(meta.poster)
-            .backdrop(meta.background)
-            .logo(meta.logo)
-            .build()?))
+        // let kind = media::MediaType::Movie.to_string(); // fallback
+        // let endpoint = crate::sdks::stremio::MetaEndpointBuilder::default()
+        //     .id(id.clone())
+        //     .kind(kind)
+        //     .build()?;
+        // let res = self.query.request(&endpoint).await?;
+        // let meta = res.meta;
+        // Ok(Some(media::Media::builder()
+        //     .id(meta.id)
+        //     .name(meta.name)
+        //     .kind(meta.kind.parse().unwrap_or(media::MediaType::Movie))
+        //     .poster(meta.poster)
+        //     .backdrop(meta.background)
+        //     .logo(meta.logo)
+        //     .build()?))
+        Ok(None)
     }
 }

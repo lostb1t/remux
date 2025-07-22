@@ -21,8 +21,9 @@ args = ["build", "--platform", "web", "--release"]
 command = "docker"
 args = ["buildx", "build", "-t", "ghcr.io/lostb1t/remux:latest", ".", "--load"]
 
-#[tasks.deploy]
-#run_task = { name = ["fmt", "deploy-web"] }
+[tasks.sync]
+command = "sh"
+args = ["-c", "while true; do rsync -avz --delete kenobi:/root/Projects/remux-web/src/ /Users/sarendsen/Projects/remux/src/; sleep 2; done"]
 
 [tasks.fmt]
 script = [

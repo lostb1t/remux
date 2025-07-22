@@ -41,6 +41,16 @@ impl Default for AppHost {
             id
         };
 
+        #[cfg(target_arch = "wasm32")]
+        let is_touch = {
+            let window = web_sys::window().unwrap();
+            let navigator = window.navigator();
+            navigator.max_touch_points() > 0
+        };
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let is_touch = false;
+
         Self {
             remux_version: option_env!("REMUX_VERSION")
                 .unwrap_or(env!("CARGO_PKG_VERSION"))
@@ -52,11 +62,7 @@ impl Default for AppHost {
                 .next()
                 .unwrap_or("Unknown")
                 .to_string(),
-            is_touch: {
-                let window = web_sys::window().unwrap();
-                let navigator = window.navigator();
-                navigator.max_touch_points() > 0
-            },
+            is_touch,
         }
     }
 }

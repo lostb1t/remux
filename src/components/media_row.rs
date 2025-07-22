@@ -115,7 +115,7 @@ pub fn MediaCard(props: MediaCardProps) -> Element {
        image
     } else {
        title = Some(props.item.title.clone());
-       server.image_url(&props.item, media::ImageType::Backdrop).unwrap()
+       server.image_url(&props.item, media::ImageType::Backdrop).unwrap_or_default()
     };
 
     rsx! {
