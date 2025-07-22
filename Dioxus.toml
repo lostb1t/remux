@@ -29,6 +29,6 @@ script = []
 identifier = "com.github.remux"
 publisher = "lostb1t"
 icon = [
-    "icons/app-icon.png",
-    "icons/icons.icns",
+    "icons/icon.png",
+    "icons/icon.icns",
 ]
