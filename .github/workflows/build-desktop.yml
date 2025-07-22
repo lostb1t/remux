@@ -89,4 +89,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: remux-${{ matrix.target }}
-          path: ⁨target/dx/remux/bundle
+          path: ⁨target/dx/remux/bundle/**/*
