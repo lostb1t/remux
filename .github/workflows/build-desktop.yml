@@ -22,7 +22,7 @@ jobs:
     steps:
 
       - name: Set git config for long paths
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows'
         run: |
           git config --system core.longpaths true
       - name: Checkout repo
