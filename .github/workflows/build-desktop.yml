@@ -51,7 +51,7 @@ jobs:
             ${{ runner.os == 'Windows' && 'C:\\cargo\\git' || '~/.cargo/git' }}
             ${{ runner.os == 'Windows' && 'C:\\cargo\\bin' || '~/.cargo/bin' }}
             target
-          key: cargo-${{ matrix.target }
+          key: cargo-${{ matrix.target }}
 
       - name: Install cargo-binstall
         shell: bash
