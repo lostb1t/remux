@@ -20,7 +20,15 @@ jobs:
             runner: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
+      - name: Shorten CARGO_HOME to avoid path-too-long issues (Windows)
+        if: matrix.os == 'windows'
+        run: echo "CARGO_HOME=C:/cargo" >> $env:GITHUB_ENV
+        shell: pwsh
 
+      - name: Create cargo dir (Windows)
+        if: matrix.os == 'windows'
+        run: mkdir C:\cargo
+        shell: pwsh
       - name: Set git config for long paths
         if: matrix.os == 'windows'
         run: |
@@ -39,11 +47,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ runner.os == 'Windows' && 'C:\\Users\\runneradmin\\.cargo\\registry' || '~/.cargo/registry' }}
-            ${{ runner.os == 'Windows' && 'C:\\Users\\runneradmin\\.cargo\\git' || '~/.cargo/git' }}
-            ${{ runner.os == 'Windows' && 'C:\\Users\\runneradmin\\.cargo\\bin' || '~/.cargo/bin' }}
+            ${{ runner.os == 'Windows' && 'C:\\cargo\\registry' || '~/.cargo/registry' }}
+            ${{ runner.os == 'Windows' && 'C:\\cargo\\git' || '~/.cargo/git' }}
+            ${{ runner.os == 'Windows' && 'C:\\cargo\\bin' || '~/.cargo/bin' }}
             target
-          key: ${{ runner.os }}-cargo
+          key: cargo-${{ matrix.target }
 
       - name: Install cargo-binstall
         shell: bash
