@@ -1,13 +1,8 @@
-Got it. Here’s the cleaned-up version with:
-	•	#[skip_serializing_none] from serde_with
-	•	#[derive(Builder)] from bon
-	•	No comments or extra annotations
-
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use bon::Builder;
 use std::collections::HashMap;
-use crate::client::{Endpoint, QueryParams};
+use crate::sdks::core::{CommaSeparatedList, Endpoint, QueryParams};
 
 #[derive(Debug, Clone)]
 pub struct ManifestEndpoint;
@@ -68,11 +63,17 @@ pub struct ExtraProp {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Builder)]
+#[derive(Debug, Clone, Serialize, Builder)]
 pub struct CatalogEndpoint {
+    #[serde(skip)]
     pub kind: String,
+    #[serde(skip)]
     pub id: String,
-    pub extra: Option<HashMap<String, String>>,
+    
+    pub search: Option<String>,
+    pub genre: Option<String>,
+    pub skip: Option<u32>,
+    //pub extra: Option<HashMap<String, String>>,
 }
 
 impl Endpoint for CatalogEndpoint {
@@ -83,11 +84,7 @@ impl Endpoint for CatalogEndpoint {
     }
 
     fn parameters(&self) -> QueryParams {
-        self.extra
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .collect()
+      self.into()
     }
 }
 

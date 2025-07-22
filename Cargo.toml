@@ -94,7 +94,6 @@ inherits = "dev"
 [profile.android-dev]
 inherits = "dev"
 
-
 [patch.crates-io]
 dioxus-sdk = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
 dioxus_storage = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }

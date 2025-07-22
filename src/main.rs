@@ -3,6 +3,7 @@ use crate::server::{ConnectionStatus, Server};
 use components::video::VideoPlayerState;
 use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, error, info, trace, Level};
+use dioxus_storage::set_dir;
 use rand::rand_core::le;
 use std::sync::Arc;
 use views::{
@@ -48,6 +49,9 @@ pub enum Route {
 }
 
 fn main() {
+    #[cfg(not(target_arch = "wasm32"))]
+    set_dir!();
+
     dioxus_logger::init(Level::DEBUG).expect("logger failed to init");
     dioxus::launch(App);
 }
