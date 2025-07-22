@@ -46,12 +46,6 @@ jobs:
           cargo install cargo-binstall || true
           cargo binstall --no-confirm dioxus-cli@0.7.0-alpha.3
 
-      - name: Install Windows dependencies
-        if: matrix.os == 'windows'
-        shell: pwsh
-        run: |
-          choco install -y webview2-runti
-
       - name: Install dependencies (Linux only)
         if: matrix.os == 'linux'
         run: |
