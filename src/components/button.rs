@@ -2,7 +2,9 @@ use crate::components;
 use crate::hooks;
 use crate::media;
 use dioxus::prelude::*;
-use dioxus_free_icons::icons::fa_solid_icons::FaPlay;
+use dioxus_free_icons::icons::io_icons::{
+IoPlay
+};
 use dioxus_free_icons::Icon;
 use dioxus_logger::tracing::{debug, error, info};
 //use gloo_timers::future::sleep;
@@ -144,7 +146,7 @@ pub fn PlayButton(props: PlayButtonProps) -> Element {
                 width: 16,
                 height: 16,
                 fill: "black",
-                icon: FaPlay,
+                icon: IoPlay,
             }
             "Play"
         }
