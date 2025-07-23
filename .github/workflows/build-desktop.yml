@@ -115,13 +115,9 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: ./artifacts
+          path: ./dist
+          merge-multiple: true
 
-      - name: Flatten all artifacts into single dist/
-        run: |
-          mkdir dist
-          find ./artifacts -type f -exec cp {} dist/ \;
-  
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
