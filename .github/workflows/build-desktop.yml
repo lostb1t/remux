@@ -81,19 +81,24 @@ jobs:
         run: |
           dx bundle --release --platform desktop --trace
 
-      - name: Copy built package to dist/
+      - name: Prepare artifact (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          mkdir artifacts
+          Copy-Item dist/nsis/Remux_0.0.0_x64-setup.exe artifacts/remux-windows.exe
+      
+      - name: Prepare artifact (Linux)
+        if: matrix.os == 'linux'
         run: |
           mkdir -p artifacts
+          cp dist/Remux.AppImage artifacts/remux-linux.AppImage
       
-          if [[ "${{ matrix.os }}" == "windows" ]]; then
-            cp dist/nsis/Remux_0.0.0_x64-setup.exe artifacts/remux_0.0.0_x64-setup.exe
-      
-          elif [[ "${{ matrix.os }}" == "linux" ]]; then
-            cp dist/Remux.AppImage artifacts/remux-linux.AppImage
-      
-          elif [[ "${{ matrix.os }}" == "macos" ]]; then
-            cp dist/dmg/Remux_0.0.0_aarch64.dmg artifacts/remux_0.0.0_aarch64.dmg
-          fi
+      - name: Prepare artifact (macOS)
+        if: matrix.os == 'macos'
+        run: |
+          mkdir -p artifacts
+          cp dist/dmg/Remux_0.0.0_aarch64.dmg artifacts/remux-macos.dmg
 
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
