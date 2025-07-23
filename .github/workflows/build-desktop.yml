@@ -86,13 +86,13 @@ jobs:
         shell: pwsh
         run: |
           mkdir artifacts
-          Copy-Item dist/Remux_0.0.0_x64-setup.exe artifacts/remux-windows.exe
+          Copy-Item dist/Remux_0.0.0_x64-setup.exe artifacts/remux_0.0.0_x64-setup.exe
       
       - name: Prepare artifact (Linux)
         if: matrix.os == 'linux'
         run: |
           mkdir -p artifacts
-          cp dist/Remux.AppImage artifacts/remux-linux.AppImage
+          cp dist/Remux.AppImage artifacts/remux.AppImage
       
       - name: Prepare artifact (macOS)
         if: matrix.os == 'macos'
