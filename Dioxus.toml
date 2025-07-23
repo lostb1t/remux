@@ -1,9 +1,6 @@
 [application]
-
-# App (Project) Name
 name = "remux"
-#asset_dir = "public"
-
+out_dir = "dist"
 
 [web.app]
 out_dir = "docs"
