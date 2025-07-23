@@ -56,5 +56,5 @@ added in the future.
 Make sure you have installed [Rust](https://www.rust-lang.org/tools/install)
 
 1. Install the Tailwind CSS CLI: https://tailwindcss.com/docs/installation/tailwind-cli
-2. Install cargo make: `cargo install --force cargo-make`
+2. Install rust dependencies: `cargo install cargo-make dioxus-cli`
 3. run dev: `cargo make dev`
