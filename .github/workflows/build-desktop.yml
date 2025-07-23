@@ -81,6 +81,25 @@ jobs:
         run: |
           dx bundle --release --platform desktop --trace
 
+- name: Copy built package to dist/
+  run: |
+    mkdir -p dist
+
+    if [[ "${{ matrix.os }}" == "windows" ]]; then
+      cp target/dx/remux/bundle/windows/bundle/nsis/remux_installer.exe dist/remux-windows.exe
+
+    elif [[ "${{ matrix.os }}" == "linux" ]]; then
+      cp target/dx/remux/bundle/Remux.AppImage dist/remux-linux.AppImage
+
+    elif [[ "${{ matrix.os }}" == "macos" ]]; then
+      # Prefer DMG if available
+      if [ -f target/dx/remux/bundle/Remux.dmg ]; then
+        cp target/dx/remux/bundle/Remux.dmg dist/remux-macos.dmg
+      else
+        cp -R target/dx/remux/bundle/Remux.app dist/remux-macos.app
+      fi
+    fi
+
 - name: Copy built package to dist folder
   run: |
     mkdir -p dist
