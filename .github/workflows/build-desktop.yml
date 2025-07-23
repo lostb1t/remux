@@ -86,7 +86,7 @@ jobs:
         shell: pwsh
         run: |
           mkdir artifacts
-          Copy-Item dist/nsis/Remux_0.0.0_x64-setup.exe artifacts/remux-windows.exe
+          Copy-Item dist/Remux_0.0.0_x64-setup.exe artifacts/remux-windows.exe
       
       - name: Prepare artifact (Linux)
         if: matrix.os == 'linux'
@@ -98,7 +98,7 @@ jobs:
         if: matrix.os == 'macos'
         run: |
           mkdir -p artifacts
-          cp dist/dmg/Remux_0.0.0_aarch64.dmg artifacts/remux-macos.dmg
+          cp dist/Remux_0.0.0_aarch64.dmg artifacts/remux-macos.dmg
 
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
