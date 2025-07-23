@@ -43,16 +43,11 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
-
+      
       - name: Cache cargo build
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ${{ runner.os == 'Windows' && 'C:\\cargo\\registry' || '~/.cargo/registry' }}
-            ${{ runner.os == 'Windows' && 'C:\\cargo\\git' || '~/.cargo/git' }}
-            ${{ runner.os == 'Windows' && 'C:\\cargo\\bin' || '~/.cargo/bin' }}
-            target
-          key: cargo-${{ matrix.target }}
+          key: ${{ matrix.target }}
 
       - name: Install cargo-binstall
         shell: bash
