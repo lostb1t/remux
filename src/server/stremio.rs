@@ -1,6 +1,7 @@
 use crate::sdks::core::ApiError;
 use crate::sdks::core::RestClient;
 use crate::{
+    sdks,
     capabilities::Capabilities,
     media::{self, Media, MediaSource},
     server::{ConnectionStatus, MediaQuery, Server, ServerConfig, ServerKind},
@@ -11,22 +12,52 @@ use async_trait::async_trait;
 use derive_more::with_trait::Debug;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use dioxus_logger::tracing::*;
+use crate::sdks::core::endpoint::Endpoint;
 
 #[derive(Debug, Clone)]
 pub struct Addon {
     // pub name: String,
-    pub enabled: bool,
+   // pub enabled: bool,
     pub url: String,
 
     #[debug(skip)]
     pub client: RestClient,
+    pub manifest: sdks::stremio::Manifest,
+}
+
+impl Addon {
+  
+    pub async fn new(url: String) -> Result<Self> {
+        let client = RestClient::new("https://v3-cinemeta.strem.io").unwrap(); 
+        let endpoint = crate::sdks::stremio::ManifestEndpoint{};
+        let manifest = endpoint.query(&client).await?;
+        //debug!(?manifest, "manifest");
+        Ok(Self {
+            url,
+            client,
+            manifest  
+        })
+    }
+  
+  
+    fn get_catalogs(&self) -> Result<Vec<Media>> {
+        Ok(self.manifest.catalogs.clone().into_iter().map(|x| media::Media {
+        id: format!("{}.{}", self.manifest.id, x.id),
+        title: x.name,
+        ..Default::default()
+      }).collect())
+    }
+    
+    
 }
 
 #[derive(Clone, Debug)]
 pub struct StremioServer {
     pub host: String,
     pub status: ConnectionStatus,
-    pub addons: Vec<Addon>,
+    
+    pub addons: Option<Vec<Addon>>,
 }
 
 impl StremioServer {
@@ -34,11 +65,8 @@ impl StremioServer {
         Self {
             status: ConnectionStatus::Success,
             host: host,
-            addons: vec![Addon {
-                client: RestClient::new("https://v3-cinemeta.strem.io").unwrap(),
-                enabled: true,
-                url: "https://v3-cinemeta.strem.io".to_string(),
-            }],
+            addons: None
+            //..Default::default()
         }
     }
 
@@ -72,15 +100,13 @@ impl Server for StremioServer {
     }
 
     fn image_url(&self, media_item: &Media, image_type: media::ImageType) -> Option<String> {
-        match image_type {
-            media::ImageType::Poster => media_item.poster.clone(),
-            media::ImageType::Backdrop => media_item.backdrop.clone(),
-            media::ImageType::Logo => media_item.logo.clone(),
-            media::ImageType::Thumb => media_item.thumb.clone(),
-        }
+      None
     }
 
     async fn connect(&mut self) -> Result<()> {
+        self.addons = Some(vec![Addon::new (
+                "https://v3-cinemeta.strem.io".to_string(),
+            ).await?]);
         self.status = ConnectionStatus::Success;
         Ok(())
     }
@@ -108,17 +134,11 @@ impl Server for StremioServer {
     }
 
     async fn get_catalogs(&self) -> Result<Vec<Media>> {
-        // let endpoint = crate::sdks::stremio::ManifestEndpoint;
-        // let manifest = self.client.query(&endpoint).await?;
-        // let catalogs = manifest.catalogs.into_iter().map(|c| {
-        //     media::Media::builder()
-        //         .id(c.id.clone())
-        //         .title(c.name)
-        //         .media_type(c.kind.parse().unwrap_or(media::MediaType::Movie))
-        //         .build()
-        // }).collect::<Result<Vec<_>, _>>()?;
-        // Ok(catalogs)
-        Ok(vec![])
+        let mut catalogs = vec![];
+        for addon in self.addons.clone().unwrap_or_default() {
+          catalogs.extend(addon.get_catalogs()?);
+        };
+        Ok(catalogs)
     }
 
     async fn get_genres(&self) -> Result<Vec<media::Genre>> {
@@ -173,3 +193,6 @@ impl Server for StremioServer {
         Ok(None)
     }
 }
+
+
+

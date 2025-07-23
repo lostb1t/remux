@@ -138,22 +138,13 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    pub fn into_serverr(self) -> ServerInstance {
+    pub fn into_server(self) -> ServerInstance {
     match self.kind {
         ServerKind::Jellyfin => ServerInstance::Jellyfin(super::JellyfinServer::from_config(self)),
         ServerKind::Stremio => ServerInstance::Stremio(super::StremioServer::from_config(self)),
     }
 }
-    pub fn into_server(self) -> Box<dyn Server> {
-        match self.kind {
-            ServerKind::Jellyfin => {
-                Box::new(super::JellyfinServer::from_config(self)) as Box<dyn Server>
-            },
-            ServerKind::Stremio => {
-                Box::new(super::StremioServer::from_config(self)) as Box<dyn Server>
-            }
-        }
-    }
+
 }
 
 #[async_trait(?Send)]
