@@ -124,7 +124,7 @@ pub struct MediaDetailSeasonProps {
 
 #[component]
 pub fn MediaDetailSeason(props: MediaDetailSeasonProps) -> Element {
-    let server = hooks::consume_server().unwrap();
+    let server = hooks::use_server()().unwrap();
     let item = props.item.clone();
 
     let seasons = {

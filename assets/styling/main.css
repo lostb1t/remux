@@ -19,12 +19,19 @@ html, body {
   display: none;
 } */
 
-::-webkit-scrollbar {
+/* ::-webkit-scrollbar {
   display: none;
-}
+} */
 
 .img-gray {
   
   /* or to blue */
   filter: invert(1) sepia(1) saturate(0) hue-rotate(0deg);
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
 }

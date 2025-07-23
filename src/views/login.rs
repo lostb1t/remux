@@ -1,7 +1,7 @@
 use crate::Route;
 use crate::{
     components, hooks,
-    server::{JellyfinServer, Server},
+    server::{JellyfinServer, Server, ServerConfig, ServerInstance, ServerKind, StremioServer},
 };
 use dioxus::prelude::*;
 use dioxus::signals::*;
@@ -35,13 +35,22 @@ pub fn LoginView() -> Element {
         error.set(None);
 
         spawn(async move {
-            let mut jf =
-                JellyfinServer::new(host.trim_end_matches('/').to_string(), username, password);
-            match jf.connect().await {
+            let config = ServerConfig {
+                kind: if host.contains("stremio") {
+                    ServerKind::Stremio
+                } else {
+                    ServerKind::Jellyfin
+                },
+                host: host.trim_end_matches('/').to_string(),
+                username,
+                password,
+            };
+            let mut server_instance = ServerInstance::from_config(config);
+
+            match server_instance.connect().await {
                 Ok(()) => {
-                    // todo. Tjis aint working. PRobaply because we use spawn
-                    server_config.set(Some(jf.into_config()));
-                    server.set(Some(Arc::new(jf)));
+                    server_config.set(Some(server_instance.into_config()));
+                    server.set(Some(Arc::new(server_instance)));
                     let _ = nav.push(Route::Home {});
                 }
                 Err(e) => {

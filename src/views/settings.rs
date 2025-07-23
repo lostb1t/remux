@@ -161,7 +161,7 @@ pub fn SettingsSection(props: SettingsSectionProps) -> Element {
 #[component]
 pub fn SettingsCatalogView() -> Element {
     let mut settings = use_settings();
-    let server = hooks::consume_server().expect("missing server");
+    let server = hooks::use_server()().unwrap();
     let mut new_catalog = use_signal(|| String::new());
 
     let server_catalogs = use_resource(move || {

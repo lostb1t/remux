@@ -118,13 +118,14 @@ fn ServerProvider(children: Element) -> Element {
 
             if reconnect_needed {
                 if let Some(cfg) = config_signal() {
-                    let mut instance = cfg.into_server(); // returns Box<dyn Server>
+                    // let mut instance = cfg.into_server(); // returns Box<dyn Server>
+                    let mut instance = server::ServerInstance::from_config(cfg);
 
                     match instance.connect().await {
                         Ok(()) => {
                             debug!("Connected to server: {}", instance.host());
-                            let arc_server: Arc<dyn Server> = instance.into(); // avoid double Arc
-                            server_signal.set(Some(arc_server));
+                            // let arc_server: Arc<dyn Server> = instance.into(); // avoid double Arc
+                            server_signal.set(Some(Arc::new(instance))); 
                             let _ = nav.push(Route::Home {});
                         }
                         Err(e) => {
@@ -170,7 +171,7 @@ fn App() -> Element {
 
     use_context_provider(|| views::home::HomeFilter::default());
     use_context_provider(|| VideoPlayerState::default());
-    use_context_provider(|| Signal::new(None::<Arc<dyn server::Server>>));
+    use_context_provider(|| Signal::new(None::<Arc<server::ServerInstance>>));
     // use_context_provider(|| {
     //     Signal::new(hooks::AppHost::default())
     // });

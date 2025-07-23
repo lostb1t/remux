@@ -143,7 +143,7 @@ pub struct GenreListProps {
 #[component]
 pub fn GenreList(props: GenreListProps) -> Element {
     let mut open = props.open;
-    let server = hooks::consume_server().unwrap();
+    let server = hooks::use_server()().unwrap();
     //let mut genres = hooks::use_genres(server);
     let mut home_filter = hooks::use_home_filter();
     //let mut genres_open = use_signal(|| false);

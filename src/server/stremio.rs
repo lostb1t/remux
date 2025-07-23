@@ -30,7 +30,7 @@ pub struct StremioServer {
 }
 
 impl StremioServer {
-    pub fn new(host: String) -> Self {
+    pub fn new(host: String, username: String, password: String) -> Self {
         Self {
             status: ConnectionStatus::Success,
             host: host,
@@ -43,7 +43,7 @@ impl StremioServer {
     }
 
     pub fn from_config(config: ServerConfig) -> Self {
-        Self::new(config.host)
+        Self::new(config.host, config.username, config.password)
     }
 }
 

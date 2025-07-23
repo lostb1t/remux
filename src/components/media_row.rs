@@ -100,7 +100,7 @@ pub struct MediaCardProps {
 }
 
 pub fn MediaCard(props: MediaCardProps) -> Element {
-    let server = crate::hooks::consume_server().expect("missing server");
+    let server = hooks::use_server()().unwrap();
     let image_type = match &props.card_variant {
         components::CardVariant::Landscape => media::ImageType::Thumb,
         components::CardVariant::Square => media::ImageType::Poster,
@@ -173,7 +173,7 @@ pub struct GenericMediaListProps {
 
 #[component]
 pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
-    let server = crate::hooks::consume_server().expect("missing server");
+    let server = hooks::use_server()().unwrap();
     let scroll_size: usize = 5;
     let title = props.title.clone().unwrap_or_else(|| "Unknown".to_string());
     // let mut scroll_to = use_signal(|| scroll_size);
@@ -255,7 +255,7 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                     super::PaginatedList {
                         items: items.clone(),
                         index: scroll_to,
-                        class: "overflow-y-hidden overflow-x-visible pl-6 gap-x-2",
+                        class: "overflow-y-hidden overflow-x-auto no-scrollbar pl-6 gap-x-2",
                         on_load_more: Some(
                             EventHandler::new(move |_| {
                                 if !*media_items().is_loading.read() {

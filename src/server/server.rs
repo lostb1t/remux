@@ -23,23 +23,6 @@ use crate::sdks::jellyfin::{self, AuthenticationResult};
 use crate::utils::TryIntoVec;
 use derive_more::with_trait::Debug;
 
-#[derive(Builder, Serialize, Deserialize, Debug, Clone)]
-pub struct Catalog {
-    pub id: String,
-    pub title: String,
-}
-
-impl TryFrom<sdks::jellyfin::BaseItemDto> for Catalog {
-    type Error = anyhow::Error;
-
-    fn try_from(item: sdks::jellyfin::BaseItemDto) -> anyhow::Result<Self, Self::Error> {
-        Ok(Catalog::builder()
-            .id(item.id.unwrap().to_string())
-            .title(item.name.unwrap())
-            .build())
-    }
-}
-
 #[derive(Builder, Debug, Hash, Clone, PartialEq)]
 #[builder(derive(Clone))]
 pub struct MediaQuery {
@@ -86,6 +69,64 @@ impl Default for ConnectionStatus {
 #[serde(tag = "type")]
 pub enum ServerKind {
     Jellyfin,
+    Stremio
+}
+
+use delegate::delegate;
+
+#[derive(Debug, Clone)]
+pub enum ServerInstance {
+    Jellyfin(super::JellyfinServer),
+    Stremio(super::StremioServer),
+}
+
+impl ServerInstance {
+    pub fn from_config(config: ServerConfig) -> Self {
+        let host = config.host.trim_end_matches('/').to_string();
+        match config.kind {
+            ServerKind::Stremio => {
+                ServerInstance::Stremio(super::StremioServer::new(
+                    host,
+                    config.username,
+                    config.password,
+                ))
+            }
+            ServerKind::Jellyfin => {
+                ServerInstance::Jellyfin(super::JellyfinServer::new(
+                    host,
+                    config.username,
+                    config.password,
+                ))
+            }
+        }
+    }
+}
+
+impl ServerInstance {
+    delegate! {
+        to match self {
+            ServerInstance::Jellyfin(inner) => inner,
+            ServerInstance::Stremio(inner) => inner,
+        } {
+
+        pub fn host(&self) -> String;
+        pub fn status(&self) -> ConnectionStatus;
+        pub fn user_id(&self) -> Option<String>;
+        pub fn into_config(&self) -> ServerConfig;
+        pub fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> Option<String>;
+
+        pub async fn connect(&mut self) -> Result<()>;
+        pub async fn is_watched(&self, val: bool, media_item: &media::Media) -> Result<()>;
+        pub async fn is_favorite(&self, val: bool, media_item: &media::Media) -> Result<()>;
+        pub async fn get_stream_url(&self, item: media::Media, source: Option<media::MediaSource>, cap: capabilities::Capabilities) -> Result<String>;
+        pub async fn get_media_sources(&self, item: media::Media) -> Result<Vec<media::MediaSource>>;
+        pub async fn get_catalogs(&self) -> Result<Vec<media::Media>>;
+        pub async fn get_genres(&self) -> Result<Vec<media::Genre>>;
+        pub async fn get_media(&self, q: &MediaQuery) -> Result<Vec<media::Media>>;
+        pub async fn nextup(&self, item: &media::Media) -> Result<Vec<media::Media>>;
+        pub async fn get_media_details(&self, id: String) -> Result<Option<media::Media>>;
+        }
+    }
 }
 
 #[derive(Serialize, PartialEq, Deserialize, Clone, Debug)]
@@ -97,15 +138,19 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    // pub fn into_server(self) -> Arc<dyn Server> {
-    //     match self.kind {
-    //         ServerKind::Jellyfin => Arc::new(JellyfinServer::from_config(self)) as Arc<dyn Server>,
-    //     }
-    // }
+    pub fn into_serverr(self) -> ServerInstance {
+    match self.kind {
+        ServerKind::Jellyfin => ServerInstance::Jellyfin(super::JellyfinServer::from_config(self)),
+        ServerKind::Stremio => ServerInstance::Stremio(super::StremioServer::from_config(self)),
+    }
+}
     pub fn into_server(self) -> Box<dyn Server> {
         match self.kind {
             ServerKind::Jellyfin => {
                 Box::new(super::JellyfinServer::from_config(self)) as Box<dyn Server>
+            },
+            ServerKind::Stremio => {
+                Box::new(super::StremioServer::from_config(self)) as Box<dyn Server>
             }
         }
     }
@@ -114,15 +159,14 @@ impl ServerConfig {
 #[async_trait(?Send)]
 pub trait Server: Debug {
     fn host(&self) -> String;
-    //  fn id(&self) -> String;
     fn status(&self) -> ConnectionStatus;
-    async fn is_watched(&self, val: bool, media_item: &media::Media) -> Result<()>;
-    async fn is_favorite(&self, val: bool, media_item: &media::Media) -> Result<()>;
     fn user_id(&self) -> Option<String>;
     fn into_config(&self) -> ServerConfig;
-    // fn name(&self) -> String;
     fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> Option<String>;
+
     async fn connect(&mut self) -> Result<()>;
+    async fn is_watched(&self, val: bool, media_item: &media::Media) -> Result<()>;
+    async fn is_favorite(&self, val: bool, media_item: &media::Media) -> Result<()>;
     async fn get_stream_url(
         &self,
         item: media::Media,
@@ -133,7 +177,6 @@ pub trait Server: Debug {
     async fn get_catalogs(&self) -> Result<Vec<media::Media>>;
     async fn get_genres(&self) -> Result<Vec<media::Genre>>;
     async fn get_media(&self, q: &MediaQuery) -> Result<Vec<media::Media>>;
-    // series only
     async fn nextup(&self, item: &media::Media) -> Result<Vec<media::Media>>;
     async fn get_media_details(&self, id: String) -> Result<Option<media::Media>>;
 }
@@ -171,10 +214,9 @@ use cached::*;
     create = "{ TimedCache::with_lifespan(360) }",
     convert = r#"{ format!("collections-{:?}", server.user_id()) }"#,
     result = true
-    // map_error = r#"|e| e.to_string()"#
 )]
 pub async fn get_catalogs_cached(
-    server: Arc<dyn crate::server::Server>,
+    server: Arc<ServerInstance>,
 ) -> Result<Vec<media::Media>, ApiError> {
     Ok(server.get_catalogs().await?)
 }
@@ -184,10 +226,9 @@ pub async fn get_catalogs_cached(
     create = "{ TimedCache::with_lifespan(360) }",
     convert = r#"{ format!("media-{:?}-{:?}", server.user_id(), query.clone()) }"#,
     result = true
-    // map_error = r#"|e| e.to_string()"#
 )]
 pub async fn get_media_cached(
-    server: Arc<dyn crate::server::Server>,
+    server: Arc<ServerInstance>,
     query: &MediaQuery,
 ) -> Result<Vec<media::Media>, ApiError> {
     //debug!("Fetching  for user: {:?}", server.user_id());

@@ -28,7 +28,7 @@ pub fn play_shaka(id: &str, url: &str) {
 #[component]
 pub fn VideoPlayer() -> Element {
     let mut player = use_video_player();
-    let server = hooks::consume_server().expect("uhu");
+    let server = hooks::use_server()().unwrap();
     let caps = hooks::use_caps();
     let mut is_loading = use_signal(|| true);
     let visible = *player.visible.read();

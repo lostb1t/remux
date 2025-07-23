@@ -29,7 +29,7 @@ pub struct HeroListProps {
 
 #[component]
 pub fn HeroList(props: HeroListProps) -> Element {
-    let server = hooks::consume_server().expect("missing server");
+    let server = hooks::use_server()().unwrap();
     let query = props.query.clone();
     let mut index = use_signal(|| 0_usize);
 
@@ -112,7 +112,7 @@ use super::FadeInImage;
 pub fn HeroItem(props: HeroItemProps) -> Element {
     // info!("HeroItem: {:?}", &item);
     let mut player = components::video::use_video_player();
-    let server = hooks::consume_server().unwrap();
+    let server = hooks::use_server()().unwrap();
     let item = props.item.clone();
     let mut is_favorite = use_signal(|| {
         item.user_data

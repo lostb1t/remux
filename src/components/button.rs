@@ -97,7 +97,7 @@ pub struct PlayButtonProps {
 
 #[component]
 pub fn PlayButton(props: PlayButtonProps) -> Element {
-    let server = hooks::consume_server().expect("uhu");
+    let server = hooks::use_server()().unwrap();
     let mut sheet_open = use_signal(|| false);
     let mut media_item = props.media_item.clone();
     let mut player = super::use_video_player();
@@ -107,7 +107,6 @@ pub fn PlayButton(props: PlayButtonProps) -> Element {
     );
     let has_multiple_sources = media_item.media_sources.len() > 1;
     let should_show_sheet = is_movie_or_episode && has_multiple_sources;
-    //let should_show_sheet = is_movie_or_episode && has_multiple_sources;
 
     let nextup_items = {
         to_owned![server, media_item];

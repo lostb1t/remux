@@ -67,22 +67,20 @@ pub fn use_server_old() -> (
     (server, set_server)
 }
 
-pub fn use_server() -> Signal<Option<Arc<dyn Server>>> {
+pub fn use_server() -> Signal<Option<Arc<server::ServerInstance>>> {
     consume_context()
 }
+
+//pub fn consume_server() -> anyhow::Result<Arc<server::ServerInstance>> {
+//    let signal = consume_context::<Signal<Option<Arc<server::ServerInstance>>>>();
+//    signal
+//        .peek()
+//        .clone()
+//        .ok_or_else(|| anyhow!("No server set"))
+//}
 
 pub fn use_caps() -> capabilities::Capabilities {
     consume_context()
-}
-
-pub fn consume_server() -> anyhow::Result<Arc<dyn Server>> {
-    let signal = consume_context::<Signal<Option<Arc<dyn Server>>>>();
-    let x = signal
-        .peek()
-        .clone()
-        .ok_or_else(|| anyhow!("No server set"));
-    x
-    //Ok(server)
 }
 
 pub fn use_home_filter() -> views::home::HomeFilter {

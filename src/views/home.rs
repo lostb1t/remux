@@ -33,7 +33,7 @@ pub fn HomeTransitionView() -> Element {
 
 #[component]
 pub fn Home() -> Element {
-    let server = hooks::consume_server().expect("missing server");
+    let server = hooks::use_server()().unwrap();
     let mut home_filter = hooks::use_home_filter();
     let mut settings = crate::settings::use_settings();
 
