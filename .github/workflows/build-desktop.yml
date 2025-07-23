@@ -83,17 +83,23 @@ jobs:
 
       - name: Copy built package to dist/
         run: |
-          mkdir -p dist
+          mkdir -p artifacts
       
           if [[ "${{ matrix.os }}" == "windows" ]]; then
-            cp dist/nsis/Remux_0.0.0_x64-setup.exe dist/remux_0.0.0_x64-setup.exe
+            cp dist/nsis/Remux_0.0.0_x64-setup.exe artifacts/remux_0.0.0_x64-setup.exe
       
           elif [[ "${{ matrix.os }}" == "linux" ]]; then
-            cp dist/Remux.AppImage dist/remux-linux.AppImage
+            cp dist/Remux.AppImage artifacts/remux-linux.AppImage
       
           elif [[ "${{ matrix.os }}" == "macos" ]]; then
-            cp dist/dmg/Remux_0.0.0_aarch64.dmg dist/remux_0.0.0_aarch64.dmg
+            cp dist/dmg/Remux_0.0.0_aarch64.dmg artifacts/remux_0.0.0_aarch64.dmg
           fi
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-package
+          path: artifacts/*
 
   release:
     name: Upload to GitHub Release
@@ -106,30 +112,16 @@ jobs:
         with:
           path: ./artifacts
 
-      - name: Flatten artifact structure
+      - name: Flatten all artifacts into single dist/
         run: |
           mkdir dist
-          find ./artifacts -name "*.zip" -exec cp {} dist/ \;
-
-      - name: Delete old nightly release assets
-        uses: dev-drprasad/delete-release-assets@v1.0
-        with:
-          tag: nightly
-          assets: "remux-macos.zip,remux-linux.zip,remux-windows.zip"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
-
+          find ./artifacts -type f -exec cp {} dist/ \;
+  
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: nightly
           name: Nightly Build
-          body: |
-            Latest nightly build of Remux.
-
-            Built automatically via GitHub Actions.
-          draft: false
           prerelease: true
           files: dist/*
         env:
