@@ -5,7 +5,7 @@
    
 <div align="center">
   <h1><b>Remux</b></h1>
-  <p><i>A *VERY experimental* web client for Jellyfin written in Rust </i></p>
+  <p><i>A *VERY experimental* web/desktop client for Jellyfin written in Rust </i></p>
 </div>
 
 <details>
@@ -41,6 +41,8 @@ What makes this different.
 
 - A more family orientated client. Most users just want that netflix experience.
 - Multiple providers support. It has a pluggable source system. So while only jellyfin is currently supported im also planning support for stremio
+- central management of settings for all users
+- tons of options to customize the home screen
 
 ### Selfhosting
  
