@@ -1,3 +1,4 @@
+#![cfg_attr(feature = "bundle", windows_subsystem = "windows")]
 #![allow(warnings)]
 use crate::server::{ConnectionStatus, Server};
 use components::video::VideoPlayerState;
