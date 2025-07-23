@@ -51,7 +51,7 @@ pub fn Home() -> Element {
 
     match &*catalogs {
         Ok(data) => {
-            let merged = settings().add_catalogs(data.clone()).catalogs;
+            let merged = settings().add_catalogs(data.clone()).catalogs();
             //debug!(?merged, "yo");
             let media_results = use_resource(use_reactive!(|home_filter| {
                 let server = server.clone();
@@ -67,7 +67,7 @@ pub fn Home() -> Element {
                         .unwrap_or(vec![media::MediaType::Movie, media::MediaType::Series]);
                     let genres = home_filter.genre.read().as_ref().map(|g| vec![g.clone()]);
 
-                    let futures = merged.iter().filter(|x| x.enabled).map(|col| {
+                    let futures = merged.iter().filter(|x| x.enabled.effective()).map(|col| {
                         let query = MediaQuery::builder()
                             .limit(15)
                             .maybe_genres(genres.clone())
@@ -120,7 +120,7 @@ pub fn Home() -> Element {
                                 key: "{query.key()}",
                                 title: Some(col.title.clone()),
                                 query: query.clone(),
-                                card_variant: col.card_variant.clone(),
+                                card_variant: col.card_variant.effective(),
                             }
                         }
                     }

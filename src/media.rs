@@ -3,7 +3,7 @@ use chrono::Utc;
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
-
+use crate::settings;
 // use crate::plex::{self, *};
 // use crate::clients::core::query::Query;
 
@@ -407,7 +407,7 @@ pub struct Media {
     pub user_data: Option<UserData>,
     pub official_rating: Option<String>,
     #[builder(default)]
-    pub card_variant: components::CardVariant,
+    pub card_variant: settings::SettingField<components::CardVariant>,
     #[builder(default)]
     pub ratings: Vec<Rating>,
     #[builder(default)]
@@ -417,8 +417,8 @@ pub struct Media {
     //pub images: Images;
 
     // for catalogs/collections
-    #[builder(default = true)]
-    pub enabled: bool,
+    #[builder(default = settings::SettingField {value: Some(true), ..Default::default()})]
+    pub enabled: settings::SettingField<bool>,
 }
 
 use chrono::Duration;

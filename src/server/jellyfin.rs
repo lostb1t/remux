@@ -18,6 +18,7 @@ use crate::capabilities;
 use crate::components;
 use crate::media;
 use crate::sdks;
+use crate::settings;
 use crate::sdks::core::ApiError;
 use crate::sdks::core::RestClient;
 use crate::sdks::jellyfin::{self, AuthenticationResult};
@@ -324,7 +325,11 @@ impl Server for JellyfinServer {
                 .id("continue_watching".to_string())
                 .title("Continue Watching".to_string())
                 .media_type(media::MediaType::Catalog)
-                .card_variant(components::CardVariant::Landscape)
+                .card_variant(settings::SettingField {
+                default: components::CardVariant::Landscape,
+                value: None,
+                locked: false,
+            })
                 .build(),
         );
         Ok(catalogs)

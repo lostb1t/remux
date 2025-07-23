@@ -9,7 +9,7 @@ use std::cell::OnceCell;
 use std::sync::Arc;
 use views::{
     media::MediaDetailViewTransition as MediaDetailView, settings::Settings,
-    settings::SettingsAddonsView, settings::SettingsCatalogView, AuthenticatedLayout,
+    settings::SettingsCatalogView, AuthenticatedLayout,
     HomeTransitionView as Home, LoginView, MainLayout, SafeSpaceLayout, SearchView,
     UnauthenticatedLayout,
 };

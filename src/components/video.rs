@@ -72,7 +72,6 @@ pub fn VideoPlayer() -> Element {
                         },
 
                         "Cancel"
-                    
                     }
                 }
             }
@@ -140,8 +139,7 @@ pub fn VideoPlayer() -> Element {
                         player.stop();
                     }
                 },
-            
-            // Spinner
+                        // Spinner
             }
             if is_loading() {
                 crate::Loading {
@@ -154,7 +152,6 @@ pub fn VideoPlayer() -> Element {
                         },
 
                         "Cancel"
-                    
                     }
                 }
             }

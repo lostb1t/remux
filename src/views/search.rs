@@ -28,7 +28,6 @@ pub fn SearchView(props: SearchViewProps) -> Element {
                     scroll_direction: components::ScrollDirection::Vertical,
                     query: MediaQuery::builder().search_query(query.clone()).build(),
                 }
-            
             }
         }
     }

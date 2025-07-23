@@ -298,7 +298,6 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
         
 
 
-
         }
 
 
@@ -423,7 +422,6 @@ pub fn TagsDisplay(props: TagsDisplayProps) -> Element {
                         }
                     }
 
-    
                 }
             }) })}
         }
