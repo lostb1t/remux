@@ -81,35 +81,19 @@ jobs:
         run: |
           dx bundle --release --platform desktop --trace
 
-- name: Copy built package to dist/
-  run: |
-    mkdir -p dist
-
-    if [[ "${{ matrix.os }}" == "windows" ]]; then
-      cp target/dx/remux/bundle/windows/bundle/nsis/remux_installer.exe dist/remux-windows.exe
-
-    elif [[ "${{ matrix.os }}" == "linux" ]]; then
-      cp target/dx/remux/bundle/Remux.AppImage dist/remux-linux.AppImage
-
-    elif [[ "${{ matrix.os }}" == "macos" ]]; then
-      # Prefer DMG if available
-      if [ -f target/dx/remux/bundle/Remux.dmg ]; then
-        cp target/dx/remux/bundle/Remux.dmg dist/remux-macos.dmg
-      else
-        cp -R target/dx/remux/bundle/Remux.app dist/remux-macos.app
-      fi
-    fi
-
-- name: Copy built package to dist folder
-  run: |
-    mkdir -p dist
-    cp -r target/dx/remux/bundle/* dist/
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: remux-${{ matrix.target }}
-          path: target/dx/remux/bundle/**/*
+      - name: Copy built package to dist/
+        run: |
+          mkdir -p dist
+      
+          if [[ "${{ matrix.os }}" == "windows" ]]; then
+            cp dist/nsis/Remux_0.0.0_x64-setup.exe dist/remux_0.0.0_x64-setup.exe
+      
+          elif [[ "${{ matrix.os }}" == "linux" ]]; then
+            cp dist/Remux.AppImage dist/remux-linux.AppImage
+      
+          elif [[ "${{ matrix.os }}" == "macos" ]]; then
+            cp dist/dmg/Remux_0.0.0_aarch64.dmg dist/remux_0.0.0_aarch64.dmg
+          fi
 
   release:
     name: Upload to GitHub Release
