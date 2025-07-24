@@ -32,6 +32,9 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+
+      - name: Checkout repo
+        uses: actions/checkout@v
       
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
