@@ -41,7 +41,7 @@ serde_with = { version = "3.13.0", features = ["macros"] }
 derive_more = { version = "2", features = ["debug"] }
 thiserror = "2.0.12"
 #dioxus-free-icons = { git = "https://github.com/lostb1t/dioxus-free-icons", features = ["hero-icons-solid", ionicons"]}
-dioxus-free-icons = { version = "0.9", features = ["hero-icons-solid", "ionicons"] }
+dioxus-free-icons = { version = "0.10.0-alpha.1", features = ["hero-icons-solid", "ionicons"] }
 #serde_urlencoded = "0.7.1"
 urlencoding = "2.1.3"
 #dioxus-sdk = "0.6.0"
@@ -96,7 +96,7 @@ inherits = "dev"
 inherits = "dev"
 
 [patch.crates-io]
-dioxus-free-icons = { git = "https://github.com/lostb1t/dioxus-free-icons", features = ["hero-icons-solid", "ionicons"]}
+#dioxus-free-icons = { git = "https://github.com/lostb1t/dioxus-free-icons", features = ["hero-icons-solid", "ionicons"]}
 dioxus-sdk = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
 dioxus_storage = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
 dioxus-time = { git = "https://github.com/ealmloff/dioxus-std", branch = "0.7" }
