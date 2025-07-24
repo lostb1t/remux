@@ -72,11 +72,6 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libxdo-dev
 
-      - name: Run cargo build manually
-        shell: pwsh
-        if: matrix.os == 'windows'
-        run: cargo build --release
-
       - name: Build Dioxus desktop app
         run: |
           dx bundle --release --platform desktop --trace
