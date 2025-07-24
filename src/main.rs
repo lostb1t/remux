@@ -1,4 +1,4 @@
-#![cfg_attr(windows_subsystem = "windows")]
+#![cfg_attr(feature = "bundle", windows_subsystem = "windows")]
 #![allow(warnings)]
 use crate::server::{ConnectionStatus, Server};
 use components::video::VideoPlayerState;
@@ -10,9 +10,8 @@ use std::cell::OnceCell;
 use std::sync::Arc;
 use views::{
     media::MediaDetailViewTransition as MediaDetailView, settings::Settings,
-    settings::SettingsCatalogView, AuthenticatedLayout,
-    HomeTransitionView as Home, LoginView, MainLayout, SafeSpaceLayout, SearchView,
-    UnauthenticatedLayout,
+    settings::SettingsCatalogView, AuthenticatedLayout, HomeTransitionView as Home, LoginView,
+    MainLayout, SafeSpaceLayout, SearchView, UnauthenticatedLayout,
 };
 
 mod addons;
@@ -104,49 +103,9 @@ fn ServerProvider(children: Element) -> Element {
         config.set(Some(server().unwrap().into_config()));
     };
 
-    use_future({
-        let mut server_signal = server.clone();
-        let mut config_signal = config.clone();
-        let nav = nav.clone();
-
-        move || async move {
-            let reconnect_needed = match server_signal() {
-                None => true,
-                Some(s) => matches!(s.status(), ConnectionStatus::Unknown),
-            };
-
-            debug!("Reconnect needed: {reconnect_needed}");
-
-            if reconnect_needed {
-                if let Some(cfg) = config_signal() {
-                    // let mut instance = cfg.into_server(); // returns Box<dyn Server>
-                    let mut instance = server::ServerInstance::from_config(cfg);
-
-                    match instance.connect().await {
-                        Ok(()) => {
-                            debug!("Connected to server: {}", instance.host());
-                            // let arc_server: Arc<dyn Server> = instance.into(); // avoid double Arc
-                            server_signal.set(Some(Arc::new(instance))); 
-                            let _ = nav.push(Route::Home {});
-                        }
-                        Err(e) => {
-                            config_signal.set(None);
-                            error!("Connection failed: {e}");
-                            nav.push(Route::LoginView {});
-                        }
-                    }
-                } else {
-                    nav.push(Route::LoginView {});
-                }
-            }
-
-            is_ready.set(true);
-        }
-    });
-
-    if !is_ready() {
-        return rsx! { Loading {} };
-    }
+    // if !is_ready() {
+    //     return rsx! { Loading {} };
+    // }
 
     rsx! {
         {children}
@@ -172,10 +131,15 @@ fn App() -> Element {
 
     use_context_provider(|| views::home::HomeFilter::default());
     use_context_provider(|| VideoPlayerState::default());
-    use_context_provider(|| Signal::new(None::<Arc<server::ServerInstance>>));
-    // use_context_provider(|| {
-    //     Signal::new(hooks::AppHost::default())
-    // });
+
+    // Server provider handles this. But for some reason isnt triggered
+    let cfg = hooks::use_server_config().peek().clone();
+    let server_signal = if let Some(cfg) = cfg {
+        Signal::new(server::ServerInstance::from_config(cfg).ok().map(Arc::new))
+    } else {
+        Signal::new(None::<Arc<server::ServerInstance>>)
+    };
+    use_context_provider(|| server_signal);
 
     rsx! {
             // document::Link { rel: "icon", href: FAVICON }

@@ -18,10 +18,10 @@ use crate::capabilities;
 use crate::components;
 use crate::media;
 use crate::sdks;
-use crate::settings;
 use crate::sdks::core::ApiError;
 use crate::sdks::core::RestClient;
 use crate::sdks::jellyfin::{self, AuthenticationResult};
+use crate::settings;
 use crate::utils::TryIntoVec;
 use derive_more::with_trait::Debug;
 
@@ -29,18 +29,18 @@ use derive_more::with_trait::Debug;
 pub struct JellyfinServer {
     pub host: String,
     pub username: String,
-    #[debug(skip)]
-    pub password: String,
+    //  #[debug(skip)]
+    //  pub password: String,
     //  pub id: String,
     // pub name: String,
     #[debug(skip)]
-    pub access_token: Option<String>,
+    pub access_token: String,
 
     // #[serde(skip, default)]
     #[debug(skip)]
     pub client: RestClient,
     //#[serde(skip, default)]
-    pub status: ConnectionStatus,
+    // pub status: ConnectionStatus,
     pub user_id: Option<String>,
 }
 
@@ -62,8 +62,8 @@ impl Server for JellyfinServer {
     //     self.id.clone()
     //}
 
-    fn status(&self) -> ConnectionStatus {
-        self.status
+    async fn check_status(&self) -> Result<ConnectionStatus> {
+        todo!("implement")
     }
 
     fn user_id(&self) -> Option<String> {
@@ -75,7 +75,8 @@ impl Server for JellyfinServer {
             kind: ServerKind::Jellyfin,
             host: self.host.clone(),
             username: self.username.clone(),
-            password: self.password.clone(),
+            token: Some(self.access_token.clone()),
+            user_id: self.user_id.clone(),
             //status: ConnectionStatus::Unknown,
         }
     }
@@ -115,22 +116,22 @@ impl Server for JellyfinServer {
     // fn poster_url(&self, media: &Media) -> String {
     //     format!("{}{}", self.host, media.poster_path)
     // }
+    //    async fn authenticate(
+    //         host: String,
+    //         username: String,
+    //         password: String,
+    //     ) -> Result<super::AuthenticateResult> {
+    //         let client = RestClient::new(host)?.header("Authorization", &Self::anon_auth_header());
 
-    async fn connect(&mut self) -> Result<()> {
-        debug!("connecting to jellyfin");
-        let res = Self::authenticate(&self.host, &self.username, &self.password).await?;
-        let access_token = res.access_token.ok_or_else(|| anyhow!("Missing token"))?;
-        let user_id = res
-            .user
-            .ok_or_else(|| anyhow!("Missing user"))?
-            .id
-            .ok_or_else(|| anyhow!("Missing user ID"))?;
-        self.client = Self::create_client(&self.host, &access_token, &user_id)?;
-        self.access_token = Some(access_token);
-        self.user_id = Some(user_id);
-        self.status = ConnectionStatus::Success;
-        Ok(())
-    }
+    //         let endpoint = jellyfin::AuthenticateUserByName::builder()
+    //             .username(username.to_string())
+    //             .password(password.to_string())
+    //             .build();
+
+    //         Ok(endpoint.query(&client).await?)
+    //     }
+
+    //
 
     async fn is_watched(&self, val: bool, media_item: &media::Media) -> Result<()> {
         let endpoint = sdks::jellyfin::TogglePlayedEndpoint::builder()
@@ -178,7 +179,7 @@ impl Server for JellyfinServer {
         } else {
             let e = sdks::jellyfin::VideoStreamRequest::builder()
                 .item_id(item.id.clone())
-                .api_key(self.access_token.clone().expect("missing api key"))
+                .api_key(self.access_token.clone())
                 //.media_source_id(item.id)
                 //.transcoding_protocol("hls".to_string())
                 //.transcoding_container("ts".to_string())
@@ -326,10 +327,10 @@ impl Server for JellyfinServer {
                 .title("Continue Watching".to_string())
                 .media_type(media::MediaType::Catalog)
                 .card_variant(settings::SettingField {
-                default: components::CardVariant::Landscape,
-                value: None,
-                locked: false,
-            })
+                    default: components::CardVariant::Landscape,
+                    value: None,
+                    locked: false,
+                })
                 .build(),
         );
         Ok(catalogs)
@@ -339,37 +340,35 @@ impl Server for JellyfinServer {
 //#[bon]
 impl JellyfinServer {
     // #[builder]
-    pub fn new(host: String, username: String, password: String) -> JellyfinServer {
-        // let name = self.name().ok_or_else(|| eyre!("missing name"))?;
-        //let res = JellyfinServer::authenticate(&host, &username, &password).await?;
-        //let access_token = res.access_token.expect("Expect access token");
-        //let id = res.server_id.expect("Expect access token");
-        let client = JellyfinServer::create_client(&host, "", "").unwrap();
 
-        JellyfinServer {
+    pub async fn from_credentials(
+        host: String,
+        username: String,
+        password: String,
+    ) -> Result<Self> {
+        debug!("Connecting to jellyfin");
+        let res = Self::authenticate(&host, &username, &password).await?;
+        let access_token = res
+            .access_token
+            .ok_or_else(|| anyhow!("Missing access token"))?;
+        let user_id = res
+            .user
+            .ok_or_else(|| anyhow!("Missing user"))?
+            .id
+            .ok_or_else(|| anyhow!("Missing user ID"))?;
+        let client = Self::create_client(&host, &access_token, &user_id)?;
+
+        Ok(Self {
             host,
             username,
-            password,
             //  id,
             client,
             //  name: res.name,
-            access_token: None,
+            access_token: access_token,
             //     client,
-            status: ConnectionStatus::default(),
-            user_id: None,
-        }
-    }
-
-    pub fn from_config(config: ServerConfig) -> Self {
-        Self::new(config.host, config.username, config.password)
-    }
-
-    fn anon_auth_header() -> String {
-        let app = crate::APP_HOST.peek();
-        format!(
-            "Emby Client=\"Remux\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
-            app.device_name, app.device_id, app.remux_version
-        )
+            // status: ConnectionStatus::Success,
+            user_id: Some(user_id),
+        })
     }
 
     async fn authenticate(
@@ -387,6 +386,30 @@ impl JellyfinServer {
         Ok(endpoint.query(&client).await?)
     }
 
+    pub fn from_config(config: ServerConfig) -> Result<Self> {
+        let client = Self::create_client(
+            &config.host,
+            &config.token.clone().unwrap(),
+            &config.user_id.clone().unwrap(),
+        )?;
+        Ok(Self {
+            host: config.host,
+            username: config.username,
+            access_token: config.token.unwrap(),
+            client,
+            user_id: config.user_id,
+            // status: ConnectionStatus::Success,
+        })
+    }
+
+    fn anon_auth_header() -> String {
+        let app = crate::APP_HOST.peek();
+        format!(
+            "Emby Client=\"Remux\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
+            app.device_name, app.device_id, app.remux_version
+        )
+    }
+
     fn create_client(host: &str, token: &str, user_id: &str) -> Result<RestClient> {
         let app = crate::APP_HOST.peek();
         let auth_header = format!(
@@ -400,7 +423,7 @@ impl JellyfinServer {
         Ok(RestClient::new(host)?.header("Authorization", &auth_header))
     }
 
-    pub async fn reconnect(&mut self) -> Result<()> {
-        self.connect().await
-    }
+    //pub async fn reconnect(&mut self) -> Result<()> {
+    //    self.connect().await
+    //}
 }

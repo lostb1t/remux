@@ -55,23 +55,27 @@ impl Addon {
 #[derive(Clone, Debug)]
 pub struct StremioServer {
     pub host: String,
-    pub status: ConnectionStatus,
+    // pub status: ConnectionStatus,
     
     pub addons: Option<Vec<Addon>>,
 }
 
 impl StremioServer {
-    pub fn new(host: String, username: String, password: String) -> Self {
-        Self {
-            status: ConnectionStatus::Success,
+    pub async fn from_credentials(host: String, username: String, password: String) -> Result<Self> {
+        Ok(Self {
+            // status: ConnectionStatus::Success,
             host: host,
             addons: None
             //..Default::default()
-        }
+        })
     }
 
-    pub fn from_config(config: ServerConfig) -> Self {
-        Self::new(config.host, config.username, config.password)
+    pub fn from_config(config: ServerConfig) -> Result<Self> {
+        Ok(Self { 
+            host: config.host,
+            // status: ConnectionStatus::Success,
+            addons: None,
+        })
     }
 }
 
@@ -81,8 +85,8 @@ impl Server for StremioServer {
         self.host.clone()
     }
 
-    fn status(&self) -> ConnectionStatus {
-        self.status
+    async fn check_status(&self) -> Result<ConnectionStatus> {
+        todo!("implement check_status for StremioServer")
     }
 
     fn user_id(&self) -> Option<String> {
@@ -95,7 +99,8 @@ impl Server for StremioServer {
             // host: self.host.clone(),
             host: "".to_string(),
             username: "".to_string(),
-            password: "".to_string(),
+            token: None,
+            user_id: None,
         }
     }
 
@@ -103,13 +108,13 @@ impl Server for StremioServer {
       None
     }
 
-    async fn connect(&mut self) -> Result<()> {
-        self.addons = Some(vec![Addon::new (
-                "https://v3-cinemeta.strem.io".to_string(),
-            ).await?]);
-        self.status = ConnectionStatus::Success;
-        Ok(())
-    }
+    // async fn connect(&mut self) -> Result<()> {
+    //     self.addons = Some(vec![Addon::new (
+    //             "https://v3-cinemeta.strem.io".to_string(),
+    //         ).await?]);
+    //     self.status = ConnectionStatus::Success;
+    //     Ok(())
+    // }
 
     async fn is_watched(&self, _val: bool, _media_item: &Media) -> Result<()> {
         Ok(())

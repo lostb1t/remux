@@ -1,4 +1,6 @@
 use crate::sdks::core::endpoint::Endpoint;
+use crate::server::JellyfinServer;
+use crate::server::StremioServer;
 use anyhow::anyhow;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -51,11 +53,12 @@ impl MediaQuery {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
-    //Connecting,
     Success,
-    Failed,
+    Unauthorized,
+    Unreachable,
+    Timeout,
     Unknown,
 }
 
@@ -69,7 +72,7 @@ impl Default for ConnectionStatus {
 #[serde(tag = "type")]
 pub enum ServerKind {
     Jellyfin,
-    Stremio
+    Stremio,
 }
 
 use delegate::delegate;
@@ -81,23 +84,27 @@ pub enum ServerInstance {
 }
 
 impl ServerInstance {
-    pub fn from_config(config: ServerConfig) -> Self {
-        let host = config.host.trim_end_matches('/').to_string();
-        match config.kind {
-            ServerKind::Stremio => {
-                ServerInstance::Stremio(super::StremioServer::new(
-                    host,
-                    config.username,
-                    config.password,
-                ))
-            }
-            ServerKind::Jellyfin => {
-                ServerInstance::Jellyfin(super::JellyfinServer::new(
-                    host,
-                    config.username,
-                    config.password,
-                ))
-            }
+    pub fn from_config(config: ServerConfig) -> Result<Self> {
+        let instance = match config.kind {
+            ServerKind::Jellyfin => ServerInstance::Jellyfin(JellyfinServer::from_config(config)?),
+            ServerKind::Stremio => ServerInstance::Stremio(StremioServer::from_config(config)?),
+        };
+        Ok(instance)
+    }
+
+    pub async fn from_credentials(
+        kind: ServerKind,
+        host: String,
+        username: String,
+        password: String,
+    ) -> Result<Self> {
+        match kind {
+            ServerKind::Jellyfin => Ok(ServerInstance::Jellyfin(
+                JellyfinServer::from_credentials(host, username, password).await?,
+            )),
+            ServerKind::Stremio => Ok(ServerInstance::Stremio(
+                StremioServer::from_credentials(host, username, password).await?,
+            )),
         }
     }
 }
@@ -110,12 +117,14 @@ impl ServerInstance {
         } {
 
         pub fn host(&self) -> String;
-        pub fn status(&self) -> ConnectionStatus;
+        pub async fn check_status(&self) -> Result<ConnectionStatus>;
+
         pub fn user_id(&self) -> Option<String>;
         pub fn into_config(&self) -> ServerConfig;
         pub fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> Option<String>;
 
-        pub async fn connect(&mut self) -> Result<()>;
+       // pub async fn authenticate(host: String, username: String, password: String) -> Result<AuthenticateResult>;
+       // pub async fn from_username_and_password(&mut self) -> Result<()>;
         pub async fn is_watched(&self, val: bool, media_item: &media::Media) -> Result<()>;
         pub async fn is_favorite(&self, val: bool, media_item: &media::Media) -> Result<()>;
         pub async fn get_stream_url(&self, item: media::Media, source: Option<media::MediaSource>, cap: capabilities::Capabilities) -> Result<String>;
@@ -134,28 +143,39 @@ pub struct ServerConfig {
     pub kind: ServerKind,
     pub host: String,
     pub username: String,
-    pub password: String,
+
+    // Set after authentication
+    pub token: Option<String>,
+    pub user_id: Option<String>,
 }
 
 impl ServerConfig {
-    pub fn into_server(self) -> ServerInstance {
-    match self.kind {
-        ServerKind::Jellyfin => ServerInstance::Jellyfin(super::JellyfinServer::from_config(self)),
-        ServerKind::Stremio => ServerInstance::Stremio(super::StremioServer::from_config(self)),
+    pub fn into_server(self) -> Result<ServerInstance> {
+        let instance = match self.kind {
+            ServerKind::Jellyfin => {
+                ServerInstance::Jellyfin(super::JellyfinServer::from_config(self)?)
+            }
+            ServerKind::Stremio => ServerInstance::Stremio(super::StremioServer::from_config(self)?),
+        };
+        Ok(instance)
     }
 }
 
+#[derive(Serialize, PartialEq, Deserialize, Clone, Debug)]
+pub struct AuthenticateResult {
+    pub user_id: Option<String>,
+    pub token: String,
 }
 
 #[async_trait(?Send)]
 pub trait Server: Debug {
     fn host(&self) -> String;
-    fn status(&self) -> ConnectionStatus;
+    async fn check_status(&self) -> Result<ConnectionStatus>;
     fn user_id(&self) -> Option<String>;
     fn into_config(&self) -> ServerConfig;
     fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> Option<String>;
-
-    async fn connect(&mut self) -> Result<()>;
+    // async fn authenticate(host: String, username: String, password: String) -> Result<AuthenticateResult>;
+    //async fn from_credentials(host: String, username: String, password: String) -> Result<dyn Server>;
     async fn is_watched(&self, val: bool, media_item: &media::Media) -> Result<()>;
     async fn is_favorite(&self, val: bool, media_item: &media::Media) -> Result<()>;
     async fn get_stream_url(

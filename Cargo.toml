@@ -79,6 +79,7 @@ rand = { version = "0.9" }
 uuid = { version = "1.17.0", features = ["v4"] }
 
 [features]
+bundle = []
 default = ["web"]
 web = ["dioxus/web", "tokio_with_wasm", "dep:web-sys", "whoami/web", "whoami/web-sys"]
 server = ["dioxus/server", "dep:whoami"]

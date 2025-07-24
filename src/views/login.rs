@@ -35,29 +35,23 @@ pub fn LoginView() -> Element {
         error.set(None);
 
         spawn(async move {
-            let config = ServerConfig {
-                kind: if host.contains("stremio") {
-                    ServerKind::Stremio
-                } else {
-                    ServerKind::Jellyfin
-                },
-                host: host.trim_end_matches('/').to_string(),
-                username,
-                password,
-            };
-            let mut server_instance = ServerInstance::from_config(config);
+            let kind = if host.contains("stremio") {
+    ServerKind::Stremio
+} else {
+    ServerKind::Jellyfin
+};
 
-            match server_instance.connect().await {
-                Ok(()) => {
-                    server_config.set(Some(server_instance.into_config()));
-                    server.set(Some(Arc::new(server_instance)));
-                    let _ = nav.push(Route::Home {});
-                }
-                Err(e) => {
-                    error.set(Some(format!("Login failed: {}", e)));
-                    error!("{e}");
-                }
-            }
+match ServerInstance::from_credentials(kind, host.clone(), username.clone(), password.clone()).await {
+    Ok(server_instance) => {
+        server_config.set(Some(server_instance.into_config()));
+        server.set(Some(Arc::new(server_instance)));
+        let _ = nav.push(Route::Home {});
+    }
+    Err(e) => {
+        error.set(Some(format!("Login failed: {}", e)));
+        error!("{e}");
+    }
+}
 
             loading.set(false);
         });
