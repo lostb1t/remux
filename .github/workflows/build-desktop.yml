@@ -1,4 +1,4 @@
-name: Build Dioxus Desktop
+name: Build Desktop
 
 on:
   workflow_dispatch:
