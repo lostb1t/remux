@@ -12,6 +12,7 @@ pub enum CardVariant {
     Square,
     Landscape,
     Hero,
+    Unstyled
 }
 
 impl Default for CardVariant {
@@ -26,6 +27,7 @@ fn image_class(variant: &CardVariant) -> &'static str {
         CardVariant::Square => "w-45 h-45 aspect-square",
         CardVariant::Landscape => "w-60 aspect-video",
         CardVariant::Hero => "w-[calc(100vw-2.5rem)] max-h-110 max-w-100 aspect-[5/6]",
+        CardVariant::Unstyled => "",
     }
 }
 
@@ -47,10 +49,11 @@ pub struct CardProps {
 #[component]
 pub fn Card(props: CardProps) -> Element {
     let content = rsx! {
-        div { class: "overflow-hidden relative {image_class(&props.variant)} {props.class}",
+        div { 
+            class: "overflow-hidden rounded-lg relative {image_class(&props.variant)} {props.class}",
             super::FadeInImage {
                 src: "{props.image}",
-                class: "rounded-lg w-full h-full object-cover",
+                class: "w-full h-full object-cover",
             }
             {props.children}
         }

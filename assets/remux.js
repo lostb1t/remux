@@ -18,7 +18,7 @@ export function getScrollInfo(id) {
 export function findLastPartiallyVisibleIndex(id, direction) {
     const container = document.getElementById(id);
     if (!container) return 0;
-console.log(direction);
+
     const containerRect = container.getBoundingClientRect();
     const children = container.children;
 

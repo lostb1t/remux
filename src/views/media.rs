@@ -203,19 +203,19 @@ pub fn MediaDetailSeason(props: MediaDetailSeasonProps) -> Element {
                 Some(Ok(list)) => {
                     rsx! {
                         div { class: "overflow-x-auto no-scrollbar mb-4",
-                            div { class: "flex space-x-4",
+                            div { class: "flex relative space-x-4",
                                 for episode in list.iter() {
                                     // {info!("Rendering episode: {:?}", episode)}
                                     components::Card {
                                         //title: episode.title.clone(),
                                         image: server.image_url(&episode, media::ImageType::Poster).unwrap(),
-                                        variant: components::CardVariant::Landscape,
+                                        variant: components::CardVariant::Unstyled,
                                         to: Route::MediaDetailView {
                                             media_type: episode.media_type.clone(),
                                             id: episode.id.clone(),
                                         },
-                                        class: "w-45",
-                                        div { class: "w-full h-full p-5 relative bg-gradient-to-t from-neutral-800 to-neutral-500/10 flex flex-col",
+                                        class: "w-55",
+                                        div { class: "w-full h-full p-5 bg-gradient-to-t from-neutral-800 to-neutral-500/10 flex flex-col",
                                             //   div {
                                             //     class: "absolute bottom-0 left-0 bg-gradient-to-t from-neutral-500 to-neutral-200 pointer-events-none"
                                             //   }
