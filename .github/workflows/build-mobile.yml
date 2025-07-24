@@ -67,7 +67,7 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           mkdir -p artifacts
-          bundletool build-apks --bundle=/MyApp/my_app.aab --output=dist/remux.apks
+          bundletool build-apks --bundle=dist/Remux-aarch64-linux-android.aab --output=dist/remux.apk
           cp dist/*.* artifacts/
       
       - name: Prepare artifact (macOS)
