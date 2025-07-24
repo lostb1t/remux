@@ -58,7 +58,7 @@ jobs:
 
       - name: Build app
         run: |
-          dx bundle --release --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
+          dx bundle --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
       
       - name: Prepare artifact (Android)
         if: matrix.os == 'linux'
