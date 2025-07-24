@@ -20,7 +20,7 @@ pub fn Settings() -> Element {
     let nav = use_navigator();
     let mut settings = use_settings();
 
-    return Err(error::AppError::Other("yoooo".to_string()))?;
+    //return Err(error::AppError::Other("yoooo".to_string()))?;
 
     rsx! {
         div {
