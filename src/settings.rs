@@ -24,7 +24,6 @@ pub struct SettingField<T> {
     pub locked: bool,
 }
 
-
 impl<T> SettingField<Vec<T>> {
     pub fn modify_item<F>(&mut self, index: usize, f: F)
     where
@@ -39,8 +38,6 @@ impl<T> SettingField<Vec<T>> {
 }
 
 impl<T: Clone> SettingField<T> {
-  
-  
     pub fn effective(&self) -> T {
         if self.locked {
             self.default.clone()
@@ -48,9 +45,9 @@ impl<T: Clone> SettingField<T> {
             self.value.clone().unwrap_or_else(|| self.default.clone())
         }
     }
-    
+
     pub fn set(&mut self, val: T) {
-      //debug!(?self.locked);
+        //debug!(?self.locked);
         if !self.locked {
             self.value = Some(val);
         }
@@ -91,8 +88,6 @@ impl Settings {
     pub fn catalogs(&self) -> Vec<crate::media::Media> {
         self.catalogs.effective()
     }
-
-    
 }
 
 impl Default for Settings {
@@ -146,7 +141,11 @@ impl Settings {
         &self,
         server_catalogs: Vec<crate::media::Media>,
     ) -> Vec<crate::media::Media> {
-        let local = self.catalogs.value.as_ref().unwrap_or(&self.catalogs.default);
+        let local = self
+            .catalogs
+            .value
+            .as_ref()
+            .unwrap_or(&self.catalogs.default);
 
         server_catalogs
             .into_iter()

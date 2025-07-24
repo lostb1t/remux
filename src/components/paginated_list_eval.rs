@@ -1,13 +1,13 @@
 use crate::js_bindings;
 use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, error, info, trace, warn, Level};
+use dioxus_use_js::EvalResultExt;
 use rand::Rng;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json;
 use std::rc::Rc;
 use strum_macros::Display as EnumDisplay;
 use strum_macros::EnumString;
-use dioxus_use_js::EvalResultExt;
 
 fn generate_id() -> String {
     format!("{:06}", rand::thread_rng().gen::<u32>() % 1_000_000)
@@ -95,7 +95,10 @@ where
         let id = id.clone();
         //let event_id = event_id();
         move |_| async move {
-            let scroll_info: js_bindings::ScrollInfo = js_bindings::getScrollInfo(id()).await.deserialize().unwrap();
+            let scroll_info: js_bindings::ScrollInfo = js_bindings::getScrollInfo(id())
+                .await
+                .deserialize()
+                .unwrap();
             //debug!(?s, "uhu");
             let scroll_pos = match direction {
                 ScrollDirection::Horizontal => {

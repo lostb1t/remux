@@ -5,6 +5,8 @@ use crate::settings::{use_settings, Addon};
 use crate::Route;
 use dioxus::prelude::*;
 //use dioxus::web::WebEventExt;
+use crate::error;
+use anyhow::anyhow;
 use dioxus_logger::tracing::{debug, info};
 use dioxus_primitives::switch::{Switch, SwitchThumb};
 use std::str::FromStr;
@@ -17,6 +19,8 @@ pub fn Settings() -> Element {
     let mut config = hooks::use_server_config();
     let nav = use_navigator();
     let mut settings = use_settings();
+
+    return Err(error::AppError::Other("yoooo".to_string()))?;
 
     rsx! {
         div {
@@ -59,8 +63,6 @@ pub fn Settings() -> Element {
         }
     }
 }
-
-
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SettingRowProps {
@@ -147,10 +149,17 @@ pub fn SettingsCatalogView() -> Element {
                                 key: "{i}",
                                 class: "flex items-center justify-between px-4 py-3 bg-zinc-900 rounded-lg hover:bg-zinc-800 transition space-x-2",
 
+        
+
+                                //let mut settings = settings.read().clone();
+                                // debug!(?current, "Toggling catalog");
+
+                                //}
+
                                 span { class: "text-white font-medium", "{catalog.title}" }
-
+        
                                 div { class: "flex items-center space-x-2",
-
+        
                                     select {
                                         class: "bg-gray-800 text-white px-3 py-2 rounded",
                                         onchange: move |evt| {
@@ -163,11 +172,8 @@ pub fn SettingsCatalogView() -> Element {
                                         },
                                         for card in components::CardVariant::iter() {
                                             option {
-
-                                                //let mut settings = settings.read().clone();
-                                                // debug!(?current, "Toggling catalog");
-
-                                                //}
+        
+        
                                                 value: "{card}",
                                                 selected: catalog.card_variant.effective() == card,
                                                 "{card}"

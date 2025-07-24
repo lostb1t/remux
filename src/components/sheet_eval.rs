@@ -3,11 +3,11 @@ use crate::utils;
 use dioxus::events::TouchEvent;
 use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, info};
+use dioxus_use_js::EvalResultExt;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::time::Duration;
 use tokio::time::sleep;
-use dioxus_use_js::EvalResultExt;
 #[cfg(target_arch = "wasm32")]
 use tokio_with_wasm::alias as tokio;
 
@@ -67,7 +67,10 @@ pub fn Sheet(open: Signal<bool>, title: Option<String>, children: Element) -> El
 
         async move {
             //let wut = read.as_ref().map(|el| el).unwrap();
-            let scroll_info: js_bindings::ScrollInfo = js_bindings::getScrollInfo(id()).await.deserialize().unwrap();
+            let scroll_info: js_bindings::ScrollInfo = js_bindings::getScrollInfo(id())
+                .await
+                .deserialize()
+                .unwrap();
             let top = scroll_info.scroll_top;
             //debug!("on_touch_move_new: top={}", top);
 

@@ -218,8 +218,10 @@ pub fn GenreList(props: GenreListProps) -> Element {
 #[component]
 pub fn UnauthenticatedLayout() -> Element {
     rsx! {
-        div { class: "flex justify-center",
-            div { class: "w-full h-full", Outlet::<Route> {} }
+        ServerProvider {
+            div { class: "flex justify-center",
+                div { class: "w-full h-full", Outlet::<Route> {} }
+            }
         }
     }
 }

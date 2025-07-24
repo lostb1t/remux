@@ -17,6 +17,7 @@ use views::{
 mod addons;
 mod capabilities;
 mod components;
+mod error;
 mod hooks;
 mod js_bindings;
 mod media;
@@ -88,10 +89,10 @@ pub fn Loading(props: LoadingProps) -> Element {
 
 #[component]
 fn ServerProvider(children: Element) -> Element {
-    let mut server = hooks::use_server();
     let nav = use_navigator();
     let mut config = hooks::use_server_config();
     let mut is_ready = use_signal(|| false);
+    let mut server = hooks::use_server();
 
     if server().is_none() && config().is_none() {
         debug!("Server and Config is missing, routing to login");
@@ -109,6 +110,21 @@ fn ServerProvider(children: Element) -> Element {
 
     rsx! {
         {children}
+    }
+}
+
+#[component]
+fn ErrorHandler(children: Element) -> Element {
+    rsx! {
+        ErrorBoundary {
+            handle_error: |e: ErrorContext| { rsx! {
+                for e in e.errors() {
+                    p { "{e}" }
+                  //  {children.clone()}
+                }
+            } },
+            {children}
+        }
     }
 }
 
@@ -132,13 +148,18 @@ fn App() -> Element {
     use_context_provider(|| views::home::HomeFilter::default());
     use_context_provider(|| VideoPlayerState::default());
 
-    // Server provider handles this. But for some reason isnt triggered
-    let cfg = hooks::use_server_config().peek().clone();
-    let server_signal = if let Some(cfg) = cfg {
-        Signal::new(server::ServerInstance::from_config(cfg).ok().map(Arc::new))
-    } else {
-        Signal::new(None::<Arc<server::ServerInstance>>)
+    let mut config = hooks::use_server_config();
+
+    //let cfg = hooks::use_server_config().peek().clone();
+    let server_signal = {
+        debug!("only run once");
+        if let Some(cfg) = config.peek().clone() {
+            Signal::new(server::ServerInstance::from_config(cfg).ok().map(Arc::new))
+        } else {
+            Signal::new(None::<Arc<server::ServerInstance>>)
+        }
     };
+
     use_context_provider(|| server_signal);
 
     rsx! {
@@ -210,7 +231,9 @@ window.playShaka = async function(videoId, sourceUrl) {
             }
 
             div { class: "bg-neutral-900 min-h-screen",
+            ErrorHandler {
                 Router::<Route> {}
+              }
             }
 
 

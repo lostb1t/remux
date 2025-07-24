@@ -2,9 +2,7 @@ use crate::components;
 use crate::hooks;
 use crate::media;
 use dioxus::prelude::*;
-use dioxus_free_icons::icons::io_icons::{
-IoPlay
-};
+use dioxus_free_icons::icons::io_icons::IoPlay;
 use dioxus_free_icons::Icon;
 use dioxus_logger::tracing::{debug, error, info};
 //use gloo_timers::future::sleep;

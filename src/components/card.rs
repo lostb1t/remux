@@ -12,7 +12,7 @@ pub enum CardVariant {
     Square,
     Landscape,
     Hero,
-    Unstyled
+    Unstyled,
 }
 
 impl Default for CardVariant {
@@ -49,12 +49,8 @@ pub struct CardProps {
 #[component]
 pub fn Card(props: CardProps) -> Element {
     let content = rsx! {
-        div { 
-            class: "overflow-hidden rounded-lg relative {image_class(&props.variant)} {props.class}",
-            super::FadeInImage {
-                src: "{props.image}",
-                class: "w-full h-full object-cover",
-            }
+        div { class: "overflow-hidden rounded-lg relative {image_class(&props.variant)} {props.class}",
+            super::FadeInImage { src: "{props.image}", class: "w-full h-full object-cover" }
             {props.children}
         }
     };

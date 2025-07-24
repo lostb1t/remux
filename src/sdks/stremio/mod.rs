@@ -57,8 +57,8 @@ pub struct CatalogRef {
 #[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 pub struct ExtraProp {
     pub name: String,
-   // #[serde(rename = "isRequired")]
-  //  pub is_required: bool,
+    // #[serde(rename = "isRequired")]
+    //  pub is_required: bool,
     pub options: Option<Vec<String>>,
 }
 

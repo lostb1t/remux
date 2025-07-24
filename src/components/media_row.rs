@@ -265,8 +265,12 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                         ),
 
         
-                        render_item: move |i: &media::Media| rsx! {
 
+        
+                        render_item: move |i: &media::Media| rsx! {
+        
+
+            
                             super::MediaCard { card_variant: props.card_variant.clone(), item: i.clone() }
                         },
                     }

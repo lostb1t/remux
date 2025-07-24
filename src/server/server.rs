@@ -155,7 +155,9 @@ impl ServerConfig {
             ServerKind::Jellyfin => {
                 ServerInstance::Jellyfin(super::JellyfinServer::from_config(self)?)
             }
-            ServerKind::Stremio => ServerInstance::Stremio(super::StremioServer::from_config(self)?),
+            ServerKind::Stremio => {
+                ServerInstance::Stremio(super::StremioServer::from_config(self)?)
+            }
         };
         Ok(instance)
     }

@@ -1,9 +1,9 @@
+use crate::settings;
 use chrono::DateTime;
 use chrono::Utc;
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
-use crate::settings;
 // use crate::plex::{self, *};
 // use crate::clients::core::query::Query;
 

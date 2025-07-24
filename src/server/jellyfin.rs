@@ -389,8 +389,8 @@ impl JellyfinServer {
     pub fn from_config(config: ServerConfig) -> Result<Self> {
         let client = Self::create_client(
             &config.host,
-            &config.token.clone().unwrap(),
-            &config.user_id.clone().unwrap(),
+            &config.token.clone().expect("need token"),
+            &config.user_id.clone().expect("need user id"),
         )?;
         Ok(Self {
             host: config.host,

@@ -1,24 +1,24 @@
+use crate::sdks::core::endpoint::Endpoint;
 use crate::sdks::core::ApiError;
 use crate::sdks::core::RestClient;
 use crate::{
-    sdks,
     capabilities::Capabilities,
     media::{self, Media, MediaSource},
+    sdks,
     server::{ConnectionStatus, MediaQuery, Server, ServerConfig, ServerKind},
     APP_HOST,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use derive_more::with_trait::Debug;
+use dioxus_logger::tracing::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use dioxus_logger::tracing::*;
-use crate::sdks::core::endpoint::Endpoint;
 
 #[derive(Debug, Clone)]
 pub struct Addon {
     // pub name: String,
-   // pub enabled: bool,
+    // pub enabled: bool,
     pub url: String,
 
     #[debug(skip)]
@@ -27,51 +27,55 @@ pub struct Addon {
 }
 
 impl Addon {
-  
     pub async fn new(url: String) -> Result<Self> {
-        let client = RestClient::new("https://v3-cinemeta.strem.io").unwrap(); 
-        let endpoint = crate::sdks::stremio::ManifestEndpoint{};
+        let client = RestClient::new("https://v3-cinemeta.strem.io").unwrap();
+        let endpoint = crate::sdks::stremio::ManifestEndpoint {};
         let manifest = endpoint.query(&client).await?;
         //debug!(?manifest, "manifest");
         Ok(Self {
             url,
             client,
-            manifest  
+            manifest,
         })
     }
-  
-  
+
     fn get_catalogs(&self) -> Result<Vec<Media>> {
-        Ok(self.manifest.catalogs.clone().into_iter().map(|x| media::Media {
-        id: format!("{}.{}", self.manifest.id, x.id),
-        title: x.name,
-        ..Default::default()
-      }).collect())
+        Ok(self
+            .manifest
+            .catalogs
+            .clone()
+            .into_iter()
+            .map(|x| media::Media {
+                id: format!("{}.{}", self.manifest.id, x.id),
+                title: x.name,
+                ..Default::default()
+            })
+            .collect())
     }
-    
-    
 }
 
 #[derive(Clone, Debug)]
 pub struct StremioServer {
     pub host: String,
     // pub status: ConnectionStatus,
-    
     pub addons: Option<Vec<Addon>>,
 }
 
 impl StremioServer {
-    pub async fn from_credentials(host: String, username: String, password: String) -> Result<Self> {
+    pub async fn from_credentials(
+        host: String,
+        username: String,
+        password: String,
+    ) -> Result<Self> {
         Ok(Self {
             // status: ConnectionStatus::Success,
             host: host,
-            addons: None
-            //..Default::default()
+            addons: None, //..Default::default()
         })
     }
 
     pub fn from_config(config: ServerConfig) -> Result<Self> {
-        Ok(Self { 
+        Ok(Self {
             host: config.host,
             // status: ConnectionStatus::Success,
             addons: None,
@@ -105,7 +109,7 @@ impl Server for StremioServer {
     }
 
     fn image_url(&self, media_item: &Media, image_type: media::ImageType) -> Option<String> {
-      None
+        None
     }
 
     // async fn connect(&mut self) -> Result<()> {
@@ -141,8 +145,8 @@ impl Server for StremioServer {
     async fn get_catalogs(&self) -> Result<Vec<Media>> {
         let mut catalogs = vec![];
         for addon in self.addons.clone().unwrap_or_default() {
-          catalogs.extend(addon.get_catalogs()?);
-        };
+            catalogs.extend(addon.get_catalogs()?);
+        }
         Ok(catalogs)
     }
 
@@ -198,6 +202,3 @@ impl Server for StremioServer {
         Ok(None)
     }
 }
-
-
-
