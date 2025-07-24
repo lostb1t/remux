@@ -64,7 +64,7 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           mkdir -p artifacts
-          cp target/dx/remux/release/android/app/*.* artifacts/
+          cp target/dx/remux/debug/android/app/*.* artifacts/
           cp dist/*.* artifacts/
       
       - name: Prepare artifact (macOS)
