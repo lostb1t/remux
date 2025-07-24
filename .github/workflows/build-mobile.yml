@@ -51,9 +51,9 @@ jobs:
         run: |
           cargo binstall --force --no-confirm dioxus-cli@0.7.0-alpha.3
 
-      - name: Build Dioxus desktop app
+      - name: Build app
         run: |
-          dx bundle --release --platform mobile --trace
+          dx bundle --release --platform ${{ matrix.platform }} --trace
       
       - name: Prepare artifact (Linux)
         if: matrix.os == 'linux'
