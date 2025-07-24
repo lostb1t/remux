@@ -15,7 +15,7 @@ jobs:
          #   target: aarch64-apple-darwin
           - os: linux
             runner: ubuntu-latest
-            target: android
+            platform: android
     steps:
       - name: Set up JDK 17
         uses: actions/setup-java@v3
@@ -36,7 +36,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.android }}
+          key: ${{ matrix.platform }}
 
       - name: Install cargo-binstall
         shell: bash
@@ -70,7 +70,7 @@ jobs:
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.android }}-package
+          name: ${{ matrix.platform }}-package
           path: artifacts/*
 
   release:
