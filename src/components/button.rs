@@ -62,8 +62,8 @@ pub struct ButtonProps {
 #[component]
 pub fn Button(props: ButtonProps) -> Element {
     let class = match props.variant {
-        ButtonVariant::Primary => "p-3 rounded-lg bg-white text-black text-xs font-semibold border border-gray-300 ",
-        ButtonVariant::Secondary => "p-3 rounded-lg bg-neutral-800 text-white text-sm font-bold",
+        ButtonVariant::Primary => "p-3.5 rounded-full bg-white text-black text-base font-semibold border border-gray-300 ",
+        ButtonVariant::Secondary => "p-3.5 rounded-full bg-neutral-800 text-white text-sm font-bold",
         ButtonVariant::Outline => "p-3 rounded-lg border border-gray-300 hover:bg-gray-100 text-sm font-semibold",
         _ => "p-3 rounded-lg bg-white text-black border border-gray-300 hover:bg-gray-100 text-sm font-semibold",
     };
@@ -72,7 +72,7 @@ pub fn Button(props: ButtonProps) -> Element {
         button {
             //class,
 
-            class: "flex items-center justify-center gap-2 leading-none cursor-pointer {props.class} {class}",
+            class: "flex items-center justify-center gap-2 leading-none cursor-pointer {class} {props.class}",
             onclick: move |event| {
                 if let Some(f) = props.onclick.as_ref() {
                     f(event)
@@ -140,12 +140,12 @@ pub fn PlayButton(props: PlayButtonProps) -> Element {
             },
             attr: props.attr.clone(),
             Icon {
-                width: 16,
-                height: 16,
+                width: 18,
+                height: 18,
                 fill: "black",
                 icon: IoPlay,
             }
-            "Play"
+           "Play"
         }
 
         if *sheet_open.read() {

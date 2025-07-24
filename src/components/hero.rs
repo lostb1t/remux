@@ -234,10 +234,10 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                 //     class: "w-full",
                 //if props.detail {
 
-                div { class: "flex w-full gap-2 items-center",
+                div { class: "flex gap-2.5 items-center justify-center",
 
-                    components::PlayButton { class: "flex-1 h-10 p-0", media_item: item.clone() }
-
+                    components::PlayButton { class: "min-w-40", media_item: item.clone() }
+                    
                     components::Button {
                         variant: components::ButtonVariant::Secondary,
                         onclick: {
@@ -252,11 +252,11 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                             }
                         },
                         //   class: "flex-none",
-                        class: "flex-none flex items-center justify-center w-10 h-10",
+                       // class: "items-center justify-center",
                         //if let Some(data) = item.user_data {
                         super::ToggleIcon {
-                            width: 18,
-                            height: 18,
+                            width: 19,
+                            height: 19,
                             fill: "white",
                             icon: IoHeartOutline,
                             icon_active: IoHeart,
@@ -278,11 +278,11 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                             }
                         },
                         //   class: "flex-none",
-                        class: "flex-none w-10 h-10 flex items-center justify-center",
+                        //class: " items-center justify-center",
                         //if let Some(data) = item.user_data {
                         super::ToggleIcon {
-                            width: 18,
-                            height: 18,
+                            width: 19,
+                            height: 19,
                             fill: "white",
                             icon: IoEye,
                             icon_active: IoEyeOutline,
