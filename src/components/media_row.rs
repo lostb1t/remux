@@ -279,6 +279,7 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                     super::PaginatedList {
                         scroll_direction: props.scroll_direction,
                         items: items.clone(),
+                        class: "w-full overflow-x-hidden flex flex-wrap",
                         on_load_more: Some(
                             EventHandler::new(move |_| {
                                 if !*media_items().is_loading.read() {

@@ -11,7 +11,10 @@ pub fn Sidebar() -> Element {
 
         nav { class: "min-h-screen w-full bg-neutral-800/50 backdrop-blur-[80px] text-white flex flex-col items-start px-3 py-4 gap-3 text-sm",
             form {
+                // action needed for ios to show search button
+                action: ".",
                 onsubmit: move |evt| {
+                    evt.prevent_default();
                     if !query().is_empty() {
                         navigator
                             .push(Route::SearchView {
@@ -20,7 +23,9 @@ pub fn Sidebar() -> Element {
                     }
                 },
                 input {
-                    r#type: "text",
+                    type: "search",
+                    enterkeyhint: "search",
+                    name: "search",
                     class: "w-full rounded-md px-3 py-1.5 bg-neutral-800 text-white placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-blue-500",
                     value: query(),
                     placeholder: "Search",
