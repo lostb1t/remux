@@ -37,7 +37,7 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
-          target: aarch64-linux-android
+          target: ${{ matrix.target }}
 
       - name: Checkout repo
         uses: actions/checkout@v4
