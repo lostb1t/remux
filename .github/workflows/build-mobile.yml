@@ -1,0 +1,118 @@
+name: Build Mobile
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+         # - os: macos
+         #   runner: macos-14
+         #   target: aarch64-apple-darwin
+          - os: linux
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+        
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cargo-binstall
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            pwsh -Command "Set-ExecutionPolicy Unrestricted -Scope Process; iex (iwr 'https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1').Content"
+          else
+            curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          fi
+
+      - name: Install Dioxus CLI
+        run: |
+          cargo binstall --force --no-confirm dioxus-cli@0.7.0-alpha.3
+
+      - name: Install dependencies (Linux only)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev
+
+      - name: Run cargo build manually
+        shell: pwsh
+        if: matrix.os == 'windows'
+        run: cargo build --release
+
+      - name: Build Dioxus desktop app
+        run: |
+          dx bundle --release --platform desktop --trace
+
+      - name: Prepare artifact (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          mkdir artifacts
+          Copy-Item dist/Remux_0.0.0_x64-setup.exe artifacts/remux_0.0.0_x64-setup.exe
+      
+      - name: Prepare artifact (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          mkdir -p artifacts
+          cp dist/Remux.AppImage artifacts/remux.AppImage
+      
+      - name: Prepare artifact (macOS)
+        if: matrix.os == 'macos'
+        run: |
+          mkdir -p artifacts
+          cp dist/Remux_0.0.0_aarch64.dmg artifacts/remux-macos.dmg
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-package
+          path: artifacts/*
+
+  release:
+    name: Upload to GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./dist
+          merge-multiple: true
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly Build
+          prerelease: true
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
