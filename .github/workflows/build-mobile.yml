@@ -60,11 +60,11 @@ jobs:
         run: |
           dx bundle --release --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
       
-      - name: Prepare artifact (Linux)
+      - name: Prepare artifact (Android)
         if: matrix.os == 'linux'
         run: |
           mkdir -p artifacts
-          cp dist/Remux.AppImage artifacts/remux.AppImage
+          cp dist/Remux-aarch64-linux-android.aab artifacts/remux-android.aab
       
       - name: Prepare artifact (macOS)
         if: matrix.os == 'macos'
