@@ -75,6 +75,7 @@ jobs:
         run: |
           mkdir -p artifacts
           find target/dx/remux/release/ios/app/ -type f -name "*.ipa" -exec cp {} artifacts/ \;
+          find dist/ -type f -name "*.ipa" -exec cp {} artifacts/ \;
 
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
