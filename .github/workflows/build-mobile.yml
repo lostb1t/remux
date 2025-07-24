@@ -27,6 +27,9 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Setup bundletool
+        uses: amyu/setup-bundletool@v1
+
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -58,13 +61,13 @@ jobs:
 
       - name: Build app
         run: |
-          dx bundle --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
+          dx bundle --release --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
       
       - name: Prepare artifact (Android)
         if: matrix.os == 'linux'
         run: |
           mkdir -p artifacts
-          cp target/dx/remux/debug/android/app/*.* artifacts/
+          bundletool build-apks --bundle=/MyApp/my_app.aab --output=dist/remux.apks
           cp dist/*.* artifacts/
       
       - name: Prepare artifact (macOS)
