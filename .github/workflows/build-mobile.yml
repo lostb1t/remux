@@ -10,9 +10,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-         # - os: macos
-         #   runner: macos-14
-         #   target: aarch64-apple-darwin
+          - os: macos
+            runner: macos-14
+            platform: ios
+            target: aarch64-apple-ios
           - os: linux
             runner: ubuntu-latest
             platform: android
@@ -69,11 +70,11 @@ jobs:
           mkdir -p artifacts
           find target/dx/remux/release/android/app/ -type f -name "*.apk" -exec cp {} artifacts/ \;
       
-      - name: Prepare artifact (macOS)
-        if: matrix.os == 'macos'
+      - name: Prepare artifact (ios)
+        if: matrix.platform == 'ios'
         run: |
           mkdir -p artifacts
-          cp dist/Remux_0.0.0_aarch64.dmg artifacts/remux-macos.dmg
+          find target/dx/remux/release/android/app/ -type f -name "*.ipa" -exec cp {} artifacts/ \;
 
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
