@@ -255,7 +255,7 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                     super::PaginatedList {
                         items: items.clone(),
                         index: scroll_to,
-                        class: "overflow-y-hidden overflow-x-auto no-scrollbar pl-6 gap-x-2",
+                        class: "overflow-y-hidden overflow-x-auto no-scrollbar pl-6 gap-x-2.5",
                         on_load_more: Some(
                             EventHandler::new(move |_| {
                                 if !*media_items().is_loading.read() {

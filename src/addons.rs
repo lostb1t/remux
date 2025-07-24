@@ -1,7 +1,7 @@
 //use crate::sdks::jellyfin;
 //use axum::Json;
 //use base64::{Engine as _, engine::general_purpose::URL_SAFE};
-use eyre::Result;
+use anyhow::Result;
 //use futures_util::future::join_all;
 //use futures_util::future::try_join_all;
 //use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
