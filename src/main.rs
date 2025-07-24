@@ -151,16 +151,16 @@ fn App() -> Element {
     let mut config = hooks::use_server_config();
 
     //let cfg = hooks::use_server_config().peek().clone();
-    let server_signal = {
-        debug!("only run once");
-        if let Some(cfg) = config.peek().clone() {
-            Signal::new(server::ServerInstance::from_config(cfg).ok().map(Arc::new))
-        } else {
-            Signal::new(None::<Arc<server::ServerInstance>>)
+    use_context_provider(|| {
+    if let Some(cfg) = config.peek().clone() {
+        if let Ok(server) = server::ServerInstance::from_config(cfg) {
+            debug!("server initialized");
+            return Signal::new(Some(Arc::new(server)));
         }
-    };
-
-    use_context_provider(|| server_signal);
+        debug!("server config not ok");
+    }
+    Signal::new(None::<Arc<server::ServerInstance>>)
+});;
 
     rsx! {
             // document::Link { rel: "icon", href: FAVICON }

@@ -550,9 +550,6 @@
   .w-60 {
     width: calc(var(--spacing) * 60);
   }
-  .w-\[calc\(100vw-1\.5rem\)\] {
-    width: calc(100vw - 1.5rem);
-  }
   .w-\[calc\(100vw-2\.5rem\)\] {
     width: calc(100vw - 2.5rem);
   }
@@ -1407,19 +1404,9 @@
       max-height: calc(var(--spacing) * 140);
     }
   }
-  .lg\:max-h-150 {
-    @media (width >= 64rem) {
-      max-height: calc(var(--spacing) * 150);
-    }
-  }
   .lg\:min-h-140 {
     @media (width >= 64rem) {
       min-height: calc(var(--spacing) * 140);
-    }
-  }
-  .lg\:min-h-150 {
-    @media (width >= 64rem) {
-      min-height: calc(var(--spacing) * 150);
     }
   }
   .lg\:max-w-md {
