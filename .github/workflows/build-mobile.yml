@@ -87,8 +87,8 @@ jobs:
           cd dist/
           mkdir -p Payload
           cp -r Remux.app Payload/
-          zip -r Remux.ipa Payload
-          cp Remux.ipa ../artifacts/
+          zip -r remux.ipa Payload
+          cp remux.ipa ../artifacts/
           
 
       - name: Upload platform artifact
