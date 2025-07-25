@@ -81,7 +81,7 @@ jobs:
         shell: pwsh
         run: |
           mkdir artifacts
-          Copy-Item dist/Remux_0.0.0_x64-setup.exe artifacts/remux_0.0.0_x64-setup.exe
+          Copy-Item dist/Remux_0.0.0_x64-setup.exe artifacts/remux-x64-setup.exe
       
       - name: Prepare artifact (Linux)
         if: matrix.os == 'linux'
