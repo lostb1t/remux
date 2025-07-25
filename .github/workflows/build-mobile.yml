@@ -76,7 +76,7 @@ jobs:
         if: matrix.platform == 'android'
         run: |
           mkdir -p artifacts
-          find target/dx/remux/release/android/app/ -type f -name "*.apk" -exec cp {} artifacts/ \;
+          find target/dx/remux/ -type f -name "*.apk" -exec cp {} artifacts/ \;
           cd artifacts/
           mv *.apk remux.apk
 
