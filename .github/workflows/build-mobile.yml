@@ -70,7 +70,7 @@ jobs:
       - name: Build app
         if: matrix.platform == 'ios'
         run: |
-          dx bundle --package-types ios --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
+          dx bundle --release --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
 
       - name: Prepare artifact (Android)
         if: matrix.platform == 'android'
@@ -83,8 +83,8 @@ jobs:
         run: |
           mkdir -p artifacts
           mkdir -p dist
-          find target/dx/remux/ -type f -name "*.ipa" -exec cp {} artifacts/ \;
-          find dist/ -type f -name "*.ipa" -exec cp {} artifacts/ \;
+          find target/dx/remux/ -type f -name "*.app" -exec cp {} artifacts/ \;
+          find dist/ -type f -name "*.app" -exec cp {} artifacts/ \;
 
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
