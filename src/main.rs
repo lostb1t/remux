@@ -133,7 +133,10 @@ const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 const MANIFEST: Asset = asset!("/assets/manifest.json");
 const SW: Asset = asset!("/assets/sw.js");
 
+
 pub static APP_HOST: GlobalSignal<utils::AppHost> = GlobalSignal::new(|| utils::AppHost::default());
+//pub static TMDB: GlobalSignal<sdks::tmdb::TmdbClient> = GlobalSignal::new(|| sdks::tmdb::TmdbClient::new("https://api.tmdb.org")?.header("Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIwZDczZTBjYjkxZjM5ZTY3MGIwZWZhNjkxM2FmYmQ1OCIsIm5iZiI6MTUzMjkzOTA3My41MzcsInN1YiI6IjViNWVjYjQxMGUwYTI2MmU5MDA0NjNjMCIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.vfOGe8_35CxhjjZXdnR2iAwdOMIY0VFYMBQrLWuRqn8"));
+
 
 #[component]
 fn App() -> Element {

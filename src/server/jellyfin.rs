@@ -82,11 +82,19 @@ impl Server for JellyfinServer {
     }
 
     fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> Option<String> {
+        // jf doesnt have textless posters
+        if image_type == media::ImageType::PosterTextless {
+
+          //return 
+        }
+      
+      
         let tag = match image_type {
             media::ImageType::Poster => media_item.poster.as_deref(),
             media::ImageType::Backdrop => media_item.backdrop.as_deref(),
             media::ImageType::Logo => media_item.logo.as_deref(),
             media::ImageType::Thumb => media_item.thumb.as_deref(),
+            _ => None,
         };
         //debug!(?tag, "yo");
         if tag.is_none() {
@@ -98,6 +106,7 @@ impl Server for JellyfinServer {
             media::ImageType::Backdrop => "Backdrop",
             media::ImageType::Logo => "Logo",
             media::ImageType::Thumb => "Thumb",
+            _ => return None
         };
 
         Some(format!(

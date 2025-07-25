@@ -169,6 +169,9 @@ pub struct GenericMediaListProps {
     pub card_variant: components::CardVariant,
     #[props(default)]
     pub scroll_direction: components::ScrollDirection,
+
+    #[props(default)]
+    pub class: String,
 }
 
 #[component]
@@ -199,7 +202,7 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
     let items = media_items().items.read().clone();
 
     rsx! {
-        div { class: "px-0 overflow-x-visible sidebar-offset",
+        div { class: "px-0 overflow-x-visible {props.class}",
             if let Some(title) = props.title.clone() {
                 div { class: "flex items-center justify-between mb-2",
                     h3 {

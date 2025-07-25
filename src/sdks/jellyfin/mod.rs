@@ -8,6 +8,9 @@ pub mod genre;
 pub use genre::*;
 pub mod series;
 pub use series::*;
+pub mod user;
+pub use user::*;
+
 
 use crate::media;
 use chrono::{DateTime, Utc};

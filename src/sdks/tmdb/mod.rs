@@ -1,11 +1,13 @@
 use crate::sdks::core::RestClient;
 use crate::media;
 use serde::{Deserialize, Deserializer, Serialize};
+use strum_macros::{Display, EnumString};
 
 pub mod movie;
 pub mod providers;
 pub mod show;
 pub mod trending;
+pub mod image;
 
 pub type TmdbClient = RestClient;
 
@@ -34,4 +36,12 @@ pub struct MediaShort {
     pub id: u64,
     //pub title: String,
     pub media_type: media::MediaType,
+}
+
+
+#[derive(Debug, Clone, EnumString, Display)]
+#[strum(serialize_all = "snake_case")]
+pub enum MediaType {
+    Movie,
+    Tv,
 }

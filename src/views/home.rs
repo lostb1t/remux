@@ -69,11 +69,11 @@ pub fn Home() -> Element {
 
                     let futures = merged.iter().filter(|x| x.enabled.effective()).map(|col| {
                         let query = MediaQuery::builder()
-                            .limit(15)
+                            .limit(10)
                             .maybe_genres(genres.clone())
                             .types(media_types.clone())
                             .for_catalog(col.clone())
-                            .build();
+                            .build();        
 
                         let server = server.clone();
                         let col = col.clone();
@@ -117,6 +117,7 @@ pub fn Home() -> Element {
                         for (col , query) in media_results.iter().skip(1) {
                             // components::MediaList {
                             components::GenericMediaList {
+                                class: "sidebar-offset",
                                 key: "{query.key()}",
                                 title: Some(col.title.clone()),
                                 query: query.clone(),

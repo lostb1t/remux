@@ -234,6 +234,9 @@
   .visible {
     visibility: visible;
   }
+  .visible\! {
+    visibility: visible !important;
+  }
   .absolute {
     position: absolute;
   }
@@ -453,6 +456,9 @@
   .h-50 {
     height: calc(var(--spacing) * 50);
   }
+  .h-200 {
+    height: calc(var(--spacing) * 200);
+  }
   .h-auto {
     height: auto;
   }
@@ -552,6 +558,9 @@
   .w-60 {
     width: calc(var(--spacing) * 60);
   }
+  .w-200 {
+    width: calc(var(--spacing) * 200);
+  }
   .w-\[calc\(100vw-2\.5rem\)\] {
     width: calc(100vw - 2.5rem);
   }
@@ -581,6 +590,9 @@
   }
   .min-w-50 {
     min-width: calc(var(--spacing) * 50);
+  }
+  .min-w-\[100vh\] {
+    min-width: 100vh;
   }
   .flex-1 {
     flex: 1;

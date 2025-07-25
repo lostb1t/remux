@@ -19,6 +19,11 @@ use dioxus_time::use_debounce;
 use std::rc::Rc;
 use std::time::Duration;
 
+//use std::time::Duration;
+use tokio::time::sleep;
+#[cfg(target_arch = "wasm32")]
+use tokio_with_wasm::alias as tokio;
+
 #[derive(Clone, PartialEq, Props)]
 pub struct HeroListProps {
     pub title: Option<String>,
@@ -32,12 +37,12 @@ pub fn HeroList(props: HeroListProps) -> Element {
     let server = hooks::use_server()().unwrap();
     let query = props.query.clone();
     let mut index = use_signal(|| 0_usize);
-
+        let mut visible = use_signal(|| false);
     let media_items = {
         let server = server.clone();
         let query = query.clone();
 
-        utils::use_paginated_resource(10, move |limit, offset| {
+        utils::use_paginated_resource(query.limit as usize, move |limit, offset| {
             let server = server.clone();
             let mut paged_query = query.clone();
             paged_query.offset = offset as u32;
@@ -62,7 +67,24 @@ pub fn HeroList(props: HeroListProps) -> Element {
     };
 
     rsx! {
-        div { class: "relative mb-6",
+        div { 
+          
+          class: "relative mb-6",
+         onvisible: move |evt| 
+
+            {
+
+              let data = evt.data();
+                 // let intersecting = data.is_intersecting().unwrap_or(false);
+      
+             // for slme reason, the chils onbisible get all trigger onlload. this is a failsafe  
+            spawn(async move {
+                sleep(Duration::from_millis(100)).await;
+                visible.set(true);
+            });
+            
+            },
+              
             components::CarouselList {
                 items: list.clone(),
                 index: index.clone(),
@@ -75,17 +97,12 @@ pub fn HeroList(props: HeroListProps) -> Element {
                 ),
                 render_item: move |item: &media::Media| rsx! {
                     div { class: "flex-shrink-0 w-full snap-start",
-                        HeroItem { item: item.clone() }
+                        HeroItem { item: item.clone(), visible: visible}
                     }
                 },
-                        // render_item: move |item: &media::Media, idx: String| rsx! {
-            //     div {
-            //         id: idx,
-            //         class: "flex-shrink-0 w-full snap-start",
-            //         HeroItem { item: item.clone() }
-            //     }
-            // },
+                
             }
+          
             PaginationDots {
                 list_len: list.len(),
                 index: index.clone(),
@@ -104,6 +121,8 @@ pub struct HeroItemProps {
     pub detail: bool,
     // pub id: String,
     //   pub disable_links: bool,
+    #[props(default = Signal::new(true))]
+    pub visible: Signal<bool>
 }
 
 use super::FadeInImage;
@@ -114,6 +133,9 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
     let mut player = components::video::use_video_player();
     let server = hooks::use_server()().unwrap();
     let item = props.item.clone();
+    let visible = props.visible.clone();
+    let mut loaded = use_signal(|| false);
+
     let mut is_favorite = use_signal(|| {
         item.user_data
             .clone()
@@ -126,9 +148,23 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
             .map(|x| x.is_watched)
             .unwrap_or(false)
     });
+    
+  //  if !*visible.read() {
+  //    return rsx!{}
+  //  };
     //let binding = server.read();
     //let server = binding.as_ref().unwrap().clone();
-    let mut load_logo = use_signal(|| false);
+
+    let test = {
+        let item = item.clone();
+        let server = server.clone();
+        use_resource(move || {
+                     async move { 
+        //  debug!("does tbis get loaded");
+        }
+        })
+    };
+    
     // debug!("HeroItem: item: {:?}", &item.backdrop);
     let backdrop_url = match &item.backdrop {
         Some(backdrop) => server.image_url(&item, media::ImageType::Backdrop),
@@ -142,12 +178,14 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
         let server = server.clone();
         use_resource(move || {
             let server = server.clone();
-            let item = item.clone();
+            let item = item.clone();      
+
             //to_owned![item, server];
             async move {
-                if !load_logo() || item.logo.is_none() {
+                if !*loaded.read() || item.logo.is_none() {
                     return None;
                 };
+             //  debug!("loading logo");
                 let logo_url = server.image_url(&item, media::ImageType::Logo);
                 utils::fetch_and_trim_base64(&logo_url.unwrap()).await
             }
@@ -168,11 +206,17 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
     rsx! {
         div {
             class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-140 lg:max-h-140 w-full text-white overflow-hidden",
-            onvisible: move |evt| {
-                let data = evt.data();
-                if let Ok(is_intersecting) = data.is_intersecting() {
-                    load_logo.set(true);
-                }
+            onvisible: move |evt| 
+
+            {
+              let ratio = evt.data().get_intersection_ratio().unwrap_or(0.0);
+              //debug!(?ratio, "ui");
+                          if *visible.read() || ratio >= 0.99 {
+                            loaded.set(true);
+                              // debug!("visible item");
+                          
+                             }
+                              
             },
             Link {
                 to: Route::MediaDetailView {
@@ -181,7 +225,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                 },
                 class: "absolute inset-0 w-full h-full block",
 
-                FadeInImage {
+               FadeInImage {
                     src: backdrop_url.unwrap(),
                     alt: item.title.clone(),
                     class: "absolute inset-0 w-full object-cover h-full",
@@ -203,9 +247,10 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                         id: item.id.clone(),
                     },
                     class: "space-y-4 block",
+                    
 
 
-
+if item.logo.is_some() {
                     match logo_src_resource() {
                         Some(Some(logo)) => rsx! {
                             FadeInImage {
@@ -216,11 +261,20 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                                 //attr: vec![],
                             }
                         },
+                        
                         Some(None) => rsx! {
-                            h1 { class: "text-4xl font-bold", "{item.title}" }
+                          //if *loaded.read() {
+                          //h1 { class: "text-4xl font-bold", "{item.title}" }
+                        //}
                         },
-                        None => rsx! {},
+                        None => rsx! {
+                          h1 { class: "text-4xl font-bold", "{item.title}" }
+                        },
                     }
+                  } else {
+                                              h1 { class: "text-4xl font-bold", "{item.title}" }
+                  }
+                    //}
 
                     //if !item.genres.is_empty() {
                     p { class: "text-sm ml-6 mr-6 text-center truncate font-medium",
@@ -235,7 +289,6 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                 //if props.detail {
 
                 div { class: "flex gap-2.5 items-center justify-center",
-
                     components::PlayButton { class: "min-w-40", media_item: item.clone() }
                     
                     components::Button {
@@ -306,7 +359,8 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
         // Description
         if props.detail {
-            div { class: "sidebar-offset px-6 space-y-4 flex flex-col",
+            div { 
+                class: "sidebar-offset px-6 space-y-4 flex flex-col",
 
                 if item.description.is_some() {
                     Link {
@@ -321,7 +375,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                     }
                 }
 
-                components::TagsDisplay { media_item: item }
+                components::TagsDisplay { media_item: item.clone() }
             }
         }
     }

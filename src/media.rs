@@ -320,6 +320,7 @@ impl TryFrom<sdks::jellyfin::MediaStream> for MediaStream {
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Copy)]
 pub enum ImageType {
     Poster,
+    PosterTextless,
     Backdrop,
     Thumb,
     Logo,
@@ -419,10 +420,13 @@ pub struct Media {
     // for catalogs/collections
     #[builder(default = settings::SettingField {value: Some(true), ..Default::default()})]
     pub enabled: settings::SettingField<bool>,
+    
+  
 }
 
 use chrono::Duration;
 impl Media {
+
     pub fn is_series(&self) -> bool {
         self.media_type == MediaType::Series
     }
