@@ -1,4 +1,4 @@
-name: Build & Push to GitHub Packages
+name: Build Docker
 
 on:
   workflow_dispatch:
