@@ -70,7 +70,7 @@ jobs:
       - name: Build app
         if: matrix.platform == 'ios'
         run: |
-          dx bundle --release --package-types apk --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
+          dx bundle --release --package-types ios --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
 
       - name: Prepare artifact (Android)
         if: matrix.platform == 'android'
