@@ -48,8 +48,7 @@ What makes this different.
  
 Theres a docker image avaiable at: ghcr.io/lostb1t/remux:latest
 
-There are currently no binaries distributed. They will be
-added in the future.
+Experimental native builds can be found here: https://github.com/lostb1t/remux/releases/tag/nightly
 
 ### Development
 
