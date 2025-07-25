@@ -63,9 +63,15 @@ jobs:
           cargo binstall --force --no-confirm dioxus-cli@0.7.0-alpha.3
 
       - name: Build app
+        if: matrix.platform == 'android'
         run: |
           dx build --release --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
-      
+
+      - name: Build app
+        if: matrix.platform == 'ios'
+        run: |
+          dx bundle --release --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
+
       - name: Prepare artifact (Android)
         if: matrix.platform == 'android'
         run: |
