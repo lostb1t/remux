@@ -20,12 +20,14 @@ jobs:
             target: aarch64-linux-android
     steps:
       - name: Set up JDK 17
+        if: matrix.platform == 'android'
         uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
         
       - name: Setup Android SDK
+        if: matrix.platform == 'android'
         uses: android-actions/setup-android@v3
 
       - name: Setup bundletool
@@ -65,7 +67,7 @@ jobs:
           dx build --release --platform ${{ matrix.platform }} --trace --target ${{ matrix.target }}
       
       - name: Prepare artifact (Android)
-        if: matrix.os == 'linux'
+        if: matrix.platform == 'android'
         run: |
           mkdir -p artifacts
           find target/dx/remux/release/android/app/ -type f -name "*.apk" -exec cp {} artifacts/ \;
