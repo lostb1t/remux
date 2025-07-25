@@ -11,7 +11,7 @@ jobs:
       matrix:
         include:
           - os: macos
-            runner: macos-14
+            runner: macos-latest
             target: aarch64-apple-darwin
           #- os: linux
           #  runner: ubuntu-latest
