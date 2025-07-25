@@ -82,9 +82,12 @@ jobs:
         if: matrix.platform == 'ios'
         run: |
           mkdir -p artifacts
-          mkdir -p dist
-          find target/dx/remux/ -type f -name "*.app" -exec cp {} artifacts/ \;
-          find dist/ -type f -name "*.app" -exec cp {} artifacts/ \;
+          cd dist/
+          mkdir -p Payload
+          cp -r Remux.app Payload/
+          zip -r Remux.ipa Payload
+          cp Remux.ipa artifacts/
+          
 
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
