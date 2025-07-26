@@ -14,8 +14,8 @@
 ![Mobile](mobile.png)
 
 <p align="center">
-  <img src="mobile.png" width="200" alt="Image 1">
-  <img src="mobile.png" width="200" alt="Image 2">
+  <img src="mobile.png" style="width:25%" alt="Image 1">
+  <img src="mobile.png" style="width:25%" alt="Image 2">
 </p>
 
 </details>
