@@ -9,11 +9,11 @@
 </div>
 
 
-<summary> Desktop Layout </summary>
+<summary> Mobile Layout </summary>
 <p align="center">
 
-  <img src="mobile.png" style="max-width:500px; width:48%; margin:5px;" alt="Image 1">
-  <img src="mobile.png" style="max-width:500px; width:48%; margin:5px;" alt="Image 2">
+  <img src="mobile.png" style="max-width:500px; width:49%; margin:5px;" alt="Image 1">
+  <img src="mobile.png" style="max-width:500px; width:49%; margin:5px;" alt="Image 2">
 </p>
 
 <summary> Desktop Layout </summary>
