@@ -9,9 +9,8 @@
 </div>
 
 
-<summary> Mobile Layout </summary>
+<p align="center"> Mobile Layout </p>
 <p align="center">
-
   <img src="mobile.png" style="max-width:500px; width:49%; margin:5px;" alt="Image 1">
   <img src="mobile2.png" style="max-width:500px; width:49%; margin:5px;" alt="Image 2">
 </p>
