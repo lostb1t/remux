@@ -139,10 +139,10 @@ where
 
     let base_class = match direction {
         ScrollDirection::Vertical => {
-            "flex flex-col overflow-y-auto no-scrollbar scroll-smooth gap-4"
+            "flex flex-wrap overflow-y-auto max-h-screen no-scrollbar scroll-smooth gap-2.5"
         }
         ScrollDirection::Horizontal => {
-            "flex overflow-x-auto no-scrollbar scroll-smooth snap-x snap-mandatory gap-4"
+            "flex overflow-x-auto no-scrollbar scroll-smooth snap-x snap-mandatory gap-2.5"
         }
     };
 

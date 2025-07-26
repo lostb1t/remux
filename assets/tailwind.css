@@ -390,6 +390,9 @@
   .flex {
     display: flex;
   }
+  .grid {
+    display: grid;
+  }
   .hidden {
     display: none;
   }
@@ -654,6 +657,15 @@
   }
   .scroll-pl-6 {
     scroll-padding-left: calc(var(--spacing) * 6);
+  }
+  .grid-flow-col {
+    grid-auto-flow: column;
+  }
+  .grid-cols-\[repeat\(auto-fill\,minmax\(104px\,1fr\)\)\] {
+    grid-template-columns: repeat(auto-fill,minmax(104px,1fr));
+  }
+  .grid-cols-none {
+    grid-template-columns: none;
   }
   .flex-col {
     flex-direction: column;

@@ -266,14 +266,7 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                                 }
                             }),
                         ),
-
-        
-
-        
                         render_item: move |i: &media::Media| rsx! {
-        
-
-            
                             super::MediaCard { card_variant: props.card_variant.clone(), item: i.clone() }
                         },
                     }
@@ -282,7 +275,8 @@ pub fn GenericMediaList(props: GenericMediaListProps) -> Element {
                     super::PaginatedList {
                         scroll_direction: props.scroll_direction,
                         items: items.clone(),
-                        class: "w-full overflow-x-hidden flex flex-wrap",
+                        // class: "w-full overflow-x-hidden grid grid-flow-col",
+                        class: "w-full overflow-x-hidden",
                         on_load_more: Some(
                             EventHandler::new(move |_| {
                                 if !*media_items().is_loading.read() {

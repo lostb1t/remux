@@ -17,9 +17,6 @@ use std::io::Cursor;
 use std::rc::Rc;
 use uuid::Uuid;
 
-
-
-
 pub fn generate_id() -> String {
     format!("{:06}", rand::thread_rng().gen::<u32>() % 1_000_000)
 }

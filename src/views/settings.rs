@@ -52,14 +52,9 @@ pub fn Settings() -> Element {
                             move |_| {
                                 config.set(None);
                                 server.set(None);
-                                
-                                
-                                
-                                //nav.push(Route::LoginView {});
                             }
                         },
                         "Logout"
-                                        // to: Route::SettingsCatalogqView {},
                     }
                 }
             }
