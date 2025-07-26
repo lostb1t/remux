@@ -8,24 +8,23 @@
   <p><i>A *VERY experimental* web/desktop client for Jellyfin written in Rust </i></p>
 </div>
 
-<details>
-<summary> Mobile Layout </summary>
-  
 
-
+  <summary> Desktop Layout </summary>
 <p align="center">
   <img src="mobile.png" style="max-width:500px; width:45%; margin:5px;" alt="Image 1">
   <img src="mobile.png" style="max-width:500px; width:45%; margin:5px;" alt="Image 2">
 </p>
 
-</details>
 
-<details>
+
+
 <summary> Desktop Layout </summary>
   
-![Desktop](desktop.png)
+<p align="center">
+  <img src="desktop.png" style="max-width:1000px; width:95%; margin:5px;" alt="Image 1">
+</
 
-</details>
+
 
 Hosted version at: https://app.remux.media
 
