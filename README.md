@@ -21,13 +21,11 @@
 <p align="center">
 
   <img src="desktop.png" style="max-width:1000px; width:100%;" alt="Image 1">
-</
-
-
+</p>
 
 Hosted version at: https://app.remux.media
 
-This only works for Jellyfin servers that are behind a reverse proxy and have HTTPS set up correctly. If your server runs over HTTP, you must host it yourself.
+The hosted version only works for Jellyfin servers that are behind a reverse proxy and have HTTPS set up correctly. If your server runs over HTTP, you must host it yourself.
 
 ### Catalogs
 
