@@ -12,8 +12,8 @@
 
 <p align="center">
     <summary> Desktop Layout </summary>
-  <img src="mobile.png" style="max-width:500px; width:47%; margin:5px;" alt="Image 1">
-  <img src="mobile.png" style="max-width:500px; width:47%; margin:5px;" alt="Image 2">
+  <img src="mobile.png" style="max-width:500px; width:45%; margin:5px;" alt="Image 1">
+  <img src="mobile.png" style="max-width:500px; width:45%; margin:5px;" alt="Image 2">
 </p>
 
 
