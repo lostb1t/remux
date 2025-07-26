@@ -198,6 +198,11 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                 if url.is_none() {
                     url = server.image_url(&item, media::ImageType::Backdrop);
                 }
+                
+                if url.is_none() {
+                    url = server.image_url(&item, media::ImageType::Poster);
+                }
+                //debug!(?url);
 
                 url
             }
