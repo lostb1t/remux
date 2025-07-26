@@ -17,7 +17,7 @@ use views::{
 mod addons;
 mod capabilities;
 mod components;
-mod error;
+mod errors;
 mod hooks;
 mod js_bindings;
 mod media;
@@ -140,9 +140,16 @@ fn ServerProvider(children: Element) -> Element {
 fn ErrorHandler(children: Element) -> Element {
     rsx! {
         ErrorBoundary {
-            handle_error: |e: ErrorContext| { rsx! {
+            handle_error: |e: ErrorContext| { 
+              for e in &*e.errors() {
+                    error!("{:?}", e);
+              }
+              rsx! {
                 for e in e.errors() {
-                    p { "{e}" }
+                    p { 
+                      class: "z-125 absolute top-0 left-0 bg-red-400",
+                      "{e}" 
+                    }
                   //  {children.clone()}
                 }
             } },

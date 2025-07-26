@@ -254,7 +254,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                 },
                 if *loaded.read() {
                 div {
-
+               // class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-140 lg:max-h-140 w-full text-white overflow-hidden",
 
                 Link {
                     to: Route::MediaDetailView {
@@ -401,7 +401,8 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
 
 
-            // }
+            }
+          }
 
             // Description
             if props.detail {
@@ -424,8 +425,8 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                     components::TagsDisplay { media_item: item.clone() }
                 }
             }
-                            }
-                }
+                            //}
+              //  }
         }
 }
 

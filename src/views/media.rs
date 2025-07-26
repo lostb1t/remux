@@ -102,13 +102,6 @@ pub fn MediaDetailView(props: MediaDetailViewProps) -> Element {
                 }
                 components::HeroItem { item: data.clone(), detail: true }
                 if data.is_series() {
-                    // SuspenseBoundary {
-                    //     fallback: |context: SuspenseContext| rsx! {
-                    //         // Loading {}
-                    //         div {}
-                    //     },
-                    //     MediaDetailSeason { item: data.clone() }
-                    // }
                     MediaDetailSeason { item: data.clone() }
                 }
             },
