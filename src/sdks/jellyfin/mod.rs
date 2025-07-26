@@ -176,7 +176,7 @@ pub enum ItemType {
     Channel,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ProviderIds {
     pub imdb: Option<String>,
@@ -659,6 +659,7 @@ pub struct BaseItemDto {
     // pub current_program: Option<Box<BaseItemDto>>,
     pub has_series_timer: Option<bool>,
     pub has_timer: Option<bool>,
+    pub provider_ids: Option<ProviderIds>,
     // custom.
 }
 

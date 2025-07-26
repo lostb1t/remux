@@ -1619,9 +1619,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-use-js"
-version = "0.2.0-alpha.4"
+version = "0.2.0-alpha.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92b77a92075eee63ccce4c6fd877812744d65b8705a8c8b5ea3be858bf6d4d7b"
+checksum = "6813edc621155f71fc64b1c7d66ec4d77a37a3713ceaa4ea26f64ce7c57cf4ba"
 dependencies = [
  "dioxus",
  "dioxus-use-js-macro",
@@ -1631,9 +1631,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-use-js-macro"
-version = "0.2.0-alpha.4"
+version = "0.2.0-alpha.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c66e0660cf2da7121b423e5c205cfcfd6627a3d7b20081b5561518ec0ecd7656"
+checksum = "0e96650b39ff21edc95515b5a67ee86e015a31e69fac98b0d295257c436ada63"
 dependencies = [
  "proc-macro2",
  "quote",

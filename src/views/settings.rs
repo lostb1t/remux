@@ -50,9 +50,12 @@ pub fn Settings() -> Element {
                         //   icon: "👤",
                         onclick: {
                             move |_| {
-                                server.set(None);
                                 config.set(None);
-                                nav.push(Route::LoginView {});
+                                server.set(None);
+                                
+                                
+                                
+                                //nav.push(Route::LoginView {});
                             }
                         },
                         "Logout"

@@ -24,7 +24,7 @@ pub fn FadeInImage(props: FadeInImageProps) -> Element {
     let mut loaded: Signal<bool> = use_signal(|| false);
 
     let class = format!(
-        "transition-opacity duration-700 ease-in {} {}",
+        "transition-opacity duration-400 ease-in {} {}",
         if *loaded.read() {
             "opacity-100"
         } else {

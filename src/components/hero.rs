@@ -37,7 +37,7 @@ pub fn HeroList(props: HeroListProps) -> Element {
     let server = hooks::use_server()().unwrap();
     let query = props.query.clone();
     let mut index = use_signal(|| 0_usize);
-        let mut visible = use_signal(|| false);
+    let mut visible = use_signal(|| false);
     let media_items = {
         let server = server.clone();
         let query = query.clone();
@@ -67,24 +67,24 @@ pub fn HeroList(props: HeroListProps) -> Element {
     };
 
     rsx! {
-        div { 
-          
+        div {
+
           class: "relative mb-6",
-         onvisible: move |evt| 
+         onvisible: move |evt|
 
             {
 
               let data = evt.data();
                  // let intersecting = data.is_intersecting().unwrap_or(false);
-      
-             // for slme reason, the chils onbisible get all trigger onlload. this is a failsafe  
+
+             // for slme reason, the chils onbisible get all trigger onlload. this is a failsafe
             spawn(async move {
                 sleep(Duration::from_millis(100)).await;
                 visible.set(true);
             });
-            
+
             },
-              
+
             components::CarouselList {
                 items: list.clone(),
                 index: index.clone(),
@@ -100,9 +100,9 @@ pub fn HeroList(props: HeroListProps) -> Element {
                         HeroItem { item: item.clone(), visible: visible}
                     }
                 },
-                
+
             }
-          
+
             PaginationDots {
                 list_len: list.len(),
                 index: index.clone(),
@@ -122,7 +122,7 @@ pub struct HeroItemProps {
     // pub id: String,
     //   pub disable_links: bool,
     #[props(default = Signal::new(true))]
-    pub visible: Signal<bool>
+    pub visible: Signal<bool>,
 }
 
 use super::FadeInImage;
@@ -148,10 +148,10 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
             .map(|x| x.is_watched)
             .unwrap_or(false)
     });
-    
-  //  if !*visible.read() {
-  //    return rsx!{}
-  //  };
+
+    //  if !*visible.read() {
+    //    return rsx!{}
+    //  };
     //let binding = server.read();
     //let server = binding.as_ref().unwrap().clone();
 
@@ -159,16 +159,48 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
         let item = item.clone();
         let server = server.clone();
         use_resource(move || {
-                     async move { 
-        //  debug!("does tbis get loaded");
-        }
+            async move {
+                //  debug!("does tbis get loaded");
+            }
         })
     };
-    
+
     // debug!("HeroItem: item: {:?}", &item.backdrop);
-    let backdrop_url = match &item.backdrop {
-        Some(backdrop) => server.image_url(&item, media::ImageType::Backdrop),
-        None => server.image_url(&item, media::ImageType::Poster),
+    // let backdrop_url = match &item.backdrop {
+    //     Some(backdrop) => server.image_url(&item, media::ImageType::Backdrop),
+    //     None => server.image_url(&item, media::ImageType::Poster),
+    //};
+
+    let backdrop_url = {
+        let item = item.clone();
+        let server = server.clone();
+
+        use_resource(move || {
+            let server = server.clone();
+            let item = item.clone();
+
+            async move {
+                if !*loaded.read() {
+                    return None;
+                };
+                let size: crate::js_bindings::WindowSize =
+                    crate::js_bindings::getWindowSize().await.unwrap();
+                let mut url: Option<String> = None;
+
+                if size.width <= 768 {
+                    url = server.image_url(&item, media::ImageType::PosterTextless);
+                    if url.is_none() {
+                        url = item.get_poster_textless().await.ok().flatten();
+                    }
+                }
+
+                if url.is_none() {
+                    url = server.image_url(&item, media::ImageType::Backdrop);
+                }
+
+                url
+            }
+        })
     };
 
     let logo_url = server.image_url(&item, media::ImageType::Logo);
@@ -178,14 +210,14 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
         let server = server.clone();
         use_resource(move || {
             let server = server.clone();
-            let item = item.clone();      
+            let item = item.clone();
 
             //to_owned![item, server];
             async move {
                 if !*loaded.read() || item.logo.is_none() {
                     return None;
                 };
-             //  debug!("loading logo");
+                //  debug!("loading logo");
                 let logo_url = server.image_url(&item, media::ImageType::Logo);
                 utils::fetch_and_trim_base64(&logo_url.unwrap()).await
             }
@@ -202,183 +234,190 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
     subtitle_vec.extend(item.genres.clone());
     //let logo_src = logo_src_resource().unwrap_or_default();
-
+    let backdrop_url = &*backdrop_url.read();
+    //debug!(?backdrop_url);
     rsx! {
-        div {
-            class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-140 lg:max-h-140 w-full text-white overflow-hidden",
-            onvisible: move |evt| 
-
-            {
-              let ratio = evt.data().get_intersection_ratio().unwrap_or(0.0);
-              //debug!(?ratio, "ui");
-                          if *visible.read() || ratio >= 0.99 {
-                            loaded.set(true);
-                              // debug!("visible item");
-                          
-                             }
-                              
-            },
-            Link {
-                to: Route::MediaDetailView {
-                    media_type: item.media_type.clone(),
-                    id: item.id.clone(),
-                },
-                class: "absolute inset-0 w-full h-full block",
-
-               FadeInImage {
-                    src: backdrop_url.unwrap(),
-                    alt: item.title.clone(),
-                    class: "absolute inset-0 w-full object-cover h-full",
-                    attr: vec![],
-                }
-                div { class: "absolute bottom-0 left-0 right-0 h-1/2 bg-gradient-to-t from-neutral-900 via-neutral-900/100 to-transparent pointer-events-none" }
-            }
-
-            // Overlay gradient
-
-
-            // Foreground content (text + play)
             div {
-                class: "sidebar-offset absolute w-full bottom-0 lg:min-w-md lg:max-w-md flex flex-col justify-center p-6 space-y-4",
+                class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-140 lg:max-h-140 w-full text-white overflow-hidden",
+                onvisible: move |evt|
 
+                {
+                  let ratio = evt.data().get_intersection_ratio().unwrap_or(0.0);
+                  //debug!(?ratio, "ui");
+                              if *visible.read() || ratio >= 0.99 {
+                                loaded.set(true);
+                                  // debug!("visible item");
+
+                                 }
+
+                },
                 Link {
                     to: Route::MediaDetailView {
                         media_type: item.media_type.clone(),
                         id: item.id.clone(),
                     },
-                    class: "space-y-4 block",
-                    
-
-
-if item.logo.is_some() {
-                    match logo_src_resource() {
-                        Some(Some(logo)) => rsx! {
-                            FadeInImage {
-                                src: logo,
-                                //src:  logo_url,
-                                class: "w-full max-h-24 lg:max-h-42 object-contain",
-                                //class: "invert brightness-0",
-                                //attr: vec![],
-                            }
-                        },
-                        
-                        Some(None) => rsx! {
-                          //if *loaded.read() {
-                          //h1 { class: "text-4xl font-bold", "{item.title}" }
+                    class: "absolute inset-0 w-full h-full block",
+        if *loaded.read() {
+                    if let Some(Some(url)) = backdrop_url {
+                   FadeInImage {
+                        src: url,
+                       // src: {
+                        //  item.get_poster_textless().await.unwrap()
                         //}
-                        },
-                        None => rsx! {
-                          h1 { class: "text-4xl font-bold", "{item.title}" }
-                        },
+                        alt: item.title.clone(),
+                        class: "absolute inset-0 w-full object-cover h-full",
+                        attr: vec![],
                     }
-                  } else {
-                                              h1 { class: "text-4xl font-bold", "{item.title}" }
-                  }
-                    //}
+                  }}
 
-                    //if !item.genres.is_empty() {
-                    p { class: "text-sm ml-6 mr-6 text-center truncate font-medium",
-                        "{subtitle_vec.join(\" · \")}"
-                    }
-                                // }
+                    div { class: "absolute bottom-0 left-0 right-0 h-1/2 bg-gradient-to-t from-neutral-900 via-neutral-900/100 to-transparent pointer-events-none" }
                 }
 
-
-                //   div {
-                //     class: "w-full",
-                //if props.detail {
-
-                div { class: "flex gap-2.5 items-center justify-center",
-                    components::PlayButton { class: "min-w-40", media_item: item.clone() }
-                    
-                    components::Button {
-                        variant: components::ButtonVariant::Secondary,
-                        onclick: {
-                            to_owned![item, server];
-                            move |_| {
-                                to_owned![item, server];
-                                let fav = is_favorite();
-                                is_favorite.set(!fav);
-                                spawn(async move {
-                                    server.is_favorite(!fav, &item).await;
-                                });
-                            }
-                        },
-                        //   class: "flex-none",
-                       // class: "items-center justify-center",
-                        //if let Some(data) = item.user_data {
-                        super::ToggleIcon {
-                            width: 19,
-                            height: 19,
-                            fill: "white",
-                            icon: IoHeartOutline,
-                            icon_active: IoHeart,
-                            active: *is_favorite.read(),
-                        }
-                    }
-
-                    components::Button {
-                        variant: components::ButtonVariant::Secondary,
-                        onclick: {
-                            to_owned![item, server];
-                            move |_| {
-                                to_owned![item, server];
-                                spawn(async move {
-                                    let watched = is_watched();
-                                    is_watched.set(!watched);
-                                    server.is_watched(!watched, &item).await;
-                                });
-                            }
-                        },
-                        //   class: "flex-none",
-                        //class: " items-center justify-center",
-                        //if let Some(data) = item.user_data {
-                        super::ToggleIcon {
-                            width: 19,
-                            height: 19,
-                            fill: "white",
-                            icon: IoEye,
-                            icon_active: IoEyeOutline,
-                            active: *is_watched.read(),
-                        }
-                    }
-                }
-                        //  } else {
-            //     components::PlayButton { class: "w-full", media_item: item.clone() }
-            //}
-
-            }
-        
+                // Overlay gradient
 
 
-        }
+                // Foreground content (text + play)
+                div {
+                    class: "sidebar-offset absolute w-full bottom-0 lg:min-w-md lg:max-w-md flex flex-col justify-center p-6 space-y-4",
 
-
-
-        // }
-
-        // Description
-        if props.detail {
-            div { 
-                class: "sidebar-offset px-6 space-y-4 flex flex-col",
-
-                if item.description.is_some() {
                     Link {
                         to: Route::MediaDetailView {
                             media_type: item.media_type.clone(),
                             id: item.id.clone(),
                         },
-                        // class: "pointer-events-auto",
-                        div { class: "pt-2 line-clamp-4 text-sm font-medium",
-                            "{item.description.as_deref().unwrap()}"
+                        class: "space-y-4 block",
+
+
+
+    if item.logo.is_some() {
+                        match logo_src_resource() {
+                            Some(Some(logo)) => rsx! {
+                                FadeInImage {
+                                    src: logo,
+                                    //src:  logo_url,
+                                    class: "w-full max-h-24 lg:max-h-42 object-contain",
+                                    //class: "invert brightness-0",
+                                    //attr: vec![],
+                                }
+                            },
+
+                            Some(None) => rsx! {
+                              //if *loaded.read() {
+                              //h1 { class: "text-4xl font-bold", "{item.title}" }
+                            //}
+                            },
+                            None => rsx! {
+                              h1 { class: "text-4xl font-bold", "{item.title}" }
+                            },
+                        }
+                      } else {
+                                                  h1 { class: "text-4xl font-bold", "{item.title}" }
+                      }
+                        //}
+
+                        //if !item.genres.is_empty() {
+                        p { class: "text-sm ml-6 mr-6 text-center truncate font-medium",
+                            "{subtitle_vec.join(\" · \")}"
+                        }
+                                    // }
+                    }
+
+
+                    //   div {
+                    //     class: "w-full",
+                    //if props.detail {
+
+                    div { class: "flex gap-2.5 items-center justify-center",
+                        components::PlayButton { class: "min-w-40", media_item: item.clone() }
+
+                        components::Button {
+                            variant: components::ButtonVariant::Secondary,
+                            onclick: {
+                                to_owned![item, server];
+                                move |_| {
+                                    to_owned![item, server];
+                                    let fav = is_favorite();
+                                    is_favorite.set(!fav);
+                                    spawn(async move {
+                                        server.is_favorite(!fav, &item).await;
+                                    });
+                                }
+                            },
+                            //   class: "flex-none",
+                           // class: "items-center justify-center",
+                            //if let Some(data) = item.user_data {
+                            super::ToggleIcon {
+                                width: 19,
+                                height: 19,
+                                fill: "white",
+                                icon: IoHeartOutline,
+                                icon_active: IoHeart,
+                                active: *is_favorite.read(),
+                            }
+                        }
+
+                        components::Button {
+                            variant: components::ButtonVariant::Secondary,
+                            onclick: {
+                                to_owned![item, server];
+                                move |_| {
+                                    to_owned![item, server];
+                                    spawn(async move {
+                                        let watched = is_watched();
+                                        is_watched.set(!watched);
+                                        server.is_watched(!watched, &item).await;
+                                    });
+                                }
+                            },
+                            //   class: "flex-none",
+                            //class: " items-center justify-center",
+                            //if let Some(data) = item.user_data {
+                            super::ToggleIcon {
+                                width: 19,
+                                height: 19,
+                                fill: "white",
+                                icon: IoEye,
+                                icon_active: IoEyeOutline,
+                                active: *is_watched.read(),
+                            }
                         }
                     }
+                            //  } else {
+                //     components::PlayButton { class: "w-full", media_item: item.clone() }
+                //}
+
                 }
 
-                components::TagsDisplay { media_item: item.clone() }
+
+
+            }
+
+
+
+            // }
+
+            // Description
+            if props.detail {
+                div {
+                    class: "sidebar-offset px-6 space-y-4 flex flex-col",
+
+                    if item.description.is_some() {
+                        Link {
+                            to: Route::MediaDetailView {
+                                media_type: item.media_type.clone(),
+                                id: item.id.clone(),
+                            },
+                            // class: "pointer-events-auto",
+                            div { class: "pt-2 line-clamp-4 text-sm font-medium",
+                                "{item.description.as_deref().unwrap()}"
+                            }
+                        }
+                    }
+
+                    components::TagsDisplay { media_item: item.clone() }
+                }
             }
         }
-    }
 }
 
 #[derive(Props, PartialEq, Clone)]
@@ -476,7 +515,7 @@ pub fn TagsDisplay(props: TagsDisplayProps) -> Element {
                         }
                     }
 
-    
+
                 }
             }) })}
         }

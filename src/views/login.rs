@@ -5,8 +5,12 @@ use crate::{
 };
 use dioxus::prelude::*;
 use dioxus::signals::*;
-use dioxus_logger::tracing::{error, info};
+use dioxus_logger::tracing::{debug, error, info};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::sleep;
+#[cfg(target_arch = "wasm32")]
+use tokio_with_wasm::alias as tokio;
 
 #[component]
 pub fn LoginView() -> Element {
@@ -19,13 +23,16 @@ pub fn LoginView() -> Element {
     let nav = use_navigator();
     let mut server = hooks::use_server();
 
+    if server_config.read().is_some() {
+        debug!("We have a config already, routing to home");
+        nav.push(Route::Home {});
+    }
+
     let on_login = move |_| {
         let host = host();
         let username = username();
         let password = password();
-        //dbg!(&server_config);
-        // info!("donfig {:?}", &server_config);
-        //dbg!
+
         if host.is_empty() || username.is_empty() || password.is_empty() {
             error.set(Some("Please fill in all fields.".to_string()));
             return;
@@ -50,9 +57,18 @@ pub fn LoginView() -> Element {
             .await
             {
                 Ok(server_instance) => {
+                    debug!(
+                        "Server instance created: {:?}",
+                        server_instance.into_config()
+                    );
                     server_config.set(Some(server_instance.into_config()));
                     server.set(Some(Arc::new(server_instance)));
-                    let _ = nav.push(Route::Home {});
+                    // spawn(async move {
+                   // sleep(Duration::from_millis(5000)).await;
+                   // let _ = nav.push(Route::Home {});
+                    // signal.set(true);
+                    //});
+                    // let _ = nav.push(Route::Home {});
                 }
                 Err(e) => {
                     error.set(Some(format!("Login failed: {}", e)));
@@ -74,6 +90,7 @@ pub fn LoginView() -> Element {
                     placeholder: "Server URL",
                     class: "text-black mb-4 w-full px-3 py-2 border border-gray-300 rounded",
                     value: "{host}",
+                    name: "host",
                     oninput: move |e| host.set(e.value().clone()),
                 }
 
@@ -82,6 +99,7 @@ pub fn LoginView() -> Element {
                     placeholder: "Username",
                     class: "text-black mb-4 w-full px-3 py-2 border border-gray-300 rounded",
                     value: "{username}",
+                    name: "username",
                     oninput: move |e| username.set(e.value().clone()),
                 }
 
@@ -90,6 +108,7 @@ pub fn LoginView() -> Element {
                     placeholder: "Password",
                     class: "text-black mb-6 w-full px-3 py-2 border border-gray-300 rounded",
                     value: "{password}",
+                    name: "password",
                     oninput: move |e| password.set(e.value().clone()),
                 }
 

@@ -15,6 +15,13 @@ export function getScrollInfo(id) {
     };
 }
 
+export function getWindowSize() {
+    return {
+        width: window.innerWidth,
+        height: window.innerHeight
+    };
+}
+
 export function findLastPartiallyVisibleIndex(id, direction) {
     const container = document.getElementById(id);
     if (!container) return 0;

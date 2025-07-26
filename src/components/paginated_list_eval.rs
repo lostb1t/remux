@@ -1,7 +1,7 @@
 use crate::js_bindings;
 use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, error, info, trace, warn, Level};
-use dioxus_use_js::EvalResultExt;
+//use dioxus_use_js::EvalResultExt;
 use rand::Rng;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json;
@@ -97,7 +97,6 @@ where
         move |_| async move {
             let scroll_info: js_bindings::ScrollInfo = js_bindings::getScrollInfo(id())
                 .await
-                .deserialize()
                 .unwrap();
             //debug!(?s, "uhu");
             let scroll_pos = match direction {

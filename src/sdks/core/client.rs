@@ -104,7 +104,6 @@ impl RestClient {
 
         let baseurl = Url::parse(url)?;
 
-        // debug!("new client for {}", baseurl);
         Ok(RestClient {
             client,
             baseurl,
@@ -137,8 +136,6 @@ impl RestClient {
         query: Option<&QueryParams>,
         body: Option<String>,
     ) -> Result<Request, anyhow::Error> {
-        // let mut req = reqwest::Request::new(method, self.make_uri(path)?);
-        // let mut build = reqwest::RequestBuilder::from_parts(self.client.clone(), req);
         let mut build = self
             .client
             .clone()
@@ -175,10 +172,10 @@ impl RestClient {
     ) -> anyhow::Result<url::Url> {
         let mut url = self.baseurl.clone();
 
-        if path.is_some() {
-            url = url.join(path.unwrap().as_str()).unwrap();
+        if let Some(path) = path {
+            url.set_path([url.path(), &path].join("/").as_str());
         }
-
+    
         // we already encode in another layer as we want finer control over the query params
         if let Some(query) = query {
             let raw = query

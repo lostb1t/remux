@@ -69,7 +69,7 @@ pub fn Home() -> Element {
 
                     let futures = merged.iter().filter(|x| x.enabled.effective()).map(|col| {
                         let query = MediaQuery::builder()
-                            .limit(10)
+                            .limit(15)
                             .maybe_genres(genres.clone())
                             .types(media_types.clone())
                             .for_catalog(col.clone())

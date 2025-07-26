@@ -3,11 +3,12 @@ use crate::media;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum_macros::{Display, EnumString};
 
-pub mod movie;
-pub mod providers;
-pub mod show;
-pub mod trending;
+//pub mod movie;
+//pub mod providers;
+//pub mod show;
+//pub mod trending;
 pub mod image;
+pub use image::*;
 
 pub type TmdbClient = RestClient;
 
@@ -39,7 +40,7 @@ pub struct MediaShort {
 }
 
 
-#[derive(Debug, Clone, EnumString, Display)]
+#[derive(Debug, Clone, Serialize, EnumString, Display)]
 #[strum(serialize_all = "snake_case")]
 pub enum MediaType {
     Movie,

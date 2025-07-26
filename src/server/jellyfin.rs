@@ -85,7 +85,7 @@ impl Server for JellyfinServer {
         // jf doesnt have textless posters
         if image_type == media::ImageType::PosterTextless {
 
-          //return 
+          return None;
         }
       
       
@@ -396,15 +396,13 @@ impl JellyfinServer {
     }
 
     pub fn from_config(config: ServerConfig) -> Result<Self> {
-        let client = Self::create_client(
-            &config.host,
-            &config.token.clone().expect("need token"),
-            &config.user_id.clone().expect("need user id"),
-        )?;
+        let token = config.token.clone().ok_or_else(|| anyhow!("Missing token"))?;
+        let user_id = config.user_id.clone().ok_or_else(|| anyhow!("Missing user id"))?;
+        let client = Self::create_client(&config.host, &token, &user_id)?;
         Ok(Self {
             host: config.host,
             username: config.username,
-            access_token: config.token.unwrap(),
+            access_token: token,
             client,
             user_id: config.user_id,
             // status: ConnectionStatus::Success,

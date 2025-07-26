@@ -16,3 +16,10 @@ pub struct ScrollInfo {
     pub offset_width: f64,
     pub offset_height: f64,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowSize {
+    pub width: u32,
+    pub height: u32,
+}

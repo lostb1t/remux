@@ -3,7 +3,7 @@ use crate::utils;
 use dioxus::events::TouchEvent;
 use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, info};
-use dioxus_use_js::EvalResultExt;
+//use dioxus_use_js::EvalResultExt;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::time::Duration;
@@ -69,7 +69,6 @@ pub fn Sheet(open: Signal<bool>, title: Option<String>, children: Element) -> El
             //let wut = read.as_ref().map(|el| el).unwrap();
             let scroll_info: js_bindings::ScrollInfo = js_bindings::getScrollInfo(id())
                 .await
-                .deserialize()
                 .unwrap();
             let top = scroll_info.scroll_top;
             //debug!("on_touch_move_new: top={}", top);

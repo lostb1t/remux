@@ -10,6 +10,7 @@ use std::fmt::{self, Display};
 // use gluesql::core::executor::Payload;
 use dioxus_logger::tracing::*;
 use serde::{Deserialize, Serialize};
+use crate::sdks::core::endpoint::Endpoint;
 // use plex_api::library::{self as plex_library, MetadataItem};
 // use plex_api::media_container::server::library::Guid as PlexApiGuid;
 // use plex_api::media_container::server::library::Metadata as PlexApiMetadata;
@@ -179,6 +180,21 @@ impl TryFrom<MediaType> for sdks::jellyfin::ItemType {
             MediaType::Series => Ok(sdks::jellyfin::ItemType::Series),
             MediaType::Season => Ok(sdks::jellyfin::ItemType::Season),
             MediaType::Episode => Ok(sdks::jellyfin::ItemType::Episode),
+            // MediaType::Collection => Ok(sdks::jellyfin::ItemType::BoxSet),
+            _ => Err(anyhow!("Unsupported MediaType: {:?}", value)),
+        }
+    }
+}
+
+impl TryFrom<MediaType> for sdks::tmdb::MediaType {
+    type Error = Error;
+
+    fn try_from(value: MediaType) -> Result<Self, Self::Error> {
+        match value {
+            MediaType::Movie => Ok(sdks::tmdb::MediaType::Movie),
+            MediaType::Series => Ok(sdks::tmdb::MediaType::Tv),
+            //MediaType::Season => Ok(sdks::jellyfin::ItemType::Season),
+           // MediaType::Episode => Ok(sdks::jellyfin::ItemType::Episode),
             // MediaType::Collection => Ok(sdks::jellyfin::ItemType::BoxSet),
             _ => Err(anyhow!("Unsupported MediaType: {:?}", value)),
         }
@@ -426,8 +442,34 @@ pub struct Media {
 
 use chrono::Duration;
 impl Media {
+pub async fn get_poster_textless(&self) -> Result<Option<String>> {
+    let tmdb_id = self.external_ids.tmdb;
+    if tmdb_id.is_none() {
+      return Ok(None);
+    }
+  
+    let endpoint = sdks::tmdb::Image {
+        media_type: self.media_type.clone().try_into().unwrap(),
+        id: self.external_ids.tmdb.unwrap(),
+        include_image_language: Some("null".into()),
+    };
 
-    pub fn is_series(&self) -> bool {
+    let response = endpoint.query(&crate::TMDB.peek()).await?;
+    let textless_posters: Vec<_> = response
+        .posters
+        .into_iter()
+        .filter(|p| p.iso_639_1.is_none())
+        .collect();
+
+    let im = match textless_posters.first() {
+        Some(im) => im,
+        None => return Ok(None),
+    };
+
+    Ok(Some(im.url("w500")))
+}
+
+  pub fn is_series(&self) -> bool {
         self.media_type == MediaType::Series
     }
 
@@ -464,8 +506,13 @@ impl TryFrom<sdks::jellyfin::BaseItemDto> for Media {
             .id(item.id.unwrap().to_string())
             .title(item.name.unwrap())
             .media_type(item.type_.unwrap().try_into().unwrap())
-            .external_ids(ExternalIds {
-                ..Default::default()
+            .external_ids({
+              let provider_ids = item.provider_ids.unwrap_or_default();
+
+        ExternalIds {
+            tmdb: provider_ids.tmdb.and_then(|v| v.parse::<u32>().ok())
+           // imdb: provider_ids.imdb,
+        }
             })
             .maybe_index_number(item.index_number)
             .maybe_description(item.overview)
