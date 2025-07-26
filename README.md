@@ -9,20 +9,17 @@
 </div>
 
 
-    <summary> Desktop Layout </summary>
+<summary> Desktop Layout </summary>
 <p align="center">
 
-  <img src="mobile.png" style="max-width:500px; width:45%; margin:5px;" alt="Image 1">
-  <img src="mobile.png" style="max-width:500px; width:45%; margin:5px;" alt="Image 2">
+  <img src="mobile.png" style="max-width:500px; width:48%; margin:5px;" alt="Image 1">
+  <img src="mobile.png" style="max-width:500px; width:48%; margin:5px;" alt="Image 2">
 </p>
 
-
-
-
-
+<summary> Desktop Layout </summary>
   
 <p align="center">
-<summary> Desktop Layout </summary>
+
   <img src="desktop.png" style="max-width:1000px; width:100%;" alt="Image 1">
 </
 
