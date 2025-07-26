@@ -466,7 +466,7 @@ pub async fn get_poster_textless(&self) -> Result<Option<String>> {
         None => return Ok(None),
     };
 
-    Ok(Some(im.url("w500")))
+    Ok(Some(im.url("w780")))
 }
 
   pub fn is_series(&self) -> bool {

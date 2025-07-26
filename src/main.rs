@@ -97,7 +97,7 @@ fn ServerProvider(children: Element) -> Element {
     let mut is_ready = use_signal(|| false);
 
     if !is_ready() {
-        debug!("Not ready");
+        //debug!("Not ready");
         // debug!("Server signal is None, checking config");
         if let Some(cfg) = &cfg {
             if let Ok(server) = server::ServerInstance::from_config(cfg.clone()) {

@@ -70,8 +70,6 @@ pub fn Button(props: ButtonProps) -> Element {
 
     rsx!(
         button {
-            //class,
-
             class: "flex items-center justify-center gap-2 leading-none cursor-pointer {class} {props.class}",
             onclick: move |event| {
                 if let Some(f) = props.onclick.as_ref() {

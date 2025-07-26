@@ -150,6 +150,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
     });
 
     //  if !*visible.read() {
+    //     debug!("HeroItem not visible, skipping rendering");
     //    return rsx!{}
     //  };
     //let binding = server.read();
@@ -251,13 +252,17 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                                  }
 
                 },
+                if *loaded.read() {
+                div {
+
+
                 Link {
                     to: Route::MediaDetailView {
                         media_type: item.media_type.clone(),
                         id: item.id.clone(),
                     },
                     class: "absolute inset-0 w-full h-full block",
-        if *loaded.read() {
+        // if *loaded.read() {
                     if let Some(Some(url)) = backdrop_url {
                    FadeInImage {
                         src: url,
@@ -268,7 +273,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                         class: "absolute inset-0 w-full object-cover h-full",
                         attr: vec![],
                     }
-                  }}
+                  }
 
                     div { class: "absolute bottom-0 left-0 right-0 h-1/2 bg-gradient-to-t from-neutral-900 via-neutral-900/100 to-transparent pointer-events-none" }
                 }
@@ -326,8 +331,9 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                     //   div {
                     //     class: "w-full",
                     //if props.detail {
-
+                    // if *loaded.read() {
                     div { class: "flex gap-2.5 items-center justify-center",
+
                         components::PlayButton { class: "min-w-40", media_item: item.clone() }
 
                         components::Button {
@@ -387,6 +393,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                 //}
 
                 }
+            
 
 
 
@@ -417,6 +424,8 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                     components::TagsDisplay { media_item: item.clone() }
                 }
             }
+                            }
+                }
         }
 }
 
