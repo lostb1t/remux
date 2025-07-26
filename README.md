@@ -9,9 +9,9 @@
 </div>
 
 
-
-<p align="center">
     <summary> Desktop Layout </summary>
+<p align="center">
+
   <img src="mobile.png" style="max-width:500px; width:45%; margin:5px;" alt="Image 1">
   <img src="mobile.png" style="max-width:500px; width:45%; margin:5px;" alt="Image 2">
 </p>
