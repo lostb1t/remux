@@ -290,6 +290,21 @@ pub struct MediaSource {
     pub media_streams: Option<Vec<MediaStream>>,
 }
 
+impl MediaSource {
+    pub fn display_title(&self) -> String {
+      //debug!(?self);
+        let mut stream = self.media_streams
+            .as_ref()
+            .and_then(|streams| {
+                streams
+                    .iter()
+                    .find(|s| s.type_ == MediaStreamType::Video)
+            }).unwrap();
+            let mut title = stream.display_title.clone().unwrap_or_else(|| self.name.clone());
+          format!("{} ({} mbps)", title,  (stream.bit_rate.unwrap()) / 1_000_000)
+    }
+}
+
 impl TryFrom<sdks::jellyfin::MediaSourceInfo> for MediaSource {
     type Error = Error;
 
@@ -317,7 +332,8 @@ pub struct MediaStream {
     pub index: Option<i32>,
     pub title: Option<String>,
     pub display_title: Option<String>,
-    pub type_: Option<MediaStreamType>,
+    pub type_: MediaStreamType,
+    pub bit_rate: Option<i32>,
 }
 
 impl TryFrom<sdks::jellyfin::MediaStream> for MediaStream {
@@ -328,7 +344,8 @@ impl TryFrom<sdks::jellyfin::MediaStream> for MediaStream {
             index: stream.index,
             title: stream.title,
             display_title: stream.display_title,
-            type_: stream.type_.map(Into::into),
+            type_: stream.type_.unwrap().into(),
+            bit_rate: stream.bit_rate,
         })
     }
 }

@@ -154,7 +154,7 @@ pub fn PlayButton(props: PlayButtonProps) -> Element {
                         for source in media_item.media_sources.clone() {
                             components::ListItem {
                                 a {
-                                    class: "cursor-pointer",
+                                    class: "cursor-pointer text-sm font-semibold",
                                     onclick: {
                                         to_owned![player, media_item];
                                         move |_| {
@@ -163,7 +163,7 @@ pub fn PlayButton(props: PlayButtonProps) -> Element {
                                             player.play();
                                         }
                                     },
-                                    "{source.name}"
+                                    "{source.display_title()}"
                                 }
                             }
                         }
