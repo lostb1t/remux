@@ -8,9 +8,9 @@ use std::fmt::{self, Display};
 // use crate::clients::core::query::Query;
 
 // use gluesql::core::executor::Payload;
+use crate::sdks::core::endpoint::Endpoint;
 use dioxus_logger::tracing::*;
 use serde::{Deserialize, Serialize};
-use crate::sdks::core::endpoint::Endpoint;
 // use plex_api::library::{self as plex_library, MetadataItem};
 // use plex_api::media_container::server::library::Guid as PlexApiGuid;
 // use plex_api::media_container::server::library::Metadata as PlexApiMetadata;
@@ -194,7 +194,7 @@ impl TryFrom<MediaType> for sdks::tmdb::MediaType {
             MediaType::Movie => Ok(sdks::tmdb::MediaType::Movie),
             MediaType::Series => Ok(sdks::tmdb::MediaType::Tv),
             //MediaType::Season => Ok(sdks::jellyfin::ItemType::Season),
-           // MediaType::Episode => Ok(sdks::jellyfin::ItemType::Episode),
+            // MediaType::Episode => Ok(sdks::jellyfin::ItemType::Episode),
             // MediaType::Collection => Ok(sdks::jellyfin::ItemType::BoxSet),
             _ => Err(anyhow!("Unsupported MediaType: {:?}", value)),
         }
@@ -222,7 +222,7 @@ pub fn placeholder_image(width: u32, height: u32) -> Option<String> {
 #[derive(PartialEq, Eq, Default, Hash, Clone, Debug, Serialize, Deserialize)]
 // #[builder(setter(into))]
 pub struct ExternalIds {
-    // tmdb is always required
+    pub imdb: Option<String>,
     pub tmdb: Option<u32>,
 }
 
@@ -436,40 +436,53 @@ pub struct Media {
     // for catalogs/collections
     #[builder(default = settings::SettingField {value: Some(true), ..Default::default()})]
     pub enabled: settings::SettingField<bool>,
-    
-  
 }
 
 use chrono::Duration;
 impl Media {
-pub async fn get_poster_textless(&self) -> Result<Option<String>> {
-    let tmdb_id = self.external_ids.tmdb;
-    if tmdb_id.is_none() {
-      return Ok(None);
+    pub async fn get_poster_textless(&self) -> Result<Option<String>> {
+        let tmdb_id = self.external_ids.tmdb;
+        if tmdb_id.is_none() {
+            return Ok(None);
+        }
+
+        let endpoint = sdks::tmdb::Image {
+            media_type: self.media_type.clone().try_into().unwrap(),
+            id: self.external_ids.tmdb.unwrap(),
+            include_image_language: Some("null".into()),
+        };
+
+        let response = endpoint.query(&crate::TMDB.peek()).await?;
+        let textless_posters: Vec<_> = response
+            .posters
+            .into_iter()
+            .filter(|p| p.iso_639_1.is_none())
+            .collect();
+
+        let im = match textless_posters.first() {
+            Some(im) => im,
+            None => return Ok(None),
+        };
+
+        Ok(Some(im.url("w780")))
     }
-  
-    let endpoint = sdks::tmdb::Image {
-        media_type: self.media_type.clone().try_into().unwrap(),
-        id: self.external_ids.tmdb.unwrap(),
-        include_image_language: Some("null".into()),
-    };
 
-    let response = endpoint.query(&crate::TMDB.peek()).await?;
-    let textless_posters: Vec<_> = response
-        .posters
-        .into_iter()
-        .filter(|p| p.iso_639_1.is_none())
-        .collect();
+    pub async fn get_opensubtitles(&self) -> Result<Vec<sdks::stremio::Subtitle>> {
+        let imdb_id = self
+            .external_ids
+            .imdb
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("IMDb ID was None"))?;
 
-    let im = match textless_posters.first() {
-        Some(im) => im,
-        None => return Ok(None),
-    };
+        let url = format!(
+            "https://opensubtitles-v3.strem.io/subtitles/movie/{}.json",
+            imdb_id
+        );
+        let res: sdks::stremio::SubtitleResponse = reqwest::get(url).await?.json().await?;
+        Ok(res.subtitles)
+    }
 
-    Ok(Some(im.url("w780")))
-}
-
-  pub fn is_series(&self) -> bool {
+    pub fn is_series(&self) -> bool {
         self.media_type == MediaType::Series
     }
 
@@ -507,12 +520,12 @@ impl TryFrom<sdks::jellyfin::BaseItemDto> for Media {
             .title(item.name.unwrap())
             .media_type(item.type_.unwrap().try_into().unwrap())
             .external_ids({
-              let provider_ids = item.provider_ids.unwrap_or_default();
+                let provider_ids = item.provider_ids.unwrap_or_default();
 
-        ExternalIds {
-            tmdb: provider_ids.tmdb.and_then(|v| v.parse::<u32>().ok())
-           // imdb: provider_ids.imdb,
-        }
+                ExternalIds {
+                    tmdb: provider_ids.tmdb.and_then(|v| v.parse::<u32>().ok()),
+                    imdb: provider_ids.imdb,
+                }
             })
             .maybe_index_number(item.index_number)
             .maybe_description(item.overview)

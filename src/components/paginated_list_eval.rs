@@ -95,9 +95,8 @@ where
         let id = id.clone();
         //let event_id = event_id();
         move |_| async move {
-            let scroll_info: js_bindings::ScrollInfo = js_bindings::getScrollInfo(id())
-                .await
-                .unwrap();
+            let scroll_info: js_bindings::ScrollInfo =
+                js_bindings::getScrollInfo(id()).await.unwrap();
             //debug!(?s, "uhu");
             let scroll_pos = match direction {
                 ScrollDirection::Horizontal => {

@@ -84,11 +84,9 @@ impl Server for JellyfinServer {
     fn image_url(&self, media_item: &media::Media, image_type: media::ImageType) -> Option<String> {
         // jf doesnt have textless posters
         if image_type == media::ImageType::PosterTextless {
-
-          return None;
+            return None;
         }
-      
-      
+
         let tag = match image_type {
             media::ImageType::Poster => media_item.poster.as_deref(),
             media::ImageType::Backdrop => media_item.backdrop.as_deref(),
@@ -106,7 +104,7 @@ impl Server for JellyfinServer {
             media::ImageType::Backdrop => "Backdrop",
             media::ImageType::Logo => "Logo",
             media::ImageType::Thumb => "Thumb",
-            _ => return None
+            _ => return None,
         };
 
         Some(format!(
@@ -177,6 +175,7 @@ impl Server for JellyfinServer {
             .item_id(item.id.clone())
             .device_profile(cap.to_device_profile())
             .enable_all_subtitles(true)
+           // .subtitle_stream_index(3)
             .maybe_media_source_id(source.clone().map(|p| p.id))
             .build();
 
@@ -184,11 +183,12 @@ impl Server for JellyfinServer {
 
         if let Some(url) = res.media_sources.first().unwrap().transcoding_url.clone() {
             // info!("{:?}",url );
-            Ok(format!("{}{}", self.host, url))
+            Ok(format!("{}{}&SubtitleMethod=Hls", self.host, url))
         } else {
             let e = sdks::jellyfin::VideoStreamRequest::builder()
                 .item_id(item.id.clone())
                 .api_key(self.access_token.clone())
+                .subtitle_method("HLs".to_string())
                 //.media_source_id(item.id)
                 //.transcoding_protocol("hls".to_string())
                 //.transcoding_container("ts".to_string())
@@ -396,8 +396,14 @@ impl JellyfinServer {
     }
 
     pub fn from_config(config: ServerConfig) -> Result<Self> {
-        let token = config.token.clone().ok_or_else(|| anyhow!("Missing token"))?;
-        let user_id = config.user_id.clone().ok_or_else(|| anyhow!("Missing user id"))?;
+        let token = config
+            .token
+            .clone()
+            .ok_or_else(|| anyhow!("Missing token"))?;
+        let user_id = config
+            .user_id
+            .clone()
+            .ok_or_else(|| anyhow!("Missing user id"))?;
         let client = Self::create_client(&config.host, &token, &user_id)?;
         Ok(Self {
             host: config.host,

@@ -1,5 +1,5 @@
-use crate::sdks::core::RestClient;
 use crate::media;
+use crate::sdks::core::RestClient;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum_macros::{Display, EnumString};
 
@@ -38,7 +38,6 @@ pub struct MediaShort {
     //pub title: String,
     pub media_type: media::MediaType,
 }
-
 
 #[derive(Debug, Clone, Serialize, EnumString, Display)]
 #[strum(serialize_all = "snake_case")]

@@ -67,9 +67,8 @@ pub fn Sheet(open: Signal<bool>, title: Option<String>, children: Element) -> El
 
         async move {
             //let wut = read.as_ref().map(|el| el).unwrap();
-            let scroll_info: js_bindings::ScrollInfo = js_bindings::getScrollInfo(id())
-                .await
-                .unwrap();
+            let scroll_info: js_bindings::ScrollInfo =
+                js_bindings::getScrollInfo(id()).await.unwrap();
             let top = scroll_info.scroll_top;
             //debug!("on_touch_move_new: top={}", top);
 

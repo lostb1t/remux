@@ -148,6 +148,21 @@ pub struct Stream {
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+pub struct SubtitleResponse {
+    pub subtitles: Vec<Subtitle>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Subtitle {
+    pub id: String,
+    pub url: String,
+    pub sub_encoding: Option<String>,
+    pub lang: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 pub struct MetaItem {
     pub id: String,
     #[serde(rename = "type")]

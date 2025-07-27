@@ -1,28 +1,33 @@
 #![allow(non_snake_case)]
 use crate::hooks;
 use crate::media;
+use crate::sdks;
 use crate::utils::ResultLogExt;
 use anyhow::anyhow;
 use dioxus::prelude::*;
 use dioxus_logger::tracing::{debug, error, info, instrument};
 use std::{thread, time};
 //use dioxus::web::use_eval;
+use crate::js_bindings;
+use serde::Serialize;
 
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::wasm_bindgen;
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_name = playShaka)]
-    pub fn play_shaka(id: &str, url: &str);
+#[derive(Serialize, Debug, Clone)]
+pub struct TextTrack {
+    pub url: String,
+    pub lang: String,
+    pub label: String,
+    pub mime: Option<String>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub fn play_shaka(id: &str, url: &str) {
-    // fallback call using eval for desktop/webview
-    let call = format!("window.playShaka({:?}, {:?});", id, url);
-    document::eval(&call);
+impl From<sdks::stremio::Subtitle> for TextTrack {
+    fn from(sub: sdks::stremio::Subtitle) -> Self {
+        TextTrack {
+            url: sub.url,
+            lang: sub.lang.clone().unwrap_or_else(|| "und".to_string()), // fallback to "und" (undefined)
+            label: sub.lang.clone().unwrap_or_else(|| "Unknown".to_string()),
+            mime: Some("text/srt".to_string()),
+        }
+    }
 }
 
 #[component]
@@ -33,6 +38,7 @@ pub fn VideoPlayer() -> Element {
     let mut is_loading = use_signal(|| true);
     let visible = *player.visible.read();
     let media = player.media.read().clone();
+    let media_value = media.clone().unwrap();
 
     if !visible || media.is_none() {
         debug!("not visible or no media");
@@ -79,8 +85,24 @@ pub fn VideoPlayer() -> Element {
     };
 
     use_effect(move || {
-        //is_loading.set(false);
-        play_shaka("video-player", &url);
+        to_owned![url, media_value];
+        spawn(async move {
+            // if *init.read() {
+            // let _: () = js_bindings::initShaka("video-player").await.unwrap();
+            let text_tracks: Vec<TextTrack> = media_value
+                .get_opensubtitles()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|x| x.into())
+                .collect();
+            //debug!(?text_tracks);
+            let _: () = js_bindings::playShaka(url.clone(), text_tracks)
+                .await
+                .unwrap();
+            //  }
+            //is_loading.set(false);
+        });
     });
 
     rsx! {

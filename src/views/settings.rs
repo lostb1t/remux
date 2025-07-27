@@ -147,7 +147,7 @@ pub fn SettingsCatalogView() -> Element {
                                 key: "{i}",
                                 class: "flex items-center justify-between px-4 py-3 bg-zinc-900 rounded-lg hover:bg-zinc-800 transition space-x-2",
 
-        
+
 
                                 //let mut settings = settings.read().clone();
                                 // debug!(?current, "Toggling catalog");
@@ -155,9 +155,9 @@ pub fn SettingsCatalogView() -> Element {
                                 //}
 
                                 span { class: "text-white font-medium", "{catalog.title}" }
-        
+
                                 div { class: "flex items-center space-x-2",
-        
+
                                     select {
                                         class: "bg-gray-800 text-white px-3 py-2 rounded",
                                         onchange: move |evt| {
@@ -170,8 +170,8 @@ pub fn SettingsCatalogView() -> Element {
                                         },
                                         for card in components::CardVariant::iter() {
                                             option {
-        
-        
+
+
                                                 value: "{card}",
                                                 selected: catalog.card_variant.effective() == card,
                                                 "{card}"
@@ -181,7 +181,7 @@ pub fn SettingsCatalogView() -> Element {
                                     button {
                                         onclick: move |_| {
                                             let mut s = settings.read().clone();
-        
+
                                             let vec = s.catalogs.value.get_or_insert_with(|| s.catalogs.default.clone());
                                             if i > 0 {
                                                 vec.swap(i, i - 1);
@@ -194,7 +194,7 @@ pub fn SettingsCatalogView() -> Element {
                                     button {
                                         onclick: move |_| {
                                             let mut s = settings.read().clone();
-        
+
                                             let vec = s.catalogs.value.get_or_insert_with(|| s.catalogs.default.clone());
                                             if i + 1 < vec.len() {
                                                 vec.swap(i, i + 1);
@@ -217,7 +217,7 @@ pub fn SettingsCatalogView() -> Element {
                                             let catalog = catalog.clone();
                                             move |new_state| {
                                                 let mut catalog = catalog.clone();
-        
+
                                                 debug!(? new_state, "Toggling catalog");
                                                 catalog.enabled.set(new_state);
                                                 let mut s = settings.read().clone();

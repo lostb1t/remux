@@ -1,6 +1,5 @@
-use serde::{Serialize, Deserialize};
 use crate::sdks::core::{CommaSeparatedList, Endpoint, QueryParams};
-
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct GetDisplayPreferences {
@@ -23,10 +22,12 @@ impl Endpoint for GetDisplayPreferences {
     type Output = DisplayPreferencesDto;
 
     fn endpoint(&self) -> String {
-        format!("/Users/{}/DisplayPreferences/{}", self.user_id, self.display_id)
+        format!(
+            "/Users/{}/DisplayPreferences/{}",
+            self.user_id, self.display_id
+        )
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct SetDisplayPreferences {
@@ -43,7 +44,10 @@ impl Endpoint for SetDisplayPreferences {
     }
 
     fn endpoint(&self) -> String {
-        format!("/Users/{}/DisplayPreferences/{}", self.user_id, self.display_id)
+        format!(
+            "/Users/{}/DisplayPreferences/{}",
+            self.user_id, self.display_id
+        )
     }
 
     fn body(&self) -> Option<String> {

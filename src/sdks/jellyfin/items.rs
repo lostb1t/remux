@@ -337,6 +337,7 @@ pub struct VideoStreamRequest {
     pub enable_transcoding: Option<bool>,
     pub allow_video_stream_copy: Option<bool>,
     pub allow_audio_stream_copy: Option<bool>,
+    pub subtitle_method: Option<String>,
     #[serde(rename = "api_key")]
     pub api_key: Option<String>, // needed if not using header auth
     #[serde(rename = "static")]

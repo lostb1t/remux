@@ -1,8 +1,8 @@
+use super::MediaType;
 use crate::sdks::core::endpoint::Endpoint;
 use http::Method;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use super::MediaType;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Image {
@@ -25,10 +25,9 @@ impl Endpoint for Image {
     }
 
     fn parameters(&self) -> crate::sdks::core::QueryParams {
-      self.into()
+        self.into()
     }
 }
-
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ImageInfo {
@@ -46,7 +45,6 @@ impl ImageInfo {
         format!("https://image.tmdb.org/t/p/{}/{}", size, self.file_path)
     }
 }
-
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ImagesResponse {

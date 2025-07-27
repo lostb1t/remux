@@ -64,8 +64,8 @@ pub fn LoginView() -> Element {
                     server_config.set(Some(server_instance.into_config()));
                     server.set(Some(Arc::new(server_instance)));
                     // spawn(async move {
-                   // sleep(Duration::from_millis(5000)).await;
-                   // let _ = nav.push(Route::Home {});
+                    // sleep(Duration::from_millis(5000)).await;
+                    // let _ = nav.push(Route::Home {});
                     // signal.set(true);
                     //});
                     // let _ = nav.push(Route::Home {});

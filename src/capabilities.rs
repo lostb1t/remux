@@ -249,7 +249,6 @@ fn build_all_subtitle_profiles() -> Vec<sdks::jellyfin::SubtitleProfile> {
         "pgs",
         "pgssub",
         "ssa",
-
         // Other formats
         "microdvd",
         "mov_text",

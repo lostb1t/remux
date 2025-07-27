@@ -73,7 +73,7 @@ pub fn Home() -> Element {
                             .maybe_genres(genres.clone())
                             .types(media_types.clone())
                             .for_catalog(col.clone())
-                            .build();        
+                            .build();
 
                         let server = server.clone();
                         let col = col.clone();

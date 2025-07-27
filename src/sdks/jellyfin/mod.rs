@@ -11,7 +11,6 @@ pub use series::*;
 pub mod user;
 pub use user::*;
 
-
 use crate::media;
 use chrono::{DateTime, Utc};
 use serde_with::skip_serializing_none;

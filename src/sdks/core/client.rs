@@ -175,7 +175,7 @@ impl RestClient {
         if let Some(path) = path {
             url.set_path([url.path(), &path].join("/").as_str());
         }
-    
+
         // we already encode in another layer as we want finer control over the query params
         if let Some(query) = query {
             let raw = query

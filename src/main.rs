@@ -140,15 +140,15 @@ fn ServerProvider(children: Element) -> Element {
 fn ErrorHandler(children: Element) -> Element {
     rsx! {
         ErrorBoundary {
-            handle_error: |e: ErrorContext| { 
+            handle_error: |e: ErrorContext| {
               for e in &*e.errors() {
                     error!("{:?}", e);
               }
               rsx! {
                 for e in e.errors() {
-                    p { 
+                    p {
                       class: "z-125 absolute top-0 left-0 bg-red-400",
-                      "{e}" 
+                      "{e}"
                     }
                   //  {children.clone()}
                 }
@@ -184,98 +184,42 @@ fn App() -> Element {
     use_context_provider(|| VideoPlayerState::default());
     use_context_provider(|| Signal::new(None::<Arc<server::ServerInstance>>));
 
-    // let mut config_signal = hooks::use_server_config();
-    // let cfg = config_signal.peek().clone();
-
-    // use_context_provider(|| {
-    //     debug!("YOHO");
-    //     if let Some(cfg) = cfg {
-    //         if let Ok(server) = server::ServerInstance::from_config(cfg) {
-    //             debug!("server initialized");
-    //             return Signal::new(Some(Arc::new(server)));
-    //         }
-    //         debug!("server config not ok");
-    //         config_signal.set(None);
-    //     }
-    //     Signal::new(None::<Arc<server::ServerInstance>>)
-    // });
-
     rsx! {
-            // document::Link { rel: "icon", href: FAVICON }
-            document::Link { rel: "manifest", href: MANIFEST }
-            document::Script {
-                {format!(r#"
+        // document::Link { rel: "icon", href: FAVICON }
+        document::Link { rel: "manifest", href: MANIFEST }
+        document::Script {
+            {format!(r#"
   if (typeof navigator.serviceWorker !== 'undefined') {{
     navigator.serviceWorker.register('{SW}')
             }}
                   "#)}
-            }
-            document::Link { rel: "stylesheet", href: TAILWIND_CSS }
-            document::Link { rel: "stylesheet", href: MAIN_CSS }
-            document::Link { rel: "stylesheet", href: "https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.4/controls.min.css" }
-            document::Script {
-                src: "https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.7/shaka-player.compiled.min.js"
-            }
-            // document::Script { src: "https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.4/shaka-player.ui.min.js"}
-
-    document::Script {
-    {r#"
-
-window.playShaka = async function(videoId, sourceUrl) {
-    shaka.polyfill.installAll();
-
-    const video = document.getElementById(videoId);
-    const container = document.getElementById("Gidrocontsinet");
-
-    if (!video || !container) {
-        console.error("Video or container element not found");
-        return;
-    }
-
-    if (!shaka.Player.isBrowserSupported()) {
-        console.error("Shaka Player not supported");
-        return;
-    }
-
-    const player = new shaka.Player();
-    window._shaka_player = player;
-
-    await player.attach(video, true);
-
-    player.addEventListener('error', e => {
-        console.error('Shaka error', e);
-    });
-
-    try {
-        await player.load(sourceUrl);
-        console.log("Shaka load successful");
-        video.play().catch(e => console.warn("Autoplay blocked", e));
-    } catch (e) {
-        console.error('Shaka load failed', e);
-    }
-};
-            "#}
-            }
-
-            document::Meta {
-                name: "viewport",
-                content: "viewport-fit=cover, user-scalable=no, width=device-width, initial-scale=1, maximum-scale=1",
-            }
-            document::Meta { name: "mobile-web-app-capable", content: "yes" }
-            document::Meta { name: "apple-mobile-web-app-capable", content: "yes" }
-            document::Meta {
-                name: "apple-mobile-web-app-status-bar-style",
-                content: "black-translucent",
-            }
-
-            div { class: "bg-neutral-900 min-h-screen",
-
-            ErrorHandler {
-                Router::<Route> {}
-              }
-
+        }
+        document::Link { rel: "stylesheet", href: TAILWIND_CSS }
+        document::Link { rel: "stylesheet", href: MAIN_CSS }
+        document::Link { rel: "stylesheet", href: "https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.4/controls.min.css" }
+        // Currently, higher versions break hls playback
+        document::Script {
+            src: "https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.7/shaka-player.compiled.min.js"
+        }
+        document::Meta {
+            name: "viewport",
+            content: "viewport-fit=cover, user-scalable=no, width=device-width, initial-scale=1, maximum-scale=1",
+        }
+        document::Meta { name: "mobile-web-app-capable", content: "yes" }
+        document::Meta { name: "apple-mobile-web-app-capable", content: "yes" }
+        document::Meta {
+            name: "apple-mobile-web-app-status-bar-style",
+            content: "black-translucent",
         }
 
+        div { class: "bg-neutral-900 min-h-screen",
 
-        }
+        ErrorHandler {
+            Router::<Route> {}
+          }
+
+    }
+
+
+    }
 }
