@@ -66,11 +66,9 @@ pub fn Sheet(open: Signal<bool>, title: Option<String>, children: Element) -> El
         let read = content_ref.peek();
 
         async move {
-            //let wut = read.as_ref().map(|el| el).unwrap();
             let scroll_info: js_bindings::ScrollInfo =
                 js_bindings::getScrollInfo(id()).await.unwrap();
             let top = scroll_info.scroll_top;
-            //debug!("on_touch_move_new: top={}", top);
 
             // only start dragging when pulling down and inner content is at the top
             if let Some(touch) = evt.touches().get(0) {

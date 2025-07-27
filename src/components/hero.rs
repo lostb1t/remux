@@ -8,7 +8,7 @@ use crate::Route;
 use chrono::Datelike;
 use dioxus::prelude::*;
 use dioxus_free_icons::icons::io_icons::{
-    IoAirplane, IoEye, IoEyeOutline, IoHeart, IoHeartOutline,
+   IoChevronBackOutline, IoArrowBack, IoChevronForwardOutline, IoEye, IoEyeOutline, IoHeart, IoHeartOutline,
 };
 use dioxus_logger::tracing::{debug, info, trace, Level};
 use rand::Rng;
@@ -38,6 +38,9 @@ pub fn HeroList(props: HeroListProps) -> Element {
     let query = props.query.clone();
     let mut index = use_signal(|| 0_usize);
     let mut visible = use_signal(|| false);
+    let app = crate::APP_HOST.peek();
+    let is_touch = app.is_touch;
+    
     let media_items = {
         let server = server.clone();
         let query = query.clone();
@@ -69,7 +72,8 @@ pub fn HeroList(props: HeroListProps) -> Element {
     rsx! {
         div {
 
-          class: "relative mb-6",
+          class: "relative mb-8",
+          //class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-140 lg:max-h-140 w-full text-white",
          onvisible: move |evt|
 
             {
@@ -97,18 +101,30 @@ pub fn HeroList(props: HeroListProps) -> Element {
                 ),
                 render_item: move |item: &media::Media| rsx! {
                     div { class: "flex-shrink-0 w-full snap-start",
-                        HeroItem { item: item.clone(), visible: visible}
+                        HeroItem { class: "pb-0", item: item.clone(), visible: visible}
                     }
                 },
 
             }
-
+            
+            if !is_touch {
+             PaginationArrows {
+                list_len: list.len(),
+                index: index.clone(),
+                scroll_to_index: Callback::new(scroll_to_index.clone()),
+            }
+            }
+            
+            
+           div {
+              class: "",
             PaginationDots {
                 list_len: list.len(),
                 index: index.clone(),
                 max_dots: 10,
                 scroll_to_index: Callback::new(scroll_to_index.clone()),
             }
+          }
         }
     }
 }
@@ -119,6 +135,10 @@ pub struct HeroItemProps {
 
     #[props(default = false)]
     pub detail: bool,
+    
+    
+    #[props(default = "".to_string())]
+    pub class: String,
     // pub id: String,
     //   pub disable_links: bool,
     #[props(default = Signal::new(true))]
@@ -148,29 +168,6 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
             .map(|x| x.is_watched)
             .unwrap_or(false)
     });
-
-    //  if !*visible.read() {
-    //     debug!("HeroItem not visible, skipping rendering");
-    //    return rsx!{}
-    //  };
-    //let binding = server.read();
-    //let server = binding.as_ref().unwrap().clone();
-
-    let test = {
-        let item = item.clone();
-        let server = server.clone();
-        use_resource(move || {
-            async move {
-                //  debug!("does tbis get loaded");
-            }
-        })
-    };
-
-    // debug!("HeroItem: item: {:?}", &item.backdrop);
-    // let backdrop_url = match &item.backdrop {
-    //     Some(backdrop) => server.image_url(&item, media::ImageType::Backdrop),
-    //     None => server.image_url(&item, media::ImageType::Poster),
-    //};
 
     let backdrop_url = {
         let item = item.clone();
@@ -244,7 +241,8 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
     //debug!(?backdrop_url);
     rsx! {
             div {
-                class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-140 lg:max-h-140 w-full text-white overflow-hidden",
+               //class: "absolute inset-0",
+               class: "relative min-h-[80vh] max-h-[80vh] lg:min-h-140 lg:max-h-140 w-full text-white overflow-hidden {props.class}",
                 onvisible: move |evt|
 
                 {
@@ -279,8 +277,33 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                         attr: vec![],
                     }
                   }
+   
+                   // div { class: "absolute bottom-0 left-0 right-0 h-1/2 bg-gradient-to-t from-neutral-900 via-neutral-900/100 to-transparent  pointer-events-none" }
+//div {
+//    class: "absolute bottom-0 left-0 right-0 h-1/2 \
+//            backdrop-blur-[80px] pointer-events-none \
+//            [mask-image:linear-gradient(to_top,black,transparent)]"
+//}
+//div {
+//    class: "absolute bottom-0 left-0 right-0 h-1/2 \
+//            backdrop-blur-[60px] pointer-events-none \
+//            [mask-image:linear-gradient(to_top,black_0px,black_50px,transparent_300px)]"
+//}
 
-                    div { class: "absolute bottom-0 left-0 right-0 h-1/2 bg-gradient-to-t from-neutral-900 via-neutral-900/100 to-transparent pointer-events-none" }
+//div { class: "absolute bottom-0 left-0 right-0 h-1/2 pointer-events-none" ,
+    // Layer 1: solid black base
+    
+
+    // Layer 2: gradient fade + blur above it
+    div {
+        class: "absolute h-1/2 left-0 right-0 bottom-0 \
+                [mask-image:linear-gradient(to_top,black,transparent)] \
+                backdrop-blur-[80px]"
+    }
+    div {
+                   div { class: "absolute bottom-0 left-0 right-0 h-50 bg-gradient-to-t from-neutral-900/100 to-transparent  pointer-events-none" }
+    }
+//}
                 }
 
                 // Overlay gradient
@@ -288,14 +311,14 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
 
                 // Foreground content (text + play)
                 div {
-                    class: "sidebar-offset absolute w-full bottom-0 lg:min-w-md lg:max-w-md flex flex-col justify-center p-6 space-y-4",
+                    class: "sidebar-offset absolute w-full bottom-0 lg:max-w-md flex flex-col text-center justify-center lg:text-left lg:justify-left pb-4 px-7 lg:px-18 space-y-4",
 
                     Link {
                         to: Route::MediaDetailView {
                             media_type: item.media_type.clone(),
                             id: item.id.clone(),
                         },
-                        class: "space-y-4 block",
+                        class: "space-y-2 block",
 
 
 
@@ -326,7 +349,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                         //}
 
                         //if !item.genres.is_empty() {
-                        p { class: "text-sm ml-6 mr-6 text-center truncate font-medium",
+                        div { class: "text-center lg:text-left text-sm truncate font-medium",
                             "{subtitle_vec.join(\" · \")}"
                         }
                                     // }
@@ -337,7 +360,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
                     //     class: "w-full",
                     //if props.detail {
                     // if *loaded.read() {
-                    div { class: "flex gap-2.5 items-center justify-center",
+                    div { class: "flex gap-2.5 items-center justify-center lg:items-left lg:justify-left",
 
                         components::PlayButton { class: "min-w-40", media_item: item.clone() }
 
@@ -412,7 +435,7 @@ pub fn HeroItem(props: HeroItemProps) -> Element {
             // Description
             if props.detail {
                 div {
-                    class: "sidebar-offset px-6 space-y-4 flex flex-col",
+                    class: "sidebar-offset mt-6 px-6 space-y-4 flex flex-col",
 
                     if item.description.is_some() {
                         Link {
@@ -481,6 +504,60 @@ pub fn PaginationDots(props: PaginationDotsProps) -> Element {
     rsx! {
         div { class: "sidebar-offset flex justify-center items-center",
             {pagination_dots.collect::<Vec<_>>().into_iter()}
+        }
+    }
+}
+
+#[derive(Props, PartialEq, Clone)]
+pub struct PaginationArrowsProps {
+    pub list_len: usize,
+    pub index: Signal<usize>,
+    pub scroll_to_index: Callback<usize>,
+}
+
+#[component]
+pub fn PaginationArrows(props: PaginationArrowsProps) -> Element {
+    let current_index = *props.index.read();
+    let mut index = props.index;
+    let total_items = props.list_len;
+    let scroll_to_index = props.scroll_to_index.clone();
+
+    rsx! {
+        div { 
+          class: "right-8 absolute top-1/2 -translate-y-1/2",
+                        components::Button {
+                            variant: components::ButtonVariant::Secondary,
+                onclick: move |_| {
+                    let i = current_index + 1;
+                    index.set(i);
+                    scroll_to_index.call(i);
+                },
+Icon {
+                                width: 28,
+                                height: 28,
+                                fill: "white",
+                                icon: IoChevronForwardOutline,
+                            }
+              }
+        }
+        if current_index > 0 {
+        div { 
+          class: "left-8 absolute top-1/2 -translate-y-1/2",
+                        components::Button {
+                            variant: components::ButtonVariant::Secondary,
+                onclick: move |_| {
+                    let i = current_index - 1;
+                    index.set(i);
+                    scroll_to_index.call(i);
+                },
+Icon {
+                                width: 28,
+                                height: 28,
+                                //fill: "white",
+                                icon: IoChevronBackOutline,
+                            }
+              }
+            }
         }
     }
 }
