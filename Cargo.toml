@@ -66,6 +66,8 @@ dioxus-use-js = "0.2.0-alpha.5"
 delegate = "0.13.4"
 #icondata = "0.6.0"
 
+dioxus-motion = { git = "https://github.com/wheregmis/dioxus-motion", branch = "minimize_rerender"}
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 rand = { version = "0.9", features = ["std", "os_rng"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
@@ -80,7 +82,7 @@ uuid = { version = "1.17.0", features = ["v4"] }
 [features]
 bundle = []
 default = ["web"]
-web = ["dioxus/web", "tokio_with_wasm", "dep:web-sys", "whoami/web", "whoami/web-sys"]
+web = ["dioxus/web", "tokio_with_wasm", "dep:web-sys", "whoami/web", "whoami/web-sys", "dioxus-motion/web", "dioxus-motion/transitions"]
 server = ["dioxus/server", "dep:whoami"]
 desktop = ["dioxus/desktop", "dep:whoami"]
 mobile = ["dioxus/mobile", "dep:whoami"]

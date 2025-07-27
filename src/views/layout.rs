@@ -6,7 +6,7 @@ use crate::ServerProvider;
 use dioxus::prelude::*;
 use dioxus_elements::div;
 use dioxus_logger::tracing::{info, Level};
-//use dioxus_motion::prelude::*;
+use dioxus_motion::prelude::*;
 
 #[component]
 fn LoadingProvider(children: Element) -> Element {
@@ -33,6 +33,7 @@ pub fn AuthenticatedLayout() -> Element {
 pub fn MainLayout() -> Element {
     let mut player = components::use_video_player();
     rsx! {
+        ServerProvider {
         div { class: "pb-[calc(2rem+env(safe-area-inset-bottom))] md:pb-[env(safe-area-inset-bottom)] min-h-screen flex w-full",
 
             // Sidebar with fixed width on lg+
@@ -44,8 +45,8 @@ pub fn MainLayout() -> Element {
             div {
                 // class: "flex-auto min-w-0 pb-10 lg:pb-6 md:ml-50 md:w-[calc(100%-13rem)] ",
                 class: "flex-auto min-h-screen min-w-0 pb-10 lg:pb-6",
-
-                LoadingProvider { Outlet::<Route> {} }
+AnimatedOutlet::<Route> {}
+                //LoadingProvider { Outlet::<Route> {} }
             }
         }
 
@@ -53,6 +54,7 @@ pub fn MainLayout() -> Element {
         if *player.visible.read() {
             components::VideoPlayer {}
         }
+      }
     }
 }
 

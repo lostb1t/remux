@@ -13,6 +13,7 @@ use views::{
     settings::SettingsCatalogView, AuthenticatedLayout, HomeTransitionView as Home, LoginView,
     MainLayout, SafeSpaceLayout, SearchView, UnauthenticatedLayout,
 };
+use dioxus_motion::prelude::*;
 
 mod addons;
 mod capabilities;
@@ -27,9 +28,30 @@ mod settings;
 mod utils;
 mod views;
 
-#[derive(Debug, Clone, Routable, PartialEq)]
+#[derive(Debug, Clone, Routable, PartialEq, MotionTransitions)]
 #[rustfmt::skip]
 pub enum Route {
+  #[layout(MainLayout)]
+    #[route("/login")]
+    LoginView {},
+    #[route("/")]
+    #[transition(SlideLeft)]
+    Home {},
+    #[route("/media/:media_type/:id")]
+    #[transition(SlideLeft)]
+    MediaDetailView { media_type: media::MediaType, id: String },
+    #[route("/search/:query")]
+    SearchView { query: String },
+    #[route("/settings")]
+    Settings {},
+    #[route("/settings/catalog")]
+    SettingsCatalogView {}
+}
+
+
+#[derive(Debug, Clone, Routable, PartialEq)]
+#[rustfmt::skip]
+pub enum Router {
     #[layout(UnauthenticatedLayout)]
       #[route("/login")]
       LoginView {},
@@ -128,7 +150,7 @@ fn ServerProvider(children: Element) -> Element {
     }
 
     if !is_ready() {
-        return rsx! { Loading {} };
+       return rsx! { Loading {} };
     }
 
     rsx! {
@@ -215,7 +237,7 @@ fn App() -> Element {
         div { class: "bg-neutral-900 min-h-screen",
 
         ErrorHandler {
-            Router::<Route> {}
+          Router::<Route> {}
           }
 
     }
