@@ -87,21 +87,20 @@ pub fn VideoPlayer() -> Element {
     use_effect(move || {
         to_owned![url, media_value];
         spawn(async move {
-            // if *init.read() {
-            // let _: () = js_bindings::initShaka("video-player").await.unwrap();
-            let text_tracks: Vec<TextTrack> = media_value
-                .get_opensubtitles()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|x| x.into())
-                .collect();
-            //debug!(?text_tracks);
+
+            //let text_tracks: Vec<TextTrack> = media_value
+            //    .get_opensubtitles()
+            //    .await
+            //    .unwrap_or_default()
+            //    .into_iter()
+            //    .map(|x| x.into())
+            //    .collect();
+            
+            let text_tracks: Vec<TextTrack> = vec![];
+
             let _: () = js_bindings::playShaka(url.clone(), text_tracks)
                 .await
                 .unwrap();
-            //  }
-            //is_loading.set(false);
         });
     });
 

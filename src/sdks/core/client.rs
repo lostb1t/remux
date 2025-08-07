@@ -173,7 +173,7 @@ impl RestClient {
         let mut url = self.baseurl.clone();
 
         if let Some(path) = path {
-            url.set_path([url.path(), &path].join("/").as_str());
+            url = url.join(&path)?;
         }
 
         // we already encode in another layer as we want finer control over the query params
