@@ -4,7 +4,7 @@ Instead of local files, everything is routed to stremio addons.
 
 Aims to be compatible with all jellyfin clients (eventually)
 
-Very experimental 🔥
+Status: Very experimental 🔥
 
 ```yml
 version: "3"
