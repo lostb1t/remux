@@ -883,7 +883,7 @@ pub struct Meta {
     pub genres: Option<Vec<String>>,
     pub release_info: Option<String>,
     
-    #[serde(deserialize_with = "deserialize_option_duration")]
+    #[serde(default, deserialize_with = "deserialize_option_duration")]
     pub runtime: Option<Duration>,
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
