@@ -6,6 +6,8 @@ Aims to be compatible with all jellyfin clients (eventually)
 
 Status: Very experimental 🔥
 
+Highly recommend using https://github.com/Viren070/AIOStreams to manage your addons.
+
 ```yml
 version: "3"
 services:
