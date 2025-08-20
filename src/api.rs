@@ -21,7 +21,7 @@ use uuid::Uuid;
 use axum_extra::response::file_stream::FileStream;
 use futures_util::StreamExt;
 use futures_util::stream::Stream;
-
+use tracing::info;
 use std::convert::Infallible;
 use std::io;
 use tokio_util::io::ReaderStream;
@@ -390,7 +390,7 @@ pub async fn get_items(
     mut q: jellyfin::GetItemsQuery,
     count: bool,
 ) -> Result<ItemsQueryResult> {
-    dbg!(&q);
+   // trace!(&q);
 
     let search = q.search_term.clone().or(q.name_starts_with.clone()); // for now, dont do a few requests
     // only support Movie and Series for search
@@ -737,7 +737,7 @@ pub async fn items_images(
 
         // state.tmdb
         //let mut url: Option<String> = None;
-        dbg!(&meta);
+        //dbg!(&meta);
         if image_type == "primary" && meta.poster.is_some() {
             url = meta.poster;
         }
@@ -854,6 +854,7 @@ pub async fn videos_stream(
     //    .one(&state.db.pool)
     //    .await?
     //    .unwrap();
+
     let (id, media_type) = utils::decode_media_uuid(&id).unwrap();
     let streams = state
         .stremio
@@ -872,7 +873,8 @@ pub async fn videos_stream(
                 .unwrap_or(true)
         })
         .unwrap();
-
+    
+    info!("starting video playback for: {:?}", &stream); 
     //let decoded = URL_SAFE.decode(query.media_source_id.unwrap())?;
     //let url = String::from_utf8(decoded)?;
 

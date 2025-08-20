@@ -13,6 +13,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 use eyre;
 use std::str::FromStr;
 use uuid::Uuid;
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub struct StremioService {
@@ -157,6 +158,7 @@ impl StremioService {
                 return addon.get_meta(imdb_id, media_type, season, episode).await;
             }
         }
+        warn!("no addons with meta resources avaiable");
         Ok(None)
     }
 
