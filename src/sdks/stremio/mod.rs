@@ -12,8 +12,8 @@ use std::{collections::HashMap, path::Path};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 use eyre;
 use std::str::FromStr;
-use uuid::Uuid;
 use tracing::warn;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct StremioService {
@@ -195,7 +195,6 @@ impl StremioService {
             })
             .ok_or_else(|| eyre::eyre!("catalog not found"))?;
 
-        // now call get_items
         catalog.get_items(addon, search, skip).await
     }
 }
@@ -406,7 +405,20 @@ impl Catalog {
             genre: None,
             skip,
         };
-        Ok(endpoint.query(&addon.client).await?.metas)
+        Ok(endpoint
+            .query(&addon.client)
+            .await?
+            .metas
+            .into_iter()
+            .filter(|meta| {
+                if meta.imdb_id.is_none() {
+                    // dbg!(&meta);
+                    warn!("Meta without imdb_id found in catalog: {}", self.id);
+                    return false;
+                }
+                true
+            })
+            .collect())
     }
 }
 
@@ -842,7 +854,7 @@ pub struct Subtitle {
 pub struct Meta {
     // #[serde(alias = "imdb_id", alias = "imdbId")]
     #[serde(rename = "imdb_id")]
-    pub imdb_id: String,
+    pub imdb_id: Option<String>,
     pub country: Option<String>,
     pub description: Option<String>,
     pub genre: Option<Vec<String>>,

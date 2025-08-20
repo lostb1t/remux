@@ -164,9 +164,11 @@ impl From<tmdb::Episode> for db::media::Model {
 
 impl From<stremio::Meta> for jellyfin::BaseItemDto {
     fn from(meta: stremio::Meta) -> Self {
+        // dbg!(&meta);
         let media_type: jellyfin::MediaType = meta.media_type.into();
+
         jellyfin::BaseItemDto {
-            id: Some(utils::encode_media_uuid(&meta.imdb_id, media_type)),
+            id: Some(utils::encode_media_uuid(&meta.imdb_id.unwrap(), media_type)),
             name: meta.name.clone(),
             overview: meta.description.clone(),
             type_: Some(media_type),
