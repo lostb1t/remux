@@ -35,5 +35,6 @@ services:
 - p2p
 - favorites
 - external subtitles
+- anything persistant like continue watching etc
 - no user management yet, so auth is open. Can use any user/pw combi
 - filtering does not work in library view and probaply never will
