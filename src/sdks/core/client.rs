@@ -219,7 +219,6 @@ impl RestClient {
             let path = path.trim_start_matches('/');
             url = url.join(&path)?;
         }
-        
 
         // we already encode in another layer as we want finer control over the query params
         if let Some(query) = query {
@@ -233,7 +232,7 @@ impl RestClient {
         };
 
         url = url.as_str().parse::<url::Url>()?;
-//dbg!(&url);
+        //dbg!(&url);
         Ok(url)
     }
 }

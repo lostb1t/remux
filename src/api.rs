@@ -301,7 +301,7 @@ pub async fn get_items_query_conditions(
         conditions = conditions.add(cond);
     }
 
-  if let Some(types) = &q.include_item_types {
+    if let Some(types) = &q.include_item_types {
         //conditions = conditions.add(db::media::Column::MediaType.is_in(types.clone()));
     }
 
@@ -390,24 +390,24 @@ pub async fn get_items(
     mut q: jellyfin::GetItemsQuery,
     count: bool,
 ) -> Result<ItemsQueryResult> {
-    dbg!(&q);  
-    
-    let search = q.search_term.clone().or(q.name_starts_with.clone());// for now, dont do a few requests
-// only support Movie and Series for search
+    dbg!(&q);
 
-if search.is_some() {
+    let search = q.search_term.clone().or(q.name_starts_with.clone()); // for now, dont do a few requests
+    // only support Movie and Series for search
 
-if let Some(types) = &q.include_item_types {
-    
-    if ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series].contains(&types[0]) {
-        return Ok(ItemsQueryResult {
-            items: vec![],
-            total_count: 0,
-        });
+    if search.is_some() {
+        if let Some(types) = &q.include_item_types {
+            if ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series]
+                .contains(&types[0])
+            {
+                return Ok(ItemsQueryResult {
+                    items: vec![],
+                    total_count: 0,
+                });
+            }
+        }
     }
-}
-}
-   
+
     if q.filters.is_some() {
         return Ok(ItemsQueryResult {
             // items: items,
@@ -465,15 +465,13 @@ if let Some(types) = &q.include_item_types {
         }
     }
 
-    
-
     //let endpoint = match
     //1sdks::tmdb::Movie::
     //let res = state.tmdb
     //let endpoint = sdks::tmdb::Movie::Discover
 
     let mut items: Vec<jellyfin::BaseItemDto> = vec![];
-    
+
     // single item. We assume details
     if let Some(ids) = &q.ids {
         let (id, media_type) = utils::decode_media_uuid(&ids[0]).unwrap();
@@ -514,23 +512,22 @@ if let Some(types) = &q.include_item_types {
         } else {
             None
         };
-        
+
         if catalog.is_none() && q.include_item_types.is_some() {
-          
-          let media_type = q.include_item_types.unwrap()[0];
-          if let Some(ref t) = search {
-          catalog = state.stremio.get_search_catalog(media_type.into());
-        }else{
-                    catalog = state.stremio.get_library_catalog(media_type.into());   
+            let media_type = q.include_item_types.unwrap()[0];
+            if let Some(ref t) = search {
+                catalog = state.stremio.get_search_catalog(media_type.into());
+            } else {
+                catalog = state.stremio.get_library_catalog(media_type.into());
+            }
+        } else {
+            if catalog.is_none() {
+                catalog = state.stremio.get_catalogs().first().cloned();
+            };
         }
-        } else {  
-        if catalog.is_none() {
-           catalog = state.stremio.get_catalogs().first().cloned();
-        };
-      }
 
         let catalog = catalog.expect("at least one catalog should exist");
-//dbg!(&catalog);
+        //dbg!(&catalog);
         items = state
             .stremio
             .get_catalog_items(catalog.uuid.clone(), search, Some(skip))
@@ -773,12 +770,7 @@ pub async fn items_playbackinfo(
 
     let streams: Vec<sdks::stremio::Stream> = state
         .stremio
-        .get_streams(
-            id,
-            media_type.into(),
-            None,
-            None,
-        )
+        .get_streams(id, media_type.into(), None, None)
         .await?
         .into_iter()
         .filter(|x| {
@@ -865,12 +857,7 @@ pub async fn videos_stream(
     let (id, media_type) = utils::decode_media_uuid(&id).unwrap();
     let streams = state
         .stremio
-        .get_streams(
-            id,
-            media_type.into(),
-            None,
-            None,
-        )
+        .get_streams(id, media_type.into(), None, None)
         .await
         .unwrap();
 

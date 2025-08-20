@@ -585,7 +585,7 @@ impl Stream {
     /// could have used the url but these tend to be crazy long
     pub fn id(&self) -> String {
         // dbg!(self);
-        let hints    = self.behavior_hints.clone().unwrap();
+        let hints = self.behavior_hints.clone().unwrap();
         let s = format!(
             "{}{}{}",
             hints.video_size.unwrap_or(0),

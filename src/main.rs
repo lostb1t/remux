@@ -28,6 +28,7 @@ use futures::future::BoxFuture;
 //use futures::stream::StreamExt;
 use http::Uri;
 //use itertools::Itertools;
+use figment;
 use futures_util::StreamExt;
 use reqwest::header::LOCATION;
 use sea_orm;
@@ -39,6 +40,8 @@ use sea_orm::QuerySelect;
 use serde_json::json;
 use std;
 use std::collections::HashMap;
+use std::env;
+use std::fs;
 use std::path::Path;
 use timed;
 use tower::Layer;
@@ -50,9 +53,6 @@ use tracing::instrument;
 use tracing::warn;
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
-use std::fs;
-use std::env;
-use figment;
 
 mod api;
 mod conversions;
@@ -66,15 +66,12 @@ mod utils;
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     setup_logging();
-    //std::env::set_var("DATABASE_URL", "sqlite://db.sqlite");
-    //let conn = db::Database::new().await?;
 
-  // let config: Config = Config::load_or_create().unwrap();
-   let config: Config = figment::Figment::new()
-  //  .merge(figmentToml::file("Cargo.toml"))
-    .merge(figment::providers::Env::prefixed(""))
-    .extract()?;
-  
+    let config: Config = figment::Figment::new()
+        //  .merge(figmentToml::file("Cargo.toml"))
+        .merge(figment::providers::Env::prefixed(""))
+        .extract()?;
+
     let state = api::AppState {
         config: config.clone(),
         db: db::Database::new().await?,
@@ -90,12 +87,8 @@ async fn main() -> Result<()> {
         .layer(
             Router::new()
                 .merge(api::routes())
-                // .nest("/emby", api::routes())
                 .with_state(state)
-                // .layer(middleware::from_fn(normalize_path))
                 .layer(tower_http::trace::TraceLayer::new_for_http())
-                //.nest_service("/", ServeDir::new("../jellyfin-web/dist"))
-                //.fallback(handle_404),
                 .fallback_service(ServeDir::new("../jellyfin-web/dist")),
         )
         .into_make_service();
@@ -107,7 +100,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Config {
     pub addons: Vec<String>,
@@ -117,17 +109,12 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             addons: vec![
-            "https://torrentio.strem.fun/manifest.json".to_string(),
-        
-
-            "https://v3-cinemeta.strem.io/manifest.json".to_string()
-          
+                "https://torrentio.strem.fun/manifest.json".to_string(),
+                "https://v3-cinemeta.strem.io/manifest.json".to_string(),
             ],
         }
     }
 }
-
-
 
 impl Config {
     pub fn load() -> Result<Self> {
@@ -135,7 +122,7 @@ impl Config {
         let data = fs::read_to_string(path)?;
         Ok(toml::from_str(&data)?)
     }
-    
+
     pub fn load_or_create() -> Result<Self> {
         let path = env::var("CONFIG").unwrap_or_else(|_| "config.toml".into());
 
@@ -158,11 +145,11 @@ impl Config {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 struct AddonConfig {
-   url: String,
-   //search_movies: bool,
-   //search_shows: bool,
-   //meta_shows: bool,
-   //meta_movies: bool
+    url: String,
+    //search_movies: bool,
+    //search_shows: bool,
+    //meta_shows: bool,
+    //meta_movies: bool
 }
 
 async fn spawn_background_tasks(state: api::AppState) -> Result<()> {
@@ -197,34 +184,6 @@ async fn spawn_background_tasks(state: api::AppState) -> Result<()> {
     });
 
     Ok(())
-}
-
-pub fn rewrite_request_uri_old<B>(mut req: Request<B>) -> Request<B> {
-    //async fn normalize_path(mut req: Request, next: Next) -> Result<Response, StatusCode> {
-    let original_uri = req.uri().clone();
-    let path = original_uri.path();
-    dbg!("Yooo");
-    // Make path lowercase
-    let stripped = path.replace("/emby", "");
-
-    let lowercased = stripped.to_ascii_lowercase();
-
-    // Preserve query string if present
-    let query = original_uri
-        .query()
-        .map(|q| format!("?{}", q))
-        .unwrap_or_default();
-    let new_path_and_query = format!("{}{}", lowercased, query);
-
-    let new_uri = Uri::builder()
-        .path_and_query(new_path_and_query)
-        .build()
-        .map_err(|_| StatusCode::BAD_REQUEST)
-        .unwrap();
-
-    *req.uri_mut() = new_uri;
-
-    req
 }
 
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
