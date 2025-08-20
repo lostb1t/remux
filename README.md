@@ -2,7 +2,9 @@ Total replacement for the Jellyfin server.
 
 Instead of local files, everything is routed to stremio addons.
 
-Aims to be comparible with all jellyfin clients (eventually)
+Aims to be compatible with all jellyfin clients (eventually)
+
+Very experimental 🔥
 
 ```yml
 version: "3"
