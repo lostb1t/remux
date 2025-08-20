@@ -32,14 +32,14 @@ impl Addon {
         let url = u.replace("manifest.json", "");
         let client = super::core::RestClient::without_cache(&url)?;
         let mut manifest = ManifestEndpoint {}.query(&client).await?;
-       //dbf
-       //manifest.catalogs[0].uuid = "catalog:test".to_string();
+        //dbf
+        //manifest.catalogs[0].uuid = "catalog:test".to_string();
 
         Ok(Self {
             url,
             manifest,
             client,
-           // config
+            // config
         })
     }
 
@@ -64,7 +64,7 @@ impl Addon {
         .await?
         .streams
         .into_iter()
-     //   .filter(|x| x.is_valid())
+        .filter(|x| x.is_valid())
         .collect())
     }
 
@@ -382,15 +382,15 @@ fn new_uuid() -> String {
 }
 
 impl Catalog {
-  fn has_search(&self) -> bool {
-for extra in &self.extra {
-  if extra.name == "search".to_string() {
-    return true;
-  }
-}
-false
-}
-  
+    fn has_search(&self) -> bool {
+        for extra in &self.extra {
+            if extra.name == "search".to_string() {
+                return true;
+            }
+        }
+        false
+    }
+
     pub async fn get_items(
         &self,
         addon: &Addon,
@@ -584,7 +584,8 @@ impl Stream {
 
     /// could have used the url but these tend to be crazy long
     pub fn id(&self) -> String {
-        let hints = self.behavior_hints.clone().unwrap();
+        // dbg!(self);
+        let hints    = self.behavior_hints.clone().unwrap();
         let s = format!(
             "{}{}{}",
             hints.video_size.unwrap_or(0),
@@ -594,9 +595,9 @@ impl Stream {
         URL_SAFE.encode(s)
     }
 
-    // pub fn is_valid(&self) -> bool {
-    //     self.behavior_hints.is_some()
-    // }
+    pub fn is_valid(&self) -> bool {
+        self.behavior_hints.is_some()
+    }
 
     pub fn filesize(&self) -> Option<u64> {
         self.behavior_hints.as_ref()?.video_size
@@ -659,14 +660,14 @@ impl Stream {
     //     url_name
     // }
 
-    pub fn is_valid(&self) -> bool {
-        self.url.is_some()
-            && self
-                .behavior_hints
-                .as_ref()
-                .map(|h| h.binge_group.is_some() && h.filename.is_some())
-                .unwrap_or(false)
-    }
+    // pub fn is_valid(&self) -> bool {
+    //     self.url.is_some()
+    //         && self
+    //             .behavior_hints
+    //             .as_ref()
+    //             .map(|h| h.binge_group.is_some() && h.filename.is_some())
+    //             .unwrap_or(false)
+    // }
 
     pub fn into_media_source(&self) -> jellyfin::MediaSourceInfo {
         let mut video = jellyfin::MediaStream {
@@ -786,12 +787,13 @@ impl Stream {
             supports_direct_stream: Some(true),
             supports_direct_play: Some(true),
             //is_remote: Some(true),
-name: {
-    match &self.description {
-        Some(desc) => format!("{}\n{}", self.name.as_ref().unwrap(), desc),
-        None => self.name.clone().unwrap(),
-    }
-}.into(),
+            name: {
+                match &self.description {
+                    Some(desc) => format!("{}\n{}", self.name.as_ref().unwrap(), desc),
+                    None => self.name.clone().unwrap(),
+                }
+            }
+            .into(),
             media_streams: Some({
                 let mut streams = vec![video];
                 if has_audio {
