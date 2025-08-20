@@ -21,11 +21,12 @@ services:
 
 ### What works
 
-- library view
-- Collections (mapped to catalogs)
+- libraries
+- collections (mapped to catalogs)
 - search
-- builtin rows: recently added movies and recently added shows
+- home view with builtin rows: recently added movies and recently added shows
 - direct playback
+- stream selection
 
 ### Wat does not work yet
 
