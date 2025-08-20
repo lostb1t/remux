@@ -1,0 +1,972 @@
+use axum::Extension;
+use axum::Json;
+use axum::Router;
+use axum::extract::{Path, State};
+use axum::response::Redirect;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::routing::get_service;
+use axum::routing::post;
+use axum_extra::extract::Query;
+//use axum_route::route;
+use chrono;
+use eyre;
+use http::StatusCode;
+use std::str::FromStr;
+//use crate::sdks::tmdb;
+use serde::Deserialize;
+use tower_http::services::{ServeDir, ServeFile};
+use uuid::Uuid;
+//use bytes::Bytes;
+use axum_extra::response::file_stream::FileStream;
+use futures_util::StreamExt;
+use futures_util::stream::Stream;
+
+use std::convert::Infallible;
+use std::io;
+use tokio_util::io::ReaderStream;
+use tokio_util::io::StreamReader;
+//use futures_util::StreamExt;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE};
+use ffprobe;
+use futures::future::join_all;
+use futures_util::TryStreamExt;
+use headers;
+use sea_orm::ColumnTrait;
+use sea_orm::EntityTrait;
+use sea_orm::Order;
+use sea_orm::PaginatorTrait;
+use sea_orm::QueryFilter;
+use sea_orm::QueryOrder;
+use sea_orm::QuerySelect;
+use sea_orm::RelationTrait;
+use serde_json::json;
+use tracing::warn;
+// uwuse sea_orm::prelude::*;
+
+use crate::db;
+use crate::errors::Result;
+use crate::rewrite_request_uri;
+use crate::sdks;
+use crate::sdks::{jellyfin, stremio, tmdb};
+use crate::utils;
+use chrono::Datelike;
+use tower::util::MapRequestLayer;
+//use crate::AppState;
+
+#[derive(Debug, Clone)]
+pub struct AppState {
+    pub config: crate::Config,
+    pub db: db::Database,
+    pub tmdb: sdks::core::RestClient,
+    pub stremio: sdks::stremio::StremioService,
+}
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/users/authenticatebyname", post(users_authenticatebyname))
+        .route("/system/info/public", get(system_info_public))
+        .route("/system/ping", get(system_ping))
+        .route("/system/endpoint", get(system_endpoint))
+        .route("/userviews", get(userviews))
+        .route("/userviews/groupingoptions", get(userviews_groupingoptions))
+        .route("/library/virtualfolders", get(library_virtualfolders))
+        .route("/items/suggestions", get(items_suggestions))
+        .route("/shows/nextup", get(mock_items))
+        .route("/shows/{id}/seasons", get(shows_seasons))
+        .route("/shows/{id}/episodes", get(shows_episodes))
+        .route("/items/latest", get(items_flat))
+        .route("/useritems/resume", get(stub))
+        .route("/persons", get(persons))
+        .route("/items", get(items))
+        .route("/Items", get(items))
+        .route("/items/{id}/images/{image_type}", get(items_images))
+        .route("/items/{id}", get(items_get))
+        .route("/items/{id}/playbackinfo", post(items_playbackinfo))
+        .route("/items/filters", get(items_filters))
+        .route("/users/me", get(users_me))
+        .route("/users/{id}", get(users_me))
+        .route("/users/{user_id}/items", get(items))
+        .route("/users/{user_id}/items/{id}", get(users_items_get))
+        .route("/users/{id}/views", get(userviews))
+        .route("/users/{id}/groupingoptions", get(users_groupingoptions))
+        .route("/videos/{id}/stream", get(videos_stream))
+        .route("/playback/bitratetest", get(playback_bitratetest))
+        .route("/displaypreferences/usersettings", get(user_settings))
+        .route("/system/info", get(system_info))
+        // stubs. to impltement
+        .route("/sessions/playing", post(stub))
+        .route("/userimage", get(stub))
+        .route("/sessions/capabilities/full", post(stub))
+        .route("/quickconnect/enabled", post(stub))
+        .route("/branding/configuration", post(stub))
+        .route("/branding/configuration", get(stub))
+        .route("/quickconnect/enabled", get(stub))
+
+    //.map_request(rewrite_request_uri)
+    //.layer(MapRequestLayer::new(rewrite_request_uri))
+    // .route("/jellyfin/Items/{id}/Image/{image_type}", get_service(ServeFile::new("assets/placeholder_poster.jpg")))
+}
+
+fn server_id() -> String {
+    "remux".to_string()
+}
+
+pub fn test_media_source() -> jellyfin::MediaSourceInfo {
+    jellyfin::MediaSourceInfo {
+           id: Some("test".to_string()),
+           name: Some("test gues test yes".to_string()),
+           ///type_: Some(jellyfin::types::MediaSourceType::Video),
+           //type_: Some(jellyfin::types::BaseItemKind::Movie),
+           media_streams: Some(vec![
+             jellyfin::MediaStream {
+            // id: Some("1234".to_string()),
+            // name: Some("test".to_string()),
+             type_: Some(jellyfin::MediaStreamType::Video),
+             ..Default::default()
+             },
+             jellyfin::MediaStream {
+             index: Some(0),
+             display_title: Some("test".to_string()),
+             type_: Some(jellyfin::MediaStreamType::Subtitle),
+             ..Default::default()
+           }
+            ]),
+           ..Default::default()
+         }
+}
+
+pub fn test_items() -> Vec<jellyfin::BaseItemDto> {
+    vec![jellyfin::BaseItemDto {
+        id: Some("tt2294629".to_string()),
+        name: Some("test".to_string()),
+        type_: Some(sdks::jellyfin::MediaType::Movie),
+        //original_title: Some("yogo".to_string()),
+        media_sources: Some(vec![test_media_source()]),
+        ..Default::default()
+    }]
+}
+
+//#[route(get, "/jellyfin/System/Info/Public")]
+
+/// TODO: make a real server id
+pub async fn system_info_public(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::PublicSystemInfo {
+        local_address: Some("".to_string()),
+        server_name: Some("Remux".to_string()),
+        //id: Some("remux".to_string()),
+        product_name: Some("Jellyfin Server".to_string()),
+        startup_wizard_completed: Some(true),
+        version: Some("10.10.7".to_string()),
+        operating_system: Some("".to_string()),
+        id: Some(server_id()),
+        ..Default::default()
+    }))
+}
+
+pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::SystemInfo {
+        id: Some(server_id()),
+        server_name: Some(server_id()),
+        // server_id: Some(server_id()),
+        ..Default::default()
+    }))
+}
+
+pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    Ok(Json(json!("Remux Server")))
+}
+
+pub async fn system_endpoint(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(json!({
+        "IsLocal": false,
+        "IsInNetwork": false,
+
+    })))
+}
+
+pub async fn user_settings(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    Ok(Json(json!({})))
+}
+
+pub async fn users_authenticatebyname(
+    State(state): State<AppState>,
+    Json(data): Json<jellyfin::AuthenticateUserByName>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::AuthenticationResult {
+        access_token: Some("sometoken".to_string()),
+        server_id: Some(server_id()),
+        user: Some(jellyfin::UserDto {
+            server_id: Some(server_id()),
+            name: Some("test".to_string()),
+            id: Some(1.to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }))
+}
+
+/// This sbould hold dynamic collections
+pub async fn userviews(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    //let mut items: Vec<jellyfin::BaseItemDto> = state.stremio.get_catalogs().await?.into_iter().map(jellyfin::BaseItemDto::from).collect();
+    //items.extend(utils::libraries());
+    let items = utils::libraries();
+    Ok(Json(jellyfin::BaseItemDtoQueryResult {
+        items,
+        ..Default::default()
+    }))
+}
+
+pub async fn userviews_groupingoptions(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(json!(utils::libraries())))
+}
+
+pub async fn library_virtualfolders(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(json!(utils::libraries())))
+}
+
+pub async fn items_suggestions(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    //let b = state.tmdb.movie_popular_list().send().await.unwrap()
+    //.into_inner()
+    //.results
+    //.map(|c| {
+    //  jellyfin::BaseItemDto {
+    //     name: c.title,
+    //     ..Default::default()
+    //   }
+    //}
+    //);
+    //let tmdb_items = state.tmdb.movie_now_playing().send().await;
+    Ok(Json(jellyfin::BaseItemDtoQueryResult {
+        items: test_items(),
+        ..Default::default()
+    }))
+}
+
+pub async fn persons(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::BaseItemDtoQueryResult {
+        items: vec![],
+        ..Default::default()
+    }))
+}
+
+pub async fn get_items_query_conditions(
+    state: AppState,
+    q: jellyfin::GetItemsQuery,
+) -> Result<sea_orm::Condition> {
+    let mut conditions = sea_orm::Condition::all();
+
+    if let Some(name_start) = &q.name_starts_with {
+        conditions =
+            conditions.add(db::media::Column::Name.like(format!("{}%", name_start)));
+    }
+
+    if let Some(search_term) = &q.search_term {
+        conditions = conditions
+            .add(db::media::Column::Name.contains(format!("{}", search_term)));
+    }
+
+    if let Some(ids) = &q.ids {
+        conditions = conditions.add(db::media::Column::Id.is_in(ids.clone()));
+    }
+
+    if let Some(genres) = &q.genres {
+        // conditions = conditions.add(db::media_genre::Column::Genre.is_in(genres.clone()));
+    }
+
+    if let Some(years) = &q.years {
+        let mut cond = sea_orm::Condition::any(); // OR across years
+
+        for &year in years {
+            let start_date = chrono::NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
+            let end_date = chrono::NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap();
+
+            let year_cond = db::media::Column::ReleaseDate
+                .gte(start_date)
+                .and(db::media::Column::ReleaseDate.lt(end_date));
+
+            cond = cond.add(year_cond);
+        }
+
+        conditions = conditions.add(cond);
+    }
+
+  if let Some(types) = &q.include_item_types {
+        //conditions = conditions.add(db::media::Column::MediaType.is_in(types.clone()));
+    }
+
+    if let Some(season_id) = &q.season_id {
+        conditions = conditions.add(db::media::Column::ParentId.eq(season_id.clone()));
+    }
+
+    if let Some(parent_id) = &q.parent_id {
+        if parent_id == "movies" {
+            conditions = conditions
+                .add(db::media::Column::MediaType.eq(db::media::MediaType::Movie));
+        } else if parent_id == "series" {
+            conditions = conditions
+                .add(db::media::Column::MediaType.eq(db::media::MediaType::Series));
+        } else if parent_id.starts_with("catalog") {
+            //let catalogs = state.stremio.get_catalogs().await?;
+            // let catalog = state.stremio.addons
+            //     .into_iter()
+            //     .find(|x| {
+            //       x.manifest.catalogs.iter().find(|y| &x.catalog_guid(y) == parent_id)
+            //     })
+            //     .expect("catalog not found");
+            //if let Some(catalog) = state.stremio.get_catalog(parent_id) {
+            //   conditions = conditions.add(db::media::Column::ImdbId.is_in(ids));
+            //}
+
+            // let ids: Vec<_> = catalog
+            //     .get_items().await
+            //     .unwrap_or_default()
+            //     .into_iter()
+            //     .map(|x| x.id)
+            //     .collect();
+            //  let ids: Vec<_> = vec![];
+
+            //   conditions = conditions.add(db::media::Column::ImdbId.is_in(ids));
+        } else {
+            conditions =
+                conditions.add(db::media::Column::ParentId.eq(parent_id.clone()));
+        }
+    }
+
+    Ok(conditions)
+}
+
+pub fn apply_sorting(
+    mut query: sea_orm::Select<db::media::Entity>,
+    q: jellyfin::GetItemsQuery,
+) -> sea_orm::Select<db::media::Entity> {
+    use db::media::Column as MediaColumn;
+    use sea_orm::sea_query::Expr;
+
+    let order: sea_orm::Order = q
+        .sort_order
+        .unwrap_or(jellyfin::SortOrder::Ascending)
+        .into();
+    if let Some(sort_by_vec) = &q.sort_by {
+        for sort_by in sort_by_vec {
+            query = match sort_by {
+                jellyfin::ItemSortBy::SortName => {
+                    query.order_by(MediaColumn::Name, order.clone())
+                }
+                jellyfin::ItemSortBy::Name => {
+                    query.order_by(MediaColumn::Name, order.clone())
+                }
+                jellyfin::ItemSortBy::PremiereDate => {
+                    query.order_by(MediaColumn::ReleaseDate, order.clone())
+                }
+                jellyfin::ItemSortBy::Random => {
+                    query.order_by_asc(Expr::cust("RANDOM()"))
+                }
+                _ => query.order_by(MediaColumn::Id, order.clone()),
+            };
+        }
+    }
+
+    query
+}
+
+pub struct ItemsQueryResult {
+    pub items: Vec<jellyfin::BaseItemDto>,
+    pub total_count: i64,
+}
+
+pub async fn get_items(
+    state: AppState,
+    mut q: jellyfin::GetItemsQuery,
+    count: bool,
+) -> Result<ItemsQueryResult> {
+    dbg!(&q);  
+    
+    let search = q.search_term.clone().or(q.name_starts_with.clone());// for now, dont do a few requests
+// only support Movie and Series for search
+
+if search.is_some() {
+
+if let Some(types) = &q.include_item_types {
+    
+    if ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series].contains(&types[0]) {
+        return Ok(ItemsQueryResult {
+            items: vec![],
+            total_count: 0,
+        });
+    }
+}
+}
+   
+    if q.filters.is_some() {
+        return Ok(ItemsQueryResult {
+            // items: items,
+            items: vec![],
+            total_count: 0,
+        });
+    }
+
+    let skip = q.start_index.unwrap_or_else(|| 0) as u32;
+
+    // addon catalogs as collections
+    if let Some(parent_id) = &q.parent_id {
+        if parent_id == "collections" {
+            let items: Vec<jellyfin::BaseItemDto> = state
+                .stremio
+                .get_catalogs()
+                .into_iter()
+                .map(jellyfin::BaseItemDto::from)
+                .collect();
+            return Ok(ItemsQueryResult {
+                total_count: items.len() as i64,
+                items,
+            });
+        }
+
+        // get datalog items
+        if parent_id.starts_with("catalog") {
+            // if let Some(catalog) = state.stremio.get_catalog(parent_id.) {
+            //if parent_id.ends_with("test")
+            let items = state
+                .stremio
+                .get_catalog_items(parent_id.clone(), None, Some(skip))
+                .await
+                .unwrap();
+            return Ok(ItemsQueryResult {
+                items: items.into_iter().map(jellyfin::BaseItemDto::from).collect(),
+                total_count: 0,
+            });
+        }
+        // }
+    }
+
+    // request for a single catalog
+    if let Some(ids) = &q.ids {
+        if ids[0].starts_with("catalog") {
+            let catalog = state.stremio.get_catalog(ids[0].as_str()).unwrap();
+            // let catalog = catalogs
+            //              .into_iter()
+            //              .find(|x| x.guid() == ids[0])
+            //               .expect("catalog not found");
+            return Ok(ItemsQueryResult {
+                items: vec![catalog.into()],
+                total_count: 0,
+            });
+        }
+    }
+
+    
+
+    //let endpoint = match
+    //1sdks::tmdb::Movie::
+    //let res = state.tmdb
+    //let endpoint = sdks::tmdb::Movie::Discover
+
+    let mut items: Vec<jellyfin::BaseItemDto> = vec![];
+    
+    // single item. We assume details
+    if let Some(ids) = &q.ids {
+        let (id, media_type) = utils::decode_media_uuid(&ids[0]).unwrap();
+        let mut item: jellyfin::BaseItemDto = state
+            .stremio
+            .get_meta(id.clone(), media_type.into(), None, None)
+            .await
+            .unwrap()
+            .unwrap()
+            .into();
+        item.media_sources = Some(
+            state
+                .stremio
+                .get_streams(
+                    id.clone(),
+                    media_type.into(),
+                    None,
+                    None, //  item.parent_index_number,
+                          //  item.index_number,
+                )
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|stream| stream.into_media_source())
+                .collect::<Vec<jellyfin::MediaSourceInfo>>(), //})
+        );
+        items.push(item);
+    } else {
+        // check parent if itd a libeary
+        let mut catalog = if let Some(parent_id) = &q.parent_id {
+            if parent_id.contains("movie") || parent_id.contains("series") {
+                sdks::stremio::MediaType::from_str(parent_id)
+                    .ok()
+                    .and_then(|ty| state.stremio.get_library_catalog(ty))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        if catalog.is_none() && q.include_item_types.is_some() {
+          
+          let media_type = q.include_item_types.unwrap()[0];
+          if let Some(ref t) = search {
+          catalog = state.stremio.get_search_catalog(media_type.into());
+        }else{
+                    catalog = state.stremio.get_library_catalog(media_type.into());   
+        }
+        } else {  
+        if catalog.is_none() {
+           catalog = state.stremio.get_catalogs().first().cloned();
+        };
+      }
+
+        let catalog = catalog.expect("at least one catalog should exist");
+//dbg!(&catalog);
+        items = state
+            .stremio
+            .get_catalog_items(catalog.uuid.clone(), search, Some(skip))
+            .await?
+            .into_iter()
+            .map(jellyfin::BaseItemDto::from)
+            .collect();
+    }
+
+    return Ok(ItemsQueryResult {
+        items: items,
+        total_count: 5000,
+    });
+
+    let conditions = get_items_query_conditions(state.clone(), q.clone()).await?;
+    let mut query = db::media::Entity::find().filter(conditions);
+
+    let result_count = if count {
+        query.clone().count(&state.db.pool).await? as i64
+    } else {
+        0
+    };
+    // .cursor_by(db::media::Column::Id)
+    let mut items: Vec<db::media::Model> = apply_sorting(query, q.clone())
+        .offset(q.start_index.unwrap_or_else(|| 0) as u64)
+        .limit(q.limit.unwrap_or_else(|| 25) as u64)
+        .all(&state.db.pool)
+        .await?;
+
+    // we only add resources when needed. meaning if ids is 1.
+    if items.len() != 0
+        && q.ids.as_ref().map_or(false, |ids| ids.len() == 1)
+        && [db::media::MediaType::Movie, db::media::MediaType::Episode]
+            .contains(&items[0].media_type)
+        && q.fields
+            .as_ref()
+            .map_or(true, |f| f.contains(&jellyfin::ItemFields::MediaStreams))
+    {
+        let item = &items[0];
+        //let tmdb_id = match item.media_type {
+
+        //0};
+
+        //dbg!(&item.media_type);
+        // let item = items[0];
+        //if &[db::media::MediaType::Movie, db::media::MediaType::Series].contains(item.medi_type)
+        // if let Some(imdb_id) = &item.id {
+        items[0].streams = Some(
+            state
+                .stremio
+                .get_streams(
+                    item.id.clone(),
+                    item.media_type.into(),
+                    item.parent_index_number,
+                    item.index_number,
+                )
+                .await
+                .unwrap(),
+        );
+        // } else {
+        //     warn!("Media item has no IMDb ID: {}", items[0].name);
+        // }
+    };
+
+    //dbg!(&items);
+
+    Ok(ItemsQueryResult {
+        items: items.into_iter().map(jellyfin::BaseItemDto::from).collect(),
+        total_count: result_count,
+    })
+
+    //Ok(items)
+}
+
+pub async fn items_flat(
+    State(state): State<AppState>,
+    Query(q): Query<jellyfin::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    let items = get_items(state, q, false).await?;
+    Ok(Json::<Vec<jellyfin::BaseItemDto>>(items.items))
+}
+
+pub async fn items(
+    State(state): State<AppState>,
+    Query(q): Query<jellyfin::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    dbg!("items");
+    // dbg!(&q);
+    let items = get_items(state, q.clone(), true).await?;
+
+    Ok(Json(jellyfin::BaseItemDtoQueryResult {
+        items: items.items,
+        total_record_count: items.total_count as i32,
+        start_index: q.start_index.unwrap_or_else(|| 0),
+        ..Default::default()
+    }))
+}
+
+pub async fn item(
+    state: AppState,
+    id: String,
+) -> Result<Option<jellyfin::BaseItemDto>> {
+    if let Some(library) = utils::libraries()
+        .into_iter()
+        .find(|x| x.id.clone().unwrap() == id)
+    {
+        return Ok(Some(library));
+    }
+
+    let q = jellyfin::GetItemsQuery {
+        ids: vec![id].into(),
+        ..Default::default()
+    };
+    return Ok(get_items(state, q, false).await?.items.first().cloned());
+}
+
+pub async fn items_get(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse> {
+    return Ok(Json(item(state, id).await?).into_response());
+}
+
+pub async fn users_items_get(
+    State(state): State<AppState>,
+    Path((user_id, id)): Path<(String, String)>,
+) -> Result<impl IntoResponse> {
+    return Ok(Json(item(state, id).await?).into_response());
+}
+
+pub async fn shows_seasons(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+    Query(mut q): Query<jellyfin::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    let mut items: Vec<db::media::Model> = db::media::Entity::find()
+        .filter(db::media::Column::MediaType.eq(db::media::MediaType::Season))
+        .filter(db::media::Column::ParentId.eq(id))
+        .all(&state.db.pool)
+        .await?;
+
+    // dbg!(&media);
+    //let endpoint = tmdb::SeriesEndpoint::builder().id(media.tmdb_id.unwrap() as u64).build();
+    //let series = state.tmdb.request(&endpoint).await?;
+    //dbg!(&series);
+    // let items = series.seasons.into_iter().map(jellyfin::BaseItemDto::from).collect();
+
+    Ok(Json(jellyfin::BaseItemDtoQueryResult {
+        items: items.into_iter().map(jellyfin::BaseItemDto::from).collect(),
+        //total_record_count: total_record_count as i32,
+        //start_index: q.start_index.unwrap_or_else(|| 0),
+        ..Default::default()
+    }))
+}
+
+pub async fn shows_episodes(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Query(mut q): Query<jellyfin::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    let items = get_items(state, q.clone(), true).await?;
+
+    Ok(Json(jellyfin::BaseItemDtoQueryResult {
+        items: items.items,
+        total_record_count: items.total_count as i32,
+        start_index: q.start_index.unwrap_or_else(|| 0),
+        ..Default::default()
+    }))
+}
+
+#[derive(Deserialize)]
+enum ImageType {
+    Primary,
+}
+
+pub async fn items_images(
+    State(state): State<AppState>,
+    Path((id, image_type)): Path<(String, String)>,
+    Query(q): Query<jellyfin::ImageQuery>,
+) -> Result<impl IntoResponse> {
+    let mut url = q.tag;
+    let (id, media_type) = utils::decode_media_uuid(&id).unwrap();
+    if url.is_none() {
+        //let item = db::media::Entity::find_by_id(id)
+        //    .one(&state.db.pool)
+        //    .await?
+        //   .ok_or_else(|| axum::http::StatusCode::NOT_FOUND.into_response())
+        //    .unwrap();
+        // dbg!("YOOO");
+        // let meta = state.stremio.get_meta(item.id, item.media_type.into(), item.season, item.episode).await;
+        // let meta = state.stremio.get_meta(item.id, item.media_type.into(), None, None).await;
+        let meta = state
+            .stremio
+            .get_meta(id, media_type.into(), None, None)
+            .await?
+            .ok_or_else(|| eyre::eyre!("missing meta"))?;
+
+        // match item.media_type {
+        //     MediaType::Movie => {
+        //         let endpoint = tmdb::MediaEndpoint::builder()
+        //             .id(item.unwrap().tmdb_id.unwrap())
+        //             .build();
+
+        //     }
+        //     // MediaType::TVShow => tmdb::MediaEndpoint::TVShow,
+        // }
+
+        // state.tmdb
+        //let mut url: Option<String> = None;
+        dbg!(&meta);
+        if image_type == "primary" && meta.poster.is_some() {
+            url = meta.poster;
+        }
+    };
+
+    if url.is_none() {
+        url = Some("https://placehold.co/600x400".to_string());
+    }
+
+    Ok(Redirect::temporary(url.unwrap().as_str()))
+}
+
+pub async fn items_playbackinfo(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<jellyfin::PlaybackInfoQuery>,
+    data: Option<Json<jellyfin::PlaybackInfoQuery>>,
+) -> Result<impl IntoResponse> {
+    let Json(payload) = data.unwrap_or_default();
+    let (id, media_type) = utils::decode_media_uuid(&id).unwrap();
+    let media_source_id = payload
+        .media_source_id
+        .as_ref()
+        .or(query.media_source_id.as_ref());
+
+    //let mut media = db::media::Entity::find_by_id(id)
+    //    .one(&state.db.pool)
+    //    .await?
+    //    .unwrap();
+
+    let streams: Vec<sdks::stremio::Stream> = state
+        .stremio
+        .get_streams(
+            id,
+            media_type.into(),
+            None,
+            None,
+        )
+        .await?
+        .into_iter()
+        .filter(|x| {
+            media_source_id
+                .map(|id| {
+                    let result = x.id() == *id;
+                    result
+                })
+                .unwrap_or(true)
+        })
+        .collect();
+
+    // info on tracks: https://github.com/jellyfin/Swiftfin/blob/main/Shared/Extensions/JellyfinAPI/MediaStream.swift#L219
+
+    // Codec: "subrip" - Subtitle format codec (SRT)
+    // TimeBase: "1/1000" - Time base in milliseconds
+    // VideoRange: "Unknown" - Video color range (not applicable for subtitles)
+    // VideoRangeType: "Unknown" - Color range type unknown
+    // AudioSpatialFormat: "None" - No audio spatial format (subtitle)
+    // LocalizedUndefined: "Undefined" - Label for undefined flag
+    // LocalizedDefault: "Default" - Label for default flag
+    // LocalizedForced: "Forced" - Label for forced subtitle flag
+    // LocalizedExternal: "External" - Label for external subtitle source
+    // LocalizedHearingImpaired: "Hearing Impaired" - Label for hearing impaired subtitles
+    // DisplayTitle: "Undefined - SUBRIP - External" - Combined display title
+    // IsInterlaced: false - Not interlaced (not applicable)
+    // IsAVC: false - Not AVC video codec (subtitle)
+    // IsDefault: false - Not default subtitle stream
+    // IsForced: false - Not forced subtitle
+    // IsHearingImpaired: false - Not hearing impaired subtitles
+    // Height: 0 - Video height (not applicable)
+    // Width: 0 - Video width (not applicable)
+    // Type: "Subtitle" - Stream type is subtitle
+    // Index: 0 - Stream index
+    // IsExternal: true - Subtitle is external
+    // DeliveryMethod: "External" - Delivered as external file
+    // DeliveryUrl: "/Videos/657a70e0-ad75-82d8-2e64-c3a30c186a03/657a70e0ad7582d82e64c3a30c186a03/Subtitles/0/0/Stream.vtt?api_key=68068a69a1594bc1a1f34b394259630c" - URL for fetching subtitle stream
+    // IsExternalUrl: false - DeliveryUrl is not an external URL
+    // IsTextSubtitleStream: true - This is a text subtitle stream
+    // SupportsExternalStream: true - External subtitle streams supported
+    // Path: "/media/test/Ghosts.2021.S01E05.720p.AMZN.WEBRip.x264-GalaxyTV.srt" - Local file path for subtitle
+    // Level: 0 - Subtitle level or priority
+
+    let info = jellyfin::PlaybackInfoResponse {
+        media_sources: streams
+            .into_iter()
+            .map(|stream| stream.probe().unwrap().into())
+            .collect(),
+
+        play_session_id: Some("test".to_string()),
+        ..Default::default()
+    };
+    Ok(Json(info))
+}
+
+pub async fn items_filters(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    /// genres is actually tags?
+    use strum::IntoEnumIterator;
+    // let genres = db::Genre::iter().map(|g| g.to_string()).collect();
+    let current_year = chrono::Utc::now().year() as i32;
+    //let years = (1900..=current_year).collect();
+
+    Ok(Json(jellyfin::QueryFiltersLegacy {
+        //  genres: Some(genres),
+        //  years: Some(years),
+        genres: None,
+        years: None,
+        ..Default::default()
+    }))
+}
+
+pub async fn videos_stream(
+    //req: axum::extract::Request<axum::body::Body>,
+    //Some(axum_extra::TypedHeader(range)): Option<axum_extra::TypedHeader<headers::Range>>,
+    range: Option<axum_extra::TypedHeader<headers::Range>>,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<jellyfin::VideoStreamQuery>,
+) -> Result<impl IntoResponse> {
+    //let mut media = db::media::Entity::find_by_id(id)
+    //    .one(&state.db.pool)
+    //    .await?
+    //    .unwrap();
+    let (id, media_type) = utils::decode_media_uuid(&id).unwrap();
+    let streams = state
+        .stremio
+        .get_streams(
+            id,
+            media_type.into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    //let media_source_id = query.media_source_id.clone();
+    let stream = streams
+        .into_iter()
+        .find(|x| {
+            query
+                .media_source_id
+                .as_ref()
+                .map(|id| x.id() == *id)
+                .unwrap_or(true)
+        })
+        .unwrap();
+
+    //let decoded = URL_SAFE.decode(query.media_source_id.unwrap())?;
+    //let url = String::from_utf8(decoded)?;
+
+    // return Ok(Redirect::temporary(
+    //format!("{}", url).as_str(),
+    //));
+    //let resp = reqwest::get(stream.url.unwrap()).await?;
+    let mut req = reqwest::Client::new().get(stream.url.unwrap());
+
+    if let Some(axum_extra::TypedHeader(range)) = range {
+        let s = format!("{:?}", range);
+        req = req.header(axum::http::header::RANGE, s);
+    }
+
+    let resp = req.send().await?;
+    //Ok(FileStream::new(body).file_name("stream.mp4"))
+
+    let reader = StreamReader::new(resp.bytes_stream().map_err(io::Error::other));
+
+    let body = ReaderStream::new(reader);
+    Ok(FileStream::new(body).file_name("stream.mp4"))
+}
+//URL: https://jellyfin.sjoerdarendsen.dev/Items/e494097f55b2459db6af916d59c404fe/Images/Primary?fillWidth=300&quality=80&tag=c2eb83c4eb6320de96199a825e9513eb
+
+//URL: https://jellyfin.sjoerdarendsen.dev/Items/e494097f55b2459db6af916d59c404fe/Images/Primary?fillWidth=300&quality=80&tag=c2eb83c4eb6320de96199a825e9513eb
+
+pub async fn users_me(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    //let user: UserDtoDummy = Faker.fake();
+    Ok(Json(jellyfin::UserDto {
+        id: Some("test".to_string()),
+        name: Some("test".to_string()),
+        has_password: Some(true),
+        server_id: Some(server_id()),
+        ..Default::default()
+    })
+    .into_response())
+    //Ok(StatusCode::NOT_FOUND.into_response())
+    // match media::Entity::find_by_id(id).one(&state.conn).await? {
+    //     Some(item) => {
+    //         Ok(Json(jellyfin_sdk::types::BaseItemDto::from(item)).into_response())
+    //    }
+    //    None => Ok(StatusCode::NOT_FOUND.into_response()),
+    // }
+}
+
+/// todo: actually @molement
+pub async fn playback_bitratetest(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    //let user: UserDtoDummy = Faker.fake();
+    //Ok(Json().into_response())
+    Ok(StatusCode::NO_CONTENT.into_response())
+    // match media::Entity::find_by_id(id).one(&state.conn).await? {
+    //     Some(item) => {
+    //         Ok(Json(jellyfin_sdk::types::BaseItemDto::from(item)).into_response())
+    //    }
+    //    None => Ok(StatusCode::NOT_FOUND.into_response()),
+    // }
+}
+
+pub async fn users_groupingoptions(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    Ok(Json::<Vec<jellyfin::SpecialViewOptionDto>>(vec![]))
+}
+//fn id_encode
+
+pub async fn stub(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    //let user: UserDtoDummy = Faker.fake();
+    //Ok(Json().into_response())
+    Ok(StatusCode::NO_CONTENT.into_response())
+    // match media::Entity::find_by_id(id).one(&state.conn).await? {
+    //     Some(item) => {
+    //         Ok(Json(jellyfin_sdk::types::BaseItemDto::from(item)).into_response())
+    //    }
+    //    None => Ok(StatusCode::NOT_FOUND.into_response()),
+    // }
+}
+pub async fn mock_items(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::BaseItemDtoQueryResult {
+        ..Default::default()
+    }))
+}
+//fn id_encode

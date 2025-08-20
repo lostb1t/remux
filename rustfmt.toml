@@ -1,0 +1,3 @@
+merge_derives = true
+chain_width = 60
+max_width = 88

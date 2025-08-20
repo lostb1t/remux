@@ -1,0 +1,25 @@
+FROM rust:slim-bookworm AS builder
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN cargo build --release
+
+RUN rm -rf src
+COPY ./src ./src
+RUN cargo build --release
+
+RUN strip target/release/remux-server
+
+from debian:bookworm-slim as release
+ENV CONFIG=/data/config.toml
+
+RUN apt update \
+    && apt install -y ffmpeg \
+    && apt clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+WORKDIR /app
+COPY --from=builder /app/target/release/remux-server .
+
+CMD ["./remux-server"]

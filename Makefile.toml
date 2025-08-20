@@ -1,0 +1,24 @@
+[env]
+RUST_LOG = "trace,axum=debug,tower_http=debug,remux_server=trace,hyper=warn,sqlx=warn"
+RUST_BACKTRACE = 0
+# HTTP_PROXY="http://10.0.10.11:9090"
+# HTTPS_PROXY="http://10.0.10.11:9090"
+#DATABASE_URL = "sqlite://target/db.sqlite"
+
+[tasks.sqlx-prepare]
+command = "cargo"
+args = ["sqlx", "prepare"]
+
+[tasks.sqlx-migrate]
+command = "cargo"
+args = ["sqlx", "migrate", "run", "--source", "./src/db/migrations"]
+
+[tasks.dev]
+command = "cargo"
+args = ["run"]
+#dependencies = ["sqlx-migrate", "sqlx-prepare"]
+watch = true
+
+[tasks.build]
+command = "docker"
+args = ["buildx", "build", "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:latest", ".", "--push"]
