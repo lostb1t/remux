@@ -409,16 +409,17 @@ impl Catalog {
             .query(&addon.client)
             .await?
             .metas
-            .into_iter()
-            .filter(|meta| {
-                if meta.imdb_id.is_none() {
-                    // dbg!(&meta);
-                    warn!("Meta without imdb_id found in catalog: {}", self.id);
-                    return false;
-                }
-                true
-            })
-            .collect())
+           // .into_iter()
+           // .filter(|meta| {
+           //     if meta.imdb_id.is_none() {
+
+           //         warn!("Meta without imdb_id found in catalog: {}", self.id);
+           //         return false;
+           //     }
+           //     true
+           // })
+            //.collect()
+            )
     }
 }
 
@@ -877,7 +878,7 @@ pub struct Meta {
     pub awards: Option<String>,
     pub popularity: Option<f64>,
     pub poster: Option<String>,
-    pub id: Option<String>,
+    pub id: String,
     pub genres: Option<Vec<String>>,
     pub release_info: Option<String>,
     // pub trailer_streams: Option<Vec<String>>,

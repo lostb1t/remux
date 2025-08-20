@@ -232,7 +232,7 @@ impl RestClient {
         };
 
         url = url.as_str().parse::<url::Url>()?;
-        //dbg!(&url);
+        // dbg!(&url);
         Ok(url)
     }
 }
