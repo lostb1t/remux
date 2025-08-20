@@ -31,8 +31,9 @@ services:
 ### Wat does not work yet
 
 - only tested with streamyfin so use that
-- shows currently do not work.
-- p2p does not work yet
-- favorites does not work yet
+- shows
+- p2p
+- favorites
+- external subtitles
 - no user management yet, so auth is open. Can use any user/pw combi
 - filtering does not work in library view and probaply never will
