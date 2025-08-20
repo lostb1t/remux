@@ -168,7 +168,10 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
         let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
         jellyfin::BaseItemDto {
-            id: Some(utils::encode_media_uuid(&meta.imdb_id.clone().unwrap_or_else(||meta.clone().id), media_type)),
+            id: Some(utils::encode_media_uuid(
+                &meta.imdb_id.clone().unwrap_or_else(|| meta.clone().id),
+                media_type,
+            )),
             name: meta.name.clone(),
             overview: meta.description.clone(),
             type_: Some(media_type),
@@ -179,7 +182,9 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
                 ..Default::default()
             }),
             genres: meta.genres.clone(),
-            run_time_ticks: meta.runtime_in_ticks().unwrap(),
+            run_time_ticks: meta
+                .runtime
+                .map(|r| r.as_secs().to_ticks(utils::TickUnit::Seconds).unwrap()),
             ..Default::default()
         }
     }
