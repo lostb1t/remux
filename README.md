@@ -28,13 +28,14 @@ services:
 - direct playback
 - stream selection
 
-### Wat does not work yet
+### Wat does not work yet (todo)
 
 - only tested with streamyfin so use that
 - shows
 - p2p
 - favorites
 - external subtitles
+- transcoding
 - trailers
 - anything persistant like continue watching etc
 - no user management yet, so auth is open. Can use any user/pw combi
