@@ -881,7 +881,40 @@ pub struct Meta {
     pub id: String,
     pub genres: Option<Vec<String>>,
     pub release_info: Option<String>,
+    pub runtime: Option<String>,
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
+}
+
+impl Meta {
+  pub fn runtime_in_ticks(&self) -> Result<Option<i64>> {
+    let mut hours = 0;
+    let mut minutes = 0;
+
+    if self.runtime.is_none() {
+      return Ok(None);
+    }
+    
+    let s = self.runtime.clone().unwrap().to_lowercase();
+
+    if let Some(h_pos) = s.find('h') {
+        let (h, rest) = s.split_at(h_pos);
+        hours = h.parse::<u64>()?;
+        let s = &rest[1..];
+
+        if let Some(m_pos) = s.find("min") {
+            let m = &s[..m_pos];
+            minutes = m.parse::<u64>()?;
+        }
+    } else if let Some(m_pos) = s.find("min") {
+        let m = &s[..m_pos];
+        minutes = m.parse::<u64>()?;
+    } else {
+return Err(eyre::eyre!("unsupported format"));
+    }
+
+    let total = std::time::Duration::from_secs(hours * 3600 + minutes * 60);
+    Ok(Some((total.as_nanos() / 100) as i64))
+}
 }

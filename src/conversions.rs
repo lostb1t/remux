@@ -165,23 +165,21 @@ impl From<tmdb::Episode> for db::media::Model {
 impl From<stremio::Meta> for jellyfin::BaseItemDto {
     fn from(meta: stremio::Meta) -> Self {
         // dbg!(&meta);
-        let media_type: jellyfin::MediaType = meta.media_type.into();
+        let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
         jellyfin::BaseItemDto {
-            id: Some(utils::encode_media_uuid(&meta.imdb_id.unwrap_or_else(||meta.id), media_type)),
+            id: Some(utils::encode_media_uuid(&meta.imdb_id.clone().unwrap_or_else(||meta.clone().id), media_type)),
             name: meta.name.clone(),
             overview: meta.description.clone(),
             type_: Some(media_type),
             //premiere_date: meta.released.and_then(utils::native_to_utc),
-            community_rating: meta.imdb_rating.and_then(|r| r.parse().ok()),
-            image_tags: meta.poster.map(|p| jellyfin::ImageTags {
+            community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
+            image_tags: meta.poster.clone().map(|p| jellyfin::ImageTags {
                 primary: Some(p),
                 ..Default::default()
             }),
-            genres: meta.genres,
-            // runtime: meta.year.and_then(|y| y.parse().ok()).and_then(|mins| {
-            //     (mins as i32).to_ticks(utils::TickUnit::Minutes)
-            // }),
+            genres: meta.genres.clone(),
+            run_time_ticks: meta.runtime_in_ticks().unwrap(),
             ..Default::default()
         }
     }
