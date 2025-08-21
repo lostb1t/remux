@@ -83,6 +83,7 @@ pub fn routes() -> Router<AppState> {
         .route("/items", get(items))
         .route("/Items", get(items))
         .route("/items/{id}/images/{image_type}", get(items_images))
+        .route("/items/{id}/images/{image_type}/{index}", get(items_images))
         .route("/items/{id}", get(items_get))
         .route("/items/{id}/playbackinfo", post(items_playbackinfo))
         .route("/items/filters", get(items_filters))
@@ -750,7 +751,7 @@ enum ImageType {
 
 pub async fn items_images(
     State(state): State<AppState>,
-    Path((id, image_type)): Path<(String, String)>,
+    Path((id, image_type, index)): Path<(String, String, Option<usize>)>,
     Query(q): Query<jellyfin::ImageQuery>,
 ) -> Result<impl IntoResponse> {
     // sometimes it send the id as a tag. And we replacee it with an url.

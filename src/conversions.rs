@@ -177,8 +177,24 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
             type_: Some(media_type),
             //premiere_date: meta.released.and_then(utils::native_to_utc),
             community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
-            image_tags: meta.poster.clone().map(|p| jellyfin::ImageTags {
-                primary: Some(p),
+            image_tags: Some(jellyfin::ImageTags {
+                primary: meta.poster,
+                logo: meta.logo,
+                backdrop: meta.background.clone(),
+                ..Default::default()
+            }),
+            backdrop_image_tags: meta
+                .background
+                .clone()
+                .map(|url| vec![url]),
+            image_blur_hashes: Some(jellyfin::ImageBlurHashes {
+                backdrop: {
+                    if let Some(bg) = meta.background.clone() {
+                        Some(HashMap::from([(bg.clone(), bg)]))
+                    } else {
+                        None
+                    }
+                },
                 ..Default::default()
             }),
             genres: meta.genres.clone(),

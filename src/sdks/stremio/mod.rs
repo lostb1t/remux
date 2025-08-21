@@ -810,6 +810,16 @@ impl Stream {
             media_streams: Some({
                 let mut streams = vec![video];
                 if has_audio {
+let display_title = [
+    audio.codec.clone(),
+    audio.channels.map(|c| format!("{c}ch")),
+]
+.into_iter()
+.flatten()
+.collect::<Vec<_>>()
+.join(" ");
+
+audio.display_title = Some(display_title);
                     streams.push(audio);
                 }
                 streams

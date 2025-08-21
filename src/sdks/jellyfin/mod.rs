@@ -3,6 +3,7 @@ use std::str::FromStr;
 //use progenitor::generate_api;
 use chrono::{DateTime, Utc};
 use serde_with::skip_serializing_none;
+use std::collections::HashMap;
 //generate_api!(
 //    spec = "src/sdks/jellyfin/openapi.json", // The OpenAPI document
 //    interface = Builder
@@ -514,6 +515,15 @@ pub struct ImageTags {
 }
 
 #[skip_serializing_none]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ImageBlurHashes {
+    pub backdrop: Option<HashMap<String, String>>,
+    pub primary:  Option<HashMap<String, String>>,
+    pub logo:     Option<HashMap<String, String>>,
+}
+
+#[skip_serializing_none]
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
@@ -608,6 +618,7 @@ pub struct BaseItemDto {
     pub media_source_count: Option<i32>,
     pub image_tags: Option<ImageTags>,
     pub backdrop_image_tags: Option<Vec<String>>,
+    pub image_blur_hashes: Option<ImageBlurHashes>,
     pub screenshot_image_tags: Option<Vec<String>>,
     pub parent_thumb_item_id: Option<String>,
     pub parent_thumb_image_tag: Option<String>,
