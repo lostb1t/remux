@@ -293,7 +293,7 @@ pub struct UserDto {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct UserPolicy {
     pub is_administrator: bool,
@@ -338,6 +338,55 @@ pub struct UserPolicy {
     pub authentication_provider_id: Option<String>,
     pub password_reset_provider_id: Option<String>,
     pub sync_play_access: Option<String>,
+}
+
+impl Default for UserPolicy {
+    fn default() -> Self {
+        Self {
+            access_schedules: None,
+            allowed_tags: None,
+            authentication_provider_id: Some("Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".into()),
+            block_unrated_items: None,
+            blocked_channels: None,
+            blocked_media_folders: None,
+            blocked_tags: None,
+            enable_all_channels: None,
+            enable_all_devices: None,
+            enable_all_folders: None,
+            enable_audio_playback_transcoding: None,
+            enable_collection_management: Some(false),
+            enable_content_deletion: None,
+            enable_content_deletion_from_folders: None,
+            enable_content_downloading: Some(true),
+            enable_live_tv_access: None,
+            enable_live_tv_management: None,
+            enable_lyric_management: Some(false),
+            enable_media_conversion: Some(true),
+            enable_media_playback: Some(true),
+            enable_playback_remuxing: Some(true),
+            enable_public_sharing: None,
+            enable_remote_access: None,
+            enable_remote_control_of_other_users: None,
+            enable_shared_device_control: None,
+            enable_subtitle_management: Some(false),
+            enable_sync_transcoding: None,
+            enable_user_preference_access: None,
+            enable_video_playback_transcoding: Some(true),
+            enabled_channels: None,
+            enabled_devices: None,
+            enabled_folders: None,
+            force_remote_source_transcoding: None,
+            invalid_login_attempt_count: None,
+            is_administrator: false,
+            is_disabled: Some(false),
+            is_hidden: Some(true),
+            login_attempts_before_lockout: None,
+            max_active_sessions: None,
+            password_reset_provider_id: Some("Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider".into()),
+            remote_client_bitrate_limit: None,
+            sync_play_access: None,
+        }
+    }
 }
 
 #[skip_serializing_none]
@@ -423,10 +472,10 @@ pub struct ImageTags {
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
+    pub id: String,
     pub name: Option<String>,
     pub original_title: Option<String>,
     pub original_title_sortable: Option<String>,
-    pub id: Option<String>,
     pub etag: Option<String>,
     pub source_type: Option<String>,
     pub playlist_item_id: Option<String>,

@@ -67,6 +67,10 @@ pub trait Endpoint {
                 res.text().await?
             )));
         }
+        
+      //  let body = res.text().await?;
+   // println!("Raw response: {}", body);
+  //  let result: Self::Output = serde_json::from_str(&body).unwrap();
 
         let result = res.json::<Self::Output>().await?;
         Ok(result)

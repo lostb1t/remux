@@ -29,6 +29,7 @@ use tokio_util::io::{ReaderStream, StreamReader};
 use tracing;
 //use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 use std::str::FromStr;
+use crate::errors::LogErr;
 
 //use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
@@ -39,8 +40,8 @@ pub fn encode_media_uuid(id: &str, media_type: jellyfin::MediaType) -> String {
 }
 
 pub fn decode_media_uuid(encoded: &str) -> Result<(String, jellyfin::MediaType)> {
-    let bytes = decode(encoded).unwrap(); // Vec<u8>
-    let s = std::str::from_utf8(&bytes).unwrap(); // panic-safe UTF-8 check
+    let bytes = decode(encoded).anyhow()?; // Vec<u8>
+    let s = std::str::from_utf8(&bytes)?; // panic-safe UTF-8 check
 
     let (id, media_type) = s.rsplit_once(':').unwrap();
 
@@ -58,7 +59,7 @@ pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
     vec![
         jellyfin::BaseItemDto {
             name: Some("Movies".to_string()),
-            id: Some("movies".to_string()),
+            id: "movies".to_string(),
             //parent_id: Some("test".to_string()),
             type_: Some(jellyfin::MediaType::CollectionFolder),
             collection_type: Some(jellyfin::CollectionType::Movies),
@@ -71,7 +72,7 @@ pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
         },
         jellyfin::BaseItemDto {
             name: Some("Series".to_string()),
-            id: Some("series".to_string()),
+            id: "series".to_string(),
             //parent_id: Some("test".to_string()),
             type_: Some(jellyfin::MediaType::CollectionFolder),
             collection_type: Some(jellyfin::CollectionType::Tvshows),
@@ -80,7 +81,7 @@ pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
         },
         jellyfin::BaseItemDto {
             name: Some("Collections".to_string()),
-            id: Some("collections".to_string()),
+            id: "collections".to_string(),
             //parent_id: Some("test".to_string()),
             type_: Some(jellyfin::MediaType::CollectionFolder),
             collection_type: Some(jellyfin::CollectionType::Boxsets),

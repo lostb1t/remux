@@ -10,9 +10,9 @@ use bytes::Bytes;
 use eyre::Result;
 use http::request::Builder as RequestBuilder;
 use http::{HeaderMap, HeaderValue, Response};
-//use http_cache_reqwest::{
-//    CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions,
-//};
+use http_cache_reqwest::{
+   CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions,
+};
 use reqwest::Method;
 use reqwest::Request;
 use reqwest_middleware::{ClientBuilder as MwClientBuilder, ClientWithMiddleware};
@@ -105,9 +105,22 @@ impl RestClient {
         RestClient::with_builder(url, RestClient::builder())
     }
 
-    pub fn without_cache(url: &str) -> Result<RestClient> {
+    // TODO: make cache location come from config
+    pub fn with_cache(url: &str) -> Result<RestClient> {
         let inner = reqwest::ClientBuilder::new().build().unwrap();
-        let client = MwClientBuilder::new(inner).build();
+        let client = MwClientBuilder::new(inner)
+             .with(Cache(HttpCache {
+                 mode: CacheMode::Default,
+                 manager: CACacheManager::new("/tmp/ccache".into(), true),
+                 options: HttpCacheOptions::default(),
+                //  options: HttpCacheOptions {
+                //      cache_mode_fn: Some(Arc::new(|_: &http_cache_reqwest::Parts| {
+                //          CacheMode::IgnoreRules
+                //      })),
+                //      ..Default::default()
+                //  },
+             }))
+            .build();
         let baseurl = Url::parse(url)?;
 
         Ok(RestClient {
@@ -232,7 +245,7 @@ impl RestClient {
         };
 
         url = url.as_str().parse::<url::Url>()?;
-        // dbg!(&url);
+
         Ok(url)
     }
 }

@@ -41,7 +41,7 @@ impl TryFrom<imdb::TitleBasics> for db::media::Model {
 impl From<tmdb::Movie> for jellyfin::BaseItemDto {
     fn from(item: tmdb::Movie) -> Self {
         Self {
-            id: Some(item.id.to_string()),
+            id: item.id.to_string(),
             name: Some(item.title),
             type_: Some(jellyfin::MediaType::Movie),
             ..Default::default()
@@ -52,7 +52,7 @@ impl From<tmdb::Movie> for jellyfin::BaseItemDto {
 impl From<tmdb::Season> for jellyfin::BaseItemDto {
     fn from(item: tmdb::Season) -> Self {
         Self {
-            id: Some(item.id.to_string()),
+            id: item.id.to_string(),
             index_number: Some(item.season_number as i32),
             name: Some(item.name),
             //parent_id: Some("92053".to_string()),
@@ -65,7 +65,7 @@ impl From<tmdb::Season> for jellyfin::BaseItemDto {
 impl From<tmdb::Episode> for jellyfin::BaseItemDto {
     fn from(item: tmdb::Episode) -> Self {
         Self {
-            id: Some(item.id.to_string()),
+            id: item.id.to_string(),
             name: Some(item.name),
             type_: Some(jellyfin::MediaType::Episode),
             ..Default::default()
@@ -168,10 +168,10 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
         let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
         jellyfin::BaseItemDto {
-            id: Some(utils::encode_media_uuid(
+            id: utils::encode_media_uuid(
                 &meta.imdb_id.clone().unwrap_or_else(|| meta.clone().id),
                 media_type,
-            )),
+            ),
             name: meta.name.clone(),
             overview: meta.description.clone(),
             type_: Some(media_type),
@@ -215,8 +215,34 @@ impl From<stremio::Catalog> for jellyfin::BaseItemDto {
     fn from(item: stremio::Catalog) -> Self {
         jellyfin::BaseItemDto {
             name: Some(item.name.clone()),
-            id: Some(item.uuid),
+            id: item.uuid,
             type_: Some(jellyfin::MediaType::BoxSet),
+            ..Default::default()
+        }
+    }
+}
+
+impl From<stremio::Episode> for jellyfin::BaseItemDto {
+    fn from(item: stremio::Episode) -> Self {
+        jellyfin::BaseItemDto {
+            name: item.name.clone(),
+            id: utils::encode_media_uuid(
+                item.id.as_str(),
+                jellyfin::MediaType::Episode,
+            ),
+            type_: Some(jellyfin::MediaType::Episode),
+            index_number: item.episode,
+            season_id: Some(utils::encode_media_uuid(
+                format!("{}:{:?}", item.id, item.season).as_str(),
+                jellyfin::MediaType::Episode,
+            )),
+            parent_index_number: item.season,
+            season_name: Some(format!("Season {:?}", item.season)),
+            overview: item.overview.clone(),
+            image_tags: Some(jellyfin::ImageTags {
+                primary: item.thumbnail,
+                ..Default::default()
+            }),
             ..Default::default()
         }
     }
@@ -227,7 +253,7 @@ impl From<db::media::Model> for jellyfin::BaseItemDto {
         jellyfin::BaseItemDto {
             name: Some(media.name),
             overview: media.overview,
-            id: Some(media.id.to_string()),
+            id: media.id.to_string(),
             //type_: Some(media.media_type.into()),
             premiere_date: utils::native_to_utc(media.release_date),
             run_time_ticks: media

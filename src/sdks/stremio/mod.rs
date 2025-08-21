@@ -10,11 +10,11 @@ use std::time::Duration;
 use std::{collections::HashMap, path::Path};
 //use crate::errors::Result;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
+use duration_str::deserialize_option_duration;
 use eyre;
 use std::str::FromStr;
 use tracing::warn;
 use uuid::Uuid;
-use duration_str::deserialize_option_duration;
 
 #[derive(Debug, Clone)]
 pub struct StremioService {
@@ -32,7 +32,7 @@ pub struct Addon {
 impl Addon {
     pub async fn new(u: String) -> Result<Self> {
         let url = u.replace("manifest.json", "");
-        let client = super::core::RestClient::without_cache(&url)?;
+        let client = super::core::RestClient::with_cache(&url)?;
         let mut manifest = ManifestEndpoint {}.query(&client).await?;
         //dbf
         //manifest.catalogs[0].uuid = "catalog:test".to_string();
@@ -406,21 +406,18 @@ impl Catalog {
             genre: None,
             skip,
         };
-        Ok(endpoint
-            .query(&addon.client)
-            .await?
-            .metas
-           // .into_iter()
-           // .filter(|meta| {
-           //     if meta.imdb_id.is_none() {
+        Ok(
+            endpoint.query(&addon.client).await?.metas, // .into_iter()
+                                                        // .filter(|meta| {
+                                                        //     if meta.imdb_id.is_none() {
 
-           //         warn!("Meta without imdb_id found in catalog: {}", self.id);
-           //         return false;
-           //     }
-           //     true
-           // })
-            //.collect()
-            )
+                                                        //         warn!("Meta without imdb_id found in catalog: {}", self.id);
+                                                        //         return false;
+                                                        //     }
+                                                        //     true
+                                                        // })
+                                                        //.collect()
+        )
     }
 }
 
@@ -882,14 +879,52 @@ pub struct Meta {
     pub id: String,
     pub genres: Option<Vec<String>>,
     pub release_info: Option<String>,
-    
+
     #[serde(default, deserialize_with = "deserialize_option_duration")]
     pub runtime: Option<Duration>,
+    // #[serde(rename = "videos")]
+    pub videos: Option<Vec<Episode>>,
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
 }
 
 impl Meta {
-  
+    pub fn get_season_numbers(&self) -> Vec<i32> {
+        // dbg!(&self);
+        if let Some(episodes) = self.videos.as_ref() {
+            let mut seasons: Vec<i32> =
+                episodes.iter().filter_map(|e| e.season).collect();
+            seasons.sort_unstable();
+            seasons.dedup();
+            seasons
+        } else {
+            vec![]
+        }
+    }
+
+    pub fn get_episode_by_id(&self, id: String) -> Option<&Episode> {
+        if let Some(episodes) = &self.videos {
+            episodes.into_iter().find(|e| e.id == id)
+        } else {
+            None
+        }
+    }
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[serde(rename_all = "camelCase")]
+pub struct Episode {
+    pub id: String,
+    pub name: Option<String>,
+    pub released: Option<String>,
+    pub thumbnail: Option<String>,
+    pub episode: Option<i32>,
+    pub season: Option<i32>,
+    pub overview: Option<String>,
+    pub number: Option<i32>,
+    pub description: Option<String>,
+    pub rating: Option<String>,
+    pub first_aired: Option<String>,
 }
