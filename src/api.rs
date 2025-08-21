@@ -89,6 +89,8 @@ pub fn routes() -> Router<AppState> {
         .route("/users/me", get(users_me))
         .route("/users/{id}", get(users_me))
         .route("/users/{user_id}/items", get(items))
+        .route("/users/{user_id}/items/latest", get(items_flat))
+        .route("/users/{user_id}/items/resume", get(stub))
         .route("/users/{user_id}/items/{id}", get(users_items_get))
         .route("/users/{id}/views", get(userviews))
         .route("/users/{id}/groupingoptions", get(users_groupingoptions))
@@ -98,7 +100,7 @@ pub fn routes() -> Router<AppState> {
         .route("/system/info", get(system_info))
         // stubs. to impltement
         .route("/sessions/playing", post(stub))
-        .route("/userimage", get(stub))
+        .route("/userimage", get(user_image))
         .route("/sessions/capabilities/full", post(stub))
         .route("/quickconnect/enabled", post(stub))
         .route("/branding/configuration", post(stub))
@@ -393,7 +395,7 @@ pub async fn get_items(
     count: bool,
 ) -> Result<ItemsQueryResult> {
     // trace!(&q);
-    // dbg!(&q);
+    dbg!(&q);
 
     let search = q.search_term.clone().or(q.name_starts_with.clone()); // for now, dont do a few requests
     // only support Movie and Series for search
@@ -561,7 +563,9 @@ pub async fn get_items(
 
     // single item. We assume details
     if let Some(ids) = &q.ids {
-        let (id, media_type) = utils::decode_media_uuid(&ids[0]).unwrap();
+        let (id, media_type) = utils::decode_media_uuid(&ids[0])
+            .log_err("Failed to decode media UUID")
+            .unwrap();
 
         // just support movie and series for now
         // todo: add support for episodes.
@@ -647,6 +651,7 @@ pub async fn items_flat(
     State(state): State<AppState>,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    dbg!(&q);
     let items = get_items(state, q, false).await?;
     Ok(Json::<Vec<jellyfin::BaseItemDto>>(items.items))
 }
@@ -729,6 +734,15 @@ pub async fn shows_episodes(
     }))
 }
 
+pub async fn user_image(
+    State(state): State<AppState>,
+    // Query(q): Query<jellyfin::ImageQuery>,
+) -> Result<impl IntoResponse> {
+    let url = Some("https://placehold.co/600x400".to_string());
+
+    Ok(Redirect::temporary(url.unwrap().as_str()))
+}
+
 #[derive(Deserialize)]
 enum ImageType {
     Primary,
@@ -764,11 +778,11 @@ pub async fn items_images(
             .await?
             .ok_or_else(|| eyre::eyre!("missing meta"))?;
         dbg!(&meta);
-         // return images.
-         if media_type == jellyfin::MediaType::Episode {
+        // return images.
+        if media_type == jellyfin::MediaType::Episode {
             dbg!(meta.get_episode_by_id(id.clone()));
             url = meta.get_episode_by_id(id).unwrap().thumbnail.clone();
-         }
+        }
 
         if url.is_none() && image_type == "primary" && meta.poster.is_some() {
             url = meta.poster;

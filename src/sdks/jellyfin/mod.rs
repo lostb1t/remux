@@ -79,6 +79,7 @@ pub struct SpecialViewOptionDto {
     pub id: Option<String>,
 }
 
+#[skip_serializing_none]
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct GetItemsQuery {
@@ -273,10 +274,32 @@ pub struct QueryFiltersLegacy {
 }
 
 #[skip_serializing_none]
-#[derive(Default, Deserialize, Serialize, Clone, Debug)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UserConfiguration {
+    pub audio_language_preference: Option<String>,
+    pub play_default_audio_track: Option<bool>,
+    pub subtitle_language_preference: Option<String>,
+    pub display_missing_episodes: Option<bool>,
+    pub grouped_folders: Option<Vec<String>>,
+    pub subtitle_mode: Option<String>,
+    pub display_collections_view: Option<bool>,
+    pub enable_local_password: Option<bool>,
+    pub ordered_views: Option<Vec<String>>,
+    pub latest_items_excludes: Option<Vec<String>>,
+    pub my_media_excludes: Option<Vec<String>>,
+    pub hide_played_in_latest: Option<bool>,
+    pub remember_audio_selections: Option<bool>,
+    pub remember_subtitle_selections: Option<bool>,
+    pub enable_next_episode_auto_play: Option<bool>,
+    pub cast_receiver_id: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct UserDto {
-    // pub configuration: Option<UserConfiguration>,
+    pub configuration: Option<UserConfiguration>,
     pub enable_auto_login: Option<bool>,
     pub has_configured_easy_password: Option<bool>,
     pub has_configured_password: Option<bool>,
@@ -291,6 +314,28 @@ pub struct UserDto {
     pub server_id: Option<String>,
     pub server_name: Option<String>,
 }
+
+impl Default for UserDto {
+    fn default() -> Self {
+        Self {
+            configuration: Some(UserConfiguration::default()),
+            enable_auto_login: Some(false),
+            has_configured_easy_password: Some(false),
+            has_configured_password: Some(true),
+            has_password: Some(true),
+            id: None,
+            last_activity_date: None,
+            last_login_date: None,
+            name: None,
+            policy: UserPolicy::default(),
+            primary_image_aspect_ratio: None,
+            primary_image_tag: None,
+            server_id: None,
+            server_name: None,
+        }
+    }
+}
+
 
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize, Clone)]
