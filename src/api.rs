@@ -400,9 +400,9 @@ pub async fn get_items(
     dbg!(&q);
 
     let search = q.search_term.clone().or(q.name_starts_with.clone()); // for now, dont do a few requests
-    // only support Movie and Series for search
-
-    if search.is_some() {
+    
+    // only support Movie and Series for sesrch and catalogs
+    if search.is_some() || q.parent_id.as_deref().map_or(false, |id| id.starts_with("catalog")) {
         if let Some(types) = &q.include_item_types {
             if ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series]
                 .contains(&types[0])
@@ -441,8 +441,20 @@ pub async fn get_items(
 
         // get datalog items
         if parent_id.starts_with("catalog") {
-            // if let Some(catalog) = state.stremio.get_catalog(parent_id.) {
-            //if parent_id.ends_with("test")
+
+if let Some(types) = &q.include_item_types {
+              let catalog = state
+                .stremio
+                .get_catalog(parent_id.clone().as_str())
+                .unwrap();
+                if catalog.kind != types[0].into()
+            {
+                return Ok(ItemsQueryResult {
+                    items: vec![],
+                    total_count: 0,
+                });
+            }
+        }
             let items = state
                 .stremio
                 .get_catalog_items(parent_id.clone(), None, q.limit, Some(skip))
