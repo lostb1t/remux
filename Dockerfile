@@ -1,6 +1,11 @@
 FROM rust:slim-bookworm AS builder
 WORKDIR /app
 
+RUN apt update \
+    && apt install -y ffmpeg \
+    && apt clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release

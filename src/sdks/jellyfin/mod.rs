@@ -94,7 +94,7 @@ pub struct GetItemsQuery {
     pub adjacent_to: Option<String>,
     pub index_number: Option<i32>,
     pub start_index: Option<i32>,
-    pub limit: Option<i32>,
+    pub limit: Option<u32>,
     pub search_term: Option<String>,
     pub parent_id: Option<String>,
     pub season_id: Option<String>,
@@ -135,7 +135,8 @@ pub struct GetItemsQuery {
 #[serde(rename_all = "camelCase")]
 pub struct VideoStreamQuery {
     pub container: Option<String>,
-    pub r#static: Option<bool>,
+    #[serde(rename="static")]
+    pub static_: Option<bool>,
     pub params: Option<String>,
     pub tag: Option<String>,
     pub device_profile_id: Option<String>,

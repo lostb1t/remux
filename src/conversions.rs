@@ -198,9 +198,9 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
                 ..Default::default()
             }),
             genres: meta.genres.clone(),
-            run_time_ticks: meta
-                .runtime
-                .map(|r| r.as_secs().to_ticks(utils::TickUnit::Seconds).unwrap()),
+            // run_time_ticks: meta
+            //     .runtime
+            //     .map(|r| r.as_secs().to_ticks(utils::TickUnit::Seconds).unwrap()),
             ..Default::default()
         }
     }

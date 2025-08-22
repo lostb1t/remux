@@ -99,8 +99,10 @@ pub fn routes() -> Router<AppState> {
         .route("/playback/bitratetest", get(playback_bitratetest))
         .route("/displaypreferences/usersettings", get(user_settings))
         .route("/system/info", get(system_info))
-        // stubs. to impltement
+        
+        // stubs. to implement
         .route("/sessions/playing", post(stub))
+        .route("/sessions/playing/progress", post(stub))
         .route("/userimage", get(user_image))
         .route("/sessions/capabilities/full", post(stub))
         .route("/quickconnect/enabled", post(stub))
@@ -161,7 +163,6 @@ pub async fn system_info_public(
     Ok(Json(jellyfin::PublicSystemInfo {
         local_address: Some("".to_string()),
         server_name: Some("Remux".to_string()),
-        //id: Some("remux".to_string()),
         product_name: Some("Jellyfin Server".to_string()),
         startup_wizard_completed: Some(true),
         version: Some("10.10.7".to_string()),
@@ -444,7 +445,7 @@ pub async fn get_items(
             //if parent_id.ends_with("test")
             let items = state
                 .stremio
-                .get_catalog_items(parent_id.clone(), None, Some(skip))
+                .get_catalog_items(parent_id.clone(), None, q.limit, Some(skip))
                 .await
                 .unwrap();
             return Ok(ItemsQueryResult {
@@ -635,7 +636,7 @@ pub async fn get_items(
         //dbg!(&catalog);
         items = state
             .stremio
-            .get_catalog_items(catalog.uuid.clone(), search, Some(skip))
+            .get_catalog_items(catalog.uuid.clone(), search, q.limit, Some(skip))
             .await?
             .into_iter()
             .map(jellyfin::BaseItemDto::from)
@@ -652,7 +653,6 @@ pub async fn items_flat(
     State(state): State<AppState>,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    dbg!(&q);
     let items = get_items(state, q, false).await?;
     Ok(Json::<Vec<jellyfin::BaseItemDto>>(items.items))
 }
@@ -661,8 +661,6 @@ pub async fn items(
     State(state): State<AppState>,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    dbg!("items");
-    // dbg!(&q);
     let items = get_items(state, q.clone(), true).await?;
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
@@ -761,7 +759,7 @@ pub async fn items_images(
     Path(ImagePath { id, image_type, index }): Path<ImagePath>,
     Query(q): Query<jellyfin::ImageQuery>,
 ) -> Result<impl IntoResponse> {
-    // sometimes it send the id as a tag. And we replacee it with an url.
+    // we replace tags with urls so use that first.
     let mut url = q.tag;
     dbg!(&url, "items_images");
     if url.is_none() {
@@ -810,7 +808,6 @@ pub async fn items_playbackinfo(
     Query(query): Query<jellyfin::PlaybackInfoQuery>,
     data: Option<Json<jellyfin::PlaybackInfoQuery>>,
 ) -> Result<impl IntoResponse> {
-    dbg!("yooooo");
     trace!(?query, "tracing");
     let Json(payload) = data.unwrap_or_default();
     let (id, media_type) = utils::decode_media_uuid(&id)
@@ -906,7 +903,7 @@ pub async fn videos_stream(
     range: Option<axum_extra::TypedHeader<headers::Range>>,
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(query): Query<jellyfin::VideoStreamQuery>,
+    Query(q): Query<jellyfin::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
     //let mut media = db::media::Entity::find_by_id(id)
     //    .one(&state.db.pool)
@@ -926,7 +923,7 @@ pub async fn videos_stream(
     let stream = streams
         .into_iter()
         .find(|x| {
-            query
+            q
                 .media_source_id
                 .as_ref()
                 .map(|id| x.id() == *id)
@@ -942,6 +939,8 @@ pub async fn videos_stream(
     //format!("{}", url).as_str(),
     //));
     //let resp = reqwest::get(stream.url.unwrap()).await?;
+    
+    if q.static_.unwrap_or(false) {
     let mut req = reqwest::Client::new().get(stream.url.unwrap());
 
     if let Some(axum_extra::TypedHeader(range)) = range {
@@ -955,7 +954,10 @@ pub async fn videos_stream(
     let reader = StreamReader::new(resp.bytes_stream().map_err(io::Error::other));
 
     let body = ReaderStream::new(reader);
-    Ok(FileStream::new(body).file_name("stream.mp4"))
+    return Ok(FileStream::new(body).file_name("stream.mp4"));
+    }
+    
+    todo!();
 }
 //URL: https://jellyfin.sjoerdarendsen.dev/Items/e494097f55b2459db6af916d59c404fe/Images/Primary?fillWidth=300&quality=80&tag=c2eb83c4eb6320de96199a825e9513eb
 

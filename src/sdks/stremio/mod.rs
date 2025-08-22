@@ -2,6 +2,7 @@ use crate::sdks::core::{CommaSeparatedList, Endpoint, QueryParams};
 use crate::sdks::jellyfin;
 use bon::Builder;
 use eyre::Result;
+use futures::{StreamExt, TryStreamExt, stream::FuturesOrdered};
 use futures_util::future::join_all;
 use futures_util::future::try_join_all;
 use serde::{Deserialize, Serialize};
@@ -180,7 +181,8 @@ impl StremioService {
         &self,
         uuid: String,
         search: Option<String>,
-        skip: Option<u32>,
+        limit: Option<u32>,
+        offset: Option<u32>,
     ) -> Result<Vec<Meta>> {
         // first find the addon + catalog that match this uuid
         let (addon, catalog) = self
@@ -196,7 +198,7 @@ impl StremioService {
             })
             .ok_or_else(|| eyre::eyre!("catalog not found"))?;
 
-        catalog.get_items(addon, search, skip).await
+        catalog.get_items(addon, search, limit, offset).await
     }
 }
 
@@ -397,27 +399,38 @@ impl Catalog {
         &self,
         addon: &Addon,
         search: Option<String>,
-        skip: Option<u32>,
+        limit: Option<u32>,
+        offset: Option<u32>,
     ) -> Result<Vec<Meta>> {
-        let endpoint = CatalogEndpoint {
-            kind: self.kind.clone(),
-            id: self.id.clone(),
-            search,
-            genre: None,
-            skip,
-        };
-        Ok(
-            endpoint.query(&addon.client).await?.metas, // .into_iter()
-                                                        // .filter(|meta| {
-                                                        //     if meta.imdb_id.is_none() {
+        const PAGE: u32 = 20;
+        let limit = limit.unwrap_or(PAGE);
+        let start = offset.unwrap_or(0);
+        let pages = (limit + PAGE - 1) / PAGE;
 
-                                                        //         warn!("Meta without imdb_id found in catalog: {}", self.id);
-                                                        //         return false;
-                                                        //     }
-                                                        //     true
-                                                        // })
-                                                        //.collect()
-        )
+        let kind = self.kind.clone();
+        let id = self.id.clone();
+        let client = addon.client.clone();
+
+        FuturesOrdered::from_iter((0..pages).map(|i| {
+            let kind = kind.clone();
+            let id = id.clone();
+            let client = client.clone();
+            let search = search.clone();
+            let skip = start + i * PAGE;
+            async move {
+                let endpoint = CatalogEndpoint {
+                    kind,
+                    id,
+                    search,
+                    genre: None,
+                    skip: Some(skip),
+                };
+                Ok::<_, eyre::Report>(endpoint.query(&client).await?.metas)
+            }
+        }))
+        .try_collect::<Vec<Vec<Meta>>>()
+        .await
+        .map(|results| results.into_iter().flatten().take(limit as usize).collect())
     }
 }
 
@@ -810,16 +823,16 @@ impl Stream {
             media_streams: Some({
                 let mut streams = vec![video];
                 if has_audio {
-let display_title = [
-    audio.codec.clone(),
-    audio.channels.map(|c| format!("{c}ch")),
-]
-.into_iter()
-.flatten()
-.collect::<Vec<_>>()
-.join(" ");
+                    let display_title = [
+                        audio.codec.clone(),
+                        audio.channels.map(|c| format!("{c}ch")),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" ");
 
-audio.display_title = Some(display_title);
+                    audio.display_title = Some(display_title);
                     streams.push(audio);
                 }
                 streams
@@ -890,13 +903,36 @@ pub struct Meta {
     pub genres: Option<Vec<String>>,
     pub release_info: Option<String>,
 
-    #[serde(default, deserialize_with = "deserialize_option_duration")]
+    #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
     pub runtime: Option<Duration>,
+
     // #[serde(rename = "videos")]
     pub videos: Option<Vec<Episode>>,
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
+}
+
+use serde::{Deserializer};
+use serde::de::Error as _;
+//use std::time::Duration;
+
+fn deserialize_opt_duration_empty_ok<'de, D>(de: D) -> Result<Option<Duration>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(de)?;
+    match opt {
+        None => Ok(None),
+        Some(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                Ok(None)
+            } else {
+                duration_str::parse(t).map(Some).map_err(D::Error::custom)
+            }
+        }
+    }
 }
 
 impl Meta {

@@ -11,11 +11,12 @@ use eyre::Result;
 use http::request::Builder as RequestBuilder;
 use http::{HeaderMap, HeaderValue, Response};
 use http_cache_reqwest::{
-   CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions,
+    CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions,
 };
 use reqwest::Method;
 use reqwest::Request;
 use reqwest_middleware::{ClientBuilder as MwClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::mpsc::channel;
@@ -107,19 +108,33 @@ impl RestClient {
 
     // TODO: make cache location come from config
     pub fn with_cache(url: &str) -> Result<RestClient> {
-        let inner = reqwest::ClientBuilder::new().build().unwrap();
+        let inner = reqwest::ClientBuilder::new()
+            .retry(
+                reqwest::retry::for_host(url.to_string())
+                .classify_fn(|req_rep| {
+                    //dbg!(&req_rep);
+                    if let Some(status) = req_rep.status() {
+                        if status.is_server_error() {
+                           // return req_rep.retryable();
+                        }
+                    }
+                    req_rep.success()
+                }),
+            )
+            .build()
+            .unwrap();
         let client = MwClientBuilder::new(inner)
-             .with(Cache(HttpCache {
-                 mode: CacheMode::Default,
-                 manager: CACacheManager::new("/tmp/ccache".into(), true),
-                 options: HttpCacheOptions::default(),
+            .with(Cache(HttpCache {
+                mode: CacheMode::Default,
+                manager: CACacheManager::new("/tmp/ccache".into(), true),
+                options: HttpCacheOptions::default(),
                 //  options: HttpCacheOptions {
                 //      cache_mode_fn: Some(Arc::new(|_: &http_cache_reqwest::Parts| {
                 //          CacheMode::IgnoreRules
                 //      })),
                 //      ..Default::default()
                 //  },
-             }))
+            }))
             .build();
         let baseurl = Url::parse(url)?;
 
@@ -245,7 +260,7 @@ impl RestClient {
         };
 
         url = url.as_str().parse::<url::Url>()?;
-
+        // dbg!(&url);
         Ok(url)
     }
 }
