@@ -2,7 +2,7 @@ FROM rust:slim-bookworm AS builder
 WORKDIR /app
 
 RUN apt update \
-    && apt install -y ffmpeg pkg-config \
+    && apt install -y ffmpeg pkg-config libavutil-dev libavcodec-dev libavformat-dev libavfilter-dev libavdevice-dev libswresample-dev libswscale-dev \
     && apt clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
