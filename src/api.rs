@@ -749,9 +749,16 @@ enum ImageType {
     Primary,
 }
 
+#[derive(Deserialize)]
+struct ImagePath {
+    id: String,
+    image_type: String,
+    index: Option<usize>,
+}
+
 pub async fn items_images(
     State(state): State<AppState>,
-    Path((id, image_type, index)): Path<(String, String, Option<usize>)>,
+    Path(ImagePath { id, image_type, index }): Path<ImagePath>,
     Query(q): Query<jellyfin::ImageQuery>,
 ) -> Result<impl IntoResponse> {
     // sometimes it send the id as a tag. And we replacee it with an url.
