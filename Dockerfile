@@ -2,7 +2,7 @@ FROM rust:slim-bookworm AS builder
 WORKDIR /app
 
 RUN apt update \
-    && apt install -y ffmpeg \
+    && apt install -y ffmpeg pkg-config \
     && apt clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
