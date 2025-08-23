@@ -19,7 +19,7 @@ RUN cargo build --release
 RUN strip target/release/remux-server
 
 from debian:bookworm-slim as release
-ENV WEB_PATH =/app/jellyfin-web
+ENV WEB_PATH=/app/jellyfin-web
 
 RUN apt update \
     && apt install -y ffmpeg \
