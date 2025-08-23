@@ -83,6 +83,11 @@ async fn main() -> Result<()> {
     };
 
     // spawn_background_tasks(state.clone()).await?;
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any) // or list them explicitly:
+        .expose_headers(Any);
 
     let app = tower::util::MapRequestLayer::new(rewrite_request_uri)
         .layer(
@@ -90,7 +95,7 @@ async fn main() -> Result<()> {
                 .merge(api::routes())
                 .with_state(state)
                 .layer(tower_http::trace::TraceLayer::new_for_http())
-                .layer(CorsLayer::new().allow_methods(Any).allow_origin(Any))
+                .layer(cors)
                 .fallback_service(ServeDir::new("../jellyfin-web/dist")),
         )
         .into_make_service();

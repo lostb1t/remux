@@ -111,6 +111,7 @@ pub fn routes() -> Router<AppState> {
         .route("/useritems/resume", get(mock_items))
         .route("/sessions/playing", post(stub))
         .route("/sessions/playing/progress", post(stub))
+        .route("/sessions/stopped", post(stub))
         .route("/userimage", get(user_image))
         .route("/sessions/capabilities/full", post(stub))
         .route("/quickconnect/enabled", post(stub))
@@ -851,6 +852,10 @@ pub async fn items_playbackinfo(
     let (id, media_type, stream_id) = utils::decode_media_uuid(&id)
         .log_err("Failed to decode media UUID")
         .unwrap();
+
+    dbg!(&id, &media_type, &stream_id, "playbackinfo");
+
+    /// todo: media source can also be send as streamid.
     let media_source_id = payload
         .media_source_id
         .as_ref()
@@ -861,21 +866,27 @@ pub async fn items_playbackinfo(
     //    .await?
     //    .unwrap();
 
-    let streams: Vec<sdks::stremio::Stream> = state
+    let mut streams: Vec<sdks::stremio::Stream> = state
         .stremio
         .get_streams(id.clone(), media_type.into(), None, None)
         .await?
         .into_iter()
-        .filter(|x| {
-            media_source_id
-                .map(|id| {
-                    let result = x.id() == *id;
-                    result
-                })
-                .unwrap_or(true)
-        })
+        // .filter(|x| {
+        //     media_source_id
+        //         .map(|id| {
+        //             let result = x.id() == *id;
+        //             result
+        //         })
+        //         .unwrap_or(true)
+        // })
         .collect();
 
+    // we dont need everything. Only the selected
+    streams = vec![streams[0].clone()]; // for now just use the first stream
+
+    // let selected_streams = Vec<streams[0]>;
+
+    // dbg!(&streams, "streams");
     // let subtitles = state
     //     .stremio
     //     .get_subtitles(id, media_type.into(), None, None)
@@ -912,10 +923,14 @@ pub async fn items_playbackinfo(
     // SupportsExternalStream: true - External subtitle streams supported
     // Path: "/media/test/Ghosts.2021.S01E05.720p.AMZN.WEBRip.x264-GalaxyTV.srt" - Local file path for subtitle
     // Level: 0 - Subtitle level or priority
+
     let mut media_sources: Vec<MediaSourceInfo> = streams
         .into_iter()
         .map(|stream| {
-            let mut media_source: MediaSourceInfo = stream.probe().log_err("Failed to probe media stream")?.into();
+            let mut media_source: MediaSourceInfo = stream
+                .probe()
+                .log_err("Failed to probe media stream")?
+                .into();
             let subtitles = subtitles.clone();
 
             if let Some(media_streams) = media_source.media_streams.as_mut() {
@@ -930,6 +945,25 @@ pub async fn items_playbackinfo(
             Ok(media_source)
         })
         .collect::<Result<Vec<_>>>()?;
+
+    // let mut media_sources: Vec<MediaSourceInfo> = streams
+    //     .into_iter()
+    //     .map(|stream| {
+    //         let mut media_source: MediaSourceInfo = stream.probe().log_err("Failed to probe media stream")?.into();
+    //         let subtitles = subtitles.clone();
+
+    //         if let Some(media_streams) = media_source.media_streams.as_mut() {
+    //             media_streams.extend({
+    //                 subtitles
+    //                     .into_iter()
+    //                     .map(|subtitle| subtitle.into())
+    //                     .collect::<Vec<_>>()
+    //             });
+    //         }
+
+    //         Ok(media_source)
+    //     })
+    //     .collect::<Result<Vec<_>>>()?;
 
     // media_sources.extend({
     //     subtitles

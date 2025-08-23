@@ -911,8 +911,8 @@ impl Stream {
 
         //dbg!(&info);
         let mut source: super::jellyfin::MediaSourceInfo = info.into();
-        source.id = Some(id.clone());
-        source.e_tag = Some(id.clone());
+        // source.id = Some(id.clone());
+        // source.e_tag = Some(id.clone());
 
         // if include_external.as_ref().unwrap_or(&false) {
 
