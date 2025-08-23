@@ -13,6 +13,7 @@ use crate::db;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::{DisplayFromStr, serde_as};
+use serde_alias::serde_alias;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -159,13 +160,19 @@ pub struct VideoStreamQuery {
     pub always_burn_in_subtitle_when_transcoding: Option<bool>,
 }
 
+#[serde(rename_all = "camelCase")]         // canonical case
+#[serde_alias(CamelCase, PascalCase)]
+#[serde(default)]
+#[serde_as]
 #[derive(Default, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// #[serde(rename_all = "camelCase")]
 pub struct PlaybackInfoQuery {
     pub user_id: Option<String>,
     pub max_streaming_bitrate: Option<i32>,
     pub start_time_ticks: Option<i64>,
+    #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
     pub audio_stream_index: Option<i32>,
+    #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
     pub subtitle_stream_index: Option<i32>,
     pub max_audio_channels: Option<i32>,
     pub media_source_id: Option<String>,

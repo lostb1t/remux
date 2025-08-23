@@ -2,6 +2,7 @@
 #![allow(warnings)]
 #[macro_use]
 extern crate serde_derive;
+extern crate serde_alias;
 
 use axum::response::Html;
 use reqwest;
@@ -70,8 +71,11 @@ async fn main() -> Result<()> {
 
     let config: Config = figment::Figment::new()
         //  .merge(figmentToml::file("Cargo.toml"))
+        .merge(figment::providers::Serialized::defaults(Config::default()))
         .merge(figment::providers::Env::prefixed(""))
         .extract()?;
+
+    tracing::info!("config: {:?}", config);
 
     let state = api::AppState {
         config: config.clone(),
@@ -225,7 +229,9 @@ pub fn setup_logging() {
 
     let subscriber = tracing_subscriber::registry()
         .with(filter)
-        .with(fmt::layer().with_writer(std::io::stdout));
+        .with(fmt::layer()
+        // .pretty()
+        .with_writer(std::io::stdout));
 
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");

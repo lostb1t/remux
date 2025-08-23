@@ -59,7 +59,7 @@ pub fn decode_media_uuid(
         .anyhow()
         .context("invalid base36 in media uuid")?;
     let s = std::str::from_utf8(&bytes).context("decoded media uuid was not utf-8")?;
-dbg!(&s);
+
     let mut parts = s.splitn(3, "::");
     let id = parts.next().context("missing id")?;
     let media_type = parts.next().context("missing media type")?;

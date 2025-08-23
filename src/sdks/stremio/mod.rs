@@ -216,6 +216,17 @@ impl StremioService {
         self.get_catalogs().into_iter().find(|c| c.uuid == uuid)
     }
 
+    // pub async fn get_streams(
+    //     &self,
+    //     stream_id: String,
+    //     imdb_id: String,
+    //     media_type: MediaType,
+    //     season: Option<i64>,
+    //     episode: Option<i64>,
+    // ) -> Result<Vec<Stream>> {
+    //     self.get_streams().into_iter().find(|c| c.uuid == uuid)
+    // }
+
     pub async fn get_catalog_items(
         &self,
         uuid: String,

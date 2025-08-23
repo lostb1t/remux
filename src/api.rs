@@ -111,7 +111,7 @@ pub fn routes() -> Router<AppState> {
         .route("/useritems/resume", get(mock_items))
         .route("/sessions/playing", post(stub))
         .route("/sessions/playing/progress", post(stub))
-        .route("/sessions/stopped", post(stub))
+        .route("/sessions/playing/stopped", post(stub))
         .route("/userimage", get(user_image))
         .route("/sessions/capabilities/full", post(stub))
         .route("/quickconnect/enabled", post(stub))
@@ -588,10 +588,11 @@ pub async fn get_items(
 
     // single item. We assume details
     if let Some(ids) = &q.ids {
-        let (id, media_type, stream_id) = utils::decode_media_uuid(&ids[0])
+        let uuid = &ids[0];
+        let (id, media_type, stream_id) = utils::decode_media_uuid(&uuid)
             .log_err("Failed to decode media UUID")
             .unwrap();
-
+        // dbg!(&id, &media_type, &stream_id);
         // just support movie and series for now
         // todo: add support for episodes.
         if ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series]
@@ -611,7 +612,12 @@ pub async fn get_items(
             .unwrap()
             .unwrap()
             .into();
-        // dbg!(&item);
+
+        // jf is weird. if a stream id is provider it needs the be the id
+        if stream_id.is_some() {
+            item.id = uuid.to_string();
+        };
+
         item.media_sources = Some(
             state
                 .stremio
@@ -625,6 +631,8 @@ pub async fn get_items(
                 .await
                 .unwrap()
                 .into_iter()
+                // jf is weird. if a stream id is provider we just filter out the rest.
+                .filter(|x| stream_id.clone().map_or(true, |id| x.id() == id))
                 .map(|stream| {
                     let mut source = stream.into_media_source();
                     let _id = Some(utils::encode_media_uuid(
@@ -637,7 +645,7 @@ pub async fn get_items(
                     source.e_tag = Some(_id);
                     source
                 })
-                .collect::<Vec<jellyfin::MediaSourceInfo>>(), //})
+                .collect::<Vec<jellyfin::MediaSourceInfo>>(),
         );
         items.push(item);
     } else {
@@ -798,14 +806,15 @@ pub async fn items_images(
     }): Path<ImagePath>,
     Query(q): Query<jellyfin::ImageQuery>,
 ) -> Result<impl IntoResponse> {
+    trace!(%id, %image_type, ?index, ?q, "items_images");
     // we replace tags with urls so use that first.
     let mut url = q.tag;
     // dbg!(&url, "items_images");
     if url.is_none() {
         // first decode the id and type
-        let (id, mut media_type, stream_id) = utils::decode_media_uuid(&id)
-            .log_err("Failed to decode media UUID")
-            .unwrap();
+        let (id, mut media_type, stream_id) =
+            utils::decode_media_uuid(&id).log_err("Failed to decode media UUID")?;
+
         let ids: Vec<String> = id.split(':').map(|s| s.to_string()).collect();
 
         let mut base_media_type = media_type;
@@ -845,48 +854,52 @@ pub async fn items_playbackinfo(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<jellyfin::PlaybackInfoQuery>,
-    data: Option<Json<jellyfin::PlaybackInfoQuery>>,
+    Json(payload): Json<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    trace!(?query, "tracing");
-    let Json(payload) = data.unwrap_or_default();
+    // let Json(payload) = data.unwrap_or_default();
+    trace!(?payload, "items_playbackinfo");
     let (id, media_type, stream_id) = utils::decode_media_uuid(&id)
         .log_err("Failed to decode media UUID")
         .unwrap();
 
-    dbg!(&id, &media_type, &stream_id, "playbackinfo");
+    trace!(?id, ?media_type, ?stream_id, "items_playbackinfo");
 
     /// todo: media source can also be send as streamid.
-    let media_source_id = payload
+    let media_source_id: Option<String> = payload
         .media_source_id
-        .as_ref()
-        .or(query.media_source_id.as_ref());
+        .clone()
+        .or_else(|| query.media_source_id.clone())
+        .and_then(|s| {
+            let (_, _, stream_id) = utils::decode_media_uuid(&s)
+                .log_err("Failed to decode media UUID")
+                .unwrap();
+            stream_id
+        });
 
-    //let mut media = db::media::Entity::find_by_id(id)
-    //    .one(&state.db.pool)
-    //    .await?
-    //    .unwrap();
-
+    let filter_by_id: Option<String> = stream_id.or(media_source_id.clone());
+    // dbg!(&filter_by_id, "filter_by_id");
     let mut streams: Vec<sdks::stremio::Stream> = state
         .stremio
         .get_streams(id.clone(), media_type.into(), None, None)
         .await?
         .into_iter()
-        // .filter(|x| {
-        //     media_source_id
-        //         .map(|id| {
-        //             let result = x.id() == *id;
-        //             result
-        //         })
-        //         .unwrap_or(true)
-        // })
+        .filter(|x| {
+            // we dont need everything. Only the selected
+            filter_by_id
+                .clone()
+                .map(|id| {
+                    // dbg!(x.id(), "filtering");
+                    let result = x.id() == *id;
+                    result
+                })
+                .unwrap_or(true)
+        })
         .collect();
 
-    // we dont need everything. Only the selected
-    streams = vec![streams[0].clone()]; // for now just use the first stream
+    // fallback
+    streams = vec![streams[0].clone()];
+    // dbg!(&streams);
 
-    // let selected_streams = Vec<streams[0]>;
-
-    // dbg!(&streams, "streams");
     // let subtitles = state
     //     .stremio
     //     .get_subtitles(id, media_type.into(), None, None)
@@ -1011,29 +1024,30 @@ pub async fn items_filters(State(state): State<AppState>) -> Result<impl IntoRes
 /// If the `static_` query parameter is set to `true`, the response will be a static
 /// video stream. Otherwise, a `jellyfin::PlaybackInfoResponse` is returned.
 pub async fn videos_stream(
-    //req: axum::extract::Request<axum::body::Body>,
-    //Some(axum_extra::TypedHeader(range)): Option<axum_extra::TypedHeader<headers::Range>>,
-    range: Option<axum_extra::TypedHeader<headers::Range>>,
+    // range: Option<axum_extra::TypedHeader<headers::Range>>,
+    headers: headers::HeaderMap,
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(uuid): Path<String>,
     Query(q): Query<jellyfin::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    trace!(?q, ?id, ?range, "videos_stream");
-
-    let (id, media_type, stream_id) = utils::decode_media_uuid(&id)
+    let (id, media_type, stream_id) = utils::decode_media_uuid(&uuid)
         .log_err("Failed to decode media UUID")
         .unwrap();
+
+    trace!(?uuid, ?q, ?id, ?headers, ?stream_id, "videos_stream");
+
     let streams = state
         .stremio
         .get_streams(id, media_type.into(), None, None)
         .await
         .unwrap();
 
-    //let media_source_id = query.media_source_id.clone();
+    // filter by id
+    let filter_by_id: Option<String> = stream_id.or(q.media_source_id.clone());
     let stream = streams
         .into_iter()
         .find(|x| {
-            q.media_source_id
+            filter_by_id
                 .as_ref()
                 .map(|id| x.id() == *id)
                 .unwrap_or(true)
@@ -1041,11 +1055,15 @@ pub async fn videos_stream(
         .unwrap();
 
     if q.static_.unwrap_or(false) {
-        info!("starting direct playback for: {:?}", &stream);
+        info!("starting direct playback for: {:?}", &stream.name);
         let mut req = reqwest::Client::new().get(stream.url.unwrap());
-        if let Some(axum_extra::TypedHeader(range)) = range {
-            let s = format!("{:?}", range);
-            req = req.header(axum::http::header::RANGE, s);
+        // if let Some(axum_extra::TypedHeader(range)) = range {
+        //     // let s = format!("{:?}", range);
+        //     // req = req.header(axum::http::header::RANGE, s);
+        //     req = req.header(http::header::RANGE, range);
+        // }
+        if let Some(v) = headers.get(http::header::RANGE) {
+            req = req.header(http::header::RANGE, v.clone());
         }
 
         let upstream = req.send().await?;
@@ -1054,6 +1072,8 @@ pub async fn videos_stream(
         let headers_in = upstream.headers().clone();
         let upstream_stream = upstream.bytes_stream();
         let body = Body::from_stream(upstream_stream.map_err(io::Error::other));
+
+        trace!(?status, ?headers_in, "videos_stream");
 
         // Build outgoing response with same status
         let mut resp_out = axum::response::Response::builder()
