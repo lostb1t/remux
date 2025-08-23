@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
                 .with_state(state)
                 .layer(tower_http::trace::TraceLayer::new_for_http())
                 .layer(cors)
-                .fallback_service(ServeDir::new("../jellyfin-web/dist")),
+                .fallback_service(ServeDir::new(config.web_path)),
         )
         .into_make_service();
 
@@ -110,6 +110,7 @@ async fn main() -> Result<()> {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Config {
     pub addons: Vec<String>,
+    pub web_path: String,
 }
 
 impl Default for Config {
@@ -119,6 +120,7 @@ impl Default for Config {
                 "https://torrentio.strem.fun/manifest.json".to_string(),
                 "https://v3-cinemeta.strem.io/manifest.json".to_string(),
             ],
+            web_path: "../jellyfin-web/dist".into(),
         }
     }
 }

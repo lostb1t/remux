@@ -1,3 +1,5 @@
+FROM jellyfin/jellyfin:10.10.7 AS web
+
 FROM rust:slim-bookworm AS builder
 WORKDIR /app
 
@@ -17,7 +19,7 @@ RUN cargo build --release
 RUN strip target/release/remux-server
 
 from debian:bookworm-slim as release
-ENV CONFIG=/data/config.toml
+ENV WEB_PATH =/app/jellyfin-web
 
 RUN apt update \
     && apt install -y ffmpeg \
@@ -26,5 +28,6 @@ RUN apt update \
 
 WORKDIR /app
 COPY --from=builder /app/target/release/remux-server .
+COPY --from=web /jellyfin/jellyfin-web /app/jellyfin-web
 
 CMD ["./remux-server"]

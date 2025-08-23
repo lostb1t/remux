@@ -1,5 +1,5 @@
 [env]
-RUST_LOG = "trace,axum=debug,tower_http=debug,remux_server=trace,hyper=warn,sqlx=warn"
+RUST_LOG = "trace,axum=info,tower_http=debug,remux_server=trace,hyper=warn,sqlx=warn"
 RUST_BACKTRACE = 0
 HTTP_PROXY="http://10.0.10.11:9090"
 HTTPS_PROXY="http://10.0.10.11:9090"
@@ -21,4 +21,5 @@ watch = true
 
 [tasks.build]
 command = "docker"
-args = ["buildx", "build", "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:latest", ".", "--push"]
+# args = ["buildx", "build", "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:latest", ".", "--push"]
+args = ["buildx", "build", "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:latest", "."]
