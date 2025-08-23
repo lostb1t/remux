@@ -86,7 +86,8 @@ dotenvy = "0.15.7"
 duration-str = "0.17.0"
 
 reqwest-retry = "0.7.0"
-ez-ffmpeg = "0.5"
+default2 = "1.0.2"
+# ez-ffmpeg = "0.5"
 #ffmpeg-sys-next = "=7.1.3"
 #ffmpeg-next     = "=7.1.0"
 

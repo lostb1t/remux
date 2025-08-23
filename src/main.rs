@@ -46,6 +46,7 @@ use std::path::Path;
 use timed;
 use tower::Layer;
 use tower::util::MapRequestLayer;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing;
 use tracing::debug;
@@ -89,6 +90,7 @@ async fn main() -> Result<()> {
                 .merge(api::routes())
                 .with_state(state)
                 .layer(tower_http::trace::TraceLayer::new_for_http())
+                .layer(CorsLayer::new().allow_methods(Any).allow_origin(Any))
                 .fallback_service(ServeDir::new("../jellyfin-web/dist")),
         )
         .into_make_service();

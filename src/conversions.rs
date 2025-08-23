@@ -171,11 +171,14 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
             id: utils::encode_media_uuid(
                 &meta.imdb_id.clone().unwrap_or_else(|| meta.clone().id),
                 media_type,
+                None
             ),
+            server_id: utils::server_id(),
             name: meta.name.clone(),
+            original_title: meta.name.clone(),
             overview: meta.description.clone(),
             type_: Some(media_type),
-            //premiere_date: meta.released.and_then(utils::native_to_utc),
+            premiere_date: meta.released.clone(),
             community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
                 primary: meta.poster,
@@ -198,32 +201,80 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
                 ..Default::default()
             }),
             genres: meta.genres.clone(),
-            // run_time_ticks: meta
-            //     .runtime
-            //     .map(|r| r.as_secs().to_ticks(utils::TickUnit::Seconds).unwrap()),
+            run_time_ticks: meta
+                .runtime
+                .map(|r| r.as_secs().to_ticks(utils::TickUnit::Seconds).unwrap()),
             ..Default::default()
         }
     }
 }
 
 //Resources
-impl From<stremio::Stream> for jellyfin::MediaSourceInfo {
-    fn from(item: stremio::Stream) -> Self {
-        let id = Some(URL_SAFE.encode(item.url.unwrap()));
 
-        //let streams =
+// impl From<stremio::Stream> for jellyfin::MediaSourceInfo {
+//     fn from(item: stremio::Stream) -> Self {
+//         let id = Some(URL_SAFE.encode(item.url.unwrap()));
 
-        Self {
-            // base64 encode url
-            //id: Some("yoo".to_string()),
-            id: id.clone(),
-            e_tag: id,
-            name: Some(item.name.unwrap()),
+//         //let streams =
 
-            supports_direct_play: Some(true),
-            supports_direct_stream: Some(true),
+//         Self {
+//             // base64 encode url
+//             //id: Some("yoo".to_string()),
+//             id: id.clone(),
+//             e_tag: id,
+//             name: Some(item.name.unwrap()),
+
+//             supports_direct_play: Some(true),
+//             supports_direct_stream: Some(true),
+//             ..Default::default()
+//         }
+//     }
+// }
+
+impl From<stremio::Subtitle> for jellyfin::MediaStream {
+    fn from(sub: stremio::Subtitle) -> Self {
+        // Guess codec from URL extension; default to webvtt for browser compat
+        let lc = sub.url.to_ascii_lowercase();
+        let codec = if lc.ends_with(".vtt") {
+            "webvtt"
+        } else if lc.ends_with(".srt") {
+            "subrip"
+        } else {
+            "webvtt"
+        };
+
+        // Build a single external text subtitle stream
+        jellyfin::MediaStream {
+            index: Some(0),
+            type_: Some(jellyfin::MediaStreamType::Subtitle),
+            codec: Some(codec.to_string()),
+            language: sub.lang.clone(),
+            display_title: Some({
+                let lang = sub.lang.clone().unwrap_or_else(|| "und".into());
+                format!("{} - {} - External", lang, codec.to_uppercase())
+            }),
+            is_default: Some(false),
+            is_forced: Some(false),
+            is_external: Some(true),
+            is_text_subtitle_stream: Some(true),
+            // delivery_method: Some(jellyfin::SubtitleDeliveryMethod::External),
+            delivery_url: Some(sub.url.clone()),
+            is_external_url: Some(true),
             ..Default::default()
         }
+
+        // Represent this subtitle as a MediaSourceInfo that supports external streams
+        // let id = Some(URL_SAFE.encode(sub.id));
+        // jellyfin::MediaSourceInfo {
+        //     id: id.clone(),
+        //     e_tag: id,
+        //     name: Some("External Subtitle".to_string()),
+        //     supports_direct_play: Some(true),
+        //     supports_direct_stream: Some(true),
+        //     // supports_external_stream: Some(true),
+        //     media_streams: Some(vec![stream]),
+        //     ..Default::default()
+        // }
     }
 }
 
@@ -245,12 +296,14 @@ impl From<stremio::Episode> for jellyfin::BaseItemDto {
             id: utils::encode_media_uuid(
                 item.id.as_str(),
                 jellyfin::MediaType::Episode,
+                None
             ),
             type_: Some(jellyfin::MediaType::Episode),
             index_number: item.episode,
             season_id: Some(utils::encode_media_uuid(
                 format!("{}:{:?}", item.id, item.season).as_str(),
                 jellyfin::MediaType::Episode,
+                None
             )),
             parent_index_number: item.season,
             season_name: Some(format!("Season {:?}", item.season)),
@@ -264,41 +317,41 @@ impl From<stremio::Episode> for jellyfin::BaseItemDto {
     }
 }
 
-impl From<db::media::Model> for jellyfin::BaseItemDto {
-    fn from(media: db::media::Model) -> Self {
-        jellyfin::BaseItemDto {
-            name: Some(media.name),
-            overview: media.overview,
-            id: media.id.to_string(),
-            //type_: Some(media.media_type.into()),
-            premiere_date: utils::native_to_utc(media.release_date),
-            run_time_ticks: media
-                .runtime
-                .and_then(|x| x.to_ticks(utils::TickUnit::Minutes)),
-            image_tags: Some(jellyfin::ImageTags {
-                primary: media.poster_path,
-                ..Default::default()
-            }),
-            community_rating: media.community_rating,
-            parent_id: media.parent_id.map(|x| x.to_string()),
-            backdrop_image_tags: media.backdrop_path.map(|path| vec![path]),
-            media_sources: media.streams.as_ref().map(|r| {
-                // r.streams
-                r.clone()
-                    // .unwrap_or_default()
-                    .into_iter()
-                    .map(|stream| stream.into_media_source())
-                    .collect()
-            }),
-            // TODO!!! this for some reason breaks swiftfin listings
-            //provider_ids: Some(HashMap::from([
-            //   ("Tmdb".to_string(), media.tmdb_id.map(|v| v.to_string())),
-            //   ("Imdb".to_string(), media.imdb_id),
-            //])),
-            ..Default::default()
-        }
-    }
-}
+// impl From<db::media::Model> for jellyfin::BaseItemDto {
+//     fn from(media: db::media::Model) -> Self {
+//         jellyfin::BaseItemDto {
+//             name: Some(media.name),
+//             overview: media.overview,
+//             id: media.id.to_string(),
+//             //type_: Some(media.media_type.into()),
+//             premiere_date: utils::native_to_utc(media.release_date),
+//             run_time_ticks: media
+//                 .runtime
+//                 .and_then(|x| x.to_ticks(utils::TickUnit::Minutes)),
+//             image_tags: Some(jellyfin::ImageTags {
+//                 primary: media.poster_path,
+//                 ..Default::default()
+//             }),
+//             community_rating: media.community_rating,
+//             parent_id: media.parent_id.map(|x| x.to_string()),
+//             backdrop_image_tags: media.backdrop_path.map(|path| vec![path]),
+//             media_sources: media.streams.as_ref().map(|r| {
+//                 // r.streams
+//                 r.clone()
+//                     // .unwrap_or_default()
+//                     .into_iter()
+//                     .map(|stream| stream.into_media_source())
+//                     .collect()
+//             }),
+//             // TODO!!! this for some reason breaks swiftfin listings
+//             //provider_ids: Some(HashMap::from([
+//             //   ("Tmdb".to_string(), media.tmdb_id.map(|v| v.to_string())),
+//             //   ("Imdb".to_string(), media.imdb_id),
+//             //])),
+//             ..Default::default()
+//         }
+//     }
+// }
 
 //impl From<db::media::MediaType> for jellyfin::BaseItemKind {
 //    fn from(media: db::media::MediaType) -> Self {

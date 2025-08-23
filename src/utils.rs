@@ -13,6 +13,8 @@ use tokio_stream::StreamExt;
 use chrono::{DateTime, NaiveDate, Utc};
 use csv_async::AsyncDeserializer;
 use csv_async::AsyncReaderBuilder;
+use eyre::ContextCompat;
+use eyre::WrapErr;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use std::path::Path;
@@ -28,24 +30,49 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::io::{ReaderStream, StreamReader};
 use tracing;
 //use base64::{engine::general_purpose::URL_SAFE, Engine as _};
-use std::str::FromStr;
 use crate::errors::LogErr;
+use std::str::FromStr;
 
 //use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
 use base36::{decode, encode};
 
-pub fn encode_media_uuid(id: &str, media_type: jellyfin::MediaType) -> String {
-    encode(format!("{id}:{media_type}").as_bytes()) // produces lowercase [0-9a-z]
+pub fn server_id() -> String {
+    "remux".to_string()
 }
 
-pub fn decode_media_uuid(encoded: &str) -> Result<(String, jellyfin::MediaType)> {
-    let bytes = decode(encoded).anyhow()?; // Vec<u8>
-    let s = std::str::from_utf8(&bytes)?; // panic-safe UTF-8 check
+/// media_id::media_type::media_source_id
 
-    let (id, media_type) = s.rsplit_once(':').unwrap();
+pub fn encode_media_uuid(
+    id: &str,
+    media_type: jellyfin::MediaType,
+    stream_id: Option<String>,
+) -> String {
+    let src = stream_id.unwrap_or_default();
+    encode(format!("{id}::{media_type}::{src}").as_bytes())
+}
 
-    Ok((id.to_string(), jellyfin::MediaType::from_str(media_type)?))
+pub fn decode_media_uuid(
+    encoded: &str,
+) -> Result<(String, jellyfin::MediaType, Option<String>)> {
+    let bytes = decode(encoded)
+        .anyhow()
+        .context("invalid base36 in media uuid")?;
+    let s = std::str::from_utf8(&bytes).context("decoded media uuid was not utf-8")?;
+dbg!(&s);
+    let mut parts = s.splitn(3, "::");
+    let id = parts.next().context("missing id")?;
+    let media_type = parts.next().context("missing media type")?;
+    let stream_id = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    Ok((
+        id.to_string(),
+        jellyfin::MediaType::from_str(media_type)?,
+        stream_id,
+    ))
 }
 
 pub fn native_to_utc(opt_date: Option<NaiveDate>) -> Option<DateTime<Utc>> {

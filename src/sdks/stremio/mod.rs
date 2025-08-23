@@ -1,6 +1,7 @@
 use crate::sdks::core::{CommaSeparatedList, Endpoint, QueryParams};
 use crate::sdks::jellyfin;
 use bon::Builder;
+use chrono::{DateTime, Utc};
 use eyre::Result;
 use futures::{StreamExt, TryStreamExt, stream::FuturesOrdered};
 use futures_util::future::join_all;
@@ -71,6 +72,27 @@ impl Addon {
         .collect())
     }
 
+    pub async fn get_subtitles(
+        &self,
+        imdb_id: String,
+        media_type: MediaType,
+        season: Option<i64>,
+        episode: Option<i64>,
+    ) -> Result<Vec<Subtitle>> {
+        Ok(SubtitlesEndpoint {
+            imdb_id,
+            media_type,
+            season,
+            episode,
+        }
+        .query(&self.client)
+        .await?
+        .subtitles
+        .into_iter()
+        // .filter(|x| x.is_valid())
+        .collect())
+    }
+
     pub async fn get_meta(
         &self,
         imdb_id: String,
@@ -135,6 +157,23 @@ impl StremioService {
     ) -> Result<Vec<Stream>> {
         Ok(join_all(self.addons.iter().map(|addon| {
             addon.get_streams(imdb_id.clone(), media_type.clone(), season, episode)
+        }))
+        .await
+        .into_iter()
+        .filter_map(Result::ok)
+        .flatten()
+        .collect())
+    }
+
+    pub async fn get_subtitles(
+        &self,
+        imdb_id: String,
+        media_type: MediaType,
+        season: Option<i64>,
+        episode: Option<i64>,
+    ) -> Result<Vec<Subtitle>> {
+        Ok(join_all(self.addons.iter().map(|addon| {
+            addon.get_subtitles(imdb_id.clone(), media_type.clone(), season, episode)
         }))
         .await
         .into_iter()
@@ -526,6 +565,29 @@ pub struct MetaResponse {
     pub meta: Meta,
 }
 
+/// TODO: Add filename for better matching
+#[derive(Debug, Clone, Builder)]
+pub struct SubtitlesEndpoint {
+    pub media_type: MediaType,
+    pub imdb_id: String,
+    pub season: Option<i64>,
+    pub episode: Option<i64>,
+}
+
+impl Endpoint for SubtitlesEndpoint {
+    type Output = SubtitlesResponse;
+
+    fn endpoint(&self) -> String {
+        format!("/subtitles/{}/{}.json", self.media_type, self.imdb_id)
+    }
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+pub struct SubtitlesResponse {
+    pub subtitles: Vec<Subtitle>,
+}
+
 // #[skip_serializing_none]
 #[derive(Debug, Clone, Builder)]
 pub struct StreamEndpoint {
@@ -613,7 +675,7 @@ impl Stream {
         // dbg!(self);
         let hints = self.behavior_hints.clone().unwrap();
         let s = format!(
-            "{}{}{}",
+            "mediasource:{}{}{}",
             hints.video_size.unwrap_or(0),
             hints.binge_group.unwrap_or("".to_string()),
             hints.filename.unwrap_or("".to_string())
@@ -804,10 +866,10 @@ impl Stream {
             .map(|s| s.to_lowercase());
 
         super::jellyfin::MediaSourceInfo {
-            id: Some(self.id()),
-            e_tag: Some(self.id()),
+            // id: Some(self.id()),
+            // e_tag: Some(self.id()),
             //path: self.url.clone(),
-            container,
+            //container,
             // protocol: Some("http".to_string()),
             supports_transcoding: Some(false),
             supports_direct_stream: Some(true),
@@ -851,6 +913,11 @@ impl Stream {
         let mut source: super::jellyfin::MediaSourceInfo = info.into();
         source.id = Some(id.clone());
         source.e_tag = Some(id.clone());
+
+        // if include_external.as_ref().unwrap_or(&false) {
+
+        // }
+
         Ok(source)
     }
 }
@@ -882,7 +949,7 @@ pub struct Meta {
     pub genre: Option<Vec<String>>,
     pub imdb_rating: Option<String>,
     pub name: Option<String>,
-    pub released: Option<String>,
+    pub released: Option<DateTime<Utc>>,
     pub slug: Option<String>,
     #[serde(rename = "type")]
     pub media_type: MediaType,
@@ -913,11 +980,13 @@ pub struct Meta {
     // pub behavior_hints: Option<BehaviorHints>,
 }
 
-use serde::{Deserializer};
+use serde::Deserializer;
 use serde::de::Error as _;
 //use std::time::Duration;
 
-fn deserialize_opt_duration_empty_ok<'de, D>(de: D) -> Result<Option<Duration>, D::Error>
+fn deserialize_opt_duration_empty_ok<'de, D>(
+    de: D,
+) -> Result<Option<Duration>, D::Error>
 where
     D: Deserializer<'de>,
 {

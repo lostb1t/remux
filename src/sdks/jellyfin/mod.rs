@@ -203,7 +203,7 @@ pub struct BaseItemDtoQueryResult {
 }
 
 #[skip_serializing_none]
-#[derive(Default, Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(default2::Default, Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 pub struct MediaSourceInfo {
     pub analyze_duration_ms: Option<i32>,
@@ -223,7 +223,7 @@ pub struct MediaSourceInfo {
     pub ignore_dts: Option<bool>,
     pub ignore_index: Option<bool>,
     pub is_infinite_stream: Option<bool>,
-
+    #[default(Some(false))]
     pub is_remote: Option<bool>,
     //pub iso_type: Option<IsoType>,
     pub live_stream_id: Option<String>,
@@ -240,9 +240,15 @@ pub struct MediaSourceInfo {
     pub requires_opening: Option<bool>,
     pub run_time_ticks: Option<i64>,
     pub size: Option<i64>,
+    #[default(Some(true))]
     pub supports_direct_play: Option<bool>,
+    #[default(Some(true))]
     pub supports_direct_stream: Option<bool>,
+    pub supports_external_stream: Option<bool>,
+    #[default(Some(true))]
     pub supports_probing: Option<bool>,
+    // TODO: implement
+    #[default(Some(false))]
     pub supports_transcoding: Option<bool>,
     //  pub timestamp: Option<TransportStreamTimestamp>,
     pub transcoding_container: Option<String>,
@@ -251,9 +257,11 @@ pub struct MediaSourceInfo {
     //  pub transcoding_sub_protocol: Option<MediaStreamProtocol>,
     pub transcoding_url: Option<String>,
     // pub type_: Option<MediaSourceType>,
+    #[default(false)]
     pub use_most_compatible_transcoding_profile: bool,
     //  pub video3_d_format: Option<Video3DFormat>,
-    //pub video_type: Option<VideoType>,
+    #[default("VideoFile".to_string())]
+    pub video_type: String,
 }
 
 #[skip_serializing_none]
@@ -296,6 +304,80 @@ pub struct UserConfiguration {
     pub enable_next_episode_auto_play: Option<bool>,
     pub cast_receiver_id: Option<String>,
 }
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct DisplayPreferencesDto {
+    pub id: Option<String>,
+    pub view_type: Option<String>,
+    pub sort_by: Option<String>,
+    pub index_by: Option<String>,
+    pub remember_indexing: Option<bool>,
+    pub primary_image_height: Option<i32>,
+    pub primary_image_width: Option<i32>,
+    pub custom_prefs: Option<HashMap<String, Option<String>>>,
+    pub scroll_direction: Option<ScrollDirection>,
+    pub show_backdrop: Option<bool>,
+    pub remember_sorting: Option<bool>,
+    pub sort_order: Option<SortOrder>,
+    pub show_sidebar: Option<bool>,
+    pub client: Option<String>,
+}
+
+impl Default for DisplayPreferencesDto {
+    fn default() -> Self {
+        use std::collections::HashMap;
+
+        // Build CustomPrefs from the provided JSON
+        let custom_prefs: HashMap<String, Option<String>> = vec![
+            ("homesection0", "smalllibrarytiles"),
+            ("homesection1", "latestmedia"),
+            ("homesection2", "none"),
+            ("homesection3", "none"),
+            ("homesection4", "none"),
+            ("homesection5", "none"),
+            ("homesection6", "none"),
+            ("homesection7", "none"),
+            ("homesection8", "none"),
+            ("homesection9", "none"),
+            ("chromecastVersion", "stable"),
+            ("skipForwardLength", "30000"),
+            ("skipBackLength", "10000"),
+            ("enableNextVideoInfoOverlay", "False"),
+            ("tvhome", ""),
+            ("dashboardTheme", "dark"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), Some(v.to_string())))
+        .collect();
+
+        Self {
+            id: None,
+            view_type: None,
+            sort_by: Some("SortName".into()),
+            index_by: None,
+            remember_indexing: Some(false),
+            primary_image_height: Some(250),
+            primary_image_width: Some(250),
+            custom_prefs: Some(custom_prefs),
+            scroll_direction: Some(ScrollDirection::Horizontal),
+            show_backdrop: Some(true),
+            remember_sorting: Some(false),
+            sort_order: Some(SortOrder::Ascending),
+            show_sidebar: Some(false),
+            client: Some("emby".into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum ScrollDirection {
+    Horizontal,
+    Vertical,
+}
+
 
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -525,10 +607,11 @@ pub struct ImageBlurHashes {
 }
 
 #[skip_serializing_none]
-#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(default2::Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
     pub id: String,
+    pub server_id: String,
     pub name: Option<String>,
     pub original_title: Option<String>,
     pub original_title_sortable: Option<String>,
@@ -541,7 +624,9 @@ pub struct BaseItemDto {
     pub airs_before_season_number: Option<i32>,
     pub airs_after_season_number: Option<i32>,
     pub airs_before_episode_number: Option<i32>,
+    #[default(Some(false))]
     pub can_delete: Option<bool>,
+    #[default(Some(true))]
     pub can_download: Option<bool>,
     pub has_subtitles: Option<bool>,
     pub preferred_metadata_language: Option<String>,
@@ -628,7 +713,8 @@ pub struct BaseItemDto {
     //pub chapters: Option<Vec<ChapterInfo>>,
     pub location_type: Option<String>,
     pub iso_type: Option<String>,
-    pub media_type: Option<String>,
+    #[default("Video".to_string())]
+    pub media_type: String,
     pub end_date: Option<String>,
     //pub locked_fields: Option<Vec<MetadataFields>>,
     pub trailer_count: Option<i32>,
@@ -640,7 +726,8 @@ pub struct BaseItemDto {
     pub album_count: Option<i32>,
     pub artist_count: Option<i32>,
     pub music_video_count: Option<i32>,
-    pub lock_data: Option<bool>,
+    #[default(true)]
+    pub lock_data: bool,
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub camera_make: Option<String>,
