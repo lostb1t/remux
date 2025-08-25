@@ -274,125 +274,6 @@ pub async fn persons(State(state): State<AppState>) -> Result<impl IntoResponse>
     }))
 }
 
-pub async fn get_items_query_conditions(
-    state: AppState,
-    q: jellyfin::GetItemsQuery,
-) -> Result<sea_orm::Condition> {
-    let mut conditions = sea_orm::Condition::all();
-
-    if let Some(name_start) = &q.name_starts_with {
-        conditions =
-            conditions.add(db::media::Column::Name.like(format!("{}%", name_start)));
-    }
-
-    if let Some(search_term) = &q.search_term {
-        conditions = conditions
-            .add(db::media::Column::Name.contains(format!("{}", search_term)));
-    }
-
-    if let Some(ids) = &q.ids {
-        conditions = conditions.add(db::media::Column::Id.is_in(ids.clone()));
-    }
-
-    if let Some(genres) = &q.genres {
-        // conditions = conditions.add(db::media_genre::Column::Genre.is_in(genres.clone()));
-    }
-
-    if let Some(years) = &q.years {
-        let mut cond = sea_orm::Condition::any(); // OR across years
-
-        for &year in years {
-            let start_date = chrono::NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-            let end_date = chrono::NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap();
-
-            let year_cond = db::media::Column::ReleaseDate
-                .gte(start_date)
-                .and(db::media::Column::ReleaseDate.lt(end_date));
-
-            cond = cond.add(year_cond);
-        }
-
-        conditions = conditions.add(cond);
-    }
-
-    if let Some(types) = &q.include_item_types {
-        //conditions = conditions.add(db::media::Column::MediaType.is_in(types.clone()));
-    }
-
-    if let Some(season_id) = &q.season_id {
-        conditions = conditions.add(db::media::Column::ParentId.eq(season_id.clone()));
-    }
-
-    if let Some(parent_id) = &q.parent_id {
-        if parent_id == "movies" {
-            conditions = conditions
-                .add(db::media::Column::MediaType.eq(db::media::MediaType::Movie));
-        } else if parent_id == "series" {
-            conditions = conditions
-                .add(db::media::Column::MediaType.eq(db::media::MediaType::Series));
-        } else if parent_id.starts_with("catalog") {
-            //let catalogs = state.stremio.get_catalogs().await?;
-            // let catalog = state.stremio.addons
-            //     .into_iter()
-            //     .find(|x| {
-            //       x.manifest.catalogs.iter().find(|y| &x.catalog_guid(y) == parent_id)
-            //     })
-            //     .expect("catalog not found");
-            //if let Some(catalog) = state.stremio.get_catalog(parent_id) {
-            //   conditions = conditions.add(db::media::Column::ImdbId.is_in(ids));
-            //}
-
-            // let ids: Vec<_> = catalog
-            //     .get_items().await
-            //     .unwrap_or_default()
-            //     .into_iter()
-            //     .map(|x| x.id)
-            //     .collect();
-            //  let ids: Vec<_> = vec![];
-
-            //   conditions = conditions.add(db::media::Column::ImdbId.is_in(ids));
-        } else {
-            conditions =
-                conditions.add(db::media::Column::ParentId.eq(parent_id.clone()));
-        }
-    }
-
-    Ok(conditions)
-}
-
-pub fn apply_sorting(
-    mut query: sea_orm::Select<db::media::Entity>,
-    q: jellyfin::GetItemsQuery,
-) -> sea_orm::Select<db::media::Entity> {
-    use db::media::Column as MediaColumn;
-    use sea_orm::sea_query::Expr;
-
-    let order: sea_orm::Order = q
-        .sort_order
-        .unwrap_or(jellyfin::SortOrder::Ascending)
-        .into();
-    if let Some(sort_by_vec) = &q.sort_by {
-        for sort_by in sort_by_vec {
-            query = match sort_by {
-                jellyfin::ItemSortBy::SortName => {
-                    query.order_by(MediaColumn::Name, order.clone())
-                }
-                jellyfin::ItemSortBy::Name => {
-                    query.order_by(MediaColumn::Name, order.clone())
-                }
-                jellyfin::ItemSortBy::PremiereDate => {
-                    query.order_by(MediaColumn::ReleaseDate, order.clone())
-                }
-                jellyfin::ItemSortBy::Random => {
-                    query.order_by_asc(Expr::cust("RANDOM()"))
-                }
-                _ => query.order_by(MediaColumn::Id, order.clone()),
-            };
-        }
-    }
-
-    query
-}
 
 pub struct ItemsQueryResult {
     pub items: Vec<jellyfin::BaseItemDto>,
@@ -856,13 +737,11 @@ pub async fn items_playbackinfo(
     Query(query): Query<jellyfin::PlaybackInfoQuery>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    // let Json(payload) = data.unwrap_or_default();
-    trace!(?payload, "items_playbackinfo");
     let (id, media_type, stream_id) = utils::decode_media_uuid(&id)
         .log_err("Failed to decode media UUID")
         .unwrap();
 
-    trace!(?id, ?media_type, ?stream_id, "items_playbackinfo");
+    trace!(?id, ?media_type, ?stream_id, ?payload, ?query, "items_playbackinfo");
 
     /// todo: media source can also be send as streamid.
     let media_source_id: Option<String> = payload
@@ -877,7 +756,7 @@ pub async fn items_playbackinfo(
         });
 
     let filter_by_id: Option<String> = stream_id.or(media_source_id.clone());
-    // dbg!(&filter_by_id, "filter_by_id");
+   // dbg!(&filter_by_id, "filter_by_id");
     let mut streams: Vec<sdks::stremio::Stream> = state
         .stremio
         .get_streams(id.clone(), media_type.into(), None, None)
@@ -895,7 +774,7 @@ pub async fn items_playbackinfo(
                 .unwrap_or(true)
         })
         .collect();
-
+    dbg!(&streams);
     // fallback
     streams = vec![streams[0].clone()];
     // dbg!(&streams);
@@ -993,6 +872,8 @@ pub async fn items_playbackinfo(
         play_session_id: Some("test".to_string()),
         ..Default::default()
     };
+    
+    trace!(?info, "items_playbackinfo_result");
     Ok(Json(info))
 }
 

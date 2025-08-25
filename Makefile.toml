@@ -1,8 +1,8 @@
 [env]
-RUST_LOG = "info,axum=info,tower_http=info,remux_server=trace,hyper=warn,sqlx=warn"
+RUST_LOG = "trace,axum=info,tower_http=info,remux_server=trace,hyper=warn,sqlx=warn"
 RUST_BACKTRACE = 0
-HTTP_PROXY="http://10.0.10.11:9090"
-HTTPS_PROXY="http://10.0.10.11:9090"
+# HTTP_PROXY="http://10.0.10.11:9090"
+# HTTPS_PROXY="http://10.0.10.11:9090"
 #DATABASE_URL = "sqlite://target/db.sqlite"
 
 [tasks.sqlx-prepare]
@@ -23,3 +23,12 @@ watch = true
 command = "docker"
 # args = ["buildx", "build", "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:latest", ".", "--push"]
 args = ["buildx", "build", "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:latest", "."]
+
+[tasks.build-dev]
+command = "docker"
+args = ["build", "-f", "Dockerfile.dev", "-t", "remux-dev", "."]
+
+[tasks.dev-container]
+command = "docker"
+args = ["run", "--rm", "-it", "-p", "8080:8080", "-v", "${PWD}:/app", "-v", "target:/app/target", "remux-dev"]
+dependencies = ["build-dev"]
