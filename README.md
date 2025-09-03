@@ -1,10 +1,10 @@
-Use stremio addons with Jellyfin clients.
+## A Jellyfin server replacement based on stremio addons
 
 Total replacement for the Jellyfin server.  
 Instead of local files, everything is routed to stremio addons.  
 Aims to be compatible with all jellyfin clients (eventually)
 
-Status: Very experimental 🔥
+Status: Very experimental 🔥 it's a proof of concept
 
 Highly recommend using https://github.com/Viren070/AIOStreams to manage your addons.
 
