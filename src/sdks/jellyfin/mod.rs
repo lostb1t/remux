@@ -614,6 +614,15 @@ pub struct ImageBlurHashes {
 }
 
 #[skip_serializing_none]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ProviderIds {
+    pub imdb: Option<String>,
+    pub tmdb: Option<String>,
+}
+
+
+#[skip_serializing_none]
 #[derive(default2::Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
@@ -769,7 +778,7 @@ pub struct BaseItemDto {
     // pub current_program: Option<Box<BaseItemDto>>,
     pub has_series_timer: Option<bool>,
     pub has_timer: Option<bool>,
-    // custom.
+    pub provider_ids: Option<ProviderIds>
 }
 
 #[derive(

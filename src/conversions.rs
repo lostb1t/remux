@@ -200,6 +200,10 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
                 },
                 ..Default::default()
             }),
+            provider_ids: Some(jellyfin::ProviderIds {
+               imdb: meta.imdb_id,
+               ..Default::default()
+            }),
             genres: meta.genres.clone(),
             run_time_ticks: meta
                 .runtime

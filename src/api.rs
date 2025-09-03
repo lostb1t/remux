@@ -12,6 +12,7 @@ use axum_extra::extract::Query;
 //use axum_route::route;
 use chrono;
 use eyre;
+use eyre::ContextCompat;
 use http::StatusCode;
 use sea_orm::ColIdx;
 use std::str::FromStr;
@@ -494,7 +495,7 @@ pub async fn get_items(
             .unwrap()
             .into();
 
-        // jf is weird. if a stream id is provider it needs the be the id
+        // jf is weird. if a stream id is provided it needs the be the id
         if stream_id.is_some() {
             item.id = uuid.to_string();
         };
@@ -503,11 +504,17 @@ pub async fn get_items(
             state
                 .stremio
                 .get_streams(
-                    id.clone(),
+                    // importsnt its imdb. Lot of addons dont support tmdb
+                    item
+                      .provider_ids
+                      .clone()
+                      .context("providerids missing")?
+                      .imdb
+                      .context("imdb id missing")?,
                     media_type.into(),
                     None,
-                    None, //  item.parent_index_number,
-                          //  item.index_number,
+                    None,
+                          
                 )
                 .await
                 .unwrap()
