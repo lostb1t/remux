@@ -17,27 +17,18 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-
+use anyhow::Result;
 use axum::ServiceExt;
 use axum::extract::Request;
 use axum::middleware;
 use axum::middleware::Next;
 use chrono::prelude::*;
 use chrono::{Duration, Utc};
-use eyre::Result;
 use futures::future::BoxFuture;
-//use futures::stream::StreamExt;
 use http::Uri;
-//use itertools::Itertools;
-use figment;
+use config::Config;
 use futures_util::StreamExt;
 use reqwest::header::LOCATION;
-use sea_orm;
-use sea_orm::ColumnTrait;
-use sea_orm::EntityOrSelect;
-use sea_orm::EntityTrait;
-use sea_orm::QueryFilter;
-use sea_orm::QuerySelect;
 use serde_json::json;
 use std;
 use std::collections::HashMap;
@@ -55,6 +46,8 @@ use tracing::instrument;
 use tracing::warn;
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
+use url::Url;
+use anyhow::anyhow;
 
 mod api;
 mod conversions;
@@ -69,21 +62,20 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     setup_logging();
 
-    let config: Config = figment::Figment::new()
-        //  .merge(figmentToml::file("Cargo.toml"))
-        .merge(figment::providers::Serialized::defaults(Config::default()))
-        .merge(figment::providers::Env::prefixed(""))
-        .extract()?;
+    ;
+let settings: Settings = Config::builder()
 
-    tracing::info!("config: {:?}", config);
+        .add_source(config::Environment::with_prefix(""))
+        .build()?
+        .try_deserialize()?;
+        
+        
+    tracing::info!("config: {:?}", settings);
 
     let state = api::AppState {
-        config: config.clone(),
-        db: db::Database::new().await?,
-        tmdb: sdks::core::RestClient::new("https://api.themoviedb.org/3")
-        .expect("to work")
-        .header("Authorization", "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIwZDczZTBjYjkxZjM5ZTY3MGIwZWZhNjkxM2FmYmQ1OCIsIm5iZiI6MTUzMjkzOTA3My41MzcsInN1YiI6IjViNWVjYjQxMGUwYTI2MmU5MDA0NjNjMCIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.vfOGe8_35CxhjjZXdnR2iAwdOMIY0VFYMBQrLWuRqn8"),
-        stremio: sdks::stremio::StremioService::new(config.addons).await.expect("proper manifest url")
+        config: settings.clone(),
+      //  db: db::Database::new().await?
+        //users: settings.users,
     };
 
     // spawn_background_tasks(state.clone()).await?;
@@ -100,7 +92,7 @@ async fn main() -> Result<()> {
                 .with_state(state)
                 .layer(tower_http::trace::TraceLayer::new_for_http())
                 .layer(cors)
-                .fallback_service(ServeDir::new(config.web_path)),
+                .fallback_service(ServeDir::new(settings.web_path)),
         )
         .into_make_service();
 
@@ -112,91 +104,52 @@ async fn main() -> Result<()> {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct Config {
-    pub addons: Vec<String>,
-    pub web_path: String,
+pub struct User {
+    pub id: String,
+    pub username: String,
+    pub password: String,
+    pub aio_url: String,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            addons: vec![
-                "https://torrentio.strem.fun/manifest.json".to_string(),
-                "https://v3-cinemeta.strem.io/manifest.json".to_string(),
-            ],
-            web_path: "../jellyfin-web/dist".into(),
-        }
-    }
-}
+impl User {
+   pub async fn get_aio(&self) ->  Result<sdks::RestClient> {
+          sdks::aio::client(self.aio_url).await?
+ } 
+pub async fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
+        let mut url = Url::parse(&self.aio_url)?;
 
-impl Config {
-    pub fn load() -> Result<Self> {
-        let path = env::var("CONFIG").unwrap_or_else(|_| "config.toml".into());
-        let data = fs::read_to_string(path)?;
-        Ok(toml::from_str(&data)?)
-    }
+        let segments: Vec<String> = url
+            .path_segments()
+            .ok_or_else(|| anyhow!("url has no path segments"))?
+            .map(|s| s.to_string())
+            .collect();
 
-    pub fn load_or_create() -> Result<Self> {
-        let path = env::var("CONFIG").unwrap_or_else(|_| "config.toml".into());
-
-        if let Ok(data) = fs::read_to_string(&path) {
-            return Ok(toml::from_str(&data)?);
+        if segments.len() < 3 {
+            return Err(anyhow!(
+                "invalid aio_url format: expected /stremio/<username>/<password>/..."
+            ));
         }
 
-        let cfg = Config::default();
-        cfg.save()?;
-        Ok(cfg)
+        let username = segments[1].clone();
+        let password = segments[2].clone();
+
+        // Build https://host/api/v1/search (preserve scheme/host/port/query is dropped intentionally)
+        url.set_path("/api/v1/search");
+        url.set_query(None);
+        url.set_fragment(None);
+
+        let search_url = url.as_str().to_string();
+
+        sdks::aio::search_client(&search_url, username, password).await?
     }
 
-    pub fn save(&self) -> Result<()> {
-        let path = env::var("CONFIG").unwrap_or_else(|_| "config.toml".into());
-        let data = toml::to_string_pretty(self)?;
-        fs::write(path, data)?;
-        Ok(())
-    }
+
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-struct AddonConfig {
-    url: String,
-    //search_movies: bool,
-    //search_shows: bool,
-    //meta_shows: bool,
-    //meta_movies: bool
-}
-
-async fn spawn_background_tasks(state: api::AppState) -> Result<()> {
-    tokio::spawn({
-        let cstate = state.clone();
-        async move {
-            //let stream = imdb::TitleBasics::stream().await.unwrap();
-            let stream = utils::FileStream::<imdb::TitleBasics>::from_url(
-                "https://datasets.imdbws.com/title.basics.tsv.gz",
-            )
-            .await
-            .unwrap();
-            let chunk_size = 500;
-            let mut imported = 0;
-
-            let mut chunks = stream.chunks(chunk_size);
-
-            while let Some(chunk) = chunks.next().await {
-                let items: Vec<db::media::Model> = chunk
-                    .into_iter()
-                    .filter_map(|x| x.ok().and_then(|v| v.try_into().ok()))
-                    .collect();
-
-                if let Err(e) = db::media::Model::bulk_upsert(items, &cstate.db).await {
-                    tracing::error!("bulk_upsert failed: {:?}", e);
-                    continue;
-                }
-                imported += chunk_size;
-                tracing::info!("Imported {} items so far", imported);
-            }
-        }
-    });
-
-    Ok(())
+pub struct Settings {
+    pub web_path: String,
+    pub users: Vec<String>,
 }
 
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
@@ -242,7 +195,7 @@ async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {
     (StatusCode::NOT_FOUND, "Not Found")
 }
 
-async fn handle_static_404(req: Request<Body>) -> Result<impl IntoResponse> {
+async fn handle_static_404(req: Request<Body>) -> impl IntoResponse {
     tracing::debug!(
         "Static 404 Not Found: {} {}",
         req.method(),

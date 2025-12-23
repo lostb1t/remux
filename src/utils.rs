@@ -1,8 +1,8 @@
 use crate::db;
 use crate::sdks::jellyfin;
 use async_compression::tokio::bufread::GzipDecoder;
-use eyre;
-use eyre::Result;
+use anyhow::{Result,anyhow, Context};
+
 //use futures::Stream;
 //use futures::StreamExt;
 //use futures_util::TryStreamExt;
@@ -13,8 +13,6 @@ use tokio_stream::StreamExt;
 use chrono::{DateTime, NaiveDate, Utc};
 use csv_async::AsyncDeserializer;
 use csv_async::AsyncReaderBuilder;
-use eyre::ContextCompat;
-use eyre::WrapErr;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use std::path::Path;
@@ -55,9 +53,11 @@ pub fn encode_media_uuid(
 pub fn decode_media_uuid(
     encoded: &str,
 ) -> Result<(String, jellyfin::MediaType, Option<String>)> {
-    let bytes = decode(encoded)
-        .anyhow()
-        .context("invalid base36 in media uuid")?;
+
+
+let bytes = decode(encoded)
+    .map_err(|e| anyhow!(e.to_string()))
+    .context("invalid base36 in media uuid")?;
     let s = std::str::from_utf8(&bytes).context("decoded media uuid was not utf-8")?;
 
     let mut parts = s.splitn(3, "::");

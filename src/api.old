@@ -9,9 +9,11 @@ use axum::routing::get;
 use axum::routing::get_service;
 use axum::routing::post;
 use axum_extra::extract::Query;
-use anyhow::anyhow;
+//use axum_route::route;
 use chrono;
+use eyre;
 use http::StatusCode;
+use sea_orm::ColIdx;
 use std::str::FromStr;
 //use crate::sdks::tmdb;
 use serde::Deserialize;
@@ -35,11 +37,19 @@ use ffprobe;
 use futures::future::join_all;
 use futures_util::TryStreamExt;
 use headers;
+use sea_orm::ColumnTrait;
+use sea_orm::EntityTrait;
+use sea_orm::Order;
+use sea_orm::PaginatorTrait;
+use sea_orm::QueryFilter;
+use sea_orm::QueryOrder;
+use sea_orm::QuerySelect;
+use sea_orm::RelationTrait;
 use serde_json::json;
 use tracing::trace;
 use tracing::warn;
 
-//use crate::db;
+use crate::db;
 use crate::errors::Result;
 use crate::rewrite_request_uri;
 use crate::sdks;
@@ -52,10 +62,10 @@ use tower::util::MapRequestLayer;
 
 #[derive(Debug, Clone)]
 pub struct AppState {
-    pub config: crate::Settings,
-  //  pub db: db::Database,
-   // pub tmdb: sdks::RestClient,
-   // pub stremio: sdks::aio::StremioService,
+    pub config: crate::Config,
+    pub db: db::Database,
+    pub tmdb: sdks::core::RestClient,
+    pub stremio: sdks::stremio::StremioService,
 }
 
 pub fn routes() -> Router<AppState> {
@@ -407,7 +417,7 @@ pub async fn get_items(
                     .stremio
                     .get_meta(
                         id.clone().to_string(),
-                        sdks::aio::MediaType::Series,
+                        sdks::stremio::MediaType::Series,
                         None,
                         None,
                     )
@@ -484,7 +494,7 @@ pub async fn get_items(
             .unwrap()
             .into();
 
-        // jf is weird. if a stream id is provided it needs the be the id
+        // jf is weird. if a stream id is provider it needs the be the id
         if stream_id.is_some() {
             item.id = uuid.to_string();
         };
@@ -493,17 +503,11 @@ pub async fn get_items(
             state
                 .stremio
                 .get_streams(
-                    // importsnt its imdb. Lot of addons dont support tmdb
-                    item
-                      .provider_ids
-                      .clone()
-                      .context("providerids missing")?
-                      .imdb
-                      .context("imdb id missing")?,
+                    id.clone(),
                     media_type.into(),
                     None,
-                    None,
-                          
+                    None, //  item.parent_index_number,
+                          //  item.index_number,
                 )
                 .await
                 .unwrap()
@@ -529,7 +533,7 @@ pub async fn get_items(
         // check parent if its a library
         let mut catalog = if let Some(parent_id) = &q.parent_id {
             if parent_id.contains("movie") || parent_id.contains("series") {
-                sdks::aio::MediaType::from_str(parent_id)
+                sdks::stremio::MediaType::from_str(parent_id)
                     .ok()
                     .and_then(|ty| state.stremio.get_library_catalog(ty))
             } else {
@@ -707,7 +711,7 @@ pub async fn items_images(
             .stremio
             .get_meta(ids[0].clone(), base_media_type.into(), None, None)
             .await?
-            .ok_or_else(|| anyhow!("missing meta"))?;
+            .ok_or_else(|| eyre::eyre!("missing meta"))?;
         // dbg!(&meta);
         // return images.
         if media_type == jellyfin::MediaType::Episode {
@@ -733,6 +737,9 @@ pub async fn items_playbackinfo(
     Query(query): Query<jellyfin::PlaybackInfoQuery>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
+    // let Json(payload) = data.unwrap_or_default();
+   // trace!(?payload, ?query, "items_playbackinfo");
+    
     let (id, media_type, stream_id) = utils::decode_media_uuid(&id)
         .log_err("Failed to decode media UUID")
         .unwrap();
@@ -752,8 +759,8 @@ pub async fn items_playbackinfo(
         });
 
     let filter_by_id: Option<String> = stream_id.or(media_source_id.clone());
-   // dbg!(&filter_by_id, "filter_by_id");
-    let mut streams: Vec<sdks::aio::SearchResult> = state
+    dbg!(&filter_by_id, "filter_by_id");
+    let mut streams: Vec<sdks::stremio::Stream> = state
         .stremio
         .get_streams(id.clone(), media_type.into(), None, None)
         .await?
@@ -770,7 +777,7 @@ pub async fn items_playbackinfo(
                 .unwrap_or(true)
         })
         .collect();
-    dbg!(&streams);
+
     // fallback
     streams = vec![streams[0].clone()];
     // dbg!(&streams);
@@ -868,8 +875,6 @@ pub async fn items_playbackinfo(
         play_session_id: Some("test".to_string()),
         ..Default::default()
     };
-    
-    trace!(?info, "items_playbackinfo_result");
     Ok(Json(info))
 }
 

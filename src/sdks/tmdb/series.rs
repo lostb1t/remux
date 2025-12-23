@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{Status, default_append_to_response};
-use crate::sdks::core::{CommaSeparatedList, Endpoint, QueryParams};
+use crate::sdks::{CommaSeparatedList, Endpoint};
 use bon::Builder;
 use bon::builder;
 use chrono::NaiveDate;
@@ -72,21 +72,11 @@ impl SeriesEndpoint {
 impl Endpoint for SeriesEndpoint {
     type Output = Series;
 
-    fn endpoint(&self) -> String {
+    fn path(&self) -> String {
         format!("tv/{}", self.id)
     }
 
-    fn parameters(&self) -> QueryParams {
-        self.into()
-        //     let mut params = vec![];
-        //     if let Some(lang) = &self.language {
-        //         params.push(("language".to_string(), lang.clone()));
-        //     }
-        //    // if let Some(appends) = &self.append_to_response {
-        //         params.push(("append_to_response".to_string(), self.append_to_response.join(",")));
-        //    // }
-        //     params
-    }
+    
 }
 
 #[serde_as]
@@ -121,21 +111,11 @@ impl SeasonEndpoint {}
 impl Endpoint for SeasonEndpoint {
     type Output = Season;
 
-    fn endpoint(&self) -> String {
+    fn path(&self) -> String {
         format!("tv/{}/season/{}", self.series_id, self.season_number)
     }
 
-    fn parameters(&self) -> QueryParams {
-        self.into()
-        // let mut params = vec![];
-        // if let Some(lang) = &self.language {
-        //     params.push(("language".to_string(), lang.clone()));
-        // }
-        // if let Some(appends) = &self.append_to_response {
-        //     params.push(("append_to_response".to_string(), appends.join(",")));
-        // }
-        // params
-    }
+    
 }
 
 #[serde_as]

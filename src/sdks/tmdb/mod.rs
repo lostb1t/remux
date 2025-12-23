@@ -6,8 +6,8 @@
 //);
 
 use crate::db::media;
-use crate::sdks::core::Endpoint;
-use crate::sdks::core::QueryParams;
+use crate::sdks::Endpoint;
+use crate::sdks::QueryParams;
 use async_trait;
 use backon::ExponentialBuilder;
 use backon::Retryable;
@@ -41,12 +41,12 @@ pub struct FindByIdEndpoint {
 impl Endpoint for FindByIdEndpoint {
     type Output = FindByIdResponse;
 
-    fn endpoint(&self) -> String {
+    fn path(&self) -> String {
         format!("find/{}", self.external_id)
     }
 
-    fn parameters(&self) -> QueryParams {
-        self.into()
+    fn query(&self) -> Vec<(String, String)> {
+        Vec::new()
     }
 }
 
