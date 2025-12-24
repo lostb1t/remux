@@ -174,7 +174,8 @@ pub struct User {
 
 impl User {
    pub fn get_aio(&self) ->  Result<sdks::RestClient> {
-          Ok(sdks::aio::client(&self.aio_url)?)
+          
+     Ok(sdks::aio::client(&self.aio_url.strip_suffix("manifest.json").unwrap_or(&self.aio_url))?)
  } 
 pub fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
         let mut url = Url::parse(&self.aio_url)?;
