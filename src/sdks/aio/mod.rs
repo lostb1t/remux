@@ -292,14 +292,14 @@ pub struct Meta {
     pub slug: Option<String>,
     #[serde(rename = "type")]
     pub media_type: MediaType,
-    pub writer: Option<Vec<String>>,
+    //pub writer: Option<Vec<String>>,
     pub year: Option<String>,
     pub moviedb_id: Option<u64>,
 
     // pub popularities: Option<Popularities>,
     // pub trailers: Option<Vec<String>>,
-    pub cast: Option<Vec<String>>,
-    pub director: Option<Vec<String>>,
+    //pub cast: Option<Vec<String>>,
+    //pub director: Option<Vec<String>>,
     pub background: Option<String>,
     pub logo: Option<String>,
     pub awards: Option<String>,
@@ -313,11 +313,19 @@ pub struct Meta {
     pub runtime: Option<Duration>,
 
     // #[serde(rename = "videos")]
-    pub videos: Option<Vec<Episode>>,
+    pub videos: Option<Vec<Meta>>,
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
-}
+    pub thumbnail: Option<String>,
+    pub episode: Option<i32>,
+    pub season: Option<i32>,
+    pub overview: Option<String>,
+    pub number: Option<i32>,
+    pub rating: Option<String>,
+    pub first_aired: Option<String>,
+  
+  }
 
 use serde::Deserializer;
 use serde::de::Error as _;
@@ -357,7 +365,7 @@ impl Meta {
         }
     }
 
-    pub fn get_episode_by_id(&self, id: String) -> Option<&Episode> {
+    pub fn get_episode_by_id(&self, id: String) -> Option<&Meta> {
         if let Some(episodes) = &self.videos {
             episodes.into_iter().find(|e| e.id == id)
         } else {

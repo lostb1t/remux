@@ -1,7 +1,8 @@
 [env]
 RUST_LOG = "trace,axum=info,tower_http=info,remux_server=trace,hyper=warn,sqlx=warn"
-RUST_BACKTRACE = 0
+RUST_BACKTRACE = 1
 CONFIG= "./config.toml"
+AXUM_ANYHOW_EXPOSE_ERRORS=1
 # HTTP_PROXY="http://10.0.10.11:9090"
 # HTTPS_PROXY="http://10.0.10.11:9090"
 #DATABASE_URL = "sqlite://target/db.sqlite"

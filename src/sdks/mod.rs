@@ -1,7 +1,7 @@
 use axum::http::{header, HeaderMap, HeaderValue, Method};
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
-
+use tracing::{info};
 pub mod aio;
 pub mod jellyfin;
 pub mod tmdb;
@@ -81,7 +81,7 @@ pub enum ClientError {
     #[error(transparent)]
     UrlEncoded(#[from] serde_urlencoded::ser::Error),
 
-     #[error(transparent)]
+    #[error(transparent)]
     Other(#[from] anyhow::Error),
   }
 
@@ -169,6 +169,7 @@ impl RestClient<NoAuth> {
         let inner = reqwest::Client::new();
         let manager = MokaManager::default();
 
+        
         let http = ClientBuilder::new(inner)
             .with(Cache(HttpCache {
                 mode: CacheMode::Default,
@@ -179,7 +180,7 @@ impl RestClient<NoAuth> {
 
         Ok(Self {
             http,
-            base: url::Url::parse(base)?,
+            base: url::Url::parse(format!("{}/", base.trim_start_matches('/')).as_str())?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
         })
@@ -215,8 +216,7 @@ impl<A: Auth> RestClient<A> {
         cache_override: Option<CacheMode>,
     ) -> Result<EP::Output, ClientError> {
         let endpoint = ep.path();
-
-        let mut url = self.base.join(&endpoint)?;
+        let mut url = self.base.join(&endpoint.trim_start_matches('/'))?;
 
         let query = ep.query();
         if !query.is_empty() {
@@ -240,7 +240,7 @@ impl<A: Auth> RestClient<A> {
                     status: 0,
                     source: e,
                     endpoint: Some(endpoint.clone()),
-                    body: None,
+                    body: Some(v.to_string()),
                 })?;
 
                 req.header(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))
@@ -268,14 +268,7 @@ impl<A: Auth> RestClient<A> {
         match status {
             401 => Err(ClientError::Unauthorized),
 
-            s if (200..300).contains(&s) && text.trim().is_empty() => {
-                serde_json::from_str::<EP::Output>("null").map_err(|e| ClientError::Json {
-                    status: s,
-                    source: e,
-                    endpoint: Some(endpoint),
-                    body: None,
-                })
-            }
+
 
             s if (200..300).contains(&s) => {
                 serde_json::from_str::<EP::Output>(&text).map_err(|e| ClientError::Json {

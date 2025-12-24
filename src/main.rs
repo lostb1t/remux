@@ -53,6 +53,8 @@ use axum_anyhow::{ApiResult, OptionExt};
 use http::request::Parts;
 use config;
 use async_trait::async_trait;
+use axum_anyhow::set_expose_errors;
+use axum_anyhow::on_error;
 
 mod api;
 mod conversions;
@@ -92,15 +94,23 @@ let settings: Settings = config::Config::builder()
         .expose_headers(Any);
 
     let app = tower::util::MapRequestLayer::new(rewrite_request_uri)
-        .layer(
-            Router::new()
-                .merge(api::routes())
-                .with_state(state)
-                .layer(tower_http::trace::TraceLayer::new_for_http())
-                .layer(cors)
-                .fallback_service(ServeDir::new(settings.web_path)),
-        )
-        .into_make_service();
+    .layer(
+        Router::new()
+            .merge(api::routes())
+            .with_state(state)
+            .layer(on_error(|err| {
+                tracing::error!(
+                    status = %err.status(),
+                    title = %err.title(),
+                    detail = %err.detail(),
+                    "api error"
+                );
+            }))
+            .layer(tower_http::trace::TraceLayer::new_for_http())
+            .layer(cors)
+            .fallback_service(ServeDir::new(settings.web_path)),
+    )
+    .into_make_service();
 
     tracing::info!("starting webserver at 0.0.0.0:3000");
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
@@ -244,7 +254,11 @@ pub fn setup_logging() {
 
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
+    
+    //set_expose_errors(true);    
 }
+
+
 
 async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {
     debug!("404 - Not Found: {}", uri);
