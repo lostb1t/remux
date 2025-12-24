@@ -67,12 +67,13 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     setup_logging();
 
-    ;
-let settings: Settings = config::Config::builder()
+    let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
 
-        .add_source(config::Environment::with_prefix(""))
-        .build()?
-        .try_deserialize()?;
+let settings: Settings = config::Config::builder()
+    .add_source(config::File::with_name(&cfg))
+    .build()?
+            .try_deserialize()?;
+            
         
         
     tracing::info!("config: {:?}", settings);
@@ -198,8 +199,13 @@ pub fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Settings {
+    #[serde(default = "default_web_path")]
     pub web_path: String,
     pub users: Vec<User>,
+}
+
+fn default_web_path() -> String {
+    "../jellyfin-web/dist".to_string()
 }
 
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
