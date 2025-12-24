@@ -16,7 +16,6 @@ use anyhow::Context;
 use serde::Deserialize;
 use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
-//use bytes::Bytes;
 use axum_extra::response::file_stream::FileStream;
 use futures_util::StreamExt;
 use futures_util::stream::Stream;
@@ -305,10 +304,6 @@ let manifest = aio
     .execute(&aio::ManifestEndpoint)
     .await?;
 
-    // helper: find catalog by uuid (catalog:<uuid>)
-    let find_catalog_by_uuid = |m: &aio::Manifest, uuid: &str| -> Option<aio::Catalog> {
-        manifest.catalogs.iter().find(|c| c.uuid == uuid).cloned()
-    };
 
     // helper: meta
     let fetch_meta = |media_type: aio::MediaType, imdb_id: String| async {
@@ -356,10 +351,10 @@ let manifest = aio
                 items,
             });
         }
-
-        // catalog browsing by uuid ("catalog:<uuid>")
-        if parent_id.starts_with("catalog:") {
-            let catalog = find_catalog_by_uuid(&manifest, parent_id)
+       
+       // catalog get
+       if let Some(id) = parent_id.strip_prefix("catalog:") {
+            let catalog = manifest.get_catalog_by_id(id)
                 .ok_or_else(|| anyhow!("catalog not found"))?;
 
             if let Some(types) = &q.include_item_types {
@@ -383,16 +378,6 @@ let manifest = aio
             })
             .await
             .map(|r| r.metas)?;
-
-            // return Ok(ItemsQueryResult {
-            //     kind: catalog.kind.clone(),
-            //     id: catalog.id.clone(),
-            //     search: search.clone(),
-            //     genre,
-            //     skip,
-            // })
-            // .await
-            // .map(|r| r.metas)?;
 
             return Ok(ItemsQueryResult {
                 items: metas.into_iter().map(jellyfin::BaseItemDto::from).collect(),
@@ -470,8 +455,10 @@ let manifest = aio
 
     // request for a single catalog (ids[0] is "catalog:<uuid>")
     if let Some(ids) = &q.ids {
-        if ids[0].starts_with("catalog:") {
-            let catalog = find_catalog_by_uuid(&manifest, &ids[0])
+      if let Some(id) = ids[0].strip_prefix("catalog:") {
+
+          
+            let catalog = manifest.get_catalog_by_id(&id)
                 .ok_or_else(|| anyhow!("catalog not found"))?;
             return Ok(ItemsQueryResult {
                 items: vec![catalog.into()],
@@ -486,8 +473,8 @@ let manifest = aio
     if let Some(ids) = &q.ids {
         let uuid = &ids[0];
         let (id, media_type, stream_id) =
-            utils::decode_media_uuid(uuid).unwrap();
-            //.log_err("Failed to decode media UUID")?;
+            utils::decode_media_uuid(uuid)
+            .log_err("Failed to decode media UUID")?;
 
         if ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series].contains(&media_type) {
             return Ok(ItemsQueryResult {

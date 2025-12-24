@@ -1,7 +1,7 @@
 use axum::http::{header, HeaderMap, HeaderValue, Method};
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
-use tracing::{info};
+use tracing::{info, trace};
 pub mod aio;
 pub mod jellyfin;
 pub mod tmdb;
@@ -55,7 +55,7 @@ pub enum ClientError {
     #[error("unauthorized")]
     Unauthorized,
 
-    #[error("api error (status={status}) endpoint={endpoint:?}: {message}")]
+    #[error("http error (status={status}) endpoint={endpoint:?}: {message}")]
     Http {
         status: u16,
         message: String,
@@ -261,14 +261,13 @@ impl<A: Auth> RestClient<A> {
             Body::Bytes(b) => req.body(b),
         };
 
+        trace!("requesting {}", url.clone().to_string());
         let resp = req.send().await?;
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
 
         match status {
             401 => Err(ClientError::Unauthorized),
-
-
 
             s if (200..300).contains(&s) => {
                 serde_json::from_str::<EP::Output>(&text).map_err(|e| ClientError::Json {

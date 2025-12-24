@@ -171,7 +171,7 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
     fn from(item: aio::Catalog) -> Self {
         jellyfin::BaseItemDto {
             name: Some(item.name.clone()),
-            id: item.uuid,
+            id: format!("catalog:{}", item.id),
             type_: Some(jellyfin::MediaType::BoxSet),
             ..Default::default()
         }

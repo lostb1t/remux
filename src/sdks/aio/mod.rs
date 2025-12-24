@@ -87,7 +87,11 @@ pub struct Manifest {
     pub logo: Option<String>,
 }
 
-impl Manifest {}
+impl Manifest {
+  pub fn get_catalog_by_id(&self, id: &str) -> Option<Catalog> {
+        self.catalogs.iter().find(|c| c.id == id).cloned()
+  }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -132,15 +136,8 @@ pub struct Catalog {
     pub name: String,
     #[serde(default)]
     pub extra: Vec<ExtraProp>,
-
-    // we assign a uuid
-    #[serde(default = "new_uuid")]
-    pub uuid: String,
 }
 
-fn new_uuid() -> String {
-    format!("catalog:{}", uuid::Uuid::new_v4().to_string())
-}
 
 impl Catalog {
     fn has_search(&self) -> bool {
