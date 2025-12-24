@@ -1,5 +1,5 @@
 use axum::http::Method;
-use super::{Endpoint, ApiError,BasicAuth, RestClient };
+use super::{Endpoint, ClientError,BasicAuth, RestClient };
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -8,10 +8,12 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use bon::Builder;
 use std::str::FromStr;
+use http_cache_reqwest::{CacheMode};
+use anyhow::Result;
 
 #[derive(
     Default,
-  //  strum_macros::EnumString,
+    strum_macros::EnumString,
     strum_macros::Display,
     Debug,
     Clone,
@@ -64,6 +66,10 @@ impl Endpoint for ManifestEndpoint {
 
     fn path(&self) -> String {
         "/manifest.json".into()
+    }
+    
+    fn cache_mode(&self) -> Option<CacheMode> {
+        Some(CacheMode::ForceCache)
     }
 }
 
@@ -197,10 +203,6 @@ impl Endpoint for CatalogEndpoint {
         ep.push_str(".json");
         ep
     }
-
-    //fn parameters(&self) -> QueryParams {
-    //    HashMap::new()
-    //}
 }
 
 #[skip_serializing_none]
@@ -210,10 +212,10 @@ pub struct CatalogResponse {
 }
 
 // #[skip_serializing_none]
-#[derive(Debug, Clone, Builder)]
+#[derive(Debug, Default, Clone, Builder)]
 pub struct MetaEndpoint {
     pub media_type: MediaType,
-    pub imdb_id: String,
+    pub id: String,
     pub season: Option<i64>,
     pub episode: Option<i64>,
 }
@@ -222,7 +224,7 @@ impl Endpoint for MetaEndpoint {
     type Output = MetaResponse;
 
     fn path(&self) -> String {
-        let mut id = self.imdb_id.clone();
+        let mut id = self.id.clone();
         if self.season.is_some() || self.episode.is_some() {
             id = format!(
                 "{}:{}:{}",
@@ -386,7 +388,7 @@ pub struct Episode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: MediaType,
     pub id: String,
 }
 
@@ -405,16 +407,16 @@ pub struct SearchResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SearchData {
     pub filtered: i64,
-    pub results: Vec<SearchResult>,
+    pub results: Vec<Stream>,
     pub errors: Vec<serde_json::Value>,
 }
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SearchResult {
+pub struct Stream {
     pub info_hash: String,
-    pub url: String,
+    pub url: Option<String>,
     pub nzb_url: Option<String>,
     pub rar_urls: Option<Vec<String>>,
     pub seven_zip_urls: Option<Vec<String>>,
@@ -448,6 +450,30 @@ pub struct SearchResult {
     pub description: Option<String>,
 }
 
+impl Stream {
+   pub fn id(&self) -> String {
+     self.info_hash.clone()
+    }
+    
+    pub fn probe(&self) -> Result<super::jellyfin::MediaSourceInfo> {
+        let id = self.id();
+
+        // debug!("Probing: {}", self.url.clone().unwrap());
+        let info = ffprobe::ffprobe(self.url.clone().unwrap())?;
+
+        //dbg!(&info);
+        let mut source: super::jellyfin::MediaSourceInfo = info.into();
+        // source.id = Some(id.clone());
+        // source.e_tag = Some(id.clone());
+
+        // if include_external.as_ref().unwrap_or(&false) {
+
+        // }
+
+        Ok(source)
+    }
+  }
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -480,8 +506,11 @@ pub struct ParsedFile {
     pub season_pack: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Search {
-    pub query: SearchQuery,
+    #[serde(rename = "type")]
+    pub kind: MediaType,
+    pub id: String,
     pub format: bool,
 }
 
@@ -498,8 +527,8 @@ impl Endpoint for Search {
 
     fn query(&self) -> Vec<(String, String)> {
         let mut q = Vec::with_capacity(3);
-        q.push(("type".to_string(), self.query.kind.clone()));
-        q.push(("id".to_string(), self.query.id.clone()));
+        q.push(("type".to_string(), self.kind.clone().to_string()));
+        q.push(("id".to_string(), self.id.clone()));
         q.push(("format".to_string(), if self.format { "true" } else { "false" }.to_string()));
         q
     }
@@ -515,15 +544,13 @@ pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
 
 pub async fn search(
     client: &RestClient<BasicAuth>,
-    kind: impl Into<String>,
+    kind: impl Into<MediaType>,
     id: impl Into<String>,
-) -> Result<SearchResponse, ApiError> {
+) -> Result<SearchResponse, ClientError> {
     client
         .execute(&Search {
-            query: SearchQuery {
-                kind: kind.into(),
-                id: id.into(),
-            },
+            kind: kind.into(),
+            id: id.into(),
             format: true,
         })
         .await

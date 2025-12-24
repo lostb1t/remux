@@ -229,7 +229,26 @@ impl From<jellyfin::MediaType> for aio::MediaType {
 }
 
 
+impl From<aio::Stream> for jellyfin::MediaSourceInfo {
+    fn from(stream: aio::Stream) -> Self {
+   jellyfin::MediaSourceInfo {
+            // id: Some(self.id()),
+            // e_tag: Some(self.id()),
+            //path: self.url.clone(),
+            //container,
+            // protocol: Some("http".to_string()),
+            supports_transcoding: Some(false),
+            supports_direct_stream: Some(true),
+            supports_direct_play: Some(true),
+            //is_remote: Some(true),
+            name: stream.name.clone(),
+        
+            ..Default::default()
+        }
+   
+    }
 
+}
 
 use ffprobe;
 //use base64::engine::general_purpose::URL_SAFE;

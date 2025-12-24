@@ -1,4 +1,4 @@
-use crate::db;
+
 use crate::sdks::jellyfin;
 use async_compression::tokio::bufread::GzipDecoder;
 use anyhow::{Result,anyhow, Context};
@@ -17,7 +17,7 @@ use reqwest::Client;
 use serde::de::DeserializeOwned;
 use std::path::Path;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+//use std::task::{Context, Poll};
 use tempfile;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::{
@@ -53,26 +53,20 @@ pub fn encode_media_uuid(
 pub fn decode_media_uuid(
     encoded: &str,
 ) -> Result<(String, jellyfin::MediaType, Option<String>)> {
-
-
-let bytes = decode(encoded)
-    .map_err(|e| anyhow!(e.to_string()))
-    .context("invalid base36 in media uuid")?;
+    let bytes = decode(encoded).map_err(|e| anyhow!(e.to_string()))?;
     let s = std::str::from_utf8(&bytes).context("decoded media uuid was not utf-8")?;
 
     let mut parts = s.splitn(3, "::");
+
     let id = parts.next().context("missing id")?;
     let media_type = parts.next().context("missing media type")?;
+
     let stream_id = parts
         .next()
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    Ok((
-        id.to_string(),
-        jellyfin::MediaType::from_str(media_type)?,
-        stream_id,
-    ))
+    Ok((id.to_string(), jellyfin::MediaType::from_str(media_type)?, stream_id))
 }
 
 pub fn native_to_utc(opt_date: Option<NaiveDate>) -> Option<DateTime<Utc>> {
@@ -230,19 +224,7 @@ where
     }
 }
 
-impl<T> Stream for FileStream<T>
-where
-    T: DeserializeOwned + Send + 'static,
-{
-    type Item = Result<T>;
 
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        self.get_mut().inner.as_mut().poll_next(cx)
-    }
-}
 
 pub fn parse_strings_to_u64s(strings: Vec<String>) -> Vec<u64> {
     strings

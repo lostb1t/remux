@@ -17,11 +17,11 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use anyhow::Result;
 use axum::ServiceExt;
 use axum::extract::Request;
 use axum::middleware;
 use axum::middleware::Next;
+use axum::extract::{FromRequestParts};
 use chrono::prelude::*;
 use chrono::{Duration, Utc};
 use futures::future::BoxFuture;
@@ -48,14 +48,19 @@ use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
 use anyhow::anyhow;
+use anyhow::Result;
+use axum_anyhow::{ApiResult, OptionExt};
+use http::request::Parts;
+use config;
+use async_trait::async_trait;
 
 mod api;
 mod conversions;
-mod db;
 mod errors;
 mod imdb;
 mod sdks;
 mod utils;
+mod remux;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -63,7 +68,7 @@ async fn main() -> Result<()> {
     setup_logging();
 
     ;
-let settings: Settings = Config::builder()
+let settings: Settings = config::Config::builder()
 
         .add_source(config::Environment::with_prefix(""))
         .build()?
@@ -72,7 +77,7 @@ let settings: Settings = Config::builder()
         
     tracing::info!("config: {:?}", settings);
 
-    let state = api::AppState {
+    let state = AppState {
         config: settings.clone(),
       //  db: db::Database::new().await?
         //users: settings.users,
@@ -103,6 +108,51 @@ let settings: Settings = Config::builder()
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub struct AppState {
+    pub config: Settings,
+  //  pub db: db::Database,
+   // pub tmdb: sdks::RestClient,
+   // pub stremio: sdks::aio::StremioService,
+}
+
+#[derive(Debug)]
+pub struct AuthError;
+
+impl axum::response::IntoResponse for AuthError {
+    fn into_response(self) -> axum::response::Response {
+        axum::http::StatusCode::UNAUTHORIZED.into_response()
+    }
+}
+
+
+pub struct AuthState {
+    pub user: User,
+    pub device: Option<String>
+}
+
+//#[async_trait]
+impl FromRequestParts<AppState> for AuthState {
+    type Rejection = AuthError;
+
+    async fn from_request_parts(
+        _parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let user = state
+            .config
+            .users
+            .get(0)
+            .cloned()
+            .ok_or(AuthError)?;
+
+        Ok(AuthState {
+            user,
+            device: None,
+        })
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct User {
     pub id: String,
@@ -112,10 +162,10 @@ pub struct User {
 }
 
 impl User {
-   pub async fn get_aio(&self) ->  Result<sdks::RestClient> {
-          sdks::aio::client(self.aio_url).await?
+   pub fn get_aio(&self) ->  Result<sdks::RestClient> {
+          Ok(sdks::aio::client(&self.aio_url)?)
  } 
-pub async fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
+pub fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
         let mut url = Url::parse(&self.aio_url)?;
 
         let segments: Vec<String> = url
@@ -140,7 +190,7 @@ pub async fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> 
 
         let search_url = url.as_str().to_string();
 
-        sdks::aio::search_client(&search_url, username, password).await?
+        Ok(sdks::aio::search_client(&search_url, username, password)?)
     }
 
 
@@ -149,7 +199,7 @@ pub async fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Settings {
     pub web_path: String,
-    pub users: Vec<String>,
+    pub users: Vec<User>,
 }
 
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
@@ -195,7 +245,7 @@ async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {
     (StatusCode::NOT_FOUND, "Not Found")
 }
 
-async fn handle_static_404(req: Request<Body>) -> impl IntoResponse {
+async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
     tracing::debug!(
         "Static 404 Not Found: {} {}",
         req.method(),

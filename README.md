@@ -1,3 +1,5 @@
+https://github.com/wdanilo/crabtime# use this man, so cool: 
+
 Use stremio addons with Jellyfin clients.
 
 Total replacement for the Jellyfin server.  
