@@ -195,7 +195,7 @@ pub fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
         let password = segments[2].clone();
 
         // Build https://host/api/v1/search (preserve scheme/host/port/query is dropped intentionally)
-        url.set_path("/api/v1/search");
+        url.set_path("/api/v1");
         url.set_query(None);
         url.set_fragment(None);
 

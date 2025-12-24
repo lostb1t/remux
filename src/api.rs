@@ -41,7 +41,7 @@ use tracing::warn;
 
 //use crate::db;
 //use anyhow::Result;
-use axum_anyhow::{ApiResult as Result};
+use axum_anyhow::{ApiResult as Result, OptionExt};
 use crate::rewrite_request_uri;
 use crate::sdks;
 use crate::sdks::{jellyfin, aio, tmdb};
@@ -977,7 +977,7 @@ pub async fn videos_stream(
                 .map(|id| x.id() == *id)
                 .unwrap_or(true)
         })
-        .unwrap();
+        .context_not_found("no stream", "no stream")?;
 
     if q.static_.unwrap_or(false) {
         info!("starting direct playback for: {:?}", &stream.name);

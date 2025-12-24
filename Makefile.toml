@@ -1,5 +1,5 @@
 [env]
-RUST_LOG = "trace,axum=info,tower_http=info,remux_server=trace,hyper=warn,sqlx=warn"
+RUST_LOG = "info,axum=info,tower_http=info,remux_server=trace,hyper=warn,sqlx=warn"
 RUST_BACKTRACE = 1
 CONFIG= "./config.toml"
 AXUM_ANYHOW_EXPOSE_ERRORS=1

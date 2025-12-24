@@ -224,7 +224,7 @@ impl<A: Auth> RestClient<A> {
                 .extend_pairs(query.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         }
 
-        let mut req = self.http.request(ep.method(), url).headers(ep.headers());
+        let mut req = self.http.request(ep.method(), url.clone()).headers(ep.headers());
         req = self.auth.apply(req);
 
         let mode = cache_override.or_else(|| ep.cache_mode());
@@ -239,7 +239,7 @@ impl<A: Auth> RestClient<A> {
                 let bytes = serde_json::to_vec(&v).map_err(|e| ClientError::Json {
                     status: 0,
                     source: e,
-                    endpoint: Some(endpoint.clone()),
+                    endpoint: Some(url.clone().to_string()),
                     body: Some(v.to_string()),
                 })?;
 
@@ -274,12 +274,12 @@ impl<A: Auth> RestClient<A> {
                 serde_json::from_str::<EP::Output>(&text).map_err(|e| ClientError::Json {
                     status: s,
                     source: e,
-                    endpoint: Some(endpoint),
+                    endpoint: Some(url.clone().to_string()),
                     body: Some(text),
                 })
             }
 
-            s => Err((self.map_error)(s, &endpoint, &text)),
+            s => Err((self.map_error)(s, &url.clone().to_string(), &text)),
         }
     }
 }

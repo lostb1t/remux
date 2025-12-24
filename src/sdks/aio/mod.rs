@@ -313,17 +313,10 @@ pub struct Meta {
     pub runtime: Option<Duration>,
 
     // #[serde(rename = "videos")]
-    pub videos: Option<Vec<Meta>>,
+    pub videos: Option<Vec<Episode>>,
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
-    pub thumbnail: Option<String>,
-    pub episode: Option<i32>,
-    pub season: Option<i32>,
-    pub overview: Option<String>,
-    pub number: Option<i32>,
-    pub rating: Option<String>,
-    pub first_aired: Option<String>,
   
   }
 
@@ -365,7 +358,7 @@ impl Meta {
         }
     }
 
-    pub fn get_episode_by_id(&self, id: String) -> Option<&Meta> {
+    pub fn get_episode_by_id(&self, id: String) -> Option<&Episode> {
         if let Some(episodes) = &self.videos {
             episodes.into_iter().find(|e| e.id == id)
         } else {
@@ -530,7 +523,7 @@ impl Endpoint for Search {
     }
 
     fn path(&self) -> String {
-        "/api/v1/search".to_string()
+        "/search".to_string()
     }
 
     fn query(&self) -> Vec<(String, String)> {
