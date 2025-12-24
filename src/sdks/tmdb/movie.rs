@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Status, default_append_to_response};
 use crate::sdks::{CommaSeparatedList, Endpoint};
-use bon::Builder;
-use bon::builder;
+
 use chrono::NaiveDate;
 use serde_with::{DisplayFromStr, serde_as};
 
@@ -28,7 +27,7 @@ pub struct Movie {
     pub external_ids: Option<super::ExternalIds>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MovieEndpoint {
     pub id: i64,
 

@@ -53,7 +53,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
         let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
         jellyfin::BaseItemDto {
-            id: utils::encode_media_uuid(
+            id: utils::encode_media_token(
                 &meta.imdb_id.clone().unwrap_or_else(|| meta.clone().id),
                 media_type,
                 None
@@ -182,14 +182,14 @@ impl From<aio::Episode> for jellyfin::BaseItemDto {
     fn from(item: aio::Episode) -> Self {
         jellyfin::BaseItemDto {
             name: item.name.clone(),
-            id: utils::encode_media_uuid(
+            id: utils::encode_media_token(
                 item.id.as_str(),
                 jellyfin::MediaType::Episode,
                 None
             ),
             type_: Some(jellyfin::MediaType::Episode),
             index_number: item.episode,
-            season_id: Some(utils::encode_media_uuid(
+            season_id: Some(utils::encode_media_token(
                 format!("{}:{:?}", item.id, item.season).as_str(),
                 jellyfin::MediaType::Episode,
                 None

@@ -46,6 +46,7 @@ use crate::sdks;
 use crate::sdks::{jellyfin, aio, tmdb};
 use crate::utils;
 use crate::utils::server_id;
+use crate::utils::MediaId;
 use crate::AppState;
 use chrono::Datelike;
 use tower::util::MapRequestLayer;
@@ -69,14 +70,14 @@ pub fn routes() -> Router<AppState> {
         .route("/Items", get(items))
         .route("/items/{id}/images/{image_type}", get(items_images))
         .route("/items/{id}/images/{image_type}/{index}", get(items_images))
-        .route("/items/{id}", get(items_get))
+        .route("/items/{media}", get(items_get))
         .route("/items/{id}/playbackinfo", post(items_playbackinfo))
         .route("/items/filters", get(items_filters))
         .route("/users/me", get(users_me))
         .route("/users/{id}", get(users_me))
         .route("/users/{user_id}/items", get(items))
         .route("/users/{user_id}/items/latest", get(items_flat))
-        .route("/users/{user_id}/items/{id}", get(users_items_get))
+        .route("/users/{user_id}/items/{media}", get(users_items_get))
         .route("/users/{id}/views", get(userviews))
         .route("/users/{id}/groupingoptions", get(users_groupingoptions))
         .route("/videos/{id}/stream", get(videos_stream))
@@ -389,7 +390,7 @@ let manifest = aio
         if let Some(types) = &q.include_item_types {
             if types[0] == jellyfin::MediaType::Season {
                 let (id, media_type, _stream_id) =
-                    utils::decode_media_uuid(parent_id)?;
+                    utils::decode_media_token(parent_id)?;
                     //.log_err("Failed to decode media UUID")?;
 
                 let meta = fetch_meta(media_type.into(), id.clone()).await?;
@@ -398,7 +399,7 @@ let manifest = aio
                     .get_season_numbers()
                     .into_iter()
                     .map(|x| jellyfin::BaseItemDto {
-                        id: utils::encode_media_uuid(
+                        id: utils::encode_media_token(
                             format!("{}:{}", id.clone(), x).as_str(),
                             jellyfin::MediaType::Season,
                             None,
@@ -422,12 +423,12 @@ let manifest = aio
         if let Some(types) = &q.include_item_types {
             if types[0] == jellyfin::MediaType::Episode {
                 let (id, _media_type, _stream_id) =
-                    utils::decode_media_uuid(&parent_id)?;
+                    utils::decode_media_token(&parent_id)?;
                     //.log_err("Failed to decode media UUID")?;
 
                 let mut season_number: Option<i32> = None;
                 if let Some(season_id) = q.season_id.take() {
-                    let (decoded, _, _) = utils::decode_media_uuid(&season_id)?;
+                    let (decoded, _, _) = utils::decode_media_token(&season_id)?;
                        // .context("Failed to decode media UUID")?;
                     let (_, sn) = decoded
                         .rsplit_once(':')
@@ -473,7 +474,7 @@ let manifest = aio
     if let Some(ids) = &q.ids {
         let uuid = &ids[0];
         let (id, media_type, stream_id) =
-            utils::decode_media_uuid(uuid)
+            utils::decode_media_token(uuid)
             .log_err("Failed to decode media UUID")?;
 
         if ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series].contains(&media_type) {
@@ -505,7 +506,7 @@ let manifest = aio
                 .map(|stream| {
                     let mut source: jellyfin::MediaSourceInfo = stream.clone().into();
                     let enc =
-                        utils::encode_media_uuid(&id, media_type, Some(stream.id()));
+                        utils::encode_media_token(&id, media_type, Some(stream.id()));
                     source.id = Some(enc.clone());
                     source.e_tag = Some(enc);
                     source
@@ -600,14 +601,14 @@ pub async fn items(
 pub async fn item(
     state: AppState,
     auth: AuthState,
-    id: String,
+    media: MediaId
 ) -> Result<Option<jellyfin::BaseItemDto>> {
-    if let Some(library) = utils::libraries().into_iter().find(|x| x.id.clone() == id) {
+    if let Some(library) = utils::libraries().into_iter().find(|x| x.id.clone() == media.id) {
         return Ok(Some(library));
     }
 
     let q = jellyfin::GetItemsQuery {
-        ids: vec![id].into(),
+        ids: vec![media.token].into(),
         ..Default::default()
     };
     return Ok(get_items(state, auth, q, false).await?.items.first().cloned());
@@ -615,18 +616,18 @@ pub async fn item(
 
 pub async fn items_get(
     State(state): State<AppState>,
-        auth: AuthState,
-    Path(id): Path<String>,
+    auth: AuthState,
+    Path(media): Path<MediaId>
 ) -> Result<impl IntoResponse> {
-    return Ok(Json(item(state, auth, id).await?).into_response());
+    return Ok(Json(item(state, auth, media).await?).into_response());
 }
 
 pub async fn users_items_get(
     State(state): State<AppState>,
-        auth: AuthState,
-    Path((user_id, id)): Path<(String, String)>,
+    auth: AuthState,
+    Path((user_id, media)): Path<(String, MediaId)>,
 ) -> Result<impl IntoResponse> {
-    return Ok(Json(item(state, auth, id).await?).into_response());
+    return Ok(Json(item(state, auth, media).await?).into_response());
 }
 
 pub async fn shows_seasons(
@@ -702,7 +703,7 @@ pub async fn items_images(
     if url.is_none() {
         // first decode the id and type
         let (id, mut media_type, stream_id) =
-            utils::decode_media_uuid(&id)?;
+            utils::decode_media_token(&id)?;
             //.log_err("Failed to decode media UUID")?;
 
         let ids: Vec<String> = id.split(':').map(|s| s.to_string()).collect();
@@ -753,7 +754,7 @@ pub async fn items_playbackinfo(
     Query(query): Query<jellyfin::PlaybackInfoQuery>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    let (id, media_type, stream_id) = utils::decode_media_uuid(&id)
+    let (id, media_type, stream_id) = utils::decode_media_token(&id)
    //     .log_err("Failed to decode media UUID")
         .unwrap();
 
@@ -765,7 +766,7 @@ pub async fn items_playbackinfo(
         .clone()
         .or_else(|| query.media_source_id.clone())
         .and_then(|s| {
-            let (_, _, stream_id) = utils::decode_media_uuid(&s)
+            let (_, _, stream_id) = utils::decode_media_token(&s)
           //      .log_err("Failed to decode media UUID")
                 .unwrap();
             stream_id
@@ -933,7 +934,7 @@ pub async fn videos_stream(
     Path(uuid): Path<String>,
     Query(q): Query<jellyfin::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    let (id, media_type, stream_id) = utils::decode_media_uuid(&uuid)?;
+    let (id, media_type, stream_id) = utils::decode_media_token(&uuid)?;
       //  .log_err("Failed to decode media UUID")
 
     trace!(?uuid, ?q, ?id, ?headers, ?stream_id, "videos_stream");
@@ -954,6 +955,7 @@ pub async fn videos_stream(
 
     // filter by id
     let filter_by_id: Option<String> = stream_id.or(q.media_source_id.clone());
+info!(filter_by_id = ?filter_by_id);
     let stream = streams
         .data
         .results

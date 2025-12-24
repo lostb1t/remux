@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Status, default_append_to_response};
 use crate::sdks::{CommaSeparatedList, Endpoint};
-use bon::Builder;
-use bon::builder;
+
 use chrono::NaiveDate;
 use serde_with::{DisplayFromStr, serde_as};
 
@@ -48,7 +47,7 @@ pub struct Series {
     pub external_ids: Option<super::ExternalIds>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeriesEndpoint {
     pub id: i64,
 
@@ -94,7 +93,7 @@ pub struct Season {
     pub episodes: Option<Vec<Episode>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeasonEndpoint {
     pub series_id: i64,
     pub season_number: i64,
@@ -127,10 +126,10 @@ pub struct Episode {
     pub vote_average: Option<f64>,
     pub vote_count: i64,
     #[serde_as(as = "Option<DisplayFromStr>")]
-    pub air_date: Option<NaiveDate>, // <-- hier
+    pub air_date: Option<NaiveDate>,
     pub episode_number: i64,
-    pub episode_type: Option<String>,    // <-- hier
-    pub production_code: Option<String>, // <-- hier
+    pub episode_type: Option<String>,
+    pub production_code: Option<String>,
     pub runtime: Option<i64>,
     pub season_number: i64,
     pub show_id: i64,

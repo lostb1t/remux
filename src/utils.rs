@@ -2,7 +2,7 @@
 use crate::sdks::jellyfin;
 use async_compression::tokio::bufread::GzipDecoder;
 use anyhow::{Result,anyhow, Context};
-
+use serde::{Deserialize, Serialize};
 //use futures::Stream;
 //use futures::StreamExt;
 //use futures_util::TryStreamExt;
@@ -39,9 +39,56 @@ pub fn server_id() -> String {
     "remux".to_string()
 }
 
-/// media_id::media_type::media_source_id
 
-pub fn encode_media_uuid(
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct MediaId {
+    pub id: String,
+    pub media_type: jellyfin::MediaType,
+    pub stream_id: Option<String>,
+    pub token: String,
+}
+
+impl MediaId {
+    pub fn new(
+        id: String,
+        media_type: jellyfin::MediaType,
+        stream_id: Option<String>,
+    ) -> Self {
+        let token = encode_media_token(&id, media_type, stream_id.clone());
+        Self {
+            id,
+            media_type,
+            stream_id,
+            token,
+        }
+    }
+}
+
+impl FromStr for MediaId {
+    type Err = anyhow::Error;
+
+    fn from_str(token: &str) -> Result<Self, Self::Err> {
+        let (id, media_type, stream_id) = decode_media_token(token)?;
+        Ok(Self {
+            id,
+            media_type,
+            stream_id,
+            token: token.into()
+        })
+    }
+}
+
+impl TryFrom<String> for MediaId {
+    type Error = anyhow::Error;
+
+    fn try_from(token: String) -> Result<Self, Self::Error> {
+        MediaId::from_str(&token)
+    }
+}
+
+pub fn encode_media_token(
     id: &str,
     media_type: jellyfin::MediaType,
     stream_id: Option<String>,
@@ -50,7 +97,7 @@ pub fn encode_media_uuid(
     encode(format!("{id}::{media_type}::{src}").as_bytes())
 }
 
-pub fn decode_media_uuid(
+pub fn decode_media_token(
     encoded: &str,
 ) -> Result<(String, jellyfin::MediaType, Option<String>)> {
     let bytes = decode(encoded).map_err(|e| anyhow!(e.to_string()))?;
@@ -80,7 +127,8 @@ pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
     vec![
         jellyfin::BaseItemDto {
             name: Some("Movies".to_string()),
-            id: "movies".to_string(),
+            id: MediaId::new("movies".into(), jellyfin::MediaType::CollectionFolder, None).token,
+           // id: "library:movies".to_string(),
             //parent_id: Some("test".to_string()),
             type_: Some(jellyfin::MediaType::CollectionFolder),
             collection_type: Some(jellyfin::CollectionType::Movies),
@@ -93,7 +141,8 @@ pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
         },
         jellyfin::BaseItemDto {
             name: Some("Series".to_string()),
-            id: "series".to_string(),
+            //id: "series".to_string(),
+            id: MediaId::new("series".into(), jellyfin::MediaType::CollectionFolder, None).token,
             //parent_id: Some("test".to_string()),
             type_: Some(jellyfin::MediaType::CollectionFolder),
             collection_type: Some(jellyfin::CollectionType::Tvshows),
@@ -102,7 +151,8 @@ pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
         },
         jellyfin::BaseItemDto {
             name: Some("Collections".to_string()),
-            id: "collections".to_string(),
+            //id: "collections".to_string(),
+            id: MediaId::new("collections".into(), jellyfin::MediaType::CollectionFolder, None).token,
             //parent_id: Some("test".to_string()),
             type_: Some(jellyfin::MediaType::CollectionFolder),
             collection_type: Some(jellyfin::CollectionType::Boxsets),
