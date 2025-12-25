@@ -4,6 +4,7 @@ use std::str::FromStr;
 use chrono::{DateTime, Utc};
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
+use crate::utils::MediaId;
 //generate_api!(
 //    spec = "src/sdks/jellyfin/openapi.json", // The OpenAPI document
 //    interface = Builder
@@ -14,6 +15,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_with::{DisplayFromStr, serde_as};
 use serde_alias::serde_alias;
+use uuid::Uuid;
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -97,8 +100,8 @@ pub struct GetItemsQuery {
     pub start_index: Option<i32>,
     pub limit: Option<u32>,
     pub search_term: Option<String>,
-    pub parent_id: Option<String>,
-    pub season_id: Option<String>,
+    pub parent_id: Option<MediaId>,
+    pub season_id: Option<MediaId>,
     pub fields: Option<Vec<ItemFields>>,
     pub exclude_item_types: Option<Vec<String>>,
     pub include_item_types: Option<Vec<MediaType>>,
@@ -129,7 +132,7 @@ pub struct GetItemsQuery {
     pub studios: Option<Vec<String>>,
     pub studio_ids: Option<Vec<String>>,
     pub exclude_artist_ids: Option<Vec<String>>,
-    pub ids: Option<Vec<String>>,
+    pub ids: Option<Vec<MediaId>>,
 }
 
 #[derive(Default, Debug, Deserialize)]
@@ -145,7 +148,7 @@ pub struct VideoStreamQuery {
     pub segment_container: Option<String>,
     pub segment_length: Option<i32>,
     pub min_segments: Option<i32>,
-    pub media_source_id: Option<String>,
+    pub media_source_id: Option<MediaId>,
     pub device_id: Option<String>,
     pub audio_codec: Option<String>,
     pub enable_auto_stream_copy: Option<bool>,
@@ -175,7 +178,7 @@ pub struct PlaybackInfoQuery {
     #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
     pub subtitle_stream_index: Option<i32>,
     pub max_audio_channels: Option<i32>,
-    pub media_source_id: Option<String>,
+    pub media_source_id: Option<MediaId>,
     pub live_stream_id: Option<String>,
     pub auto_open_live_stream: Option<bool>,
     pub enable_direct_play: Option<bool>,
@@ -626,7 +629,8 @@ pub struct ProviderIds {
 #[derive(default2::Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
-    pub id: String,
+    //pub id: String,
+    pub id: MediaId,
     pub server_id: String,
     pub name: Option<String>,
     pub original_title: Option<String>,
@@ -681,7 +685,7 @@ pub struct BaseItemDto {
     pub critic_rating_summary: Option<String>,
     pub is_hd: Option<bool>,
     pub is_folder: Option<bool>,
-    pub parent_id: Option<String>,
+    pub parent_id: Option<MediaId>,
     pub type_: Option<MediaType>,
     // pub people: Option<Vec<BaseItemPerson>>,
     // pub studios: Option<Vec<NameLongIdPair>>,
@@ -694,8 +698,8 @@ pub struct BaseItemDto {
     pub recursive_item_count: Option<i32>,
     pub child_count: Option<i32>,
     pub series_name: Option<String>,
-    pub series_id: Option<String>,
-    pub season_id: Option<String>,
+    pub series_id: Option<MediaId>,
+    pub season_id: Option<MediaId>,
     pub special_feature_count: Option<i32>,
     pub display_preferences_id: Option<String>,
     pub status: Option<Status>,

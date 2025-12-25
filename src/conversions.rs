@@ -7,45 +7,9 @@ use anyhow::{Result, anyhow, Error};
 use isolang::Language;
 use std::collections::HashMap;
 use std::str::FromStr;
-
+use crate::utils::MediaId;
 use std::convert::{TryFrom, TryInto};
 
-
-
-impl From<tmdb::Movie> for jellyfin::BaseItemDto {
-    fn from(item: tmdb::Movie) -> Self {
-        Self {
-            id: item.id.to_string(),
-            name: Some(item.title),
-            type_: Some(jellyfin::MediaType::Movie),
-            ..Default::default()
-        }
-    }
-}
-
-impl From<tmdb::Season> for jellyfin::BaseItemDto {
-    fn from(item: tmdb::Season) -> Self {
-        Self {
-            id: item.id.to_string(),
-            index_number: Some(item.season_number as i32),
-            name: Some(item.name),
-            //parent_id: Some("92053".to_string()),
-            type_: Some(jellyfin::MediaType::Season),
-            ..Default::default()
-        }
-    }
-}
-
-impl From<tmdb::Episode> for jellyfin::BaseItemDto {
-    fn from(item: tmdb::Episode) -> Self {
-        Self {
-            id: item.id.to_string(),
-            name: Some(item.name),
-            type_: Some(jellyfin::MediaType::Episode),
-            ..Default::default()
-        }
-    }
-}
 
 impl From<aio::Meta> for jellyfin::BaseItemDto {
     fn from(meta: aio::Meta) -> Self {
@@ -53,11 +17,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
         let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
         jellyfin::BaseItemDto {
-            id: utils::encode_media_token(
-                &meta.imdb_id.clone().unwrap_or_else(|| meta.clone().id),
-                media_type,
-                None
-            ),
+            id: MediaId::new( meta.imdb_id.clone().unwrap_or_else(|| meta.clone().id), media_type,None),
             server_id: utils::server_id(),
             name: meta.name.clone(),
             original_title: meta.name.clone(),
@@ -171,7 +131,7 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
     fn from(item: aio::Catalog) -> Self {
         jellyfin::BaseItemDto {
             name: Some(item.name.clone()),
-            id: format!("catalog:{}", item.id),
+            id: MediaId::new(item.id, jellyfin::MediaType::BoxSet, None),
             type_: Some(jellyfin::MediaType::BoxSet),
             ..Default::default()
         }
@@ -181,16 +141,12 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
 impl From<aio::Episode> for jellyfin::BaseItemDto {
     fn from(item: aio::Episode) -> Self {
         jellyfin::BaseItemDto {
-            name: item.name.clone(),
-            id: utils::encode_media_token(
-                item.id.as_str(),
-                jellyfin::MediaType::Episode,
-                None
-            ),
+            name: item.name.clone(),  
+            id: MediaId::new(item.id.clone(), jellyfin::MediaType::Episode, None),
             type_: Some(jellyfin::MediaType::Episode),
             index_number: item.episode,
-            season_id: Some(utils::encode_media_token(
-                format!("{}:{:?}", item.id, item.season).as_str(),
+            season_id: Some(MediaId::new(
+                format!("{}:{:?}", item.id, item.season),
                 jellyfin::MediaType::Episode,
                 None
             )),

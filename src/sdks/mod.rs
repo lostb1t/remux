@@ -147,6 +147,8 @@ pub trait Endpoint {
     fn cache_mode(&self) -> Option<http_cache_reqwest::CacheMode> {
         None
     }
+    
+    
 }
 
 //
