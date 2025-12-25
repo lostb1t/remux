@@ -55,6 +55,7 @@ use config;
 use async_trait::async_trait;
 use axum_anyhow::set_expose_errors;
 use axum_anyhow::on_error;
+use uuid::Uuid;
 
 mod api;
 mod conversions;
@@ -164,26 +165,49 @@ impl FromRequestParts<AppState> for AuthState {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
-    pub id: String,
+    pub key: String,
+
+    #[serde(skip)]
+    id: Option<Uuid>,
+
     pub username: String,
     pub password: String,
     pub aio_url: String,
 }
 
 impl User {
-   pub fn get_aio(&self) ->  Result<sdks::RestClient> {
-          
-     Ok(sdks::aio::client(&self.aio_url.strip_suffix("manifest.json").unwrap_or(&self.aio_url))?)
- } 
-pub fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
+    fn stable_id_from_key(key: &str) -> Uuid {
+        Uuid::new_v5(&Uuid::nil(), key.as_bytes())
+    }
+
+    pub fn get_id(&mut self) -> Uuid {
+        if let Some(id) = self.id {
+            return id;
+        }
+
+        let id = Self::stable_id_from_key(&self.key);
+        self.id = Some(id);
+        id
+    }
+
+    pub fn get_aio(&self) -> Result<sdks::RestClient> {
+        let url = self
+            .aio_url
+            .strip_suffix("manifest.json")
+            .unwrap_or(self.aio_url.as_str());
+
+        Ok(sdks::aio::client(url)?)
+    }
+
+    pub fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
         let mut url = Url::parse(&self.aio_url)?;
 
-        let segments: Vec<String> = url
+        let segments: Vec<&str> = url
             .path_segments()
             .ok_or_else(|| anyhow!("url has no path segments"))?
-            .map(|s| s.to_string())
             .collect();
 
         if segments.len() < 3 {
@@ -192,10 +216,9 @@ pub fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
             ));
         }
 
-        let username = segments[1].clone();
-        let password = segments[2].clone();
+        let username = segments[1].to_string();
+        let password = segments[2].to_string();
 
-        // Build https://host/api/v1/search (preserve scheme/host/port/query is dropped intentionally)
         url.set_path("/api/v1");
         url.set_query(None);
         url.set_fragment(None);
@@ -204,8 +227,6 @@ pub fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
 
         Ok(sdks::aio::search_client(&search_url, username, password)?)
     }
-
-
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
