@@ -178,6 +178,7 @@ pub struct PlaybackInfoQuery {
     #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
     pub subtitle_stream_index: Option<i32>,
     pub max_audio_channels: Option<i32>,
+    #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
     pub media_source_id: Option<MediaId>,
     pub live_stream_id: Option<String>,
     pub auto_open_live_stream: Option<bool>,
