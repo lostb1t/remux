@@ -1,0 +1,7 @@
+/target
+.lock
+.DS_Store
+.idea/
+output.mp4
+output.aac
+Cargo.lock

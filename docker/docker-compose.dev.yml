@@ -5,19 +5,20 @@ services:
       dockerfile: docker/Dockerfile.dev
       args:
         JF_FFMPEG_VERSION: 7.1.1-7
+      network: host
 
     volumes:
-      - .:/appp
+      - ..:/app
       - remux-cargo:/cargo
       - remux-rustup:/rustup
       - remux-target:/app/target
-
+    network_mode: host
     environment:
       RUST_BACKTRACE: 1
 
     ports:
       - "3001:3000"
-    command: ["bash", "-lc", "ls -la /appp"]
+    #command: ["bash", "-lc", "ls -la /app"]
 
 volumes:
   remux-cargo:
