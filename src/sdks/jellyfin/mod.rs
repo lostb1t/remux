@@ -1,22 +1,20 @@
 use merge::Merge;
 use std::str::FromStr;
 //use progenitor::generate_api;
+use crate::utils::MediaId;
 use chrono::{DateTime, Utc};
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
-use crate::utils::MediaId;
 //generate_api!(
 //    spec = "src/sdks/jellyfin/openapi.json", // The OpenAPI document
 //    interface = Builder
 //);
 
-
 use serde::Deserialize;
 use serde::Serialize;
-use serde_with::{DisplayFromStr, serde_as};
 use serde_alias::serde_alias;
+use serde_with::{DisplayFromStr, serde_as};
 use uuid::Uuid;
-
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -139,7 +137,7 @@ pub struct GetItemsQuery {
 #[serde(rename_all = "camelCase")]
 pub struct VideoStreamQuery {
     pub container: Option<String>,
-    #[serde(rename="static")]
+    #[serde(rename = "static")]
     pub static_: Option<bool>,
     pub params: Option<String>,
     pub tag: Option<String>,
@@ -163,7 +161,7 @@ pub struct VideoStreamQuery {
     pub always_burn_in_subtitle_when_transcoding: Option<bool>,
 }
 
-#[serde(rename_all = "camelCase")]         // canonical case
+#[serde(rename_all = "camelCase")] // canonical case
 #[serde_alias(CamelCase, PascalCase)]
 #[serde(default)]
 #[serde_as]
@@ -389,7 +387,6 @@ pub enum ScrollDirection {
     Vertical,
 }
 
-
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "PascalCase")]
@@ -430,7 +427,6 @@ impl Default for UserDto {
         }
     }
 }
-
 
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -485,7 +481,10 @@ impl Default for UserPolicy {
         Self {
             access_schedules: None,
             allowed_tags: None,
-            authentication_provider_id: Some("Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".into()),
+            authentication_provider_id: Some(
+                "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider"
+                    .into(),
+            ),
             block_unrated_items: None,
             blocked_channels: None,
             blocked_media_folders: None,
@@ -522,7 +521,10 @@ impl Default for UserPolicy {
             is_hidden: Some(true),
             login_attempts_before_lockout: None,
             max_active_sessions: None,
-            password_reset_provider_id: Some("Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider".into()),
+            password_reset_provider_id: Some(
+                "Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider"
+                    .into(),
+            ),
             remote_client_bitrate_limit: None,
             sync_play_access: None,
         }
@@ -613,8 +615,8 @@ pub struct ImageTags {
 #[serde(rename_all = "PascalCase")]
 pub struct ImageBlurHashes {
     pub backdrop: Option<HashMap<String, String>>,
-    pub primary:  Option<HashMap<String, String>>,
-    pub logo:     Option<HashMap<String, String>>,
+    pub primary: Option<HashMap<String, String>>,
+    pub logo: Option<HashMap<String, String>>,
 }
 
 #[skip_serializing_none]
@@ -624,7 +626,6 @@ pub struct ProviderIds {
     pub imdb: Option<String>,
     pub tmdb: Option<String>,
 }
-
 
 #[skip_serializing_none]
 #[derive(default2::Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -783,7 +784,7 @@ pub struct BaseItemDto {
     // pub current_program: Option<Box<BaseItemDto>>,
     pub has_series_timer: Option<bool>,
     pub has_timer: Option<bool>,
-    pub provider_ids: Option<ProviderIds>
+    pub provider_ids: Option<ProviderIds>,
 }
 
 #[derive(

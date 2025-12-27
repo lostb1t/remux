@@ -1,7 +1,6 @@
-
 use crate::sdks::jellyfin;
+use anyhow::{Context, Result, anyhow};
 use async_compression::tokio::bufread::GzipDecoder;
-use anyhow::{Result,anyhow, Context};
 
 //use futures::Stream;
 //use futures::StreamExt;
@@ -32,17 +31,17 @@ use crate::errors::LogErr;
 use std::str::FromStr;
 
 use moka::sync::Cache;
-use std::{sync::{Arc, OnceLock}, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
-
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use uuid::Uuid;
 
 pub fn server_id() -> String {
     "remux".to_string()
 }
-
-
 
 const NS_MEDIA: Uuid = uuid::uuid!("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
 static MEDIA_LOOKUP: OnceLock<Cache<Uuid, MediaId>> = OnceLock::new();
@@ -84,10 +83,9 @@ impl MediaId {
     }
 
     pub fn from_uuid(uuid: &Uuid) -> Result<Self> {
-        media_lookup()
-            .get(uuid)
-            .map(|v| v.clone())
-            .ok_or_else(|| anyhow!("unknown jellyfin id: {uuid} (not warmed or evicted)"))
+        media_lookup().get(uuid).map(|v| v.clone()).ok_or_else(|| {
+            anyhow!("unknown jellyfin id: {uuid} (not warmed or evicted)")
+        })
     }
 
     pub fn stable_uuid_for(
@@ -160,9 +158,11 @@ pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
     vec![
         jellyfin::BaseItemDto {
             name: Some("Movies".to_string()),
-            id: MediaId::new("movies".into(), jellyfin::MediaType::CollectionFolder, None),
-           // id: "library:movies".to_string(),
-            //parent_id: Some("test".to_string()),
+            id: MediaId::new(
+                "movies".into(),
+                jellyfin::MediaType::CollectionFolder,
+                None,
+            ),
             type_: Some(jellyfin::MediaType::CollectionFolder),
             collection_type: Some(jellyfin::CollectionType::Movies),
             is_folder: Some(true),
@@ -175,7 +175,11 @@ pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
         jellyfin::BaseItemDto {
             name: Some("Series".to_string()),
             //id: "series".to_string(),
-            id: MediaId::new("series".into(), jellyfin::MediaType::CollectionFolder, None),
+            id: MediaId::new(
+                "series".into(),
+                jellyfin::MediaType::CollectionFolder,
+                None,
+            ),
             //parent_id: Some("test".to_string()),
             type_: Some(jellyfin::MediaType::CollectionFolder),
             collection_type: Some(jellyfin::CollectionType::Tvshows),
@@ -185,7 +189,11 @@ pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
         jellyfin::BaseItemDto {
             name: Some("Collections".to_string()),
             //id: "collections".to_string(),
-            id: MediaId::new("collections".into(), jellyfin::MediaType::CollectionFolder, None),
+            id: MediaId::new(
+                "collections".into(),
+                jellyfin::MediaType::CollectionFolder,
+                None,
+            ),
             //parent_id: Some("test".to_string()),
             type_: Some(jellyfin::MediaType::CollectionFolder),
             collection_type: Some(jellyfin::CollectionType::Boxsets),
@@ -306,8 +314,6 @@ where
         })
     }
 }
-
-
 
 pub fn parse_strings_to_u64s(strings: Vec<String>) -> Vec<u64> {
     strings

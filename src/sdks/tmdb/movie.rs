@@ -56,13 +56,13 @@ impl Endpoint for MovieEndpoint {
     }
 
     fn query(&self) -> Vec<(String, String)> {
-             let mut params = vec![];
-            if let Some(lang) = &self.language {
-                 params.push(("language".to_string(), lang.clone()));
-             }
+        let mut params = vec![];
+        if let Some(lang) = &self.language {
+            params.push(("language".to_string(), lang.clone()));
+        }
         // if let Some(appends) = &self.append_to_response {
-                 //params.push(("append_to_response".to_string(), self.append_to_response.join(",")));
+        //params.push(("append_to_response".to_string(), self.append_to_response.join(",")));
         //    }
-             params
+        params
     }
 }

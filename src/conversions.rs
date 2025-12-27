@@ -1,15 +1,14 @@
 use crate::imdb;
-use crate::sdks::{jellyfin, aio, tmdb};
+use crate::sdks::{aio, jellyfin, tmdb};
 use crate::utils;
+use crate::utils::MediaId;
 use crate::utils::ToRunTimeTicks;
+use anyhow::{Error, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
-use anyhow::{Result, anyhow, Error};
 use isolang::Language;
 use std::collections::HashMap;
-use std::str::FromStr;
-use crate::utils::MediaId;
 use std::convert::{TryFrom, TryInto};
-
+use std::str::FromStr;
 
 impl From<aio::Meta> for jellyfin::BaseItemDto {
     fn from(meta: aio::Meta) -> Self {
@@ -17,7 +16,11 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
         let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
         jellyfin::BaseItemDto {
-            id: MediaId::new( meta.imdb_id.clone().unwrap_or_else(|| meta.clone().id), media_type,None),
+            id: MediaId::new(
+                meta.imdb_id.clone().unwrap_or_else(|| meta.clone().id),
+                media_type,
+                None,
+            ),
             server_id: utils::server_id(),
             name: meta.name.clone(),
             original_title: meta.name.clone(),
@@ -31,10 +34,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
                 backdrop: meta.background.clone(),
                 ..Default::default()
             }),
-            backdrop_image_tags: meta
-                .background
-                .clone()
-                .map(|url| vec![url]),
+            backdrop_image_tags: meta.background.clone().map(|url| vec![url]),
             image_blur_hashes: Some(jellyfin::ImageBlurHashes {
                 backdrop: {
                     if let Some(bg) = meta.background.clone() {
@@ -46,8 +46,8 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
                 ..Default::default()
             }),
             provider_ids: Some(jellyfin::ProviderIds {
-               imdb: meta.imdb_id,
-               ..Default::default()
+                imdb: meta.imdb_id,
+                ..Default::default()
             }),
             genres: meta.genres.clone(),
             run_time_ticks: meta
@@ -141,14 +141,14 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
 impl From<aio::Episode> for jellyfin::BaseItemDto {
     fn from(item: aio::Episode) -> Self {
         jellyfin::BaseItemDto {
-            name: item.name.clone(),  
+            name: item.name.clone(),
             id: MediaId::new(item.id.clone(), jellyfin::MediaType::Episode, None),
             type_: Some(jellyfin::MediaType::Episode),
             index_number: item.episode,
             season_id: Some(MediaId::new(
                 format!("{}:{:?}", item.id, item.season),
                 jellyfin::MediaType::Episode,
-                None
+                None,
             )),
             parent_index_number: item.season,
             season_name: Some(format!("Season {:?}", item.season)),
@@ -161,8 +161,6 @@ impl From<aio::Episode> for jellyfin::BaseItemDto {
         }
     }
 }
-
-
 
 impl From<aio::MediaType> for jellyfin::MediaType {
     fn from(kind: aio::MediaType) -> Self {
@@ -184,10 +182,9 @@ impl From<jellyfin::MediaType> for aio::MediaType {
     }
 }
 
-
 impl From<aio::Stream> for jellyfin::MediaSourceInfo {
     fn from(stream: aio::Stream) -> Self {
-   jellyfin::MediaSourceInfo {
+        jellyfin::MediaSourceInfo {
             // id: Some(self.id()),
             // e_tag: Some(self.id()),
             //path: self.url.clone(),
@@ -198,12 +195,10 @@ impl From<aio::Stream> for jellyfin::MediaSourceInfo {
             supports_direct_play: Some(true),
             //is_remote: Some(true),
             name: stream.name.clone(),
-        
+
             ..Default::default()
         }
-   
     }
-
 }
 
 use ffprobe;
@@ -299,7 +294,6 @@ impl From<ffprobe::FfProbe> for jellyfin::MediaSourceInfo {
         }
     }
 }
-
 
 fn to_option_bool(flag: i64) -> Option<bool> {
     match flag {

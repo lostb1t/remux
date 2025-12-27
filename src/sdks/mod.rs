@@ -1,4 +1,4 @@
-use axum::http::{header, HeaderMap, HeaderValue, Method};
+use axum::http::{HeaderMap, HeaderValue, Method, header};
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use tracing::{info, trace};
@@ -11,14 +11,20 @@ pub mod tmdb;
 //
 
 pub trait Auth: Send + Sync {
-    fn apply(&self, req: reqwest_middleware::RequestBuilder) -> reqwest_middleware::RequestBuilder;
+    fn apply(
+        &self,
+        req: reqwest_middleware::RequestBuilder,
+    ) -> reqwest_middleware::RequestBuilder;
 }
 
 #[derive(Clone, Debug)]
 pub struct NoAuth;
 
 impl Auth for NoAuth {
-    fn apply(&self, req: reqwest_middleware::RequestBuilder) -> reqwest_middleware::RequestBuilder {
+    fn apply(
+        &self,
+        req: reqwest_middleware::RequestBuilder,
+    ) -> reqwest_middleware::RequestBuilder {
         req
     }
 }
@@ -30,7 +36,10 @@ pub struct BasicAuth {
 }
 
 impl Auth for BasicAuth {
-    fn apply(&self, req: reqwest_middleware::RequestBuilder) -> reqwest_middleware::RequestBuilder {
+    fn apply(
+        &self,
+        req: reqwest_middleware::RequestBuilder,
+    ) -> reqwest_middleware::RequestBuilder {
         req.basic_auth(self.username.clone(), Some(self.password.clone()))
     }
 }
@@ -41,7 +50,10 @@ pub struct BearerAuth {
 }
 
 impl Auth for BearerAuth {
-    fn apply(&self, req: reqwest_middleware::RequestBuilder) -> reqwest_middleware::RequestBuilder {
+    fn apply(
+        &self,
+        req: reqwest_middleware::RequestBuilder,
+    ) -> reqwest_middleware::RequestBuilder {
         req.bearer_auth(&self.token)
     }
 }
@@ -83,9 +95,7 @@ pub enum ClientError {
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
-  }
-
-
+}
 
 fn default_error_mapper(status: u16, endpoint: &str, body: &str) -> ClientError {
     if status == 401 {
@@ -147,8 +157,6 @@ pub trait Endpoint {
     fn cache_mode(&self) -> Option<http_cache_reqwest::CacheMode> {
         None
     }
-    
-    
 }
 
 //
@@ -171,7 +179,6 @@ impl RestClient<NoAuth> {
         let inner = reqwest::Client::new();
         let manager = MokaManager::default();
 
-        
         let http = ClientBuilder::new(inner)
             .with(Cache(HttpCache {
                 mode: CacheMode::Default,
@@ -182,7 +189,9 @@ impl RestClient<NoAuth> {
 
         Ok(Self {
             http,
-            base: url::Url::parse(format!("{}/", base.trim_start_matches('/')).as_str())?,
+            base: url::Url::parse(
+                format!("{}/", base.trim_start_matches('/')).as_str(),
+            )?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
         })
@@ -204,11 +213,17 @@ impl<A: Auth> RestClient<A> {
         self
     }
 
-    pub async fn execute<EP: Endpoint>(&self, ep: &EP) -> Result<EP::Output, ClientError> {
+    pub async fn execute<EP: Endpoint>(
+        &self,
+        ep: &EP,
+    ) -> Result<EP::Output, ClientError> {
         self.execute_inner(ep, None).await
     }
 
-    pub async fn execute_no_cache<EP: Endpoint>(&self, ep: &EP) -> Result<EP::Output, ClientError> {
+    pub async fn execute_no_cache<EP: Endpoint>(
+        &self,
+        ep: &EP,
+    ) -> Result<EP::Output, ClientError> {
         self.execute_inner(ep, Some(CacheMode::NoStore)).await
     }
 
@@ -226,7 +241,10 @@ impl<A: Auth> RestClient<A> {
                 .extend_pairs(query.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         }
 
-        let mut req = self.http.request(ep.method(), url.clone()).headers(ep.headers());
+        let mut req = self
+            .http
+            .request(ep.method(), url.clone())
+            .headers(ep.headers());
         req = self.auth.apply(req);
 
         let mode = cache_override.or_else(|| ep.cache_mode());
@@ -245,8 +263,11 @@ impl<A: Auth> RestClient<A> {
                     body: Some(v.to_string()),
                 })?;
 
-                req.header(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))
-                    .body(bytes)
+                req.header(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                )
+                .body(bytes)
             }
 
             Body::Form(v) => {
@@ -271,14 +292,13 @@ impl<A: Auth> RestClient<A> {
         match status {
             401 => Err(ClientError::Unauthorized),
 
-            s if (200..300).contains(&s) => {
-                serde_json::from_str::<EP::Output>(&text).map_err(|e| ClientError::Json {
+            s if (200..300).contains(&s) => serde_json::from_str::<EP::Output>(&text)
+                .map_err(|e| ClientError::Json {
                     status: s,
                     source: e,
                     endpoint: Some(url.clone().to_string()),
                     body: Some(text),
-                })
-            }
+                }),
 
             s => Err((self.map_error)(s, &url.clone().to_string(), &text)),
         }
@@ -346,5 +366,3 @@ where
         write!(f, "{}", self.data.iter().format(","))
     }
 }
-
-

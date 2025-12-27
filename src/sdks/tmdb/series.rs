@@ -74,8 +74,6 @@ impl Endpoint for SeriesEndpoint {
     fn path(&self) -> String {
         format!("tv/{}", self.id)
     }
-
-    
 }
 
 #[serde_as]
@@ -113,8 +111,6 @@ impl Endpoint for SeasonEndpoint {
     fn path(&self) -> String {
         format!("tv/{}/season/{}", self.series_id, self.season_number)
     }
-
-    
 }
 
 #[serde_as]

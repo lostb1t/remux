@@ -1,3 +1,4 @@
+use anyhow::{Result, anyhow};
 use axum;
 use axum::{
     extract::FromRequest,
@@ -10,9 +11,8 @@ use core::fmt::Debug;
 use serde::Serialize;
 use serde_json::json;
 use serde_with::skip_serializing_none;
-use tracing::error;
 use std::{error::Error as StdError, fmt};
-use anyhow::{anyhow, Result};
+use tracing::error;
 
 pub trait LogErr<T, E> {
     fn log_err(self, msg: &str) -> Self;

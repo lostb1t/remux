@@ -1,15 +1,16 @@
+use super::{BasicAuth, ClientError, Endpoint, RestClient};
 use axum::http::Method;
-use super::{Endpoint, ClientError,BasicAuth, RestClient };
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use serde_with::skip_serializing_none;
-use std::time::Duration;
-use chrono::{DateTime, Utc};
-use bon::Builder;
-use std::str::FromStr;
-use http_cache_reqwest::{CacheMode};
 use anyhow::Result;
+use bon::Builder;
+use chrono::{DateTime, Utc};
+use http_cache_reqwest::CacheMode;
+use serde::{Deserialize, Serialize};
+use serde_aux::prelude::*;
+use serde_with::skip_serializing_none;
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(
     Default,
@@ -67,7 +68,7 @@ impl Endpoint for ManifestEndpoint {
     fn path(&self) -> String {
         "/manifest.json".into()
     }
-    
+
     fn cache_mode(&self) -> Option<CacheMode> {
         Some(CacheMode::ForceCache)
     }
@@ -88,9 +89,9 @@ pub struct Manifest {
 }
 
 impl Manifest {
-  pub fn get_catalog_by_id(&self, id: &str) -> Option<Catalog> {
+    pub fn get_catalog_by_id(&self, id: &str) -> Option<Catalog> {
         self.catalogs.iter().find(|c| c.id == id).cloned()
-  }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,16 +129,16 @@ pub struct ResourceRef {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Catalog {
     pub id: String,
     #[serde(rename = "type")]
-    pub kind: MediaType,
+    pub kind: String,
     pub name: String,
     #[serde(default)]
     pub extra: Vec<ExtraProp>,
 }
-
 
 impl Catalog {
     fn has_search(&self) -> bool {
@@ -148,16 +149,15 @@ impl Catalog {
         }
         false
     }
-
-    
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExtraProp {
     pub name: String,
-    // #[serde(rename = "isRequired")]
-    //  pub is_required: bool,
+    #[serde(default)]
+    pub is_required: bool,
     pub options: Option<Vec<String>>,
 }
 
@@ -165,7 +165,7 @@ pub struct ExtraProp {
 #[derive(Debug, Clone, Serialize)]
 pub struct CatalogEndpoint {
     #[serde(skip)]
-    pub kind: MediaType,
+    pub kind: String,
     #[serde(skip)]
     pub id: String,
 
@@ -260,9 +260,8 @@ impl Endpoint for SubtitlesEndpoint {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 pub struct SubtitlesResponse {
-   pub subtitles: Vec<Subtitle>,
+    pub subtitles: Vec<Subtitle>,
 }
-
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -290,7 +289,8 @@ pub struct Meta {
     #[serde(rename = "type")]
     pub media_type: MediaType,
     //pub writer: Option<Vec<String>>,
-    pub year: Option<String>,
+    #[serde(deserialize_with = "deserialize_string_from_number")]
+    pub year: String,
     pub moviedb_id: Option<u64>,
 
     // pub popularities: Option<Popularities>,
@@ -304,8 +304,10 @@ pub struct Meta {
     pub poster: Option<String>,
     pub id: String,
     pub genres: Option<Vec<String>>,
-    pub release_info: Option<String>,
 
+    // this can be a range 2012-2015
+    // #[serde(deserialize_with = "deserialize_string_from_number")]
+    //pub release_info: String,
     #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
     pub runtime: Option<Duration>,
 
@@ -314,8 +316,7 @@ pub struct Meta {
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
-  
-  }
+}
 
 use serde::Deserializer;
 use serde::de::Error as _;
@@ -378,10 +379,8 @@ pub struct Episode {
     pub number: Option<i32>,
     pub description: Option<String>,
     pub rating: Option<String>,
-    pub first_aired: Option<String>,
+    //  pub first_aired: Option<String>,
 }
-
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {
@@ -429,7 +428,7 @@ pub struct Stream {
     pub proxied: bool,
     pub filename: String,
     pub folder_name: Option<String>,
-   // pub size: i64,
+    // pub size: i64,
     //pub folder_size: Option<i64>,
     pub message: Option<String>,
     pub library: bool,
@@ -449,10 +448,10 @@ pub struct Stream {
 }
 
 impl Stream {
-   pub fn id(&self) -> String {
-     self.info_hash.clone()
+    pub fn id(&self) -> String {
+        self.info_hash.clone()
     }
-    
+
     pub fn probe(&self) -> Result<super::jellyfin::MediaSourceInfo> {
         let id = self.id();
 
@@ -470,7 +469,7 @@ impl Stream {
 
         Ok(source)
     }
-  }
+}
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -527,12 +526,19 @@ impl Endpoint for Search {
         let mut q = Vec::with_capacity(3);
         q.push(("type".to_string(), self.kind.clone().to_string()));
         q.push(("id".to_string(), self.id.clone()));
-        q.push(("format".to_string(), if self.format { "true" } else { "false" }.to_string()));
+        q.push((
+            "format".to_string(),
+            if self.format { "true" } else { "false" }.to_string(),
+        ));
         q
     }
 }
 
-pub fn search_client(base: &str, username: String, password: String) -> Result<RestClient<BasicAuth>, url::ParseError> {
+pub fn search_client(
+    base: &str,
+    username: String,
+    password: String,
+) -> Result<RestClient<BasicAuth>, url::ParseError> {
     Ok(RestClient::new(base)?.with_auth(BasicAuth { username, password }))
 }
 
