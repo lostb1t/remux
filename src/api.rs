@@ -1,4 +1,3 @@
-use crate::AuthState;
 use crate::errors::LogErr;
 use crate::sdks::jellyfin::MediaSourceInfo;
 use crate::sdks::jellyfin::MediaStream;
@@ -47,6 +46,9 @@ use crate::sdks::{aio, jellyfin, tmdb};
 use crate::utils;
 use crate::utils::MediaId;
 use crate::utils::server_id;
+use crate::auth;
+use crate::auth::Device;
+use crate::user::User;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 use chrono::Datelike;
 use tower::util::MapRequestLayer;
@@ -89,7 +91,6 @@ pub fn routes() -> Router<AppState> {
         .route("/playback/bitratetest", get(playback_bitratetest))
         .route("/displaypreferences/usersettings", get(user_settings))
         .route("/system/info", get(system_info))
-        
         .route("/videos/master.m3u8", get(master_hls))
         // stubs. to implement
         .route("/shows/nextup", get(mock_items))
@@ -198,24 +199,19 @@ pub async fn user_settings(State(state): State<AppState>) -> Result<impl IntoRes
     }))
 }
 
-use axum_login::AuthSession;
-
 pub async fn users_authenticatebyname(
     State(state): State<AppState>,
-  //  mut auth: AuthSession<Backend>,
+    auth_header: auth::JellyfinAuthHeader,
     Json(data): Json<jellyfin::AuthenticateUserByName>,
 ) -> Result<impl IntoResponse> {
-  
-  
+    let user = User::authenticate(&state.db, &data.username, &data.pw).await?.context_bad_request("not found", "not foubd")?;
+    let device = Device::new_from_header(auth_header, &user)?;
+    device.save(&state.db).await?;
+
     Ok(Json(jellyfin::AuthenticationResult {
-        access_token: Some("sometoken".to_string()),
+        access_token: Some(device.access_token),
         server_id: Some(server_id()),
-        user: Some(jellyfin::UserDto {
-            server_id: Some(server_id()),
-            name: Some("test".to_string()),
-            id: Some(1.to_string()),
-            ..Default::default()
-        }),
+        user: Some(user.into()),
         ..Default::default()
     }))
 }
@@ -223,9 +219,13 @@ pub async fn users_authenticatebyname(
 /// This sbould hold dynamic collections
 pub async fn userviews(
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = auth.user.get_aio()?.execute(&aio::ManifestEndpoint).await?;
+    let manifest = session
+        .user
+        .get_aio()?
+        .execute(&aio::ManifestEndpoint)
+        .await?;
     let items = crate::virtual_folders(&manifest);
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items,
@@ -241,9 +241,9 @@ pub async fn userviews_groupingoptions(
 
 pub async fn library_virtualfolders(
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = auth.user.get_aio()?.execute(&aio::ManifestEndpoint).await?;
+    let manifest = session.user.get_aio()?.execute(&aio::ManifestEndpoint).await?;
 
     Ok(Json(json!(crate::virtual_folders(&manifest))))
 }
@@ -282,12 +282,12 @@ pub struct ItemsQueryResult {
 
 pub async fn get_items(
     state: AppState,
-    auth: AuthState,
+    session: auth::AuthSession,
     mut q: jellyfin::GetItemsQuery,
     _count: bool,
 ) -> Result<ItemsQueryResult> {
-    let aio = auth.user.get_aio()?;
-    let aio_search = auth.user.get_aio_search()?;
+    let aio = session.user.get_aio()?;
+    let aio_search = session.user.get_aio_search()?;
     let search = q.search_term.clone().or(q.name_starts_with.clone());
     let skip = q.start_index.unwrap_or(0) as u32;
 
@@ -599,19 +599,19 @@ pub async fn get_items(
 
 pub async fn items_flat(
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let items = get_items(state, auth, q, false).await?;
+    let items = get_items(state, session, q, false).await?;
     Ok(Json::<Vec<jellyfin::BaseItemDto>>(items.items))
 }
 
 pub async fn items(
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let items = get_items(state, auth, q.clone(), true).await?;
+    let items = get_items(state, session, q.clone(), true).await?;
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
@@ -623,7 +623,7 @@ pub async fn items(
 
 pub async fn item(
     state: AppState,
-    auth: AuthState,
+    session: auth::AuthSession,
     media_id: MediaId,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
     if let Some(library) = utils::libraries()
@@ -637,7 +637,7 @@ pub async fn item(
         ids: vec![media_id].into(),
         ..Default::default()
     };
-    return Ok(get_items(state, auth, q, false)
+    return Ok(get_items(state, session, q, false)
         .await?
         .items
         .first()
@@ -646,29 +646,29 @@ pub async fn item(
 
 pub async fn items_get(
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession,
     Path(media_id): Path<MediaId>,
 ) -> Result<impl IntoResponse> {
-    return Ok(Json(item(state, auth, media_id).await?).into_response());
+    return Ok(Json(item(state, session, media_id).await?).into_response());
 }
 
 pub async fn users_items_get(
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession,
     Path((user_id, media_id)): Path<(String, MediaId)>,
 ) -> Result<impl IntoResponse> {
-    return Ok(Json(item(state, auth, media_id).await?).into_response());
+    return Ok(Json(item(state, session, media_id).await?).into_response());
 }
 
 pub async fn shows_seasons(
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession,
     Path(media_id): Path<MediaId>,
     Query(mut q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     q.parent_id = Some(media_id);
     q.include_item_types = Some(vec![jellyfin::MediaType::Season]);
-    let items = get_items(state, auth, q.clone(), true).await?;
+    let items = get_items(state, session, q.clone(), true).await?;
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
@@ -678,14 +678,14 @@ pub async fn shows_seasons(
 
 pub async fn shows_episodes(
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession,
     Path(media_id): Path<MediaId>,
     Query(mut q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     // q.season_id = Some(id);
     q.parent_id = Some(media_id);
     q.include_item_types = Some(vec![jellyfin::MediaType::Episode]);
-    let items = get_items(state, auth, q.clone(), true).await?;
+    let items = get_items(state, session, q.clone(), true).await?;
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
@@ -718,7 +718,7 @@ struct ImagePath {
 
 pub async fn items_images(
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession,
     Path(ImagePath {
         media_id,
         image_type,
@@ -743,7 +743,7 @@ pub async fn items_images(
 
         // get details
 
-        let meta = auth
+        let meta = session
             .user
             .get_aio()?
             .execute(&aio::MetaEndpoint {
@@ -779,7 +779,7 @@ pub async fn items_images(
 
 pub async fn items_playbackinfo(
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession  ,
     Path(media_id): Path<MediaId>,
     Query(q): Query<jellyfin::PlaybackInfoQuery>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
@@ -793,7 +793,7 @@ pub async fn items_playbackinfo(
         .or_else(|| q.media_source_id.as_ref().and_then(|m| m.stream_id.clone()));
     // dbg!(&filter_by_id, "filter_by_id");
     // let remux = Remux::from_user(&auth.user);
-    let mut streams: Vec<sdks::aio::Stream> = auth
+    let mut streams: Vec<sdks::aio::Stream> = session
         .user
         .get_aio_search()?
         .execute(&aio::Search {
@@ -937,11 +937,11 @@ pub async fn items_filters(State(state): State<AppState>) -> Result<impl IntoRes
 ///
 /// If the `static_` query parameter is set to `true`, the response will be a static
 /// video stream. Otherwise, a `jellyfin::PlaybackInfoResponse` is returned.
-pub async fn videos_stream(
+pub async fn    videos_stream(
     // range: Option<axum_extra::TypedHeader<headers::Range>>,
     headers: headers::HeaderMap,
     State(state): State<AppState>,
-    auth: AuthState,
+    session: auth::AuthSession,
     Path(media_id): Path<MediaId>,
     Query(q): Query<jellyfin::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
@@ -950,7 +950,7 @@ pub async fn videos_stream(
 
     trace!(?media_id.id, ?q, ?headers, ?media_id.stream_id, "videos_stream");
 
-    let streams = auth
+    let streams = session
         .user
         .get_aio_search()?
         .execute(&aio::Search {
@@ -1037,13 +1037,12 @@ pub async fn videos_stream(
 }
 
 pub async fn master_hls(
-State(state): State<AppState>,
-    auth: AuthState
-   // media_id: MediaId,
+    State(state): State<AppState>,
+    session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-use ez_ffmpeg::{FfmpegContext, Output};
+    use ez_ffmpeg::{FfmpegContext, Output};
 
-   // let stream = auth.user.get_stream().await?;
+    // let stream = auth.user.get_stream().await?;
 
     // Create directory for output files if it doesn't exist
     let output_dir = "hls_output";
@@ -1070,21 +1069,24 @@ use ez_ffmpeg::{FfmpegContext, Output};
         .start()?
         .wait()?;
 
-    println!("Conversion complete. HLS files are in the '{}' directory", output_dir);
-    println!("You can play the HLS stream using a compatible player with: {}", output_path.display());
+    println!(
+        "Conversion complete. HLS files are in the '{}' directory",
+        output_dir
+    );
+    println!(
+        "You can play the HLS stream using a compatible player with: {}",
+        output_path.display()
+    );
 
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-pub async fn users_me(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn users_me(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
     //let user: UserDtoDummy = Faker.fake();
-    Ok(Json(jellyfin::UserDto {
-        id: Some("test".to_string()),
-        name: Some("test".to_string()),
-        has_password: Some(true),
-        server_id: Some(server_id()),
-        ..Default::default()
-    })
+    Ok(Json(jellyfin::UserDto::from(session.user))
     .into_response())
     //Ok(StatusCode::NOT_FOUND.into_response())
     // match media::Entity::find_by_id(id).one(&state.conn).await? {

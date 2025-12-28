@@ -397,3 +397,7 @@ impl ToRunTimeTicks for &str {
         self.parse::<f64>().ok().and_then(|v| v.to_ticks(unit))
     }
 }
+
+pub fn get_uuid() -> String {
+    uuid::Uuid::new_v4().to_string()
+}

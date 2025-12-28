@@ -5,7 +5,11 @@ CONFIG= "./config.toml"
 AXUM_ANYHOW_EXPOSE_ERRORS=1
 # HTTP_PROXY="http://10.0.10.11:9090"
 # HTTPS_PROXY="http://10.0.10.11:9090"
-#DATABASE_URL = "sqlite://target/db.sqlite"
+DATABASE_URL = "sqlite://db.sqlite"
+
+[tasks.sqlx-create]
+command = "cargo"
+args = ["sqlx", "database", "create"]
 
 [tasks.sqlx-prepare]
 command = "cargo"
@@ -13,12 +17,17 @@ args = ["sqlx", "prepare"]
 
 [tasks.sqlx-migrate]
 command = "cargo"
-args = ["sqlx", "migrate", "run", "--source", "./src/db/migrations"]
+args = ["sqlx", "migrate", "run", "--source", "./migrations"]
+
+[tasks.db]
+command = "cargo"
+args = ["run"]
+dependencies = ["sqlx-create", "sqlx-migrate", "sqlx-prepare"]
 
 [tasks.dev]
 command = "cargo"
 args = ["run"]
-#dependencies = ["sqlx-migrate", "sqlx-prepare"]
+#dependencies = ["sqlx-create", "sqlx-migrate", "sqlx-prepare"]
 watch = true
 
 [tasks.build]

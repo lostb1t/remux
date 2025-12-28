@@ -9,6 +9,7 @@ use isolang::Language;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::str::FromStr;
+use crate::utils::server_id;
 
 impl From<aio::Meta> for jellyfin::BaseItemDto {
     fn from(meta: aio::Meta) -> Self {
@@ -124,6 +125,17 @@ impl From<aio::Subtitle> for jellyfin::MediaStream {
         //     media_streams: Some(vec![stream]),
         //     ..Default::default()
         // }
+    }
+}
+
+impl From<crate::user::User> for jellyfin::UserDto {
+    fn from(user: crate::user::User) -> Self {
+        jellyfin::UserDto {
+            server_id: Some(server_id()),
+            name: user.username,
+            id: user.id,
+            ..Default::default()
+        }
     }
 }
 

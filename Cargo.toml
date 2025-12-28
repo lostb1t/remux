@@ -94,8 +94,9 @@ serde_urlencoded = "0.7.1"
 config = "0.15.19"
 ez-ffmpeg = { version = "0.6.0" }
 serde-aux = "4.7.0"
-axum-login = "0.18.0"
-toasty = { git = "https://github.com/tokio-rs/toasty.git", branch = "main", features = ["sqlite"] }
+sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "uuid" ] }
+argon2 = "0.5.3"
+#toasty = { git = "https://github.com/tokio-rs/toasty.git", branch = "main", features = ["sqlite"] }
 #ffmpeg-sys-next = { version = "=7.1.3", features = ["build"] }
 #ez-ffmpeg = { version = "0.6.0", features = ["static"] }
 #ffmpeg-sys-next = "=7.1.3"

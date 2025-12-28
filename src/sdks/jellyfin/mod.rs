@@ -20,8 +20,8 @@ use uuid::Uuid;
 #[serde(rename_all = "PascalCase")]
 pub struct AuthenticateUserByName {
     //#[serde(alias = "Password")]
-    pub pw: Option<String>,
-    pub username: Option<String>,
+    pub pw: String,
+    pub username: String,
 }
 
 #[skip_serializing_none]
@@ -396,10 +396,10 @@ pub struct UserDto {
     pub has_configured_easy_password: Option<bool>,
     pub has_configured_password: Option<bool>,
     pub has_password: Option<bool>,
-    pub id: Option<String>,
+    pub id: String,
     pub last_activity_date: Option<DateTime<Utc>>,
     pub last_login_date: Option<DateTime<Utc>>,
-    pub name: Option<String>,
+    pub name: String,
     pub policy: UserPolicy,
     pub primary_image_aspect_ratio: Option<f64>,
     pub primary_image_tag: Option<String>,
@@ -415,10 +415,10 @@ impl Default for UserDto {
             has_configured_easy_password: Some(false),
             has_configured_password: Some(true),
             has_password: Some(true),
-            id: None,
+            id: "1".to_string(),
             last_activity_date: None,
             last_login_date: None,
-            name: None,
+            name: "default".to_string(),
             policy: UserPolicy::default(),
             primary_image_aspect_ratio: None,
             primary_image_tag: None,
