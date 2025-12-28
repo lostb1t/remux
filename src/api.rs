@@ -204,7 +204,7 @@ pub async fn users_authenticatebyname(
     auth_header: auth::JellyfinAuthHeader,
     Json(data): Json<jellyfin::AuthenticateUserByName>,
 ) -> Result<impl IntoResponse> {
-    let user = User::authenticate(&state.db, &data.username, &data.pw).await?.context_bad_request("not found", "not foubd")?;
+    let user = User::authenticate(&state.db, &data.username, &data.pw).await?.context_unauthorized("not found", "not foubd")?;
     let device = Device::new_from_header(auth_header, &user)?;
     device.save(&state.db).await?;
 
@@ -718,6 +718,30 @@ struct ImagePath {
 
 pub async fn items_images(
     State(state): State<AppState>,
+   // session: auth::AuthSession,
+    Path(ImagePath {
+        media_id,
+        image_type,
+        index,
+    }): Path<ImagePath>,
+    Query(q): Query<jellyfin::ImageQuery>,
+) -> Result<impl IntoResponse> {
+    trace!(%media_id.id, %image_type, ?index, ?q, "items_images");
+    
+    // we replace tags with urls so use that first.
+    let mut url = q.tag;
+    
+
+    if url.is_none() {
+        url = Some("https://placehold.co/600x400".to_string());
+    }
+
+    Ok(Redirect::temporary(url.unwrap().as_str()))
+}
+
+
+pub async fn items_images_back(
+    State(state): State<AppState>,
     session: auth::AuthSession,
     Path(ImagePath {
         media_id,
@@ -727,9 +751,9 @@ pub async fn items_images(
     Query(q): Query<jellyfin::ImageQuery>,
 ) -> Result<impl IntoResponse> {
     trace!(%media_id.id, %image_type, ?index, ?q, "items_images");
+    
     // we replace tags with urls so use that first.
     let mut url = q.tag;
-    // dbg!(&url, "items_images");
     if url.is_none() {
         //let ids: Vec<String> = id.split(':').map(|s| s.to_string()).collect();
 
@@ -739,10 +763,8 @@ pub async fn items_images(
         {
             base_media_type = jellyfin::MediaType::Series;
         }
-        // dbg!(&ids, media_type, "items_images");
-
-        // get details
-
+        
+        //let user = User::
         let meta = session
             .user
             .get_aio()?
@@ -754,8 +776,6 @@ pub async fn items_images(
             .await
             .map(|r| r.meta)?;
 
-        // dbg!(&meta);
-        // return images.
         if media_id.media_type == jellyfin::MediaType::Episode {
             dbg!(meta.get_episode_by_id(media_id.id.clone()));
             url = meta

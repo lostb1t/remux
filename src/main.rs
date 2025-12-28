@@ -96,6 +96,17 @@ async fn main() -> Result<()> {
     .await?;
   
     database::migrate(&db).await?;
+    
+    for u in settings.users.clone() {
+      let mut user = user::User {
+        id: u.stable_id_from_key(),
+        username: u.username,
+        aio_url: u.aio_url,
+        password_hash: user::User::hash_password(&u.password)?
+      };
+
+      user.save(&db).await?;
+    }
 
     let state = AppState {
         config: settings.clone(),
@@ -184,7 +195,14 @@ pub fn virtual_folders(
 pub struct UserConfig {
     pub key: String,
     pub username: String,
+    pub password: String,
     pub aio_url: String,
+}
+
+impl UserConfig {
+    fn stable_id_from_key(&self) -> String {
+        Uuid::new_v5(&Uuid::nil(), &self.key.clone().as_bytes()).to_string()
+    } 
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

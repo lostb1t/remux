@@ -116,7 +116,6 @@ impl User {
 
         Ok(row)
     }
-   
      
   pub async fn get_by_username(
         db: &SqlitePool,
@@ -136,8 +135,7 @@ impl User {
         .await?;
 
         Ok(row)
-    }
-   
+    }   
     
     pub fn new_with_password(key: String, username: String, password: &str, aio_url: String) -> Result<Self> {
         let password_hash = Self::hash_password(password)?;
@@ -163,7 +161,7 @@ impl User {
             .is_ok())
     }
 
-    fn hash_password(password: &str) -> Result<String> {
+    pub fn hash_password(password: &str) -> Result<String> {
         let salt = SaltString::generate(&mut OsRng);
         let hash = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
@@ -184,11 +182,7 @@ impl User {
         }
     }
 
-    fn stable_id_from_key(key: &str) -> Uuid {
-        Uuid::new_v5(&Uuid::nil(), key.as_bytes())
-    }
-
-    
+ 
 
     pub fn get_aio(&self) -> Result<sdks::RestClient> {
         let url = self
