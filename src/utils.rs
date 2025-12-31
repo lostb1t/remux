@@ -58,45 +58,48 @@ fn media_lookup() -> &'static Cache<Uuid, MediaId> {
     })
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct MediaId {
     pub id: String,
     pub jellyfin_media_type: jellyfin::MediaType,
     pub uuid: Uuid,
-    pub stream_id: Option<String>,
+    pub stream: Option<sdks::aio::Stream>,
 }
 
 impl MediaId {
     pub fn new(
         id: String,
         jellyfin_media_type: jellyfin::MediaType,
-        stream_id: Option<String>,
+        stream: Option<sdks::aio::Stream>,
     ) -> Self {
-        let uuid = Self::stable_uuid_for(&id, &jellyfin_media_type, stream_id.as_deref());
+        let uuid = Self::stable_uuid_for(&id, &jellyfin_media_type, stream.clone());
 
         let media = Self {
             id,
             jellyfin_media_type,
             uuid,
-            stream_id,
+            stream,
         };
 
         media_lookup().insert(uuid, media.clone());
         media
     }
     
+    pub fn save(&self) {
+       media_lookup().insert(self.uuid, self.clone());
+    }
+    
     pub fn from_aio_meta(
         meta: sdks::aio::Meta,
     ) -> Self {
         let jellyfin_media_type: jellyfin::MediaType = meta.media_type.into();
-        
         let uuid = Self::stable_uuid_for(&meta.id, &jellyfin_media_type, None);
 
         let media = Self {
             id: meta.id,
             jellyfin_media_type,
             uuid,
-            stream_id: None,
+            stream: None,
         };
 
         media_lookup().insert(uuid, media.clone());
@@ -110,13 +113,14 @@ impl MediaId {
     }
 
     pub fn stable_uuid_for(
-        id: &str,
-        media_type: &jellyfin::MediaType,
-        stream_id: Option<&str>,
-    ) -> Uuid {
-        let name = format!("{}|{}|{}", id, media_type, stream_id.unwrap_or(""));
-        Uuid::new_v5(&NS_MEDIA, name.as_bytes()).simple().into()
-    }
+    id: &str,
+    media_type: &jellyfin::MediaType,
+    stream: Option<sdks::aio::Stream>,
+) -> Uuid {
+    let stream_id = stream.map(|s| s.id()).unwrap_or_else(|| "None".to_string());
+    let name = format!("{}|{}|{}", id, media_type, stream_id);
+    Uuid::new_v5(&NS_MEDIA, name.as_bytes()).simple().into()
+}
 }
 
 impl Serialize for MediaId {

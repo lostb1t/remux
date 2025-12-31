@@ -223,11 +223,12 @@ pub fn stream_into_media_source_info(
     let id = MediaId::new(
                 id,
                 jellyfin_media_type,
-                Some(stream.id()),
+                Some(stream.clone()),
             );
     jellyfin::MediaSourceInfo {
         id: id.clone(),
         e_tag: Some(id.clone()),
+        path: stream.url,
         protocol: Some("File".to_string()),
         supports_transcoding: Some(false),
         supports_direct_stream: Some(true),

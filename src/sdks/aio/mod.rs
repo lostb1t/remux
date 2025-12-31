@@ -412,7 +412,7 @@ pub struct SearchData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Stream {
-    pub info_hash: String,
+    pub info_hash: Option<String>,
     pub url: Option<String>,
     pub nzb_url: Option<String>,
     pub rar_urls: Option<Vec<String>>,
@@ -426,13 +426,13 @@ pub struct Stream {
     pub external_url: Option<String>,
     pub file_idx: Option<i64>,
     pub proxied: bool,
-    pub filename: String,
+    pub filename: Option<String>,
     pub folder_name: Option<String>,
     // pub size: i64,
     //pub folder_size: Option<i64>,
     pub message: Option<String>,
     pub library: bool,
-    pub addon: String,
+    pub addon: Option<String>,
     #[serde(rename = "type")]
     pub kind: String,
     pub indexer: Option<String>,
@@ -448,8 +448,12 @@ pub struct Stream {
 }
 
 impl Stream {
+ 
+    pub fn is_valid(&self) -> bool {
+        self.info_hash.is_some()
+    }
     pub fn id(&self) -> String {
-        self.info_hash.clone()
+        self.info_hash.clone().unwrap()
     }
 
 }

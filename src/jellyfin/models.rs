@@ -216,7 +216,7 @@ pub struct BaseItemDtoQueryResult {
 }
 
 #[skip_serializing_none]
-#[derive(default2::Default, Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(default2::Default, Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct MediaSourceInfo {
     pub analyze_duration_ms: Option<i32>,
@@ -653,7 +653,7 @@ pub struct ProviderIds {
 }
 
 #[skip_serializing_none]
-#[derive(default2::Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
     //pub id: String,

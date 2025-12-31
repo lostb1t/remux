@@ -164,7 +164,7 @@ pub fn virtual_folders(
             None,
         ),
         //parent_id: Some("test".to_string()),
-        type_: Some(jellyfin::MediaType::CollectionFolder),
+        //type_: Some(jellyfin::MediaType::CollectionFolder),
         collection_type: Some(jellyfin::CollectionType::Boxsets),
         is_folder: Some(true),
         ..Default::default()
@@ -182,7 +182,10 @@ pub fn virtual_folders(
                     jellyfin::MediaType::CollectionFolder,
                     None,
                 ),
-                type_: Some(jellyfin::MediaType::CollectionFolder),
+                // none means mixed
+                collection_type: None,
+                //type_: Some(jellyfin::MediaType::CollectionFolder),
+                //collection_type: Some(jellyfin::CollectionType::Mixed),
                 is_folder: Some(true),
                 //collection_type:
                 ..Default::default()

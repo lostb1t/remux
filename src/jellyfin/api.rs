@@ -466,7 +466,7 @@ pub async fn get_items(
     // Single item (ids=...)
     // ------------------------------------------------------------
     if let Some(ids) = &q.ids {
-        let media_id = &ids[0];
+        let mut media_id = ids[0].clone();
 
         if ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series]
             .contains(&media_id.jellyfin_media_type)
@@ -488,20 +488,24 @@ pub async fn get_items(
 
         item.media_sources = Some(
             streams
+                .clone()
                 .into_iter()
                 .filter(|x| {
-                    media_id.stream_id.clone().map_or(true, |sid| x.id() == sid)
+                    x.is_valid() && media_id.stream.clone().map_or(true, |s| x.id() == s.id())
                 })
                 .map(|stream| {
                     let mut source: jellyfin::MediaSourceInfo = conversions::stream_into_media_source_info(media_id.id.clone(), media_id.jellyfin_media_type.clone(), stream.clone());
-                    //  let enc =
-                    //   utils::encode_media_token(&media.id, media.media_type, Some(stream.id()));
-                    // source.id = Some(enc.clone());
-                    //source.e_tag = Some(enc);
                     source
                 })
                 .collect::<Vec<jellyfin::MediaSourceInfo>>(),
         );
+        
+        
+        
+if let Some(stream) = streams.first() {
+    media_id.stream = Some(stream.clone());
+    media_id.save();
+}
 
         return Ok(ItemsQueryResult {
             items: vec![item],
@@ -598,7 +602,7 @@ pub async fn item(
 
 if let Some(library) = libraries
     .into_iter()
-    .find(|x| x.id == id)
+    .find(|x| x.id.id == id.id)
 {
     return Ok(Some(library));
 }
@@ -715,11 +719,11 @@ pub async fn items_playbackinfo(
     State(state): State<AppState>,
     session: auth::AuthSession  ,
     Path(id): Path<MediaId>,
-    Query(q): Query<jellyfin::PlaybackInfoQuery>,
+   // Query(q): Query<jellyfin::PlaybackInfoQuery>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
-) -> Result<impl IntoResponse> {
+) -> Result<impl IntoResponse> { 
+    trace!(?id, ?payload, "items_playbackinfo");
     
-    //trace!(?item.id, ?media_id.media_type, ?media_id.stream_id, ?payload, ?q, "items_playbackinfo");
     //let mut item = session.item_store.get(&id);
     //let source = item.media_sources_mut(&session.aio)
     //        .await?
@@ -729,19 +733,19 @@ pub async fn items_playbackinfo(
     //        .probe_in_place();
 
     //item.save(&session.item_store);
-    let stream_id = id
-        .stream_id
+    let stream = id
+        .stream
         .clone()
-        .or_else(|| q.media_source_id.as_ref().and_then(|m| m.stream_id.clone()))
+        .or_else(|| payload.media_source_id.as_ref().and_then(|m| m.stream.clone()))
         .context_not_found("not", "not")?;
 
-    let stream = session.aio.get_stream(
-        id.jellyfin_media_type.into(),
-        id.id.clone(),
-        stream_id
-    ).await?;
+   // let stream = session.aio.get_stream(
+   //     id.jellyfin_media_type.into(),
+   //     id.id.clone(),
+   //     stream_id
+   // ).await?;
 
-    let mut source: jellyfin::MediaSourceInfo = stream_into_media_source_info(id.id,id.jellyfin_media_type, stream);
+    let mut source: jellyfin::MediaSourceInfo = stream_into_media_source_info(id.id, id.jellyfin_media_type, stream);
     source.probe_in_place()?;
     let subtitles: Vec<sdks::aio::Subtitle> = vec![];
 
@@ -819,28 +823,28 @@ pub async fn videos_stream(
     // range: Option<axum_extra::TypedHeader<headers::Range>>,
     headers: headers::HeaderMap,
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    //session: auth::AuthSession,
     Path(id): Path<MediaId>,
     Query(q): Query<jellyfin::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
     //let (id, media_type, stream_id) = utils::decode_media_token(&uuid)?;
     //  .log_err("Failed to decode media UUID")
 
-   // trace!(?media_id.id, ?q, ?headers, ?media_id.stream_id, "videos_stream");
+    trace!(?id, ?q, "videos_stream");
    
 
     // filter by id
-    let stream_id = id
-        .stream_id
+    let stream = id
+        .stream
         .clone()
-        .or_else(|| q.media_source_id.as_ref().and_then(|m| m.stream_id.clone()))
+        .or_else(|| q.media_source_id.as_ref().and_then(|m| m.stream.clone()))
         .context_not_found("not", "not")?;
 
-    let stream = session.aio.get_stream(
-        id.jellyfin_media_type.into(),
-        id.id,
-        stream_id
-    ).await?;
+    //let stream = session.aio.get_stream(
+    //    id.jellyfin_media_type.into(),
+    //    id.id,
+    //    stream_id
+    //).await?;
 
     if q.static_.unwrap_or(false) {
         info!("starting direct playback for: {:?}", &stream.name);
