@@ -189,9 +189,14 @@ pub fn virtual_folders(
                     None,
                 ),
                 // none means mixed
-                collection_type: None,
+                //collection_type: None,
                 //type_: Some(jellyfin::MediaType::CollectionFolder),
-                //collection_type: Some(jellyfin::CollectionType::Mixed),
+                collection_type: {
+                  match x.kind.as_str() {
+                  "series" => Some(jellyfin::CollectionType::Tvshows),
+                  _ => Some(jellyfin::CollectionType::Movies),
+                }
+                },
                 is_folder: Some(true),
                 //collection_type:
                 ..Default::default()

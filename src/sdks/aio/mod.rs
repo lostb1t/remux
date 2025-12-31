@@ -133,6 +133,7 @@ pub struct ResourceRef {
 #[serde(rename_all = "camelCase")]
 pub struct Catalog {
     pub id: String,
+    // this is a string because there isnt a fixed definition. Could be anythinf
     #[serde(rename = "type")]
     pub kind: String,
     pub name: String,
