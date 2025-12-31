@@ -3,7 +3,6 @@ use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use tracing::{info, trace};
 pub mod aio;
-pub mod jellyfin;
 pub mod tmdb;
 
 //

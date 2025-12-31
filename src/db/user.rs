@@ -182,65 +182,13 @@ impl User {
         }
     }
 
- 
+}
 
-    pub fn get_aio(&self) -> Result<sdks::RestClient> {
-        let url = self
-            .aio_url
-            .strip_suffix("manifest.json")
-            .unwrap_or(self.aio_url.as_str());
-
-        Ok(sdks::aio::client(url)?)
-    }
-
-    pub fn get_aio_search(&self) -> Result<sdks::RestClient<sdks::BasicAuth>> {
-        let mut url = Url::parse(&self.aio_url)?;
-
-        let segments: Vec<&str> = url
-            .path_segments()
-            .ok_or_else(|| anyhow!("url has no path segments"))?
-            .collect();
-
-        if segments.len() < 3 {
-            return Err(anyhow!(
-                "invalid aio_url format: expected /stremio/<username>/<password>/..."
-            ));
-        }
-
-        let username = segments[1].to_string();
-        let password = segments[2].to_string();
-
-        url.set_path("/api/v1");
-        url.set_query(None);
-        url.set_fragment(None);
-
-        let search_url = url.as_str().to_string();
-
-        Ok(sdks::aio::search_client(&search_url, username, password)?)
-    }
-
-    pub async fn get_stream(
-        &self,
-        media_type: sdks::aio::MediaType,
-        id: String,
-        stream_id: String,
-    ) -> Result<sdks::aio::Stream> {
-        let streams = self
-            .get_aio_search()?
-            .execute(&sdks::aio::Search {
-                kind: media_type.into(),
-                id,
-                ..Default::default()
-            })
-            .await?;
-
-        let stream = streams
-            .data
-            .results
-            .into_iter()
-            .find(|x| x.id() == stream_id)
-            .context("no stream")?;
-
-        Ok(stream)
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct UserMediaInfo {
+    //pub id: String,
+    pub user_id: String,
+    pub media_id: String,
+    pub is_fav: bool,
+    pub playback_position: i64,
 }

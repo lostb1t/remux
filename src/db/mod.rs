@@ -3,6 +3,11 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 
+pub mod auth;
+pub mod user;
+
+pub use user::*;
+
 pub async fn connect(url: &str) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(url)?;
     Ok(SqlitePoolOptions::new()

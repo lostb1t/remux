@@ -56,7 +56,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::user::User;
+use crate::db;
 use crate::utils::get_uuid;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -97,7 +97,7 @@ impl Device {
         Ok(())
     }
 
-pub fn new_from_header(header: JellyfinAuthHeader, user: &User) -> Result<Self> {
+pub fn new_from_header(header: JellyfinAuthHeader, user: &db::User) -> Result<Self> {
     Ok(Self {
         id: header
             .device_id
@@ -138,11 +138,11 @@ pub fn new_from_header(header: JellyfinAuthHeader, user: &User) -> Result<Self> 
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-#[serde(rename_all = "PascalCase")]
+#[derive(Clone)]
 pub struct AuthSession {
     pub device: Device,
-    pub user: User,
+    pub user: db::User,
+    pub aio: crate::aio::AioService
 }
 
 //#[async_trait]
@@ -165,12 +165,14 @@ impl FromRequestParts<AppState> for AuthSession {
         let device = Device::get_by_access_token(&state.db, token)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
-        let user = User::get_by_id(&state.db, &device.user_id)
+        let user = db::User::get_by_id(&state.db, &device.user_id)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
+        let aio = crate::aio::AioService::from_user(&user)?;
         Ok(AuthSession{
           device,
-          user
+          user,
+          aio
         })
     }
 }

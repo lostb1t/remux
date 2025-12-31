@@ -1,10 +1,13 @@
 use merge::Merge;
 use std::str::FromStr;
+use std::{sync::Arc, time::Duration};
 //use progenitor::generate_api;
-use crate::utils::MediaId;
 use chrono::{DateTime, Utc};
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
+//use super::BaseItemStore;
+use crate::aio::AioService;
+use anyhow::anyhow;
 //generate_api!(
 //    spec = "src/sdks/jellyfin/openapi.json", // The OpenAPI document
 //    interface = Builder
@@ -14,7 +17,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_alias::serde_alias;
 use serde_with::{DisplayFromStr, serde_as};
-use uuid::Uuid;
+use crate::sdks::aio;
+use crate::utils::MediaId;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -221,14 +225,14 @@ pub struct MediaSourceInfo {
     pub container: Option<String>,
     pub default_audio_stream_index: Option<i32>,
     pub default_subtitle_stream_index: Option<i32>,
-    pub e_tag: Option<String>,
+    pub e_tag: Option<MediaId>,
     pub encoder_path: Option<String>,
     //  pub encoder_protocol: Option<MediaProtocol>,
     pub fallback_max_streaming_bitrate: Option<i32>,
     pub formats: Option<Vec<String>>,
     pub gen_pts_input: Option<bool>,
     pub has_segments: Option<bool>,
-    pub id: Option<String>,
+    pub id: MediaId,
     pub ignore_dts: Option<bool>,
     pub ignore_index: Option<bool>,
     pub is_infinite_stream: Option<bool>,
@@ -241,7 +245,7 @@ pub struct MediaSourceInfo {
     pub name: Option<String>,
     pub open_token: Option<String>,
     pub path: Option<String>,
-    //pub protocol: Option<MediaProtocol>,
+    pub protocol: Option<String>,
     pub read_at_native_framerate: Option<bool>,
     //pub required_http_headers: Option<HashMap<String, Option<String>>>,
     pub requires_closing: Option<bool>,
@@ -271,6 +275,27 @@ pub struct MediaSourceInfo {
     //  pub video3_d_format: Option<Video3DFormat>,
     #[default("VideoFile".to_string())]
     pub video_type: String,
+}
+
+impl MediaSourceInfo {
+    pub fn probe_in_place(&mut self) -> anyhow::Result<()> {
+        let path = self.path.clone().ok_or_else(|| anyhow!("missing url"))?;
+        let info = ffprobe::ffprobe(path)?;
+
+        let probed: MediaSourceInfo = info.into();
+
+        let id = self.id.clone();
+        let name = self.name.clone();
+        let path = self.path.clone();
+
+        *self = probed;
+
+        self.id = id;
+        self.name = name;
+        self.path = path;
+
+        Ok(())
+    }
 }
 
 #[skip_serializing_none]
@@ -687,7 +712,7 @@ pub struct BaseItemDto {
     pub critic_rating_summary: Option<String>,
     pub is_hd: Option<bool>,
     pub is_folder: Option<bool>,
-    pub parent_id: Option<MediaId>,
+    pub parent_id: Option<String>,
     pub type_: Option<MediaType>,
     // pub people: Option<Vec<BaseItemPerson>>,
     // pub studios: Option<Vec<NameLongIdPair>>,
@@ -700,7 +725,7 @@ pub struct BaseItemDto {
     pub recursive_item_count: Option<i32>,
     pub child_count: Option<i32>,
     pub series_name: Option<String>,
-    pub series_id: Option<MediaId>,
+    pub series_id: Option<String>,
     pub season_id: Option<MediaId>,
     pub special_feature_count: Option<i32>,
     pub display_preferences_id: Option<String>,
@@ -785,7 +810,19 @@ pub struct BaseItemDto {
     pub has_series_timer: Option<bool>,
     pub has_timer: Option<bool>,
     pub provider_ids: Option<ProviderIds>,
+    
+    // internal remux stuff
+    #[serde(skip)]
+    pub aio_id: Option<String>,
+    #[serde(skip)]
+    pub aio_stream_id: Option<String>,
+    #[serde(skip)]
+    pub aio_resource_type: Option<aio::ResourceType>,
+    #[serde(skip)]
+    pub aio_media_type: Option<aio::MediaType>,
 }
+
+
 
 #[derive(
     Copy,

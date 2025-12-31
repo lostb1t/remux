@@ -289,8 +289,8 @@ pub struct Meta {
     #[serde(rename = "type")]
     pub media_type: MediaType,
     //pub writer: Option<Vec<String>>,
-    #[serde(deserialize_with = "deserialize_string_from_number")]
-    pub year: String,
+    //#[serde(deserialize_with = "deserialize_string_from_number")]
+    //pub year: String,
     pub moviedb_id: Option<u64>,
 
     // pub popularities: Option<Popularities>,
@@ -452,23 +452,6 @@ impl Stream {
         self.info_hash.clone()
     }
 
-    pub fn probe(&self) -> Result<super::jellyfin::MediaSourceInfo> {
-        let id = self.id();
-
-        // debug!("Probing: {}", self.url.clone().unwrap());
-        let info = ffprobe::ffprobe(self.url.clone().unwrap())?;
-
-        //dbg!(&info);
-        let mut source: super::jellyfin::MediaSourceInfo = info.into();
-        // source.id = Some(id.clone());
-        // source.e_tag = Some(id.clone());
-
-        // if include_external.as_ref().unwrap_or(&false) {
-
-        // }
-
-        Ok(source)
-    }
 }
 
 #[skip_serializing_none]

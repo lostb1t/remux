@@ -1,7 +1,9 @@
-use crate::imdb;
-use crate::sdks::{aio, jellyfin, tmdb};
+
+use crate::sdks::{aio, tmdb};
+use crate::jellyfin;
 use crate::utils;
-use crate::utils::MediaId;
+use crate::db;
+//use crate::utils::MediaId;
 use crate::utils::ToRunTimeTicks;
 use anyhow::{Error, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
@@ -10,36 +12,49 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::str::FromStr;
 use crate::utils::server_id;
+use crate::utils::get_uuid;
+use crate::utils::MediaId;
 
 impl From<aio::Meta> for jellyfin::BaseItemDto {
     fn from(meta: aio::Meta) -> Self {
         // dbg!(&meta);
-        let media_type: jellyfin::MediaType = meta.media_type.clone().into();
+       // let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
         jellyfin::BaseItemDto {
-            id: MediaId::new(
-                meta.imdb_id.clone().unwrap_or_else(|| meta.clone().id),
-                media_type,
-                None,
-            ),
+            id: MediaId::from_aio_meta(meta.clone()),
+            //id: String,
             server_id: utils::server_id(),
             name: meta.name.clone(),
             original_title: meta.name.clone(),
             overview: meta.description.clone(),
-            type_: Some(media_type),
+            type_: Some(meta.media_type.into()),
             premiere_date: meta.released.clone(),
             community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
-                primary: meta.poster,
-                logo: meta.logo,
+                primary: meta.poster.clone(),
+                logo: meta.logo.clone(),
                 backdrop: meta.background.clone(),
                 ..Default::default()
             }),
             backdrop_image_tags: meta.background.clone().map(|url| vec![url]),
             image_blur_hashes: Some(jellyfin::ImageBlurHashes {
                 backdrop: {
-                    if let Some(bg) = meta.background.clone() {
-                        Some(HashMap::from([(bg.clone(), bg)]))
+                    if let Some(img) = meta.background.clone() {
+                        Some(HashMap::from([(img.clone(), img)]))
+                    } else {
+                        None
+                    }
+                },
+                primary: {
+                    if let Some(img) = meta.poster.clone() {
+                        Some(HashMap::from([(img.clone(), img)]))
+                    } else {
+                        None
+                    }
+                },
+                logo: {
+                    if let Some(img) = meta.logo.clone() {
+                        Some(HashMap::from([(img.clone(), img)]))
                     } else {
                         None
                     }
@@ -128,8 +143,8 @@ impl From<aio::Subtitle> for jellyfin::MediaStream {
     }
 }
 
-impl From<crate::user::User> for jellyfin::UserDto {
-    fn from(user: crate::user::User) -> Self {
+impl From<db::User> for jellyfin::UserDto {
+    fn from(user: db::User) -> Self {
         jellyfin::UserDto {
             server_id: Some(server_id()),
             name: user.username,
@@ -143,7 +158,7 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
     fn from(item: aio::Catalog) -> Self {
         jellyfin::BaseItemDto {
             name: Some(item.name.clone()),
-            id: MediaId::new(item.id, jellyfin::MediaType::BoxSet, None),
+id: MediaId::new(item.id, jellyfin::MediaType::BoxSet, None),
             type_: Some(jellyfin::MediaType::BoxSet),
             ..Default::default()
         }
@@ -154,12 +169,17 @@ impl From<aio::Episode> for jellyfin::BaseItemDto {
     fn from(item: aio::Episode) -> Self {
         jellyfin::BaseItemDto {
             name: item.name.clone(),
-            id: MediaId::new(item.id.clone(), jellyfin::MediaType::Episode, None),
+            //id: get_uuid(),
+            id: MediaId::new(
+                item.id.clone(),
+                jellyfin::MediaType::Episode,
+                None,
+            ),
             type_: Some(jellyfin::MediaType::Episode),
             index_number: item.episode,
             season_id: Some(MediaId::new(
                 format!("{}:{:?}", item.id, item.season),
-                jellyfin::MediaType::Episode,
+                jellyfin::MediaType::Season,
                 None,
             )),
             parent_index_number: item.season,
@@ -194,22 +214,27 @@ impl From<jellyfin::MediaType> for aio::MediaType {
     }
 }
 
-impl From<aio::Stream> for jellyfin::MediaSourceInfo {
-    fn from(stream: aio::Stream) -> Self {
-        jellyfin::MediaSourceInfo {
-            // id: Some(self.id()),
-            // e_tag: Some(self.id()),
-            //path: self.url.clone(),
-            //container,
-            // protocol: Some("http".to_string()),
-            supports_transcoding: Some(false),
-            supports_direct_stream: Some(true),
-            supports_direct_play: Some(true),
-            //is_remote: Some(true),
-            name: stream.name.clone(),
-
-            ..Default::default()
-        }
+pub fn stream_into_media_source_info(
+    id: String,
+    jellyfin_media_type: jellyfin::MediaType,
+    stream: aio::Stream,
+) -> jellyfin::MediaSourceInfo {
+    //let id = get_uuid();
+    let id = MediaId::new(
+                id,
+                jellyfin_media_type,
+                Some(stream.id()),
+            );
+    jellyfin::MediaSourceInfo {
+        id: id.clone(),
+        e_tag: Some(id.clone()),
+        protocol: Some("File".to_string()),
+        supports_transcoding: Some(false),
+        supports_direct_stream: Some(true),
+        supports_direct_play: Some(true),
+        is_remote: Some(false),
+        name: stream.name.clone(),
+        ..Default::default()
     }
 }
 

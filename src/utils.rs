@@ -1,4 +1,4 @@
-use crate::sdks::jellyfin;
+
 use anyhow::{Context, Result, anyhow};
 use async_compression::tokio::bufread::GzipDecoder;
 
@@ -38,6 +38,9 @@ use std::{
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use uuid::Uuid;
+use crate::sdks;
+use crate::jellyfin;
+
 
 pub fn server_id() -> String {
     "remux".to_string()
@@ -58,7 +61,7 @@ fn media_lookup() -> &'static Cache<Uuid, MediaId> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MediaId {
     pub id: String,
-    pub media_type: jellyfin::MediaType,
+    pub jellyfin_media_type: jellyfin::MediaType,
     pub uuid: Uuid,
     pub stream_id: Option<String>,
 }
@@ -66,14 +69,14 @@ pub struct MediaId {
 impl MediaId {
     pub fn new(
         id: String,
-        media_type: jellyfin::MediaType,
+        jellyfin_media_type: jellyfin::MediaType,
         stream_id: Option<String>,
     ) -> Self {
-        let uuid = Self::stable_uuid_for(&id, media_type, stream_id.as_deref());
+        let uuid = Self::stable_uuid_for(&id, &jellyfin_media_type, stream_id.as_deref());
 
         let media = Self {
             id,
-            media_type,
+            jellyfin_media_type,
             uuid,
             stream_id,
         };
@@ -81,20 +84,38 @@ impl MediaId {
         media_lookup().insert(uuid, media.clone());
         media
     }
+    
+    pub fn from_aio_meta(
+        meta: sdks::aio::Meta,
+    ) -> Self {
+        let jellyfin_media_type: jellyfin::MediaType = meta.media_type.into();
+        
+        let uuid = Self::stable_uuid_for(&meta.id, &jellyfin_media_type, None);
 
-    pub fn from_uuid(uuid: &Uuid) -> Result<Self> {
-        media_lookup().get(uuid).map(|v| v.clone()).ok_or_else(|| {
-            anyhow!("unknown jellyfin id: {uuid} (not warmed or evicted)")
+        let media = Self {
+            id: meta.id,
+            jellyfin_media_type,
+            uuid,
+            stream_id: None,
+        };
+
+        media_lookup().insert(uuid, media.clone());
+        media
+    
+    }
+    pub fn get(key: &Uuid) -> Result<Self> {
+        media_lookup().get(key).map(|v| v.clone()).ok_or_else(|| {
+            anyhow!("unknown jellyfin id: {key} (not warmed or evicted)")
         })
     }
 
     pub fn stable_uuid_for(
         id: &str,
-        media_type: jellyfin::MediaType,
+        media_type: &jellyfin::MediaType,
         stream_id: Option<&str>,
     ) -> Uuid {
         let name = format!("{}|{}|{}", id, media_type, stream_id.unwrap_or(""));
-        Uuid::new_v5(&NS_MEDIA, name.as_bytes())
+        Uuid::new_v5(&NS_MEDIA, name.as_bytes()).simple().into()
     }
 }
 
@@ -113,7 +134,7 @@ impl<'de> Deserialize<'de> for MediaId {
         D: Deserializer<'de>,
     {
         let uuid = Uuid::deserialize(deserializer)?;
-        MediaId::from_uuid(&uuid).map_err(de::Error::custom)
+        MediaId::get(&uuid).map_err(de::Error::custom)
     }
 }
 
@@ -121,7 +142,7 @@ impl TryFrom<Uuid> for MediaId {
     type Error = anyhow::Error;
 
     fn try_from(uuid: Uuid) -> Result<Self, Self::Error> {
-        MediaId::from_uuid(&uuid)
+        MediaId::get(&uuid)
     }
 }
 
@@ -152,56 +173,7 @@ pub fn native_to_utc(opt_date: Option<NaiveDate>) -> Option<DateTime<Utc>> {
         .and_then(|d| d.and_hms_opt(0, 0, 0)) // Add time
         .map(|ndt| DateTime::<Utc>::from_utc(ndt, Utc)) // Make it UTC
 }
-//pub static LIBRARIES: &[&str] = &["movies", "shows"];
 
-pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
-    vec![
-        jellyfin::BaseItemDto {
-            name: Some("Movies".to_string()),
-            id: MediaId::new(
-                "movies".into(),
-                jellyfin::MediaType::CollectionFolder,
-                None,
-            ),
-            type_: Some(jellyfin::MediaType::CollectionFolder),
-            collection_type: Some(jellyfin::CollectionType::Movies),
-            is_folder: Some(true),
-            //image_tags: Some(jellyfin::ImageTags {
-            //    primary: Some("jsjsj".to_string()),
-            //    ..Default::default()
-            //}),
-            ..Default::default()
-        },
-        jellyfin::BaseItemDto {
-            name: Some("Series".to_string()),
-            //id: "series".to_string(),
-            id: MediaId::new(
-                "series".into(),
-                jellyfin::MediaType::CollectionFolder,
-                None,
-            ),
-            //parent_id: Some("test".to_string()),
-            type_: Some(jellyfin::MediaType::CollectionFolder),
-            collection_type: Some(jellyfin::CollectionType::Tvshows),
-            is_folder: Some(true),
-            ..Default::default()
-        },
-        jellyfin::BaseItemDto {
-            name: Some("Collections".to_string()),
-            //id: "collections".to_string(),
-            id: MediaId::new(
-                "collections".into(),
-                jellyfin::MediaType::CollectionFolder,
-                None,
-            ),
-            //parent_id: Some("test".to_string()),
-            type_: Some(jellyfin::MediaType::CollectionFolder),
-            collection_type: Some(jellyfin::CollectionType::Boxsets),
-            is_folder: Some(true),
-            ..Default::default()
-        },
-    ]
-}
 
 pub async fn download_to_file(url: &str) -> Result<TokioFile> {
     let resp = reqwest::get(url).await?.error_for_status()?;
@@ -399,5 +371,5 @@ impl ToRunTimeTicks for &str {
 }
 
 pub fn get_uuid() -> String {
-    uuid::Uuid::new_v4().to_string()
+    uuid::Uuid::new_v4().simple().to_string()
 }

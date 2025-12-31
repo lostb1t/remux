@@ -61,16 +61,14 @@ use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
 use uuid::Uuid;
 
-
-mod api;
-mod auth;
+//mod auth;
 mod conversions;
 mod errors;
-mod imdb;
-mod remux;
 mod sdks;
 mod utils;
-mod user;
+//mod user;
+mod jellyfin;
+mod aio;
 mod db;
 use crate::db as database;
 
@@ -98,19 +96,20 @@ async fn main() -> Result<()> {
     database::migrate(&db).await?;
     
     for u in settings.users.clone() {
-      let mut user = user::User {
+      let mut user = db::User {
         id: u.stable_id_from_key(),
         username: u.username,
         aio_url: u.aio_url,
-        password_hash: user::User::hash_password(&u.password)?
+        password_hash: db::User::hash_password(&u.password)?
       };
 
       user.save(&db).await?;
     }
-
+    
     let state = AppState {
         config: settings.clone(),
         db: db,
+       // item_store: jellyfin::BaseItemStore::new(25000)
     };
 
     // spawn_background_tasks(state.clone()).await?;
@@ -123,7 +122,7 @@ async fn main() -> Result<()> {
     let app = tower::util::MapRequestLayer::new(rewrite_request_uri)
         .layer(
             Router::new()
-                .merge(api::routes())
+                .merge(jellyfin::api::routes())
                 .with_state(state)
                 .layer(on_error(|err| {
                     tracing::error!(
@@ -150,22 +149,23 @@ async fn main() -> Result<()> {
 pub struct AppState {
     pub config: Settings,
     pub db: SqlitePool,
+   // pub item_store: jellyfin::BaseItemStore
 }
 
 pub fn virtual_folders(
     manifest: &sdks::aio::Manifest,
-) -> Vec<sdks::jellyfin::BaseItemDto> {
-    let mut vf = vec![sdks::jellyfin::BaseItemDto {
+) -> Vec<jellyfin::BaseItemDto> {
+    let mut vf = vec![jellyfin::BaseItemDto {
         name: Some("Collections".to_string()),
         //id: "collections".to_string(),
         id: utils::MediaId::new(
             "collections".into(),
-            sdks::jellyfin::MediaType::CollectionFolder,
+            jellyfin::MediaType::CollectionFolder,
             None,
         ),
         //parent_id: Some("test".to_string()),
-        type_: Some(sdks::jellyfin::MediaType::CollectionFolder),
-        collection_type: Some(sdks::jellyfin::CollectionType::Boxsets),
+        type_: Some(jellyfin::MediaType::CollectionFolder),
+        collection_type: Some(jellyfin::CollectionType::Boxsets),
         is_folder: Some(true),
         ..Default::default()
     }];
@@ -175,15 +175,16 @@ pub fn virtual_folders(
             .iter()
             // basicly, use catalogs that have show on home enabled
             .filter(|x| x.extra.iter().any(|e| e.name == "genre" && !e.is_required))
-            .map(|x| sdks::jellyfin::BaseItemDto {
+            .map(|x| jellyfin::BaseItemDto {
                 name: Some(x.name.clone()),
                 id: utils::MediaId::new(
                     x.id.clone(),
-                    sdks::jellyfin::MediaType::CollectionFolder,
+                    jellyfin::MediaType::CollectionFolder,
                     None,
                 ),
-                type_: Some(sdks::jellyfin::MediaType::CollectionFolder),
+                type_: Some(jellyfin::MediaType::CollectionFolder),
                 is_folder: Some(true),
+                //collection_type:
                 ..Default::default()
             })
             .collect::<Vec<_>>(),
