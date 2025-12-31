@@ -1136,6 +1136,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ez-ffmpeg"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92b9c0f3a1253fd7c2c0520efab42f715000c68ba531530e70018dad03e6f307"
+dependencies = [
+ "core-foundation",
+ "crossbeam",
+ "crossbeam-channel",
+ "ffmpeg-next",
+ "ffmpeg-sys-next",
+ "libc",
+ "log",
+ "objc",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "failure"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2932,7 +2949,8 @@ dependencies = [
  "default2",
  "dotenvy",
  "duration-str",
- "ez-ffmpeg",
+ "ez-ffmpeg 0.6.0",
+ "ez-ffmpeg 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "fake",
  "ffprobe",
  "flate2",

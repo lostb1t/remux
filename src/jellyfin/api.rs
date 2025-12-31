@@ -905,7 +905,7 @@ pub async fn master_hls(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    use ez_ffmpeg::{FfmpegContext, Output};
+    use crate::ez_ffmpeg::{FfmpegContext, Output};
 
     // let stream = auth.user.get_stream().await?;
 
