@@ -2,7 +2,6 @@ FROM jellyfin/jellyfin:10.11.5
 
 WORKDIR /app
 
-# Build deps for Rust crates (and your ffmpeg-dev headers if you need them)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl ca-certificates \
