@@ -21,7 +21,6 @@ RUN ffmpeg -version \
     && pkg-config --modversion libavcodec \
     && pkg-config --modversion libavformat
 
-# Set PKG_CONFIG_PATH explicitly
 ENV PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
 
 # Copy vendor, Cargo.toml, and Cargo.lock first for caching
@@ -34,22 +33,18 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs
 # Build dependencies
 RUN cargo build --release
 
-# Copy the rest of the source code
 COPY ./src ./src
 
 # Build the full project
 RUN cargo build --release
 
-# Strip the binary to reduce size
 RUN strip target/release/remux-server
 
-# Stage 3: Final image
 FROM debian:bookworm-slim AS release
 ENV WEB_PATH=/app/jellyfin-web
 
-# Install runtime dependencies
 RUN apt update \
-    && apt install -y ffmpeg \  # Only the runtime is needed
+    && apt install -y ffmpeg \
     && apt clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
