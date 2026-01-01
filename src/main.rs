@@ -61,11 +61,11 @@ use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
 use uuid::Uuid;
 
-#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
-pub use ez_ffmpeg_arm as ez_ffmpeg;
+//#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+//pub use ez_ffmpeg_arm as ez_ffmpeg;
 
-#[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
-pub use ez_ffmpeg_upstream as ez_ffmpeg;
+//#[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
+//pub use ez_ffmpeg_upstream as ez_ffmpeg;
 
 //mod auth;
 mod conversions;
