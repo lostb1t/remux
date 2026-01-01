@@ -32,7 +32,6 @@ watch = true
 
 [tasks.build-docker]
 command = "docker"
-# args = ["buildx", "build", "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:latest", ".", "--push"]
 args = ["buildx", "build", "-f", "docker/Dockerfile.dev",  "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:local", "."]
 
 [tasks.build]

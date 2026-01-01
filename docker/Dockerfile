@@ -14,6 +14,7 @@ RUN apt-get update \
 
 COPY vendor Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN ls -all
 RUN cargo build --release
 
 COPY ./src ./src
