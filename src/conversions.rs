@@ -37,31 +37,31 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
                 ..Default::default()
             }),
             backdrop_image_tags: meta.background.clone().map(|url| vec![url]),
-            image_blur_hashes: Some(jellyfin::ImageBlurHashes {
-                backdrop: {
-                    if let Some(img) = meta.background.clone() {
-                        Some(HashMap::from([(img.clone(), img)]))
-                        // Some(HashMap::from([("3626323".to_string, img)]))
-                    } else {
-                        None
-                    }
-                },
-                primary: {
-                    if let Some(img) = meta.poster.clone() {
-                        Some(HashMap::from([(img.clone(), img)]))
-                    } else {
-                        None
-                    }
-                },
-                logo: {
-                    if let Some(img) = meta.logo.clone() {
-                        Some(HashMap::from([(img.clone(), img)]))
-                    } else {
-                        None
-                    }
-                },
-                ..Default::default()
-            }),
+            // image_blur_hashes: Some(jellyfin::ImageBlurHashes {
+            //     backdrop: {
+            //         if let Some(img) = meta.background.clone() {
+            //             Some(HashMap::from([(img.clone(), img)]))
+            //             // Some(HashMap::from([("3626323".to_string, img)]))
+            //         } else {
+            //             None
+            //         }
+            //     },
+            //     primary: {
+            //         if let Some(img) = meta.poster.clone() {
+            //             Some(HashMap::from([(img.clone(), img)]))
+            //         } else {
+            //             None
+            //         }
+            //     },
+            //     logo: {
+            //         if let Some(img) = meta.logo.clone() {
+            //             Some(HashMap::from([(img.clone(), img)]))
+            //         } else {
+            //             None
+            //         }
+            //     },
+            //     ..Default::default()
+            // }),
             provider_ids: Some(jellyfin::ProviderIds {
                 imdb: meta.imdb_id,
                 ..Default::default()
