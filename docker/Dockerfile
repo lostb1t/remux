@@ -9,7 +9,7 @@ RUN apt-get update \
         clang pkg-config \
         libavutil-dev libavcodec-dev libavformat-dev libavfilter-dev libavdevice-dev libswresample-dev libswscale-dev \
         build-essential \
-        libssl-dev \  # Add libssl-dev for HTTPS support
+        libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY vendor Cargo.toml Cargo.lock ./
@@ -30,10 +30,8 @@ RUN apt update \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 WORKDIR /app
-# Copy the Rust binary from the builder stage
 COPY --from=builder /app/target/release/remux-server .
-# Copy the Jellyfin web client from the web stage
-COPY --from=kf /jellyfin/jellyfin-web ${WEB_PATH}
+COPY --from=jf /jellyfin/jellyfin-web ${WEB_PATH}
 
 EXPOSE 3000
 
