@@ -41,6 +41,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
                 backdrop: {
                     if let Some(img) = meta.background.clone() {
                         Some(HashMap::from([(img.clone(), img)]))
+                        // Some(HashMap::from([("3626323".to_string, img)]))
                     } else {
                         None
                     }
@@ -319,7 +320,7 @@ impl From<ffprobe::FfProbe> for jellyfin::MediaSourceInfo {
             // id: id_encoded.clone(),
             //e_tag: id_encoded,
             name: Some(filename),
-            media_streams: Some(streams),
+            media_streams: streams,
             supports_direct_play: Some(true),
             supports_direct_stream: Some(true),
             size: probe.format.size.and_then(|x| x.parse::<i64>().ok()),

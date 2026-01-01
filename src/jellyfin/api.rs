@@ -113,6 +113,7 @@ pub fn routes() -> Router<AppState> {
         .route("/branding/configuration", post(stub))
         .route("/branding/configuration", get(stub))
         .route("/quickconnect/enabled", get(stub))
+        .route("/syncplay/list", get(mock_items))
 
     //.map_request(rewrite_request_uri)
     //.layer(MapRequestLayer::new(rewrite_request_uri))
@@ -476,7 +477,7 @@ pub async fn get_items(
                 total_count: 0,
             });
         }
-        
+
         // populate media sources
         //item.media_sources(&aio).await?;
         //item.update_meta
@@ -499,9 +500,9 @@ pub async fn get_items(
                 })
                 .collect::<Vec<jellyfin::MediaSourceInfo>>(),
         );
-        
-        
-        
+
+
+
 if let Some(stream) = streams.first() {
     media_id.stream = Some(stream.clone());
     media_id.save();
@@ -516,8 +517,8 @@ if let Some(stream) = streams.first() {
     // ------------------------------------------------------------
     // Default listing (no ids): pick catalog, then list items
     // ------------------------------------------------------------
-    
-    
+
+
     let desired_kind: Option<aio::MediaType> = q
         .parent_id
         .as_ref()
@@ -529,7 +530,7 @@ if let Some(stream) = streams.first() {
                 .cloned()
                 .map(Into::into)
         });
-      
+
 
     let catalog = if let Some(kind) = desired_kind {
         manifest
@@ -610,7 +611,7 @@ if let Some(library) = libraries
     let q = jellyfin::GetItemsQuery {
         ids: vec![id].into(),
         ..Default::default()
-    }; 
+    };
     return Ok(get_items(state, session, q, false)
         .await?
         .items
@@ -701,7 +702,7 @@ pub async fn items_images(
     Query(q): Query<jellyfin::ImageQuery>,
 ) -> Result<impl IntoResponse> {
    // trace!(%media_id.id, %image_type, ?index, ?q, "items_images");
-    
+
     // we replace tags with urls so use that first.
     let mut url = q.tag;
 
@@ -721,9 +722,9 @@ pub async fn items_playbackinfo(
     Path(id): Path<MediaId>,
    // Query(q): Query<jellyfin::PlaybackInfoQuery>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
-) -> Result<impl IntoResponse> { 
+) -> Result<impl IntoResponse> {
     trace!(?id, ?payload, "items_playbackinfo");
-    
+
     //let mut item = session.item_store.get(&id);
     //let source = item.media_sources_mut(&session.aio)
     //        .await?
@@ -779,7 +780,7 @@ pub async fn items_playbackinfo(
     // SupportsExternalStream: true - External subtitle streams supported
     // Path: "/media/test/Ghosts.2021.S01E05.720p.AMZN.WEBRip.x264-GalaxyTV.srt" - Local file path for subtitle
     // Level: 0 - Subtitle level or priority
-            
+
 
 
     let info = jellyfin::PlaybackInfoResponse {
@@ -831,7 +832,7 @@ pub async fn videos_stream(
     //  .log_err("Failed to decode media UUID")
 
     trace!(?id, ?q, "videos_stream");
-   
+
 
     // filter by id
     let stream = id

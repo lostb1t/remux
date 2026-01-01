@@ -71,6 +71,7 @@ pub use ez_ffmpeg_upstream as ez_ffmpeg;
 mod conversions;
 mod errors;
 mod sdks;
+mod store;
 mod utils;
 //mod user;
 mod jellyfin;
@@ -98,9 +99,9 @@ async fn main() -> Result<()> {
             .unwrap_or("sqlite::memory:?cache=shared"),
     )
     .await?;
-  
+
     database::migrate(&db).await?;
-    
+
     for u in settings.users.clone() {
       let mut user = db::User {
         id: u.stable_id_from_key(),
@@ -111,7 +112,7 @@ async fn main() -> Result<()> {
 
       user.save(&db).await?;
     }
-    
+
     let state = AppState {
         config: settings.clone(),
         db: db,
@@ -217,7 +218,7 @@ pub struct UserConfig {
 impl UserConfig {
     fn stable_id_from_key(&self) -> String {
         Uuid::new_v5(&Uuid::nil(), &self.key.clone().as_bytes()).to_string()
-    } 
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -30,12 +30,12 @@ args = ["run"]
 #dependencies = ["sqlx-create", "sqlx-migrate", "sqlx-prepare"]
 watch = true
 
-[tasks.build]
+[tasks.build-docker]
 command = "docker"
 # args = ["buildx", "build", "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:latest", ".", "--push"]
-args = ["buildx", "build", "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:latest", "."]
+args = ["buildx", "build", "-f", "docker/Dockerfile.dev",  "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:local", "."]
 
-[tasks.build-dev]
+[tasks.build]
 command = "docker"
 args = ["build", "-f", "Dockerfile.dev", "-t", "remux-dev", "."]
 

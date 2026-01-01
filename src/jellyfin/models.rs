@@ -241,7 +241,8 @@ pub struct MediaSourceInfo {
     //pub iso_type: Option<IsoType>,
     pub live_stream_id: Option<String>,
     //pub media_attachments: Option<Vec<MediaAttachment>>,
-    pub media_streams: Option<Vec<MediaStream>>,
+    #[default(vec![])]
+    pub media_streams: Vec<MediaStream>,
     pub name: Option<String>,
     pub open_token: Option<String>,
     pub path: Option<String>,
@@ -810,7 +811,7 @@ pub struct BaseItemDto {
     pub has_series_timer: Option<bool>,
     pub has_timer: Option<bool>,
     pub provider_ids: Option<ProviderIds>,
-    
+
     // internal remux stuff
     #[serde(skip)]
     pub aio_id: Option<String>,
