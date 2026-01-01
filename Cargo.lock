@@ -2952,6 +2952,7 @@ dependencies = [
  "ez-ffmpeg 0.6.0",
  "ez-ffmpeg 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "fake",
+ "ffmpeg-sys-next",
  "ffprobe",
  "flate2",
  "futures",

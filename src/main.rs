@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
     let db = database::connect(
         std::env::var("DATABASE_URL")
             .as_deref()
-            .unwrap_or("sqlite::memory:?cache=shared"),
+            .unwrap_or("sqlite:///data/db.sqlite"),
     )
     .await?;
 

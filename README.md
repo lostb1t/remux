@@ -1,15 +1,15 @@
 ## A Jellyfin server replacement based on stremio addons
-=======
 
-Total replacement for the Jellyfin server.  
-Instead of local files, everything is routed to stremio addons.  
+
+Total replacement for the Jellyfin server.
+Instead of local files, everything is routed to stremio addons.
 Aims to be compatible with all jellyfin clients (eventually)
 
 Status: Very experimental 🔥 it's a proof of concept
 
 Highly recommend using https://github.com/Viren070/AIOStreams to manage your addons.
 
-create a config file:
+create a config.toml in the /data dir
 
 ```toml
 [[users]]
@@ -24,10 +24,12 @@ Run the image as follows
 ```yml
 version: "3"
 services:
-  remux-server:
+  remux:
     image: ghcr.io/lostb1t/remux-server
     ports:
       - "3000:3000"
+    volumes:
+      /remux/data:/data
 ```
 
 ### What works
