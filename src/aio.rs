@@ -19,25 +19,18 @@ impl AioService {
     }
 
     fn get_aio(user: &db::User) -> Result<sdks::RestClient> {
-        // Accept both:
-        // - https://host/.../manifest.json
-        // - https://host/.../ (already base)
         let base = user
             .aio_url
             .strip_suffix("manifest.json")
             .unwrap_or(user.aio_url.as_str())
             .to_string();
 
-        // Optional: normalize so we don't end up with ".../manifest.json" missing a slash edge-case
-        // (You can remove this if your client() already handles it.)
         let base = base.trim_end_matches('/').to_string() + "/";
 
         Ok(sdks::aio::client(&base)?)
     }
 
     fn get_aio_search(user: &db::User) -> Result<sdks::RestClient<sdks::BasicAuth>> {
-        // Expect stremio-style URL shape that encodes username/password in path segments:
-        // .../stremio/<username>/<password>/...
         let mut url = Url::parse(&user.aio_url)?;
 
         let segments: Vec<String> = url
@@ -46,14 +39,12 @@ impl AioService {
             .map(|s| s.to_string())
             .collect();
 
-        // We need at least: ["stremio", "<username>", "<password>", ...]
         if segments.len() < 3 {
             return Err(anyhow!(
                 "invalid aio_url format: expected /stremio/<username>/<password>/..."
             ));
         }
 
-        // If you want to be strict that segments[0] == "stremio", uncomment:
         // if segments[0] != "stremio" {
         //     return Err(anyhow!(
         //         "invalid aio_url format: expected first segment to be 'stremio', got '{}'",

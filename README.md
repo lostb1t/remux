@@ -9,13 +9,23 @@ Status: Very experimental 🔥 it's a proof of concept
 
 Highly recommend using https://github.com/Viren070/AIOStreams to manage your addons.
 
+create a config file:
+
+```toml
+[[users]]
+key = "test_user"
+username = "test"
+password = "test"
+aio_url = "https://myaiostreams"
+```
+
+Run the image as follows
+
 ```yml
 version: "3"
 services:
   remux-server:
-    image: ghcr.io/lostb1t/remux-server:latest
-    environment:
-      ADDONS: '["https://torrentio.strem.fun/manifest.json","https://v3-cinemeta.strem.io/manifest.json"]'
+    image: ghcr.io/lostb1t/remux-server
     ports:
       - "3000:3000"
 ```
