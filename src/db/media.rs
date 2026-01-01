@@ -1,392 +1,214 @@
-use crate::sdks;
-use chrono::NaiveDate;
-use eyre::{Result, eyre};
-use sdks::tmdb;
-use sea_orm::QueryOrder;
-use sea_orm::{
-    ActiveValue::{self, NotSet},
-    IntoActiveModel, Set, TryIntoModel,
-    entity::prelude::*,
+use axum::response::Html;
+use reqwest;
+
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::anyhow;
+use async_trait::async_trait;
+use axum::ServiceExt;
+use axum::body::Body;
+use axum::extract::FromRequestParts;
+use axum::extract::Request;
+use axum::http::request::Parts;
+use axum::middleware;
+use axum::middleware::Next;
+use axum::response::IntoResponse;
+use axum::response::Response;
+use axum::{
+    Json, Router,
+    http::StatusCode,
+    response::Redirect,
+    routing::{get, post},
 };
+use axum_anyhow::ApiError;
+use axum_anyhow::on_error;
+use axum_anyhow::set_expose_errors;
+use axum_anyhow::{ApiResult, OptionExt, ResultExt};
+use chrono::prelude::*;
+use chrono::{Duration, Utc};
+use config;
+use config::Config;
+use futures::future::BoxFuture;
+use futures_util::StreamExt;
+use http::Uri;
+use reqwest::header::LOCATION;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::SqlitePool;
+use std;
 use std::collections::HashMap;
-use std::convert::From;
-use strum_macros;
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+use timed;
+use tower::Layer;
+use tower::util::MapRequestLayer;
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
+use tracing;
+use tracing::debug;
+use tracing::instrument;
+use tracing::warn;
+use tracing_log::LogTracer;
+use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
+use url::Url;
+use uuid::Uuid;
+use argon2::{
+    password_hash::{
+        rand_core::OsRng,
+        PasswordHash, PasswordHasher, PasswordVerifier, SaltString
+    },
+    Argon2
+};
+
+use crate::utils::get_uuid;
+//use chrono::{DateTime, Utc};
 
 #[derive(
-    Copy,
-    Serialize,
+    Default,
+    strum_macros::EnumString,
+    strum_macros::Display,
     Debug,
     Clone,
-    Eq,
     PartialEq,
+    Serialize,
     Deserialize,
-    Hash,
-    EnumIter,
-    DeriveActiveEnum,
-    strum_macros::Display,
-    // strum_macros::EnumString,
-    Default,
 )]
-#[serde(rename_all = "PascalCase")]
-#[sea_orm(
-    rs_type = "String",
-    db_type = "String(StringLen::None)",
-    rename_all = "PascalCase"
-)]
-pub enum MediaType {
-    AggregateFolder,
-    Audio,
-    AudioBook,
-    BasePluginFolder,
-    Book,
-    BoxSet,
-    Channel,
-    ChannelFolderItem,
-    CollectionFolder,
-    Episode,
-    Folder,
-    Genre,
-    ManualPlaylistsFolder,
+#[serde(rename_all = "lowercase")]
+pub enum MediaKind {
+    #[strum(to_string = "movie")]
     Movie,
-    LiveTvChannel,
-    LiveTvProgram,
-    MusicAlbum,
-    MusicArtist,
-    MusicGenre,
-    MusicVideo,
-    Person,
-    Photo,
-    PhotoAlbum,
-    Playlist,
-    PlaylistsFolder,
-    Program,
-    Recording,
-    Season,
+    #[strum(to_string = "series")]
     Series,
-    Studio,
-    Trailer,
-    TvChannel,
-    TvProgram,
-    UserRootFolder,
-    UserView,
-    Video,
-    Year,
+    #[strum(to_string = "season")]
+    Season,
+    #[strum(to_string = "episode")]
+    Episode,
     #[default]
     Unknown,
 }
 
-#[derive(
-    Copy,
-    Serialize,
-    Debug,
-    Clone,
-    Eq,
-    PartialEq,
-    Deserialize,
-    Hash,
-    EnumIter,
-    DeriveActiveEnum,
-    strum_macros::Display,
-    //   strum_macros::EnumString,
-)]
-#[serde(rename_all = "lowercase")]
-#[sea_orm(
-    rs_type = "String",
-    db_type = "String(StringLen::None)",
-    rename_all = "lowercase"
-)]
-pub enum Genre {
-    Action,
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct MediaSource {
+    pub id: String,   
+    pub media_id: String,
+    pub url: Option<String>,
+    pub probe_data: Option<String>,
+   // pub aio_id: String,
+   // pub aio_meta: Option<String>,
+   // pub aio_stream: Option<String>,
+   // pub created_at: DateTime<Utc>,
+    pub external_data: Option<String>,
 }
 
-#[derive(
-    Copy,
-    Serialize,
-    Debug,
-    Clone,
-    Eq,
-    PartialEq,
-    Deserialize,
-    Hash,
-    EnumIter,
-    DeriveActiveEnum,
-    strum_macros::Display,
-    strum_macros::EnumString,
-)]
-#[serde(rename_all = "PascalCase")]
-#[sea_orm(rs_type = "i32", db_type = "Integer")]
-pub enum Status {
-    #[serde(rename = "Rumored")]
-    Rumored = 1,
 
-    #[serde(rename = "Planned")]
-    Planned = 2,
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Media {
+    pub id: String,   
+    pub kind: MediaKind,
+    pub parent_id: Option<String>,
+    //pub url: Option<String>,
+    pub imdb_id: Option<String>,
+    pub aio_id: String,
+    pub season: Option<i64>,
+    pub episode: Option<i64>,
+    pub probe_data: Option<String>,
 
-    #[serde(rename = "In Production")]
-    InProduction = 3,
-
-    #[serde(rename = "Post Production")]
-    PostProduction = 4,
-
-    #[serde(rename = "Released")]
-    Released = 5,
-
-    #[serde(rename = "Canceled")]
-    Canceled = 6,
-
-    #[serde(rename = "Pilot")]
-    Pilot = 7,
-
-    #[serde(rename = "Returning Series")]
-    ReturningSeries = 8,
-
-    #[serde(rename = "Ended")]
-    Ended = 9,
+    //pub aio_stream_id: String,
+    pub aio_meta: Option<String>,
+   // pub aio_stream: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, Default, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "media")]
-//#[schema(as = Media)]
-pub struct Model {
-    #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
-    pub id: String, // imdb id, cause fuckit
-    pub tmdb_id: Option<i64>,
-    // pub imdb_id: Option<String>,
-    pub parent_id: Option<i64>,
-    pub name: String,
-    pub overview: Option<String>,
-    /// in minutes
-    pub runtime: Option<i64>,
-    /// rating provided by any API that is encoded as a signed integer. Usually TMDB rating.
-    pub rating: Option<f64>,
-    pub release_date: Option<NaiveDate>,
-    pub poster_path: Option<String>,
-    pub backdrop_path: Option<String>,
-    pub media_type: MediaType,
-    pub status: Option<Status>,
-    //pub genres: Option<Vec<Genre>>,
-    pub index_number: Option<i64>,
-    pub parent_index_number: Option<i64>,
-    pub community_rating: Option<f64>,
-    pub critic_rating: Option<f64>,
-
-    // normalization
-    // pub series_id: Option<i64>,
-    // pub season_id: Option<i64>,
-    //pub season: Option<i64>,
-    #[sea_orm(ignore)]
-    pub streams: Option<Vec<sdks::stremio::Stream>>,
-    //#[sea_orm(ignore)]
-    // pub resources: Option<sdks::stremio::Resources>,
-    #[sea_orm(ignore)]
-    pub genres: Option<Vec<super::Genre>>,
-}
-
-impl Model {
-    //pub fn get_imdb_id(&self) -> Option<String>
-    //match self.media_type {
-    //MediaType:: Episode => self.get_parent().unwrap()c
-
-    //}
-    //}
-    // pub async fn get_parent(&self, db: &super::Database) -> Result<Option<Self>> {
-    //     Ok(Entity::find_by_id(self.parent_id.clone().unwrap())
-    //         .one(&db.pool)
-    //         .await?)
-    // }
-
-    pub async fn get_latest_by_media_type(
-        db: &super::Database,
-        media_type_value: MediaType,
-    ) -> Option<Self> {
-        Entity::find()
-            .filter(Column::MediaType.eq(media_type_value))
-            .order_by(Column::Id, sea_orm::Order::Desc)
-            .one(&db.pool)
-            .await
-            .ok()?
-    }
-
-    pub async fn get_by_tmdb(
-        db: &super::Database,
-        tmdb_id: u64,
-        media_type_value: MediaType,
-    ) -> Option<Self> {
-        Entity::find()
-            .filter(Column::MediaType.eq(media_type_value))
-            .filter(Column::TmdbId.eq(tmdb_id))
-            //  .order_by(Column::Id, sea_orm::Order::Desc)
-            .one(&db.pool)
-            .await
-            .ok()?
-    }
-
-    pub async fn create(self, db: &DbConn) -> Result<Self> {
-        let mut active_model: ActiveModel = self.try_into()?;
-        active_model.id = NotSet;
-        Ok(active_model.insert(db).await?.try_into()?)
-    }
-
-    pub async fn bulk_upsert(items: Vec<Self>, db: &super::Database) -> Result<()> {
-        let active_models: Vec<ActiveModel> = items
-            .into_iter()
-            .map(|model| {
-                let mut am = ActiveModel::from(model);
-                //  am.id = NotSet;
-                am
-            })
-            .collect();
-
-        Entity::insert_many(active_models)
-            .on_conflict(
-                sea_orm::sea_query::OnConflict::column(Column::Id)
-                    //   .update_column(Column::Name)
-                    // .update_column(Column::MediaType)
-                    .do_nothing()
-                    .to_owned(),
+impl Media {
+    /// Save the media to the database.
+    /// If the media already exists (same ID), update it.
+    pub async fn save(&mut self, db: &SqlitePool) -> Result<()> {
+        sqlx::query!(
+            r#"
+            INSERT INTO media (
+                id, kind, parent_id, url, imdb_id, season, episode,
+                probe_data, aio_id, aio_meta, aio_stream, created_at, updated_at
             )
-            .exec(&db.pool)
-            .await?;
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ON CONFLICT(id) DO UPDATE SET
+                kind = excluded.kind,
+                parent_id = excluded.parent_id,
+                url = excluded.url,
+                imdb_id = excluded.imdb_id,
+                season = excluded.season,
+                episode = excluded.episode,
+                probe_data = excluded.probe_data,
+                aio_id = excluded.aio_id,
+                aio_meta = excluded.aio_meta,
+                aio_stream = excluded.aio_stream,
+                updated_at = excluded.updated_at
+            "#,
+            self.id,
+            self.kind.to_string(),
+            self.parent_id,
+            self.url,
+            self.imdb_id,
+            self.season,
+            self.episode,
+            self.probe_data,
+            self.aio_id,
+            self.aio_meta,
+            self.aio_stream,
+            self.created_at,
+            Utc::now() // Update the `updated_at` timestamp
+        )
+        .execute(db)
+        .await?;
 
         Ok(())
     }
 
-    // pub async fn refresh_children(
-    //     &self,
-    //     db: &super::Database,
-    //     tmdb_client: &tmdb::TmdbClient,
-    //     parent: Option<Model>,
-    // ) -> Result<()> {
-    //     let items: Vec<Model> = match self.media_type {
-    //         MediaType::Series => {
-    //             let endpoint = tmdb::SeriesEndpoint::builder()
-    //                 .id(self.tmdb_id.clone().unwrap())
-    //                 .build();
-    //             //let series = tmdb_client.request(&endpoint).await?;
-    //             let series = endpoint.request(&tmdb_client).await?;
-    //             series
-    //                 .seasons
-    //                 .into_iter()
-    //                 .map(Model::from)
-    //                 .map(|mut item| {
-    //                     item.parent_id = Some(self.id.clone());
-    //                     item.imdb_id = self.imdb_id.clone();
-    //                     item
-    //                 })
-    //                 .collect()
-    //         }
-    //         MediaType::Season => {
-    //             let endpoint = tmdb::SeasonEndpoint::builder()
-    //                 .season_number(self.index_number.unwrap())
-    //                 .series_id(parent.as_ref().unwrap().tmdb_id.clone().unwrap())
-    //                 .build();
-    //             let season = endpoint.request(&tmdb_client).await?;
-    //             season
-    //                 .episodes
-    //                 .unwrap_or_default()
-    //                 .into_iter()
-    //                 .map(Model::from)
-    //                 .map(|mut item| {
-    //                     item.parent_id = Some(self.id.clone());
-    //                     item.imdb_id = self.imdb_id.clone();
-    //                     item
-    //                 })
-    //                 .collect()
-    //         }
-    //         _ => vec![],
-    //     };
+    /// Fetch a media item by its ID.
+    pub async fn get_by_id(db: &SqlitePool, id: &str) -> Result<Option<Self>> {
+        let row = sqlx::query_as!(
+            Media,
+            r#"
+            SELECT
+                id, kind as "kind: MediaKind", parent_id, url, imdb_id,
+                season, episode, probe_data, aio_id, aio_meta, aio_stream,
+                created_at, updated_at
+            FROM media
+            WHERE id = ?1
+            "#,
+            id
+        )
+        .fetch_optional(db)
+        .await?;
 
-    //     if items.is_empty() {
-    //         return Ok(());
-    //     }
+        Ok(row)
+    }
+    
+    pub fn generate_deterministic_id(
+        kind: &MediaKind,
+        imdb_id: &Option<String>,
+        url: &Option<String>,
+        season: &Option<i64>,
+        episode: &Option<i64>,
+    ) -> Uuid {
+        let namespace = uuid!("00000000-0000-0000-0000-000000000000");
 
-    //     // Prepare and insert models
-    //     let active_models: Vec<ActiveModel> = items
-    //         .into_iter()
-    //         .map(|model| {
-    //             let mut am = ActiveModel::from(model);
-    //             am.id = NotSet;
-    //             am
-    //         })
-    //         .collect();
-
-    //     Entity::insert_many(active_models)
-    //         .on_conflict(
-    //             sea_orm::sea_query::OnConflict::columns([Column::TmdbId, Column::MediaType])
-    //                 .update_column(Column::Name)
-    //                 .update_column(Column::MediaType)
-    //                 .to_owned(),
-    //         )
-    //         .exec(&db.pool)
-    //         .await?;
-
-    //     // Recurse into newly inserted items (only for Seasons)
-    //     if self.media_type == MediaType::Series {
-    //         let inserted_media: Vec<Model> = Entity::find()
-    //             .filter(Column::MediaType.eq(MediaType::Season))
-    //             .filter(Column::ParentId.eq(self.id.clone()))
-    //             .all(&db.pool)
-    //             .await?;
-
-    //         for m in inserted_media {
-    //             Box::pin(m.refresh_children(&db, &tmdb_client, Some(self.clone()))).await?;
-    //         }
-    //     }
-
-    //     Ok(())
-    // }
-
-    // pub fn get_ratings(&self) -> {
-
-    // }
-
-    //pub async fn resources(&self, stremio: &sdks::stremio::StremioClient) -> Result<sdks::stremio::Resources> {
-    //                    Ok(stremio
-    //                     .get_resources_flatten(
-    //                        &self.imdb_id,
-    //                         &self.media_type.into(),
-    //                         None,
-    //                        None,
-    //                    )
-    //                    .await?)
-
-    //            }
-}
-
-impl PartialEq for Model {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        let mut input = kind.to_string();
+        if let Some(imdb_id) = imdb_id {
+            input.push_str(&format!(":{}", imdb_id));
+        }
+        if let Some(season) = season {
+            input.push_str(&format!(":{}", season));
+        }
+        if let Some(episode) = episode {
+            input.push_str(&format!(":{}", episode));
+        }
+        if let Some(url) = url {
+            input.push_str(&format!(":{}", url));
+        }
+        // Generate the deterministic UUID
+        Uuid::new_v5(&namespace, input.as_bytes())
     }
 }
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(has_many = "super::media_genre::Entity")]
-    MediaGenre,
-    //  #[sea_orm(has_many = "super::genre::Entity")]
-    //  Genre,
-}
-
-// Assuming you have this relation in db::media
-impl Related<super::media_genre::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::MediaGenre.def()
-    }
-}
-
-//impl Related<super::genre::Entity> for Entity {
-// The final relation is Cake -> CakeFilling -> Filling
-//fn to() -> RelationDef {
-//    super::media_genre::Relation::Genre.def()
-// }
-
-//    fn via() -> Option<RelationDef> {
-// The original relation is CakeFilling -> Cake,
-// after `rev` it becomes Cake -> CakeFilling
-//        Some(super::media_genre::Relation::Media.def().rev())
-//    }
-//}
-
-impl ActiveModelBehavior for ActiveModel {}

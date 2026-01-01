@@ -1,0 +1,23 @@
+FROM jellyfin/jellyfin:10.11.5
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl ca-certificates \
+        clang pkg-config \
+        libavutil-dev libavcodec-dev libavformat-dev libavfilter-dev libavdevice-dev libswresample-dev libswscale-dev \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain (stable) + cargo-make
+ENV CARGO_HOME=/cargo
+ENV RUSTUP_HOME=/rustup
+ENV PATH=/cargo/bin:/rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:/rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin:/rustup/toolchains/stable/bin:$PATH
+
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal \
+    && rustup default stable \
+    && cargo install cargo-make
+
+ENTRYPOINT []
+CMD ["cargo", "make", "dev"]

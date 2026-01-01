@@ -5,14 +5,12 @@
 //    interface = Builder
 //);
 
-use crate::db::media;
-use crate::sdks::core::Endpoint;
-use crate::sdks::core::QueryParams;
+use crate::sdks::Endpoint;
+use anyhow::Result;
 use async_trait;
 use backon::ExponentialBuilder;
 use backon::Retryable;
 use bon::Builder;
-use eyre::Result;
 use futures_util::future::try_join_all;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -41,12 +39,12 @@ pub struct FindByIdEndpoint {
 impl Endpoint for FindByIdEndpoint {
     type Output = FindByIdResponse;
 
-    fn endpoint(&self) -> String {
+    fn path(&self) -> String {
         format!("find/{}", self.external_id)
     }
 
-    fn parameters(&self) -> QueryParams {
-        self.into()
+    fn query(&self) -> Vec<(String, String)> {
+        Vec::new()
     }
 }
 

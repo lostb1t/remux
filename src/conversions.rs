@@ -1,199 +1,60 @@
-// src/conversions.rs
-use crate::db;
-use crate::imdb;
-use crate::sdks::{jellyfin, stremio, tmdb};
+
+use crate::sdks::{aio, tmdb};
+use crate::jellyfin;
 use crate::utils;
+use crate::db;
+//use crate::utils::MediaId;
 use crate::utils::ToRunTimeTicks;
+use anyhow::{Error, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
-use eyre::{Result, eyre};
 use isolang::Language;
 use std::collections::HashMap;
-use std::str::FromStr;
-
 use std::convert::{TryFrom, TryInto};
+use std::str::FromStr;
+use crate::utils::server_id;
+use crate::utils::get_uuid;
+use crate::utils::MediaId;
 
-impl TryFrom<imdb::TitleBasics> for db::media::Model {
-    type Error = &'static str;
-
-    fn try_from(item: imdb::TitleBasics) -> Result<Self, Self::Error> {
-        let media_type = match item.title_type.as_str() {
-            "movie" => db::media::MediaType::Movie,
-            "short" => db::media::MediaType::Movie, // map shorts as movies?
-            "tvSeries" => db::media::MediaType::Series,
-            "tvMiniSeries" => db::media::MediaType::Series,
-            "tvMovie" => db::media::MediaType::Movie,
-            "tvEpisode" => return Err("episode"), // skip episodes
-            "tvSpecial" => db::media::MediaType::Movie,
-            "video" => db::media::MediaType::Movie,
-            "videoGame" => return Err("game"), // or map if you want
-            _ => return Err("unlown"),
-        };
-
-        Ok(Self {
-            id: item.tconst,
-            name: item.primary_title,
-            media_type,
-            ..Default::default()
-        })
-    }
-}
-
-impl From<tmdb::Movie> for jellyfin::BaseItemDto {
-    fn from(item: tmdb::Movie) -> Self {
-        Self {
-            id: item.id.to_string(),
-            name: Some(item.title),
-            type_: Some(jellyfin::MediaType::Movie),
-            ..Default::default()
-        }
-    }
-}
-
-impl From<tmdb::Season> for jellyfin::BaseItemDto {
-    fn from(item: tmdb::Season) -> Self {
-        Self {
-            id: item.id.to_string(),
-            index_number: Some(item.season_number as i32),
-            name: Some(item.name),
-            //parent_id: Some("92053".to_string()),
-            type_: Some(jellyfin::MediaType::Season),
-            ..Default::default()
-        }
-    }
-}
-
-impl From<tmdb::Episode> for jellyfin::BaseItemDto {
-    fn from(item: tmdb::Episode) -> Self {
-        Self {
-            id: item.id.to_string(),
-            name: Some(item.name),
-            type_: Some(jellyfin::MediaType::Episode),
-            ..Default::default()
-        }
-    }
-}
-
-impl From<tmdb::Movie> for db::media::Model {
-    fn from(item: tmdb::Movie) -> Self {
-        Self {
-            tmdb_id: Some(item.id),
-            //  id: item.id,
-            //imdb_id: item.imdb_id,
-            community_rating: item.vote_average,
-            release_date: item.release_date,
-            status: item.status.map(|x| x.into()),
-            // imdb_id: item.external_ids.and_then(|ids| ids.imdb_id),
-            id: item.external_ids.and_then(|ids| ids.imdb_id).unwrap(),
-            name: item.title,
-            overview: item.overview,
-            runtime: item.runtime,
-            poster_path: item.poster_path,
-            backdrop_path: item.backdrop_path,
-            media_type: db::media::MediaType::Movie,
-            ..Default::default()
-        }
-    }
-}
-
-impl From<tmdb::Series> for db::media::Model {
-    fn from(item: tmdb::Series) -> Self {
-        Self {
-            tmdb_id: Some(item.id),
-            release_date: item.first_air_date,
-            // imdb_id: item.external_ids.and_then(|ids| ids.imdb_id),
-            id: item.external_ids.and_then(|ids| ids.imdb_id).unwrap(),
-            name: item.name,
-            community_rating: item.vote_average,
-            overview: item.overview,
-            status: item.status.map(|x| x.into()),
-            poster_path: item.poster_path,
-            backdrop_path: item.backdrop_path,
-            media_type: db::media::MediaType::Series,
-            genres: item.genres.map(|items| {
-                items
-                    .into_iter()
-                    .filter_map(|g| match db::Genre::try_from(g) {
-                        Ok(genre) => Some(genre),
-                        Err(err) => {
-                            tracing::warn!("{:?}", err);
-                            None
-                        }
-                    })
-                    .collect()
-            }),
-            ..Default::default()
-        }
-    }
-}
-
-impl From<tmdb::Season> for db::media::Model {
-    fn from(item: tmdb::Season) -> Self {
-        Self {
-            tmdb_id: Some(item.id),
-            release_date: item.air_date,
-            name: item.name,
-            overview: item.overview,
-            index_number: Some(item.season_number),
-            community_rating: item.vote_average,
-            poster_path: item.poster_path,
-            //backdrop_path: item.backdrop_path,
-            media_type: db::media::MediaType::Season,
-            ..Default::default()
-        }
-    }
-}
-
-impl From<tmdb::Episode> for db::media::Model {
-    fn from(item: tmdb::Episode) -> Self {
-        Self {
-            tmdb_id: Some(item.id),
-            release_date: item.air_date,
-            name: item.name,
-            overview: item.overview,
-            community_rating: item.vote_average,
-            index_number: Some(item.episode_number),
-            parent_index_number: Some(item.season_number),
-            runtime: item.runtime,
-            poster_path: item.still_path,
-            //backdrop_path: item.backdrop_path,
-            media_type: db::media::MediaType::Episode,
-            ..Default::default()
-        }
-    }
-}
-
-impl From<stremio::Meta> for jellyfin::BaseItemDto {
-    fn from(meta: stremio::Meta) -> Self {
+impl From<aio::Meta> for jellyfin::BaseItemDto {
+    fn from(meta: aio::Meta) -> Self {
         // dbg!(&meta);
-        let media_type: jellyfin::MediaType = meta.media_type.clone().into();
+       // let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
         jellyfin::BaseItemDto {
-            id: utils::encode_media_uuid(
-                &meta.imdb_id.clone().unwrap_or_else(|| meta.clone().id),
-                media_type,
-                None
-            ),
+            id: MediaId::from_aio_meta(meta.clone()),
+            //id: String,
             server_id: utils::server_id(),
             name: meta.name.clone(),
             original_title: meta.name.clone(),
             overview: meta.description.clone(),
-            type_: Some(media_type),
+            type_: Some(meta.media_type.into()),
             premiere_date: meta.released.clone(),
             community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
-                primary: meta.poster,
-                logo: meta.logo,
+                primary: meta.poster.clone(),
+                logo: meta.logo.clone(),
                 backdrop: meta.background.clone(),
                 ..Default::default()
             }),
-            backdrop_image_tags: meta
-                .background
-                .clone()
-                .map(|url| vec![url]),
+            backdrop_image_tags: meta.background.clone().map(|url| vec![url]),
             image_blur_hashes: Some(jellyfin::ImageBlurHashes {
                 backdrop: {
-                    if let Some(bg) = meta.background.clone() {
-                        Some(HashMap::from([(bg.clone(), bg)]))
+                    if let Some(img) = meta.background.clone() {
+                        Some(HashMap::from([(img.clone(), img)]))
+                    } else {
+                        None
+                    }
+                },
+                primary: {
+                    if let Some(img) = meta.poster.clone() {
+                        Some(HashMap::from([(img.clone(), img)]))
+                    } else {
+                        None
+                    }
+                },
+                logo: {
+                    if let Some(img) = meta.logo.clone() {
+                        Some(HashMap::from([(img.clone(), img)]))
                     } else {
                         None
                     }
@@ -201,8 +62,8 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
                 ..Default::default()
             }),
             provider_ids: Some(jellyfin::ProviderIds {
-               imdb: meta.imdb_id,
-               ..Default::default()
+                imdb: meta.imdb_id,
+                ..Default::default()
             }),
             genres: meta.genres.clone(),
             run_time_ticks: meta
@@ -215,8 +76,8 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
 
 //Resources
 
-// impl From<stremio::Stream> for jellyfin::MediaSourceInfo {
-//     fn from(item: stremio::Stream) -> Self {
+// impl From<aio::Stream> for jellyfin::MediaSourceInfo {
+//     fn from(item: aio::Stream) -> Self {
 //         let id = Some(URL_SAFE.encode(item.url.unwrap()));
 
 //         //let streams =
@@ -235,8 +96,8 @@ impl From<stremio::Meta> for jellyfin::BaseItemDto {
 //     }
 // }
 
-impl From<stremio::Subtitle> for jellyfin::MediaStream {
-    fn from(sub: stremio::Subtitle) -> Self {
+impl From<aio::Subtitle> for jellyfin::MediaStream {
+    fn from(sub: aio::Subtitle) -> Self {
         // Guess codec from URL extension; default to webvtt for browser compat
         let lc = sub.url.to_ascii_lowercase();
         let codec = if lc.ends_with(".vtt") {
@@ -282,32 +143,44 @@ impl From<stremio::Subtitle> for jellyfin::MediaStream {
     }
 }
 
-impl From<stremio::Catalog> for jellyfin::BaseItemDto {
-    fn from(item: stremio::Catalog) -> Self {
+impl From<db::User> for jellyfin::UserDto {
+    fn from(user: db::User) -> Self {
+        jellyfin::UserDto {
+            server_id: Some(server_id()),
+            name: user.username,
+            id: user.id,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<aio::Catalog> for jellyfin::BaseItemDto {
+    fn from(item: aio::Catalog) -> Self {
         jellyfin::BaseItemDto {
             name: Some(item.name.clone()),
-            id: item.uuid,
+id: MediaId::new(item.id, jellyfin::MediaType::BoxSet, None),
             type_: Some(jellyfin::MediaType::BoxSet),
             ..Default::default()
         }
     }
 }
 
-impl From<stremio::Episode> for jellyfin::BaseItemDto {
-    fn from(item: stremio::Episode) -> Self {
+impl From<aio::Episode> for jellyfin::BaseItemDto {
+    fn from(item: aio::Episode) -> Self {
         jellyfin::BaseItemDto {
             name: item.name.clone(),
-            id: utils::encode_media_uuid(
-                item.id.as_str(),
+            //id: get_uuid(),
+            id: MediaId::new(
+                item.id.clone(),
                 jellyfin::MediaType::Episode,
-                None
+                None,
             ),
             type_: Some(jellyfin::MediaType::Episode),
             index_number: item.episode,
-            season_id: Some(utils::encode_media_uuid(
-                format!("{}:{:?}", item.id, item.season).as_str(),
-                jellyfin::MediaType::Episode,
-                None
+            season_id: Some(MediaId::new(
+                format!("{}:{:?}", item.id, item.season),
+                jellyfin::MediaType::Season,
+                None,
             )),
             parent_index_number: item.season,
             season_name: Some(format!("Season {:?}", item.season)),
@@ -321,101 +194,48 @@ impl From<stremio::Episode> for jellyfin::BaseItemDto {
     }
 }
 
-// impl From<db::media::Model> for jellyfin::BaseItemDto {
-//     fn from(media: db::media::Model) -> Self {
-//         jellyfin::BaseItemDto {
-//             name: Some(media.name),
-//             overview: media.overview,
-//             id: media.id.to_string(),
-//             //type_: Some(media.media_type.into()),
-//             premiere_date: utils::native_to_utc(media.release_date),
-//             run_time_ticks: media
-//                 .runtime
-//                 .and_then(|x| x.to_ticks(utils::TickUnit::Minutes)),
-//             image_tags: Some(jellyfin::ImageTags {
-//                 primary: media.poster_path,
-//                 ..Default::default()
-//             }),
-//             community_rating: media.community_rating,
-//             parent_id: media.parent_id.map(|x| x.to_string()),
-//             backdrop_image_tags: media.backdrop_path.map(|path| vec![path]),
-//             media_sources: media.streams.as_ref().map(|r| {
-//                 // r.streams
-//                 r.clone()
-//                     // .unwrap_or_default()
-//                     .into_iter()
-//                     .map(|stream| stream.into_media_source())
-//                     .collect()
-//             }),
-//             // TODO!!! this for some reason breaks swiftfin listings
-//             //provider_ids: Some(HashMap::from([
-//             //   ("Tmdb".to_string(), media.tmdb_id.map(|v| v.to_string())),
-//             //   ("Imdb".to_string(), media.imdb_id),
-//             //])),
-//             ..Default::default()
-//         }
-//     }
-// }
-
-//impl From<db::media::MediaType> for jellyfin::BaseItemKind {
-//    fn from(media: db::media::MediaType) -> Self {
-//        jellyfin::BaseItemKind::Movie
-//    }
-//}
-
-impl From<stremio::MediaType> for jellyfin::MediaType {
-    fn from(kind: stremio::MediaType) -> Self {
+impl From<aio::MediaType> for jellyfin::MediaType {
+    fn from(kind: aio::MediaType) -> Self {
         match kind {
-            stremio::MediaType::Movie => jellyfin::MediaType::Movie,
-            stremio::MediaType::Series => jellyfin::MediaType::Series,
+            aio::MediaType::Movie => jellyfin::MediaType::Movie,
+            aio::MediaType::Series => jellyfin::MediaType::Series,
             _ => jellyfin::MediaType::Unknown,
         }
     }
 }
 
-impl From<jellyfin::MediaType> for stremio::MediaType {
+impl From<jellyfin::MediaType> for aio::MediaType {
     fn from(kind: jellyfin::MediaType) -> Self {
         match kind {
-            jellyfin::MediaType::Movie => stremio::MediaType::Movie,
-            jellyfin::MediaType::Series => stremio::MediaType::Series,
-            _ => stremio::MediaType::Unknown,
+            jellyfin::MediaType::Movie => aio::MediaType::Movie,
+            jellyfin::MediaType::Series => aio::MediaType::Series,
+            _ => aio::MediaType::Unknown,
         }
     }
 }
 
-impl From<db::media::MediaType> for stremio::MediaType {
-    fn from(kind: db::media::MediaType) -> Self {
-        match kind {
-            db::media::MediaType::Movie => stremio::MediaType::Movie,
-            db::media::MediaType::Series => stremio::MediaType::Series,
-            db::media::MediaType::Episode => stremio::MediaType::Series,
-            _ => stremio::MediaType::Movie,
-        }
-    }
-}
-
-impl From<stremio::MediaType> for db::media::MediaType {
-    fn from(kind: stremio::MediaType) -> Self {
-        match kind {
-            stremio::MediaType::Movie => db::media::MediaType::Movie,
-            stremio::MediaType::Series => db::media::MediaType::Series,
-            _ => db::media::MediaType::Movie,
-        }
-    }
-}
-
-impl From<tmdb::Status> for db::media::Status {
-    fn from(kind: tmdb::Status) -> Self {
-        db::media::Status::from_str(&kind.to_string()).unwrap()
-    }
-}
-
-impl TryFrom<tmdb::Genre> for db::Genre {
-    type Error = eyre::Report;
-
-    fn try_from(item: tmdb::Genre) -> Result<Self> {
-        db::Genre::from_str(item.name.as_str())
-            .map_err(|_| eyre!("Unknown genre: {}", item.name))
+pub fn stream_into_media_source_info(
+    id: String,
+    jellyfin_media_type: jellyfin::MediaType,
+    stream: aio::Stream,
+) -> jellyfin::MediaSourceInfo {
+    //let id = get_uuid();
+    let id = MediaId::new(
+                id,
+                jellyfin_media_type,
+                Some(stream.clone()),
+            );
+    jellyfin::MediaSourceInfo {
+        id: id.clone(),
+        e_tag: Some(id.clone()),
+        path: stream.url,
+        protocol: Some("File".to_string()),
+        supports_transcoding: Some(false),
+        supports_direct_stream: Some(true),
+        supports_direct_play: Some(true),
+        is_remote: Some(false),
+        name: stream.name.clone(),
+        ..Default::default()
     }
 }
 
@@ -509,15 +329,6 @@ impl From<ffprobe::FfProbe> for jellyfin::MediaSourceInfo {
                 .and_then(|x| x.to_ticks(utils::TickUnit::Seconds)),
             bitrate: probe.format.bit_rate.and_then(|x| x.parse::<i32>().ok()),
             ..Default::default()
-        }
-    }
-}
-
-impl From<jellyfin::SortOrder> for sea_orm::Order {
-    fn from(order: jellyfin::SortOrder) -> Self {
-        match order {
-            jellyfin::SortOrder::Ascending => sea_orm::Order::Asc,
-            jellyfin::SortOrder::Descending => sea_orm::Order::Desc,
         }
     }
 }

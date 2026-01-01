@@ -1,0 +1,62 @@
+[package]
+name = "ez-ffmpeg"
+version = "0.6.0"
+edition = "2021"
+authors = ["Yeauty <YeautyYE@gmail.com>"]
+description = "A safe and ergonomic Rust interface for FFmpeg integration, designed for ease of use."
+homepage = "https://github.com/YeautyYE/ez-ffmpeg"
+documentation = "https://docs.rs/ez-ffmpeg"
+readme = "README.md"
+keywords = [
+    "ffmpeg",
+    "multimedia",
+    "video",
+    "audio",
+    "rtmp",
+]
+categories = ["multimedia"]
+license = "MIT OR Apache-2.0 OR MPL-2.0"
+repository = "https://github.com/YeautyYE/ez-ffmpeg"
+
+[dependencies]
+log = "0.4"
+thiserror = "1.0"
+ffmpeg-next = "7.1.0"
+ffmpeg-sys-next = "7.1.0"
+crossbeam = "0.8.4"
+crossbeam-channel = "0.5.13"
+libc = "0.2.159"
+
+#opengl
+surfman = { version = "0.9", features = ["chains"], optional = true }
+glow = { version = "0.16", optional = true }
+bytemuck = { version = "1.8", optional = true }
+
+#flv
+bytes = { version = "1.9.0", optional = true }
+
+#rtmp
+rml_rtmp = { version = "0.8", optional = true }
+slab = { version = "0.4", optional = true }
+dashmap = { version = "6", optional = true }
+byteorder = { version = "1.5", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+core-foundation = "0.10"
+
+[features]
+default = []
+async = []
+opengl = ["dep:surfman", "dep:glow", "dep:bytemuck"]
+rtmp = ["dep:rml_rtmp", "dep:slab", "dep:dashmap", "flv"]
+flv = ["dep:bytes", "dep:byteorder"]
+static = ["ffmpeg-next/static"]
+docs-rs = ["async", "opengl", "rtmp", "flv"]
+
+[package.metadata.docs.rs]
+features = ["docs-rs"]
+
+[dev-dependencies]
+env_logger = "0.10"
+tokio = { version = "1", features = ["full"] }

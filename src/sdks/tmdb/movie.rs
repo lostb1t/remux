@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{Status, default_append_to_response};
-use crate::sdks::core::{CommaSeparatedList, Endpoint, QueryParams};
-use bon::Builder;
-use bon::builder;
+use crate::sdks::{CommaSeparatedList, Endpoint};
+
 use chrono::NaiveDate;
 use serde_with::{DisplayFromStr, serde_as};
 
@@ -28,7 +27,7 @@ pub struct Movie {
     pub external_ids: Option<super::ExternalIds>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MovieEndpoint {
     pub id: i64,
 
@@ -52,19 +51,18 @@ impl MovieEndpoint {
 impl Endpoint for MovieEndpoint {
     type Output = Movie;
 
-    fn endpoint(&self) -> String {
+    fn path(&self) -> String {
         format!("movie/{}", self.id)
     }
 
-    fn parameters(&self) -> QueryParams {
-        self.into()
-        //     let mut params = vec![];
-        //     if let Some(lang) = &self.language {
-        //         params.push(("language".to_string(), lang.clone()));
-        //     }
-        //    // if let Some(appends) = &self.append_to_response {
-        //         params.push(("append_to_response".to_string(), self.append_to_response.join(",")));
-        //    // }
-        //     params
+    fn query(&self) -> Vec<(String, String)> {
+        let mut params = vec![];
+        if let Some(lang) = &self.language {
+            params.push(("language".to_string(), lang.clone()));
+        }
+        // if let Some(appends) = &self.append_to_response {
+        //params.push(("append_to_response".to_string(), self.append_to_response.join(",")));
+        //    }
+        params
     }
 }

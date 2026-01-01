@@ -1,46 +1,22 @@
-//pub mod item;
-//pub use item::*;
+use anyhow::Result;
+use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::str::FromStr;
 
-pub mod genre;
-pub mod media;
-pub mod media_genre;
-pub mod migrations;
-pub use genre::Genre;
+pub mod auth;
+pub mod user;
 
-use eyre::Result;
-use migrations::{Migrator, MigratorTrait};
-use sea_orm;
-pub use sea_orm::DatabaseConnection as DbConnection;
-use sea_orm::Statement;
-use sea_orm::sqlx;
-pub use sea_orm::{ConnectOptions, DatabaseConnection};
-use sea_orm::{
-    DatabaseBackend, IntoActiveModel, Set, TryIntoModel, entity::prelude::*,
-};
+pub use user::*;
 
-#[derive(Debug, Clone)]
-pub struct Database {
-    pub pool: DatabaseConnection,
+pub async fn connect(url: &str) -> Result<SqlitePool> {
+    let opts = SqliteConnectOptions::from_str(url)?;
+    Ok(SqlitePoolOptions::new()
+        .max_connections(10)
+        .connect_with(opts)
+        .await?)
 }
 
-impl Database {
-    pub async fn new() -> Result<Self> {
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "sqlite://db.sqlite?mode=rwc".to_string());
-        let mut opt = ConnectOptions::new(url.to_string()); // mutable because we're configuring it
-        opt.max_connections(5);
-
-        let pool = sea_orm::Database::connect(opt).await?;
-        pool.execute(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "PRAGMA journal_mode = WAL;".to_owned(),
-        ))
-        .await?;
-        Migrator::up(&pool, None)
-            .await
-            .expect("Failed to run migrations");
-        //Ok(db)
-
-        Ok(Self { pool })
-    }
+pub async fn migrate(pool: &SqlitePool) -> Result<()> {
+    sqlx::migrate!("./migrations").run(pool).await?;
+    Ok(())
 }

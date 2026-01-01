@@ -12,3 +12,4 @@ db.sqlite*
 config.toml
 .git
 .env
+config.toml

@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{Status, default_append_to_response};
-use crate::sdks::core::{CommaSeparatedList, Endpoint, QueryParams};
-use bon::Builder;
-use bon::builder;
+use crate::sdks::{CommaSeparatedList, Endpoint};
+
 use chrono::NaiveDate;
 use serde_with::{DisplayFromStr, serde_as};
 
@@ -48,7 +47,7 @@ pub struct Series {
     pub external_ids: Option<super::ExternalIds>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeriesEndpoint {
     pub id: i64,
 
@@ -72,20 +71,8 @@ impl SeriesEndpoint {
 impl Endpoint for SeriesEndpoint {
     type Output = Series;
 
-    fn endpoint(&self) -> String {
+    fn path(&self) -> String {
         format!("tv/{}", self.id)
-    }
-
-    fn parameters(&self) -> QueryParams {
-        self.into()
-        //     let mut params = vec![];
-        //     if let Some(lang) = &self.language {
-        //         params.push(("language".to_string(), lang.clone()));
-        //     }
-        //    // if let Some(appends) = &self.append_to_response {
-        //         params.push(("append_to_response".to_string(), self.append_to_response.join(",")));
-        //    // }
-        //     params
     }
 }
 
@@ -104,7 +91,7 @@ pub struct Season {
     pub episodes: Option<Vec<Episode>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeasonEndpoint {
     pub series_id: i64,
     pub season_number: i64,
@@ -121,20 +108,8 @@ impl SeasonEndpoint {}
 impl Endpoint for SeasonEndpoint {
     type Output = Season;
 
-    fn endpoint(&self) -> String {
+    fn path(&self) -> String {
         format!("tv/{}/season/{}", self.series_id, self.season_number)
-    }
-
-    fn parameters(&self) -> QueryParams {
-        self.into()
-        // let mut params = vec![];
-        // if let Some(lang) = &self.language {
-        //     params.push(("language".to_string(), lang.clone()));
-        // }
-        // if let Some(appends) = &self.append_to_response {
-        //     params.push(("append_to_response".to_string(), appends.join(",")));
-        // }
-        // params
     }
 }
 
@@ -147,10 +122,10 @@ pub struct Episode {
     pub vote_average: Option<f64>,
     pub vote_count: i64,
     #[serde_as(as = "Option<DisplayFromStr>")]
-    pub air_date: Option<NaiveDate>, // <-- hier
+    pub air_date: Option<NaiveDate>,
     pub episode_number: i64,
-    pub episode_type: Option<String>,    // <-- hier
-    pub production_code: Option<String>, // <-- hier
+    pub episode_type: Option<String>,
+    pub production_code: Option<String>,
     pub runtime: Option<i64>,
     pub season_number: i64,
     pub show_id: i64,

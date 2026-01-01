@@ -1,8 +1,7 @@
-use crate::db;
-use crate::sdks::jellyfin;
+
+use anyhow::{Context, Result, anyhow};
 use async_compression::tokio::bufread::GzipDecoder;
-use eyre;
-use eyre::Result;
+
 //use futures::Stream;
 //use futures::StreamExt;
 //use futures_util::TryStreamExt;
@@ -13,13 +12,11 @@ use tokio_stream::StreamExt;
 use chrono::{DateTime, NaiveDate, Utc};
 use csv_async::AsyncDeserializer;
 use csv_async::AsyncReaderBuilder;
-use eyre::ContextCompat;
-use eyre::WrapErr;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use std::path::Path;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+//use std::task::{Context, Poll};
 use tempfile;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::{
@@ -33,90 +30,154 @@ use tracing;
 use crate::errors::LogErr;
 use std::str::FromStr;
 
-//use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use moka::sync::Cache;
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
-use base36::{decode, encode};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use uuid::Uuid;
+use crate::sdks;
+use crate::jellyfin;
+
 
 pub fn server_id() -> String {
     "remux".to_string()
 }
 
-/// media_id::media_type::media_source_id
+const NS_MEDIA: Uuid = uuid::uuid!("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+static MEDIA_LOOKUP: OnceLock<Cache<Uuid, MediaId>> = OnceLock::new();
 
-pub fn encode_media_uuid(
+fn media_lookup() -> &'static Cache<Uuid, MediaId> {
+    MEDIA_LOOKUP.get_or_init(|| {
+        Cache::builder()
+            .max_capacity(100_000)
+            .time_to_idle(std::time::Duration::from_secs(60 * 60))
+            .build()
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MediaId {
+    pub id: String,
+    pub jellyfin_media_type: jellyfin::MediaType,
+    pub uuid: Uuid,
+    pub stream: Option<sdks::aio::Stream>,
+}
+
+impl MediaId {
+    pub fn new(
+        id: String,
+        jellyfin_media_type: jellyfin::MediaType,
+        stream: Option<sdks::aio::Stream>,
+    ) -> Self {
+        let uuid = Self::stable_uuid_for(&id, &jellyfin_media_type, stream.clone());
+
+        let media = Self {
+            id,
+            jellyfin_media_type,
+            uuid,
+            stream,
+        };
+
+        media_lookup().insert(uuid, media.clone());
+        media
+    }
+    
+    pub fn save(&self) {
+       media_lookup().insert(self.uuid, self.clone());
+    }
+    
+    pub fn from_aio_meta(
+        meta: sdks::aio::Meta,
+    ) -> Self {
+        let jellyfin_media_type: jellyfin::MediaType = meta.media_type.into();
+        let uuid = Self::stable_uuid_for(&meta.id, &jellyfin_media_type, None);
+
+        let media = Self {
+            id: meta.id,
+            jellyfin_media_type,
+            uuid,
+            stream: None,
+        };
+
+        media_lookup().insert(uuid, media.clone());
+        media
+    
+    }
+    pub fn get(key: &Uuid) -> Result<Self> {
+        media_lookup().get(key).map(|v| v.clone()).ok_or_else(|| {
+            anyhow!("unknown jellyfin id: {key} (not warmed or evicted)")
+        })
+    }
+
+    pub fn stable_uuid_for(
     id: &str,
-    media_type: jellyfin::MediaType,
-    stream_id: Option<String>,
-) -> String {
-    let src = stream_id.unwrap_or_default();
-    encode(format!("{id}::{media_type}::{src}").as_bytes())
+    media_type: &jellyfin::MediaType,
+    stream: Option<sdks::aio::Stream>,
+) -> Uuid {
+    let stream_id = stream.map(|s| s.id()).unwrap_or_else(|| "None".to_string());
+    let name = format!("{}|{}|{}", id, media_type, stream_id);
+    Uuid::new_v5(&NS_MEDIA, name.as_bytes()).simple().into()
+}
 }
 
-pub fn decode_media_uuid(
-    encoded: &str,
-) -> Result<(String, jellyfin::MediaType, Option<String>)> {
-    let bytes = decode(encoded)
-        .anyhow()
-        .context("invalid base36 in media uuid")?;
-    let s = std::str::from_utf8(&bytes).context("decoded media uuid was not utf-8")?;
-
-    let mut parts = s.splitn(3, "::");
-    let id = parts.next().context("missing id")?;
-    let media_type = parts.next().context("missing media type")?;
-    let stream_id = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-
-    Ok((
-        id.to_string(),
-        jellyfin::MediaType::from_str(media_type)?,
-        stream_id,
-    ))
+impl Serialize for MediaId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.uuid.serialize(serializer)
+    }
 }
+
+impl<'de> Deserialize<'de> for MediaId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let uuid = Uuid::deserialize(deserializer)?;
+        MediaId::get(&uuid).map_err(de::Error::custom)
+    }
+}
+
+impl TryFrom<Uuid> for MediaId {
+    type Error = anyhow::Error;
+
+    fn try_from(uuid: Uuid) -> Result<Self, Self::Error> {
+        MediaId::get(&uuid)
+    }
+}
+
+//impl FromStr for MediaId {
+//    type Err = anyhow::Error;
+
+//    fn from_str(uuid: &str) -> Result<Self> {
+//        MediaId::from_uuid(&uuid)
+//    }
+//}
+
+//impl From<MediaId> for String {
+//    fn from(media: MediaId) -> Self {
+//        media.uuid.to_string()
+//    }
+//}
+
+//impl TryFrom<String> for MediaId {
+//    type Error = anyhow::Error;
+
+//    fn try_from(uuid: String) -> Result<Self, Self::Error> {
+//        MediaId::from_str(&token)
+//    }
+//}
 
 pub fn native_to_utc(opt_date: Option<NaiveDate>) -> Option<DateTime<Utc>> {
     opt_date
         .and_then(|d| d.and_hms_opt(0, 0, 0)) // Add time
         .map(|ndt| DateTime::<Utc>::from_utc(ndt, Utc)) // Make it UTC
 }
-//pub static LIBRARIES: &[&str] = &["movies", "shows"];
 
-pub fn libraries() -> Vec<jellyfin::BaseItemDto> {
-    vec![
-        jellyfin::BaseItemDto {
-            name: Some("Movies".to_string()),
-            id: "movies".to_string(),
-            //parent_id: Some("test".to_string()),
-            type_: Some(jellyfin::MediaType::CollectionFolder),
-            collection_type: Some(jellyfin::CollectionType::Movies),
-            is_folder: Some(true),
-            //image_tags: Some(jellyfin::ImageTags {
-            //    primary: Some("jsjsj".to_string()),
-            //    ..Default::default()
-            //}),
-            ..Default::default()
-        },
-        jellyfin::BaseItemDto {
-            name: Some("Series".to_string()),
-            id: "series".to_string(),
-            //parent_id: Some("test".to_string()),
-            type_: Some(jellyfin::MediaType::CollectionFolder),
-            collection_type: Some(jellyfin::CollectionType::Tvshows),
-            is_folder: Some(true),
-            ..Default::default()
-        },
-        jellyfin::BaseItemDto {
-            name: Some("Collections".to_string()),
-            id: "collections".to_string(),
-            //parent_id: Some("test".to_string()),
-            type_: Some(jellyfin::MediaType::CollectionFolder),
-            collection_type: Some(jellyfin::CollectionType::Boxsets),
-            is_folder: Some(true),
-            ..Default::default()
-        },
-    ]
-}
 
 pub async fn download_to_file(url: &str) -> Result<TokioFile> {
     let resp = reqwest::get(url).await?.error_for_status()?;
@@ -230,20 +291,6 @@ where
     }
 }
 
-impl<T> Stream for FileStream<T>
-where
-    T: DeserializeOwned + Send + 'static,
-{
-    type Item = Result<T>;
-
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        self.get_mut().inner.as_mut().poll_next(cx)
-    }
-}
-
 pub fn parse_strings_to_u64s(strings: Vec<String>) -> Vec<u64> {
     strings
         .into_iter()
@@ -325,4 +372,8 @@ impl ToRunTimeTicks for &str {
     fn to_ticks(&self, unit: TickUnit) -> Option<i64> {
         self.parse::<f64>().ok().and_then(|v| v.to_ticks(unit))
     }
+}
+
+pub fn get_uuid() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }
