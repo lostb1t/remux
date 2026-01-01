@@ -1,3 +1,4 @@
+use axum::routing::get_service;
 use merge::Merge;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
@@ -18,7 +19,7 @@ use serde::Serialize;
 use serde_alias::serde_alias;
 use serde_with::{DisplayFromStr, serde_as};
 use crate::sdks::aio;
-use crate::utils::MediaId;
+use crate::utils::{MediaId, get_uuid, server_id};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -33,7 +34,7 @@ pub struct AuthenticateUserByName {
 #[serde(rename_all = "PascalCase")]
 pub struct AuthenticationResult {
     pub access_token: Option<String>,
-    pub server_id: Option<String>,
+    pub server_id: String,
     //pub session_info: Option<SessionInfoDto>,
     pub user: Option<UserDto>,
 }
@@ -429,7 +430,7 @@ pub struct UserDto {
     pub policy: UserPolicy,
     pub primary_image_aspect_ratio: Option<f64>,
     pub primary_image_tag: Option<String>,
-    pub server_id: Option<String>,
+    pub server_id: String,
     pub server_name: Option<String>,
 }
 
@@ -448,7 +449,7 @@ impl Default for UserDto {
             policy: UserPolicy::default(),
             primary_image_aspect_ratio: None,
             primary_image_tag: None,
-            server_id: None,
+            server_id: server_id(),
             server_name: None,
         }
     }
@@ -657,8 +658,8 @@ pub struct ProviderIds {
 #[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
-    //pub id: String,
     pub id: MediaId,
+    #[default(server_id())]
     pub server_id: String,
     pub name: Option<String>,
     pub original_title: Option<String>,

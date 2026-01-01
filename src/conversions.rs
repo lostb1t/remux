@@ -147,7 +147,7 @@ impl From<aio::Subtitle> for jellyfin::MediaStream {
 impl From<db::User> for jellyfin::UserDto {
     fn from(user: db::User) -> Self {
         jellyfin::UserDto {
-            server_id: Some(server_id()),
+            server_id: server_id(),
             name: user.username,
             id: user.id,
             ..Default::default()

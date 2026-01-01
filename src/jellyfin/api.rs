@@ -180,7 +180,7 @@ pub async fn users_authenticatebyname(
 
     Ok(Json(jellyfin::AuthenticationResult {
         access_token: Some(device.access_token),
-        server_id: Some(server_id()),
+        server_id: server_id(),
         user: Some(user.into()),
         ..Default::default()
     }))
