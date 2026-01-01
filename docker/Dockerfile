@@ -12,7 +12,7 @@ RUN apt-get update \
         libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY vendor Cargo.toml Cargo.lock ./
+COPY vendor/ Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN ls -all
 RUN cargo build --release
