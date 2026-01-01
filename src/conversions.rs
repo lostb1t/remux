@@ -27,7 +27,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
             name: meta.name.clone(),
             original_title: meta.name.clone(),
             overview: meta.description.clone(),
-            type_: Some(meta.media_type.into()),
+            type_: meta.media_type.into(),
             premiere_date: meta.released.clone(),
             community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
@@ -160,7 +160,7 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
         jellyfin::BaseItemDto {
             name: Some(item.name.clone()),
 id: MediaId::new(item.id, jellyfin::MediaType::BoxSet, None),
-            type_: Some(jellyfin::MediaType::BoxSet),
+            type_: jellyfin::MediaType::BoxSet,
             ..Default::default()
         }
     }
@@ -176,7 +176,7 @@ impl From<aio::Episode> for jellyfin::BaseItemDto {
                 jellyfin::MediaType::Episode,
                 None,
             ),
-            type_: Some(jellyfin::MediaType::Episode),
+            type_: jellyfin::MediaType::Episode,
             index_number: item.episode,
             season_id: Some(MediaId::new(
                 format!("{}:{:?}", item.id, item.season),

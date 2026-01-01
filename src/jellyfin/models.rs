@@ -6,6 +6,7 @@ use std::{sync::Arc, time::Duration};
 use chrono::{DateTime, Utc};
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
+
 //use super::BaseItemStore;
 use crate::aio::AioService;
 use anyhow::anyhow;
@@ -17,7 +18,8 @@ use anyhow::anyhow;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_alias::serde_alias;
-use serde_with::{DisplayFromStr, serde_as};
+use serde_with::{DisplayFromStr, StringWithSeparator, serde_as};
+use serde_with::formats::CommaSeparator;
 use crate::sdks::aio;
 use crate::utils::{MediaId, get_uuid, server_id};
 
@@ -87,9 +89,10 @@ pub struct SpecialViewOptionDto {
     pub id: Option<String>,
 }
 
+#[serde_as]
 #[skip_serializing_none]
 #[derive(Default, Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "PascalCase")]
 pub struct GetItemsQuery {
     pub user_id: Option<String>,
     pub max_official_rating: Option<String>,
@@ -105,7 +108,8 @@ pub struct GetItemsQuery {
     pub search_term: Option<String>,
     pub parent_id: Option<MediaId>,
     pub season_id: Option<MediaId>,
-    pub fields: Option<Vec<ItemFields>>,
+    //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
+    //pub fields: Option<Vec<ItemFields>>,
     pub exclude_item_types: Option<Vec<String>>,
     pub include_item_types: Option<Vec<MediaType>>,
     pub is_favorite: Option<bool>,
@@ -114,8 +118,10 @@ pub struct GetItemsQuery {
     pub name_starts_with_or_greater: Option<String>,
     pub name_starts_with: Option<String>,
     pub name_less_than: Option<String>,
+    #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemSortBy>>")]
     pub sort_by: Option<Vec<ItemSortBy>>,
-    pub sort_order: Option<SortOrder>,
+    //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, SortOrder>>")]
+    //pub sort_order: Option<SortOrder>,
     pub enable_images: Option<bool>,
     pub enable_user_data: Option<bool>,
     pub enable_total_record_count: Option<bool>,
@@ -715,7 +721,8 @@ pub struct BaseItemDto {
     pub is_hd: Option<bool>,
     pub is_folder: Option<bool>,
     pub parent_id: Option<String>,
-    pub type_: Option<MediaType>,
+    #[default(MediaType::Movie)]
+    pub type_: MediaType,
     // pub people: Option<Vec<BaseItemPerson>>,
     // pub studios: Option<Vec<NameLongIdPair>>,
     //pub genre_items: Option<Vec<NameLongIdPair>>,

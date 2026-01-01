@@ -298,7 +298,7 @@ impl<A: Auth> RestClient<A> {
             Body::Bytes(b) => req.body(b),
         };
 
-        trace!("requesting {}", url.clone().to_string());
+        //trace!("requesting {}", url.clone().to_string());
         let resp = req.send().await?;
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();

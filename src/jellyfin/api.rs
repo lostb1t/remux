@@ -264,7 +264,7 @@ pub async fn get_items(
     let search = q.search_term.clone().or(q.name_starts_with.clone());
     let skip = q.start_index.unwrap_or(0) as u32;
    // let media = MediaId::get(&id)?;
-
+    trace!(?q, "get_items");
     // only support Movie and Series for search and catalogs
     if search.is_some()
         || q.parent_id
@@ -325,6 +325,7 @@ pub async fn get_items(
     if let Some(parent_id) = &q.parent_id {
         // "collections" = list catalogs
         if parent_id.id == "collections" {
+            trace!("collections requested");
             let items: Vec<jellyfin::BaseItemDto> = manifest
                 .catalogs
                 .into_iter()
@@ -583,6 +584,7 @@ pub async fn items(
     session: auth::AuthSession,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    //trace!(?q);
     let items = get_items(state, session, q.clone(), true).await?;
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
