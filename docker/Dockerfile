@@ -21,7 +21,7 @@ RUN ffmpeg -version \
     && pkg-config --modversion libavcodec \
     && pkg-config --modversion libavformat
 
-ENV PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
+ENV PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig
 
 # Copy vendor, Cargo.toml, and Cargo.lock first for caching
 COPY vendor ./vendor

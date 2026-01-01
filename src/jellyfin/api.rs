@@ -951,31 +951,15 @@ pub async fn users_me(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    //let user: UserDtoDummy = Faker.fake();
     Ok(Json(jellyfin::UserDto::from(session.user))
     .into_response())
-    //Ok(StatusCode::NOT_FOUND.into_response())
-    // match media::Entity::find_by_id(id).one(&state.conn).await? {
-    //     Some(item) => {
-    //         Ok(Json(jellyfin_sdk::types::BaseItemDto::from(item)).into_response())
-    //    }
-    //    None => Ok(StatusCode::NOT_FOUND.into_response()),
-    // }
 }
 
 /// todo: actually @molement
 pub async fn playback_bitratetest(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
-    //let user: UserDtoDummy = Faker.fake();
-    //Ok(Json().into_response())
     Ok(StatusCode::NO_CONTENT.into_response())
-    // match media::Entity::find_by_id(id).one(&state.conn).await? {
-    //     Some(item) => {
-    //         Ok(Json(jellyfin_sdk::types::BaseItemDto::from(item)).into_response())
-    //    }
-    //    None => Ok(StatusCode::NOT_FOUND.into_response()),
-    // }
 }
 
 pub async fn users_groupingoptions(
@@ -983,18 +967,9 @@ pub async fn users_groupingoptions(
 ) -> Result<impl IntoResponse> {
     Ok(Json::<Vec<jellyfin::SpecialViewOptionDto>>(vec![]))
 }
-//fn id_encode
 
 pub async fn stub(State(state): State<AppState>) -> Result<impl IntoResponse> {
-    //let user: UserDtoDummy = Faker.fake();
-    //Ok(Json().into_response())
     Ok(StatusCode::NO_CONTENT.into_response())
-    // match media::Entity::find_by_id(id).one(&state.conn).await? {
-    //     Some(item) => {
-    //         Ok(Json(jellyfin_sdk::types::BaseItemDto::from(item)).into_response())
-    //    }
-    //    None => Ok(StatusCode::NOT_FOUND.into_response()),
-    // }
 }
 
 pub async fn stub_json(State(state): State<AppState>) -> Result<impl IntoResponse> {
