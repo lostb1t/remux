@@ -61,7 +61,6 @@ use argon2::{
     },
     Argon2
 };
-
 use crate::sdks;
 use crate::utils::get_uuid;
 
@@ -96,7 +95,7 @@ impl User {
 
         Ok(())
     }
-  
+
   pub async fn get_by_id(
         db: &SqlitePool,
         id: &String,
@@ -116,7 +115,7 @@ impl User {
 
         Ok(row)
     }
-     
+
   pub async fn get_by_username(
         db: &SqlitePool,
         username: &str,
@@ -135,8 +134,8 @@ impl User {
         .await?;
 
         Ok(row)
-    }   
-    
+    }
+
     pub fn new_with_password(key: String, username: String, password: &str, aio_url: String) -> Result<Self> {
         let password_hash = Self::hash_password(password)?;
         Ok(Self {

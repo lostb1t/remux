@@ -165,6 +165,21 @@ pub trait Endpoint {
 use http_cache_reqwest::{Cache, CacheMode, HttpCache, HttpCacheOptions, MokaManager};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 
+// #[async_trait::async_trait]
+// impl Middleware for CacheMiddleware {
+//     async fn handle(
+//         &self,
+//         req: Request,
+//         extensions: &mut Extensions,
+//         next: Next<'_>,
+//     ) -> Result<Response> {
+//         println!("Request started {:?}", req);
+//         let res = next.run(req, extensions).await;
+//         println!("Result: {:?}", res);
+//         res
+//     }
+// }
+
 #[derive(Clone)]
 pub struct RestClient<A: Auth = NoAuth> {
     http: ClientWithMiddleware,
@@ -175,10 +190,10 @@ pub struct RestClient<A: Auth = NoAuth> {
 
 impl RestClient<NoAuth> {
     pub fn new(base: &str) -> Result<Self, url::ParseError> {
-        let inner = reqwest::Client::new();
+        // let inner = reqwest::Client::new();
         let manager = MokaManager::default();
 
-        let http = ClientBuilder::new(inner)
+        let http = ClientBuilder::new(reqwest::Client::new())
             .with(Cache(HttpCache {
                 mode: CacheMode::Default,
                 manager,

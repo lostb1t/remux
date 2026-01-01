@@ -6,7 +6,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use axum_valid::Valid as AxumValid;
 use core::fmt::Debug;
 use serde::Serialize;
 use serde_json::json;
