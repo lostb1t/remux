@@ -1,9 +1,8 @@
-use anyhow::{anyhow, Result};
-use url::Url;
-use crate::sdks;
 use crate::db;
+use crate::sdks;
 use anyhow::Context;
-
+use anyhow::{Result, anyhow};
+use url::Url;
 
 #[derive(Clone)]
 pub struct AioService {
@@ -15,7 +14,10 @@ impl AioService {
     pub fn from_user(user: &db::User) -> Result<Self> {
         let client = Self::get_aio(user)?;
         let search_client = Self::get_aio_search(user)?;
-        Ok(Self { client, search_client })
+        Ok(Self {
+            client,
+            search_client,
+        })
     }
 
     fn get_aio(user: &db::User) -> Result<sdks::RestClient> {
@@ -63,17 +65,15 @@ impl AioService {
         let search_url = url.to_string();
 
         Ok(sdks::aio::search_client(&search_url, username, password)?)
-    }  
-    
+    }
+
     pub async fn get_stream(
         &self,
         media_type: sdks::aio::MediaType,
         id: String,
         stream_id: String,
     ) -> Result<sdks::aio::Stream> {
-        let streams = self
-            .get_streams(media_type, id)
-            .await?;
+        let streams = self.get_streams(media_type, id).await?;
 
         let stream = streams
             .into_iter()
@@ -82,7 +82,7 @@ impl AioService {
 
         Ok(stream)
     }
-       
+
     pub async fn get_streams(
         &self,
         media_type: sdks::aio::MediaType,
@@ -95,7 +95,8 @@ impl AioService {
                 id,
                 ..Default::default()
             })
-            .await?.data.results)
+            .await?
+            .data
+            .results)
     }
-    
 }

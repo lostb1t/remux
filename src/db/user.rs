@@ -1,9 +1,17 @@
 use axum::response::Html;
 use reqwest;
 
+use crate::sdks;
+use crate::utils::get_uuid;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use argon2::{
+    Argon2,
+    password_hash::{
+        PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
+    },
+};
 use async_trait::async_trait;
 use axum::ServiceExt;
 use axum::body::Body;
@@ -54,15 +62,6 @@ use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
 use uuid::Uuid;
-use argon2::{
-    password_hash::{
-        rand_core::OsRng,
-        PasswordHash, PasswordHasher, PasswordVerifier, SaltString
-    },
-    Argon2
-};
-use crate::sdks;
-use crate::utils::get_uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
@@ -75,7 +74,7 @@ pub struct User {
 }
 
 impl User {
-   pub async fn save(&mut self, db: &SqlitePool) -> Result<()> {
+    pub async fn save(&mut self, db: &SqlitePool) -> Result<()> {
         sqlx::query!(
             r#"
             INSERT INTO auth_users (id, username, password_hash, aio_url)
@@ -96,10 +95,7 @@ impl User {
         Ok(())
     }
 
-  pub async fn get_by_id(
-        db: &SqlitePool,
-        id: &String,
-    ) -> Result<Option<Self>> {
+    pub async fn get_by_id(db: &SqlitePool, id: &String) -> Result<Option<Self>> {
         let row = sqlx::query_as!(
             Self,
             r#"
@@ -116,7 +112,7 @@ impl User {
         Ok(row)
     }
 
-  pub async fn get_by_username(
+    pub async fn get_by_username(
         db: &SqlitePool,
         username: &str,
     ) -> Result<Option<Self>> {
@@ -136,7 +132,12 @@ impl User {
         Ok(row)
     }
 
-    pub fn new_with_password(key: String, username: String, password: &str, aio_url: String) -> Result<Self> {
+    pub fn new_with_password(
+        key: String,
+        username: String,
+        password: &str,
+        aio_url: String,
+    ) -> Result<Self> {
         let password_hash = Self::hash_password(password)?;
         Ok(Self {
             id: get_uuid(),
@@ -169,7 +170,11 @@ impl User {
         Ok(hash.to_string())
     }
 
-   pub async fn authenticate(db: &SqlitePool, username: &str, password: &str) -> Result<Option<Self>> {
+    pub async fn authenticate(
+        db: &SqlitePool,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<Self>> {
         let Some(user) = Self::get_by_username(db, username).await? else {
             return Ok(None);
         };
@@ -180,7 +185,6 @@ impl User {
             Ok(None)
         }
     }
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

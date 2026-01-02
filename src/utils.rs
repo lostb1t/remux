@@ -1,4 +1,3 @@
-
 use anyhow::{Context, Result, anyhow};
 use async_compression::tokio::bufread::GzipDecoder;
 
@@ -36,11 +35,10 @@ use std::{
     time::Duration,
 };
 
+use crate::jellyfin;
+use crate::sdks;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use uuid::Uuid;
-use crate::sdks;
-use crate::jellyfin;
-
 
 pub fn server_id() -> String {
     "remux".to_string()
@@ -84,14 +82,12 @@ impl MediaId {
         media_lookup().insert(uuid, media.clone());
         media
     }
-    
+
     pub fn save(&self) {
-       media_lookup().insert(self.uuid, self.clone());
+        media_lookup().insert(self.uuid, self.clone());
     }
-    
-    pub fn from_aio_meta(
-        meta: sdks::aio::Meta,
-    ) -> Self {
+
+    pub fn from_aio_meta(meta: sdks::aio::Meta) -> Self {
         let jellyfin_media_type: jellyfin::MediaType = meta.media_type.into();
         let uuid = Self::stable_uuid_for(&meta.id, &jellyfin_media_type, None);
 
@@ -104,7 +100,6 @@ impl MediaId {
 
         media_lookup().insert(uuid, media.clone());
         media
-    
     }
     pub fn get(key: &Uuid) -> Result<Self> {
         media_lookup().get(key).map(|v| v.clone()).ok_or_else(|| {
@@ -113,14 +108,14 @@ impl MediaId {
     }
 
     pub fn stable_uuid_for(
-    id: &str,
-    media_type: &jellyfin::MediaType,
-    stream: Option<sdks::aio::Stream>,
-) -> Uuid {
-    let stream_id = stream.map(|s| s.id()).unwrap_or_else(|| "None".to_string());
-    let name = format!("{}|{}|{}", id, media_type, stream_id);
-    Uuid::new_v5(&NS_MEDIA, name.as_bytes()).simple().into()
-}
+        id: &str,
+        media_type: &jellyfin::MediaType,
+        stream: Option<sdks::aio::Stream>,
+    ) -> Uuid {
+        let stream_id = stream.map(|s| s.id()).unwrap_or_else(|| "None".to_string());
+        let name = format!("{}|{}|{}", id, media_type, stream_id);
+        Uuid::new_v5(&NS_MEDIA, name.as_bytes()).simple().into()
+    }
 }
 
 impl Serialize for MediaId {
@@ -158,11 +153,11 @@ impl TryFrom<Uuid> for MediaId {
 //    }
 //}
 
-//impl From<MediaId> for String {
-//    fn from(media: MediaId) -> Self {
-//        media.uuid.to_string()
-//    }
-//}
+impl From<MediaId> for String {
+    fn from(media: MediaId) -> Self {
+        media.uuid.to_string()
+    }
+}
 
 //impl TryFrom<String> for MediaId {
 //    type Error = anyhow::Error;
@@ -177,7 +172,6 @@ pub fn native_to_utc(opt_date: Option<NaiveDate>) -> Option<DateTime<Utc>> {
         .and_then(|d| d.and_hms_opt(0, 0, 0)) // Add time
         .map(|ndt| DateTime::<Utc>::from_utc(ndt, Utc)) // Make it UTC
 }
-
 
 pub async fn download_to_file(url: &str) -> Result<TokioFile> {
     let resp = reqwest::get(url).await?.error_for_status()?;

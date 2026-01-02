@@ -74,9 +74,9 @@ mod sdks;
 mod store;
 mod utils;
 //mod user;
-mod jellyfin;
 mod aio;
 mod db;
+mod jellyfin;
 use crate::db as database;
 
 #[tokio::main]
@@ -103,20 +103,20 @@ async fn main() -> Result<()> {
     database::migrate(&db).await?;
 
     for u in settings.users.clone() {
-      let mut user = db::User {
-        id: u.stable_id_from_key(),
-        username: u.username,
-        aio_url: u.aio_url,
-        password_hash: db::User::hash_password(&u.password)?
-      };
+        let mut user = db::User {
+            id: u.stable_id_from_key(),
+            username: u.username,
+            aio_url: u.aio_url,
+            password_hash: db::User::hash_password(&u.password)?,
+        };
 
-      user.save(&db).await?;
+        user.save(&db).await?;
     }
 
     let state = AppState {
         config: settings.clone(),
         db: db,
-       // item_store: jellyfin::BaseItemStore::new(25000)
+        store: store::Store::new(100000)
     };
 
     // spawn_background_tasks(state.clone()).await?;
@@ -156,12 +156,10 @@ async fn main() -> Result<()> {
 pub struct AppState {
     pub config: Settings,
     pub db: SqlitePool,
-   // pub item_store: jellyfin::BaseItemStore
+    pub store: store::Store
 }
 
-pub fn virtual_folders(
-    manifest: &sdks::aio::Manifest,
-) -> Vec<jellyfin::BaseItemDto> {
+pub fn virtual_folders(manifest: &sdks::aio::Manifest) -> Vec<jellyfin::BaseItemDto> {
     let mut vf = vec![jellyfin::BaseItemDto {
         name: Some("Collections".to_string()),
         //id: "collections".to_string(),
@@ -173,7 +171,7 @@ pub fn virtual_folders(
         //parent_id: Some("test".to_string()),
         //type_: Some(jellyfin::MediaType::CollectionFolder),
         collection_type: Some(jellyfin::CollectionType::Boxsets),
-        is_folder: Some(true),
+        is_folder: true,
         ..Default::default()
     }];
     vf.extend(
@@ -189,16 +187,18 @@ pub fn virtual_folders(
                     jellyfin::MediaType::CollectionFolder,
                     None,
                 ),
-                // none means mixed
+
                 //collection_type: None,
-                //type_: Some(jellyfin::MediaType::CollectionFolder),
+                type_: jellyfin::MediaType::CollectionFolder,
+                // none means mixed
                 collection_type: {
-                  match x.kind.as_str() {
-                  "series" => Some(jellyfin::CollectionType::Tvshows),
-                  _ => Some(jellyfin::CollectionType::Movies),
-                }
+                    match x.kind.as_str() {
+                        "series" => Some(jellyfin::CollectionType::Tvshows),
+                        "movie" => Some(jellyfin::CollectionType::Movies),
+                        _ => None,
+                    }
                 },
-                is_folder: Some(true),
+                is_folder: true,
                 //collection_type:
                 ..Default::default()
             })

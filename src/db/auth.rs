@@ -97,25 +97,20 @@ impl Device {
         Ok(())
     }
 
-pub fn new_from_header(header: JellyfinAuthHeader, user: &db::User) -> Result<Self> {
-    Ok(Self {
-        id: header
-            .device_id
-            .context("missing device id")?,
-        name: header
-            .device
-            .context("missing device name")?,
-        app_name: header
-            .client
-            .context("missing device name")?,
-        app_version: header
-            .version
-            .context("missing device name")?,
-        user_id: user.id.clone(),
-        access_token: get_uuid(),
-        ..Default::default()
-    })
-}
+    pub fn new_from_header(
+        header: JellyfinAuthHeader,
+        user: &db::User,
+    ) -> Result<Self> {
+        Ok(Self {
+            id: header.device_id.context("missing device id")?,
+            name: header.device.context("missing device name")?,
+            app_name: header.client.context("missing device name")?,
+            app_version: header.version.context("missing device name")?,
+            user_id: user.id.clone(),
+            access_token: get_uuid(),
+            ..Default::default()
+        })
+    }
 
     pub async fn get_by_access_token(
         db: &SqlitePool,
@@ -142,7 +137,7 @@ pub fn new_from_header(header: JellyfinAuthHeader, user: &db::User) -> Result<Se
 pub struct AuthSession {
     pub device: Device,
     pub user: db::User,
-    pub aio: crate::aio::AioService
+    pub aio: crate::aio::AioService,
 }
 
 //#[async_trait]
@@ -169,11 +164,7 @@ impl FromRequestParts<AppState> for AuthSession {
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
         let aio = crate::aio::AioService::from_user(&user)?;
-        Ok(AuthSession{
-          device,
-          user,
-          aio
-        })
+        Ok(AuthSession { device, user, aio })
     }
 }
 
@@ -245,5 +236,3 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
         Ok(JellyfinAuthHeader::from_str(raw)?)
     }
 }
-
-

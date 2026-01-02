@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
 //use progenitor::generate_api;
 use chrono::{DateTime, Utc};
+use serde_aux::prelude::*;
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 
@@ -15,13 +16,13 @@ use anyhow::anyhow;
 //    interface = Builder
 //);
 
+use crate::sdks::aio;
+use crate::utils::{MediaId, get_uuid, server_id};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_alias::serde_alias;
-use serde_with::{DisplayFromStr, StringWithSeparator, serde_as};
 use serde_with::formats::CommaSeparator;
-use crate::sdks::aio;
-use crate::utils::{MediaId, get_uuid, server_id};
+use serde_with::{DisplayFromStr, StringWithSeparator, serde_as};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -89,10 +90,12 @@ pub struct SpecialViewOptionDto {
     pub id: Option<String>,
 }
 
+//use serde_aux::container_attributes::deserialize_struct_case_insensitive;
+
 #[serde_as]
 #[skip_serializing_none]
 #[derive(Default, Debug, Deserialize, Clone)]
-#[serde(rename_all = "PascalCase")]
+#[serde_alias(CamelCase, PascalCase)]
 pub struct GetItemsQuery {
     pub user_id: Option<String>,
     pub max_official_rating: Option<String>,
@@ -145,7 +148,7 @@ pub struct GetItemsQuery {
 }
 
 #[derive(Default, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde_alias(CamelCase, PascalCase)]
 pub struct VideoStreamQuery {
     pub container: Option<String>,
     #[serde(rename = "static")]
@@ -719,7 +722,7 @@ pub struct BaseItemDto {
     pub parent_index_number: Option<i32>,
     pub critic_rating_summary: Option<String>,
     pub is_hd: Option<bool>,
-    pub is_folder: Option<bool>,
+    pub is_folder: bool,
     pub parent_id: Option<String>,
     #[default(MediaType::Movie)]
     pub type_: MediaType,
@@ -734,7 +737,7 @@ pub struct BaseItemDto {
     pub recursive_item_count: Option<i32>,
     pub child_count: Option<i32>,
     pub series_name: Option<String>,
-    pub series_id: Option<String>,
+    pub series_id: Option<MediaId>,
     pub season_id: Option<MediaId>,
     pub special_feature_count: Option<i32>,
     pub display_preferences_id: Option<String>,
@@ -742,7 +745,11 @@ pub struct BaseItemDto {
     pub air_time: Option<String>,
     pub air_days: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
-    pub primary_image_aspect_ratio: Option<f32>,
+
+    // this is fucking weird. And its used.
+    // anyway we set it to poster format by default
+    #[default(0.6)]
+    pub primary_image_aspect_ratio: f32,
     //pub artists: Option<Vec<String>>,
     //pub artist_items: Option<Vec<NameIdPair>>,
     //pub album: Option<String>,
@@ -829,6 +836,11 @@ pub struct BaseItemDto {
     pub aio_resource_type: Option<aio::ResourceType>,
     #[serde(skip)]
     pub aio_media_type: Option<aio::MediaType>,
+}
+
+
+impl BaseItemDto {
+  
 }
 
 

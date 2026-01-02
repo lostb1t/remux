@@ -449,14 +449,12 @@ pub struct Stream {
 }
 
 impl Stream {
- 
     pub fn is_valid(&self) -> bool {
         self.info_hash.is_some()
     }
     pub fn id(&self) -> String {
         self.info_hash.clone().unwrap()
     }
-
 }
 
 #[skip_serializing_none]
