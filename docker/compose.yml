@@ -6,7 +6,7 @@ services:
 
     ports:
       - "3001:3000"
-    command: ["bash", "-c", "tail -f /dev/null"]
+    #command: ["bash", "-c", "tail -f /dev/null"]
     #command: ["bash", "-lc", "ls -la ."]
     #command: ["/app/remux-server"]
       

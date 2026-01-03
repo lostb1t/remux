@@ -269,8 +269,9 @@ pub fn setup_logging() {
 
     let subscriber = tracing_subscriber::registry().with(filter).with(
         fmt::layer()
+        
             // .pretty()
-            .with_writer(std::io::stdout),
+           // .with_writer(std::io::stdout),
     );
 
     tracing::subscriber::set_global_default(subscriber)
