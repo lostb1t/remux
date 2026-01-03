@@ -40,16 +40,13 @@ services:
 - home view with builtin rows: recently added movies and recently added shows
 - direct playback
 - stream selection
+- user/auth
 
 ### Wat does not work yet (todo)
 
-- only tested with streamyfin so use that
-- shows
-- p2p
 - favorites
 - external subtitles
 - transcoding
 - trailers
 - anything persistant like continue watching etc
-- no user management yet, so auth is open. Can use any user/pw combi
 - filtering does not work in library view and probaply never will
