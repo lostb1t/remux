@@ -84,7 +84,6 @@ use crate::db as database;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("Starting remux-server...");
     setup_logging();
 
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
@@ -239,7 +238,7 @@ pub struct Settings {
 }
 
 fn default_web_path() -> String {
-    "../jellyfin-web/dist".to_string()
+    "/app/jellyfin-web".to_string()
 }
 
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {

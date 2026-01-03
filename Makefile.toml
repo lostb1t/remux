@@ -6,7 +6,7 @@ AXUM_ANYHOW_EXPOSE_ERRORS=1
 # HTTP_PROXY="http://10.0.10.11:9090"
 # HTTPS_PROXY="http://10.0.10.11:9090"
 DATABASE_URL = "sqlite://db.sqlite"
-
+WEB_PATH="../jellyfin-web/dist"
 [tasks.sqlx-create]
 command = "cargo"
 args = ["sqlx", "database", "create"]
