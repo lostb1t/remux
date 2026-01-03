@@ -56,8 +56,11 @@ use tracing;
 use tracing::debug;
 use tracing::instrument;
 use tracing::warn;
-use tracing_log::LogTracer;
-use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
+//use tracing_log::LogTracer;
+//use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry, fmt};
 use url::Url;
 use uuid::Uuid;
 
@@ -91,7 +94,7 @@ async fn main() -> Result<()> {
         .build()?
         .try_deserialize()?;
 
-    tracing::info!("config: {:?}", settings);
+    tracing::debug!("config: {:?}", settings);
 
     let db = database::connect(
         std::env::var("DATABASE_URL")
@@ -123,7 +126,7 @@ async fn main() -> Result<()> {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
-        .allow_headers(Any) // or list them explicitly:
+        .allow_headers(Any)
         .expose_headers(Any);
 
     let app = tower::util::MapRequestLayer::new(rewrite_request_uri)
@@ -262,20 +265,20 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
 }
 
 pub fn setup_logging() {
-    LogTracer::init().unwrap();
-
-    let filter = EnvFilter::try_from_default_env()
+    let filter_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,hyper=warn,sqlx=warn"));
-
-    let subscriber = tracing_subscriber::registry().with(filter).with(
-        fmt::layer()
+let fmt_layer = fmt::layer()
+       // .with_thread_names(true)
+       // .with_thread_ids(true)
+        .with_line_number(true)
+       // .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+        .with_target(true)
+        .compact();
         
-            // .pretty()
-           // .with_writer(std::io::stdout),
-    );
-
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("setting default subscriber failed");
+Registry::default()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .init();
 
     //set_expose_errors(true);
 }
