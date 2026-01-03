@@ -32,7 +32,7 @@ services:
       /remux/data:/data
 ```
 
-### What works
+### Whats included
 
 - libraries
 - collections (mapped to catalogs)
@@ -42,8 +42,9 @@ services:
 - stream selection
 - user/auth
 
-### Wat does not work yet (todo)
+### Whats missing
 
+- admin
 - favorites
 - external subtitles
 - transcoding
