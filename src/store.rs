@@ -54,12 +54,25 @@ impl Store {
         Self { inner }
     }
 
-    pub fn insert<T: Cacheable>(&self, key: impl Into<String>, item: T, ttl: Duration) {
+    pub fn save<T: Cacheable>(&self, key: impl Into<String>, item: T, ttl: Duration) {
         let entry = Arc::new(StoreEntry {
             item: Box::new(item),
             ttl,
         });
         self.inner.insert(key.into(), entry);
+    }
+
+    pub fn insert<T: Cacheable>(&self, key: impl Into<String>, item: T, ttl: Duration) -> bool {
+        let key = key.into();
+        if self.inner.contains_key(&key) {
+            return false;
+        }
+        let entry = Arc::new(StoreEntry {
+            item: Box::new(item),
+            ttl,
+        });
+        self.inner.insert(key, entry);
+        true
     }
 
     // Voeg `Clone` toe aan de trait bound voor `T`

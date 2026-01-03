@@ -286,31 +286,6 @@ pub async fn get_items(
 
     let manifest = aio.client.execute(&aio::ManifestEndpoint).await?;
 
-    // helper: meta
-    let fetch_meta = |media_type: aio::MediaType, imdb_id: String| async {
-        // insteas of thos
-        aio.client
-            .execute(&aio::MetaEndpoint {
-                media_type,
-                id: imdb_id,
-                season: None,
-                episode: None,
-            })
-            .await
-            .map(|r| r.meta)
-    };
-
-    // helper: streams (search endpoint)
-    let fetch_streams = |kind: aio::MediaType, id: String| async {
-        aio.search_client
-            .execute(&aio::Search {
-                kind,
-                id,
-                format: true,
-            })
-            .await
-            .map(|r| r.data.results)
-    };
 
     // ------------------------------------------------------------
     // Parent-based behavior
@@ -347,10 +322,14 @@ pub async fn get_items(
         if parent_id.jellyfin_media_type == jellyfin::MediaType::BoxSet
             || parent_id.jellyfin_media_type == jellyfin::MediaType::CollectionFolder
         {
+                    let (kind, id) = parent_id
+                        .id
+                        .rsplit_once(':')
+                        .ok_or_else(|| anyhow!("invalid season id"))?;
             let catalog = manifest
-                .get_catalog_by_id(&parent_id.id)
+                .get_catalog(&id, &kind.to_string())
                 .ok_or_else(|| anyhow!("catalog not found"))?;
-
+    trace!(?kind, ?id, ?catalog, "catalog");
             if let Some(types) = &q.include_item_types {
                 let wanted: aio::MediaType = types[0].into();
                 //if catalog.kind != wanted.to_string() {
@@ -361,7 +340,7 @@ pub async fn get_items(
                 //}
             }
 
-            let metas = aio
+            let items = aio
                 .client
                 .execute(&aio::CatalogEndpoint {
                     kind: catalog.kind.clone(),
@@ -371,10 +350,13 @@ pub async fn get_items(
                     skip: Some(skip),
                 })
                 .await
-                .map(|r| r.metas)?;
+                .map(|r| r.metas)?
+                .into_iter()
+                .map(jellyfin::BaseItemDto::from)
+                .collect();
 
             return Ok(ItemsQueryResult {
-                items: metas.into_iter().map(jellyfin::BaseItemDto::from).collect(),
+                items: items,
                 total_count: 9_999_999,
             });
         }
@@ -382,11 +364,8 @@ pub async fn get_items(
         // seasons listing under a show id
         if let Some(types) = &q.include_item_types {
             if types[0] == jellyfin::MediaType::Season {
-                let meta = fetch_meta(
-                    parent_id.jellyfin_media_type.into(),
-                    parent_id.id.clone(),
-                )
-                .await?;
+                let meta =
+                    aio.get_meta(parent_id.jellyfin_media_type.into(), parent_id.id.clone()).await?;
 
                 let seasons: Vec<jellyfin::BaseItemDto> = meta
                     .get_season_numbers()
@@ -398,7 +377,7 @@ pub async fn get_items(
                             None,
                         ),
                         name: Some(format!("Season {}", x)),
-                        index_number: Some(x as i32),
+                        index_number: Some(x as i64),
                         ..Default::default()
                     })
                     .collect();
@@ -415,26 +394,21 @@ pub async fn get_items(
     if let Some(media_id) = q.parent_id.clone() {
         if let Some(types) = &q.include_item_types {
             if types[0] == jellyfin::MediaType::Episode {
-                let mut season_number: Option<i32> = None;
                 if let Some(season_id) = q.season_id.take() {
                     // .context("Failed to decode media UUID")?;
                     let (_, sn) = media_id
                         .id
                         .rsplit_once(':')
                         .ok_or_else(|| anyhow!("invalid season id"))?;
-                    season_number = Some(sn.parse::<i32>()?);
-                }
+                    let season_number = sn.parse::<i64>()?;
+
 
                 let meta =
-                    fetch_meta(aio::MediaType::Series, media_id.id.clone()).await?;
+                    aio.get_meta(aio::MediaType::Series, media_id.id.clone()).await?;
 
                 let episodes: Vec<jellyfin::BaseItemDto> = meta
-                    .videos
-                    .unwrap_or_default()
+                    .get_episodes(season_number)
                     .into_iter()
-                    .filter(|e| {
-                        season_number.map(|s| e.season == Some(s)).unwrap_or(false)
-                    })
                     .map(jellyfin::BaseItemDto::from)
                     .collect();
 
@@ -442,6 +416,7 @@ pub async fn get_items(
                     total_count: episodes.len() as i64,
                     items: episodes,
                 });
+              }
             }
         }
     }
@@ -450,8 +425,13 @@ pub async fn get_items(
     if let Some(ids) = &q.ids {
         let media_id = ids[0].clone();
         if media_id.jellyfin_media_type == jellyfin::MediaType::BoxSet {
-            let catalog = manifest
-                .get_catalog_by_id(&media_id.id)
+                                let (kind, id) = media_id
+                        .id
+                        .rsplit_once(':')
+                        .ok_or_else(|| anyhow!("invalid season id"))?;
+          
+          let catalog = manifest
+                .get_catalog(&id, &kind.to_string())
                 .ok_or_else(|| anyhow!("catalog not found"))?;
             return Ok(ItemsQueryResult {
                 items: vec![catalog.into()],
@@ -480,24 +460,26 @@ pub async fn get_items(
             });
         }
         //let meta_id = media_id.jellyfin_media_type ==
-        let meta = if media_id.jellyfin_media_type == jellyfin::MediaType::Episode || media_id.jellyfin_media_type == jellyfin::MediaType::Season {
-
-        fetch_meta(jellyfin::MediaType::Series.into(), media_id.id.split(':').next().unwrap().to_string()).await?
-        
-} else {
-    fetch_meta(media_id.jellyfin_media_type.into(), media_id.id.clone()).await?
+        let meta = match media_id.jellyfin_media_type {
+    jellyfin::MediaType::Episode | jellyfin::MediaType::Season => {
+        aio.get_meta(aio::MediaType::Series, media_id.id.split(':').next().unwrap().to_string()).await?
+    }
+    _ => {
+        aio.get_meta(media_id.jellyfin_media_type.into(), media_id.id.clone()).await?
+    }
 };
 
-        let mut item: jellyfin::BaseItemDto = meta.clone().into();
 
+
+        // if season or episode use rhat
+        let mut item: jellyfin::BaseItemDto = meta.into();
+        
         if [jellyfin::MediaType::Movie, jellyfin::MediaType::Episode]
             .contains(&media_id.jellyfin_media_type)
         {
-            let streams = fetch_streams(
-                media_id.jellyfin_media_type.clone().into(),
-                media_id.id.clone(),
-            )
-            .await?;
+          
+            let streams = aio.get_streams(media_id.jellyfin_media_type.clone().into(),
+                media_id.id.clone()).await?;
 
             item.media_sources = Some(
                 streams
@@ -606,7 +588,7 @@ pub async fn items(
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
-        total_record_count: items.total_count as i32,
+        total_record_count: items.total_count as i64,
         start_index: q.start_index.unwrap_or_else(|| 0),
         ..Default::default()
     }))
@@ -680,7 +662,7 @@ pub async fn shows_episodes(
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
-        // total_record_count: items.total_count as i32,
+        // total_record_count: items.total_count as i64,
         // start_index: q.start_index.unwrap_or_else(|| 0),
         ..Default::default()
     }))
@@ -814,7 +796,7 @@ pub async fn items_filters(State(state): State<AppState>) -> Result<impl IntoRes
     /// genres is actually tags?
     use strum::IntoEnumIterator;
     // let genres = db::Genre::iter().map(|g| g.to_string()).collect();
-    let current_year = chrono::Utc::now().year() as i32;
+    let current_year = chrono::Utc::now().year() as i64;
     //let years = (1900..=current_year).collect();
 
     Ok(Json(jellyfin::QueryFiltersLegacy {

@@ -130,6 +130,7 @@ impl Media {
             r#"
             INSERT INTO media (
                 id, kind, parent_id, url, imdb_id, season, episode,
+    
                 probe_data, aio_id, aio_meta, aio_stream, created_at, updated_at
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
@@ -186,7 +187,7 @@ impl Media {
         Ok(row)
     }
     
-    pub fn generate_deterministic_id(
+    pub fn get_stable_id(
         kind: &MediaKind,
         imdb_id: &Option<String>,
         url: &Option<String>,

@@ -66,6 +66,24 @@ impl AioService {
 
         Ok(sdks::aio::search_client(&search_url, username, password)?)
     }
+    
+    pub async fn get_meta(
+        &self,
+        media_type: sdks::aio::MediaType,
+        id: String
+    ) -> Result<sdks::aio::Meta> {
+            Ok(self.client
+            .execute(&sdks::aio::MetaEndpoint {
+                media_type,
+                id,
+                season: None,
+                episode: None,
+            })
+            .await?
+            .meta)
+    }
+    
+
 
     pub async fn get_stream(
         &self,

@@ -20,9 +20,9 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
         // dbg!(&meta);
         // let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
-        let item = jellyfin::BaseItemDto {
+    let item = jellyfin::BaseItemDto {
             id: MediaId::from_aio_meta(meta.clone()),
-            //id: String,
+           // id: get_stable_uuid(meta.id.clone()),
             server_id: utils::server_id(),
             name: meta.name.clone(),
             original_title: meta.name.clone(),
@@ -77,11 +77,13 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
                 .map(|r| r.as_secs().to_ticks(utils::TickUnit::Seconds).unwrap()),
             ..Default::default()
         };
+        
+        
 
         // this shouldnt be done here but eh
         if meta.media_type == aio::MediaType::Series {
             // Group episodes by season
-            let seasons: BTreeMap<i32, Vec<aio::Episode>> = meta
+            let seasons: BTreeMap<i64, Vec<aio::Episode>> = meta
                 .videos
                 .unwrap()
                 .into_iter()
@@ -106,6 +108,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
                     //  parent_id: Some(MediaId::from_aio_meta(meta.clone())),
                     ..Default::default()
                 };
+               // season.save(&store);
 
                 for episode in episodes {
                           jellyfin::BaseItemDto {
@@ -125,6 +128,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
             }),
             ..Default::default()
         };
+        //episode.save(&store);
                     //jellyfin::BaseItemDto::from(episode.clone());
                 }
             }
@@ -306,13 +310,13 @@ impl From<ffprobe::FfProbe> for jellyfin::MediaSourceInfo {
                 jellyfin::MediaStream {
                     aspect_ratio: s.display_aspect_ratio,
                     //average_frame_rate: s.avg_frame_rate,
-                    bit_rate: s.bit_rate.map(|x| x.parse::<i32>().unwrap()),
+                    bit_rate: s.bit_rate.map(|x| x.parse::<i64>().unwrap()),
                     codec: s.codec_name.clone(),
                     codec_tag: Some(s.codec_tag),
                     //codec_time_base: s.codec_time_base,
-                    height: s.height.map(|x| x as i32),
-                    width: s.width.map(|x| x as i32),
-                    channels: s.channels.map(|x| x as i32),
+                    height: s.height.map(|x| x as i64),
+                    width: s.width.map(|x| x as i64),
+                    channels: s.channels.map(|x| x as i64),
                     channel_layout: s.channel_layout.clone(),
                     //sample_rate: s.sample_rate,
                     //time_base: s.time_base,
@@ -339,7 +343,7 @@ impl From<ffprobe::FfProbe> for jellyfin::MediaSourceInfo {
                             Some(joined)
                         }
                     },
-                    index: Some(s.index as i32),
+                    index: Some(s.index as i64),
                     language,
                     //language: s.tags.as_ref().and_then(|tags| tags.get("language").cloned()),
                     is_default: to_option_bool(s.disposition.default),
@@ -379,7 +383,7 @@ impl From<ffprobe::FfProbe> for jellyfin::MediaSourceInfo {
                 .format
                 .duration
                 .and_then(|x| x.to_ticks(utils::TickUnit::Seconds)),
-            bitrate: probe.format.bit_rate.and_then(|x| x.parse::<i32>().ok()),
+            bitrate: probe.format.bit_rate.and_then(|x| x.parse::<i64>().ok()),
             ..Default::default()
         }
     }

@@ -183,7 +183,7 @@ pub fn virtual_folders(manifest: &sdks::aio::Manifest) -> Vec<jellyfin::BaseItem
             .map(|x| jellyfin::BaseItemDto {
                 name: Some(x.name.clone()),
                 id: utils::MediaId::new(
-                    x.id.clone(),
+                    format!("{}:{}", x.kind, x.id.clone()),
                     jellyfin::MediaType::CollectionFolder,
                     None,
                 ),

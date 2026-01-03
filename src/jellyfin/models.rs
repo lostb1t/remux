@@ -90,12 +90,20 @@ pub struct SpecialViewOptionDto {
     pub id: Option<String>,
 }
 
-//use serde_aux::container_attributes::deserialize_struct_case_insensitive;
 
 #[serde_as]
 #[skip_serializing_none]
+#[serde_alias(
+    CamelCase,
+    PascalCase,
+    LowerCase,
+    UpperCase,
+    SnakeCase,
+    ScreamingSnakeCase,
+    KebabCase,
+    ScreamingKebabCase
+)]
 #[derive(Default, Debug, Deserialize, Clone)]
-#[serde_alias(CamelCase, PascalCase)]
 pub struct GetItemsQuery {
     pub user_id: Option<String>,
     pub max_official_rating: Option<String>,
@@ -105,8 +113,8 @@ pub struct GetItemsQuery {
     pub has_special_feature: Option<bool>,
     pub has_trailer: Option<bool>,
     pub adjacent_to: Option<String>,
-    pub index_number: Option<i32>,
-    pub start_index: Option<i32>,
+    pub index_number: Option<i64>,
+    pub start_index: Option<i64>,
     pub limit: Option<u32>,
     pub search_term: Option<String>,
     pub parent_id: Option<MediaId>,
@@ -116,7 +124,7 @@ pub struct GetItemsQuery {
     pub exclude_item_types: Option<Vec<String>>,
     pub include_item_types: Option<Vec<MediaType>>,
     pub is_favorite: Option<bool>,
-    pub image_type_limit: Option<i32>,
+    pub image_type_limit: Option<i64>,
     pub enable_image_types: Option<Vec<String>>,
     pub name_starts_with_or_greater: Option<String>,
     pub name_starts_with: Option<String>,
@@ -132,7 +140,7 @@ pub struct GetItemsQuery {
     pub enable_rewatching: Option<bool>,
     pub disable_first_episode: Option<bool>,
     pub next_up_date_cutoff: Option<String>,
-    pub years: Option<Vec<i32>>,
+    pub years: Option<Vec<i64>>,
     pub genres: Option<Vec<String>>,
     pub genre_ids: Option<Vec<String>>,
     pub official_ratings: Option<Vec<String>>,
@@ -158,8 +166,8 @@ pub struct VideoStreamQuery {
     pub device_profile_id: Option<String>,
     pub play_session_id: Option<String>,
     pub segment_container: Option<String>,
-    pub segment_length: Option<i32>,
-    pub min_segments: Option<i32>,
+    pub segment_length: Option<i64>,
+    pub min_segments: Option<i64>,
     pub media_source_id: Option<MediaId>,
     pub device_id: Option<String>,
     pub audio_codec: Option<String>,
@@ -167,8 +175,8 @@ pub struct VideoStreamQuery {
     pub allow_video_stream_copy: Option<bool>,
     pub allow_audio_stream_copy: Option<bool>,
     pub break_on_non_key_frames: Option<bool>,
-    pub audio_stream_index: Option<i32>,
-    pub video_stream_index: Option<i32>,
+    pub audio_stream_index: Option<i64>,
+    pub video_stream_index: Option<i64>,
     pub context: Option<String>, // Could use enum "Streaming" | "Static"
     pub stream_options: Option<std::collections::HashMap<String, Option<String>>>,
     pub enable_audio_vbr_encoding: Option<bool>,
@@ -183,13 +191,13 @@ pub struct VideoStreamQuery {
 // #[serde(rename_all = "camelCase")]
 pub struct PlaybackInfoQuery {
     pub user_id: Option<String>,
-    pub max_streaming_bitrate: Option<i32>,
+    pub max_streaming_bitrate: Option<i64>,
     pub start_time_ticks: Option<i64>,
     #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
-    pub audio_stream_index: Option<i32>,
+    pub audio_stream_index: Option<i64>,
     #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
-    pub subtitle_stream_index: Option<i32>,
-    pub max_audio_channels: Option<i32>,
+    pub subtitle_stream_index: Option<i64>,
+    pub max_audio_channels: Option<i64>,
     #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
     pub media_source_id: Option<MediaId>,
     pub live_stream_id: Option<String>,
@@ -218,27 +226,27 @@ pub struct BaseItemDtoQueryResult {
 
     /// Gets or sets the index of the first record in Items.
     // #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub start_index: i32,
+    pub start_index: i64,
 
     /// Gets or sets the total number of records available.
     // #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub total_record_count: i32,
+    pub total_record_count: i64,
 }
 
 #[skip_serializing_none]
 #[derive(default2::Default, Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct MediaSourceInfo {
-    pub analyze_duration_ms: Option<i32>,
-    pub bitrate: Option<i32>,
-    pub buffer_ms: Option<i32>,
+    pub analyze_duration_ms: Option<i64>,
+    pub bitrate: Option<i64>,
+    pub buffer_ms: Option<i64>,
     pub container: Option<String>,
-    pub default_audio_stream_index: Option<i32>,
-    pub default_subtitle_stream_index: Option<i32>,
+    pub default_audio_stream_index: Option<i64>,
+    pub default_subtitle_stream_index: Option<i64>,
     pub e_tag: Option<MediaId>,
     pub encoder_path: Option<String>,
     //  pub encoder_protocol: Option<MediaProtocol>,
-    pub fallback_max_streaming_bitrate: Option<i32>,
+    pub fallback_max_streaming_bitrate: Option<i64>,
     pub formats: Option<Vec<String>>,
     pub gen_pts_input: Option<bool>,
     pub has_segments: Option<bool>,
@@ -325,7 +333,7 @@ pub struct QueryFiltersLegacy {
     pub genres: Option<Vec<String>>,
     pub official_ratings: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
-    pub years: Option<Vec<i32>>,
+    pub years: Option<Vec<i64>>,
 }
 
 #[skip_serializing_none]
@@ -359,8 +367,8 @@ pub struct DisplayPreferencesDto {
     pub sort_by: Option<String>,
     pub index_by: Option<String>,
     pub remember_indexing: Option<bool>,
-    pub primary_image_height: Option<i32>,
-    pub primary_image_width: Option<i32>,
+    pub primary_image_height: Option<i64>,
+    pub primary_image_width: Option<i64>,
     pub custom_prefs: Option<HashMap<String, Option<String>>>,
     pub scroll_direction: Option<ScrollDirection>,
     pub show_backdrop: Option<bool>,
@@ -500,13 +508,13 @@ pub struct UserPolicy {
     pub enable_all_channels: Option<bool>,
     pub enabled_folders: Option<Vec<String>>,
     pub enable_all_folders: Option<bool>,
-    pub invalid_login_attempt_count: Option<i32>,
-    pub login_attempts_before_lockout: Option<i32>,
-    pub max_active_sessions: Option<i32>,
+    pub invalid_login_attempt_count: Option<i64>,
+    pub login_attempts_before_lockout: Option<i64>,
+    pub max_active_sessions: Option<i64>,
     pub enable_public_sharing: Option<bool>,
     pub blocked_media_folders: Option<Vec<String>>,
     pub blocked_channels: Option<Vec<String>>,
-    pub remote_client_bitrate_limit: Option<i32>,
+    pub remote_client_bitrate_limit: Option<i64>,
     pub authentication_provider_id: Option<String>,
     pub password_reset_provider_id: Option<String>,
     pub sync_play_access: Option<String>,
@@ -574,11 +582,11 @@ pub struct MediaStream {
     pub aspect_ratio: Option<String>,
     //  pub audio_spatial_format: AudioSpatialFormat,
     pub average_frame_rate: Option<f32>,
-    pub bit_depth: Option<i32>,
-    pub bit_rate: Option<i32>,
-    pub bl_present_flag: Option<i32>,
+    pub bit_depth: Option<i64>,
+    pub bit_rate: Option<i64>,
+    pub bl_present_flag: Option<i64>,
     pub channel_layout: Option<String>,
-    pub channels: Option<i32>,
+    pub channels: Option<i64>,
     pub codec: Option<String>,
     pub codec_tag: Option<String>,
     pub codec_time_base: Option<String>,
@@ -590,14 +598,14 @@ pub struct MediaStream {
     // pub delivery_method: Option<SubtitleDeliveryMethod>,
     pub delivery_url: Option<String>,
     pub display_title: Option<String>,
-    pub dv_bl_signal_compatibility_id: Option<i32>,
-    pub dv_level: Option<i32>,
-    pub dv_profile: Option<i32>,
-    pub dv_version_major: Option<i32>,
-    pub dv_version_minor: Option<i32>,
-    pub el_present_flag: Option<i32>,
-    pub height: Option<i32>,
-    pub index: Option<i32>,
+    pub dv_bl_signal_compatibility_id: Option<i64>,
+    pub dv_level: Option<i64>,
+    pub dv_profile: Option<i64>,
+    pub dv_version_major: Option<i64>,
+    pub dv_version_minor: Option<i64>,
+    pub el_present_flag: Option<i64>,
+    pub height: Option<i64>,
+    pub index: Option<i64>,
     pub is_anamorphic: Option<bool>,
     pub is_avc: Option<bool>,
     pub is_default: Option<bool>,
@@ -615,17 +623,17 @@ pub struct MediaStream {
     pub localized_hearing_impaired: Option<String>,
     pub localized_undefined: Option<String>,
     pub nal_length_size: Option<String>,
-    pub packet_length: Option<i32>,
+    pub packet_length: Option<i64>,
     pub path: Option<String>,
     pub pixel_format: Option<String>,
     pub profile: Option<String>,
     pub real_frame_rate: Option<f32>,
-    pub ref_frames: Option<i32>,
+    pub ref_frames: Option<i64>,
     pub reference_frame_rate: Option<f32>,
-    pub rotation: Option<i32>,
-    pub rpu_present_flag: Option<i32>,
-    pub sample_rate: Option<i32>,
-    pub score: Option<i32>,
+    pub rotation: Option<i64>,
+    pub rpu_present_flag: Option<i64>,
+    pub sample_rate: Option<i64>,
+    pub score: Option<i64>,
     pub supports_external_stream: Option<bool>,
     pub time_base: Option<String>,
     pub title: Option<String>,
@@ -633,7 +641,7 @@ pub struct MediaStream {
     pub video_do_vi_title: Option<String>,
     pub video_range: Option<VideoRange>,
     pub video_range_type: Option<VideoRangeType>,
-    pub width: Option<i32>,
+    pub width: Option<i64>,
 }
 
 #[skip_serializing_none]
@@ -679,9 +687,9 @@ pub struct BaseItemDto {
     pub date_created: Option<String>,
     pub date_last_media_added: Option<String>,
     pub extra_type: Option<String>,
-    pub airs_before_season_number: Option<i32>,
-    pub airs_after_season_number: Option<i32>,
-    pub airs_before_episode_number: Option<i32>,
+    pub airs_before_season_number: Option<i64>,
+    pub airs_after_season_number: Option<i64>,
+    pub airs_before_episode_number: Option<i64>,
     #[default(Some(false))]
     pub can_delete: Option<bool>,
     #[default(Some(true))]
@@ -713,17 +721,17 @@ pub struct BaseItemDto {
     pub run_time_ticks: Option<i64>,
     pub play_access: Option<String>,
     pub aspect_ratio: Option<String>,
-    pub production_year: Option<i32>,
+    pub production_year: Option<i64>,
     pub is_place_holder: Option<bool>,
     pub number: Option<String>,
     pub channel_number: Option<String>,
-    pub index_number: Option<i32>,
-    pub index_number_end: Option<i32>,
-    pub parent_index_number: Option<i32>,
+    pub index_number: Option<i64>,
+    pub index_number_end: Option<i64>,
+    pub parent_index_number: Option<i64>,
     pub critic_rating_summary: Option<String>,
     pub is_hd: Option<bool>,
     pub is_folder: bool,
-    pub parent_id: Option<String>,
+    pub parent_id: Option<MediaId>,
     #[default(MediaType::Movie)]
     pub type_: MediaType,
     // pub people: Option<Vec<BaseItemPerson>>,
@@ -732,14 +740,14 @@ pub struct BaseItemDto {
     pub parent_logo_item_id: Option<String>,
     pub parent_backdrop_item_id: Option<String>,
     pub parent_backdrop_image_tags: Option<Vec<String>>,
-    pub local_trailer_count: Option<i32>,
+    pub local_trailer_count: Option<i64>,
     //pub user_data: Option<UserItemDataDto>,
-    pub recursive_item_count: Option<i32>,
-    pub child_count: Option<i32>,
+    pub recursive_item_count: Option<i64>,
+    pub child_count: Option<i64>,
     pub series_name: Option<String>,
     pub series_id: Option<MediaId>,
     pub season_id: Option<MediaId>,
-    pub special_feature_count: Option<i32>,
+    pub special_feature_count: Option<i64>,
     pub display_preferences_id: Option<String>,
     pub status: Option<Status>,
     pub air_time: Option<String>,
@@ -763,8 +771,8 @@ pub struct BaseItemDto {
     pub season_name: Option<String>,
     pub media_streams: Option<Vec<MediaStream>>,
     pub video_type: Option<String>,
-    pub part_count: Option<i32>,
-    pub media_source_count: Option<i32>,
+    pub part_count: Option<i64>,
+    pub media_source_count: Option<i64>,
     pub image_tags: Option<ImageTags>,
     pub backdrop_image_tags: Option<Vec<String>>,
     pub image_blur_hashes: Option<ImageBlurHashes>,
@@ -780,19 +788,19 @@ pub struct BaseItemDto {
     pub media_type: String,
     pub end_date: Option<String>,
     //pub locked_fields: Option<Vec<MetadataFields>>,
-    pub trailer_count: Option<i32>,
-    pub movie_count: Option<i32>,
-    pub series_count: Option<i32>,
-    pub program_count: Option<i32>,
-    pub episode_count: Option<i32>,
-    pub song_count: Option<i32>,
-    pub album_count: Option<i32>,
-    pub artist_count: Option<i32>,
-    pub music_video_count: Option<i32>,
+    pub trailer_count: Option<i64>,
+    pub movie_count: Option<i64>,
+    pub series_count: Option<i64>,
+    pub program_count: Option<i64>,
+    pub episode_count: Option<i64>,
+    pub song_count: Option<i64>,
+    pub album_count: Option<i64>,
+    pub artist_count: Option<i64>,
+    pub music_video_count: Option<i64>,
     #[default(true)]
     pub lock_data: bool,
-    pub width: Option<i32>,
-    pub height: Option<i32>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
     pub camera_make: Option<String>,
     pub camera_model: Option<String>,
     pub software: Option<String>,
@@ -804,12 +812,12 @@ pub struct BaseItemDto {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub altitude: Option<f64>,
-    pub iso_speed_rating: Option<i32>,
+    pub iso_speed_rating: Option<i64>,
     pub series_timer_id: Option<String>,
     pub program_id: Option<String>,
     pub channel_primary_image_tag: Option<String>,
     pub start_date: Option<String>,
-    pub completion_percentage: Option<i32>,
+    pub completion_percentage: Option<i64>,
     pub is_repeat: Option<bool>,
     pub episode_title: Option<String>,
     pub channel_type: Option<String>,
@@ -827,23 +835,30 @@ pub struct BaseItemDto {
     pub has_timer: Option<bool>,
     pub provider_ids: Option<ProviderIds>,
 
-    // internal remux stuff
-    #[serde(skip)]
-    pub aio_id: Option<String>,
-    #[serde(skip)]
-    pub aio_stream_id: Option<String>,
-    #[serde(skip)]
-    pub aio_resource_type: Option<aio::ResourceType>,
-    #[serde(skip)]
-    pub aio_media_type: Option<aio::MediaType>,
+    // internal stuff
+   // #[serde(skip)]
+   // pub aio_id: Option<String>,
+   // #[serde(skip)]
+   // pub aio_resource_type: Option<aio::ResourceType>,
+    //#[serde(skip)]
+    //pub aio_media_type: Option<aio::MediaType>,
+   // #[serde(skip)]
+    //pub aio_stream: Option<sdks::aio::Stream>,
 }
-
 
 impl BaseItemDto {
+  pub fn save(&self, store: &crate::store::Store) {
+    store.save(self.id.clone(), self.clone(), Duration::from_secs(3600));
+  }
   
+  pub fn insert(&self, store: &crate::store::Store) {
+    store.insert(self.id.clone(), self.clone(), Duration::from_secs(3600));
+  }
+  
+  
+  
+
 }
-
-
 
 #[derive(
     Copy,

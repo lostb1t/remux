@@ -11,6 +11,8 @@ use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
+use serde::Deserializer;
+use serde::de::Error as _;
 
 #[derive(
     Default,
@@ -89,8 +91,8 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn get_catalog_by_id(&self, id: &str) -> Option<Catalog> {
-        self.catalogs.iter().find(|c| c.id == id).cloned()
+    pub fn get_catalog(&self, id: &str, kind: &String) -> Option<Catalog> {
+        self.catalogs.iter().find(|c| &c.kind == kind && c.id == id).cloned()
     }
 }
 
@@ -319,8 +321,7 @@ pub struct Meta {
     // pub behavior_hints: Option<BehaviorHints>,
 }
 
-use serde::Deserializer;
-use serde::de::Error as _;
+
 //use std::time::Duration;
 
 fn deserialize_opt_duration_empty_ok<'de, D>(
@@ -344,11 +345,11 @@ where
 }
 
 impl Meta {
-    pub fn get_season_numbers(&self) -> Vec<i32> {
+    pub fn get_season_numbers(&self) -> Vec<i64> {
         // dbg!(&self);
         if let Some(episodes) = self.videos.as_ref() {
-            let mut seasons: Vec<i32> =
-                episodes.iter().filter_map(|e| e.season).collect();
+            let mut seasons: Vec<i64> =
+              episodes.iter().filter_map(|e| e.season).collect();
             seasons.sort_unstable();
             seasons.dedup();
             seasons
@@ -364,6 +365,21 @@ impl Meta {
             None
         }
     }
+
+    pub fn get_episodes(&self, season_num: i64) -> Vec<Episode> {
+        self
+                    .videos
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|e| {
+
+    e.season.map_or(false, |s| s == season_num)
+
+                    })
+                    .collect()
+    }
+    
 }
 
 #[skip_serializing_none]
@@ -374,10 +390,10 @@ pub struct Episode {
     pub name: Option<String>,
     pub released: Option<String>,
     pub thumbnail: Option<String>,
-    pub episode: Option<i32>,
-    pub season: Option<i32>,
+    pub episode: Option<i64>,
+    pub season: Option<i64>,
     pub overview: Option<String>,
-    pub number: Option<i32>,
+    pub number: Option<i64>,
     pub description: Option<String>,
     pub rating: Option<String>,
     //  pub first_aired: Option<String>,

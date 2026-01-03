@@ -118,6 +118,7 @@ impl MediaId {
     }
 }
 
+
 impl Serialize for MediaId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -366,6 +367,12 @@ impl ToRunTimeTicks for &str {
     fn to_ticks(&self, unit: TickUnit) -> Option<i64> {
         self.parse::<f64>().ok().and_then(|v| v.to_ticks(unit))
     }
+}
+
+const NS: Uuid = uuid::uuid!("6ba7b810-9dad-11d1-80b4-00c04fd430c8"); // DNS namespace
+
+pub fn get_stable_uuid(v: String) -> String {
+    Uuid::new_v5(&NS, v.as_bytes()).to_string()
 }
 
 pub fn get_uuid() -> String {
