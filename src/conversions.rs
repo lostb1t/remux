@@ -85,7 +85,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
             // Group episodes by season
             let seasons: BTreeMap<i64, Vec<aio::Episode>> = meta
                 .videos
-                .unwrap()
+                .unwrap_or_default()
                 .into_iter()
                 .filter_map(|ep| ep.season.map(|s| (s, ep)))
                 .fold(BTreeMap::new(), |mut acc, (season, ep)| {
