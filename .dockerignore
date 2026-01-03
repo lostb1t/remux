@@ -1,0 +1,4 @@
+target
+*.sqlite
+config.toml
+.git

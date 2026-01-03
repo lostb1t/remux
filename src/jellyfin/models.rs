@@ -90,9 +90,6 @@ pub struct SpecialViewOptionDto {
     pub id: Option<String>,
 }
 
-
-#[serde_as]
-#[skip_serializing_none]
 #[serde_alias(
     CamelCase,
     PascalCase,
@@ -104,6 +101,8 @@ pub struct SpecialViewOptionDto {
     ScreamingKebabCase
 )]
 #[derive(Default, Debug, Deserialize, Clone)]
+#[serde_as]
+#[skip_serializing_none]
 pub struct GetItemsQuery {
     pub user_id: Option<String>,
     pub max_official_rating: Option<String>,
@@ -183,12 +182,10 @@ pub struct VideoStreamQuery {
     pub always_burn_in_subtitle_when_transcoding: Option<bool>,
 }
 
-#[serde(rename_all = "camelCase")] // canonical case
 #[serde_alias(CamelCase, PascalCase)]
+#[derive(Default, Debug, Deserialize)]
 #[serde(default)]
 #[serde_as]
-#[derive(Default, Debug, Deserialize)]
-// #[serde(rename_all = "camelCase")]
 pub struct PlaybackInfoQuery {
     pub user_id: Option<String>,
     pub max_streaming_bitrate: Option<i64>,
@@ -575,9 +572,9 @@ impl Default for UserPolicy {
     }
 }
 
+#[derive(Default, Deserialize, PartialEq, Serialize, Clone, Debug)]
 #[skip_serializing_none]
 #[serde(rename_all = "PascalCase")]
-#[derive(Default, Deserialize, PartialEq, Serialize, Clone, Debug)]
 pub struct MediaStream {
     pub aspect_ratio: Option<String>,
     //  pub audio_spatial_format: AudioSpatialFormat,

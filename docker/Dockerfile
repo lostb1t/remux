@@ -14,19 +14,12 @@ RUN apt-get update \
 
 COPY vendor ./vendor
 COPY Cargo.toml Cargo.lock ./
+RUN cargo fetch
 
-# Create a dummy main.rs to cache dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs
+COPY . .
 
-# Build dependencies
+ENV SQLX_OFFLINE=true
 RUN cargo build --release
-
-COPY ./src ./src
-
-# Build the full project
-RUN cargo build --release
-
-RUN strip target/release/remux-server
 
 FROM debian:bookworm-slim AS release
 ENV WEB_PATH=/app/jellyfin-web

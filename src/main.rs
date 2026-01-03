@@ -84,7 +84,7 @@ use crate::db as database;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    eprintln!("Starting remux-server...");
+    println!("Starting remux-server...");
     setup_logging();
 
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
@@ -267,9 +267,8 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
 pub fn setup_logging() {
     let filter_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,hyper=warn,sqlx=warn"));
-let fmt_layer = fmt::layer()
-       // .with_thread_names(true)
-       // .with_thread_ids(true)
+    
+      let fmt_layer = fmt::layer()
         .with_line_number(true)
        // .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
         .with_target(true)
