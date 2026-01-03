@@ -1,11 +1,8 @@
-# Stage 1: Jellyfin web client
 FROM jellyfin/jellyfin:10.11.5 AS jf
 
-# Stage 2: Build Rust application
 FROM rust:slim-bookworm AS builder
 WORKDIR /app
 
-# Install build dependencies
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl ca-certificates \
@@ -15,7 +12,6 @@ RUN apt-get update \
         libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy vendor, Cargo.toml, and Cargo.lock first for caching
 COPY vendor ./vendor
 COPY Cargo.toml Cargo.lock ./
 
@@ -46,5 +42,4 @@ COPY --from=jf /jellyfin/jellyfin-web ${WEB_PATH}
 
 EXPOSE 3000
 
-# Set the entrypoint
 CMD ["./remux-server"]

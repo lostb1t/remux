@@ -81,7 +81,7 @@ use crate::db as database;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
+    eprintln!("Starting remux-server...");
     setup_logging();
 
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
