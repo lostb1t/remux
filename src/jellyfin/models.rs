@@ -831,30 +831,25 @@ pub struct BaseItemDto {
     pub has_series_timer: Option<bool>,
     pub has_timer: Option<bool>,
     pub provider_ids: Option<ProviderIds>,
-
     // internal stuff
-   // #[serde(skip)]
-   // pub aio_id: Option<String>,
-   // #[serde(skip)]
-   // pub aio_resource_type: Option<aio::ResourceType>,
+    // #[serde(skip)]
+    // pub aio_id: Option<String>,
+    // #[serde(skip)]
+    // pub aio_resource_type: Option<aio::ResourceType>,
     //#[serde(skip)]
     //pub aio_media_type: Option<aio::MediaType>,
-   // #[serde(skip)]
+    // #[serde(skip)]
     //pub aio_stream: Option<sdks::aio::Stream>,
 }
 
 impl BaseItemDto {
-  pub fn save(&self, store: &crate::store::Store) {
-    store.save(self.id.clone(), self.clone(), Duration::from_secs(3600));
-  }
-  
-  pub fn insert(&self, store: &crate::store::Store) {
-    store.insert(self.id.clone(), self.clone(), Duration::from_secs(3600));
-  }
-  
-  
-  
+    pub fn save(&self, store: &crate::store::Store) {
+        store.save(self.id.clone(), self.clone(), Duration::from_secs(3600));
+    }
 
+    pub fn insert(&self, store: &crate::store::Store) {
+        store.insert(self.id.clone(), self.clone(), Duration::from_secs(3600));
+    }
 }
 
 #[derive(

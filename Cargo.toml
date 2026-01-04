@@ -59,7 +59,7 @@ itertools = "0.14.0"
 merge = "0.2.0"
 tempfile = "3.20.0"
 ffprobe = { git = "https://github.com/theduke/ffprobe-rs.git", branch = "main" }
-http-cache-reqwest = { version = "0.16", default-features = true, features = ["manager-moka"] }
+#http-cache-reqwest = { version = "0.16", default-features = true, features = ["manager-moka"] }
 reqwest-middleware = { version = "0.4", default-features = false, features = ["rustls-tls"] }
 isolang = "2.4.0"
 timed = "0.2.1"
@@ -90,6 +90,7 @@ sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "uuid" ] }
 argon2 = { version = "0.5.3", default-features = true}
 # argo depends on 0,8
 rand = { version = "0.8", features = ["getrandom"] }
+md5 = "0.8.0"
 
 #[target.'cfg(any(target_arch = "arm", target_arch = "aarch64"))'.dependencies]
 #ez_ffmpeg_arm = { package = "ez-ffmpeg", path = "vendor/ez-ffmpeg" }

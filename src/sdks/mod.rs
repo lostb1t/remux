@@ -1,15 +1,84 @@
 use axum::http::{HeaderMap, HeaderValue, Method, header};
+use itertools::Itertools;
+use md5;
+use moka::Expiry;
+use moka::sync::Cache;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
+use std::any::Any;
+use std::fmt;
+use std::iter;
+use std::ops;
 use std::sync::Arc;
-use tracing::{info, trace};
+use std::time::Duration;
+use tracing::*;
+
+use std::sync::LazyLock;
+
+static CACHE: LazyLock<Cache<String, Arc<CachedValue>>> =
+    LazyLock::new(|| Cache::builder().max_capacity(50_000).build());
+
+fn hash_key(key: &str) -> String {
+    let result = md5::compute(key.as_bytes());
+    format!("{:x}", result)
+}
+
+#[derive(Debug)]
+pub struct CachedValue {
+    pub item: Value,
+    pub ttl: Duration,
+}
+
+impl Clone for CachedValue {
+    fn clone(&self) -> Self {
+        Self {
+            item: self.item.clone(),
+            ttl: self.ttl,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct PerEntryExpiry;
+
+impl Expiry<String, Arc<CachedValue>> for PerEntryExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &Arc<CachedValue>,
+        _current_time: std::time::Instant,
+    ) -> Option<Duration> {
+        Some(value.ttl)
+    }
+
+    fn expire_after_update(
+        &self,
+        _key: &String,
+        value: &Arc<CachedValue>,
+        _current_time: std::time::Instant,
+        _current_duration: Option<Duration>,
+    ) -> Option<Duration> {
+        Some(value.ttl)
+    }
+
+    fn expire_after_read(
+        &self,
+        _key: &String,
+        _value: &Arc<CachedValue>,
+        _current_time: std::time::Instant,
+        current_duration: Option<Duration>,
+        _now: std::time::Instant,
+    ) -> Option<Duration> {
+        current_duration
+    }
+}
+
 pub mod aio;
 pub mod tmdb;
 
-//
-// Auth
-//
-
-pub trait Auth: Send + Sync {
+pub trait Auth: Send + Sync + Clone {
     fn apply(
         &self,
         req: reqwest_middleware::RequestBuilder,
@@ -39,7 +108,7 @@ impl Auth for BasicAuth {
         &self,
         req: reqwest_middleware::RequestBuilder,
     ) -> reqwest_middleware::RequestBuilder {
-        req.basic_auth(self.username.clone(), Some(self.password.clone()))
+        req.basic_auth(&self.username, Some(&self.password))
     }
 }
 
@@ -57,15 +126,10 @@ impl Auth for BearerAuth {
     }
 }
 
-//
-// Errors
-//
-
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("unauthorized")]
     Unauthorized,
-
     #[error("http error (status={status}) endpoint={endpoint:?}: {message}")]
     Http {
         status: u16,
@@ -73,25 +137,19 @@ pub enum ClientError {
         endpoint: Option<String>,
         body: Option<String>,
     },
-
     #[error("json error (status={status}) endpoint={endpoint:?}: {source}")]
     Json {
         status: u16,
-        #[source]
         source: serde_json::Error,
         endpoint: Option<String>,
         body: Option<String>,
     },
-
     #[error(transparent)]
     Transport(#[from] reqwest_middleware::Error),
-
     #[error(transparent)]
     Url(#[from] url::ParseError),
-
     #[error(transparent)]
     UrlEncoded(#[from] serde_urlencoded::ser::Error),
-
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -102,16 +160,12 @@ fn default_error_mapper(status: u16, endpoint: &str, body: &str) -> ClientError 
     } else {
         ClientError::Http {
             status,
-            endpoint: Some(endpoint.to_string()),
             message: "http error".to_string(),
+            endpoint: Some(endpoint.to_string()),
             body: Some(body.to_string()),
         }
     }
 }
-
-//
-// Body / Endpoint
-//
 
 pub enum Body {
     Empty,
@@ -128,57 +182,24 @@ impl Default for Body {
 }
 
 pub trait Endpoint {
-    type Output: DeserializeOwned;
-
+    type Output: DeserializeOwned + Clone + Serialize;
     fn method(&self) -> Method {
         Method::GET
     }
-
     fn path(&self) -> String;
-
     fn query(&self) -> Vec<(String, String)> {
         Vec::new()
     }
-
     fn headers(&self) -> HeaderMap {
         HeaderMap::new()
     }
-
     fn body(&self) -> Body {
         Body::Empty
     }
-
-    /// Per-endpoint cache override.
-    ///
-    /// Examples:
-    /// - Manifest: `Some(CacheMode::ForceCache)`
-    /// - Normal endpoints: `None` (use middleware default)
-    fn cache_mode(&self) -> Option<http_cache_reqwest::CacheMode> {
+    fn cache_ttl(&self) -> Option<Duration> {
         None
     }
 }
-
-//
-// RestClient (reqwest-middleware + http-cache-reqwest)
-//
-
-use http_cache_reqwest::{Cache, CacheMode, HttpCache, HttpCacheOptions, MokaManager};
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-
-// #[async_trait::async_trait]
-// impl Middleware for CacheMiddleware {
-//     async fn handle(
-//         &self,
-//         req: Request,
-//         extensions: &mut Extensions,
-//         next: Next<'_>,
-//     ) -> Result<Response> {
-//         println!("Request started {:?}", req);
-//         let res = next.run(req, extensions).await;
-//         println!("Result: {:?}", res);
-//         res
-//     }
-// }
 
 #[derive(Clone)]
 pub struct RestClient<A: Auth = NoAuth> {
@@ -186,21 +207,13 @@ pub struct RestClient<A: Auth = NoAuth> {
     base: url::Url,
     auth: Arc<A>,
     map_error: fn(u16, &str, &str) -> ClientError,
+    cache: Cache<String, Arc<CachedValue>>,
 }
 
 impl RestClient<NoAuth> {
     pub fn new(base: &str) -> Result<Self, url::ParseError> {
-        // let inner = reqwest::Client::new();
-        let manager = MokaManager::default();
-
-        let http = ClientBuilder::new(reqwest::Client::new())
-            .with(Cache(HttpCache {
-                mode: CacheMode::Default,
-                manager,
-                options: HttpCacheOptions::default(),
-            }))
-            .build();
-
+        let http = ClientBuilder::new(reqwest::Client::new()).build();
+        let cache = CACHE.clone();
         Ok(Self {
             http,
             base: url::Url::parse(
@@ -208,17 +221,19 @@ impl RestClient<NoAuth> {
             )?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
+            cache,
         })
     }
 }
 
-impl<A: Auth> RestClient<A> {
-    pub fn with_auth<B: Auth>(self, auth: B) -> RestClient<B> {
+impl<A: Auth + Clone> RestClient<A> {
+    pub fn with_auth<B: Auth + Clone>(self, auth: B) -> RestClient<B> {
         RestClient {
             http: self.http,
             base: self.base,
             auth: Arc::new(auth),
             map_error: self.map_error,
+            cache: self.cache,
         }
     }
 
@@ -227,48 +242,39 @@ impl<A: Auth> RestClient<A> {
         self
     }
 
-    pub async fn execute<EP: Endpoint>(
+    pub async fn execute<EP: Endpoint + Clone>(
         &self,
-        ep: &EP,
+        endpoint: EP,
     ) -> Result<EP::Output, ClientError> {
-        self.execute_inner(ep, None).await
-    }
-
-    pub async fn execute_no_cache<EP: Endpoint>(
-        &self,
-        ep: &EP,
-    ) -> Result<EP::Output, ClientError> {
-        self.execute_inner(ep, Some(CacheMode::NoStore)).await
-    }
-
-    async fn execute_inner<EP: Endpoint>(
-        &self,
-        ep: &EP,
-        cache_override: Option<CacheMode>,
-    ) -> Result<EP::Output, ClientError> {
-        let endpoint = ep.path();
-        let mut url = self.base.join(&endpoint.trim_start_matches('/'))?;
-
-        let query = ep.query();
+        let path = endpoint.path();
+        let mut url = self.base.join(&path.trim_start_matches('/')).unwrap();
+        let query = endpoint.query();
         if !query.is_empty() {
             url.query_pairs_mut()
                 .extend_pairs(query.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         }
+        let cache_key = hash_key(&url.to_string());
+
+        if let Some(ttl) = endpoint.cache_ttl() {
+            if let Some(cached) = self.cache.get(&cache_key) {
+                return Ok(serde_json::from_value(cached.item.clone()).map_err(
+                    |e| ClientError::Json {
+                        status: 0,
+                        source: e,
+                        endpoint: Some(cache_key.clone()),
+                        body: None,
+                    },
+                )?);
+            }
+        }
 
         let mut req = self
             .http
-            .request(ep.method(), url.clone())
-            .headers(ep.headers());
+            .request(endpoint.method(), url.clone())
+            .headers(endpoint.headers());
         req = self.auth.apply(req);
-
-        let mode = cache_override.or_else(|| ep.cache_mode());
-        if let Some(mode) = mode {
-            req = req.with_extension(mode);
-        }
-
-        req = match ep.body() {
+        req = match endpoint.body() {
             Body::Empty => req,
-
             Body::Json(v) => {
                 let bytes = serde_json::to_vec(&v).map_err(|e| ClientError::Json {
                     status: 0,
@@ -276,16 +282,13 @@ impl<A: Auth> RestClient<A> {
                     endpoint: Some(url.clone().to_string()),
                     body: Some(v.to_string()),
                 })?;
-
                 req.header(
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("application/json"),
                 )
                 .body(bytes)
             }
-
             Body::Form(v) => {
-                // Produces: key=a&key=b style
                 let encoded = serde_urlencoded::to_string(&v)?;
                 req.header(
                     header::CONTENT_TYPE,
@@ -293,49 +296,100 @@ impl<A: Auth> RestClient<A> {
                 )
                 .body(encoded)
             }
-
             Body::Text(s) => req.body(s),
             Body::Bytes(b) => req.body(b),
         };
-
-        //trace!("requesting {}", url.clone().to_string());
         let resp = req.send().await?;
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
 
         match status {
             401 => Err(ClientError::Unauthorized),
+            s if (200..300).contains(&s) => {
+                let result = serde_json::from_str::<EP::Output>(&text).map_err(|e| {
+                    ClientError::Json {
+                        status: s,
+                        source: e,
+                        endpoint: Some(url.clone().to_string()),
+                        body: Some(text),
+                    }
+                });
 
-            s if (200..300).contains(&s) => serde_json::from_str::<EP::Output>(&text)
-                .map_err(|e| ClientError::Json {
-                    status: s,
-                    source: e,
-                    endpoint: Some(url.clone().to_string()),
-                    body: Some(text),
-                }),
-
+                if let Some(ttl) = endpoint.cache_ttl() {
+                    if let Ok(ref value) = result {
+                        let json_value = serde_json::to_value(value).map_err(|e| {
+                            ClientError::Json {
+                                status: 0,
+                                source: e,
+                                endpoint: Some(cache_key.clone()),
+                                body: None,
+                            }
+                        })?;
+                        let cached_value = Arc::new(CachedValue {
+                            item: json_value,
+                            ttl,
+                        });
+                        self.cache.insert(cache_key, cached_value);
+                    }
+                }
+                result
+            }
             s => Err((self.map_error)(s, &url.clone().to_string(), &text)),
         }
     }
 }
 
-// helpers
+pub trait CachedEndpoint: Endpoint + Sized {
+    fn with_cache(self, ttl: Duration) -> Cached<Self> {
+        Cached {
+            endpoint: self,
+            ttl,
+        }
+    }
+}
 
-use std::borrow::Cow;
-use std::fmt;
-use std::iter;
-use std::ops;
+impl<EP: Endpoint + Sized> CachedEndpoint for EP {}
 
-use itertools::Itertools;
+#[derive(Clone)]
+pub struct Cached<EP: Endpoint> {
+    endpoint: EP,
+    ttl: Duration,
+}
 
-/// A comma-separated list of values.
+impl<EP: Endpoint> Endpoint for Cached<EP> {
+    type Output = EP::Output;
+
+    fn method(&self) -> Method {
+        self.endpoint.method()
+    }
+
+    fn path(&self) -> String {
+        self.endpoint.path()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        self.endpoint.query()
+    }
+
+    fn headers(&self) -> HeaderMap {
+        self.endpoint.headers()
+    }
+
+    fn body(&self) -> Body {
+        self.endpoint.body()
+    }
+
+    fn cache_ttl(&self) -> Option<Duration> {
+        Some(self.ttl)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CommaSeparatedList<T> {
     data: Vec<T>,
 }
 
 impl<T> CommaSeparatedList<T> {
-    /// Create a new, empty comma-separated list.
     pub fn new() -> Self {
         Self { data: Vec::new() }
     }
@@ -379,4 +433,51 @@ where
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.data.iter().format(","))
     }
+}
+
+#[tokio::test]
+async fn test_media_metadata_caching() {
+    use serde::{Deserialize, Serialize};
+    use std::time::Duration;
+
+    let client =
+        Arc::new(RestClient::new("https://your-media-server-api.com").unwrap());
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct MovieMetadata {
+        pub id: String,
+        pub title: String,
+        pub year: u32,
+    }
+
+    #[derive(Clone)]
+    struct MovieEndpoint {
+        pub id: String,
+    }
+
+    impl Endpoint for MovieEndpoint {
+        type Output = MovieMetadata;
+
+        fn path(&self) -> String {
+            format!("movies/{}", self.id)
+        }
+
+        fn cache_ttl(&self) -> Option<Duration> {
+            Some(Duration::from_secs(60))
+        }
+    }
+
+    // First request (should hit the API)
+    let endpoint = MovieEndpoint {
+        id: "tt1234567".to_string(),
+    };
+    let metadata1 = client.execute(endpoint.clone()).await.unwrap();
+    println!("First request metadata: {:?}", metadata1);
+
+    // Second request (should hit the cache)
+    let metadata2 = client.execute(endpoint).await.unwrap();
+    println!("Second request metadata: {:?}", metadata2);
+
+    assert_eq!(metadata1.title, metadata2.title);
+    assert_eq!(metadata1.year, metadata2.year);
 }

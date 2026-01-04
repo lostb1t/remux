@@ -20,9 +20,9 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
         // dbg!(&meta);
         // let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
-    let item = jellyfin::BaseItemDto {
+        let item = jellyfin::BaseItemDto {
             id: MediaId::from_aio_meta(meta.clone()),
-           // id: get_stable_uuid(meta.id.clone()),
+            // id: get_stable_uuid(meta.id.clone()),
             server_id: utils::server_id(),
             name: meta.name.clone(),
             original_title: meta.name.clone(),
@@ -77,8 +77,6 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
                 .map(|r| r.as_secs().to_ticks(utils::TickUnit::Seconds).unwrap()),
             ..Default::default()
         };
-        
-        
 
         // this shouldnt be done here but eh
         if meta.media_type == aio::MediaType::Series {
@@ -108,27 +106,31 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
                     //  parent_id: Some(MediaId::from_aio_meta(meta.clone())),
                     ..Default::default()
                 };
-               // season.save(&store);
+                // season.save(&store);
 
                 for episode in episodes {
-                          jellyfin::BaseItemDto {
-            name: episode.name.clone(),
-            //id: get_uuid(),
-            id: MediaId::new(episode.id.clone(), jellyfin::MediaType::Episode, None),
-            type_: jellyfin::MediaType::Episode,
-            index_number: episode.episode,
-                                series_id: Some(item.id.clone()),
-            season_id: Some(season.id.clone()),
-           // parent_index_number: item.season,
-          //  season_name: Some(format!("Season {:?}", item.season)),
-            overview: episode.overview.clone(),
-            image_tags: Some(jellyfin::ImageTags {
-                primary: episode.thumbnail,
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        //episode.save(&store);
+                    jellyfin::BaseItemDto {
+                        name: episode.name.clone(),
+                        //id: get_uuid(),
+                        id: MediaId::new(
+                            episode.id.clone(),
+                            jellyfin::MediaType::Episode,
+                            None,
+                        ),
+                        type_: jellyfin::MediaType::Episode,
+                        index_number: episode.episode,
+                        series_id: Some(item.id.clone()),
+                        season_id: Some(season.id.clone()),
+                        // parent_index_number: item.season,
+                        //  season_name: Some(format!("Season {:?}", item.season)),
+                        overview: episode.overview.clone(),
+                        image_tags: Some(jellyfin::ImageTags {
+                            primary: episode.thumbnail,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    };
+                    //episode.save(&store);
                     //jellyfin::BaseItemDto::from(episode.clone());
                 }
             }
@@ -222,8 +224,12 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
     fn from(item: aio::Catalog) -> Self {
         jellyfin::BaseItemDto {
             name: Some(item.name.clone()),
-            
-            id: MediaId::new(format!("{}:{}", item.kind, item.id.clone()), jellyfin::MediaType::BoxSet, None),
+
+            id: MediaId::new(
+                format!("{}:{}", item.kind, item.id.clone()),
+                jellyfin::MediaType::BoxSet,
+                None,
+            ),
             type_: jellyfin::MediaType::BoxSet,
             ..Default::default()
         }

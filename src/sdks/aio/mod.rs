@@ -4,15 +4,14 @@ use axum::http::Method;
 use anyhow::Result;
 use bon::Builder;
 use chrono::{DateTime, Utc};
-use http_cache_reqwest::CacheMode;
+use serde::Deserializer;
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use serde_aux::prelude::*;
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
-use serde::Deserializer;
-use serde::de::Error as _;
 
 #[derive(
     Default,
@@ -70,10 +69,6 @@ impl Endpoint for ManifestEndpoint {
     fn path(&self) -> String {
         "/manifest.json".into()
     }
-
-    fn cache_mode(&self) -> Option<CacheMode> {
-        Some(CacheMode::ForceCache)
-    }
 }
 
 #[skip_serializing_none]
@@ -92,7 +87,10 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn get_catalog(&self, id: &str, kind: &String) -> Option<Catalog> {
-        self.catalogs.iter().find(|c| &c.kind == kind && c.id == id).cloned()
+        self.catalogs
+            .iter()
+            .find(|c| &c.kind == kind && c.id == id)
+            .cloned()
     }
 }
 
@@ -212,7 +210,7 @@ pub struct CatalogResponse {
 }
 
 // #[skip_serializing_none]
-#[derive(Debug, Default, Clone, Builder)]
+#[derive(Debug, Default, Clone)]
 pub struct MetaEndpoint {
     pub media_type: MediaType,
     pub id: String,
@@ -321,7 +319,6 @@ pub struct Meta {
     // pub behavior_hints: Option<BehaviorHints>,
 }
 
-
 //use std::time::Duration;
 
 fn deserialize_opt_duration_empty_ok<'de, D>(
@@ -349,7 +346,7 @@ impl Meta {
         // dbg!(&self);
         if let Some(episodes) = self.videos.as_ref() {
             let mut seasons: Vec<i64> =
-              episodes.iter().filter_map(|e| e.season).collect();
+                episodes.iter().filter_map(|e| e.season).collect();
             seasons.sort_unstable();
             seasons.dedup();
             seasons
@@ -367,19 +364,13 @@ impl Meta {
     }
 
     pub fn get_episodes(&self, season_num: i64) -> Vec<Episode> {
-        self
-                    .videos
-                    .clone()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|e| {
-
-    e.season.map_or(false, |s| s == season_num)
-
-                    })
-                    .collect()
+        self.videos
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.season.map_or(false, |s| s == season_num))
+            .collect()
     }
-    
 }
 
 #[skip_serializing_none]
@@ -554,7 +545,7 @@ pub async fn search(
     id: impl Into<String>,
 ) -> Result<SearchResponse, ClientError> {
     client
-        .execute(&Search {
+        .execute(Search {
             kind: kind.into(),
             id: id.into(),
             format: true,

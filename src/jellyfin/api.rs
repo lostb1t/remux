@@ -1,6 +1,7 @@
 use crate::errors::LogErr;
 use crate::jellyfin::MediaSourceInfo;
 use crate::jellyfin::MediaStream;
+use crate::sdks::CachedEndpoint;
 use anyhow::Context;
 use anyhow::anyhow;
 use axum::Extension;
@@ -29,6 +30,7 @@ use serde_json::json;
 use std::convert::Infallible;
 use std::io;
 use std::str::FromStr;
+use std::time::Duration;
 use tokio_util::io::ReaderStream;
 use tokio_util::io::StreamReader;
 use tower_http::services::{ServeDir, ServeFile};
@@ -60,7 +62,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/users/authenticatebyname", post(users_authenticatebyname))
         .route("/system/info/public", get(system_info_public))
-                .route("/users/public", get(system_info_public))
+        .route("/users/public", get(system_info_public))
         .route("/system/ping", get(system_ping))
         .route("/system/endpoint", get(system_endpoint))
         .route("/userviews", get(userviews))
@@ -88,7 +90,6 @@ pub fn routes() -> Router<AppState> {
             "/users/{user_id}/groupingoptions",
             get(users_groupingoptions),
         )
-
         .route("/videos/{id}/stream", get(videos_stream))
         .route("/playback/bitratetest", get(playback_bitratetest))
         .route("/displaypreferences/usersettings", get(user_settings))
@@ -191,7 +192,7 @@ pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = session.aio.client.execute(&aio::ManifestEndpoint).await?;
+    let manifest = session.aio.get_manifest().await?;
     let items = crate::virtual_folders(&manifest);
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items,
@@ -203,7 +204,7 @@ pub async fn userviews_groupingoptions(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = session.aio.client.execute(&aio::ManifestEndpoint).await?;
+    let manifest = session.aio.get_manifest().await?;
 
     Ok(Json(json!(crate::virtual_folders(&manifest))))
 }
@@ -212,7 +213,7 @@ pub async fn library_virtualfolders(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = session.aio.client.execute(&aio::ManifestEndpoint).await?;
+    let manifest = session.aio.get_manifest().await?;
 
     Ok(Json(json!(crate::virtual_folders(&manifest))))
 }
@@ -286,8 +287,7 @@ pub async fn get_items(
         });
     }
 
-    let manifest = aio.client.execute(&aio::ManifestEndpoint).await?;
-
+    let manifest = aio.get_manifest().await?;
 
     // ------------------------------------------------------------
     // Parent-based behavior
@@ -324,14 +324,14 @@ pub async fn get_items(
         if parent_id.jellyfin_media_type == jellyfin::MediaType::BoxSet
             || parent_id.jellyfin_media_type == jellyfin::MediaType::CollectionFolder
         {
-                    let (kind, id) = parent_id
-                        .id
-                        .rsplit_once(':')
-                        .ok_or_else(|| anyhow!("invalid catalog id: {:?}", parent_id))?;
+            let (kind, id) = parent_id
+                .id
+                .rsplit_once(':')
+                .ok_or_else(|| anyhow!("invalid catalog id: {:?}", parent_id))?;
             let catalog = manifest
                 .get_catalog(&id, &kind.to_string())
                 .ok_or_else(|| anyhow!("catalog not found"))?;
-    trace!(?kind, ?id, ?catalog, "catalog");
+            trace!(?kind, ?id, ?catalog, "catalog");
             if let Some(types) = &q.include_item_types {
                 let wanted: aio::MediaType = types[0].into();
                 //if catalog.kind != wanted.to_string() {
@@ -344,7 +344,7 @@ pub async fn get_items(
 
             let items = aio
                 .client
-                .execute(&aio::CatalogEndpoint {
+                .execute(aio::CatalogEndpoint {
                     kind: catalog.kind.clone(),
                     id: catalog.id.clone(),
                     search: search.clone(),
@@ -366,8 +366,12 @@ pub async fn get_items(
         // seasons listing under a show id
         if let Some(types) = &q.include_item_types {
             if types[0] == jellyfin::MediaType::Season {
-                let meta =
-                    aio.get_meta(parent_id.jellyfin_media_type.into(), parent_id.id.clone()).await?;
+                let meta = aio
+                    .get_meta(
+                        parent_id.jellyfin_media_type.into(),
+                        parent_id.id.clone(),
+                    )
+                    .await?;
 
                 let seasons: Vec<jellyfin::BaseItemDto> = meta
                     .get_season_numbers()
@@ -404,21 +408,21 @@ pub async fn get_items(
                         .ok_or_else(|| anyhow!("invalid season id"))?;
                     let season_number = sn.parse::<i64>()?;
 
+                    let meta = aio
+                        .get_meta(aio::MediaType::Series, media_id.id.clone())
+                        .await?;
 
-                let meta =
-                    aio.get_meta(aio::MediaType::Series, media_id.id.clone()).await?;
+                    let episodes: Vec<jellyfin::BaseItemDto> = meta
+                        .get_episodes(season_number)
+                        .into_iter()
+                        .map(jellyfin::BaseItemDto::from)
+                        .collect();
 
-                let episodes: Vec<jellyfin::BaseItemDto> = meta
-                    .get_episodes(season_number)
-                    .into_iter()
-                    .map(jellyfin::BaseItemDto::from)
-                    .collect();
-
-                return Ok(ItemsQueryResult {
-                    total_count: episodes.len() as i64,
-                    items: episodes,
-                });
-              }
+                    return Ok(ItemsQueryResult {
+                        total_count: episodes.len() as i64,
+                        items: episodes,
+                    });
+                }
             }
         }
     }
@@ -427,12 +431,12 @@ pub async fn get_items(
     if let Some(ids) = &q.ids {
         let media_id = ids[0].clone();
         if media_id.jellyfin_media_type == jellyfin::MediaType::BoxSet {
-                      let (kind, id) = media_id
-                        .id
-                        .rsplit_once(':')
-                        .context_internal("error", "invalid catalog id")?;
-          
-          let catalog = manifest
+            let (kind, id) = media_id
+                .id
+                .rsplit_once(':')
+                .context_internal("error", "invalid catalog id")?;
+
+            let catalog = manifest
                 .get_catalog(&id, &kind.to_string())
                 .ok_or_else(|| anyhow!("catalog not found"))?;
             return Ok(ItemsQueryResult {
@@ -463,25 +467,31 @@ pub async fn get_items(
         }
         //let meta_id = media_id.jellyfin_media_type ==
         let meta = match media_id.jellyfin_media_type {
-    jellyfin::MediaType::Episode | jellyfin::MediaType::Season => {
-        aio.get_meta(aio::MediaType::Series, media_id.id.split(':').next().unwrap().to_string()).await?
-    }
-    _ => {
-        aio.get_meta(media_id.jellyfin_media_type.into(), media_id.id.clone()).await?
-    }
-};
-
-
+            jellyfin::MediaType::Episode | jellyfin::MediaType::Season => {
+                aio.get_meta(
+                    aio::MediaType::Series,
+                    media_id.id.split(':').next().unwrap().to_string(),
+                )
+                .await?
+            }
+            _ => {
+                aio.get_meta(media_id.jellyfin_media_type.into(), media_id.id.clone())
+                    .await?
+            }
+        };
 
         // if season or episode use rhat
         let mut item: jellyfin::BaseItemDto = meta.into();
-        
+
         if [jellyfin::MediaType::Movie, jellyfin::MediaType::Episode]
             .contains(&media_id.jellyfin_media_type)
         {
-          
-            let streams = aio.get_streams(media_id.jellyfin_media_type.clone().into(),
-                media_id.id.clone()).await?;
+            let streams = aio
+                .get_streams(
+                    media_id.jellyfin_media_type.clone().into(),
+                    media_id.id.clone(),
+                )
+                .await?;
 
             item.media_sources = Some(
                 streams
@@ -552,7 +562,7 @@ pub async fn get_items(
 
     let metas = aio
         .client
-        .execute(&aio::CatalogEndpoint {
+        .execute(aio::CatalogEndpoint {
             kind: catalog.kind.clone(),
             id: catalog.id.clone(),
             search: search.clone(),
@@ -601,7 +611,7 @@ pub async fn item(
     session: auth::AuthSession,
     id: MediaId,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
-    let manifest = session.aio.client.execute(&aio::ManifestEndpoint).await?;
+    let manifest = session.aio.get_manifest().await?;
     let libraries = crate::virtual_folders(&manifest);
 
     if let Some(library) = libraries.into_iter().find(|x| x.id.id == id.id) {

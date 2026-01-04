@@ -7,7 +7,7 @@ use chrono::NaiveDate;
 use serde_with::{DisplayFromStr, serde_as};
 
 #[serde_as]
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Movie {
     pub id: i64,

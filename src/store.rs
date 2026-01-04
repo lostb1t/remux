@@ -1,5 +1,5 @@
-use std::{sync::Arc, time::Duration, any::Any};
-use moka::{sync::Cache, Expiry};
+use moka::{Expiry, sync::Cache};
+use std::{any::Any, sync::Arc, time::Duration};
 
 pub trait Cacheable: std::fmt::Debug + Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
@@ -62,7 +62,12 @@ impl Store {
         self.inner.insert(key.into(), entry);
     }
 
-    pub fn insert<T: Cacheable>(&self, key: impl Into<String>, item: T, ttl: Duration) -> bool {
+    pub fn insert<T: Cacheable>(
+        &self,
+        key: impl Into<String>,
+        item: T,
+        ttl: Duration,
+    ) -> bool {
         let key = key.into();
         if self.inner.contains_key(&key) {
             return false;
@@ -77,9 +82,9 @@ impl Store {
 
     // Voeg `Clone` toe aan de trait bound voor `T`
     pub fn get<T: Cacheable + 'static + Clone>(&self, key: &str) -> Option<T> {
-        self.inner.get(key).and_then(|entry| {
-            entry.item.as_any().downcast_ref::<T>().cloned()
-        })
+        self.inner
+            .get(key)
+            .and_then(|entry| entry.item.as_any().downcast_ref::<T>().cloned())
     }
 }
 

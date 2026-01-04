@@ -28,11 +28,9 @@ pub trait IdSetter {
     fn id(self, id: i64) -> Self;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FindByIdEndpoint {
     pub external_id: i64,
-
-    // #[builder(default = "en")]
     pub external_source: String,
 }
 
@@ -61,7 +59,7 @@ pub enum ExternalIdType {
     YoutubeId,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct FindByIdResponse {
     pub movie_results: Vec<Movie>,
 }
@@ -124,18 +122,18 @@ pub struct Creator {
     pub profile_path: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ExternalIds {
     pub imdb_id: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Genre {
     pub id: u64,
     pub name: String,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Network {
     pub id: u64,
     pub logo_path: Option<String>,

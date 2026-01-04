@@ -1,7 +1,9 @@
 use crate::db;
 use crate::sdks;
+use crate::sdks::CachedEndpoint;
 use anyhow::Context;
 use anyhow::{Result, anyhow};
+use std::time::Duration;
 use url::Url;
 
 #[derive(Clone)]
@@ -66,14 +68,22 @@ impl AioService {
 
         Ok(sdks::aio::search_client(&search_url, username, password)?)
     }
-    
+
+    pub async fn get_manifest(&self) -> Result<sdks::aio::Manifest> {
+        Ok(self
+            .client
+            .execute(sdks::aio::ManifestEndpoint.with_cache(Duration::from_secs(3600)))
+            .await?)
+    }
+
     pub async fn get_meta(
         &self,
         media_type: sdks::aio::MediaType,
-        id: String
+        id: String,
     ) -> Result<sdks::aio::Meta> {
-            Ok(self.client
-            .execute(&sdks::aio::MetaEndpoint {
+        Ok(self
+            .client
+            .execute(sdks::aio::MetaEndpoint {
                 media_type,
                 id,
                 season: None,
@@ -82,8 +92,6 @@ impl AioService {
             .await?
             .meta)
     }
-    
-
 
     pub async fn get_stream(
         &self,
@@ -108,7 +116,7 @@ impl AioService {
     ) -> Result<Vec<sdks::aio::Stream>> {
         Ok(self
             .search_client
-            .execute(&sdks::aio::Search {
+            .execute(sdks::aio::Search {
                 kind: media_type.into(),
                 id,
                 ..Default::default()

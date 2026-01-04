@@ -7,7 +7,7 @@ use chrono::NaiveDate;
 use serde_with::{DisplayFromStr, serde_as};
 
 #[serde_as]
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Series {
     pub adult: bool,
@@ -77,7 +77,7 @@ impl Endpoint for SeriesEndpoint {
 }
 
 #[serde_as]
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Season {
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub air_date: Option<NaiveDate>,
@@ -114,7 +114,7 @@ impl Endpoint for SeasonEndpoint {
 }
 
 #[serde_as]
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Episode {
     pub id: i64,
     pub name: String,

@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         config: settings.clone(),
         db: db,
-        store: store::Store::new(100000)
+        store: store::Store::new(100000),
     };
 
     // spawn_background_tasks(state.clone()).await?;
@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
 pub struct AppState {
     pub config: Settings,
     pub db: SqlitePool,
-    pub store: store::Store
+    pub store: store::Store,
 }
 
 pub fn virtual_folders(manifest: &sdks::aio::Manifest) -> Vec<jellyfin::BaseItemDto> {
@@ -266,14 +266,14 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
 pub fn setup_logging() {
     let filter_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,hyper=warn,sqlx=warn"));
-    
-      let fmt_layer = fmt::layer()
+
+    let fmt_layer = fmt::layer()
         .with_line_number(true)
-       // .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+        // .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
         .with_target(true)
         .compact();
-        
-Registry::default()
+
+    Registry::default()
         .with(filter_layer)
         .with(fmt_layer)
         .init();

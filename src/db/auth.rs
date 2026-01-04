@@ -168,6 +168,7 @@ impl FromRequestParts<AppState> for AuthSession {
     }
 }
 
+// todo theres also an old emby airh header. Should we support this?
 #[derive(Debug, Clone, Default)]
 pub struct JellyfinAuthHeader {
     pub client: Option<String>,
