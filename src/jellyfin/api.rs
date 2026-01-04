@@ -327,7 +327,7 @@ pub async fn get_items(
                     let (kind, id) = parent_id
                         .id
                         .rsplit_once(':')
-                        .ok_or_else(|| anyhow!("invalid season id"))?;
+                        .ok_or_else(|| anyhow!("invalid catalog id: {:?}", parent_id))?;
             let catalog = manifest
                 .get_catalog(&id, &kind.to_string())
                 .ok_or_else(|| anyhow!("catalog not found"))?;
@@ -427,10 +427,10 @@ pub async fn get_items(
     if let Some(ids) = &q.ids {
         let media_id = ids[0].clone();
         if media_id.jellyfin_media_type == jellyfin::MediaType::BoxSet {
-                                let (kind, id) = media_id
+                      let (kind, id) = media_id
                         .id
                         .rsplit_once(':')
-                        .ok_or_else(|| anyhow!("invalid season id"))?;
+                        .context_internal("error", "invalid catalog id")?;
           
           let catalog = manifest
                 .get_catalog(&id, &kind.to_string())

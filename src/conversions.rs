@@ -222,7 +222,8 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
     fn from(item: aio::Catalog) -> Self {
         jellyfin::BaseItemDto {
             name: Some(item.name.clone()),
-            id: MediaId::new(item.id, jellyfin::MediaType::BoxSet, None),
+            
+            id: MediaId::new(format!("{}:{}", item.kind, item.id.clone()), jellyfin::MediaType::BoxSet, None),
             type_: jellyfin::MediaType::BoxSet,
             ..Default::default()
         }

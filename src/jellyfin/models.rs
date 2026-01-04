@@ -128,8 +128,8 @@ pub struct GetItemsQuery {
     pub name_starts_with_or_greater: Option<String>,
     pub name_starts_with: Option<String>,
     pub name_less_than: Option<String>,
-    #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemSortBy>>")]
-    pub sort_by: Option<Vec<ItemSortBy>>,
+    //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemSortBy>>")]
+    //pub sort_by: Option<Vec<ItemSortBy>>,
     //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, SortOrder>>")]
     //pub sort_order: Option<SortOrder>,
     pub enable_images: Option<bool>,
