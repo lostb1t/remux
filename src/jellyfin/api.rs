@@ -60,6 +60,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/users/authenticatebyname", post(users_authenticatebyname))
         .route("/system/info/public", get(system_info_public))
+                .route("/users/public", get(system_info_public))
         .route("/system/ping", get(system_ping))
         .route("/system/endpoint", get(system_endpoint))
         .route("/userviews", get(userviews))
@@ -87,6 +88,7 @@ pub fn routes() -> Router<AppState> {
             "/users/{user_id}/groupingoptions",
             get(users_groupingoptions),
         )
+
         .route("/videos/{id}/stream", get(videos_stream))
         .route("/playback/bitratetest", get(playback_bitratetest))
         .route("/displaypreferences/usersettings", get(user_settings))
