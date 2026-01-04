@@ -101,6 +101,7 @@ pub fn routes() -> Router<AppState> {
         .route("/users/{user_id}/items/similar", get(mock_items))
         .route("/users/{user_id}/intros", get(mock_items))
         .route("/users/{user_id}/items/{id}/intros", get(mock_items))
+        .route("/users/{user_id}/configuration", post(stub))
         .route("/items/{id}/similar", get(mock_items))
         .route("/items/{id}/thememedia", get(stub_json))
         .route("/useritems/resume", get(mock_items))
@@ -159,6 +160,15 @@ pub async fn system_endpoint(
         "IsInNetwork": false,
 
     })))
+}
+
+
+pub async fn user_configuration_update(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Json(payload): Json<jellyfin::UserConfiguration>,
+) -> Result<impl IntoResponse> {
+  Ok(Json(jellyfin::UserConfiguration::default()))
 }
 
 pub async fn user_settings(State(state): State<AppState>) -> Result<impl IntoResponse> {

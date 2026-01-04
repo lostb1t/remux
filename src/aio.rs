@@ -88,7 +88,7 @@ impl AioService {
                 id,
                 season: None,
                 episode: None,
-            })
+            }.with_cache(Duration::from_secs(3600)))
             .await?
             .meta)
     }
@@ -120,7 +120,8 @@ impl AioService {
                 kind: media_type.into(),
                 id,
                 ..Default::default()
-            })
+            //  })
+             }.with_cache(Duration::from_secs(360)))
             .await?
             .data
             .results)

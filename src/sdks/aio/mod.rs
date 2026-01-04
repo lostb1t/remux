@@ -2,7 +2,6 @@ use super::{BasicAuth, ClientError, Endpoint, RestClient};
 use axum::http::Method;
 
 use anyhow::Result;
-use bon::Builder;
 use chrono::{DateTime, Utc};
 use serde::Deserializer;
 use serde::de::Error as _;
@@ -72,7 +71,7 @@ impl Endpoint for ManifestEndpoint {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub id: String,
     pub name: String,
@@ -121,7 +120,7 @@ impl Resource {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceRef {
     pub name: ResourceType,
     pub types: Vec<String>,
@@ -204,7 +203,7 @@ impl Endpoint for CatalogEndpoint {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogResponse {
     pub metas: Vec<Meta>,
 }
@@ -236,13 +235,13 @@ impl Endpoint for MetaEndpoint {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetaResponse {
     pub meta: Meta,
 }
 
 /// TODO: Add filename for better matching
-#[derive(Debug, Clone, Builder)]
+#[derive(Debug, Clone)]
 pub struct SubtitlesEndpoint {
     pub media_type: MediaType,
     pub imdb_id: String,
@@ -259,7 +258,7 @@ impl Endpoint for SubtitlesEndpoint {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtitlesResponse {
     pub subtitles: Vec<Subtitle>,
 }
@@ -274,7 +273,7 @@ pub struct Subtitle {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Meta {
     // #[serde(alias = "imdb_id", alias = "imdbId")]
@@ -374,7 +373,7 @@ impl Meta {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Episode {
     pub id: String,
