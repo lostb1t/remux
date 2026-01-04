@@ -9,6 +9,7 @@ use url::Url;
 #[derive(Clone)]
 pub struct AioService {
     pub client: sdks::RestClient,
+    // to be clear,this is a searc for streams. Not meta
     pub search_client: sdks::RestClient<sdks::BasicAuth>,
 }
 
@@ -83,14 +84,43 @@ impl AioService {
     ) -> Result<sdks::aio::Meta> {
         Ok(self
             .client
-            .execute(sdks::aio::MetaEndpoint {
-                media_type,
-                id,
-                season: None,
-                episode: None,
-            }.with_cache(Duration::from_secs(3600)))
+            .execute(
+                sdks::aio::MetaEndpoint {
+                    media_type,
+                    id,
+                    season: None,
+                    episode: None,
+                }
+                .with_cache(Duration::from_secs(3600)),
+            )
             .await?
             .meta)
+    }
+
+    pub async fn search(
+        &self,
+        media_type: sdks::aio::MediaType,
+        q: String,
+    ) -> Result<Vec<sdks::aio::Meta>> {
+        let catalog = self
+            .get_manifest()
+            .await?
+            .get_search_catalog(&media_type.to_string())
+            .unwrap();
+        Ok(self
+            .client
+            .execute(
+                sdks::aio::CatalogEndpoint {
+                    kind: catalog.kind.clone(),
+                    id: catalog.id.clone(),
+                    search: Some(q.clone()),
+                    genre: None,
+                    skip: None, //skip: Some(skip),
+                }
+                .with_cache(Duration::from_secs(60)),
+            )
+            .await?
+            .metas)
     }
 
     pub async fn get_stream(
@@ -116,12 +146,14 @@ impl AioService {
     ) -> Result<Vec<sdks::aio::Stream>> {
         Ok(self
             .search_client
-            .execute(sdks::aio::Search {
-                kind: media_type.into(),
-                id,
-                ..Default::default()
-            //  })
-             }.with_cache(Duration::from_secs(360)))
+            .execute(
+                sdks::aio::Search {
+                    kind: media_type.into(),
+                    id,
+                    ..Default::default() //  })
+                }
+                .with_cache(Duration::from_secs(360)),
+            )
             .await?
             .data
             .results)

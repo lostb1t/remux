@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde_aux::prelude::*;
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
-
+use std::collections::HashSet;
 //use super::BaseItemStore;
 use crate::aio::AioService;
 use anyhow::anyhow;
@@ -120,7 +120,7 @@ pub struct GetItemsQuery {
     pub season_id: Option<MediaId>,
     //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
     //pub fields: Option<Vec<ItemFields>>,
-    pub exclude_item_types: Option<Vec<String>>,
+    pub exclude_item_types: Option<Vec<MediaType>>,
     pub include_item_types: Option<Vec<MediaType>>,
     pub is_favorite: Option<bool>,
     pub image_type_limit: Option<i64>,
@@ -152,6 +152,32 @@ pub struct GetItemsQuery {
     pub studio_ids: Option<Vec<String>>,
     pub exclude_artist_ids: Option<Vec<String>>,
     pub ids: Option<Vec<MediaId>>,
+}
+
+impl GetItemsQuery {
+    pub fn get_requested_item_types(&self) -> Vec<MediaType> {
+        let mut requested: Vec<MediaType> = vec![MediaType::Movie, MediaType::Series];
+
+        if let Some(include_types) = &self.include_item_types {
+            requested = include_types
+                .iter()
+                .filter(|t| matches!(t, MediaType::Movie | MediaType::Series))
+                .cloned()
+                .collect();
+        }
+
+        if let Some(exclude_types) = &self.exclude_item_types {
+            requested.retain(|t| !exclude_types.contains(t));
+        }
+
+        //if let Some(media_types) = &self.media_types {
+        //    if media_types.iter().any(|mt| mt == "Video") {
+        //        requested.retain(|t| t != &MediaType::Series);
+        //    }
+        //}
+
+        requested
+    }
 }
 
 #[derive(Default, Debug, Deserialize)]

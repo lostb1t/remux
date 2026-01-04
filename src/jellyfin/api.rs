@@ -162,13 +162,12 @@ pub async fn system_endpoint(
     })))
 }
 
-
 pub async fn user_configuration_update(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Json(payload): Json<jellyfin::UserConfiguration>,
 ) -> Result<impl IntoResponse> {
-  Ok(Json(jellyfin::UserConfiguration::default()))
+    Ok(Json(jellyfin::UserConfiguration::default()))
 }
 
 pub async fn user_settings(State(state): State<AppState>) -> Result<impl IntoResponse> {
@@ -278,16 +277,32 @@ pub async fn get_items(
             id.jellyfin_media_type == jellyfin::MediaType::BoxSet
         })
     {
-        if let Some(types) = &q.include_item_types {
-            if ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series]
+        let types = q.get_requested_item_types();
+        // if types.len() != 0 {
+        if types.len() == 0
+            || ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series]
                 .contains(&types[0])
-            {
-                return Ok(ItemsQueryResult {
-                    items: vec![],
-                    total_count: 0,
-                });
-            }
+        {
+            return Ok(ItemsQueryResult {
+                items: vec![],
+                total_count: 0,
+            });
         }
+
+        if let Some(s) = search {
+            // need to to make parallel request for typrs
+            let items = aio
+                .search(types[0].clone().into(), s)
+                .await?
+                .into_iter()
+                .map(jellyfin::BaseItemDto::from)
+                .collect();
+            return Ok(ItemsQueryResult {
+                items: items,
+                total_count: 100,
+            });
+        }
+        //  }
     }
 
     if q.filters.is_some() {
@@ -341,7 +356,7 @@ pub async fn get_items(
             let catalog = manifest
                 .get_catalog(&id, &kind.to_string())
                 .ok_or_else(|| anyhow!("catalog not found"))?;
-            trace!(?kind, ?id, ?catalog, "catalog");
+            //trace!(?kind, ?id, ?catalog, "catalog");
             if let Some(types) = &q.include_item_types {
                 let wanted: aio::MediaType = types[0].into();
                 //if catalog.kind != wanted.to_string() {
@@ -357,7 +372,7 @@ pub async fn get_items(
                 .execute(aio::CatalogEndpoint {
                     kind: catalog.kind.clone(),
                     id: catalog.id.clone(),
-                    search: search.clone(),
+                    search: None,
                     genre: None,
                     skip: Some(skip),
                 })

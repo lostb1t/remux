@@ -1,34 +1,29 @@
 use axum::http::{HeaderMap, HeaderValue, Method, header};
-use serde::de::DeserializeOwned;
+use itertools::Itertools;
+use md5;
+use moka::Expiry;
+use moka::sync::Cache;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use serde::Serialize;
-use std::sync::Arc;
-use std::time::Duration;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+use std::any::Any;
 use std::fmt;
 use std::iter;
 use std::ops;
-use std::any::Any;
-use itertools::Itertools;
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use moka::sync::Cache;
-use moka::Expiry;
-use serde_json::Value;
+use std::sync::Arc;
+use std::time::Duration;
 use tracing::*;
-use md5;
 
 use std::sync::LazyLock;
 
-
-static CACHE: LazyLock<Cache<String, Arc<CachedValue>>> = LazyLock::new(|| {
-    Cache::builder()
-        .max_capacity(50_000)
-        .build()
-});
+static CACHE: LazyLock<Cache<String, Arc<CachedValue>>> =
+    LazyLock::new(|| Cache::builder().max_capacity(50_000).build());
 
 fn hash_key(key: &str) -> String {
     let result = md5::compute(key.as_bytes());
     format!("{:x}", result)
 }
-
 
 #[derive(Debug)]
 pub struct CachedValue {
@@ -84,14 +79,20 @@ pub mod aio;
 pub mod tmdb;
 
 pub trait Auth: Send + Sync + Clone {
-    fn apply(&self, req: reqwest_middleware::RequestBuilder) -> reqwest_middleware::RequestBuilder;
+    fn apply(
+        &self,
+        req: reqwest_middleware::RequestBuilder,
+    ) -> reqwest_middleware::RequestBuilder;
 }
 
 #[derive(Clone, Debug)]
 pub struct NoAuth;
 
 impl Auth for NoAuth {
-    fn apply(&self, req: reqwest_middleware::RequestBuilder) -> reqwest_middleware::RequestBuilder {
+    fn apply(
+        &self,
+        req: reqwest_middleware::RequestBuilder,
+    ) -> reqwest_middleware::RequestBuilder {
         req
     }
 }
@@ -103,7 +104,10 @@ pub struct BasicAuth {
 }
 
 impl Auth for BasicAuth {
-    fn apply(&self, req: reqwest_middleware::RequestBuilder) -> reqwest_middleware::RequestBuilder {
+    fn apply(
+        &self,
+        req: reqwest_middleware::RequestBuilder,
+    ) -> reqwest_middleware::RequestBuilder {
         req.basic_auth(&self.username, Some(&self.password))
     }
 }
@@ -114,7 +118,10 @@ pub struct BearerAuth {
 }
 
 impl Auth for BearerAuth {
-    fn apply(&self, req: reqwest_middleware::RequestBuilder) -> reqwest_middleware::RequestBuilder {
+    fn apply(
+        &self,
+        req: reqwest_middleware::RequestBuilder,
+    ) -> reqwest_middleware::RequestBuilder {
         req.bearer_auth(&self.token)
     }
 }
@@ -124,9 +131,19 @@ pub enum ClientError {
     #[error("unauthorized")]
     Unauthorized,
     #[error("http error (status={status}) endpoint={endpoint:?}: {message}")]
-    Http { status: u16, message: String, endpoint: Option<String>, body: Option<String> },
+    Http {
+        status: u16,
+        message: String,
+        endpoint: Option<String>,
+        body: Option<String>,
+    },
     #[error("json error (status={status}) endpoint={endpoint:?}: {source}")]
-    Json { status: u16, source: serde_json::Error, endpoint: Option<String>, body: Option<String> },
+    Json {
+        status: u16,
+        source: serde_json::Error,
+        endpoint: Option<String>,
+        body: Option<String>,
+    },
     #[error(transparent)]
     Transport(#[from] reqwest_middleware::Error),
     #[error(transparent)]
@@ -140,8 +157,15 @@ pub enum ClientError {
 }
 
 fn default_error_mapper(status: u16, endpoint: &str, body: &str) -> ClientError {
-    if status == 401 { ClientError::Unauthorized } else {
-        ClientError::Http { status, message: "http error".to_string(), endpoint: Some(endpoint.to_string()), body: Some(body.to_string()) }
+    if status == 401 {
+        ClientError::Unauthorized
+    } else {
+        ClientError::Http {
+            status,
+            message: "http error".to_string(),
+            endpoint: Some(endpoint.to_string()),
+            body: Some(body.to_string()),
+        }
     }
 }
 
@@ -154,17 +178,29 @@ pub enum Body {
 }
 
 impl Default for Body {
-    fn default() -> Self { Body::Empty }
+    fn default() -> Self {
+        Body::Empty
+    }
 }
 
 pub trait Endpoint {
     type Output: DeserializeOwned + Clone + Serialize;
-    fn method(&self) -> Method { Method::GET }
+    fn method(&self) -> Method {
+        Method::GET
+    }
     fn path(&self) -> String;
-    fn query(&self) -> Vec<(String, String)> { Vec::new() }
-    fn headers(&self) -> HeaderMap { HeaderMap::new() }
-    fn body(&self) -> Body { Body::Empty }
-    fn cache_ttl(&self) -> Option<Duration> { None }
+    fn query(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn headers(&self) -> HeaderMap {
+        HeaderMap::new()
+    }
+    fn body(&self) -> Body {
+        Body::Empty
+    }
+    fn cache_ttl(&self) -> Option<Duration> {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -182,7 +218,9 @@ impl RestClient<NoAuth> {
         let cache = CACHE.clone();
         Ok(Self {
             http,
-            base: url::Url::parse(format!("{}/", base.trim_start_matches('/')).as_str())?,
+            base: url::Url::parse(
+                format!("{}/", base.trim_start_matches('/')).as_str(),
+            )?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
             cache,
@@ -206,22 +244,29 @@ impl<A: Auth + Clone> RestClient<A> {
         self
     }
 
-    pub async fn execute<EP: Endpoint + Clone>(&self, endpoint: EP) -> Result<EP::Output, ClientError> {
+    pub async fn execute<EP: Endpoint + Clone>(
+        &self,
+        endpoint: EP,
+    ) -> Result<EP::Output, ClientError> {
         let path = endpoint.path();
         let mut url = self.base.join(&path.trim_start_matches('/')).unwrap();
         let query = endpoint.query();
         if !query.is_empty() {
-            url.query_pairs_mut().extend_pairs(query.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            url.query_pairs_mut()
+                .extend_pairs(query.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         }
         let cache_key = hash_key(&url.to_string());
 
-            if let Some(ttl) = endpoint.cache_ttl() {
+        if let Some(ttl) = endpoint.cache_ttl() {
             if let Some(cached) = self.cache.get(&cache_key) {
-    return Ok(serde_json::from_str(&cached.value)?);
-}
+                return Ok(serde_json::from_str(&cached.value)?);
+            }
         }
 
-        let mut req = self.http.request(endpoint.method(), url.clone()).headers(endpoint.headers());
+        let mut req = self
+            .http
+            .request(endpoint.method(), url.clone())
+            .headers(endpoint.headers());
         req = self.auth.apply(req);
         req = match endpoint.body() {
             Body::Empty => req,
@@ -232,11 +277,19 @@ impl<A: Auth + Clone> RestClient<A> {
                     endpoint: Some(url.clone().to_string()),
                     body: Some(v.to_string()),
                 })?;
-                req.header(header::CONTENT_TYPE, HeaderValue::from_static("application/json")).body(bytes)
+                req.header(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                )
+                .body(bytes)
             }
             Body::Form(v) => {
                 let encoded = serde_urlencoded::to_string(&v)?;
-                req.header(header::CONTENT_TYPE, HeaderValue::from_static("application/x-www-form-urlencoded")).body(encoded)
+                req.header(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/x-www-form-urlencoded"),
+                )
+                .body(encoded)
             }
             Body::Text(s) => req.body(s),
             Body::Bytes(b) => req.body(b),
@@ -252,7 +305,6 @@ impl<A: Auth + Clone> RestClient<A> {
 
                 if let Some(ttl) = endpoint.cache_ttl() {
                     if let Ok(ref value) = result {
-  
                         let cached_value = Arc::new(CachedValue {
                             value: text.clone(),
                             ttl,
@@ -270,7 +322,10 @@ impl<A: Auth + Clone> RestClient<A> {
 
 pub trait CachedEndpoint: Endpoint + Sized {
     fn with_cache(self, ttl: Duration) -> Cached<Self> {
-        Cached { endpoint: self, ttl }
+        Cached {
+            endpoint: self,
+            ttl,
+        }
     }
 }
 
@@ -363,10 +418,11 @@ where
 
 #[tokio::test]
 async fn test_media_metadata_caching() {
+    use serde::{Deserialize, Serialize};
     use std::time::Duration;
-    use serde::{Serialize, Deserialize};
 
-    let client = Arc::new(RestClient::new("https://your-media-server-api.com").unwrap());
+    let client =
+        Arc::new(RestClient::new("https://your-media-server-api.com").unwrap());
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct MovieMetadata {
@@ -393,7 +449,9 @@ async fn test_media_metadata_caching() {
     }
 
     // First request (should hit the API)
-    let endpoint = MovieEndpoint { id: "tt1234567".to_string() };
+    let endpoint = MovieEndpoint {
+        id: "tt1234567".to_string(),
+    };
     let metadata1 = client.execute(endpoint.clone()).await.unwrap();
     println!("First request metadata: {:?}", metadata1);
 

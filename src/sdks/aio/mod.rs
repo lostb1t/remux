@@ -91,6 +91,13 @@ impl Manifest {
             .find(|c| &c.kind == kind && c.id == id)
             .cloned()
     }
+
+    pub fn get_search_catalog(&self, kind: &String) -> Option<Catalog> {
+        self.catalogs
+            .iter()
+            .find(|c| &c.kind == kind && c.extra.iter().any(|e| e.name == "search"))
+            .cloned()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
