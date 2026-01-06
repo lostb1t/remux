@@ -10,7 +10,6 @@ use anyhow::Result;
 use async_trait;
 use backon::ExponentialBuilder;
 use backon::Retryable;
-use bon::Builder;
 use futures_util::future::try_join_all;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

@@ -19,3 +19,23 @@ CREATE TABLE IF NOT EXISTS auth_users (
   password_hash TEXT NOT NULL,
   aio_url       TEXT NOT NULL
 );
+
+CREATE TABLE media (
+    id TEXT PRIMARY KEY NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('movie', 'series', 'season', 'episode', 'unknown')),
+    parent_id TEXT,
+    imdb_id TEXT NOT NULL,
+    season_num INTEGER,
+    episode_num INTEGER,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+
+
+CREATE TABLE provider_ids (
+    media_id     TEXT    NOT NULL,
+    kind  INTEGER NOT NULL,
+    id        TEXT    NOT NULL,
+    PRIMARY KEY (media_id, kind),
+    FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
+);

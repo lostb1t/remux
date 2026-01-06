@@ -5,8 +5,9 @@ use std::str::FromStr;
 
 pub mod auth;
 pub mod user;
-
+pub mod media;
 pub use user::*;
+pub use media::*;
 
 pub async fn connect(url: &str) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(url)?;

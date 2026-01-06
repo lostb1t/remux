@@ -53,16 +53,12 @@ use tracing::warn;
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
-use uuid::Uuid;
-use argon2::{
-    password_hash::{
-        rand_core::OsRng,
-        PasswordHash, PasswordHasher, PasswordVerifier, SaltString
-    },
-    Argon2
-};
-
+use uuid::{uuid, Uuid};
+use thiserror::Error;
+use crate::sdks;
 use crate::utils::get_uuid;
+
+//use crate::utils::get_uuid;
 //use chrono::{DateTime, Utc};
 
 #[derive(
@@ -74,6 +70,7 @@ use crate::utils::get_uuid;
     PartialEq,
     Serialize,
     Deserialize,
+    sqlx::Type
 )]
 #[serde(rename_all = "lowercase")]
 pub enum MediaKind {
@@ -89,127 +86,186 @@ pub enum MediaKind {
     Unknown,
 }
 
+impl From<sdks::aio::MediaType> for MediaKind {
+    fn from(media_type: sdks::aio::MediaType) -> Self {
+        match media_type {
+            sdks::aio::MediaType::Movie => MediaKind::Movie,
+            sdks::aio::MediaType::Series | sdks::aio::MediaType::Tv => MediaKind::Series,
+            _ => MediaKind::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MediaSource {
     pub id: String,   
     pub media_id: String,
     pub url: Option<String>,
     pub probe_data: Option<String>,
-   // pub aio_id: String,
-   // pub aio_meta: Option<String>,
-   // pub aio_stream: Option<String>,
-   // pub created_at: DateTime<Utc>,
     pub external_data: Option<String>,
 }
 
+#[derive(
+    strum_macros::EnumString,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    sqlx::Type
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+  Imdb,
+  Aio
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ProviderIds {
+    pub media_id: String,   
+    pub kind: Provider,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Media {
-    pub id: String,   
+    #[default(get_uuid())]
+    pub id: String,
     pub kind: MediaKind,
     pub parent_id: Option<String>,
-    //pub url: Option<String>,
-    pub imdb_id: Option<String>,
-    pub aio_id: String,
-    pub season: Option<i64>,
-    pub episode: Option<i64>,
-    pub probe_data: Option<String>,
-
-    //pub aio_stream_id: String,
-    pub aio_meta: Option<String>,
-   // pub aio_stream: Option<String>,
+    pub season_num: Option<i64>,
+    pub episode_num: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Error, Debug)]
+pub enum MediaError {
+    #[error("Invalid media: {0}")]
+    ValidationError(String),
+}
+
 impl Media {
-    /// Save the media to the database.
-    /// If the media already exists (same ID), update it.
-    pub async fn save(&mut self, db: &SqlitePool) -> Result<()> {
+    pub fn validate(&self) -> Result<(), MediaError> {
+        match self.kind {
+            MediaKind::Season if self.season_num.is_none() => {
+                Err(MediaError::ValidationError(
+                    "Season requires a season number".to_string(),
+                ))
+            }
+            MediaKind::Episode if self.season_num.is_none() || self.episode_num.is_none() => {
+                Err(MediaError::ValidationError(
+                    "Episode requires both season and episode numbers".to_string(),
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub async fn save(&mut self, db: &sqlx::SqlitePool) -> Result<(), MediaError> {
+        self.validate()?;
+
+       // let stable_id = if self.id.is_none() {
+       //     Some(Self::get_stable_id(&Some(self.imdb_id.clone()), &self.season_num, &self.episode_num).to_string())
+       // } else {
+        //    self.id.clone()
+        //};
+        let updated_at = Utc::now();
         sqlx::query!(
             r#"
             INSERT INTO media (
-                id, kind, parent_id, url, imdb_id, season, episode,
-    
-                probe_data, aio_id, aio_meta, aio_stream, created_at, updated_at
+                id, kind, parent_id, season_num, episode_num, created_at, updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-            ON CONFLICT(id) DO UPDATE SET
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT (id) DO UPDATE SET
                 kind = excluded.kind,
                 parent_id = excluded.parent_id,
-                url = excluded.url,
-                imdb_id = excluded.imdb_id,
-                season = excluded.season,
-                episode = excluded.episode,
-                probe_data = excluded.probe_data,
-                aio_id = excluded.aio_id,
-                aio_meta = excluded.aio_meta,
-                aio_stream = excluded.aio_stream,
+                season_num = excluded.season_num,
+                episode_num = excluded.episode_num,
                 updated_at = excluded.updated_at
             "#,
             self.id,
-            self.kind.to_string(),
+            self.kind,
             self.parent_id,
-            self.url,
-            self.imdb_id,
-            self.season,
-            self.episode,
-            self.probe_data,
-            self.aio_id,
-            self.aio_meta,
-            self.aio_stream,
+            self.season_num,
+            self.episode_num,
             self.created_at,
-            Utc::now() // Update the `updated_at` timestamp
+            updated_at
         )
         .execute(db)
-        .await?;
+        .await
+        .map_err(|e| MediaError::ValidationError(e.to_string()))?;
 
         Ok(())
     }
 
-    /// Fetch a media item by its ID.
-    pub async fn get_by_id(db: &SqlitePool, id: &str) -> Result<Option<Self>> {
-        let row = sqlx::query_as!(
+    pub async fn get_by_id(db: &sqlx::SqlitePool, id: &str) -> Result<Option<Self>, sqlx::Error> {
+        sqlx::query_as!( 
             Media,
             r#"
             SELECT
-                id, kind as "kind: MediaKind", parent_id, url, imdb_id,
-                season, episode, probe_data, aio_id, aio_meta, aio_stream,
-                created_at, updated_at
+                id, kind as "kind: MediaKind", parent_id,
+                season_num,
+                episode_num,
+                created_at as "created_at: _", 
+                updated_at as "updated_at: _"
             FROM media
             WHERE id = ?1
             "#,
             id
         )
         .fetch_optional(db)
-        .await?;
-
-        Ok(row)
+        .await
     }
-    
-    pub fn get_stable_id(
-        kind: &MediaKind,
-        imdb_id: &Option<String>,
-        url: &Option<String>,
-        season: &Option<i64>,
-        episode: &Option<i64>,
-    ) -> Uuid {
-        let namespace = uuid!("00000000-0000-0000-0000-000000000000");
+}
 
-        let mut input = kind.to_string();
-        if let Some(imdb_id) = imdb_id {
-            input.push_str(&format!(":{}", imdb_id));
+impl From<sdks::aio::Meta> for Vec<Media> {
+    fn from(meta: sdks::aio::Meta) -> Self {
+        let mut media_instances = Vec::new();
+
+        //let imdb_id = meta.imdb_id.clone();
+        let media_kind = MediaKind::from(meta.media_type.clone());
+        let media = Media {
+            kind: media_kind.clone(),
+         //   imdb_id: meta.imdb_id.unwrap_or_default(),
+            ..Default::default() 
+        };
+        media_instances.push(media);
+
+        if let MediaKind::Series = media_kind {
+            if let Some(episodes) = meta.videos {
+                let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Episode>> =
+                    episodes.into_iter()
+                        .filter_map(|ep| ep.season.map(|s| (s, ep)))
+                        .fold(std::collections::BTreeMap::new(), |mut acc, (season, ep)| {
+                            acc.entry(season).or_default().push(ep);
+                            acc
+                        });
+
+                for (season_num, episodes) in seasons {
+                    let season_media = Media {
+                        kind: MediaKind::Season,
+                      //  imdb_id: meta.imdb_id.clone().unwrap_or_default(),
+                        season_num: Some(season_num),
+                        ..Default::default() // Alle andere velden default
+                    };
+                    media_instances.push(season_media);
+
+                    for episode in episodes {
+                        let episode_media = Media {
+                            kind: MediaKind::Episode,
+                            //imdb_id: meta.imdb_id.clone().unwrap_or_default(),
+                            season_num: Some(season_num),
+                            episode_num: episode.episode,
+                            ..Default::default() // Alle andere velden default
+                        };
+                        media_instances.push(episode_media);
+                    }
+                }
+            }
         }
-        if let Some(season) = season {
-            input.push_str(&format!(":{}", season));
-        }
-        if let Some(episode) = episode {
-            input.push_str(&format!(":{}", episode));
-        }
-        if let Some(url) = url {
-            input.push_str(&format!(":{}", url));
-        }
-        // Generate the deterministic UUID
-        Uuid::new_v5(&namespace, input.as_bytes())
+
+        media_instances
     }
 }
