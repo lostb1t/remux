@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
 
     tracing::debug!("config: {:?}", settings);
 
-    let conn = db::DbConn::new(
+    let conn = db::connect(
         std::env::var("DATABASE_URL")
             .as_deref()
             .unwrap_or("data/db.sqlite"),
@@ -166,7 +166,7 @@ async fn main() -> Result<()> {
 #[derive(Clone)]
 pub struct AppState {
     pub config: Settings,
-    pub db: db::DbConn,
+    pub db: SqlitePool,
     pub aio: aio::AioService,
     pub store: store::Store,
 }

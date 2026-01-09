@@ -1,16 +1,69 @@
-use diesel::prelude::*;
-use serde::{Deserialize, Serialize};
+use axum::response::Html;
+use reqwest;
+
+use crate::sdks;
+use crate::utils::get_uuid;
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::anyhow;
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{
+        PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
+    },
 };
-use rand_core::OsRng;
-use anyhow::{Context, Result, anyhow};
-use crate::utils::get_uuid;
-use super::DbConn;
+use async_trait::async_trait;
+use axum::ServiceExt;
+use axum::body::Body;
+use axum::extract::FromRequestParts;
+use axum::extract::Request;
+use axum::http::request::Parts;
+use axum::middleware;
+use axum::middleware::Next;
+use axum::response::IntoResponse;
+use axum::response::Response;
+use axum::{
+    Json, Router,
+    http::StatusCode,
+    response::Redirect,
+    routing::{get, post},
+};
+use axum_anyhow::ApiError;
+use axum_anyhow::on_error;
+use axum_anyhow::set_expose_errors;
+use axum_anyhow::{ApiResult, OptionExt, ResultExt};
+use chrono::prelude::*;
+use chrono::{Duration, Utc};
+use config;
+use config::Config;
+use futures::future::BoxFuture;
+use futures_util::StreamExt;
+use http::Uri;
+use reqwest::header::LOCATION;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::SqlitePool;
+use std;
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+use timed;
+use tower::Layer;
+use tower::util::MapRequestLayer;
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
+use tracing;
+use tracing::debug;
+use tracing::instrument;
+use tracing::warn;
+use tracing_log::LogTracer;
+use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
+use url::Url;
+use uuid::Uuid;
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, Queryable, Insertable, Identifiable)]
-#[diesel(table_name = auth_users)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
     pub id: String,
     pub username: String,
@@ -20,45 +73,67 @@ pub struct User {
     pub aio_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Queryable, Insertable, Identifiable, Associations)]
-#[diesel(table_name = user_media_info)]
-#[diesel(belongs_to(User, foreign_key = user_id))]
-pub struct UserMediaInfo {
-    pub user_id: String,
-    pub media_id: String,
-    pub is_fav: bool,
-    pub playback_position: i64,
-}
-
 impl User {
-    pub fn save(&mut self, conn: &DbConn) -> Result<()> {
-        diesel::insert_into(auth_users::table)
-            .values(self)
-            .on_conflict(auth_users::id)
-            .do_update()
-            .set(self)
-            .execute(conn)
-            .map(|_| ())
-            .map_err(|e| anyhow!("Failed to save user: {e}"))
+    pub async fn save(&mut self, db: &SqlitePool) -> Result<()> {
+        sqlx::query!(
+            r#"
+            INSERT INTO auth_users (id, username, password_hash, aio_url)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(id) DO UPDATE SET
+                username      = excluded.username,
+                password_hash = excluded.password_hash,
+                aio_url       = excluded.aio_url
+            "#,
+            self.id,
+            self.username,
+            self.password_hash,
+            self.aio_url
+        )
+        .execute(db)
+        .await?;
+
+        Ok(())
     }
 
-    pub fn get_by_id(conn: &DbConn, id: &String) -> Result<Option<Self>> {
-        auth_users::table
-            .find(id)
-            .first(conn)
-            .optional()
-            .map_err(|e| anyhow!("Failed to fetch user: {e}"))
+    pub async fn get_by_id(db: &SqlitePool, id: &String) -> Result<Option<Self>> {
+        let row = sqlx::query_as!(
+            Self,
+            r#"
+            SELECT
+            *
+            FROM auth_users
+            WHERE id = ?1
+            "#,
+            id
+        )
+        .fetch_optional(db)
+        .await?;
+
+        Ok(row)
     }
 
-    pub fn get_by_username(conn: &DbConn, username: &str) -> Result<Option<Self>> {
-        auth_users::table
-            .filter(auth_users::username.eq(username))
-            .first(conn)
-            .optional()
-            .map_err(|e| anyhow!("Failed to fetch user: {e}"))
+    pub async fn get_by_username(
+        db: &SqlitePool,
+        username: &str,
+    ) -> Result<Option<Self>> {
+        let row = sqlx::query_as!(
+            Self,
+            r#"
+            SELECT
+            *
+            FROM auth_users
+            WHERE username = ?1
+            "#,
+            username
+        )
+        .fetch_optional(db)
+        .await?;
+
+        Ok(row)
     }
 
     pub fn new_with_password(
+        key: String,
         username: String,
         password: &str,
         aio_url: Option<String>,
@@ -69,6 +144,7 @@ impl User {
             username,
             password_hash,
             aio_url,
+            ..Default::default()
         })
     }
 
@@ -79,7 +155,7 @@ impl User {
 
     pub fn verify_password(&self, password: &str) -> Result<bool> {
         let parsed = PasswordHash::new(&self.password_hash)
-            .map_err(|e| anyhow!("Invalid stored password hash: {e}"))?;
+            .map_err(|e| anyhow!("invalid stored password hash: {e}"))?;
 
         Ok(Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
@@ -90,47 +166,33 @@ impl User {
         let salt = SaltString::generate(&mut OsRng);
         let hash = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
-            .map_err(|e| anyhow!("Password hashing failed: {e}"))?;
+            .map_err(|e| anyhow!("password hashing failed: {e}"))?;
 
         Ok(hash.to_string())
     }
 
-    pub fn authenticate(
-        conn: &DbConn,
+    pub async fn authenticate(
+        db: &SqlitePool,
         username: &str,
         password: &str,
     ) -> Result<Option<Self>> {
-        let user = Self::get_by_username(conn, username)?;
+        let Some(user) = Self::get_by_username(db, username).await? else {
+            return Ok(None);
+        };
 
-        match user {
-            Some(user) if user.verify_password(password)? => Ok(Some(user)),
-            _ => Ok(None),
+        if user.verify_password(password)? {
+            Ok(Some(user))
+        } else {
+            Ok(None)
         }
     }
 }
 
-impl UserMediaInfo {
-    pub fn save(&self, conn: &DbConn) -> Result<()> {
-        diesel::insert_into(user_media_info::table)
-            .values(self)
-            .on_conflict((user_media_info::user_id, user_media_info::media_id))
-            .do_update()
-            .set(self)
-            .execute(conn)
-            .map(|_| ())
-            .map_err(|e| anyhow!("Failed to save user media info: {e}"))
-    }
-
-    pub fn get_by_user_and_media(
-        conn: &DbConn,
-        user_id: &str,
-        media_id: &str,
-    ) -> Result<Option<Self>> {
-        user_media_info::table
-            .filter(user_media_info::user_id.eq(user_id))
-            .filter(user_media_info::media_id.eq(media_id))
-            .first(conn)
-            .optional()
-            .map_err(|e| anyhow!("Failed to fetch user media info: {e}"))
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct UserMediaInfo {
+    //pub id: String,
+    pub user_id: String,
+    pub media_id: String,
+    pub is_fav: bool,
+    pub playback_position: i64,
 }
