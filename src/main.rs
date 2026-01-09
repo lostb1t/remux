@@ -105,10 +105,10 @@ async fn main() -> Result<()> {
     let conn = db::connect(
         std::env::var("DATABASE_URL")
             .as_deref()
-            .unwrap_or("data/db.sqlite"),
-    )?;
+            .unwrap_or("sqlite:///data/db.sqlite"),
+    ).await?;
 
-    db::migrate(&conn)?;
+    db::migrate(&conn).await?;
 
     for u in settings.users.clone() {
         let mut user = db::User {
@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
             ..Default::default()
         };
 
-        user.save(&conn)?;
+        user.save(&conn).await?;
     }
 
     let state = AppState {
@@ -166,7 +166,7 @@ async fn main() -> Result<()> {
 #[derive(Clone)]
 pub struct AppState {
     pub config: Settings,
-    pub db: SqlitePool,
+    pub db: sqlx::SqlitePool,
     pub aio: aio::AioService,
     pub store: store::Store,
 }
@@ -200,8 +200,9 @@ pub struct Settings {
     pub users: Vec<UserConfig>,
 
     // we dont support folders
-    #[default("fd58cb0a-9d75-49b7-aa6a-c08cc335c2f6".to_string())]
-    pub collection_id: String, //  pub libraries: Vec<Library>,
+    #[serde(default = "default_collection_id")]
+   // #[default("fd58cb0a-9d75-49b7-aa6a-c08cc335c2f6".to_string())]
+    pub collection_id: String,
 }
 
 fn clean_aio_url<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
@@ -214,6 +215,10 @@ where
         .unwrap_or(value.as_str())
         .trim_end_matches('/');
     serializer.serialize_str(cleaned)
+}
+
+fn default_collection_id() -> String {
+    "fd58cb0a-9d75-49b7-aa6a-c08cc335c2f6".to_string()
 }
 
 fn default_web_path() -> String {

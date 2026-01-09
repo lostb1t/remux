@@ -24,7 +24,7 @@ use axum_anyhow::on_error;
 use axum_anyhow::set_expose_errors;
 use axum_anyhow::{ApiResult, OptionExt, ResultExt};
 use chrono::prelude::*;
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveDateTime, DateTime, Utc};
 use config;
 use config::Config;
 use futures::future::BoxFuture;
@@ -70,8 +70,10 @@ use crate::jellyfin;
     Deserialize,
     sqlx::Type
 )]
-#[serde(rename_all = "lowercase")]
-#[sqlx(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+//#[sqlx(rename_all = "lowercase")]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
 pub enum MediaKind {
     Movie,
     Series,
@@ -81,6 +83,12 @@ pub enum MediaKind {
     Source,
     #[default]
     Unknown,
+}
+
+impl From<String> for MediaKind {
+    fn from(s: String) -> Self {
+        Self::try_from(s.as_str()).unwrap_or(MediaKind::Unknown)
+    }
 }
 
 impl From<sdks::aio::MediaType> for MediaKind {
@@ -214,21 +222,21 @@ pub struct MediaFilter {
     pub idx: Option<i64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Media {
     #[default(get_uuid())]
     pub id: String,
     pub title: String,
     pub kind: MediaKind,
-    pub released_at: Option<DateTime<Utc>>,
-    pub runtime: Option<Duration>,
+    pub released_at: Option<NaiveDateTime>,
+    pub runtime: Option<i64>,
     pub rating_critic: Option<i64>,
     pub rating_audience: Option<i64>,
     pub poster: Option<String>,
     pub parent_id: Option<String>,
     pub idx: Option<i64>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
     pub url: Option<String>,
     pub probe_data: Option<String>,
     pub remote_data: Option<String>,
@@ -305,14 +313,7 @@ impl Media {
         sqlx::query_as!(
             Media,
             r#"
-            SELECT
-                id, title, kind as "kind: MediaKind", parent_id, idx,
-                runtime, rating_critic, rating_audience, poster,
-                url, probe_data, remote_data,
-                released_at as "released_at: _",
-                created_at as "created_at: _",
-                updated_at as "updated_at: _"
-            FROM media
+            SELECT * FROM media
             WHERE id = $1
             "#,
             id
@@ -320,24 +321,15 @@ impl Media {
         .fetch_optional(db)
         .await
     }
-
+    
     pub async fn get_with_filter(db: &sqlx::SqlitePool, filter: &MediaFilter) -> Result<Vec<Self>, sqlx::Error> {
         sqlx::query_as!(
             Self,
             r#"
-            SELECT
-                id, title, kind as "kind: MediaKind", parent_id, idx,
-                runtime, rating_critic, rating_audience, poster,
-                url, probe_data, remote_data,
-                released_at as "released_at: _",
-                created_at as "created_at: _",
-                updated_at as "updated_at: _"
-            FROM media
+            SELECT * FROM media
             WHERE ($1 IS NULL OR parent_id = $1)
-            AND ($2 IS NULL OR kind = ANY($2))
             "#,
-            filter.parent_id,
-            filter.kind.as_ref().map(|kinds| kinds.iter().map(|k| k.to_string()).collect::<Vec<_>>())
+            filter.parent_id
         )
         .fetch_all(db)
         .await
@@ -385,7 +377,7 @@ impl From<sdks::aio::Meta> for Vec<Media> {
             title: meta.name.unwrap_or_default(),
             kind: media_kind.clone(),
             released_at: meta.released,
-            runtime: meta.runtime,
+          //  runtime: meta.runtime.as_secs(),
            // rating_critic: meta.rating_critic,
             rating_audience: meta.imdb_rating,
             poster: meta.poster,
@@ -417,7 +409,7 @@ impl From<sdks::aio::Meta> for Vec<Media> {
                             title: episode.name.unwrap_or_default(),
                             idx: episode.episode,
                             released_at: episode.released,
-                            runtime: episode.runtime,
+                          //  runtime: episode.runtime.as_secs(),
                             ..Default::default()
                         };
                         media_instances.push(episode_media);

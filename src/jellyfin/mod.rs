@@ -14,7 +14,7 @@ pub fn get_virtual_folders(state: &crate::AppState) -> Vec<BaseItemDto> {
     let mut vf = vec![BaseItemDto {
         name: Some("Collections".to_string()),
         //id: "collections".to_string(),
-        id: state.config.collection_id,
+        id: state.config.collection_id.clone(),
         //parent_id: Some("test".to_string()),
         //type_: Some(jellyfin::MediaType::CollectionFolder),
         collection_type: Some(CollectionType::Boxsets),

@@ -267,18 +267,18 @@ pub async fn get_items(
 ) -> Result<ItemsQueryResult> {
     let aio = session.aio;
 
-    let parent = if let Some(parent_id) = q.parent_id {
+    let parent = if let Some(parent_id) = q.parent_id.clone() {
         db::Media::get_by_id(&state.db, &parent_id).await?
     } else {
         None
-    }
+    };
     //let aio_search = session.user.get_aio_search()?;
     let search = q.search_term.clone().or(q.name_starts_with.clone());
     let skip = q.start_index.unwrap_or(0) as u32;
 
-    trace!(?q, "get_items");
+  //  trace!(?q, "get_items");
     // only support Movie and Series for search and catalogs
-if search.is_some() || parent.map_or(false, |p| p.kind == db::MediaKind::Catalog)
+if search.is_some() || parent.clone().map_or(false, |p| p.kind == db::MediaKind::Catalog)
       
     {
         let types = q.get_requested_item_types();
@@ -385,7 +385,7 @@ if search.is_some() || parent.map_or(false, |p| p.kind == db::MediaKind::Catalog
          //       .collect();
             let items = vec![];
             return Ok(ItemsQueryResult {
-                items: items,
+                items: items.clone(),
                 total_count: items.len() as i64,
             });
         }
@@ -672,7 +672,7 @@ pub async fn videos_stream(
     //  .log_err("Failed to decode media UUID")
     
     let media = db::Media::get_by_id(&state.db, &q.media_source_id.unwrap_or(id)).await?.context_not_found("not found", "not found")?;
-    trace!(?media, ?q, "videos_stream");
+   // trace!(?media, ?q, "videos_stream");
 
     
     

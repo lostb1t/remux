@@ -2,7 +2,7 @@ use super::{BasicAuth, ClientError, Endpoint, RestClient};
 use axum::http::Method;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+//use chrono::{DateTime, Utc};
 use serde::Deserializer;
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use serde_aux::prelude::*;
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::str::FromStr;
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveDateTime, DateTime, Utc};
 
 #[derive(
     Default,
@@ -289,7 +289,7 @@ pub struct Meta {
     pub genre: Option<Vec<String>>,
     pub imdb_rating: Option<i64>,
     pub name: Option<String>,
-    pub released: Option<DateTime<Utc>>,
+    pub released: Option<NaiveDateTime>,
     pub slug: Option<String>,
     #[serde(rename = "type")]
     pub media_type: MediaType,
@@ -387,7 +387,7 @@ impl Meta {
 pub struct Episode {
     pub id: String,
     pub name: Option<String>,
-    pub released: Option<DateTime<Utc>>,
+    pub released: Option<NaiveDateTime>,
     pub thumbnail: Option<String>,
     pub episode: Option<i64>,
     pub season: Option<i64>,

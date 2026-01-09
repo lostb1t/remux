@@ -27,7 +27,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
             original_title: meta.name.clone(),
             overview: meta.description.clone(),
             type_: meta.media_type.clone().into(),
-            premiere_date: meta.released.clone(),
+            //premiere_date: meta.released.clone(),
            // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
                 primary: meta.poster.clone(),
