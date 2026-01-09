@@ -11,13 +11,14 @@ use std::collections::HashSet;
 //use super::BaseItemStore;
 use crate::aio::AioService;
 use anyhow::anyhow;
+use crate::db;
 //generate_api!(
 //    spec = "src/sdks/jellyfin/openapi.json", // The OpenAPI document
 //    interface = Builder
 //);
 
 use crate::sdks::aio;
-use crate::utils::{MediaId, get_uuid, server_id};
+use crate::utils::{get_uuid, server_id};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_alias::serde_alias;
@@ -116,8 +117,8 @@ pub struct GetItemsQuery {
     pub start_index: Option<i64>,
     pub limit: Option<u32>,
     pub search_term: Option<String>,
-    pub parent_id: Option<MediaId>,
-    pub season_id: Option<MediaId>,
+    pub parent_id: Option<String>,
+    pub season_id: Option<String>,
     //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
     //pub fields: Option<Vec<ItemFields>>,
     pub exclude_item_types: Option<Vec<MediaType>>,
@@ -151,7 +152,7 @@ pub struct GetItemsQuery {
     pub studios: Option<Vec<String>>,
     pub studio_ids: Option<Vec<String>>,
     pub exclude_artist_ids: Option<Vec<String>>,
-    pub ids: Option<Vec<MediaId>>,
+    pub ids: Option<Vec<String>>,
 }
 
 impl GetItemsQuery {
@@ -193,7 +194,7 @@ pub struct VideoStreamQuery {
     pub segment_container: Option<String>,
     pub segment_length: Option<i64>,
     pub min_segments: Option<i64>,
-    pub media_source_id: Option<MediaId>,
+    pub media_source_id: Option<String>,
     pub device_id: Option<String>,
     pub audio_codec: Option<String>,
     pub enable_auto_stream_copy: Option<bool>,
@@ -222,7 +223,7 @@ pub struct PlaybackInfoQuery {
     pub subtitle_stream_index: Option<i64>,
     pub max_audio_channels: Option<i64>,
     #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
-    pub media_source_id: Option<MediaId>,
+    pub media_source_id: Option<String>,
     pub live_stream_id: Option<String>,
     pub auto_open_live_stream: Option<bool>,
     pub enable_direct_play: Option<bool>,
@@ -266,14 +267,14 @@ pub struct MediaSourceInfo {
     pub container: Option<String>,
     pub default_audio_stream_index: Option<i64>,
     pub default_subtitle_stream_index: Option<i64>,
-    pub e_tag: Option<MediaId>,
+    pub e_tag: Option<String>,
     pub encoder_path: Option<String>,
     //  pub encoder_protocol: Option<MediaProtocol>,
     pub fallback_max_streaming_bitrate: Option<i64>,
     pub formats: Option<Vec<String>>,
     pub gen_pts_input: Option<bool>,
     pub has_segments: Option<bool>,
-    pub id: MediaId,
+    pub id: String,
     pub ignore_dts: Option<bool>,
     pub ignore_index: Option<bool>,
     pub is_infinite_stream: Option<bool>,
@@ -339,6 +340,23 @@ impl MediaSourceInfo {
         Ok(())
     }
 }
+impl From<db::Media> for MediaSourceInfo {
+    fn from(source: db::Media) -> Self {
+      MediaSourceInfo {
+        id: source.id.clone(),
+        e_tag: Some(source.id.clone()),
+        path: source.url,
+        protocol: Some("File".to_string()),
+        supports_transcoding: Some(false),
+        supports_direct_stream: Some(true),
+        supports_direct_play: Some(true),
+        is_remote: Some(false),
+        name: Some(source.title.clone()),
+        ..Default::default()
+    }
+    }
+}
+
 
 #[skip_serializing_none]
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -698,7 +716,7 @@ pub struct ProviderIds {
 #[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
-    pub id: MediaId,
+    pub id: String,
     #[default(server_id())]
     pub server_id: String,
     pub name: Option<String>,
@@ -754,7 +772,7 @@ pub struct BaseItemDto {
     pub critic_rating_summary: Option<String>,
     pub is_hd: Option<bool>,
     pub is_folder: bool,
-    pub parent_id: Option<MediaId>,
+    pub parent_id: Option<String>,
     #[default(MediaType::Movie)]
     pub type_: MediaType,
     // pub people: Option<Vec<BaseItemPerson>>,
@@ -768,8 +786,8 @@ pub struct BaseItemDto {
     pub recursive_item_count: Option<i64>,
     pub child_count: Option<i64>,
     pub series_name: Option<String>,
-    pub series_id: Option<MediaId>,
-    pub season_id: Option<MediaId>,
+    pub series_id: Option<String>,
+    pub season_id: Option<String>,
     pub special_feature_count: Option<i64>,
     pub display_preferences_id: Option<String>,
     pub status: Option<Status>,
@@ -868,15 +886,6 @@ pub struct BaseItemDto {
     //pub aio_stream: Option<sdks::aio::Stream>,
 }
 
-impl BaseItemDto {
-    pub fn save(&self, store: &crate::store::Store) {
-        store.save(self.id.clone(), self.clone(), Duration::from_secs(3600));
-    }
-
-    pub fn insert(&self, store: &crate::store::Store) {
-        store.insert(self.id.clone(), self.clone(), Duration::from_secs(3600));
-    }
-}
 
 #[derive(
     Copy,

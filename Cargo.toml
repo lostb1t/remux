@@ -89,6 +89,11 @@ argon2 = { version = "0.5.3", default-features = true}
 # argo depends on 0,8
 rand = { version = "0.8", features = ["getrandom"] }
 md5 = "0.8.0"
+diesel = { version = "2.3.5", features = ["sqlite", "r2d2", "chrono"] }
+diesel_migrations = { version = "2.3.1", features = ["sqlite"] }
+r2d2 = "0.8.10"
+diesel-enum = "0.2.1"
+diesel-derive-enum = "2.1.0"
 
 #[target.'cfg(any(target_arch = "arm", target_arch = "aarch64"))'.dependencies]
 #ez_ffmpeg_arm = { package = "ez-ffmpeg", path = "vendor/ez-ffmpeg" }

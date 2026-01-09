@@ -14,31 +14,35 @@ pub struct AioService {
 }
 
 impl AioService {
-    pub fn from_user(user: &db::User) -> Result<Self> {
-        let client = Self::get_aio(user)?;
-        let search_client = Self::get_aio_search(user)?;
+
+   pub fn from_url(url: &str) -> Result<Self> {
+        let client = Self::get_aio(url)?;
+        let search_client = Self::get_aio_search(url)?;
         Ok(Self {
             client,
             search_client,
         })
     }
 
-    fn get_aio(user: &db::User) -> Result<sdks::RestClient> {
-        let base = user
-            .aio_url
-            .strip_suffix("manifest.json")
-            .unwrap_or(user.aio_url.as_str())
-            .to_string();
+    //pub fn from_user(user: &db::User) -> Result<Self> {
+    //    let base = user
+    //        .aio_url;
+    //    let client = Self::get_aio(base)?;
+    //    let search_client = Self::get_aio_search(base)?;
+    //    Ok(Self {
+    //        client,
+    //        search_client,
+    //    })
+   // }
 
-        let base = base.trim_end_matches('/').to_string() + "/";
-
+    fn get_aio(url: &str) -> Result<sdks::RestClient> {
+        let base = url.trim_end_matches('/').to_string() + "/";
         Ok(sdks::aio::client(&base)?)
     }
 
-    fn get_aio_search(user: &db::User) -> Result<sdks::RestClient<sdks::BasicAuth>> {
-        let mut url = Url::parse(&user.aio_url)?;
-
-        let segments: Vec<String> = url
+    fn get_aio_search(base: &str) -> Result<sdks::RestClient<sdks::BasicAuth>> {
+      let mut url = Url::parse(&base)?;
+      let segments: Vec<String> = url
             .path_segments()
             .ok_or_else(|| anyhow!("aio_url has no path segments"))?
             .map(|s| s.to_string())

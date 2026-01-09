@@ -1,23 +1,41 @@
 use anyhow::Result;
-use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::str::FromStr;
+use diesel::SqliteConnection;
+use diesel::r2d2::ConnectionManager;
+use r2d2::Pool;
+use std::sync::Arc;
 
 pub mod auth;
-pub mod user;
 pub mod media;
-pub use user::*;
+pub mod user;
 pub use media::*;
+pub use user::*;
+pub mod schema;
 
-pub async fn connect(url: &str) -> Result<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(url)?;
-    Ok(SqlitePoolOptions::new()
-        .max_connections(10)
-        .connect_with(opts)
-        .await?)
+type DbPool = Pool<ConnectionManager<SqliteConnection>>;
+
+#[derive(Clone)]
+pub struct DbConn {
+    pool: Arc<DbPool>,
 }
 
-pub async fn migrate(pool: &SqlitePool) -> Result<()> {
-    sqlx::migrate!("./migrations").run(pool).await?;
+impl DbConn {
+    pub fn new(database_url: &str) -> Result<Self> {
+        let manager = ConnectionManager::<SqliteConnection>::new(database_url);
+        let pool = Pool::builder().max_size(10).build(manager)?;
+        Ok(Self {
+            pool: Arc::new(pool),
+        })
+    }
+
+    pub fn get_conn(
+        &self,
+    ) -> Result<r2d2::PooledConnection<ConnectionManager<SqliteConnection>>> {
+        Ok(self.pool.clone().get()?)
+    }
+}
+
+pub fn migrate(db: &DbConn) -> Result<()> {
+    let mut conn = db.get_conn()?;
+    diesel_migrations::run_pending_migrations(&mut conn)?;
     Ok(())
 }

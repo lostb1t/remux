@@ -1,0 +1,104 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT\n                id, title, kind as \"kind: MediaKind\", parent_id, idx,\n                runtime, rating_critic, rating_audience, poster,\n                url, probe_data, remote_data,\n                released_at as \"released_at: _\",\n                created_at as \"created_at: _\",\n                updated_at as \"updated_at: _\"\n            FROM media\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "title",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind: MediaKind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "parent_id",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "idx",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "runtime",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "rating_critic",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "rating_audience",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "poster",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "url",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "probe_data",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "remote_data",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "released_at: _",
+        "ordinal": 12,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "created_at: _",
+        "ordinal": 13,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at: _",
+        "ordinal": 14,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "9af0c0b8fe918cc71e5f189e55ad0dd7e4f75623bc7cbf7c94c175de532f15a9"
+}

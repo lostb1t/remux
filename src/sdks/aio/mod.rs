@@ -10,11 +10,11 @@ use serde_aux::prelude::*;
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::time::Duration;
+use chrono::{Duration, Utc};
 
 #[derive(
     Default,
-    strum_macros::EnumString,
+ //   strum_macros::EnumString,
     strum_macros::Display,
     Debug,
     Clone,
@@ -23,14 +23,11 @@ use std::time::Duration;
     Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum MediaType {
-    #[strum(to_string = "movie")]
     Movie,
-    #[strum(to_string = "series")]
     Series,
-    #[strum(to_string = "tv")]
     Tv,
-    #[strum(to_string = "events")]
     Events,
     #[default]
     Unknown,
@@ -46,14 +43,15 @@ pub enum MediaType {
     Deserialize,
 )]
 #[serde(rename_all = "camelCase")]
+#[strum(serialize_all = "lowercase")]
 pub enum ResourceType {
-    #[strum(to_string = "stream")]
+
     Stream,
-    #[strum(to_string = "subtitles")]
+
     Subtitles,
-    #[strum(to_string = "catalog")]
+
     Catalog,
-    #[strum(to_string = "meta")]
+
     Meta,
     #[strum(to_string = "addon_catalog")]
     AddonCatalog,
@@ -289,7 +287,7 @@ pub struct Meta {
     pub country: Option<String>,
     pub description: Option<String>,
     pub genre: Option<Vec<String>>,
-    pub imdb_rating: Option<String>,
+    pub imdb_rating: Option<i64>,
     pub name: Option<String>,
     pub released: Option<DateTime<Utc>>,
     pub slug: Option<String>,
@@ -341,7 +339,11 @@ where
             if t.is_empty() {
                 Ok(None)
             } else {
-                duration_str::parse(t).map(Some).map_err(D::Error::custom)
+  let std_duration = duration_str::parse(t)
+                    .map_err(D::Error::custom)?;
+
+
+                Ok(Some(Duration::from_std(std_duration).map_err(D::Error::custom)?))
             }
         }
     }
@@ -385,7 +387,7 @@ impl Meta {
 pub struct Episode {
     pub id: String,
     pub name: Option<String>,
-    pub released: Option<String>,
+    pub released: Option<DateTime<Utc>>,
     pub thumbnail: Option<String>,
     pub episode: Option<i64>,
     pub season: Option<i64>,
@@ -393,7 +395,8 @@ pub struct Episode {
     pub number: Option<i64>,
     pub description: Option<String>,
     pub rating: Option<String>,
-    //  pub first_aired: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
+    pub runtime: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

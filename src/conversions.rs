@@ -3,7 +3,6 @@ use crate::jellyfin;
 use crate::sdks::{aio, tmdb};
 use crate::utils;
 //use crate::utils::MediaId;
-use crate::utils::MediaId;
 use crate::utils::ToRunTimeTicks;
 use crate::utils::get_uuid;
 use crate::utils::server_id;
@@ -21,7 +20,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
         // let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
         let item = jellyfin::BaseItemDto {
-            id: MediaId::from_aio_meta(meta.clone()),
+            id: meta.id,
             // id: get_stable_uuid(meta.id.clone()),
             server_id: utils::server_id(),
             name: meta.name.clone(),
@@ -29,7 +28,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
             overview: meta.description.clone(),
             type_: meta.media_type.clone().into(),
             premiere_date: meta.released.clone(),
-            community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
+           // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
                 primary: meta.poster.clone(),
                 logo: meta.logo.clone(),
@@ -74,7 +73,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
             genres: meta.genres.clone(),
             run_time_ticks: meta
                 .runtime
-                .map(|r| r.as_secs().to_ticks(utils::TickUnit::Seconds).unwrap()),
+                .map(|r| r.num_seconds().to_ticks(utils::TickUnit::Seconds).unwrap()),
             ..Default::default()
         };
 
@@ -94,11 +93,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
             for (season_num, episodes) in seasons {
                 let season = jellyfin::BaseItemDto {
                     // id: MediaId::from_aio_season(meta.id.clone(), season_num),
-                    id: MediaId::new(
-                        format!("{}:{}", meta.id, season_num),
-                        jellyfin::MediaType::Season,
-                        None,
-                    ),
+                    id: get_uuid(),
                     series_id: Some(item.id.clone()),
                     server_id: utils::server_id(),
                     name: Some(format!("Season {}", season_num)),
@@ -112,11 +107,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
                     jellyfin::BaseItemDto {
                         name: episode.name.clone(),
                         //id: get_uuid(),
-                        id: MediaId::new(
-                            episode.id.clone(),
-                            jellyfin::MediaType::Episode,
-                            None,
-                        ),
+                        id: get_uuid(),
                         type_: jellyfin::MediaType::Episode,
                         index_number: episode.episode,
                         series_id: Some(item.id.clone()),
@@ -225,11 +216,7 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
         jellyfin::BaseItemDto {
             name: Some(item.name.clone()),
 
-            id: MediaId::new(
-                format!("{}:{}", item.kind, item.id.clone()),
-                jellyfin::MediaType::BoxSet,
-                None,
-            ),
+            id: get_uuid(),
             type_: jellyfin::MediaType::BoxSet,
             ..Default::default()
         }
@@ -241,14 +228,10 @@ impl From<aio::Episode> for jellyfin::BaseItemDto {
         jellyfin::BaseItemDto {
             name: item.name.clone(),
             //id: get_uuid(),
-            id: MediaId::new(item.id.clone(), jellyfin::MediaType::Episode, None),
+            id: get_uuid(),
             type_: jellyfin::MediaType::Episode,
             index_number: item.episode,
-            season_id: Some(MediaId::new(
-                format!("{}:{:?}", item.id, item.season),
-                jellyfin::MediaType::Season,
-                None,
-            )),
+            season_id: Some(get_uuid()),
             parent_index_number: item.season,
             season_name: Some(format!("Season {:?}", item.season)),
             overview: item.overview.clone(),
@@ -287,7 +270,7 @@ pub fn stream_into_media_source_info(
     stream: aio::Stream,
 ) -> jellyfin::MediaSourceInfo {
     //let id = get_uuid();
-    let id = MediaId::new(id, jellyfin_media_type, Some(stream.clone()));
+    let id = get_uuid();
     jellyfin::MediaSourceInfo {
         id: id.clone(),
         e_tag: Some(id.clone()),
@@ -301,6 +284,8 @@ pub fn stream_into_media_source_info(
         ..Default::default()
     }
 }
+
+
 
 use ffprobe;
 //use base64::engine::general_purpose::URL_SAFE;

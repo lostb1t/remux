@@ -1,5 +1,3 @@
--- Auth sessions table (SQLite)
-
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS auth_devices (
@@ -48,7 +46,7 @@ CREATE INDEX idx_media_parent_id ON media(parent_id);
 
 CREATE TABLE provider_ids (
     media_id     TEXT    NOT NULL,
-    kind  INTEGER NOT NULL,
+    kind  TEXT NOT NULL,
     id        TEXT    NOT NULL,
     PRIMARY KEY (media_id, kind),
     FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE

@@ -1,5 +1,11 @@
 //#![feature(duration_constructors)]
 #![allow(warnings)]
+#[macro_use]
+extern crate diesel;
+#[macro_use]
+extern crate diesel_migrations;
+// #[macro_use]
+// extern crate diesel_derive_newtype;
 // #[macro_use]
 // extern crate serde_derive;
 // extern crate serde_alias;
@@ -34,13 +40,14 @@ use chrono::prelude::*;
 use chrono::{Duration, Utc};
 use config;
 use config::Config;
+use diesel::SqliteConnection;
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
 use reqwest::header::LOCATION;
+use serde::Serializer;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::SqlitePool;
 use std;
 use std::collections::HashMap;
 use std::env;
@@ -80,7 +87,7 @@ mod utils;
 mod aio;
 mod db;
 mod jellyfin;
-use crate::db as database;
+//use crate::db as database;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -95,33 +102,35 @@ async fn main() -> Result<()> {
 
     tracing::debug!("config: {:?}", settings);
 
-    let db = database::connect(
+    let conn = db::DbConn::new(
         std::env::var("DATABASE_URL")
             .as_deref()
-            .unwrap_or("sqlite:///data/db.sqlite"),
-    )
-    .await?;
+            .unwrap_or("data/db.sqlite"),
+    )?;
 
-    database::migrate(&db).await?;
+    db::migrate(&conn)?;
 
     for u in settings.users.clone() {
         let mut user = db::User {
             id: u.stable_id_from_key(),
             username: u.username,
-            aio_url: u.aio_url,
+            //aio_url: u.aio_url,
             password_hash: db::User::hash_password(&u.password)?,
+            ..Default::default()
         };
 
-        user.save(&db).await?;
+        user.save(&conn)?;
     }
 
     let state = AppState {
         config: settings.clone(),
-        db: db,
+        db: conn,
+        aio: aio::AioService::from_url(&settings.aio_url)?,
         store: store::Store::new(100000),
     };
 
-    // spawn_background_tasks(state.clone()).await?;
+    spawn_background_tasks(state.clone()).await?;
+
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -154,59 +163,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
     pub config: Settings,
-    pub db: SqlitePool,
+    pub db: db::DbConn,
+    pub aio: aio::AioService,
     pub store: store::Store,
-}
-
-pub fn virtual_folders(manifest: &sdks::aio::Manifest) -> Vec<jellyfin::BaseItemDto> {
-    let mut vf = vec![jellyfin::BaseItemDto {
-        name: Some("Collections".to_string()),
-        //id: "collections".to_string(),
-        id: utils::MediaId::new(
-            "collections".into(),
-            jellyfin::MediaType::CollectionFolder,
-            None,
-        ),
-        //parent_id: Some("test".to_string()),
-        //type_: Some(jellyfin::MediaType::CollectionFolder),
-        collection_type: Some(jellyfin::CollectionType::Boxsets),
-        is_folder: true,
-        ..Default::default()
-    }];
-    vf.extend(
-        manifest
-            .catalogs
-            .iter()
-            // basicly, use catalogs that have show on home enabled
-            .filter(|x| x.extra.iter().any(|e| e.name == "genre" && !e.is_required))
-            .map(|x| jellyfin::BaseItemDto {
-                name: Some(x.name.clone()),
-                id: utils::MediaId::new(
-                    format!("{}:{}", x.kind, x.id.clone()),
-                    jellyfin::MediaType::CollectionFolder,
-                    None,
-                ),
-
-                //collection_type: None,
-                type_: jellyfin::MediaType::CollectionFolder,
-                // none means mixed
-                collection_type: {
-                    match x.kind.as_str() {
-                        "series" => Some(jellyfin::CollectionType::Tvshows),
-                        "movie" => Some(jellyfin::CollectionType::Movies),
-                        _ => None,
-                    }
-                },
-                is_folder: true,
-                //collection_type:
-                ..Default::default()
-            })
-            .collect::<Vec<_>>(),
-    );
-    vf
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,7 +176,7 @@ pub struct UserConfig {
     pub key: String,
     pub username: String,
     pub password: String,
-    pub aio_url: String,
+    //pub aio_url: String,
 }
 
 impl UserConfig {
@@ -229,12 +191,29 @@ pub struct Library {
     pub catalog_id: String,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, default2::Default, Serialize, Debug, Clone)]
 pub struct Settings {
     #[serde(default = "default_web_path")]
     pub web_path: String,
+    #[serde(serialize_with = "clean_aio_url")]
+    pub aio_url: String,
     pub users: Vec<UserConfig>,
-    //  pub libraries: Vec<Library>,
+
+    // we dont support folders
+    #[default("fd58cb0a-9d75-49b7-aa6a-c08cc335c2f6".to_string())]
+    pub collection_id: String, //  pub libraries: Vec<Library>,
+}
+
+fn clean_aio_url<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let cleaned = value
+        .trim_end_matches('/')
+        .strip_suffix("manifest.json")
+        .unwrap_or(value.as_str())
+        .trim_end_matches('/');
+    serializer.serialize_str(cleaned)
 }
 
 fn default_web_path() -> String {
@@ -293,4 +272,28 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
         req.uri().path()
     );
     Ok((StatusCode::NOT_FOUND, "404 - File not found"))
+}
+
+async fn spawn_background_tasks(state: AppState) -> Result<()> {
+    tokio::spawn({
+        //   let cstate = state.clone();
+        async move {
+            //for state.aio.
+
+            //   manifest
+            //    .catalogs
+            //    .iter()
+            // basicly, use catalogs that have show on home enabled
+            //     .filter(|x| x.extra.iter().any(|e| e.name == "genre" && !e.is_required))
+            //    .map(|x| db::media {
+            //       title: x.title,
+            //       kind: db::MediaKind::Catalog,
+            //       ..Default::default();
+            //     };
+            //     );
+            // }
+        }
+    });
+
+    Ok(())
 }

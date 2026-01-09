@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT media_id, kind as \"kind: Provider\", id\n            FROM provider_ids\n            WHERE media_id = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "media_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind: Provider",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "id",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b91b68bc3cd1cfe5292ce07414137e09c01904c7c18a5def891157602a97d05d"
+}

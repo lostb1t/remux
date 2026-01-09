@@ -47,12 +47,12 @@ use crate::conversions::stream_into_media_source_info;
 use crate::db::auth;
 use crate::db::auth::Device;
 use crate::db::user::User;
+use crate::db;
 use crate::jellyfin;
 use crate::rewrite_request_uri;
 use crate::sdks;
 use crate::sdks::{aio, tmdb};
 use crate::utils;
-use crate::utils::MediaId;
 use crate::utils::server_id;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 use chrono::Datelike;
@@ -202,7 +202,7 @@ pub async fn userviews(
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let manifest = session.aio.get_manifest().await?;
-    let items = crate::virtual_folders(&manifest);
+    let items = super::get_virtual_folders(&state);
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items,
         ..Default::default()
@@ -215,7 +215,7 @@ pub async fn userviews_groupingoptions(
 ) -> Result<impl IntoResponse> {
     let manifest = session.aio.get_manifest().await?;
 
-    Ok(Json(json!(crate::virtual_folders(&manifest))))
+    Ok(Json(json!(crate::jellyfin::get_virtual_folders(&state))))
 }
 
 pub async fn library_virtualfolders(
@@ -224,7 +224,7 @@ pub async fn library_virtualfolders(
 ) -> Result<impl IntoResponse> {
     let manifest = session.aio.get_manifest().await?;
 
-    Ok(Json(json!(crate::virtual_folders(&manifest))))
+    Ok(Json(json!(crate::jellyfin::get_virtual_folders(&state))))
 }
 
 pub async fn items_suggestions(
@@ -266,16 +266,20 @@ pub async fn get_items(
     _count: bool,
 ) -> Result<ItemsQueryResult> {
     let aio = session.aio;
+
+    let parent = if let Some(parent_id) = q.parent_id {
+        db::Media::get_by_id(&state.db, &parent_id).await?
+    } else {
+        None
+    }
     //let aio_search = session.user.get_aio_search()?;
     let search = q.search_term.clone().or(q.name_starts_with.clone());
     let skip = q.start_index.unwrap_or(0) as u32;
-    // let media = MediaId::get(&id)?;
+
     trace!(?q, "get_items");
     // only support Movie and Series for search and catalogs
-    if search.is_some()
-        || q.parent_id.as_ref().map_or(false, |id| {
-            id.jellyfin_media_type == jellyfin::MediaType::BoxSet
-        })
+if search.is_some() || parent.map_or(false, |p| p.kind == db::MediaKind::Catalog)
+      
     {
         let types = q.get_requested_item_types();
         // if types.len() != 0 {
@@ -289,14 +293,18 @@ pub async fn get_items(
             });
         }
 
+        // TODO: implement
         if let Some(s) = search {
-            // need to to make parallel request for typrs
-            let items = aio
-                .search(types[0].clone().into(), s)
-                .await?
-                .into_iter()
-                .map(jellyfin::BaseItemDto::from)
-                .collect();
+            // todo: need to to make parallel request for typrs
+           // let items = aio
+           //     .search(types[0].clone().into(), s)
+           //     .await?
+           //     .into_iter()
+           //     .map(jellyfin::BaseItemDto::from)
+           //     .collect();
+
+           
+               let items = vec![]; 
             return Ok(ItemsQueryResult {
                 items: items,
                 total_count: 100,
@@ -314,20 +322,15 @@ pub async fn get_items(
 
     let manifest = aio.get_manifest().await?;
 
-    // ------------------------------------------------------------
-    // Parent-based behavior
-    // ------------------------------------------------------------
-
-    if let Some(parent_id) = &q.parent_id {
-        // "collections" = list catalogs
-        if parent_id.id == "collections" {
-            trace!("collections requested");
-            let items: Vec<jellyfin::BaseItemDto> = manifest
-                .catalogs
-                .into_iter()
-                .map(jellyfin::BaseItemDto::from)
-                .collect();
-
+    if let Some(parent) = &parent {
+        // collection id is hardcoded
+        if parent.id == state.config.collection_id {
+            //let items: Vec<jellyfin::BaseItemDto> = manifest
+            //    .catalogs
+            //    .into_iter()
+            //    .map(jellyfin::BaseItemDto::from)
+            //    .collect();
+            let items = vec![];
             return Ok(ItemsQueryResult {
                 total_count: items.len() as i64,
                 items,
@@ -346,260 +349,55 @@ pub async fn get_items(
         //  }
 
         // catalog get
-        if parent_id.jellyfin_media_type == jellyfin::MediaType::BoxSet
-            || parent_id.jellyfin_media_type == jellyfin::MediaType::CollectionFolder
+        if parent.kind == db::MediaKind::Catalog
         {
-            let (kind, id) = parent_id
-                .id
-                .rsplit_once(':')
-                .ok_or_else(|| anyhow!("invalid catalog id: {:?}", parent_id))?;
-            let catalog = manifest
-                .get_catalog(&id, &kind.to_string())
-                .ok_or_else(|| anyhow!("catalog not found"))?;
-            //trace!(?kind, ?id, ?catalog, "catalog");
-            if let Some(types) = &q.include_item_types {
-                let wanted: aio::MediaType = types[0].into();
+           // let (kind, id) = parent_id
+           //     .id
+           //     .rsplit_once(':')
+           //     .ok_or_else(|| anyhow!("invalid catalog id: {:?}", parent_id))?;
+           // let catalog = manifest
+           //     .get_catalog(&id, &kind.to_string())
+            //    .ok_or_else(|| anyhow!("catalog not found"))?;
+
+            //if let Some(types) = &q.include_item_types {
+            //    let wanted: aio::MediaType = types[0].into();
                 //if catalog.kind != wanted.to_string() {
                 //    return Ok(ItemsQueryResult {
                 //        items: vec![],
                 //        total_count: 0,
                 //    });
                 //}
-            }
+  //          }
 
-            let items = aio
-                .client
-                .execute(aio::CatalogEndpoint {
-                    kind: catalog.kind.clone(),
-                    id: catalog.id.clone(),
-                    search: None,
-                    genre: None,
-                    skip: Some(skip),
-                })
-                .await
-                .map(|r| r.metas)?
-                .into_iter()
-                .map(jellyfin::BaseItemDto::from)
-                .collect();
-
+           // let items = aio
+          //      .client
+          //      .execute(aio::CatalogEndpoint {
+         //           kind: catalog.kind.clone(),
+         //           id: catalog.id.clone(),
+         //           search: None,
+         //           genre: None,
+         //           skip: Some(skip),
+         //       })
+         //       .await
+         //       .map(|r| r.metas)?
+         //       .into_iter()
+         //       .map(jellyfin::BaseItemDto::from)
+         //       .collect();
+            let items = vec![];
             return Ok(ItemsQueryResult {
                 items: items,
-                total_count: 9_999_999,
+                total_count: items.len() as i64,
             });
         }
 
-        // seasons listing under a show id
-        if let Some(types) = &q.include_item_types {
-            if types[0] == jellyfin::MediaType::Season {
-                let meta = aio
-                    .get_meta(
-                        parent_id.jellyfin_media_type.into(),
-                        parent_id.id.clone(),
-                    )
-                    .await?;
+        
+    
+  //  }
 
-                let seasons: Vec<jellyfin::BaseItemDto> = meta
-                    .get_season_numbers()
-                    .into_iter()
-                    .map(|x| jellyfin::BaseItemDto {
-                        id: MediaId::new(
-                            format!("{}:{}", parent_id.id.clone(), x),
-                            jellyfin::MediaType::Season,
-                            None,
-                        ),
-                        name: Some(format!("Season {}", x)),
-                        index_number: Some(x as i64),
-                        ..Default::default()
-                    })
-                    .collect();
-
-                return Ok(ItemsQueryResult {
-                    total_count: seasons.len() as i64,
-                    items: seasons,
-                });
-            }
-        }
+    
     }
 
-    // episodes listing under a show id (optionally season_id present)
-    if let Some(media_id) = q.parent_id.clone() {
-        if let Some(types) = &q.include_item_types {
-            if types[0] == jellyfin::MediaType::Episode {
-                if let Some(season_id) = q.season_id.take() {
-                    // .context("Failed to decode media UUID")?;
-                    let (_, sn) = media_id
-                        .id
-                        .rsplit_once(':')
-                        .ok_or_else(|| anyhow!("invalid season id"))?;
-                    let season_number = sn.parse::<i64>()?;
-
-                    let meta = aio
-                        .get_meta(aio::MediaType::Series, media_id.id.clone())
-                        .await?;
-
-                    let episodes: Vec<jellyfin::BaseItemDto> = meta
-                        .get_episodes(season_number)
-                        .into_iter()
-                        .map(jellyfin::BaseItemDto::from)
-                        .collect();
-
-                    return Ok(ItemsQueryResult {
-                        total_count: episodes.len() as i64,
-                        items: episodes,
-                    });
-                }
-            }
-        }
-    }
-
-    // request for a single catalog (ids[0] is "catalog:<uuid>")
-    if let Some(ids) = &q.ids {
-        let media_id = ids[0].clone();
-        if media_id.jellyfin_media_type == jellyfin::MediaType::BoxSet {
-            let (kind, id) = media_id
-                .id
-                .rsplit_once(':')
-                .context_internal("error", "invalid catalog id")?;
-
-            let catalog = manifest
-                .get_catalog(&id, &kind.to_string())
-                .ok_or_else(|| anyhow!("catalog not found"))?;
-            return Ok(ItemsQueryResult {
-                items: vec![catalog.into()],
-                total_count: 1,
-            });
-        }
-    }
-
-    // ------------------------------------------------------------
-    // Single item (ids=...)
-    // ------------------------------------------------------------
-    if let Some(ids) = &q.ids {
-        let mut media_id = ids[0].clone();
-
-        if ![
-            jellyfin::MediaType::Movie,
-            jellyfin::MediaType::Series,
-            jellyfin::MediaType::Season,
-            jellyfin::MediaType::Episode,
-        ]
-        .contains(&media_id.jellyfin_media_type)
-        {
-            return Ok(ItemsQueryResult {
-                items: vec![],
-                total_count: 0,
-            });
-        }
-        //let meta_id = media_id.jellyfin_media_type ==
-        let meta = match media_id.jellyfin_media_type {
-            jellyfin::MediaType::Episode | jellyfin::MediaType::Season => {
-                aio.get_meta(
-                    aio::MediaType::Series,
-                    media_id.id.split(':').next().unwrap().to_string(),
-                )
-                .await?
-            }
-            _ => {
-                aio.get_meta(media_id.jellyfin_media_type.into(), media_id.id.clone())
-                    .await?
-            }
-        };
-
-        // if season or episode use rhat
-        let mut item: jellyfin::BaseItemDto = meta.into();
-
-        if [jellyfin::MediaType::Movie, jellyfin::MediaType::Episode]
-            .contains(&media_id.jellyfin_media_type)
-        {
-            let streams = aio
-                .get_streams(
-                    media_id.jellyfin_media_type.clone().into(),
-                    media_id.id.clone(),
-                )
-                .await?;
-
-            item.media_sources = Some(
-                streams
-                    .clone()
-                    .into_iter()
-                    .filter(|x| {
-                        x.is_valid()
-                            && media_id
-                                .stream
-                                .clone()
-                                .map_or(true, |s| x.id() == s.id())
-                    })
-                    .map(|stream| {
-                        let mut source: jellyfin::MediaSourceInfo =
-                            conversions::stream_into_media_source_info(
-                                media_id.id.clone(),
-                                media_id.jellyfin_media_type.clone(),
-                                stream.clone(),
-                            );
-                        source
-                    })
-                    .collect::<Vec<jellyfin::MediaSourceInfo>>(),
-            );
-
-            if let Some(stream) = streams.first() {
-                media_id.stream = Some(stream.clone());
-                media_id.save();
-            }
-        }
-
-        return Ok(ItemsQueryResult {
-            items: vec![item],
-            total_count: 1,
-        });
-    }
-
-    // ------------------------------------------------------------
-    // Default listing (no ids): pick catalog, then list items
-    // ------------------------------------------------------------
-
-    let desired_kind: Option<aio::MediaType> = q
-        .parent_id
-        .as_ref()
-        .map(|pid| pid.jellyfin_media_type.into())
-        .or_else(|| {
-            q.include_item_types
-                .as_ref()
-                .and_then(|v| v.first())
-                .cloned()
-                .map(Into::into)
-        });
-
-    let catalog = if let Some(kind) = desired_kind {
-        manifest
-            .catalogs
-            .iter()
-            .find(|c| c.kind == kind.to_string())
-            .cloned()
-            .or_else(|| manifest.catalogs.first().cloned())
-            .ok_or_else(|| anyhow!("no catalogs"))?
-    } else {
-        manifest
-            .catalogs
-            .first()
-            .cloned()
-            .ok_or_else(|| anyhow!("no catalogs"))?
-    };
-
-    let metas = aio
-        .client
-        .execute(aio::CatalogEndpoint {
-            kind: catalog.kind.clone(),
-            id: catalog.id.clone(),
-            search: search.clone(),
-            genre: None,
-            skip: Some(skip),
-        })
-        .await
-        .map(|r| r.metas)?;
-
-    let items: Vec<jellyfin::BaseItemDto> =
-        metas.into_iter().map(jellyfin::BaseItemDto::from).collect();
-
+    let items = vec![];
     Ok(ItemsQueryResult {
         items,
         total_count: 999_999,
@@ -634,12 +432,12 @@ pub async fn items(
 pub async fn item(
     state: AppState,
     session: auth::AuthSession,
-    id: MediaId,
+    id: String,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
     let manifest = session.aio.get_manifest().await?;
-    let libraries = crate::virtual_folders(&manifest);
+    let libraries = super::get_virtual_folders(&state);
 
-    if let Some(library) = libraries.into_iter().find(|x| x.id.id == id.id) {
+    if let Some(library) = libraries.into_iter().find(|x| x.id == id) {
         return Ok(Some(library));
     }
 
@@ -657,7 +455,7 @@ pub async fn item(
 pub async fn items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<MediaId>,
+    Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     return Ok(Json(item(state, session, id).await?).into_response());
 }
@@ -665,7 +463,7 @@ pub async fn items_get(
 pub async fn users_items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path((user_id, id)): Path<(String, MediaId)>,
+    Path((user_id, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse> {
     return Ok(Json(item(state, session, id).await?).into_response());
 }
@@ -673,7 +471,7 @@ pub async fn users_items_get(
 pub async fn shows_seasons(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<MediaId>,
+    Path(id): Path<String>,
     Query(mut q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     q.parent_id = Some(id);
@@ -689,7 +487,7 @@ pub async fn shows_seasons(
 pub async fn shows_episodes(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<MediaId>,
+    Path(id): Path<String>,
     Query(mut q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     // q.season_id = Some(id);
@@ -751,7 +549,7 @@ pub async fn items_images(
 pub async fn items_playbackinfo(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<MediaId>,
+    Path(id): Path<String>,
     // Query(q): Query<jellyfin::PlaybackInfoQuery>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
@@ -766,16 +564,19 @@ pub async fn items_playbackinfo(
     //        .probe_in_place();
 
     //item.save(&session.item_store);
-    let stream = id
-        .stream
-        .clone()
-        .or_else(|| {
-            payload
-                .media_source_id
-                .as_ref()
-                .and_then(|m| m.stream.clone())
-        })
-        .context_not_found("not", "not")?;
+    let media = db::Media::get_by_id(&state.db, &payload.media_source_id.unwrap_or(id)).await?.context_not_found("not found", "not found")?;
+    
+    
+    //let stream = id
+    //    .stream
+    //    .clone()
+    //    .or_else(|| {
+    //        payload
+    //            .media_source_id
+    //            .as_ref()
+    //            .and_then(|m| m.stream.clone())
+    //    })
+    //    .context_not_found("not", "not")?;
 
     // let stream = session.aio.get_stream(
     //     id.jellyfin_media_type.into(),
@@ -783,8 +584,11 @@ pub async fn items_playbackinfo(
     //     stream_id
     // ).await?;
 
+    //let mut source: jellyfin::MediaSourceInfo =
+    //    stream_into_media_source_info(id.id, id.jellyfin_media_type, stream);
+    
     let mut source: jellyfin::MediaSourceInfo =
-        stream_into_media_source_info(id.id, id.jellyfin_media_type, stream);
+        media.into();
     source.probe_in_place()?;
     let subtitles: Vec<sdks::aio::Subtitle> = vec![];
 
@@ -861,20 +665,23 @@ pub async fn videos_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
     //session: auth::AuthSession,
-    Path(id): Path<MediaId>,
+    Path(id): Path<String>,
     Query(q): Query<jellyfin::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
     //let (id, media_type, stream_id) = utils::decode_media_token(&uuid)?;
     //  .log_err("Failed to decode media UUID")
+    
+    let media = db::Media::get_by_id(&state.db, &q.media_source_id.unwrap_or(id)).await?.context_not_found("not found", "not found")?;
+    trace!(?media, ?q, "videos_stream");
 
-    trace!(?id, ?q, "videos_stream");
-
+    
+    
     // filter by id
-    let stream = id
-        .stream
-        .clone()
-        .or_else(|| q.media_source_id.as_ref().and_then(|m| m.stream.clone()))
-        .context_not_found("not", "not")?;
+    //let stream = id
+    //    .stream
+    //    .clone()
+    //    .or_else(|| q.media_source_id.as_ref().and_then(|m| m.stream.clone()))
+    //    .context_not_found("not", "not")?;
 
     //let stream = session.aio.get_stream(
     //    id.jellyfin_media_type.into(),
@@ -883,8 +690,8 @@ pub async fn videos_stream(
     //).await?;
 
     if q.static_.unwrap_or(false) {
-        info!("starting direct playback for: {:?}", &stream.name);
-        let mut req = reqwest::Client::new().get(stream.url.unwrap());
+        info!("starting direct playback for: {:?}", &media.title);
+        let mut req = reqwest::Client::new().get(media.url.unwrap());
         // if let Some(axum_extra::TypedHeader(range)) = range {
         //     // let s = format!("{:?}", range);
         //     // req = req.header(axum::http::header::RANGE, s);

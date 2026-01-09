@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO media (\n                id, title, kind, parent_id, idx, released_at, runtime,\n                rating_critic, rating_audience, poster, url, probe_data,\n                remote_data, created_at, updated_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)\n            ON CONFLICT (id) DO UPDATE SET\n                title = excluded.title,\n                parent_id = excluded.parent_id,\n                idx = excluded.idx,\n                released_at = excluded.released_at,\n                runtime = excluded.runtime,\n                rating_critic = excluded.rating_critic,\n                rating_audience = excluded.rating_audience,\n                poster = excluded.poster,\n                url = excluded.url,\n                probe_data = excluded.probe_data,\n                remote_data = excluded.remote_data,\n                updated_at = excluded.updated_at\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 15
+    },
+    "nullable": []
+  },
+  "hash": "ba10b3b95a1bec45b9d325b0fa788e10ca19bd6bc223fcf03426ad8f193127d5"
+}

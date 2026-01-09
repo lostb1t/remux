@@ -80,7 +80,6 @@ impl Store {
         true
     }
 
-    // Voeg `Clone` toe aan de trait bound voor `T`
     pub fn get<T: Cacheable + 'static + Clone>(&self, key: &str) -> Option<T> {
         self.inner
             .get(key)
