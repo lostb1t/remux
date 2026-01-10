@@ -280,23 +280,44 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
 }
 
 async fn spawn_background_tasks(state: AppState) -> Result<()> {
-    tokio::spawn({
-        //   let cstate = state.clone();
-        async move {
-            //for state.aio.
+    tokio::spawn(async move {
+        if let Ok(manifest) = state.aio.get_manifest().await {
+            let tasks: futures::stream::FuturesUnordered<_> = manifest
+                .catalogs
+                .into_iter()
+                .map(|cat| {
+                    let state = state.clone();
+                    async move {
+                        match state.aio.client.execute(sdks::aio::CatalogEndpoint {
+                            kind: cat.kind.clone(),
+                            id: cat.id.clone(),
+                            search: None,
+                            genre: None,
+                            skip: None,
+                        })
+                        
+                        .await {
+                            Ok(response) => {
+                                for meta in response.metas {
+                                    let items: Vec<db::Media> = meta.into();
+                                    for item in items {
+                                     // check if exist?
+                                     
+                                     // if not load full meta
+                                    }
+                                    // tracing::info!("succes");
+                                    //if let Err(e) = item.save(&state.db).await {
+                                    //    tracing::error!("Failed to save media item: {}", e);
+                                    //}
+                                }
+                            }
+                            Err(e) => tracing::error!("Failed to fetch catalog: {}", e),
+                        }
+                    }
+                })
+                .collect();
 
-            //   manifest
-            //    .catalogs
-            //    .iter()
-            // basicly, use catalogs that have show on home enabled
-            //     .filter(|x| x.extra.iter().any(|e| e.name == "genre" && !e.is_required))
-            //    .map(|x| db::media {
-            //       title: x.title,
-            //       kind: db::MediaKind::Catalog,
-            //       ..Default::default();
-            //     };
-            //     );
-            // }
+            tasks.collect::<()>().await;
         }
     });
 

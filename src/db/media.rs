@@ -123,97 +123,6 @@ pub struct MediaSource {
     pub external_data: Option<String>,
 }
 
-#[derive(
-    strum_macros::EnumString,
-    strum_macros::Display,
-    Debug,
-    Clone,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    sqlx::Type
-)]
-#[serde(rename_all = "lowercase")]
-pub enum Provider {
-    Imdb,
-    Aio,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct ProviderIds {
-    pub media_id: String,
-    pub kind: Provider,
-    pub id: String,
-}
-
-impl ProviderIds {
-    pub async fn save(&self, db: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
-        sqlx::query!(
-            r#"
-            INSERT INTO provider_ids (media_id, kind, id)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (media_id, kind) DO UPDATE SET id = EXCLUDED.id
-            "#,
-            self.media_id,
-            self.kind,
-            self.id
-        )
-        .execute(db)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn delete(&self, db: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
-        sqlx::query!(
-            r#"
-            DELETE FROM provider_ids
-            WHERE id = $1 AND kind = $2
-            "#,
-            self.media_id,
-            self.kind
-        )
-        .execute(db)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn get_by_media_id(
-        db: &sqlx::SqlitePool,
-        media_id: &str,
-    ) -> Result<Option<Self>, sqlx::Error> {
-        sqlx::query_as!(
-            ProviderIds,
-            r#"
-            SELECT media_id, kind as "kind: Provider", id
-            FROM provider_ids
-            WHERE media_id = ?
-            "#,
-            media_id
-        )
-        .fetch_optional(db)
-        .await
-    }
-
-    pub async fn get_by_id(
-        db: &sqlx::SqlitePool,
-        kind: Provider,
-        id: &str,
-    ) -> Result<Option<Self>, sqlx::Error> {
-        sqlx::query_as!(
-            ProviderIds,
-            r#"
-            SELECT media_id, kind as "kind: Provider", id
-            FROM provider_ids
-            WHERE id = ?1 AND kind = ?2
-            "#,
-            id,
-            kind
-        )
-        .fetch_optional(db)
-        .await
-    }
-}
-
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MediaFilter {
     pub id: Option<String>,
@@ -240,6 +149,11 @@ pub struct Media {
     pub url: Option<String>,
     pub probe_data: Option<String>,
     pub remote_data: Option<String>,
+    pub series_imdb_id: Option<String>,
+    pub imdb_id: Option<String>,
+    
+    #[sqlx(skip)]
+    pub seasons: Option<Vec<Media>>
 }
 
 #[derive(Error, Debug)]
@@ -260,7 +174,7 @@ impl Media {
         }
     }
 
-    pub async fn save(&mut self, db: &sqlx::SqlitePool) -> Result<(), MediaError> {
+    pub async fn save(&mut self, db: &sqlx::SqlitePool) -> Result<()> {
         self.validate()?;
         let updated_at = Utc::now();
 
@@ -269,11 +183,12 @@ impl Media {
             INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, url, probe_data,
-                remote_data, created_at, updated_at
+                remote_data, series_imdb_id, imdb_id, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (id) DO UPDATE SET
                 title = excluded.title,
+                kind = excluded.kind,
                 parent_id = excluded.parent_id,
                 idx = excluded.idx,
                 released_at = excluded.released_at,
@@ -284,6 +199,8 @@ impl Media {
                 url = excluded.url,
                 probe_data = excluded.probe_data,
                 remote_data = excluded.remote_data,
+                series_imdb_id = excluded.series_imdb_id,
+                imdb_id = excluded.imdb_id,
                 updated_at = excluded.updated_at
             "#,
             self.id,
@@ -299,16 +216,17 @@ impl Media {
             self.url,
             self.probe_data,
             self.remote_data,
+            self.series_imdb_id,
+            self.imdb_id,
             self.created_at,
             updated_at
         )
         .execute(db)
-        .await
-        .map_err(|e| MediaError::ValidationError(e.to_string()))?;
+        .await?;
 
         Ok(())
     }
-
+    
     pub async fn get_by_id(db: &sqlx::SqlitePool, id: &str) -> Result<Option<Self>, sqlx::Error> {
         sqlx::query_as!(
             Media,
@@ -366,6 +284,14 @@ impl Media {
             Ok(None)
         }
     }
+    
+    pub async fn seasons(&self, db: &sqlx::SqlitePool) -> Result<Vec<Self>> {
+        if let Some(seasons) = &self.seasons {
+            Ok(seasons.clone())
+        } else {
+            Ok(vec![])
+        }
+    }
 }
 
 impl From<sdks::aio::Meta> for Vec<Media> {
@@ -376,14 +302,16 @@ impl From<sdks::aio::Meta> for Vec<Media> {
         let media = Media {
             title: meta.name.unwrap_or_default(),
             kind: media_kind.clone(),
-            released_at: meta.released,
+         //   released_at: meta.released,
           //  runtime: meta.runtime.as_secs(),
            // rating_critic: meta.rating_critic,
-            rating_audience: meta.imdb_rating,
+            //rating_audience: meta.imdb_rating,
             poster: meta.poster,
+            imdb_id: Some(meta.imdb_id.clone()),
             ..Default::default()
         };
-        media_instances.push(media);
+
+        media_instances.push(media.clone());
 
         if let MediaKind::Series = media_kind {
             if let Some(episodes) = meta.videos {
@@ -408,7 +336,8 @@ impl From<sdks::aio::Meta> for Vec<Media> {
                             kind: MediaKind::Episode,
                             title: episode.name.unwrap_or_default(),
                             idx: episode.episode,
-                            released_at: episode.released,
+                            series_imdb_id: media.imdb_id.clone(),
+                           // released_at: episode.released,
                           //  runtime: episode.runtime.as_secs(),
                             ..Default::default()
                         };
@@ -421,3 +350,4 @@ impl From<sdks::aio::Meta> for Vec<Media> {
         media_instances
     }
 }
+

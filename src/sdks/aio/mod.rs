@@ -282,14 +282,14 @@ pub struct Subtitle {
 #[serde(rename_all = "camelCase")]
 pub struct Meta {
     // #[serde(alias = "imdb_id", alias = "imdbId")]
-    #[serde(rename = "imdb_id")]
-    pub imdb_id: Option<String>,
+   // #[serde(rename = "imdb_id")]
+    pub imdb_id: String,
     pub country: Option<String>,
     pub description: Option<String>,
     pub genre: Option<Vec<String>>,
-    pub imdb_rating: Option<i64>,
+    //pub imdb_rating: Option<f64>,
     pub name: Option<String>,
-    pub released: Option<NaiveDateTime>,
+    pub released: Option<DateTime<Utc>>,
     pub slug: Option<String>,
     #[serde(rename = "type")]
     pub media_type: MediaType,
@@ -387,16 +387,16 @@ impl Meta {
 pub struct Episode {
     pub id: String,
     pub name: Option<String>,
-    pub released: Option<NaiveDateTime>,
+    pub released: Option<DateTime<Utc>>,
     pub thumbnail: Option<String>,
     pub episode: Option<i64>,
     pub season: Option<i64>,
     pub overview: Option<String>,
     pub number: Option<i64>,
     pub description: Option<String>,
-    pub rating: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
-    pub runtime: Option<Duration>,
+   // pub rating: Option<f64>,
+   // #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
+  //  pub runtime: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

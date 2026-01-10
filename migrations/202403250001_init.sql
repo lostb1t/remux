@@ -24,6 +24,8 @@ CREATE TABLE media (
     id TEXT PRIMARY KEY NOT NULL,
     title TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('movie', 'series', 'season', 'episode', 'catalog', 'source', 'unknown')),
+    imdb_id TEXT,
+    series_imdb_id TEXT,
     parent_id TEXT,
     idx INTEGER,
     released_at TIMESTAMP,
@@ -44,12 +46,3 @@ CREATE TABLE media (
 CREATE INDEX idx_media_kind ON media(kind);
 CREATE INDEX idx_media_idx ON media(idx);
 CREATE INDEX idx_media_parent_id ON media(parent_id);
-
-
-CREATE TABLE provider_ids (
-    media_id     TEXT    NOT NULL,
-    kind  INTEGER NOT NULL,
-    id        TEXT    NOT NULL,
-    PRIMARY KEY (media_id, kind),
-    FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
-);
