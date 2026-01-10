@@ -134,9 +134,14 @@ pub struct MediaFilter {
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Media {
     #[default(get_uuid())]
+    // shared
     pub id: String,
     pub title: String,
     pub kind: MediaKind,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+
+    // meta
     pub released_at: Option<NaiveDateTime>,
     pub runtime: Option<i64>,
     pub rating_critic: Option<i64>,
@@ -144,16 +149,17 @@ pub struct Media {
     pub poster: Option<String>,
     pub parent_id: Option<String>,
     pub idx: Option<i64>,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
-    pub url: Option<String>,
-    pub probe_data: Option<String>,
-    pub remote_data: Option<String>,
     pub series_imdb_id: Option<String>,
     pub imdb_id: Option<String>,
     
-    #[sqlx(skip)]
-    pub seasons: Option<Vec<Media>>
+    //#[sqlx(skip)]
+   // pub seasons: Option<Vec<Media>>,
+
+    // stream
+    pub url: Option<String>,
+    pub probe_data: Option<String>,
+    pub remote_data: Option<String>,
+
 }
 
 #[derive(Error, Debug)]

@@ -302,6 +302,7 @@ async fn spawn_background_tasks(state: AppState) -> Result<()> {
                                     let items: Vec<db::Media> = meta.into();
                                     for item in items {
                                      // check if exist?
+                                     //db::Media::get
                                      
                                      // if not load full meta
                                     }
