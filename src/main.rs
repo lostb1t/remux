@@ -125,11 +125,28 @@ async fn main() -> Result<()> {
     }
 
     // libraries
+    let libs_titles = db::Media::get_by_filter(
+        &conn,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::Catalog]),
+            promoted: Some(true),
+            ..Default::default()
+        },
+    )
+    .await?
+    .into_iter()
+    .map(|m| m.title)
+    .collect::<Vec<String>>();
     for u in settings.libraries.clone() {
+        if libs_titles.contains(&u.name) {
+            continue;
+        }
+
         let mut media = db::Media {
             title: u.name,
             kind: db::MediaKind::Catalog,
-            promoted: true,
+            catalog_kind: Some(u.kind.to_string()),
+            promoted: 1,
             ..Default::default()
         };
 
@@ -202,7 +219,7 @@ impl UserConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Library {
     pub name: String,
-    pub kind: db::MediaKind,
+    pub kind: db::CatalogKind,
 }
 
 #[derive(Deserialize, default2::Default, Serialize, Debug, Clone)]
@@ -235,7 +252,7 @@ where
 fn default_libraries() -> Vec<Library> {
     vec![Library {
         name: "Movies".to_string(),
-        kind: db::MediaKind::Movie,
+        kind: db::CatalogKind::Movie,
     }]
 }
 

@@ -224,6 +224,7 @@ pub async fn userviews(
     .map(|x| {
         let mut item: jellyfin::BaseItemDto = x.into();
         item.type_ = jellyfin::MediaType::CollectionFolder;
+        item.collection_type = Some(jellyfin::CollectionType::Movies);
         item
     });
 
@@ -298,6 +299,7 @@ pub async fn get_items(
     mut q: jellyfin::GetItemsQuery,
     _count: bool,
 ) -> Result<ItemsQueryResult> {
+   // trace!(?q, "get_items");
     let aio = session.aio;
 
     let parent = if let Some(parent_id) = q.parent_id.clone() {
@@ -384,6 +386,19 @@ pub async fn get_items(
 
         // catalog get
         if parent.kind == db::MediaKind::Catalog {
+          trace!("catalog baby");
+          //if (parent.)
+         // let kind = parent.catalog_kind.unwrap();
+          let items = db::Media::get_by_filter(
+        &state.db,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::Movie]),
+            ..Default::default()
+        },
+    )
+    .await?.into_iter()
+    .map(|m| m.into())
+    .collect::<Vec<jellyfin::BaseItemDto>>();
             // let (kind, id) = parent_id
             //     .id
             //     .rsplit_once(':')
@@ -416,10 +431,11 @@ pub async fn get_items(
             //       .into_iter()
             //       .map(jellyfin::BaseItemDto::from)
             //       .collect();
-            let items = vec![];
+            //let items = vec![];
             return Ok(ItemsQueryResult {
-                items: items.clone(),
-                total_count: items.len() as i64,
+                              total_count: items.len() as i64,
+                items
+
             });
         }
 

@@ -85,6 +85,8 @@ pub enum MediaKind {
     Unknown,
 }
 
+
+
 impl From<String> for MediaKind {
     fn from(s: String) -> Self {
         Self::try_from(s.as_str()).unwrap_or(MediaKind::Unknown)
@@ -116,6 +118,36 @@ impl From<MediaKind> for jellyfin::MediaType {
         }
     }
 }
+
+#[derive(
+    strum_macros::EnumString,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+pub enum CatalogKind {
+    Movie,
+    Series,
+}
+
+impl TryFrom<String> for CatalogKind {
+    type Error = strum::ParseError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::try_from(s.as_str())
+    }
+}
+
+
+
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MediaSource {
@@ -166,9 +198,26 @@ pub struct Media {
     pub probe_data: Option<String>,
     pub remote_data: Option<String>,
     // catalog
-    #[sqlx(try_from="i32")]
-    pub promoted: bool,
+    // #[sqlx(try_from="i32")]
+    pub promoted: i64,
+   //#[sqlx(try_from="String")]
+   //pub catalog_kind: Option<CatalogKind>,
+   pub catalog_kind: Option<String>,
 }
+
+// #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+// pub struct SqlBool(pub bool);
+
+// impl From<i32> for SqlBool {
+//     fn from(value: i32) -> Self {
+//         match value {
+//             0 => Self(false),
+//             1 => Self(true),
+//             _ => panic!("invalid boolean value {value}"),
+//         }
+//     }
+// }
+
 
 #[derive(Error, Debug)]
 pub enum MediaError {
@@ -177,6 +226,22 @@ pub enum MediaError {
 }
 
 impl Media {
+  
+    pub fn catalog_kind_enum(&self) -> Option<CatalogKind> {
+  
+match self.catalog_kind.clone() {
+    Some(s) => CatalogKind::try_from(s).ok(),
+    None => None,
+}
+}
+    pub fn is_promoted(&self) -> bool {
+        match self.promoted {
+            0 => false,
+            1 => true,
+            _ => panic!("invalid boolean value"),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), MediaError> {
         match self.kind {
             MediaKind::Season | MediaKind::Episode if self.idx.is_none() => {
@@ -197,10 +262,10 @@ impl Media {
             r#"
             INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, url, probe_data, promoted,
+                rating_critic, rating_audience, poster, url, probe_data, promoted, catalog_kind,
                 remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
             ON CONFLICT (id) DO UPDATE SET
                 title = excluded.title,
                 kind = excluded.kind,
@@ -233,6 +298,7 @@ impl Media {
             self.url,
             self.probe_data,
             self.promoted,
+            self.catalog_kind,
             self.remote_data,
             self.series_imdb_id,
             self.aio_id,
@@ -258,7 +324,7 @@ impl Media {
             let mut query_builder = sqlx::QueryBuilder::new(
                 "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, url, probe_data, promoted,
+                rating_critic, rating_audience, poster, url, probe_data, promoted, catalog_kind,
                 remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at
             )",
             );
@@ -277,6 +343,7 @@ impl Media {
                     .push_bind(&item.url)
                     .push_bind(&item.probe_data)
                     .push_bind(&item.promoted)
+                    .push_bind(&item.catalog_kind)
                     .push_bind(&item.remote_data)
                     .push_bind(&item.series_imdb_id)
                     .push_bind(&item.imdb_id)

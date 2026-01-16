@@ -38,6 +38,8 @@ CREATE TABLE media (
     probe_data TEXT,
     remote_data TEXT,
     promoted INTEGER NOT NULL DEFAULT 0,
+    catalog_kind TEXT CHECK (catalog_kind IN ('movie', 'series')),
+
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
 
