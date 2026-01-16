@@ -1,0 +1,134 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT * FROM media\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "title",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "imdb_id",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "aio_id",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "series_imdb_id",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "parent_id",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "idx",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "released_at",
+        "ordinal": 8,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "runtime",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "rating_critic",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "rating_audience",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "poster",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "url",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "probe_data",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "remote_data",
+        "ordinal": 15,
+        "type_info": "Text"
+      },
+      {
+        "name": "promoted",
+        "ordinal": 16,
+        "type_info": "Integer"
+      },
+      {
+        "name": "catalog_kind",
+        "ordinal": 17,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 18,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 19,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "3c14eeca14fd08e2a73ad265acb5c00754432aa14e8542d9639f84b7315a0795"
+}

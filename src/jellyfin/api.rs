@@ -54,6 +54,7 @@ use crate::sdks;
 use crate::sdks::{aio, tmdb};
 use crate::utils;
 use crate::utils::server_id;
+use crate::utils::{IntoVec};
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 use chrono::Datelike;
 use tower::util::MapRequestLayer;
@@ -392,10 +393,7 @@ pub async fn get_items(
                     ..Default::default()
                 },
             )
-            .await?
-            .into_iter()
-            .map(|m| m.into())
-            .collect::<Vec<jellyfin::BaseItemDto>>();
+            .await?;
             // let (kind, id) = parent_id
             //     .id
             //     .rsplit_once(':')
@@ -431,7 +429,7 @@ pub async fn get_items(
             //let items = vec![];
             return Ok(ItemsQueryResult {
                 total_count: items.len() as i64,
-                items,
+                items: items.into_vec(),
             });
         }
 
@@ -441,9 +439,9 @@ pub async fn get_items(
    // if let Some(ids) = &q.ids {
     //}
 
-    let items = vec![];
+    let items = db::Media::get_by_jellyfin_filter(&state.db, &q).await?;
     Ok(ItemsQueryResult {
-        items,
+        items: items.into_vec(),
         total_count: 999_999,
     })
 }

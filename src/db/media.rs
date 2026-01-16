@@ -403,21 +403,37 @@ impl Media {
         if let Some(promoted) = &filter.promoted {
             query_builder.push(" AND promoted = ").push_bind(promoted);
         }
+        
+if let Some(kinds) = &filter.kind {
+    if !kinds.is_empty() {
+        query_builder.push(" AND kind IN (");
 
-        if let Some(kinds) = &filter.kind {
-            if !kinds.is_empty() {
-                query_builder.push(" AND kind IN (");
-                for (i, kind) in kinds.iter().enumerate() {
-                    if i > 0 {
-                        query_builder.push(", ");
-                    }
-                    query_builder.push_bind(kind);
-                }
-                query_builder.push(")");
-            }
+        let mut separated = query_builder.separated(", ");
+        for kind in kinds {
+            separated.push_bind(kind);
         }
 
+        query_builder.push(")");
+    }
+}
+
         let query = query_builder.build_query_as::<Media>();
+        Ok(query.fetch_all(db).await?)
+    }
+    
+    pub async fn get_by_jellyfin_filter(
+        db: &sqlx::SqlitePool,
+        filter: &jellyfin::GetItemsQuery,
+    ) -> Result<Vec<Media>> {
+        let mut qb =
+            sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
+
+
+if let Some(ids) = &filter.ids {
+  qb.push_in("id", &ids); 
+}
+
+        let query = qb.build_query_as::<Media>();
         Ok(query.fetch_all(db).await?)
     }
 
@@ -460,6 +476,32 @@ impl Media {
     //        Ok(vec![])
     //    }
     //}
+}
+
+trait QueryBuilderExt<'q> {
+    fn push_in<T>(&mut self, column: &str, values: &'q Vec<T>)
+    where
+        T: Send + Sync + for<'a> sqlx::Encode<'a, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + 'q;
+}
+
+impl<'q> QueryBuilderExt<'q> for sqlx::QueryBuilder<'q, sqlx::Sqlite> {
+    fn push_in<T>(&mut self, column: &str, values: &'q Vec<T>)
+    where
+        T: Send + Sync + for<'a> sqlx::Encode<'a, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + 'q,
+    {
+        if values.is_empty() { return };
+
+        self.push(" AND ");
+        self.push(column);
+        self.push(" IN (");
+
+        let mut separated = self.separated(", ");
+        for v in values {
+            separated.push_bind(v);
+        }
+
+        self.push(")");
+    }
 }
 
 impl From<sdks::aio::Catalog> for Media {

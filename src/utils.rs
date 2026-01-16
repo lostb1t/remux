@@ -254,3 +254,18 @@ pub fn get_stable_uuid(v: String) -> String {
 pub fn get_uuid() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
+
+pub trait IntoVec<T> {
+    fn into_vec<U>(self) -> Vec<U>
+    where
+        T: Into<U>;
+}
+
+impl<T> IntoVec<T> for Vec<T> {
+    fn into_vec<U>(self) -> Vec<U>
+    where
+        T: Into<U>,
+    {
+        self.into_iter().map(|x| x.into()).collect()
+    }
+}
