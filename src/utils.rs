@@ -44,7 +44,6 @@ pub fn server_id() -> String {
     "remux".to_string()
 }
 
-
 pub fn native_to_utc(opt_date: Option<NaiveDate>) -> Option<DateTime<Utc>> {
     opt_date
         .and_then(|d| d.and_hms_opt(0, 0, 0)) // Add time

@@ -85,8 +85,6 @@ pub enum MediaKind {
     Unknown,
 }
 
-
-
 impl From<String> for MediaKind {
     fn from(s: String) -> Self {
         Self::try_from(s.as_str()).unwrap_or(MediaKind::Unknown)
@@ -145,10 +143,6 @@ impl TryFrom<String> for CatalogKind {
     }
 }
 
-
-
-
-
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MediaSource {
     pub id: String,
@@ -200,9 +194,9 @@ pub struct Media {
     // catalog
     // #[sqlx(try_from="i32")]
     pub promoted: i64,
-   //#[sqlx(try_from="String")]
-   //pub catalog_kind: Option<CatalogKind>,
-   pub catalog_kind: Option<String>,
+    //#[sqlx(try_from="String")]
+    //pub catalog_kind: Option<CatalogKind>,
+    pub catalog_kind: Option<String>,
 }
 
 // #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -218,7 +212,6 @@ pub struct Media {
 //     }
 // }
 
-
 #[derive(Error, Debug)]
 pub enum MediaError {
     #[error("Invalid media: {0}")]
@@ -226,14 +219,12 @@ pub enum MediaError {
 }
 
 impl Media {
-  
     pub fn catalog_kind_enum(&self) -> Option<CatalogKind> {
-  
-match self.catalog_kind.clone() {
-    Some(s) => CatalogKind::try_from(s).ok(),
-    None => None,
-}
-}
+        match self.catalog_kind.clone() {
+            Some(s) => CatalogKind::try_from(s).ok(),
+            None => None,
+        }
+    }
     pub fn is_promoted(&self) -> bool {
         match self.promoted {
             0 => false,

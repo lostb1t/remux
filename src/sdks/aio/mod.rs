@@ -3,6 +3,7 @@ use axum::http::Method;
 
 use anyhow::Result;
 //use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::Deserializer;
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
@@ -10,11 +11,10 @@ use serde_aux::prelude::*;
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::str::FromStr;
-use chrono::{Duration, NaiveDateTime, DateTime, Utc};
 
 #[derive(
     Default,
- //   strum_macros::EnumString,
+    //   strum_macros::EnumString,
     strum_macros::Display,
     Debug,
     Clone,
@@ -45,7 +45,6 @@ pub enum MediaType {
 #[serde(rename_all = "camelCase")]
 #[strum(serialize_all = "lowercase")]
 pub enum ResourceType {
-
     Stream,
 
     Subtitles,
@@ -339,11 +338,11 @@ where
             if t.is_empty() {
                 Ok(None)
             } else {
-  let std_duration = duration_str::parse(t)
-                    .map_err(D::Error::custom)?;
+                let std_duration = duration_str::parse(t).map_err(D::Error::custom)?;
 
-
-                Ok(Some(Duration::from_std(std_duration).map_err(D::Error::custom)?))
+                Ok(Some(
+                    Duration::from_std(std_duration).map_err(D::Error::custom)?,
+                ))
             }
         }
     }
@@ -394,9 +393,9 @@ pub struct Episode {
     pub overview: Option<String>,
     pub number: Option<i64>,
     pub description: Option<String>,
-   // pub rating: Option<f64>,
-   // #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
-  //  pub runtime: Option<Duration>,
+    // pub rating: Option<f64>,
+    // #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
+    //  pub runtime: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

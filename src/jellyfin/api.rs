@@ -244,7 +244,7 @@ pub async fn userviews_groupingoptions(
 
     // Ok(Json(json!(
     // )))
-Ok(StatusCode::NO_CONTENT.into_response())
+    Ok(StatusCode::NO_CONTENT.into_response())
     // Ok(Json(json!(
     //     crate::jellyfin::get_virtual_folders(&state).await?
     // )))
@@ -255,7 +255,7 @@ pub async fn library_virtualfolders(
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let manifest = session.aio.get_manifest().await?;
-Ok(StatusCode::NO_CONTENT.into_response())
+    Ok(StatusCode::NO_CONTENT.into_response())
     // Ok(Json(json!(
     //     crate::jellyfin::get_virtual_folders(&state).await?
     // )))
@@ -299,7 +299,7 @@ pub async fn get_items(
     mut q: jellyfin::GetItemsQuery,
     _count: bool,
 ) -> Result<ItemsQueryResult> {
-   // trace!(?q, "get_items");
+    // trace!(?q, "get_items");
     let aio = session.aio;
 
     let parent = if let Some(parent_id) = q.parent_id.clone() {
@@ -386,19 +386,20 @@ pub async fn get_items(
 
         // catalog get
         if parent.kind == db::MediaKind::Catalog {
-          trace!("catalog baby");
-          //if (parent.)
-         // let kind = parent.catalog_kind.unwrap();
-          let items = db::Media::get_by_filter(
-        &state.db,
-        &db::MediaFilter {
-            kind: Some(vec![db::MediaKind::Movie]),
-            ..Default::default()
-        },
-    )
-    .await?.into_iter()
-    .map(|m| m.into())
-    .collect::<Vec<jellyfin::BaseItemDto>>();
+            trace!("catalog baby");
+            //if (parent.)
+            // let kind = parent.catalog_kind.unwrap();
+            let items = db::Media::get_by_filter(
+                &state.db,
+                &db::MediaFilter {
+                    kind: Some(vec![db::MediaKind::Movie]),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .map(|m| m.into())
+            .collect::<Vec<jellyfin::BaseItemDto>>();
             // let (kind, id) = parent_id
             //     .id
             //     .rsplit_once(':')
@@ -433,9 +434,8 @@ pub async fn get_items(
             //       .collect();
             //let items = vec![];
             return Ok(ItemsQueryResult {
-                              total_count: items.len() as i64,
-                items
-
+                total_count: items.len() as i64,
+                items,
             });
         }
 

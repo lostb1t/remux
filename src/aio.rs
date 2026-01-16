@@ -3,9 +3,9 @@ use crate::sdks;
 use crate::sdks::CachedEndpoint;
 use anyhow::Context;
 use anyhow::{Result, anyhow};
+use futures::{StreamExt, stream};
 use std::time::Duration;
 use url::Url;
-use futures::{stream, StreamExt};
 
 #[derive(Clone)]
 pub struct AioService {
@@ -15,8 +15,7 @@ pub struct AioService {
 }
 
 impl AioService {
-
-   pub fn from_url(url: &str) -> Result<Self> {
+    pub fn from_url(url: &str) -> Result<Self> {
         let client = Self::get_aio(url)?;
         let search_client = Self::get_aio_search(url)?;
         Ok(Self {
@@ -34,7 +33,7 @@ impl AioService {
     //        client,
     //        search_client,
     //    })
-   // }
+    // }
 
     fn get_aio(url: &str) -> Result<sdks::RestClient> {
         let base = url.trim_end_matches('/').to_string() + "/";
@@ -42,8 +41,8 @@ impl AioService {
     }
 
     fn get_aio_search(base: &str) -> Result<sdks::RestClient<sdks::BasicAuth>> {
-      let mut url = Url::parse(&base)?;
-      let segments: Vec<String> = url
+        let mut url = Url::parse(&base)?;
+        let segments: Vec<String> = url
             .path_segments()
             .ok_or_else(|| anyhow!("aio_url has no path segments"))?
             .map(|s| s.to_string())
@@ -164,45 +163,42 @@ impl AioService {
             .results)
     }
 
-    
-    
-    
-pub async fn get_catalog_pages(
-    &self,
-    cat: &sdks::aio::Catalog,
-) -> Result<Vec<sdks::aio::Meta>> {
-    let results = stream::iter(0..50)
-        .map(|page| {
-            let client = &self.client;
-            let kind = cat.kind.clone();
-            let id = cat.id.clone();
+    pub async fn get_catalog_pages(
+        &self,
+        cat: &sdks::aio::Catalog,
+    ) -> Result<Vec<sdks::aio::Meta>> {
+        let results = stream::iter(0..50)
+            .map(|page| {
+                let client = &self.client;
+                let kind = cat.kind.clone();
+                let id = cat.id.clone();
 
-            async move {
-                client
-                    .execute(sdks::aio::CatalogEndpoint {
-                        kind,
-                        id,
-                        search: None,
-                        genre: None,
-                        skip: Some(page),
-                    })
-                    .await
-            }
-        })
-        .buffer_unordered(10)
-        .collect::<Vec<_>>()
-        .await;
+                async move {
+                    client
+                        .execute(sdks::aio::CatalogEndpoint {
+                            kind,
+                            id,
+                            search: None,
+                            genre: None,
+                            skip: Some(page),
+                        })
+                        .await
+                }
+            })
+            .buffer_unordered(10)
+            .collect::<Vec<_>>()
+            .await;
 
-Ok(results
-    .into_iter()
-    .filter_map(|res| match res {
-        Ok(response) => Some(response.metas),
-        Err(e) => {
-            tracing::error!("Failed to fetch page: {}", e);
-            None
-        }
-    })
-    .flatten()
-    .collect())
-  }
+        Ok(results
+            .into_iter()
+            .filter_map(|res| match res {
+                Ok(response) => Some(response.metas),
+                Err(e) => {
+                    tracing::error!("Failed to fetch page: {}", e);
+                    None
+                }
+            })
+            .flatten()
+            .collect())
+    }
 }

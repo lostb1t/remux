@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 //use super::BaseItemStore;
 use crate::aio::AioService;
-use anyhow::anyhow;
 use crate::db;
+use anyhow::anyhow;
 //generate_api!(
 //    spec = "src/sdks/jellyfin/openapi.json", // The OpenAPI document
 //    interface = Builder
@@ -85,7 +85,6 @@ pub struct SystemInfo {
     pub id: Option<String>,
 }
 
-
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
@@ -93,11 +92,11 @@ pub struct VirtualFolderInfo {
     /// The name of the virtual folder.
     pub name: String,
     /// The locations (paths) associated with the virtual folder.
-   // pub locations: Vec<String>,
+    // pub locations: Vec<String>,
     /// The type of the collection.
     pub collection_type: Option<CollectionTypeOptions>,
     /// Library-specific options.
-   // pub library_options: LibraryOptions,
+    // pub library_options: LibraryOptions,
     /// The item identifier.
     pub item_id: Option<String>,
     /// The primary image item identifier.
@@ -107,7 +106,6 @@ pub struct VirtualFolderInfo {
     /// The status of the refresh operation.
     pub refresh_status: Option<String>,
 }
-
 
 // Placeholder for CollectionTypeOptions and LibraryOptions.
 // You'll need to define these according to your needs.
@@ -378,21 +376,20 @@ impl MediaSourceInfo {
 }
 impl From<db::Media> for MediaSourceInfo {
     fn from(source: db::Media) -> Self {
-      MediaSourceInfo {
-        id: source.id.clone(),
-        e_tag: Some(source.id.clone()),
-        path: source.url,
-        protocol: Some("File".to_string()),
-        supports_transcoding: Some(false),
-        supports_direct_stream: Some(true),
-        supports_direct_play: Some(true),
-        is_remote: Some(false),
-        name: Some(source.title.clone()),
-        ..Default::default()
-    }
+        MediaSourceInfo {
+            id: source.id.clone(),
+            e_tag: Some(source.id.clone()),
+            path: source.url,
+            protocol: Some("File".to_string()),
+            supports_transcoding: Some(false),
+            supports_direct_stream: Some(true),
+            supports_direct_play: Some(true),
+            is_remote: Some(false),
+            name: Some(source.title.clone()),
+            ..Default::default()
+        }
     }
 }
-
 
 #[skip_serializing_none]
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -921,7 +918,6 @@ pub struct BaseItemDto {
     // #[serde(skip)]
     //pub aio_stream: Option<sdks::aio::Stream>,
 }
-
 
 #[derive(
     Copy,

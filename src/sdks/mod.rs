@@ -301,19 +301,17 @@ impl<A: Auth + Clone> RestClient<A> {
         match status {
             401 => Err(ClientError::Unauthorized),
             s if (200..300).contains(&s) => {
-               
+                let result = Ok(serde_json::from_str::<EP::Output>(&text)?);
 
-              let result = Ok(serde_json::from_str::<EP::Output>(&text)?);
-              
                 if let Some(ttl) = endpoint.cache_ttl() {
                     //if let Ok(ref value) = result {
-                        let cached_value = Arc::new(CachedValue {
-                            value: text.clone(),
-                            ttl,
-                        });
+                    let cached_value = Arc::new(CachedValue {
+                        value: text.clone(),
+                        ttl,
+                    });
 
-                        self.cache.insert(cache_key, cached_value);
-                   // }
+                    self.cache.insert(cache_key, cached_value);
+                    // }
                 }
                 result
             }
