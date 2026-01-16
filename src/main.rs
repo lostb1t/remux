@@ -137,6 +137,8 @@ async fn main() -> Result<()> {
     .into_iter()
     .map(|m| m.title)
     .collect::<Vec<String>>();
+    
+
     for u in settings.libraries.clone() {
         if libs_titles.contains(&u.name) {
             continue;
@@ -233,8 +235,8 @@ pub struct Settings {
     pub libraries: Vec<Library>,
 
     // we dont support folders
-    #[serde(default = "default_collection_id")]
-    pub collection_id: String,
+    //#[serde(default = "default_collection_id")]
+    //pub collection_id: String,
 }
 
 fn clean_aio_url<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>

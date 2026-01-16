@@ -203,15 +203,15 @@ pub async fn userviews(
 ) -> Result<impl IntoResponse> {
     let manifest = session.aio.get_manifest().await?;
 
-    let mut items = vec![jellyfin::BaseItemDto {
-        name: Some("Collections".to_string()),
-        id: state.config.collection_id.clone(),
-        collection_type: Some(jellyfin::CollectionType::Boxsets),
-        is_folder: true,
-        ..Default::default()
-    }];
+    //let mut items = vec![jellyfin::BaseItemDto {
+    //     name: Some("Collections".to_string()),
+    //    id: state.config.collection_id.clone(),
+    //    collection_type: Some(jellyfin::CollectionType::Boxsets),
+    //    is_folder: true,
+    //    ..Default::default()
+    //}];
 
-    let libs = db::Media::get_by_filter(
+    let items = db::Media::get_by_filter(
         &state.db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Catalog]),
@@ -226,9 +226,9 @@ pub async fn userviews(
         item.type_ = jellyfin::MediaType::CollectionFolder;
         item.collection_type = Some(jellyfin::CollectionType::Movies);
         item
-    });
+    }).collect::<Vec<jellyfin::BaseItemDto>>();
 
-    items.extend(libs);
+   // items.extend(libs);
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items,
@@ -360,18 +360,14 @@ pub async fn get_items(
 
     if let Some(parent) = &parent {
         // collection id is hardcoded
-        if parent.id == state.config.collection_id {
-            //let items: Vec<jellyfin::BaseItemDto> = manifest
-            //    .catalogs
-            //    .into_iter()
-            //    .map(jellyfin::BaseItemDto::from)
-            //    .collect();
-            let items = vec![];
-            return Ok(ItemsQueryResult {
-                total_count: items.len() as i64,
-                items,
-            });
-        }
+      //  if parent.id == state.config.collection_id {
+          
+      //      let items = vec![];
+      //      return Ok(ItemsQueryResult {
+      //          total_count: items.len() as i64,
+      //          items,
+      //      });
+      //  }
 
         // library.. probaply
         // if parent_id.media_type == jellyfin::MediaType::CollectionFolder {
@@ -441,6 +437,9 @@ pub async fn get_items(
 
         //  }
     }
+    
+   // if let Some(ids) = &q.ids {
+    //}
 
     let items = vec![];
     Ok(ItemsQueryResult {
