@@ -14,6 +14,90 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::str::FromStr;
 
+impl From<db::Media> for jellyfin::BaseItemDto {
+    fn from(media: db::Media) -> Self {
+        // dbg!(&meta);
+        // let media_type: jellyfin::MediaType = meta.media_type.clone().into();
+
+        let item = jellyfin::BaseItemDto {
+            id: media.id,
+            // id: get_stable_uuid(meta.id.clone()),
+            server_id: utils::server_id(),
+            name: Some(media.title.clone()),
+            original_title: Some(media.title.clone()),
+            //overview: meta.description.clone(),
+            type_: media.kind.clone().into(),
+            // collection_type: {
+            //     if media.kind == db::MediaKind::Catalog {
+            //         match media.kind.as_str() {
+            //             "series" => Some(jellyfin::CollectionType::Tvshows),
+            //             "movie" => Some(jellyfin::CollectionType::Movies),
+            //             _ => None,
+            //         }
+            //     } else {
+            //         None
+            //     }
+            // },
+            //premiere_date: meta.released.clone(),
+            // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
+            image_tags: Some(jellyfin::ImageTags {
+                primary: media.poster.clone(),
+                // logo: meta.logo.clone(),
+                //  backdrop: meta.background.clone(),
+                ..Default::default()
+            }),
+            index_number: media.idx,
+            //           series_id: Some(item.id.clone()),
+            //            season_id: Some(season.id.clone()),
+            is_folder: if media.kind == db::MediaKind::Series
+                || media.kind == db::MediaKind::Catalog
+            {
+                true
+            } else {
+                false
+            },
+            //backdrop_image_tags: meta.background.clone().map(|url| vec![url]),
+            // image_blur_hashes: Some(jellyfin::ImageBlurHashes {
+            //     backdrop: {
+            //         if let Some(img) = meta.background.clone() {
+            //             Some(HashMap::from([(img.clone(), img)]))
+            //             // Some(HashMap::from([("3626323".to_string, img)]))
+            //         } else {
+            //             None
+            //         }
+            //     },
+            //     primary: {
+            //         if let Some(img) = meta.poster.clone() {
+            //             Some(HashMap::from([(img.clone(), img)]))
+            //         } else {
+            //             None
+            //         }
+            //     },
+            //     logo: {
+            //         if let Some(img) = meta.logo.clone() {
+            //             Some(HashMap::from([(img.clone(), img)]))
+            //         } else {
+            //             None
+            //         }
+            //     },
+            //     ..Default::default()
+            // }),
+            provider_ids: Some(jellyfin::ProviderIds {
+                imdb: media.imdb_id,
+                ..Default::default()
+            }),
+            //genres: meta.genres.clone(),
+            //run_time_ticks: media
+            //    .runtime
+            //    .map(|r| r.num_seconds().to_ticks(utils::TickUnit::Seconds).unwrap()),
+            ..Default::default()
+        };
+
+        // this shouldnt be done here but eh
+        item
+    }
+}
+
 impl From<aio::Meta> for jellyfin::BaseItemDto {
     fn from(meta: aio::Meta) -> Self {
         // dbg!(&meta);
@@ -28,7 +112,7 @@ impl From<aio::Meta> for jellyfin::BaseItemDto {
             overview: meta.description.clone(),
             type_: meta.media_type.clone().into(),
             //premiere_date: meta.released.clone(),
-           // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
+            // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
                 primary: meta.poster.clone(),
                 logo: meta.logo.clone(),
@@ -284,8 +368,6 @@ pub fn stream_into_media_source_info(
         ..Default::default()
     }
 }
-
-
 
 use ffprobe;
 //use base64::engine::general_purpose::URL_SAFE;

@@ -85,6 +85,42 @@ pub struct SystemInfo {
     pub id: Option<String>,
 }
 
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct VirtualFolderInfo {
+    /// The name of the virtual folder.
+    pub name: String,
+    /// The locations (paths) associated with the virtual folder.
+   // pub locations: Vec<String>,
+    /// The type of the collection.
+    pub collection_type: Option<CollectionTypeOptions>,
+    /// Library-specific options.
+   // pub library_options: LibraryOptions,
+    /// The item identifier.
+    pub item_id: Option<String>,
+    /// The primary image item identifier.
+    pub primary_image_item_id: Option<String>,
+    /// Progress of the refresh operation (0.0 to 1.0).
+    pub refresh_progress: Option<f64>,
+    /// The status of the refresh operation.
+    pub refresh_status: Option<String>,
+}
+
+
+// Placeholder for CollectionTypeOptions and LibraryOptions.
+// You'll need to define these according to your needs.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum CollectionTypeOptions {
+    // Define your variants here
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct LibraryOptions {
+    // Define your fields here
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SpecialViewOptionDto {
     pub name: Option<String>,

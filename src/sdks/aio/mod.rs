@@ -282,7 +282,7 @@ pub struct Subtitle {
 #[serde(rename_all = "camelCase")]
 pub struct Meta {
     // #[serde(alias = "imdb_id", alias = "imdbId")]
-   // #[serde(rename = "imdb_id")]
+    #[serde(rename = "imdb_id")]
     pub imdb_id: String,
     pub country: Option<String>,
     pub description: Option<String>,

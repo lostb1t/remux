@@ -304,8 +304,7 @@ impl<A: Auth + Clone> RestClient<A> {
                
 
               let result = Ok(serde_json::from_str::<EP::Output>(&text)?);
-//info!(?result);
-info!("YOSOSSLS");
+              
                 if let Some(ttl) = endpoint.cache_ttl() {
                     //if let Ok(ref value) = result {
                         let cached_value = Arc::new(CachedValue {

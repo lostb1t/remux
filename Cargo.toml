@@ -26,6 +26,7 @@ tracing-subscriber = { version = "^0.3", features = [
     "env-filter",
     "json",
     "tracing-log",
+    "time"
 ] }
 serde_derive = "1.0"
 anyhow = "^1.0"

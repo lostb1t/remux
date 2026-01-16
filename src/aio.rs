@@ -5,6 +5,7 @@ use anyhow::Context;
 use anyhow::{Result, anyhow};
 use std::time::Duration;
 use url::Url;
+use futures::{stream, StreamExt};
 
 #[derive(Clone)]
 pub struct AioService {
@@ -162,4 +163,46 @@ impl AioService {
             .data
             .results)
     }
+
+    
+    
+    
+pub async fn get_catalog_pages(
+    &self,
+    cat: &sdks::aio::Catalog,
+) -> Result<Vec<sdks::aio::Meta>> {
+    let results = stream::iter(0..50)
+        .map(|page| {
+            let client = &self.client;
+            let kind = cat.kind.clone();
+            let id = cat.id.clone();
+
+            async move {
+                client
+                    .execute(sdks::aio::CatalogEndpoint {
+                        kind,
+                        id,
+                        search: None,
+                        genre: None,
+                        skip: Some(page),
+                    })
+                    .await
+            }
+        })
+        .buffer_unordered(10)
+        .collect::<Vec<_>>()
+        .await;
+
+Ok(results
+    .into_iter()
+    .filter_map(|res| match res {
+        Ok(response) => Some(response.metas),
+        Err(e) => {
+            tracing::error!("Failed to fetch page: {}", e);
+            None
+        }
+    })
+    .flatten()
+    .collect())
+  }
 }

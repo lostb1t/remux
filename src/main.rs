@@ -106,10 +106,12 @@ async fn main() -> Result<()> {
         std::env::var("DATABASE_URL")
             .as_deref()
             .unwrap_or("sqlite:///data/db.sqlite"),
-    ).await?;
+    )
+    .await?;
 
     db::migrate(&conn).await?;
 
+    // users
     for u in settings.users.clone() {
         let mut user = db::User {
             id: u.stable_id_from_key(),
@@ -120,6 +122,18 @@ async fn main() -> Result<()> {
         };
 
         user.save(&conn).await?;
+    }
+
+    // libraries
+    for u in settings.libraries.clone() {
+        let mut media = db::Media {
+            title: u.name,
+            kind: db::MediaKind::Catalog,
+            promoted: true,
+            ..Default::default()
+        };
+
+        media.save(&conn).await?;
     }
 
     let state = AppState {
@@ -188,7 +202,7 @@ impl UserConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Library {
     pub name: String,
-    pub catalog_id: String,
+    pub kind: db::MediaKind,
 }
 
 #[derive(Deserialize, default2::Default, Serialize, Debug, Clone)]
@@ -198,10 +212,11 @@ pub struct Settings {
     #[serde(serialize_with = "clean_aio_url")]
     pub aio_url: String,
     pub users: Vec<UserConfig>,
+    #[serde(default = "default_libraries")]
+    pub libraries: Vec<Library>,
 
     // we dont support folders
     #[serde(default = "default_collection_id")]
-   // #[default("fd58cb0a-9d75-49b7-aa6a-c08cc335c2f6".to_string())]
     pub collection_id: String,
 }
 
@@ -215,6 +230,13 @@ where
         .unwrap_or(value.as_str())
         .trim_end_matches('/');
     serializer.serialize_str(cleaned)
+}
+
+fn default_libraries() -> Vec<Library> {
+    vec![Library {
+        name: "Movies".to_string(),
+        kind: db::MediaKind::Movie,
+    }]
 }
 
 fn default_collection_id() -> String {
@@ -253,6 +275,7 @@ pub fn setup_logging() {
 
     let fmt_layer = fmt::layer()
         .with_line_number(true)
+        .without_time()
         // .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
         .with_target(true)
         .compact();
@@ -279,47 +302,76 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
     Ok((StatusCode::NOT_FOUND, "404 - File not found"))
 }
 
+use std::time::Instant;
+
 async fn spawn_background_tasks(state: AppState) -> Result<()> {
     tokio::spawn(async move {
-        if let Ok(manifest) = state.aio.get_manifest().await {
-            let tasks: futures::stream::FuturesUnordered<_> = manifest
-                .catalogs
-                .into_iter()
-                .map(|cat| {
-                    let state = state.clone();
-                    async move {
-                        match state.aio.client.execute(sdks::aio::CatalogEndpoint {
-                            kind: cat.kind.clone(),
-                            id: cat.id.clone(),
-                            search: None,
-                            genre: None,
-                            skip: None,
-                        })
-                        
-                        .await {
-                            Ok(response) => {
-                                for meta in response.metas {
-                                    let items: Vec<db::Media> = meta.into();
-                                    for item in items {
-                                     // check if exist?
-                                     //db::Media::get
-                                     
-                                     // if not load full meta
-                                    }
-                                    // tracing::info!("succes");
-                                    //if let Err(e) = item.save(&state.db).await {
-                                    //    tracing::error!("Failed to save media item: {}", e);
-                                    //}
-                                }
-                            }
-                            Err(e) => tracing::error!("Failed to fetch catalog: {}", e),
-                        }
-                    }
-                })
-                .collect();
+        let manifest = match state.aio.get_manifest().await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!("Failed to fetch manifest: {}", e);
+                return;
+            }
+        };
 
-            tasks.collect::<()>().await;
+        let start_time = Instant::now();
+        let mut total_imported = 0;
+
+        let media_items: Vec<db::Media> = manifest
+            .catalogs
+            .clone()
+            .into_iter()
+            .map(db::Media::from)
+            .collect();
+
+        db::Media::upsert(&state.db, &media_items).await.unwrap();
+
+        for cat in manifest.catalogs {
+            match state.aio.get_catalog_pages(&cat).await {
+                Ok(metas) => {
+                    let items: Vec<db::Media> = metas
+                        .into_iter()
+                        .flat_map(|meta| Vec::<db::Media>::from(meta))
+                        //.filter(|item| matches!(db::Media::))
+                        .collect();
+
+                    if let Err(e) = db::Media::upsert(&state.db, &items).await {
+                        tracing::error!("Failed to import catalog {}: {}", cat.id, e);
+                    } else {
+                        let count = items
+                            .into_iter()
+                            .filter(|x| {
+                                matches!(
+                                    x,
+                                    db::Media {
+                                        kind: db::MediaKind::Movie
+                                            | db::MediaKind::Series,
+                                        ..
+                                    }
+                                )
+                            })
+                            .count();
+                        total_imported += count;
+                        tracing::info!(
+                            "Imported catalog {} | {} ({} items)",
+                            cat.id,
+                            cat.kind,
+                            count
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to fetch catalog {}: {}", cat.id, e);
+                }
+            }
         }
+
+        let duration = start_time.elapsed();
+        tracing::info!(
+            "Import complete. Total media items imported: {}. Time taken: {:?}",
+            total_imported,
+            duration
+        );
     });
 
     Ok(())

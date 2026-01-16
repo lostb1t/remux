@@ -44,10 +44,10 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::conversions;
 use crate::conversions::stream_into_media_source_info;
+use crate::db;
 use crate::db::auth;
 use crate::db::auth::Device;
 use crate::db::user::User;
-use crate::db;
 use crate::jellyfin;
 use crate::rewrite_request_uri;
 use crate::sdks;
@@ -202,7 +202,33 @@ pub async fn userviews(
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let manifest = session.aio.get_manifest().await?;
-    let items = super::get_virtual_folders(&state);
+
+    let mut items = vec![jellyfin::BaseItemDto {
+        name: Some("Collections".to_string()),
+        id: state.config.collection_id.clone(),
+        collection_type: Some(jellyfin::CollectionType::Boxsets),
+        is_folder: true,
+        ..Default::default()
+    }];
+
+    let libs = db::Media::get_by_filter(
+        &state.db,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::Catalog]),
+            promoted: Some(true),
+            ..Default::default()
+        },
+    )
+    .await?
+    .into_iter()
+    .map(|x| {
+        let mut item: jellyfin::BaseItemDto = x.into();
+        item.type_ = jellyfin::MediaType::CollectionFolder;
+        item
+    });
+
+    items.extend(libs);
+
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items,
         ..Default::default()
@@ -215,7 +241,12 @@ pub async fn userviews_groupingoptions(
 ) -> Result<impl IntoResponse> {
     let manifest = session.aio.get_manifest().await?;
 
-    Ok(Json(json!(crate::jellyfin::get_virtual_folders(&state))))
+    // Ok(Json(json!(
+    // )))
+Ok(StatusCode::NO_CONTENT.into_response())
+    // Ok(Json(json!(
+    //     crate::jellyfin::get_virtual_folders(&state).await?
+    // )))
 }
 
 pub async fn library_virtualfolders(
@@ -223,8 +254,10 @@ pub async fn library_virtualfolders(
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let manifest = session.aio.get_manifest().await?;
-
-    Ok(Json(json!(crate::jellyfin::get_virtual_folders(&state))))
+Ok(StatusCode::NO_CONTENT.into_response())
+    // Ok(Json(json!(
+    //     crate::jellyfin::get_virtual_folders(&state).await?
+    // )))
 }
 
 pub async fn items_suggestions(
@@ -276,10 +309,12 @@ pub async fn get_items(
     let search = q.search_term.clone().or(q.name_starts_with.clone());
     let skip = q.start_index.unwrap_or(0) as u32;
 
-  //  trace!(?q, "get_items");
+    //  trace!(?q, "get_items");
     // only support Movie and Series for search and catalogs
-if search.is_some() || parent.clone().map_or(false, |p| p.kind == db::MediaKind::Catalog)
-      
+    if search.is_some()
+        || parent
+            .clone()
+            .map_or(false, |p| p.kind == db::MediaKind::Catalog)
     {
         let types = q.get_requested_item_types();
         // if types.len() != 0 {
@@ -296,15 +331,14 @@ if search.is_some() || parent.clone().map_or(false, |p| p.kind == db::MediaKind:
         // TODO: implement
         if let Some(s) = search {
             // todo: need to to make parallel request for typrs
-           // let items = aio
-           //     .search(types[0].clone().into(), s)
-           //     .await?
-           //     .into_iter()
-           //     .map(jellyfin::BaseItemDto::from)
-           //     .collect();
+            // let items = aio
+            //     .search(types[0].clone().into(), s)
+            //     .await?
+            //     .into_iter()
+            //     .map(jellyfin::BaseItemDto::from)
+            //     .collect();
 
-           
-               let items = vec![]; 
+            let items = vec![];
             return Ok(ItemsQueryResult {
                 items: items,
                 total_count: 100,
@@ -349,40 +383,39 @@ if search.is_some() || parent.clone().map_or(false, |p| p.kind == db::MediaKind:
         //  }
 
         // catalog get
-        if parent.kind == db::MediaKind::Catalog
-        {
-           // let (kind, id) = parent_id
-           //     .id
-           //     .rsplit_once(':')
-           //     .ok_or_else(|| anyhow!("invalid catalog id: {:?}", parent_id))?;
-           // let catalog = manifest
-           //     .get_catalog(&id, &kind.to_string())
+        if parent.kind == db::MediaKind::Catalog {
+            // let (kind, id) = parent_id
+            //     .id
+            //     .rsplit_once(':')
+            //     .ok_or_else(|| anyhow!("invalid catalog id: {:?}", parent_id))?;
+            // let catalog = manifest
+            //     .get_catalog(&id, &kind.to_string())
             //    .ok_or_else(|| anyhow!("catalog not found"))?;
 
             //if let Some(types) = &q.include_item_types {
             //    let wanted: aio::MediaType = types[0].into();
-                //if catalog.kind != wanted.to_string() {
-                //    return Ok(ItemsQueryResult {
-                //        items: vec![],
-                //        total_count: 0,
-                //    });
-                //}
-  //          }
+            //if catalog.kind != wanted.to_string() {
+            //    return Ok(ItemsQueryResult {
+            //        items: vec![],
+            //        total_count: 0,
+            //    });
+            //}
+            //          }
 
-           // let items = aio
-          //      .client
-          //      .execute(aio::CatalogEndpoint {
-         //           kind: catalog.kind.clone(),
-         //           id: catalog.id.clone(),
-         //           search: None,
-         //           genre: None,
-         //           skip: Some(skip),
-         //       })
-         //       .await
-         //       .map(|r| r.metas)?
-         //       .into_iter()
-         //       .map(jellyfin::BaseItemDto::from)
-         //       .collect();
+            // let items = aio
+            //      .client
+            //      .execute(aio::CatalogEndpoint {
+            //           kind: catalog.kind.clone(),
+            //           id: catalog.id.clone(),
+            //           search: None,
+            //           genre: None,
+            //           skip: Some(skip),
+            //       })
+            //       .await
+            //       .map(|r| r.metas)?
+            //       .into_iter()
+            //       .map(jellyfin::BaseItemDto::from)
+            //       .collect();
             let items = vec![];
             return Ok(ItemsQueryResult {
                 items: items.clone(),
@@ -390,11 +423,7 @@ if search.is_some() || parent.clone().map_or(false, |p| p.kind == db::MediaKind:
             });
         }
 
-        
-    
-  //  }
-
-    
+        //  }
     }
 
     let items = vec![];
@@ -435,11 +464,11 @@ pub async fn item(
     id: String,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
     let manifest = session.aio.get_manifest().await?;
-    let libraries = super::get_virtual_folders(&state);
+    // let libraries = super::get_virtual_folders(&state).await?;
 
-    if let Some(library) = libraries.into_iter().find(|x| x.id == id) {
-        return Ok(Some(library));
-    }
+    // if let Some(library) = libraries.into_iter().find(|x| x.id == id) {
+    //     return Ok(Some(library));
+    // }
 
     let q = jellyfin::GetItemsQuery {
         ids: vec![id].into(),
@@ -564,9 +593,10 @@ pub async fn items_playbackinfo(
     //        .probe_in_place();
 
     //item.save(&session.item_store);
-    let media = db::Media::get_by_id(&state.db, &payload.media_source_id.unwrap_or(id)).await?.context_not_found("not found", "not found")?;
-    
-    
+    let media = db::Media::get_by_id(&state.db, &payload.media_source_id.unwrap_or(id))
+        .await?
+        .context_not_found("not found", "not found")?;
+
     //let stream = id
     //    .stream
     //    .clone()
@@ -586,9 +616,8 @@ pub async fn items_playbackinfo(
 
     //let mut source: jellyfin::MediaSourceInfo =
     //    stream_into_media_source_info(id.id, id.jellyfin_media_type, stream);
-    
-    let mut source: jellyfin::MediaSourceInfo =
-        media.into();
+
+    let mut source: jellyfin::MediaSourceInfo = media.into();
     source.probe_in_place()?;
     let subtitles: Vec<sdks::aio::Subtitle> = vec![];
 
@@ -670,12 +699,12 @@ pub async fn videos_stream(
 ) -> Result<impl IntoResponse> {
     //let (id, media_type, stream_id) = utils::decode_media_token(&uuid)?;
     //  .log_err("Failed to decode media UUID")
-    
-    let media = db::Media::get_by_id(&state.db, &q.media_source_id.unwrap_or(id)).await?.context_not_found("not found", "not found")?;
-   // trace!(?media, ?q, "videos_stream");
 
-    
-    
+    let media = db::Media::get_by_id(&state.db, &q.media_source_id.unwrap_or(id))
+        .await?
+        .context_not_found("not found", "not found")?;
+    // trace!(?media, ?q, "videos_stream");
+
     // filter by id
     //let stream = id
     //    .stream
