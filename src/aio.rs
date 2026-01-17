@@ -3,9 +3,14 @@ use crate::sdks;
 use crate::sdks::CachedEndpoint;
 use anyhow::Context;
 use anyhow::{Result, anyhow};
-use futures::{StreamExt, stream};
+//use futures::{StreamExt, stream};
+use futures::stream::{self, Stream, StreamExt};
+use itertools::Itertools;
+use std::pin::Pin;
 use std::time::Duration;
+use tokio_stream::wrappers::ReceiverStream;
 use url::Url;
+//use std::task::{Context, Poll};
 
 #[derive(Clone)]
 pub struct AioService {
@@ -167,7 +172,7 @@ impl AioService {
         &self,
         cat: &sdks::aio::Catalog,
     ) -> Result<Vec<sdks::aio::Meta>> {
-        let results = stream::iter(0..50)
+        let results = stream::iter(0..200)
             .map(|page| {
                 let client = &self.client;
                 let kind = cat.kind.clone();
@@ -199,6 +204,49 @@ impl AioService {
                 }
             })
             .flatten()
+            .unique_by(|x| x.id.clone())
             .collect())
+    }
+
+    pub async fn get_catalog_stream(
+        &self,
+        cat: &sdks::aio::Catalog,
+    ) -> Pin<Box<dyn Stream<Item = sdks::aio::Meta> + Send>> {
+        let client = self.client.clone();
+        let kind = cat.kind.clone();
+        let id = cat.id.clone();
+
+        let pages = stream::iter(0..200)
+            .map(move |page| {
+                let client = client.clone();
+                let kind = kind.clone();
+                let id = id.clone();
+                async move {
+                    client
+                        .execute(sdks::aio::CatalogEndpoint {
+                            kind,
+                            id,
+                            search: None,
+                            genre: None,
+                            skip: Some(page),
+                        })
+                        .await
+                }
+            })
+            .buffer_unordered(10);
+
+        let stream = pages
+            .filter_map(|result| async move {
+                match result {
+                    Ok(response) => Some(stream::iter(response.metas)),
+                    Err(e) => {
+                        tracing::error!("Failed to fetch page: {}", e);
+                        None
+                    }
+                }
+            })
+            .flatten();
+
+        Box::pin(stream)
     }
 }

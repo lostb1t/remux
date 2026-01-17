@@ -54,8 +54,8 @@ use tower_http::services::ServeDir;
 use tracing;
 use tracing::debug;
 use tracing::instrument;
-use tracing::warn;
 use tracing::trace;
+use tracing::warn;
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
@@ -189,7 +189,6 @@ pub struct Media {
     pub series_imdb_id: Option<String>,
     pub imdb_id: Option<String>,
     //pub description: Option<String>,
-
     #[sqlx(skip)]
     pub sources: Option<Vec<Media>>,
     // pub seasons: Option<Vec<Media>>,
@@ -362,6 +361,8 @@ impl Media {
                 rating_audience = excluded.rating_audience,
                 poster = excluded.poster,
                 url = excluded.url,
+                aio_id = excluded.aio_id,
+                imdb_id = excluded.imdb_id,
                 probe_data = excluded.probe_data,
                 remote_data = excluded.remote_data,
                 series_imdb_id = excluded.series_imdb_id,
@@ -377,22 +378,22 @@ impl Media {
     }
 
     pub async fn get_by_id(
-    db: &SqlitePool,
-    id: &Uuid,
-) -> Result<Option<Self>, sqlx::Error> {
-    let row = sqlx::query_as::<_, Self>(
-        r#"
+        db: &SqlitePool,
+        id: &Uuid,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        let row = sqlx::query_as::<_, Self>(
+            r#"
         SELECT *
         FROM media
         WHERE id = $1
-        "#
-    )
-    .bind(id)
-    .fetch_optional(db)
-    .await?;
+        "#,
+        )
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
 
-    Ok(row)
-}
+        Ok(row)
+    }
 
     pub async fn get_by_filter(
         db: &sqlx::SqlitePool,
@@ -415,13 +416,13 @@ impl Media {
         if let Some(kind) = &filter.kind {
             qb.push_in("kind", &kind);
         }
-        
+
         if let Some(id) = &filter.id {
             qb.push_in("id", &id);
         }
         //trace!(%qb, "got");
         let query = qb.build_query_as::<Media>();
-        
+
         Ok(query.fetch_all(db).await?)
     }
 
@@ -486,41 +487,43 @@ impl Media {
         let streams = aio
             .get_streams(self.kind.clone().into(), self.aio_id.clone().unwrap())
             .await?;
-        
 
         let items = streams
             .clone()
             .into_iter()
-            .filter(|x| x.is_valid())
-            .map(|stream| {
+            //  .filter(|x| x.is_valid())
+            .enumerate()
+            .map(|(idx, stream)| {
                 let mut item: Self = stream.into();
                 item.parent_id = Some(self.id.clone());
-                //item.save(&db);
+                item.idx = Some(idx as i64);
                 item
             })
             .collect::<Vec<Self>>();
+
         trace!(streams_len = streams.len(), "refreshing streams");
         Self::upsert(db, &items).await?;
         Ok(items)
     }
-    
+
     pub async fn sources(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
-      
-    if  self.sources.is_none() {
-        let sources = Self::get_by_filter(
-            db,
-            &MediaFilter {
-                kind: Some(vec![MediaKind::Source]),
-                parent_id: Some(self.id),
-                ..Default::default()
-            },
-        )
-        .await?;
-        //trace!(s_len = sources.len(), "got");
-        self.sources = Some(sources);
-    };
-    Ok(self.sources.clone().unwrap())
-}
+        if self.sources.is_none() {
+            let mut sources = Self::get_by_filter(
+                db,
+                &MediaFilter {
+                    kind: Some(vec![MediaKind::Source]),
+                    parent_id: Some(self.id),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            sources.sort_by(|a, b| a.idx.cmp(&b.idx));
+
+            self.sources = Some(sources);
+        };
+        Ok(self.sources.clone().unwrap())
+    }
 }
 
 trait QueryBuilderExt<'q> {
@@ -582,10 +585,15 @@ impl From<sdks::aio::Stream> for Media {
     }
 }
 
-impl From<sdks::aio::Meta> for Vec<Media> {
-    fn from(meta: sdks::aio::Meta) -> Vec<Media> {
+impl TryFrom<sdks::aio::Meta> for Vec<Media> {
+    type Error = anyhow::Error;
+    fn try_from(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
+        //self.info_hash.is_some()
+        let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
+
         let mut media_instances = Vec::new();
         let media_kind = MediaKind::from(meta.media_type.clone());
+        //let imdb_id = meta.imdb_id.clone();
 
         let media = Media {
             title: meta.name.unwrap_or_default(),
@@ -595,8 +603,8 @@ impl From<sdks::aio::Meta> for Vec<Media> {
             // rating_critic: meta.rating_critic,
             //rating_audience: meta.imdb_rating,
             poster: meta.poster,
-            imdb_id: Some(meta.imdb_id.clone()),
-            aio_id: Some(meta.imdb_id.clone()),
+            imdb_id: Some(imdb_id.clone()),
+            aio_id: Some(imdb_id.clone()),
             ..Default::default()
         };
 
@@ -620,11 +628,7 @@ impl From<sdks::aio::Meta> for Vec<Media> {
                     let season_media = Media {
                         kind: MediaKind::Season,
                         idx: Some(season_idx),
-                        aio_id: Some(format!(
-                            "{}:{}",
-                            meta.imdb_id.clone(),
-                            season_idx
-                        )),
+                        aio_id: Some(format!("{}:{}", imdb_id.clone(), season_idx)),
                         ..Default::default()
                     };
                     media_instances.push(season_media);
@@ -635,7 +639,7 @@ impl From<sdks::aio::Meta> for Vec<Media> {
                             title: episode.name.unwrap_or_default(),
                             idx: episode.episode,
                             aio_id: Some(episode.id.clone()),
-                            series_imdb_id: media.imdb_id.clone(),
+                            series_imdb_id: Some(imdb_id.clone()),
                             // released_at: episode.released,
                             //  runtime: episode.runtime.as_secs(),
                             ..Default::default()
@@ -646,6 +650,6 @@ impl From<sdks::aio::Meta> for Vec<Media> {
             }
         }
 
-        media_instances
+        Ok(media_instances)
     }
 }

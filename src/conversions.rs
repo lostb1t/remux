@@ -3,9 +3,9 @@ use crate::jellyfin;
 use crate::sdks::{aio, tmdb};
 use crate::utils;
 //use crate::utils::MediaId;
-use crate::utils::{IntoVec, ToRunTimeTicks};
 use crate::utils::get_uuid;
 use crate::utils::server_id;
+use crate::utils::{IntoVec, ToRunTimeTicks};
 use anyhow::{Error, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 use isolang::Language;
@@ -90,14 +90,14 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             //run_time_ticks: media
             //    .runtime
             //    .map(|r| r.num_seconds().to_ticks(utils::TickUnit::Seconds).unwrap()),
-            
+
             // only load sources from "prefetch"
             media_sources: {
-              if let Some(sources) = media.sources {
-    Some(sources.into_vec())
-} else {
-    None
-}
+                if let Some(sources) = media.sources {
+                    Some(sources.into_vec())
+                } else {
+                    None
+                }
             },
             ..Default::default()
         };
@@ -106,8 +106,6 @@ impl From<db::Media> for jellyfin::BaseItemDto {
         item
     }
 }
-
-
 
 //Resources
 

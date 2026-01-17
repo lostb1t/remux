@@ -94,7 +94,7 @@ impl User {
 
         Ok(())
     }
-    
+
     pub async fn save_by_username(&mut self, db: &SqlitePool) -> Result<()> {
         sqlx::query!(
             r#"
@@ -115,38 +115,38 @@ impl User {
         Ok(())
     }
 
-pub async fn get_by_id(db: &SqlitePool, id: &Uuid) -> Result<Option<Self>> {
-    let row = sqlx::query_as::<_, Self>(
-        r#"
+    pub async fn get_by_id(db: &SqlitePool, id: &Uuid) -> Result<Option<Self>> {
+        let row = sqlx::query_as::<_, Self>(
+            r#"
         SELECT *
         FROM auth_users
         WHERE id = ?1
-        "#
-    )
-    .bind(id)
-    .fetch_optional(db)
-    .await?;
+        "#,
+        )
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
 
-    Ok(row)
-}
+        Ok(row)
+    }
 
-pub async fn get_by_username(
-    db: &SqlitePool,
-    username: &str,
-) -> Result<Option<Self>> {
-    let row = sqlx::query_as::<_, Self>(
-        r#"
+    pub async fn get_by_username(
+        db: &SqlitePool,
+        username: &str,
+    ) -> Result<Option<Self>> {
+        let row = sqlx::query_as::<_, Self>(
+            r#"
         SELECT *
         FROM auth_users
         WHERE username = ?1
         "#,
-    )
-    .bind(username)
-    .fetch_optional(db)
-    .await?;
+        )
+        .bind(username)
+        .fetch_optional(db)
+        .await?;
 
-    Ok(row)
-}
+        Ok(row)
+    }
 
     pub fn new_with_password(
         key: String,

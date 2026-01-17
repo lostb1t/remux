@@ -61,10 +61,12 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing;
 use tracing::debug;
+use tracing::info;
 use tracing::instrument;
 use tracing::warn;
 //use tracing_log::LogTracer;
 //use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
+use itertools::Itertools;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry, fmt};
@@ -110,9 +112,9 @@ async fn main() -> Result<()> {
     .await?;
 
     db::migrate(&conn).await?;
-    
+
     // FOR TWSTING ONLY
-   // db::checkpoint_db(&conn).await;
+    // db::checkpoint_db(&conn).await;
 
     // users
     for u in settings.users.clone() {
@@ -340,51 +342,50 @@ async fn spawn_background_tasks(state: AppState) -> Result<()> {
 
         db::Media::upsert(&state.db, &media_items).await.unwrap();
 
-        for cat in manifest.catalogs {
-            match state.aio.get_catalog_pages(&cat).await {
-                Ok(metas) => {
-                    let items: Vec<db::Media> = metas
-                        .into_iter()
-                        .flat_map(|meta| Vec::<db::Media>::from(meta))
-.filter(|item| matches!(item.kind, db::MediaKind::Movie))
-                        .collect();
+        info!("starting catalog import ({})", manifest.catalogs.len());
 
+        for cat in manifest.catalogs {
+            let mut meta_stream = state.aio.get_catalog_stream(&cat).await.chunks(900);
+            let mut count = 0;
+            while let Some(metas) = meta_stream.next().await {
+                let items: Vec<db::Media> = metas
+                    .into_iter()
+                    .unique_by(|meta| meta.id.clone())
+                    .flat_map(|meta| match Vec::<db::Media>::try_from(meta) {
+                        Ok(items) => items.into_iter(),
+                        Err(e) => {
+                            warn!(error = %e, "Failed to convert metadata, skipping");
+                            Vec::<db::Media>::new().into_iter()
+                        }
+                    })
+                    .filter(|item| {
+                        matches!(
+                            item.kind,
+                            db::MediaKind::Movie | db::MediaKind::Series
+                        )
+                    })
+                    .collect();
+
+                if !items.is_empty() {
                     if let Err(e) = db::Media::upsert(&state.db, &items).await {
                         tracing::error!("Failed to import catalog {}: {}", cat.id, e);
                     } else {
-                        let count = items
-                            .into_iter()
-                            .filter(|x| {
-                                matches!(
-                                    x,
-                                    db::Media {
-                                        kind: db::MediaKind::Movie
-                                            | db::MediaKind::Series,
-                                        ..
-                                    }
-                                )
-                            })
-                            .count();
+                        count += items.len();
                         total_imported += count;
-                        tracing::info!(
-                            "Imported catalog {} | {} ({} items)",
-                            cat.id,
-                            cat.kind,
-                            count
-                        );
                     }
                 }
-                Err(e) => {
-                    tracing::error!("Failed to fetch catalog {}: {}", cat.id, e);
-                }
             }
+
+            info!(
+                "Imported catalog {} | {} ({} items)",
+                cat.id, cat.kind, count
+            );
         }
 
         let duration = start_time.elapsed();
-        tracing::info!(
+        info!(
             "Import complete. Total media items imported: {}. Time taken: {:?}",
-            total_imported,
-            duration
+            total_imported, duration
         );
     });
 

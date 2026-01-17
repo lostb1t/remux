@@ -113,22 +113,22 @@ impl Device {
     }
 
     pub async fn get_by_access_token(
-    db: &SqlitePool,
-    token: &str,
-) -> Result<Option<Self>> {
-    let row = sqlx::query_as::<_, Self>(
-        r#"
+        db: &SqlitePool,
+        token: &str,
+    ) -> Result<Option<Self>> {
+        let row = sqlx::query_as::<_, Self>(
+            r#"
         SELECT *
         FROM auth_devices
         WHERE access_token = ?1
-        "#
-    )
-    .bind(token)
-    .fetch_optional(db)
-    .await?;
+        "#,
+        )
+        .bind(token)
+        .fetch_optional(db)
+        .await?;
 
-    Ok(row)
-}
+        Ok(row)
+    }
 }
 
 #[derive(Clone)]

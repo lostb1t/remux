@@ -439,16 +439,16 @@ pub async fn get_items(
 
     let mut items = db::Media::get_by_jellyfin_filter(&state.db, &q).await?;
 
-if let Some(ids) = &q.ids {
-    if ids.len() == 1 {
-        // Refresh sources only for the single item
-        if let Some(item) = items.get_mut(0) {
-            item.refresh_sources(&state.db, &state.aio).await?;
-            item.sources(&state.db).await?;
-            trace!(streams_len = item.sources.clone().unwrap().len(), "sources");
+    if let Some(ids) = &q.ids {
+        if ids.len() == 1 {
+            // Refresh sources only for the single item
+            if let Some(item) = items.get_mut(0) {
+                item.refresh_sources(&state.db, &state.aio).await?;
+                item.sources(&state.db).await?;
+                trace!(streams_len = item.sources.clone().unwrap().len(), "sources");
+            }
         }
     }
-}
 
     Ok(ItemsQueryResult {
         items: items.into_vec(),

@@ -22,7 +22,6 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-
 pub async fn checkpoint_db(pool: &SqlitePool) {
     sqlx::query("PRAGMA wal_checkpoint(FULL)")
         .execute(pool)

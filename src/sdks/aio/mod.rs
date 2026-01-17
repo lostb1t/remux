@@ -284,7 +284,7 @@ pub struct Subtitle {
 pub struct Meta {
     // #[serde(alias = "imdb_id", alias = "imdbId")]
     #[serde(rename = "imdb_id")]
-    pub imdb_id: String,
+    pub imdb_id: Option<String>,
     pub country: Option<String>,
     pub description: Option<String>,
     pub genre: Option<Vec<String>>,
@@ -467,9 +467,9 @@ pub struct Stream {
 }
 
 impl Stream {
-    pub fn is_valid(&self) -> bool {
-        self.info_hash.is_some()
-    }
+    // pub fn is_valid(&self) -> bool {
+    //     self.info_hash.is_some()
+    // }
     pub fn id(&self) -> String {
         self.info_hash.clone().unwrap()
     }
