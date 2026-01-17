@@ -110,18 +110,21 @@ async fn main() -> Result<()> {
     .await?;
 
     db::migrate(&conn).await?;
+    
+    // FOR TWSTING ONLY
+   // db::checkpoint_db(&conn).await;
 
     // users
     for u in settings.users.clone() {
         let mut user = db::User {
-            id: u.stable_id_from_key(),
+            id: utils::get_stable_uuid(u.key),
             username: u.username,
             //aio_url: u.aio_url,
             password_hash: db::User::hash_password(&u.password)?,
             ..Default::default()
         };
 
-        user.save(&conn).await?;
+        user.save_by_username(&conn).await?;
     }
 
     // libraries
@@ -137,7 +140,6 @@ async fn main() -> Result<()> {
     .into_iter()
     .map(|m| m.title)
     .collect::<Vec<String>>();
-    
 
     for u in settings.libraries.clone() {
         if libs_titles.contains(&u.name) {
@@ -212,12 +214,6 @@ pub struct UserConfig {
     //pub aio_url: String,
 }
 
-impl UserConfig {
-    fn stable_id_from_key(&self) -> String {
-        Uuid::new_v5(&Uuid::nil(), &self.key.clone().as_bytes()).to_string()
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Library {
     pub name: String,
@@ -233,7 +229,6 @@ pub struct Settings {
     pub users: Vec<UserConfig>,
     #[serde(default = "default_libraries")]
     pub libraries: Vec<Library>,
-
     // we dont support folders
     //#[serde(default = "default_collection_id")]
     //pub collection_id: String,
@@ -351,7 +346,7 @@ async fn spawn_background_tasks(state: AppState) -> Result<()> {
                     let items: Vec<db::Media> = metas
                         .into_iter()
                         .flat_map(|meta| Vec::<db::Media>::from(meta))
-                        //.filter(|item| matches!(db::Media::))
+.filter(|item| matches!(item.kind, db::MediaKind::Movie))
                         .collect();
 
                     if let Err(e) = db::Media::upsert(&state.db, &items).await {

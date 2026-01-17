@@ -53,8 +53,8 @@ use crate::rewrite_request_uri;
 use crate::sdks;
 use crate::sdks::{aio, tmdb};
 use crate::utils;
+use crate::utils::IntoVec;
 use crate::utils::server_id;
-use crate::utils::{IntoVec};
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 use chrono::Datelike;
 use tower::util::MapRequestLayer;
@@ -227,9 +227,10 @@ pub async fn userviews(
         item.type_ = jellyfin::MediaType::CollectionFolder;
         item.collection_type = Some(jellyfin::CollectionType::Movies);
         item
-    }).collect::<Vec<jellyfin::BaseItemDto>>();
+    })
+    .collect::<Vec<jellyfin::BaseItemDto>>();
 
-   // items.extend(libs);
+    // items.extend(libs);
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items,
@@ -361,14 +362,14 @@ pub async fn get_items(
 
     if let Some(parent) = &parent {
         // collection id is hardcoded
-      //  if parent.id == state.config.collection_id {
-          
-      //      let items = vec![];
-      //      return Ok(ItemsQueryResult {
-      //          total_count: items.len() as i64,
-      //          items,
-      //      });
-      //  }
+        //  if parent.id == state.config.collection_id {
+
+        //      let items = vec![];
+        //      return Ok(ItemsQueryResult {
+        //          total_count: items.len() as i64,
+        //          items,
+        //      });
+        //  }
 
         // library.. probaply
         // if parent_id.media_type == jellyfin::MediaType::CollectionFolder {
@@ -435,11 +436,20 @@ pub async fn get_items(
 
         //  }
     }
-    
-   // if let Some(ids) = &q.ids {
-    //}
 
-    let items = db::Media::get_by_jellyfin_filter(&state.db, &q).await?;
+    let mut items = db::Media::get_by_jellyfin_filter(&state.db, &q).await?;
+
+if let Some(ids) = &q.ids {
+    if ids.len() == 1 {
+        // Refresh sources only for the single item
+        if let Some(item) = items.get_mut(0) {
+            item.refresh_sources(&state.db, &state.aio).await?;
+            item.sources(&state.db).await?;
+            trace!(streams_len = item.sources.clone().unwrap().len(), "sources");
+        }
+    }
+}
+
     Ok(ItemsQueryResult {
         items: items.into_vec(),
         total_count: 999_999,
@@ -474,7 +484,7 @@ pub async fn items(
 pub async fn item(
     state: AppState,
     session: auth::AuthSession,
-    id: String,
+    id: Uuid,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
     let manifest = session.aio.get_manifest().await?;
     // let libraries = super::get_virtual_folders(&state).await?;
@@ -497,7 +507,7 @@ pub async fn item(
 pub async fn items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     return Ok(Json(item(state, session, id).await?).into_response());
 }
@@ -505,7 +515,7 @@ pub async fn items_get(
 pub async fn users_items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path((user_id, id)): Path<(String, String)>,
+    Path((user_id, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
     return Ok(Json(item(state, session, id).await?).into_response());
 }
@@ -513,7 +523,7 @@ pub async fn users_items_get(
 pub async fn shows_seasons(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     Query(mut q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     q.parent_id = Some(id);
@@ -529,7 +539,7 @@ pub async fn shows_seasons(
 pub async fn shows_episodes(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     Query(mut q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     // q.season_id = Some(id);
@@ -591,7 +601,7 @@ pub async fn items_images(
 pub async fn items_playbackinfo(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     // Query(q): Query<jellyfin::PlaybackInfoQuery>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
@@ -707,7 +717,7 @@ pub async fn videos_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
     //session: auth::AuthSession,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     Query(q): Query<jellyfin::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
     //let (id, media_type, stream_id) = utils::decode_media_token(&uuid)?;

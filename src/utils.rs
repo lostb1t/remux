@@ -247,12 +247,12 @@ impl ToRunTimeTicks for &str {
 
 const NS: Uuid = uuid::uuid!("6ba7b810-9dad-11d1-80b4-00c04fd430c8"); // DNS namespace
 
-pub fn get_stable_uuid(v: String) -> String {
-    Uuid::new_v5(&NS, v.as_bytes()).to_string()
+pub fn get_stable_uuid(v: String) -> Uuid {
+    Uuid::new_v5(&NS, v.as_bytes())
 }
 
-pub fn get_uuid() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
+pub fn get_uuid() -> Uuid {
+    uuid::Uuid::new_v4()
 }
 
 pub trait IntoVec<T> {

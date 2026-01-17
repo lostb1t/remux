@@ -65,7 +65,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
-    pub id: String,
+    pub id: Uuid,
     pub username: String,
     #[serde(skip_serializing)]
     pub password_hash: String,
@@ -94,43 +94,59 @@ impl User {
 
         Ok(())
     }
-
-    pub async fn get_by_id(db: &SqlitePool, id: &String) -> Result<Option<Self>> {
-        let row = sqlx::query_as!(
-            Self,
+    
+    pub async fn save_by_username(&mut self, db: &SqlitePool) -> Result<()> {
+        sqlx::query!(
             r#"
-            SELECT
-            *
-            FROM auth_users
-            WHERE id = ?1
+            INSERT INTO auth_users (id, username, password_hash, aio_url)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(username) DO UPDATE SET
+                password_hash = excluded.password_hash,
+                aio_url       = excluded.aio_url
             "#,
-            id
+            self.id,
+            self.username,
+            self.password_hash,
+            self.aio_url
         )
-        .fetch_optional(db)
+        .execute(db)
         .await?;
 
-        Ok(row)
+        Ok(())
     }
 
-    pub async fn get_by_username(
-        db: &SqlitePool,
-        username: &str,
-    ) -> Result<Option<Self>> {
-        let row = sqlx::query_as!(
-            Self,
-            r#"
-            SELECT
-            *
-            FROM auth_users
-            WHERE username = ?1
-            "#,
-            username
-        )
-        .fetch_optional(db)
-        .await?;
+pub async fn get_by_id(db: &SqlitePool, id: &Uuid) -> Result<Option<Self>> {
+    let row = sqlx::query_as::<_, Self>(
+        r#"
+        SELECT *
+        FROM auth_users
+        WHERE id = ?1
+        "#
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
 
-        Ok(row)
-    }
+    Ok(row)
+}
+
+pub async fn get_by_username(
+    db: &SqlitePool,
+    username: &str,
+) -> Result<Option<Self>> {
+    let row = sqlx::query_as::<_, Self>(
+        r#"
+        SELECT *
+        FROM auth_users
+        WHERE username = ?1
+        "#,
+    )
+    .bind(username)
+    .fetch_optional(db)
+    .await?;
+
+    Ok(row)
+}
 
     pub fn new_with_password(
         key: String,
@@ -191,8 +207,8 @@ impl User {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct UserMediaInfo {
     //pub id: String,
-    pub user_id: String,
-    pub media_id: String,
+    pub user_id: Uuid,
+    pub media_id: Uuid,
     pub is_fav: bool,
     pub playback_position: i64,
 }

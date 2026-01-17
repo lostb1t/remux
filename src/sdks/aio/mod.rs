@@ -3,6 +3,7 @@ use axum::http::Method;
 
 use anyhow::Result;
 //use chrono::{DateTime, Utc};
+use crate::utils;
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::Deserializer;
 use serde::de::Error as _;
@@ -11,6 +12,7 @@ use serde_aux::prelude::*;
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::str::FromStr;
+use uuid::Uuid;
 
 #[derive(
     Default,
@@ -453,6 +455,7 @@ pub struct Stream {
     pub kind: String,
     pub indexer: Option<String>,
     pub duration: i64,
+    pub size: Option<i64>,
     pub video_hash: Option<String>,
     pub subtitles: Vec<serde_json::Value>,
     pub country_whitelist: Vec<String>,
@@ -469,6 +472,18 @@ impl Stream {
     }
     pub fn id(&self) -> String {
         self.info_hash.clone().unwrap()
+    }
+
+    pub fn get_guid(&self) -> Uuid {
+        let key = if let Some(hash) = &self.info_hash {
+            hash.to_string()
+        } else if let Some(filename) = &self.filename {
+            format!("{}{}", filename, self.size.unwrap_or_default())
+        } else {
+            self.url.clone().unwrap()
+        };
+
+        utils::get_stable_uuid(key)
     }
 }
 

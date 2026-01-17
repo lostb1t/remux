@@ -64,7 +64,7 @@ use crate::utils::get_uuid;
 pub struct Device {
     pub id: String,
     pub access_token: String,
-    pub user_id: String,
+    pub user_id: Uuid,
     pub name: String,
     pub app_name: String,
     pub app_version: String,
@@ -107,30 +107,28 @@ impl Device {
             app_name: header.client.context("missing device name")?,
             app_version: header.version.context("missing device name")?,
             user_id: user.id.clone(),
-            access_token: get_uuid(),
+            access_token: get_uuid().to_string(),
             ..Default::default()
         })
     }
 
     pub async fn get_by_access_token(
-        db: &SqlitePool,
-        token: &str,
-    ) -> Result<Option<Self>> {
-        let row = sqlx::query_as!(
-            Self,
-            r#"
-            SELECT
-            *
-            FROM auth_devices
-            WHERE access_token = ?1
-            "#,
-            token
-        )
-        .fetch_optional(db)
-        .await?;
+    db: &SqlitePool,
+    token: &str,
+) -> Result<Option<Self>> {
+    let row = sqlx::query_as::<_, Self>(
+        r#"
+        SELECT *
+        FROM auth_devices
+        WHERE access_token = ?1
+        "#
+    )
+    .bind(token)
+    .fetch_optional(db)
+    .await?;
 
-        Ok(row)
-    }
+    Ok(row)
+}
 }
 
 #[derive(Clone)]

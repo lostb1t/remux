@@ -1,3 +1,4 @@
+use crate::aio;
 use crate::jellyfin;
 use crate::sdks;
 use crate::utils::get_uuid;
@@ -54,6 +55,7 @@ use tracing;
 use tracing::debug;
 use tracing::instrument;
 use tracing::warn;
+use tracing::trace;
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
@@ -103,6 +105,17 @@ impl From<sdks::aio::MediaType> for MediaKind {
     }
 }
 
+impl From<MediaKind> for sdks::aio::MediaType {
+    fn from(kind: MediaKind) -> Self {
+        match kind {
+            MediaKind::Movie => sdks::aio::MediaType::Movie,
+            MediaKind::Series => sdks::aio::MediaType::Series,
+            // MediaKind::Catalog => jellyfin::MediaType::CollectionFolder,
+            _ => sdks::aio::MediaType::Unknown,
+        }
+    }
+}
+
 impl From<MediaKind> for jellyfin::MediaType {
     fn from(kind: MediaKind) -> Self {
         match kind {
@@ -143,20 +156,11 @@ impl TryFrom<String> for CatalogKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct MediaSource {
-    pub id: String,
-    pub media_id: String,
-    pub url: Option<String>,
-    pub probe_data: Option<String>,
-    pub external_data: Option<String>,
-}
-
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MediaFilter {
-    pub id: Option<String>,
+    pub id: Option<Vec<Uuid>>,
     pub kind: Option<Vec<MediaKind>>,
-    pub parent_id: Option<String>,
+    pub parent_id: Option<Uuid>,
     pub imdb_id: Option<String>,
     pub aio_id: Option<String>,
     pub promoted: Option<bool>,
@@ -164,9 +168,10 @@ pub struct MediaFilter {
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Media {
-    #[default(get_uuid())]
     // shared
-    pub id: String,
+    //#[sqlx(try_from="String")]
+    #[default(get_uuid())]
+    pub id: Uuid,
     pub title: String,
     pub kind: MediaKind,
     pub created_at: NaiveDateTime,
@@ -179,12 +184,14 @@ pub struct Media {
     pub rating_critic: Option<i64>,
     pub rating_audience: Option<i64>,
     pub poster: Option<String>,
-    pub parent_id: Option<String>,
+    pub parent_id: Option<Uuid>,
     pub idx: Option<i64>,
     pub series_imdb_id: Option<String>,
     pub imdb_id: Option<String>,
+    //pub description: Option<String>,
 
-    //#[sqlx(skip)]
+    #[sqlx(skip)]
+    pub sources: Option<Vec<Media>>,
     // pub seasons: Option<Vec<Media>>,
 
     // stream
@@ -370,68 +377,63 @@ impl Media {
     }
 
     pub async fn get_by_id(
-        db: &sqlx::SqlitePool,
-        id: &str,
-    ) -> Result<Option<Self>, sqlx::Error> {
-        sqlx::query_as!(
-            Media,
-            r#"
-            SELECT * FROM media
-            WHERE id = $1
-            "#,
-            id
-        )
-        .fetch_optional(db)
-        .await
-    }
+    db: &SqlitePool,
+    id: &Uuid,
+) -> Result<Option<Self>, sqlx::Error> {
+    let row = sqlx::query_as::<_, Self>(
+        r#"
+        SELECT *
+        FROM media
+        WHERE id = $1
+        "#
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+
+    Ok(row)
+}
 
     pub async fn get_by_filter(
         db: &sqlx::SqlitePool,
         filter: &MediaFilter,
     ) -> Result<Vec<Media>> {
-        let mut query_builder =
-            sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
+        let mut qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
 
         if let Some(parent_id) = &filter.parent_id {
-            query_builder.push(" AND parent_id = ").push_bind(parent_id);
+            qb.push(" AND parent_id = ").push_bind(parent_id);
         }
 
         if let Some(aio_id) = &filter.aio_id {
-            query_builder.push(" AND aio_id = ").push_bind(aio_id);
+            qb.push(" AND aio_id = ").push_bind(aio_id);
         }
 
         if let Some(promoted) = &filter.promoted {
-            query_builder.push(" AND promoted = ").push_bind(promoted);
+            qb.push(" AND promoted = ").push_bind(promoted);
+        }
+
+        if let Some(kind) = &filter.kind {
+            qb.push_in("kind", &kind);
         }
         
-if let Some(kinds) = &filter.kind {
-    if !kinds.is_empty() {
-        query_builder.push(" AND kind IN (");
-
-        let mut separated = query_builder.separated(", ");
-        for kind in kinds {
-            separated.push_bind(kind);
+        if let Some(id) = &filter.id {
+            qb.push_in("id", &id);
         }
-
-        query_builder.push(")");
-    }
-}
-
-        let query = query_builder.build_query_as::<Media>();
+        //trace!(%qb, "got");
+        let query = qb.build_query_as::<Media>();
+        
         Ok(query.fetch_all(db).await?)
     }
-    
+
     pub async fn get_by_jellyfin_filter(
         db: &sqlx::SqlitePool,
         filter: &jellyfin::GetItemsQuery,
     ) -> Result<Vec<Media>> {
-        let mut qb =
-            sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
+        let mut qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
 
-
-if let Some(ids) = &filter.ids {
-  qb.push_in("id", &ids); 
-}
+        if let Some(ids) = &filter.ids {
+            qb.push_in("id", &ids);
+        }
 
         let query = qb.build_query_as::<Media>();
         Ok(query.fetch_all(db).await?)
@@ -476,20 +478,73 @@ if let Some(ids) = &filter.ids {
     //        Ok(vec![])
     //    }
     //}
+    pub async fn refresh_sources(
+        &self,
+        db: &sqlx::SqlitePool,
+        aio: &aio::AioService,
+    ) -> Result<Vec<Self>> {
+        let streams = aio
+            .get_streams(self.kind.clone().into(), self.aio_id.clone().unwrap())
+            .await?;
+        
+
+        let items = streams
+            .clone()
+            .into_iter()
+            .filter(|x| x.is_valid())
+            .map(|stream| {
+                let mut item: Self = stream.into();
+                item.parent_id = Some(self.id.clone());
+                //item.save(&db);
+                item
+            })
+            .collect::<Vec<Self>>();
+        trace!(streams_len = streams.len(), "refreshing streams");
+        Self::upsert(db, &items).await?;
+        Ok(items)
+    }
+    
+    pub async fn sources(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
+      
+    if  self.sources.is_none() {
+        let sources = Self::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Source]),
+                parent_id: Some(self.id),
+                ..Default::default()
+            },
+        )
+        .await?;
+        //trace!(s_len = sources.len(), "got");
+        self.sources = Some(sources);
+    };
+    Ok(self.sources.clone().unwrap())
+}
 }
 
 trait QueryBuilderExt<'q> {
     fn push_in<T>(&mut self, column: &str, values: &'q Vec<T>)
     where
-        T: Send + Sync + for<'a> sqlx::Encode<'a, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + 'q;
+        T: Send
+            + Sync
+            + for<'a> sqlx::Encode<'a, sqlx::Sqlite>
+            + sqlx::Type<sqlx::Sqlite>
+            + 'q;
 }
 
 impl<'q> QueryBuilderExt<'q> for sqlx::QueryBuilder<'q, sqlx::Sqlite> {
     fn push_in<T>(&mut self, column: &str, values: &'q Vec<T>)
     where
-        T: Send + Sync + for<'a> sqlx::Encode<'a, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + 'q,
+        T: Send
+            + Sync
+            + for<'a> sqlx::Encode<'a, sqlx::Sqlite>
+            + sqlx::Type<sqlx::Sqlite>
+            + 'q,
     {
-        if values.is_empty() { return };
+        if values.is_empty() {
+            return;
+        };
 
         self.push(" AND ");
         self.push(column);
@@ -505,12 +560,23 @@ impl<'q> QueryBuilderExt<'q> for sqlx::QueryBuilder<'q, sqlx::Sqlite> {
 }
 
 impl From<sdks::aio::Catalog> for Media {
-    fn from(catalog: sdks::aio::Catalog) -> Self {
+    fn from(source: sdks::aio::Catalog) -> Self {
         Media {
-            title: catalog.name,
+            title: source.name,
             kind: MediaKind::Catalog,
+            aio_id: Some(source.id.clone()),
+            ..Default::default()
+        }
+    }
+}
 
-            aio_id: Some(catalog.id.clone()),
+impl From<sdks::aio::Stream> for Media {
+    fn from(source: sdks::aio::Stream) -> Self {
+        Media {
+            title: source.name.clone().unwrap(),
+            kind: MediaKind::Source,
+            url: source.url.clone(),
+            id: source.get_guid(),
             ..Default::default()
         }
     }

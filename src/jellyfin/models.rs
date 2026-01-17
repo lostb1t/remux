@@ -8,7 +8,7 @@ use serde_aux::prelude::*;
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::collections::HashSet;
-//use super::BaseItemStore;
+use uuid::Uuid;
 use crate::aio::AioService;
 use crate::db;
 use anyhow::anyhow;
@@ -151,8 +151,8 @@ pub struct GetItemsQuery {
     pub start_index: Option<i64>,
     pub limit: Option<u32>,
     pub search_term: Option<String>,
-    pub parent_id: Option<String>,
-    pub season_id: Option<String>,
+    pub parent_id: Option<Uuid>,
+    pub season_id: Option<Uuid>,
     //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
     //pub fields: Option<Vec<ItemFields>>,
     pub exclude_item_types: Option<Vec<MediaType>>,
@@ -186,7 +186,7 @@ pub struct GetItemsQuery {
     pub studios: Option<Vec<String>>,
     pub studio_ids: Option<Vec<String>>,
     pub exclude_artist_ids: Option<Vec<String>>,
-    pub ids: Option<Vec<String>>,
+    pub ids: Option<Vec<Uuid>>,
 }
 
 impl GetItemsQuery {
@@ -228,7 +228,7 @@ pub struct VideoStreamQuery {
     pub segment_container: Option<String>,
     pub segment_length: Option<i64>,
     pub min_segments: Option<i64>,
-    pub media_source_id: Option<String>,
+    pub media_source_id: Option<Uuid>,
     pub device_id: Option<String>,
     pub audio_codec: Option<String>,
     pub enable_auto_stream_copy: Option<bool>,
@@ -257,7 +257,7 @@ pub struct PlaybackInfoQuery {
     pub subtitle_stream_index: Option<i64>,
     pub max_audio_channels: Option<i64>,
     #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
-    pub media_source_id: Option<String>,
+    pub media_source_id: Option<Uuid>,
     pub live_stream_id: Option<String>,
     pub auto_open_live_stream: Option<bool>,
     pub enable_direct_play: Option<bool>,
@@ -301,14 +301,14 @@ pub struct MediaSourceInfo {
     pub container: Option<String>,
     pub default_audio_stream_index: Option<i64>,
     pub default_subtitle_stream_index: Option<i64>,
-    pub e_tag: Option<String>,
+    pub e_tag: Option<Uuid>,
     pub encoder_path: Option<String>,
     //  pub encoder_protocol: Option<MediaProtocol>,
     pub fallback_max_streaming_bitrate: Option<i64>,
     pub formats: Option<Vec<String>>,
     pub gen_pts_input: Option<bool>,
     pub has_segments: Option<bool>,
-    pub id: String,
+    pub id: Uuid,
     pub ignore_dts: Option<bool>,
     pub ignore_index: Option<bool>,
     pub is_infinite_stream: Option<bool>,
@@ -514,7 +514,7 @@ pub struct UserDto {
     pub has_configured_easy_password: Option<bool>,
     pub has_configured_password: Option<bool>,
     pub has_password: Option<bool>,
-    pub id: String,
+    pub id: Uuid,
     pub last_activity_date: Option<DateTime<Utc>>,
     pub last_login_date: Option<DateTime<Utc>>,
     pub name: String,
@@ -533,7 +533,7 @@ impl Default for UserDto {
             has_configured_easy_password: Some(false),
             has_configured_password: Some(true),
             has_password: Some(true),
-            id: "1".to_string(),
+            id: get_uuid(),
             last_activity_date: None,
             last_login_date: None,
             name: "default".to_string(),
@@ -749,13 +749,13 @@ pub struct ProviderIds {
 #[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
-    pub id: String,
+    pub id: Uuid,
     #[default(server_id())]
     pub server_id: String,
     pub name: Option<String>,
     pub original_title: Option<String>,
     pub original_title_sortable: Option<String>,
-    pub etag: Option<String>,
+    pub etag: Option<Uuid>,
     pub source_type: Option<String>,
     pub playlist_item_id: Option<String>,
     pub date_created: Option<String>,
@@ -805,7 +805,7 @@ pub struct BaseItemDto {
     pub critic_rating_summary: Option<String>,
     pub is_hd: Option<bool>,
     pub is_folder: bool,
-    pub parent_id: Option<String>,
+    pub parent_id: Option<Uuid>,
     #[default(MediaType::Movie)]
     pub type_: MediaType,
     // pub people: Option<Vec<BaseItemPerson>>,
@@ -819,8 +819,8 @@ pub struct BaseItemDto {
     pub recursive_item_count: Option<i64>,
     pub child_count: Option<i64>,
     pub series_name: Option<String>,
-    pub series_id: Option<String>,
-    pub season_id: Option<String>,
+    pub series_id: Option<Uuid>,
+    pub season_id: Option<Uuid>,
     pub special_feature_count: Option<i64>,
     pub display_preferences_id: Option<String>,
     pub status: Option<Status>,

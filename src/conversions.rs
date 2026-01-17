@@ -3,7 +3,7 @@ use crate::jellyfin;
 use crate::sdks::{aio, tmdb};
 use crate::utils;
 //use crate::utils::MediaId;
-use crate::utils::ToRunTimeTicks;
+use crate::utils::{IntoVec, ToRunTimeTicks};
 use crate::utils::get_uuid;
 use crate::utils::server_id;
 use anyhow::{Error, Result, anyhow};
@@ -90,130 +90,24 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             //run_time_ticks: media
             //    .runtime
             //    .map(|r| r.num_seconds().to_ticks(utils::TickUnit::Seconds).unwrap()),
-            ..Default::default()
-        };
-
-        // this shouldnt be done here but eh
-        item
-    }
+            
+            // only load sources from "prefetch"
+            media_sources: {
+              if let Some(sources) = media.sources {
+    Some(sources.into_vec())
+} else {
+    None
 }
-
-impl From<aio::Meta> for jellyfin::BaseItemDto {
-    fn from(meta: aio::Meta) -> Self {
-        // dbg!(&meta);
-        // let media_type: jellyfin::MediaType = meta.media_type.clone().into();
-
-        let item = jellyfin::BaseItemDto {
-            id: meta.id,
-            // id: get_stable_uuid(meta.id.clone()),
-            server_id: utils::server_id(),
-            name: meta.name.clone(),
-            original_title: meta.name.clone(),
-            overview: meta.description.clone(),
-            type_: meta.media_type.clone().into(),
-            //premiere_date: meta.released.clone(),
-            // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
-            image_tags: Some(jellyfin::ImageTags {
-                primary: meta.poster.clone(),
-                logo: meta.logo.clone(),
-                backdrop: meta.background.clone(),
-                ..Default::default()
-            }),
-            is_folder: if meta.media_type == aio::MediaType::Series {
-                true
-            } else {
-                false
             },
-            backdrop_image_tags: meta.background.clone().map(|url| vec![url]),
-            // image_blur_hashes: Some(jellyfin::ImageBlurHashes {
-            //     backdrop: {
-            //         if let Some(img) = meta.background.clone() {
-            //             Some(HashMap::from([(img.clone(), img)]))
-            //             // Some(HashMap::from([("3626323".to_string, img)]))
-            //         } else {
-            //             None
-            //         }
-            //     },
-            //     primary: {
-            //         if let Some(img) = meta.poster.clone() {
-            //             Some(HashMap::from([(img.clone(), img)]))
-            //         } else {
-            //             None
-            //         }
-            //     },
-            //     logo: {
-            //         if let Some(img) = meta.logo.clone() {
-            //             Some(HashMap::from([(img.clone(), img)]))
-            //         } else {
-            //             None
-            //         }
-            //     },
-            //     ..Default::default()
-            // }),
-            provider_ids: Some(jellyfin::ProviderIds {
-                imdb: Some(meta.imdb_id),
-                ..Default::default()
-            }),
-            genres: meta.genres.clone(),
-            run_time_ticks: meta
-                .runtime
-                .map(|r| r.num_seconds().to_ticks(utils::TickUnit::Seconds).unwrap()),
             ..Default::default()
         };
 
         // this shouldnt be done here but eh
-        if meta.media_type == aio::MediaType::Series {
-            // Group episodes by season
-            let seasons: BTreeMap<i64, Vec<aio::Episode>> = meta
-                .videos
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|ep| ep.season.map(|s| (s, ep)))
-                .fold(BTreeMap::new(), |mut acc, (season, ep)| {
-                    acc.entry(season).or_default().push(ep);
-                    acc
-                });
-
-            for (season_num, episodes) in seasons {
-                let season = jellyfin::BaseItemDto {
-                    // id: MediaId::from_aio_season(meta.id.clone(), season_num),
-                    id: get_uuid(),
-                    series_id: Some(item.id.clone()),
-                    server_id: utils::server_id(),
-                    name: Some(format!("Season {}", season_num)),
-                    type_: jellyfin::MediaType::Season,
-                    //  parent_id: Some(MediaId::from_aio_meta(meta.clone())),
-                    ..Default::default()
-                };
-                // season.save(&store);
-
-                for episode in episodes {
-                    jellyfin::BaseItemDto {
-                        name: episode.name.clone(),
-                        //id: get_uuid(),
-                        id: get_uuid(),
-                        type_: jellyfin::MediaType::Episode,
-                        index_number: episode.episode,
-                        series_id: Some(item.id.clone()),
-                        season_id: Some(season.id.clone()),
-                        // parent_index_number: item.season,
-                        //  season_name: Some(format!("Season {:?}", item.season)),
-                        overview: episode.overview.clone(),
-                        image_tags: Some(jellyfin::ImageTags {
-                            primary: episode.thumbnail,
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    };
-                    //episode.save(&store);
-                    //jellyfin::BaseItemDto::from(episode.clone());
-                }
-            }
-        }
-
         item
     }
 }
+
+
 
 //Resources
 

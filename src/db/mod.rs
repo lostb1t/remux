@@ -21,3 +21,10 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
     sqlx::migrate!("./migrations").run(pool).await?;
     Ok(())
 }
+
+
+pub async fn checkpoint_db(pool: &SqlitePool) {
+    sqlx::query("PRAGMA wal_checkpoint(FULL)")
+        .execute(pool)
+        .await;
+}
