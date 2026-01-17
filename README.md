@@ -12,11 +12,12 @@ Highly recommend using https://github.com/Viren070/AIOStreams to manage your add
 create a config.toml in the /data dir
 
 ```toml
+aio_url = "https://<your_aiostreams_manifest_url>"
+
 [[users]]
 key = "test_user"
 username = "test"
 password = "test"
-aio_url = "https://myaiostreams"
 ```
 
 Run the image as follows
