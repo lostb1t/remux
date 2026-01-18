@@ -8,12 +8,12 @@ use crate::utils::server_id;
 use crate::utils::{IntoVec, ToRunTimeTicks};
 use anyhow::{Error, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
+use chrono::{DateTime, FixedOffset, Utc};
 use isolang::Language;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::str::FromStr;
-use chrono::{DateTime, FixedOffset, Utc};
 
 impl From<db::Media> for jellyfin::BaseItemDto {
     fn from(media: db::Media) -> Self {
@@ -39,10 +39,7 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             //         None
             //     }
             // },
-premiere_date: media
-    .released_at
-    .clone()
-    .map(|d| d.and_utc()),
+            premiere_date: media.released_at.clone().map(|d| d.and_utc()),
             // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
                 primary: media.poster.clone(),

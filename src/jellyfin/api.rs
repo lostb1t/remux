@@ -389,12 +389,14 @@ pub async fn get_items(
             //if (parent.)
             // let kind = parent.catalog_kind.unwrap();
 
-                        //kind: Some(vec![db::MediaKind::Movie]),
-         // let kinds = state.
-                     q.include_item_types = Some(vec![parent.catalog_kind_enum().unwrap().into()]);
-         //             q.include_item_types = Some(vec![jellyfin::MediaType::Movie]);
-          let mut result = db::Media::get_by_jellyfin_filter(&state.db, &q, true).await?;
-            
+            //kind: Some(vec![db::MediaKind::Movie]),
+            // let kinds = state.
+            q.include_item_types =
+                Some(vec![parent.catalog_kind_enum().unwrap().into()]);
+            //             q.include_item_types = Some(vec![jellyfin::MediaType::Movie]);
+            let mut result =
+                db::Media::get_by_jellyfin_filter(&state.db, &q, true).await?;
+
             //let mut total_count = db::Media::get_by_jellyfin_filter(&state.db, &q, true).await?;
             // let items = db::Media::get_by_filter(
             //     &state.db,
@@ -735,10 +737,15 @@ pub async fn videos_stream(
     let mut media = db::Media::get_by_id(&state.db, &q.media_source_id.unwrap_or(id))
         .await?
         .context_not_found("not found", "not found")?;
-    
-if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
-  media = media.sources(&state.db).await?.get(0).context_not_found("not found", "not found")?.clone();
-}
+
+    if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+        media = media
+            .sources(&state.db)
+            .await?
+            .get(0)
+            .context_not_found("not found", "not found")?
+            .clone();
+    }
     // trace!(?media, ?q, "videos_stream");
 
     // filter by id

@@ -1,3 +1,4 @@
+use super::FilterResult;
 use crate::aio;
 use crate::jellyfin;
 use crate::sdks;
@@ -39,6 +40,7 @@ use reqwest;
 use reqwest::header::LOCATION;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::Row;
 use sqlx::SqlitePool;
 use std;
 use std::collections::HashMap;
@@ -61,8 +63,6 @@ use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
 use uuid::{Uuid, uuid};
-use sqlx::Row;
-use super::FilterResult;
 
 #[derive(
     Default,
@@ -410,63 +410,62 @@ impl Media {
         Ok(row)
     }
 
-pub async fn get_by_filter(
-    db: &sqlx::SqlitePool,
-    filter: &MediaFilter,
-) -> Result<FilterResult<Media>> {
-    let mut count_qb = sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM media WHERE 1=1");
-    let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
+    pub async fn get_by_filter(
+        db: &sqlx::SqlitePool,
+        filter: &MediaFilter,
+    ) -> Result<FilterResult<Media>> {
+        let mut count_qb =
+            sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM media WHERE 1=1");
+        let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
 
-    for qb in [&mut count_qb, &mut records_qb] {
-        if let Some(parent_id) = &filter.parent_id {
-            qb.push(" AND parent_id = ").push_bind(parent_id);
+        for qb in [&mut count_qb, &mut records_qb] {
+            if let Some(parent_id) = &filter.parent_id {
+                qb.push(" AND parent_id = ").push_bind(parent_id);
+            }
+            if let Some(aio_id) = &filter.aio_id {
+                qb.push(" AND aio_id = ").push_bind(aio_id);
+            }
+            if let Some(promoted) = &filter.promoted {
+                qb.push(" AND promoted = ").push_bind(promoted);
+            }
+            if let Some(kind) = &filter.kind {
+                qb.push_in("kind", &kind);
+            }
+            if let Some(id) = &filter.id {
+                qb.push_in("id", &id);
+            }
         }
-        if let Some(aio_id) = &filter.aio_id {
-            qb.push(" AND aio_id = ").push_bind(aio_id);
+
+        if let Some(limit) = &filter.limit {
+            records_qb.push(" LIMIT ").push_bind(limit);
         }
-        if let Some(promoted) = &filter.promoted {
-            qb.push(" AND promoted = ").push_bind(promoted);
+
+        if let Some(offset) = &filter.offset {
+            records_qb.push(" OFFSET ").push_bind(offset);
         }
-        if let Some(kind) = &filter.kind {
-            qb.push_in("kind", &kind);
-        }
-        if let Some(id) = &filter.id {
-            qb.push_in("id", &id);
-        }
-        
+
+        let (count, records) = tokio::join!(
+            async {
+                let query = count_qb.build();
+                let row = query.fetch_one(db).await;
+                row.map(|r| r.get::<i64, _>(0) as usize)
+            },
+            async {
+                let query = records_qb.build_query_as::<Media>();
+                query.fetch_all(db).await
+            }
+        );
+
+        Ok(FilterResult {
+            records: records?,
+            total_count: if filter.total_count { count? } else { 0 },
+        })
     }
-
-    if let Some(limit) = &filter.limit {
-        records_qb.push(" LIMIT ").push_bind(limit);
-    }
-    
-    if let Some(offset) = &filter.offset {
-        records_qb.push(" OFFSET ").push_bind(offset);
-    }
-
-    let (count, records) = tokio::join!(
-        async {
-            let query = count_qb.build();
-            let row = query.fetch_one(db).await;
-            row.map(|r| r.get::<i64, _>(0) as usize)
-        },
-        async {
-            let query = records_qb.build_query_as::<Media>();
-            query.fetch_all(db).await
-        }
-    );
-
-
-    Ok(FilterResult {
-        records: records?,
-        total_count: if filter.total_count { count? } else { 0 },
-    })
-}
 
     pub async fn get_by_jellyfin_filter(
         db: &sqlx::SqlitePool,
         filter: &jellyfin::GetItemsQuery,
-        total_count: bool
+        total_count: bool,
     ) -> Result<FilterResult<Media>> {
         let kinds = if let Some(include_item_types) = &filter.include_item_types {
             include_item_types.clone().into_vec::<MediaKind>()
