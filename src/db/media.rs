@@ -240,9 +240,9 @@ pub enum MediaError {
 }
 
 impl Media {
-    pub fn catalog_kind_enum(&self) -> Option<CatalogKind> {
+    pub fn catalog_kind_enum(&self) -> Option<MediaKind> {
         match self.catalog_kind.clone() {
-            Some(s) => CatalogKind::try_from(s).ok(),
+            Some(s) => MediaKind::try_from(s).ok(),
             None => None,
         }
     }

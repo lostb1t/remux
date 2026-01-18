@@ -388,9 +388,11 @@ pub async fn get_items(
             trace!("catalog baby");
             //if (parent.)
             // let kind = parent.catalog_kind.unwrap();
-            
+
                         //kind: Some(vec![db::MediaKind::Movie]),
-          q.include_item_types = Some(vec![jellyfin::MediaType::Movie]);
+         // let kinds = state.
+                     q.include_item_types = Some(vec![parent.catalog_kind_enum().unwrap().into()]);
+         //             q.include_item_types = Some(vec![jellyfin::MediaType::Movie]);
           let mut result = db::Media::get_by_jellyfin_filter(&state.db, &q, true).await?;
             
             //let mut total_count = db::Media::get_by_jellyfin_filter(&state.db, &q, true).await?;

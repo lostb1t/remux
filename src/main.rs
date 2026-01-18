@@ -253,6 +253,10 @@ fn default_libraries() -> Vec<Library> {
     vec![Library {
         name: "Movies".to_string(),
         kind: db::CatalogKind::Movie,
+    },
+    Library {
+        name: "Series".to_string(),
+        kind: db::CatalogKind::Series,
     }]
 }
 
