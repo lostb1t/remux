@@ -732,9 +732,13 @@ pub async fn videos_stream(
     //let (id, media_type, stream_id) = utils::decode_media_token(&uuid)?;
     //  .log_err("Failed to decode media UUID")
 
-    let media = db::Media::get_by_id(&state.db, &q.media_source_id.unwrap_or(id))
+    let mut media = db::Media::get_by_id(&state.db, &q.media_source_id.unwrap_or(id))
         .await?
         .context_not_found("not found", "not found")?;
+    
+if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+  media = media.sources(&state.db).await?.get(0).context_not_found("not found", "not found")?.clone();
+}
     // trace!(?media, ?q, "videos_stream");
 
     // filter by id
