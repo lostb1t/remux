@@ -5,12 +5,12 @@ use anyhow::Context;
 use anyhow::{Result, anyhow};
 //use futures::{StreamExt, stream};
 use futures::stream::{self, Stream, StreamExt};
+use futures_util::TryStreamExt;
 use itertools::Itertools;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use url::Url;
-//use std::task::{Context, Poll};
 
 #[derive(Clone)]
 pub struct AioService {
@@ -172,7 +172,7 @@ impl AioService {
         &self,
         cat: &sdks::aio::Catalog,
     ) -> Result<Vec<sdks::aio::Meta>> {
-        let results = stream::iter(0..200)
+        let results = stream::iter(0..500)
             .map(|page| {
                 let client = &self.client;
                 let kind = cat.kind.clone();
@@ -190,7 +190,7 @@ impl AioService {
                         .await
                 }
             })
-            .buffer_unordered(10)
+            .buffer_unordered(8)
             .collect::<Vec<_>>()
             .await;
 
@@ -215,8 +215,9 @@ impl AioService {
         let client = self.client.clone();
         let kind = cat.kind.clone();
         let id = cat.id.clone();
+        let mut page_size = 20;
 
-        let pages = stream::iter(0..200)
+        let pages = stream::iter(0..50)
             .map(move |page| {
                 let client = client.clone();
                 let kind = kind.clone();
@@ -228,7 +229,7 @@ impl AioService {
                             id,
                             search: None,
                             genre: None,
-                            skip: Some(page),
+                            skip: Some(page * page_size),
                         })
                         .await
                 }

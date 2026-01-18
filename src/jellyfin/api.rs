@@ -221,6 +221,7 @@ pub async fn userviews(
         },
     )
     .await?
+    .records
     .into_iter()
     .map(|x| {
         let mut item: jellyfin::BaseItemDto = x.into();
@@ -387,14 +388,20 @@ pub async fn get_items(
             trace!("catalog baby");
             //if (parent.)
             // let kind = parent.catalog_kind.unwrap();
-            let items = db::Media::get_by_filter(
-                &state.db,
-                &db::MediaFilter {
-                    kind: Some(vec![db::MediaKind::Movie]),
-                    ..Default::default()
-                },
-            )
-            .await?;
+            
+                        //kind: Some(vec![db::MediaKind::Movie]),
+          q.include_item_types = Some(vec![jellyfin::MediaType::Movie]);
+          let mut result = db::Media::get_by_jellyfin_filter(&state.db, &q, true).await?;
+            
+            //let mut total_count = db::Media::get_by_jellyfin_filter(&state.db, &q, true).await?;
+            // let items = db::Media::get_by_filter(
+            //     &state.db,
+            //     &db::MediaFilter {
+            //         kind: Some(vec![db::MediaKind::Movie]),
+            //         ..Default::default()
+            //    },
+            //)
+            //.await?;
             // let (kind, id) = parent_id
             //     .id
             //     .rsplit_once(':')
@@ -429,20 +436,20 @@ pub async fn get_items(
             //       .collect();
             //let items = vec![];
             return Ok(ItemsQueryResult {
-                total_count: items.len() as i64,
-                items: items.into_vec(),
+                total_count: result.total_count as i64,
+                items: result.records.into_vec(),
             });
         }
 
         //  }
     }
 
-    let mut items = db::Media::get_by_jellyfin_filter(&state.db, &q).await?;
+    let mut result = db::Media::get_by_jellyfin_filter(&state.db, &q, false).await?;
 
     if let Some(ids) = &q.ids {
         if ids.len() == 1 {
             // Refresh sources only for the single item
-            if let Some(item) = items.get_mut(0) {
+            if let Some(item) = result.records.get_mut(0) {
                 item.refresh_sources(&state.db, &state.aio).await?;
                 item.sources(&state.db).await?;
                 trace!(streams_len = item.sources.clone().unwrap().len(), "sources");
@@ -451,7 +458,7 @@ pub async fn get_items(
     }
 
     Ok(ItemsQueryResult {
-        items: items.into_vec(),
+        items: result.records.into_vec(),
         total_count: 999_999,
     })
 }

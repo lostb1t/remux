@@ -27,3 +27,8 @@ pub async fn checkpoint_db(pool: &SqlitePool) {
         .execute(pool)
         .await;
 }
+
+pub struct FilterResult<T> {
+    pub records: Vec<T>,
+    pub total_count: usize,
+}

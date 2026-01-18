@@ -139,6 +139,7 @@ async fn main() -> Result<()> {
         },
     )
     .await?
+    .records
     .into_iter()
     .map(|m| m.title)
     .collect::<Vec<String>>();

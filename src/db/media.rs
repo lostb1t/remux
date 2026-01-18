@@ -1,6 +1,7 @@
 use crate::aio;
 use crate::jellyfin;
 use crate::sdks;
+use crate::utils::IntoVec;
 use crate::utils::get_uuid;
 use crate::utils::server_id;
 use anyhow::Context;
@@ -60,6 +61,8 @@ use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
 use uuid::{Uuid, uuid};
+use sqlx::Row;
+use super::FilterResult;
 
 #[derive(
     Default,
@@ -130,6 +133,16 @@ impl From<MediaKind> for jellyfin::MediaType {
     }
 }
 
+impl From<jellyfin::MediaType> for MediaKind {
+    fn from(media_type: jellyfin::MediaType) -> Self {
+        match media_type {
+            jellyfin::MediaType::Movie => MediaKind::Movie,
+            jellyfin::MediaType::Series => MediaKind::Series,
+            _ => MediaKind::Unknown,
+        }
+    }
+}
+
 #[derive(
     strum_macros::EnumString,
     strum_macros::Display,
@@ -164,6 +177,8 @@ pub struct MediaFilter {
     pub imdb_id: Option<String>,
     pub aio_id: Option<String>,
     pub promoted: Option<bool>,
+    pub limit: Option<u32>,
+    pub total_count: bool,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -395,49 +410,76 @@ impl Media {
         Ok(row)
     }
 
-    pub async fn get_by_filter(
-        db: &sqlx::SqlitePool,
-        filter: &MediaFilter,
-    ) -> Result<Vec<Media>> {
-        let mut qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
+pub async fn get_by_filter(
+    db: &sqlx::SqlitePool,
+    filter: &MediaFilter,
+) -> Result<FilterResult<Media>> {
+    let mut count_qb = sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM media WHERE 1=1");
+    let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
 
+    for qb in [&mut count_qb, &mut records_qb] {
         if let Some(parent_id) = &filter.parent_id {
             qb.push(" AND parent_id = ").push_bind(parent_id);
         }
-
         if let Some(aio_id) = &filter.aio_id {
             qb.push(" AND aio_id = ").push_bind(aio_id);
         }
-
         if let Some(promoted) = &filter.promoted {
             qb.push(" AND promoted = ").push_bind(promoted);
         }
-
         if let Some(kind) = &filter.kind {
             qb.push_in("kind", &kind);
         }
-
         if let Some(id) = &filter.id {
             qb.push_in("id", &id);
         }
-        //trace!(%qb, "got");
-        let query = qb.build_query_as::<Media>();
-
-        Ok(query.fetch_all(db).await?)
     }
+
+    if let Some(limit) = &filter.limit {
+        records_qb.push(" LIMIT ").push_bind(limit);
+    }
+
+    let (count, records) = tokio::join!(
+        async {
+            let query = count_qb.build();
+            let row = query.fetch_one(db).await;
+            row.map(|r| r.get::<i64, _>(0) as usize)
+        },
+        async {
+            let query = records_qb.build_query_as::<Media>();
+            query.fetch_all(db).await
+        }
+    );
+
+
+    Ok(FilterResult {
+        records: records?,
+        total_count: if filter.total_count { count? } else { 0 },
+    })
+}
 
     pub async fn get_by_jellyfin_filter(
         db: &sqlx::SqlitePool,
         filter: &jellyfin::GetItemsQuery,
-    ) -> Result<Vec<Media>> {
-        let mut qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
-
-        if let Some(ids) = &filter.ids {
-            qb.push_in("id", &ids);
-        }
-
-        let query = qb.build_query_as::<Media>();
-        Ok(query.fetch_all(db).await?)
+        total_count: bool
+    ) -> Result<FilterResult<Media>> {
+        let kinds = if let Some(include_item_types) = &filter.include_item_types {
+            include_item_types.clone().into_vec::<MediaKind>()
+        } else {
+            Vec::new()
+        };
+        Ok(Self::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(kinds),
+                limit: filter.limit.clone(),
+                id: filter.ids.clone(),
+                total_count,
+                //   parent_id: Some(self.id),
+                ..Default::default()
+            },
+        )
+        .await?)
     }
 
     pub async fn into_base_item(
@@ -516,7 +558,8 @@ impl Media {
                     ..Default::default()
                 },
             )
-            .await?;
+            .await?
+            .records;
 
             sources.sort_by(|a, b| a.idx.cmp(&b.idx));
 
@@ -598,8 +641,8 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
         let media = Media {
             title: meta.name.unwrap_or_default(),
             kind: media_kind.clone(),
-            //   released_at: meta.released,
-            //  runtime: meta.runtime.as_secs(),
+            released_at: meta.released.map(|x| x.naive_utc()),
+            runtime: meta.runtime.map(|d| d.num_seconds()),
             // rating_critic: meta.rating_critic,
             //rating_audience: meta.imdb_rating,
             poster: meta.poster,
