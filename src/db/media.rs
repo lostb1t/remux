@@ -178,6 +178,7 @@ pub struct MediaFilter {
     pub aio_id: Option<String>,
     pub promoted: Option<bool>,
     pub limit: Option<u32>,
+    pub offset: Option<u32>,
     pub total_count: bool,
 }
 
@@ -195,6 +196,7 @@ pub struct Media {
 
     // meta
     pub released_at: Option<NaiveDateTime>,
+    // in seconds
     pub runtime: Option<i64>,
     pub rating_critic: Option<i64>,
     pub rating_audience: Option<i64>,
@@ -281,7 +283,6 @@ impl Media {
             ON CONFLICT (id) DO UPDATE SET
                 title = excluded.title,
                 kind = excluded.kind,
-                parent_id = excluded.parent_id,
                 idx = excluded.idx,
                 released_at = excluded.released_at,
                 runtime = excluded.runtime,
@@ -368,7 +369,6 @@ impl Media {
                 " ON CONFLICT DO UPDATE SET
                 title = excluded.title,
                 id = excluded.id,
-                parent_id = excluded.parent_id,
                 idx = excluded.idx,
                 released_at = excluded.released_at,
                 runtime = excluded.runtime,
@@ -433,10 +433,15 @@ pub async fn get_by_filter(
         if let Some(id) = &filter.id {
             qb.push_in("id", &id);
         }
+        
     }
 
     if let Some(limit) = &filter.limit {
         records_qb.push(" LIMIT ").push_bind(limit);
+    }
+    
+    if let Some(offset) = &filter.offset {
+        records_qb.push(" OFFSET ").push_bind(offset);
     }
 
     let (count, records) = tokio::join!(
@@ -474,6 +479,7 @@ pub async fn get_by_filter(
                 kind: Some(kinds),
                 limit: filter.limit.clone(),
                 id: filter.ids.clone(),
+                offset: filter.start_index.clone(),
                 total_count,
                 //   parent_id: Some(self.id),
                 ..Default::default()

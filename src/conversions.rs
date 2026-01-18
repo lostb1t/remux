@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::str::FromStr;
+use chrono::{DateTime, FixedOffset, Utc};
 
 impl From<db::Media> for jellyfin::BaseItemDto {
     fn from(media: db::Media) -> Self {
@@ -38,7 +39,10 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             //         None
             //     }
             // },
-            //premiere_date: meta.released.clone(),
+premiere_date: media
+    .released_at
+    .clone()
+    .map(|d| d.and_utc()),
             // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
                 primary: media.poster.clone(),
@@ -87,9 +91,9 @@ impl From<db::Media> for jellyfin::BaseItemDto {
                 ..Default::default()
             }),
             //genres: meta.genres.clone(),
-            //run_time_ticks: media
-            //    .runtime
-            //    .map(|r| r.num_seconds().to_ticks(utils::TickUnit::Seconds).unwrap()),
+            run_time_ticks: media
+                .runtime
+                .map(|r| r.to_ticks(utils::TickUnit::Seconds).unwrap()),
 
             // only load sources from "prefetch"
             media_sources: {

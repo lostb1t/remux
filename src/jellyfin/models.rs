@@ -148,7 +148,7 @@ pub struct GetItemsQuery {
     pub has_trailer: Option<bool>,
     pub adjacent_to: Option<String>,
     pub index_number: Option<i64>,
-    pub start_index: Option<i64>,
+    pub start_index: Option<u32>,
     pub limit: Option<u32>,
     pub search_term: Option<String>,
     pub parent_id: Option<Uuid>,
@@ -284,7 +284,7 @@ pub struct BaseItemDtoQueryResult {
 
     /// Gets or sets the index of the first record in Items.
     // #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub start_index: i64,
+    pub start_index: u32,
 
     /// Gets or sets the total number of records available.
     // #[serde(default, skip_serializing_if = "Option::is_none")]
