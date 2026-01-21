@@ -125,6 +125,7 @@ pub struct SpecialViewOptionDto {
     pub id: Option<String>,
 }
 
+// ordering of macros is very important. keep as is
 #[serde_alias(
     CamelCase,
     PascalCase,
@@ -135,8 +136,8 @@ pub struct SpecialViewOptionDto {
     KebabCase,
     ScreamingKebabCase
 )]
-#[derive(Default, Debug, Deserialize, Clone)]
 #[serde_as]
+#[derive(Default, Debug, Deserialize, Clone)]
 #[skip_serializing_none]
 pub struct GetItemsQuery {
     pub user_id: Option<String>,
@@ -153,8 +154,9 @@ pub struct GetItemsQuery {
     pub search_term: Option<String>,
     pub parent_id: Option<Uuid>,
     pub season_id: Option<Uuid>,
-    //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
-    pub fields: Option<Vec<ItemFields>>,
+   // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
+   #[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
+   pub fields: Option<Vec<ItemFields>>,
     pub exclude_item_types: Option<Vec<MediaType>>,
     pub include_item_types: Option<Vec<MediaType>>,
     pub is_favorite: Option<bool>,
