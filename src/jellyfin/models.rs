@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::sdks::aio;
 use crate::utils::{get_uuid, server_id};
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use serde_alias::serde_alias;
 use serde_with::formats::CommaSeparator;
@@ -154,9 +155,10 @@ pub struct GetItemsQuery {
     pub search_term: Option<String>,
     pub parent_id: Option<Uuid>,
     pub season_id: Option<Uuid>,
-   // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
-   #[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
-   pub fields: Option<Vec<ItemFields>>,
+    // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
+    //#[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
+    #[serde(deserialize_with = "deserialize_fields")]
+    pub fields: Option<Vec<ItemFields>>,
     pub exclude_item_types: Option<Vec<MediaType>>,
     pub include_item_types: Option<Vec<MediaType>>,
     pub is_favorite: Option<bool>,
@@ -215,6 +217,64 @@ impl GetItemsQuery {
 
         requested
     }
+}
+
+pub fn deserialize_fields<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<ItemFields>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum FieldInput {
+        Single(String),
+        Multiple(Vec<String>),
+    }
+
+    let input = Option::<FieldInput>::deserialize(deserializer)?;
+
+    let fields = match input {
+        Some(FieldInput::Single(s)) => s
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| match s.parse::<ItemFields>() {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    tracing::error!(
+                        value = %s,
+                        error = ?e,
+                        "ItemFields parse failed"
+                    );
+                    Err(e)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>(),
+
+        Some(FieldInput::Multiple(ss)) => ss
+            .iter()
+            .flat_map(|s| s.split(','))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| match s.parse::<ItemFields>() {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    tracing::error!(
+                        value = %s,
+                        error = ?e,
+                        "ItemFields parse failed"
+                    );
+                    Err(e)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>(),
+
+        None => return Ok(None),
+    }
+    .map_err(serde::de::Error::custom)?;
+
+    Ok(Some(fields))
 }
 
 #[derive(Default, Debug, Deserialize)]
@@ -1100,9 +1160,9 @@ pub enum Status {
     Hash,
     strum_macros::Display,
     strum_macros::EnumString,
-    //  Default,
 )]
 #[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
 pub enum ItemFields {
     AirTime,
     CanDelete,
@@ -1163,6 +1223,7 @@ pub enum ItemFields {
     ExtraIds,
     LocalTrailerCount,
     #[serde(rename = "IsHD")]
+    #[strum(serialize = "IsHD")]
     IsHd,
     SpecialFeatureCount,
 }
