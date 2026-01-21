@@ -172,7 +172,7 @@ impl AioService {
         &self,
         cat: &sdks::aio::Catalog,
     ) -> Result<Vec<sdks::aio::Meta>> {
-        let results = stream::iter(0..500)
+        let results = stream::iter(0..25)
             .map(|page| {
                 let client = &self.client;
                 let kind = cat.kind.clone();
@@ -217,7 +217,7 @@ impl AioService {
         let id = cat.id.clone();
         let mut page_size = 20;
 
-        let pages = stream::iter(0..50)
+        let pages = stream::iter(0..10)
             .map(move |page| {
                 let client = client.clone();
                 let kind = kind.clone();

@@ -315,6 +315,7 @@ pub async fn get_items(
     let skip = q.start_index.unwrap_or(0) as u32;
 
     //  trace!(?q, "get_items");
+
     // only support Movie and Series for search and catalogs
     if search.is_some()
         || parent
@@ -336,17 +337,31 @@ pub async fn get_items(
         // TODO: implement
         if let Some(s) = search {
             // todo: need to to make parallel request for typrs
-            // let items = aio
-            //     .search(types[0].clone().into(), s)
-            //     .await?
-            //     .into_iter()
-            //     .map(jellyfin::BaseItemDto::from)
-            //     .collect();
 
-            let items = vec![];
+            let items = aio
+                .search(types[0].clone().into(), s)
+                .await?
+                .into_iter()
+                .filter_map(|meta| match db::Media::try_from(meta.clone()) {
+                    Ok(media) => {
+                        state.store.save(
+                            media.id.clone(),
+                            meta.clone(),
+                            Duration::from_secs(360),
+                        );
+                        Some(jellyfin::BaseItemDto::from(media))
+                    }
+                    Err(e) => {
+                        warn!("Failed to convert item to Media: {}", e);
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            //let items = vec![];
             return Ok(ItemsQueryResult {
                 items: items,
-                total_count: 100,
+                total_count: 9999,
             });
         }
         //  }
@@ -452,11 +467,59 @@ pub async fn get_items(
 
     if let Some(ids) = &q.ids {
         if ids.len() == 1 {
-            // Refresh sources only for the single item
-            if let Some(item) = result.records.get_mut(0) {
-                item.refresh_sources(&state.db, &state.aio).await?;
-                item.sources(&state.db).await?;
-                trace!(streams_len = item.sources.clone().unwrap().len(), "sources");
+            let mut media: Option<db::Media> =
+                if let Some(media) = result.records.get(0) {
+                    Some(media.clone())
+                } else {
+                    if let Some(meta) =
+                        state.store.get::<sdks::aio::Meta>(*ids.get(0).unwrap())
+                    {
+                        let mut media: db::Media = aio
+                            .get_meta(meta.media_type.clone(), meta.id.clone())
+                            .await?
+                            .try_into()?;
+
+                        // web client makes 2 simultenious request. So we get race conditions.
+                        if let Err(err) = media.save(&state.db).await {
+                            media = db::Media::get_by_filter(
+                                &state.db,
+                                &db::MediaFilter {
+                                    aio_id: media.aio_id.clone(),
+
+                                    ..Default::default()
+                                },
+                            )
+                            .await?
+                            .records
+                            .get(0)
+                            .unwrap()
+                            .clone();
+                        }
+
+                        Some(media)
+                    } else {
+                        None
+                    }
+                };
+            if let Some(media) = media.as_mut() {
+                if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
+                    && (q.fields.is_none()
+                        || q.fields.as_ref().map_or(false, |f| {
+                            f.contains(&jellyfin::ItemFields::MediaSources)
+                        }))
+                {
+                    media.refresh_sources(&state.db, &state.aio).await?;
+                    media.sources(&state.db).await?;
+
+                    if let Some(sources) = &media.sources {
+                        trace!(streams_len = sources.len(), "sources");
+                    }
+                }
+
+                return Ok(ItemsQueryResult {
+                    items: vec![media.clone().into()],
+                    total_count: 1,
+                });
             }
         }
     }

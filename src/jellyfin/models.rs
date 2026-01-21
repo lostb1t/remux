@@ -154,7 +154,7 @@ pub struct GetItemsQuery {
     pub parent_id: Option<Uuid>,
     pub season_id: Option<Uuid>,
     //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
-    //pub fields: Option<Vec<ItemFields>>,
+    pub fields: Option<Vec<ItemFields>>,
     pub exclude_item_types: Option<Vec<MediaType>>,
     pub include_item_types: Option<Vec<MediaType>>,
     pub is_favorite: Option<bool>,

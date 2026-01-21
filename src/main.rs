@@ -365,16 +365,16 @@ async fn spawn_background_tasks(state: AppState) -> Result<()> {
                             Vec::<db::Media>::new().into_iter()
                         }
                     })
-                    .filter(|item| {
-                        matches!(
-                            item.kind,
-                            db::MediaKind::Movie | db::MediaKind::Series
-                        )
-                    })
+                    // .filter(|item| {
+                    //     matches!(
+                    //         item.kind,
+                    //         db::MediaKind::Movie | db::MediaKind::Series
+                    //     )
+                    // })
                     .collect();
 
                 if !items.is_empty() {
-                    if let Err(e) = db::Media::upsert(&state.db, &items).await {
+                    if let Err(e) = db::Media::insert(&state.db, &items).await {
                         tracing::error!("Failed to import catalog {}: {}", cat.id, e);
                     } else {
                         count += items.len();

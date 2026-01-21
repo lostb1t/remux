@@ -51,6 +51,7 @@ CREATE INDEX idx_media_kind ON media(kind);
 CREATE INDEX idx_media_idx ON media(idx);
 CREATE INDEX idx_media_parent_id ON media(parent_id);
 
-CREATE UNIQUE INDEX uniq_media_kind_imdb
+
+CREATE UNIQUE INDEX uniq_meta
 ON media (kind, aio_id)
-WHERE imdb_id IS NOT NULL;
+WHERE kind IN ('movie', 'series', 'season', 'episode');

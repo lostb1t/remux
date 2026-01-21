@@ -51,4 +51,3 @@ services:
 - transcoding
 - trailers
 - anything persistant like continue watching etc
-- filtering does not work in library view and probaply never will

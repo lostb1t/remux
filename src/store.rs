@@ -1,40 +1,17 @@
 use moka::{Expiry, sync::Cache};
 use std::{any::Any, sync::Arc, time::Duration};
-
-pub trait Cacheable: std::fmt::Debug + Send + Sync + 'static {
-    fn as_any(&self) -> &dyn Any;
-    fn clone_box(&self) -> Box<dyn Cacheable>;
-}
-
-impl<T> Cacheable for T
-where
-    T: Clone + std::fmt::Debug + Send + Sync + 'static,
-{
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn clone_box(&self) -> Box<dyn Cacheable> {
-        Box::new(self.clone())
-    }
-}
-
-impl Clone for Box<dyn Cacheable> {
-    fn clone(&self) -> Self {
-        self.clone_box()
-    }
-}
+use tracing::trace;
 
 #[derive(Debug)]
 pub struct StoreEntry {
-    pub item: Box<dyn Cacheable>,
+    pub item: Arc<dyn Any + Send + Sync>,
     pub ttl: Duration,
 }
 
 impl Clone for StoreEntry {
     fn clone(&self) -> Self {
         StoreEntry {
-            item: self.item.clone_box(),
+            item: Arc::clone(&self.item),
             ttl: self.ttl,
         }
     }
@@ -54,15 +31,24 @@ impl Store {
         Self { inner }
     }
 
-    pub fn save<T: Cacheable>(&self, key: impl Into<String>, item: T, ttl: Duration) {
+    pub fn with_cache(cache: Cache<String, Arc<StoreEntry>>) -> Self {
+        Self { inner: cache }
+    }
+
+    pub fn save<T: Any + Send + Sync + 'static>(
+        &self,
+        key: impl Into<String>,
+        item: T,
+        ttl: Duration,
+    ) {
         let entry = Arc::new(StoreEntry {
-            item: Box::new(item),
+            item: Arc::new(item),
             ttl,
         });
         self.inner.insert(key.into(), entry);
     }
 
-    pub fn insert<T: Cacheable>(
+    pub fn insert<T: Any + Send + Sync + 'static>(
         &self,
         key: impl Into<String>,
         item: T,
@@ -73,17 +59,25 @@ impl Store {
             return false;
         }
         let entry = Arc::new(StoreEntry {
-            item: Box::new(item),
+            item: Arc::new(item),
             ttl,
         });
         self.inner.insert(key, entry);
         true
     }
 
-    pub fn get<T: Cacheable + 'static + Clone>(&self, key: &str) -> Option<T> {
-        self.inner
-            .get(key)
-            .and_then(|entry| entry.item.as_any().downcast_ref::<T>().cloned())
+    pub fn get<T: Any + Send + Sync + Clone>(
+        &self,
+        key: impl Into<String>,
+    ) -> Option<T> {
+        let key: String = key.into();
+
+        self.inner.get(&key).and_then(|entry| {
+            Arc::clone(&entry.item)
+                .downcast::<T>()
+                .ok()
+                .map(|arc| (*arc).clone())
+        })
     }
 }
 

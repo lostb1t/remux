@@ -192,7 +192,6 @@ pub struct Media {
     pub kind: MediaKind,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
-    pub aio_id: Option<String>,
 
     // meta
     pub released_at: Option<NaiveDateTime>,
@@ -205,6 +204,7 @@ pub struct Media {
     pub idx: Option<i64>,
     pub series_imdb_id: Option<String>,
     pub imdb_id: Option<String>,
+    pub aio_id: Option<String>,
     //pub description: Option<String>,
     #[sqlx(skip)]
     pub sources: Option<Vec<Media>>,
@@ -265,7 +265,18 @@ impl Media {
                 )))
             }
             _ => Ok(()),
+        }?;
+
+        if self.kind == MediaKind::Movie || self.kind == MediaKind::Series {
+            if self.imdb_id.is_none() {
+                return Err(MediaError::ValidationError(format!(
+                    "{:?} requires an imdb id",
+                    self.kind
+                )));
+            }
         }
+
+        Ok(())
     }
 
     pub async fn save(&mut self, db: &sqlx::SqlitePool) -> Result<()> {
@@ -322,6 +333,55 @@ impl Media {
         .execute(db)
         .await?;
 
+        Ok(())
+    }
+
+    pub async fn insert(db: &sqlx::SqlitePool, items: &[Self]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = db.begin().await?;
+        const BATCH_SIZE: usize = 900;
+
+        for chunk in items.chunks(BATCH_SIZE) {
+            let mut query_builder = sqlx::QueryBuilder::new(
+                "INSERT INTO media (
+                id, title, kind, parent_id, idx, released_at, runtime,
+                rating_critic, rating_audience, poster, url, probe_data, promoted, catalog_kind,
+                remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at
+            )",
+            );
+
+            query_builder.push_values(chunk.iter(), |mut b, item| {
+                b.push_bind(&item.id)
+                    .push_bind(&item.title)
+                    .push_bind(&item.kind)
+                    .push_bind(&item.parent_id)
+                    .push_bind(&item.idx)
+                    .push_bind(&item.released_at)
+                    .push_bind(&item.runtime)
+                    .push_bind(&item.rating_critic)
+                    .push_bind(&item.rating_audience)
+                    .push_bind(&item.poster)
+                    .push_bind(&item.url)
+                    .push_bind(&item.probe_data)
+                    .push_bind(&item.promoted)
+                    .push_bind(&item.catalog_kind)
+                    .push_bind(&item.remote_data)
+                    .push_bind(&item.series_imdb_id)
+                    .push_bind(&item.imdb_id)
+                    .push_bind(&item.aio_id)
+                    .push_bind(&item.created_at)
+                    .push_bind(Utc::now());
+            });
+
+            query_builder.push(" ON CONFLICT DO NOTHING");
+
+            query_builder.build().execute(&mut *tx).await?;
+        }
+
+        tx.commit().await?;
         Ok(())
     }
 
@@ -427,6 +487,9 @@ impl Media {
             }
             if let Some(promoted) = &filter.promoted {
                 qb.push(" AND promoted = ").push_bind(promoted);
+            }
+            if let Some(aio_id) = &filter.aio_id {
+                qb.push(" AND aio_id = ").push_bind(aio_id);
             }
             if let Some(kind) = &filter.kind {
                 qb.push_in("kind", &kind);
@@ -633,15 +696,15 @@ impl From<sdks::aio::Stream> for Media {
     }
 }
 
-impl TryFrom<sdks::aio::Meta> for Vec<Media> {
+impl TryFrom<sdks::aio::Meta> for Media {
     type Error = anyhow::Error;
-    fn try_from(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
+    fn try_from(meta: sdks::aio::Meta) -> Result<Media> {
         //self.info_hash.is_some()
-        let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
+        // let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
 
-        let mut media_instances = Vec::new();
         let media_kind = MediaKind::from(meta.media_type.clone());
         //let imdb_id = meta.imdb_id.clone();
+        //debug!(?meta.id);
 
         let media = Media {
             title: meta.name.unwrap_or_default(),
@@ -651,14 +714,28 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
             // rating_critic: meta.rating_critic,
             //rating_audience: meta.imdb_rating,
             poster: meta.poster,
-            imdb_id: Some(imdb_id.clone()),
-            aio_id: Some(imdb_id.clone()),
+            imdb_id: meta.imdb_id.clone(),
+            aio_id: meta.imdb_id.clone(),
+            //tmdb_id: Some(imdb_id.clone()),
             ..Default::default()
         };
 
+        // media_instances.push(media.clone());
+
+        Ok(media)
+    }
+}
+
+impl TryFrom<sdks::aio::Meta> for Vec<Media> {
+    type Error = anyhow::Error;
+    fn try_from(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
+        //let imdb_id = meta.imdb_id.clone();
+        let media: Media = meta.clone().try_into()?;
+
+        let mut media_instances = Vec::new();
         media_instances.push(media.clone());
 
-        if let MediaKind::Series = media_kind {
+        if let MediaKind::Series = media.kind {
             if let Some(episodes) = meta.videos {
                 let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Episode>> =
                     episodes
@@ -676,7 +753,11 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
                     let season_media = Media {
                         kind: MediaKind::Season,
                         idx: Some(season_idx),
-                        aio_id: Some(format!("{}:{}", imdb_id.clone(), season_idx)),
+                        aio_id: Some(format!(
+                            "{}:{}",
+                            media.imdb_id.clone().unwrap(),
+                            season_idx
+                        )),
                         ..Default::default()
                     };
                     media_instances.push(season_media);
@@ -687,7 +768,7 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
                             title: episode.name.unwrap_or_default(),
                             idx: episode.episode,
                             aio_id: Some(episode.id.clone()),
-                            series_imdb_id: Some(imdb_id.clone()),
+                            series_imdb_id: media.imdb_id.clone(),
                             // released_at: episode.released,
                             //  runtime: episode.runtime.as_secs(),
                             ..Default::default()
