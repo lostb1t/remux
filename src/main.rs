@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
     let conn = db::connect(
         std::env::var("DATABASE_URL")
             .as_deref()
-            .unwrap_or("sqlite:///data/db.sqlite"),
+            .unwrap_or("sqlite:///data/db.sqlite?mode=rwc"),
     )
     .await?;
 
