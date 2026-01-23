@@ -20,14 +20,29 @@ impl From<db::Media> for jellyfin::BaseItemDto {
         // dbg!(&meta);
         // let media_type: jellyfin::MediaType = meta.media_type.clone().into();
 
-        let item = jellyfin::BaseItemDto {
-            id: media.id,
+        let mut item = jellyfin::BaseItemDto {
+            id: media.id.clone(),
+            etag: Some(media.id),
             // id: get_stable_uuid(meta.id.clone()),
             server_id: utils::server_id(),
             name: Some(media.title.clone()),
             original_title: Some(media.title.clone()),
             //overview: meta.description.clone(),
             type_: media.kind.clone().into(),
+            parent_id: media.parent_id.clone(),
+            // might be better to save it aa a column on media.
+            //series_id: if media.kind == db::MediaKind::Season
+            // {
+            //     media.parent_id
+            //} else {
+            //    None
+            //
+            series_id: media.parent_id,
+            season_id: media.parent_id,
+            //  season_name: Some(media.title.clone()),
+            //  series_name: Some(media.title.clone()),
+            //  user_data: Some(jellyfin::UserItemDataDto::default()),
+
             // collection_type: {
             //     if media.kind == db::MediaKind::Catalog {
             //         match media.kind.as_str() {
@@ -39,6 +54,7 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             //         None
             //     }
             // },
+            is_place_holder: media.sources.as_ref().map(|sources| sources.is_empty()),
             premiere_date: media.released_at.clone().map(|d| d.and_utc()),
             // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
@@ -52,6 +68,7 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             //            season_id: Some(season.id.clone()),
             is_folder: if media.kind == db::MediaKind::Series
                 || media.kind == db::MediaKind::Catalog
+                || media.kind == db::MediaKind::Season
             {
                 true
             } else {
@@ -84,7 +101,7 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             //     ..Default::default()
             // }),
             provider_ids: Some(jellyfin::ProviderIds {
-                imdb: media.imdb_id,
+                imdb: media.imdb_id.clone(),
                 ..Default::default()
             }),
             //genres: meta.genres.clone(),
@@ -93,16 +110,21 @@ impl From<db::Media> for jellyfin::BaseItemDto {
                 .map(|r| r.to_ticks(utils::TickUnit::Seconds).unwrap()),
 
             // only load sources from "prefetch"
-            media_sources: {
-                if let Some(sources) = media.sources {
-                    Some(sources.into_vec())
-                } else {
-                    None
-                }
-            },
             ..Default::default()
         };
 
+        if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+            item.media_sources = match media.sources.clone() {
+                Some(sources) if sources.is_empty() => Some(vec![media.clone().into()]),
+                Some(sources) => Some(
+                    sources
+                        .into_iter()
+                        .map(jellyfin::MediaSourceInfo::from)
+                        .collect(),
+                ),
+                None => None,
+            };
+        }
         // this shouldnt be done here but eh
         item
     }

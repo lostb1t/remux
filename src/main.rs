@@ -1,14 +1,5 @@
 //#![feature(duration_constructors)]
 #![allow(warnings)]
-#[macro_use]
-extern crate diesel;
-#[macro_use]
-extern crate diesel_migrations;
-// #[macro_use]
-// extern crate diesel_derive_newtype;
-// #[macro_use]
-// extern crate serde_derive;
-// extern crate serde_alias;
 
 use axum::response::Html;
 use reqwest;
@@ -40,7 +31,6 @@ use chrono::prelude::*;
 use chrono::{Duration, Utc};
 use config;
 use config::Config;
-use diesel::SqliteConnection;
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
@@ -152,7 +142,8 @@ async fn main() -> Result<()> {
         let mut media = db::Media {
             title: u.name,
             kind: db::MediaKind::Catalog,
-            catalog_kind: Some(u.kind.to_string()),
+            catalog_media_kind: Some(u.media_kind.to_string()),
+            catalog_kind: Some(db::CatalogKind::Smart.to_string()),
             promoted: 1,
             ..Default::default()
         };
@@ -220,7 +211,7 @@ pub struct UserConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Library {
     pub name: String,
-    pub kind: db::CatalogKind,
+    pub media_kind: db::MediaKind,
 }
 
 #[derive(Deserialize, default2::Default, Serialize, Debug, Clone)]
@@ -253,11 +244,11 @@ fn default_libraries() -> Vec<Library> {
     vec![
         Library {
             name: "Movies".to_string(),
-            kind: db::CatalogKind::Movie,
+            media_kind: db::MediaKind::Movie,
         },
         Library {
             name: "Series".to_string(),
-            kind: db::CatalogKind::Series,
+            media_kind: db::MediaKind::Series,
         },
     ]
 }
@@ -375,7 +366,7 @@ async fn spawn_background_tasks(state: AppState) -> Result<()> {
 
                 if !items.is_empty() {
                     if let Err(e) = db::Media::insert(&state.db, &items).await {
-                        tracing::error!("Failed to import catalog {}: {}", cat.id, e);
+                        tracing::error!("Failed to import chunk: {}", e);
                     } else {
                         count += items.len();
                         total_imported += count;

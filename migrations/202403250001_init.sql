@@ -38,8 +38,9 @@ CREATE TABLE media (
     probe_data TEXT,
     remote_data TEXT,
     promoted INTEGER NOT NULL DEFAULT 0,
-    catalog_kind TEXT CHECK (catalog_kind IN ('movie', 'series')),
-
+    catalog_kind TEXT CHECK (catalog_kind IN ('manual', 'smart')),
+    catalog_media_kind TEXT CHECK (catalog_media_kind IN ('movie', 'series')),
+    
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
 
@@ -55,3 +56,9 @@ CREATE INDEX idx_media_parent_id ON media(parent_id);
 CREATE UNIQUE INDEX uniq_meta
 ON media (kind, aio_id)
 WHERE kind IN ('movie', 'series', 'season', 'episode');
+
+CREATE TABLE catalog_media (
+    catalog_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    PRIMARY KEY (catalog_id, media_id)
+);

@@ -810,6 +810,25 @@ pub struct ProviderIds {
 #[skip_serializing_none]
 #[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
+pub struct UserItemDataDto {
+    pub rating: Option<f32>,
+    pub played: Option<bool>,
+    pub last_played_date: Option<DateTime<Utc>>,
+    pub playback_position_ticks: Option<i64>,
+    pub play_count: Option<i32>,
+    pub is_favorite: Option<bool>,
+    pub likes: Option<bool>,
+    pub last_liked_date: Option<DateTime<Utc>>,
+    pub favorite_added_date: Option<DateTime<Utc>>,
+    pub played_percentage: Option<f32>,
+    pub last_updated: Option<DateTime<Utc>>,
+    pub key: Option<String>,
+    pub item_id: String,
+}
+
+#[skip_serializing_none]
+#[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
     pub id: Uuid,
     #[default(server_id())]
@@ -877,7 +896,7 @@ pub struct BaseItemDto {
     pub parent_backdrop_item_id: Option<String>,
     pub parent_backdrop_image_tags: Option<Vec<String>>,
     pub local_trailer_count: Option<i64>,
-    //pub user_data: Option<UserItemDataDto>,
+    pub user_data: Option<UserItemDataDto>,
     pub recursive_item_count: Option<i64>,
     pub child_count: Option<i64>,
     pub series_name: Option<String>,

@@ -787,77 +787,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "abd57806937c9cc163efc8ea3910e00a62e2aeb0b8119f1793a978088f8f6b04"
 
 [[package]]
-name = "diesel"
-version = "2.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e130c806dccc85428c564f2dc5a96e05b6615a27c9a28776bd7761a9af4bb552"
-dependencies = [
- "chrono",
- "diesel_derives",
- "downcast-rs",
- "libsqlite3-sys",
- "r2d2",
- "sqlite-wasm-rs",
- "time",
-]
-
-[[package]]
-name = "diesel-derive-enum"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81c5131a2895ef64741dad1d483f358c2a229a3a2d1b256778cdc5e146db64d4"
-dependencies = [
- "heck 0.4.1",
- "proc-macro2",
- "quote",
- "syn 2.0.112",
-]
-
-[[package]]
-name = "diesel-enum"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4b8470493d7120fd53f7d7db6ad167c2bc06fdf8abb3cef7e7669eb1347b415"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "diesel_derives"
-version = "2.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c30b2969f923fa1f73744b92bb7df60b858df8832742d9a3aceb79236c0be1d2"
-dependencies = [
- "diesel_table_macro_syntax",
- "dsl_auto_type",
- "proc-macro2",
- "quote",
- "syn 2.0.112",
-]
-
-[[package]]
-name = "diesel_migrations"
-version = "2.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "745fd255645f0f1135f9ec55c7b00e0882192af9683ab4731e4bba3da82b8f9c"
-dependencies = [
- "diesel",
- "migrations_internals",
- "migrations_macros",
-]
-
-[[package]]
-name = "diesel_table_macro_syntax"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe2444076b48641147115697648dc743c2c00b61adade0f01ce67133c7babe8c"
-dependencies = [
- "syn 2.0.112",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -905,26 +834,6 @@ name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
-
-[[package]]
-name = "downcast-rs"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
-
-[[package]]
-name = "dsl_auto_type"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd122633e4bef06db27737f21d3738fb89c8f6d5360d6d9d7635dda142a7757e"
-dependencies = [
- "darling 0.21.3",
- "either",
- "heck 0.5.0",
- "proc-macro2",
- "quote",
- "syn 2.0.112",
-]
 
 [[package]]
 name = "dummy"
@@ -1118,12 +1027,6 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
-
-[[package]]
-name = "foldhash"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
@@ -1320,7 +1223,7 @@ checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash 0.1.5",
+ "foldhash",
 ]
 
 [[package]]
@@ -1328,9 +1231,6 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
-dependencies = [
- "foldhash 0.2.0",
-]
 
 [[package]]
 name = "hashlink"
@@ -1364,12 +1264,6 @@ checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
 dependencies = [
  "http",
 ]
-
-[[package]]
-name = "heck"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
 
 [[package]]
 name = "heck"
@@ -1895,27 +1789,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "migrations_internals"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36c791ecdf977c99f45f23280405d7723727470f6689a5e6dbf513ac547ae10d"
-dependencies = [
- "serde",
- "toml",
-]
-
-[[package]]
-name = "migrations_macros"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36fc5ac76be324cfd2d3f2cf0fdf5d5d3c4f14ed8aaebadb09e304ba42282703"
-dependencies = [
- "migrations_internals",
- "proc-macro2",
- "quote",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2386,17 +2259,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
-name = "r2d2"
-version = "0.8.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51de85fb3fb6524929c8a2eb85e6b6d363de4e8c48f9e2c2eac4944abc181c93"
-dependencies = [
- "log",
- "parking_lot",
- "scheduled-thread-pool",
-]
-
-[[package]]
 name = "rand"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2546,10 +2408,6 @@ dependencies = [
  "config",
  "csv-async",
  "default2",
- "diesel",
- "diesel-derive-enum",
- "diesel-enum",
- "diesel_migrations",
  "dotenvy",
  "duration-str",
  "fake",
@@ -2564,7 +2422,6 @@ dependencies = [
  "md5",
  "merge",
  "moka",
- "r2d2",
  "rand 0.8.5",
  "reqwest",
  "reqwest-middleware",
@@ -2852,15 +2709,6 @@ name = "ryu"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a50f4cf475b65d88e057964e0e9bb1f0aa9bbb2036dc65c64596b42932536984"
-
-[[package]]
-name = "scheduled-thread-pool"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cbc66816425a074528352f5789333ecff06ca41b36b0b0efdfbb29edc391a19"
-dependencies = [
- "parking_lot",
-]
 
 [[package]]
 name = "schemars"
@@ -3179,19 +3027,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sqlite-wasm-rs"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05e98301bf8b0540c7de45ecd760539b9c62f5772aed172f08efba597c11cd5d"
-dependencies = [
- "cc",
- "hashbrown 0.16.1",
- "js-sys",
- "thiserror 2.0.17",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "sqlx"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3261,7 +3096,7 @@ checksum = "19a9c1841124ac5a61741f96e1d9e2ec77424bf323962dd894bdb93f37d5219b"
 dependencies = [
  "dotenvy",
  "either",
- "heck 0.5.0",
+ "heck",
  "hex",
  "once_cell",
  "proc-macro2",
@@ -3428,7 +3263,7 @@ version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
 dependencies = [
- "heck 0.5.0",
+ "heck",
  "proc-macro2",
  "quote",
  "syn 2.0.112",
