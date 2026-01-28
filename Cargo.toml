@@ -90,6 +90,8 @@ argon2 = { version = "0.5.3", default-features = true}
 # argo depends on 0,8
 rand = { version = "0.8", features = ["getrandom"] }
 md5 = "0.8.0"
+#cron_tab = { version = "0.2", features = ["sync", "async"] }
+tokio-cron-scheduler = "*"
 
 #[target.'cfg(any(target_arch = "arm", target_arch = "aarch64"))'.dependencies]
 #ez_ffmpeg_arm = { package = "ez-ffmpeg", path = "vendor/ez-ffmpeg" }

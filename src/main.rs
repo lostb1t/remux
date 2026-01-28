@@ -79,6 +79,7 @@ mod utils;
 mod aio;
 mod db;
 mod jellyfin;
+mod tasks;
 //use crate::db as database;
 
 #[tokio::main]
@@ -151,14 +152,22 @@ async fn main() -> Result<()> {
         media.save(&conn).await?;
     }
 
+    let context = tasks::TaskContext {
+        config: settings.clone(),
+        db: conn.clone(),
+        aio: aio::AioService::from_url(&settings.aio_url)?,
+    };
+
+    let task_service = tasks::TaskService::new(context).await?;
+    task_service.run_startup_tasks().await?;
+
     let state = AppState {
         config: settings.clone(),
         db: conn,
         aio: aio::AioService::from_url(&settings.aio_url)?,
         store: store::Store::new(100000),
+        tasks: task_service,
     };
-
-    spawn_background_tasks(state.clone()).await?;
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -198,6 +207,7 @@ pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub aio: aio::AioService,
     pub store: store::Store,
+    pub tasks: tasks::TaskService,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,78 +324,4 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
         req.uri().path()
     );
     Ok((StatusCode::NOT_FOUND, "404 - File not found"))
-}
-
-use std::time::Instant;
-
-async fn spawn_background_tasks(state: AppState) -> Result<()> {
-    tokio::spawn(async move {
-        let manifest = match state.aio.get_manifest().await {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::error!("Failed to fetch manifest: {}", e);
-                return;
-            }
-        };
-
-        let start_time = Instant::now();
-        let mut total_imported = 0;
-
-        let media_items: Vec<db::Media> = manifest
-            .catalogs
-            .clone()
-            .into_iter()
-            .map(db::Media::from)
-            .collect();
-
-        db::Media::upsert(&state.db, &media_items).await.unwrap();
-
-        info!("starting catalog import ({})", manifest.catalogs.len());
-
-        for cat in manifest.catalogs {
-            let mut meta_stream = state.aio.get_catalog_stream(&cat).await.chunks(900);
-            let mut count = 0;
-            while let Some(metas) = meta_stream.next().await {
-                let items: Vec<db::Media> = metas
-                    .into_iter()
-                    .unique_by(|meta| meta.id.clone())
-                    .flat_map(|meta| match Vec::<db::Media>::try_from(meta) {
-                        Ok(items) => items.into_iter(),
-                        Err(e) => {
-                            warn!(error = %e, "Failed to convert metadata, skipping");
-                            Vec::<db::Media>::new().into_iter()
-                        }
-                    })
-                    // .filter(|item| {
-                    //     matches!(
-                    //         item.kind,
-                    //         db::MediaKind::Movie | db::MediaKind::Series
-                    //     )
-                    // })
-                    .collect();
-
-                if !items.is_empty() {
-                    if let Err(e) = db::Media::insert(&state.db, &items).await {
-                        tracing::error!("Failed to import chunk: {}", e);
-                    } else {
-                        count += items.len();
-                        total_imported += count;
-                    }
-                }
-            }
-
-            info!(
-                "Imported catalog {} | {} ({} items)",
-                cat.id, cat.kind, count
-            );
-        }
-
-        let duration = start_time.elapsed();
-        info!(
-            "Import complete. Total media items imported: {}. Time taken: {:?}",
-            total_imported, duration
-        );
-    });
-
-    Ok(())
 }

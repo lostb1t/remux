@@ -43,6 +43,7 @@ CREATE TABLE media (
     
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
+    refreshed_at TIMESTAMP,
 
     FOREIGN KEY (parent_id) REFERENCES media(id) ON DELETE CASCADE
 );
@@ -62,3 +63,38 @@ CREATE TABLE catalog_media (
     media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
     PRIMARY KEY (catalog_id, media_id)
 );
+
+CREATE TABLE tasks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
+CREATE TABLE task_triggers (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    time_limit_hours INTEGER,
+    cron TEXT
+);
+
+CREATE INDEX idx_task_triggers_task_id
+    ON task_triggers(task_id);
+    
+INSERT INTO task_triggers (
+    id,
+    task_id,
+    kind,
+    time_limit_hours,
+    cron
+)
+VALUES
+    (x'f47ac10b58cc4372a5670e02b2c3d479', x'7373382828284b8a9e1a737338282828', 'startup', NULL, NULL);
+CREATE TABLE task_results (
+    task_id TEXT PRIMARY KEY,
+    start_at DATETIME NOT NULL,
+    end_at DATETIME NOT NULL,
+    state TEXT NOT NULL
+);
+
+CREATE INDEX idx_task_results_task_id
+    ON task_results(task_id);

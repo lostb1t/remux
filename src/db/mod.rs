@@ -5,8 +5,10 @@ use std::str::FromStr;
 
 pub mod auth;
 pub mod media;
+pub mod task;
 pub mod user;
 pub use media::*;
+pub use task::*;
 pub use user::*;
 
 pub async fn connect(url: &str) -> Result<SqlitePool> {

@@ -20,18 +20,13 @@ args = ["sqlx", "prepare"]
 command = "cargo"
 args = ["sqlx", "migrate", "run", "--source", "./migrations"]
 
-[tasks.db-old]
-command = "cargo"
-args = ["run"]
-dependencies = ["sqlx-create", "sqlx-migrate", "sqlx-prepare"]
+[tasks.deletedb]
+command = "rm"
+args = ["db.sqlite"]
 
-[tasks.diesel-migrate]
-command = "diesel"
-args = ["migration", "run"]
+[tasks.resetdb]
+dependencies = ["deletedb", "sqlx-create", "sqlx-migrate", "sqlx-prepare"]
 
-[tasks.diesel-schema]
-command = "sh"
-args = ["-c", "diesel print-schema > src/db/schema.rs"]
 
 [tasks.dev]
 command = "cargo"

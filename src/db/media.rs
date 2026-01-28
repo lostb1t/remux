@@ -196,6 +196,7 @@ pub struct Media {
     pub kind: MediaKind,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
+    pub refreshed_at: Option<NaiveDateTime>,
 
     // meta
     pub released_at: Option<NaiveDateTime>,

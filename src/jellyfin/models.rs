@@ -157,7 +157,7 @@ pub struct GetItemsQuery {
     pub season_id: Option<Uuid>,
     // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
     //#[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
-    #[serde(deserialize_with = "deserialize_fields")]
+    #[serde(deserialize_with = "deserialize_fields", default)]
     pub fields: Option<Vec<ItemFields>>,
     pub exclude_item_types: Option<Vec<MediaType>>,
     pub include_item_types: Option<Vec<MediaType>>,

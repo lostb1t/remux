@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO task_triggers (\n                id,\n                task_id,\n                kind,\n                time_limit_hours,\n                cron\n            )\n            VALUES (?1, ?2, ?3, ?4, ?5)\n            ON CONFLICT(id) DO UPDATE SET\n                task_id          = excluded.task_id,\n                kind             = excluded.kind,\n                time_limit_hours = excluded.time_limit_hours,\n                cron             = excluded.cron\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "b72ad8110ca1216dca343c4a0a59ef0f633eabe8c1a9ca8ffaa046e38efb903a"
+}
