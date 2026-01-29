@@ -27,9 +27,10 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             server_id: utils::server_id(),
             name: Some(media.title.clone()),
             original_title: Some(media.title.clone()),
-            //overview: meta.description.clone(),
+            overview: media.description.clone(),
             type_: media.kind.clone().into(),
             parent_id: media.parent_id.clone(),
+            remote_trailers: media.trailers.clone().map(|j| j.0),
             // might be better to save it aa a column on media.
             //series_id: if media.kind == db::MediaKind::Season
             // {
@@ -59,8 +60,8 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
                 primary: media.poster.clone(),
-                // logo: meta.logo.clone(),
-                //  backdrop: meta.background.clone(),
+                logo: media.logo.clone(),
+                backdrop: media.backdrop.clone(),
                 ..Default::default()
             }),
             index_number: media.idx,
@@ -222,26 +223,7 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
     }
 }
 
-impl From<aio::Episode> for jellyfin::BaseItemDto {
-    fn from(item: aio::Episode) -> Self {
-        jellyfin::BaseItemDto {
-            name: item.name.clone(),
-            //id: get_uuid(),
-            id: get_uuid(),
-            type_: jellyfin::MediaType::Episode,
-            index_number: item.episode,
-            season_id: Some(get_uuid()),
-            parent_index_number: item.season,
-            season_name: Some(format!("Season {:?}", item.season)),
-            overview: item.overview.clone(),
-            image_tags: Some(jellyfin::ImageTags {
-                primary: item.thumbnail,
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    }
-}
+
 
 impl From<aio::MediaType> for jellyfin::MediaType {
     fn from(kind: aio::MediaType) -> Self {

@@ -281,36 +281,72 @@ pub struct Subtitle {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Trailer {
+    pub source: String,
+    //pub r#type: String,
+    //pub name: String,
+    //pub lang: String,
+}
+
+#[derive(
+    //   strum_macros::EnumString,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "lowercase")]
+pub enum Status {
+    Upcoming,
+    Continuing,
+    Ended,
+    // Returning Series
+     #[serde(rename = "Returning Series")]
+    ReturningSeries,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Meta {
     // #[serde(alias = "imdb_id", alias = "imdbId")]
     #[serde(rename = "imdb_id")]
     pub imdb_id: Option<String>,
     pub country: Option<String>,
+    pub director: Option<String>,
     pub description: Option<String>,
     pub genre: Option<Vec<String>>,
     //pub imdb_rating: Option<f64>,
     pub name: Option<String>,
+    pub status: Option<Status>,
     pub released: Option<DateTime<Utc>>,
     pub slug: Option<String>,
     #[serde(rename = "type")]
     pub media_type: MediaType,
-    //pub writer: Option<Vec<String>>,
+    pub certification: Option<String>,
     //#[serde(deserialize_with = "deserialize_string_from_number")]
     //pub year: String,
     pub moviedb_id: Option<u64>,
 
-    // pub popularities: Option<Popularities>,
-    // pub trailers: Option<Vec<String>>,
-    //pub cast: Option<Vec<String>>,
-    //pub director: Option<Vec<String>>,
+    pub trailers: Option<Vec<Trailer>>,
+
     pub background: Option<String>,
     pub logo: Option<String>,
+    pub poster: Option<String>,
+    pub thumbnail: Option<String>,
+
     pub awards: Option<String>,
     pub popularity: Option<f64>,
-    pub poster: Option<String>,
     pub id: String,
     pub genres: Option<Vec<String>>,
 
+    pub episode: Option<i64>,
+    pub season: Option<i64>,
+    pub season_posters: Option<Vec<String>>,
+    
     // this can be a range 2012-2015
     // #[serde(deserialize_with = "deserialize_string_from_number")]
     //pub release_info: String,
@@ -318,7 +354,7 @@ pub struct Meta {
     pub runtime: Option<Duration>,
 
     // #[serde(rename = "videos")]
-    pub videos: Option<Vec<Episode>>,
+    pub videos: Option<Vec<Meta>>,
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
@@ -364,7 +400,7 @@ impl Meta {
         }
     }
 
-    pub fn get_episode_by_id(&self, id: String) -> Option<&Episode> {
+    pub fn get_episode_by_id(&self, id: String) -> Option<&Meta> {
         if let Some(episodes) = &self.videos {
             episodes.into_iter().find(|e| e.id == id)
         } else {
@@ -372,7 +408,7 @@ impl Meta {
         }
     }
 
-    pub fn get_episodes(&self, season_num: i64) -> Vec<Episode> {
+    pub fn get_episodes(&self, season_num: i64) -> Vec<Meta> {
         self.videos
             .clone()
             .unwrap_or_default()
@@ -382,25 +418,7 @@ impl Meta {
     }
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Episode {
-    pub id: String,
-    pub name: Option<String>,
-    pub released: Option<DateTime<Utc>>,
-    pub thumbnail: Option<String>,
-    pub episode: Option<i64>,
-    pub season: Option<i64>,
-    pub overview: Option<String>,
-    pub number: Option<i64>,
-    pub description: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
-    pub runtime: Option<Duration>,
-    // pub rating: Option<f64>,
-    // #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
-    //  pub runtime: Option<Duration>,
-}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {

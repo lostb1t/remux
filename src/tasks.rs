@@ -139,6 +139,9 @@ impl TaskService {
         service
             .register_task(Arc::new(MediaScanTask::default()))
             .await?;
+        service
+            .register_task(Arc::new(CatalogImportTask::default()))
+            .await?;
 
         let triggers = db::TaskTrigger::get_all(&service.context.db).await?;
         for trigger in triggers {
@@ -260,6 +263,29 @@ pub struct MediaScanTask;
 
 #[async_trait]
 impl Task for MediaScanTask {
+    fn id(&self) -> Uuid {
+        uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479")
+    }
+
+    fn name(&self) -> &str {
+        "Import Catalogs"
+    }
+
+    fn default_triggers(&self) -> Vec<db::TaskTrigger> {
+        vec![]
+    }
+
+    async fn run(self: Arc<Self>, context: TaskContext) -> Result<()> {
+      
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct CatalogImportTask;
+
+#[async_trait]
+impl Task for CatalogImportTask {
     fn id(&self) -> Uuid {
         uuid!("73733828-2828-4b8a-9e1a-737338282828")
     }

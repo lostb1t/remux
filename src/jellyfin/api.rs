@@ -386,7 +386,7 @@ pub async fn get_items(
             q.include_item_types =
                 Some(vec![parent.catalog_media_kind_enum().unwrap().into()]);
             //             q.include_item_types = Some(vec![jellyfin::MediaType::Movie]);
-            trace!(?q, "CATALOG");
+           // trace!(?q, "CATALOG");
 
             let mut result =
                 db::Media::get_by_jellyfin_filter(&state.db, &q, true).await?;

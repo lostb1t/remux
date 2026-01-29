@@ -896,6 +896,7 @@ pub struct BaseItemDto {
     pub parent_backdrop_item_id: Option<String>,
     pub parent_backdrop_image_tags: Option<Vec<String>>,
     pub local_trailer_count: Option<i64>,
+    pub remote_trailers: Option<Vec<String>>,
     pub user_data: Option<UserItemDataDto>,
     pub recursive_item_count: Option<i64>,
     pub child_count: Option<i64>,

@@ -199,12 +199,16 @@ pub struct Media {
     pub refreshed_at: Option<NaiveDateTime>,
 
     // meta
+    pub description: Option<String>,
     pub released_at: Option<NaiveDateTime>,
+    pub trailers: Option<sqlx::types::Json<Vec<String>>>,
     // in seconds
     pub runtime: Option<i64>,
     pub rating_critic: Option<i64>,
     pub rating_audience: Option<i64>,
     pub poster: Option<String>,
+    pub logo: Option<String>,
+    pub backdrop: Option<String>,
     pub parent_id: Option<Uuid>,
     pub idx: Option<i64>,
     pub series_imdb_id: Option<String>,
@@ -310,10 +314,10 @@ impl Media {
             r#"
             INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, url, probe_data, promoted, catalog_kind,catalog_media_kind,
+                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind,catalog_media_kind,
                 remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
             ON CONFLICT (id) DO UPDATE SET
                 title = excluded.title,
                 kind = excluded.kind,
@@ -323,6 +327,10 @@ impl Media {
                 rating_critic = excluded.rating_critic,
                 rating_audience = excluded.rating_audience,
                 poster = excluded.poster,
+                logo = excluded.logo,
+                backdrop = excluded.backdrop,
+                description = excluded.description,
+                trailers = excluded.trailers,
                 url = excluded.url,
                 probe_data = excluded.probe_data,
                 remote_data = excluded.remote_data,
@@ -342,6 +350,10 @@ impl Media {
             self.rating_critic,
             self.rating_audience,
             self.poster,
+             self.logo,
+              self.backdrop,
+               self.description,
+               self.trailers,
             self.url,
             self.probe_data,
             self.promoted,
@@ -372,7 +384,7 @@ impl Media {
             let mut query_builder = sqlx::QueryBuilder::new(
                 "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, url, probe_data, promoted, catalog_kind, catalog_media_kind,
+                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
                 remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at
             )",
             );
@@ -390,6 +402,10 @@ impl Media {
                     .push_bind(&item.rating_critic)
                     .push_bind(&item.rating_audience)
                     .push_bind(&item.poster)
+                    .push_bind(&item.logo)
+                    .push_bind(&item.backdrop)
+                    .push_bind(&item.description)
+                    .push_bind(&item.trailers)
                     .push_bind(&item.url)
                     .push_bind(&item.probe_data)
                     .push_bind(&item.promoted)
@@ -424,7 +440,7 @@ impl Media {
             let mut query_builder = sqlx::QueryBuilder::new(
                 "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, url, probe_data, promoted, catalog_kind, catalog_media_kind,
+                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
                 remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at
             )",
             );
@@ -440,6 +456,10 @@ impl Media {
                     .push_bind(&item.rating_critic)
                     .push_bind(&item.rating_audience)
                     .push_bind(&item.poster)
+                    .push_bind(&item.logo)
+                    .push_bind(&item.backdrop)
+                    .push_bind(&item.description)
+                    .push_bind(&item.trailers)
                     .push_bind(&item.url)
                     .push_bind(&item.probe_data)
                     .push_bind(&item.promoted)
@@ -463,6 +483,10 @@ impl Media {
                 rating_critic = excluded.rating_critic,
                 rating_audience = excluded.rating_audience,
                 poster = excluded.poster,
+                logo = excluded.logo,
+                backdrop = excluded.backdrop,
+                description = excluded.description,
+                trailers = excluded.trailers,
                 url = excluded.url,
                 aio_id = excluded.aio_id,
                 imdb_id = excluded.imdb_id,
@@ -745,9 +769,21 @@ impl TryFrom<sdks::aio::Meta> for Media {
             runtime: meta.runtime.map(|d| d.num_seconds()),
             // rating_critic: meta.rating_critic,
             //rating_audience: meta.imdb_rating,
-            poster: meta.poster,
+            description: meta.description,
+            poster: meta.poster.or(meta.thumbnail),
+            logo: meta.logo,
+            backdrop: meta.background,
             imdb_id: meta.imdb_id.clone(),
             aio_id: meta.imdb_id.clone(),
+            trailers: meta.trailers.map(|trailers| {
+                sqlx::types::Json(
+                    trailers
+                        .into_iter()
+                        .map(|t| t.source)
+                        .collect::<Vec<String>>(),
+                )
+            }),
+
             //tmdb_id: Some(imdb_id.clone()),
             ..Default::default()
         };
@@ -762,6 +798,7 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
     type Error = anyhow::Error;
     fn try_from(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
         let imdb_id = meta.imdb_id.clone().context("imdb_id is missing")?;
+        
         let media: Media = meta.clone().try_into()?;
 
         let mut media_instances = Vec::new();
@@ -769,7 +806,7 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
 
         if let MediaKind::Series = media.kind {
             if let Some(episodes) = meta.videos {
-                let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Episode>> =
+                let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Meta>> =
                     episodes
                         .into_iter()
                         .filter_map(|ep| ep.season.map(|s| (s, ep)))
@@ -792,25 +829,24 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
                             media.imdb_id.clone().unwrap(),
                             season_idx
                         )),
+                        poster: meta
+                            .season_posters
+                            .as_ref()
+                            .and_then(|posters| posters.get(season_idx as usize))
+                            .cloned(),
                         parent_id: Some(media.id),
                         ..Default::default()
                     };
                     media_instances.push(season.clone());
 
-                    for episode in episodes {
-                        let episode_media = Media {
-                            kind: MediaKind::Episode,
-                            title: episode.name.unwrap_or_default(),
-                            idx: episode.episode,
-                            poster: episode.thumbnail,
-                            aio_id: Some(episode.id.clone()),
-                            series_imdb_id: media.imdb_id.clone(),
-                            parent_id: Some(season.id),
-                            released_at: episode.released.map(|x| x.naive_utc()),
-                            runtime: episode.runtime.map(|d| d.num_seconds()),
-                            ..Default::default()
-                        };
-                        media_instances.push(episode_media);
+                    for ep in episodes {
+                        let mut episode: Media = ep.clone().try_into()?;
+                        episode.idx = ep.episode;
+                        episode.aio_id = Some(ep.id.clone());
+                        episode.series_imdb_id = media.imdb_id.clone();
+                        episode.parent_id = Some(season.id);
+
+                        media_instances.push(episode);
                     }
                 }
             }

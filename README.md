@@ -51,3 +51,23 @@ services:
 - transcoding
 - trailers
 - anything persistant like continue watching etc
+
+### Whats missing
+
+install cargo make
+
+```
+cargo install --force cargo-make
+```
+
+setup db
+
+```
+cargo make resetdb
+```
+
+run
+
+```
+cargo make dev
+```
