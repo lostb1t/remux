@@ -97,7 +97,7 @@ CREATE TABLE task_results (
     task_id TEXT PRIMARY KEY,
     start_at DATETIME NOT NULL,
     end_at DATETIME NOT NULL,
-    state TEXT NOT NULL
+    status TEXT NOT NULL
 );
 
 CREATE INDEX idx_task_results_task_id

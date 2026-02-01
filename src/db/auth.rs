@@ -155,13 +155,13 @@ impl FromRequestParts<AppState> for AuthSession {
             .device_id
             .as_deref()
             .context_unauthorized("forbidden", "forbidden")?;
-        let device = Device::get_by_access_token(&state.db, token)
+        let device = Device::get_by_access_token(&state.ctx.db, token)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
-        let user = db::User::get_by_id(&state.db, &device.user_id)
+        let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
-        let aio = crate::aio::AioService::from_url(&state.config.aio_url)?;
+        let aio = crate::aio::AioService::from_url(&state.ctx.config.aio_url)?;
         Ok(AuthSession { device, user, aio })
     }
 }

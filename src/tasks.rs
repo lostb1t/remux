@@ -1,34 +1,24 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-
-use crate::Settings;
-use crate::aio;
-use crate::db;
-use anyhow::{Result, anyhow};
-use async_trait::async_trait;
-use chrono::Utc;
-use futures_util::StreamExt;
-use itertools::Itertools;
-use sqlx::SqlitePool;
 use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio_cron_scheduler::job::JobId;
 use tokio_cron_scheduler::{Job, JobScheduler};
-use tracing::info;
-use tracing::warn;
+use tokio_cron_scheduler::job::JobId;
+use anyhow::{Result, anyhow, Context};
+use async_trait::async_trait;
+use chrono::Utc;
 use uuid::Uuid;
 use uuid::uuid;
+use futures::stream::{self, StreamExt};
+use itertools::Itertools;
+use tracing::{info, warn, error};
 
-#[derive(Clone)]
-pub struct TaskContext {
-    pub db: SqlitePool,
-    pub config: Settings,
-    pub aio: aio::AioService,
-}
+// Assuming these are imported from your project:
+use crate::{db, aio, AppContext, meta_provider::MetaProvider, meta_provider::AioMetaProvider};
 
 #[derive(Debug)]
-pub enum TaskState {
+pub enum TaskStatus {
     Idle,
     Active,
     Stopped,
@@ -41,11 +31,11 @@ pub trait Task: Send + Sync {
     fn name(&self) -> &str;
     fn default_triggers(&self) -> Vec<db::TaskTrigger>;
 
-    async fn run(self: Arc<Self>, context: TaskContext) -> Result<()>;
+    async fn run(self: Arc<Self>, ctx: AppContext, task_service: Arc<TaskService>) -> Result<()>;
 }
 
 pub struct TaskHandler {
-    pub state: TaskState,
+    pub status: TaskStatus,
     pub task: Arc<dyn Task>,
     pub jobs: Vec<JobId>,
     pub handle: Option<JoinHandle<()>>,
@@ -54,7 +44,7 @@ pub struct TaskHandler {
 impl TaskHandler {
     pub fn new(task: Arc<dyn Task>) -> Self {
         Self {
-            state: TaskState::Idle,
+            status: TaskStatus::Idle,
             task,
             jobs: Vec::new(),
             handle: None,
@@ -68,41 +58,41 @@ impl TaskHandler {
             .unwrap_or(false)
     }
 
-    pub fn run(&mut self, context: TaskContext) {
+    pub fn run(&mut self, ctx: AppContext, task_service: Arc<TaskService>) {
         if self.is_running() {
             return;
         }
 
-        self.state = TaskState::Active;
+        self.status = TaskStatus::Active;
         let task = self.task.clone();
         let task_id = task.id();
 
         let handle = tokio::spawn(async move {
             let start_at = Utc::now().naive_utc();
             let task_name = task.name().to_string();
-            tracing::info!(name = %task_name, "starting task");
-            let result = task.run(context.clone()).await;
-            tracing::info!(name = %task_name, "finished task");
+            info!(name = %task_name, "starting task");
+            let result = task.run(ctx.clone(), task_service).await;
+            info!(name = %task_name, "finished task");
 
             let end_at = Utc::now().naive_utc();
-            let state = match &result {
-                Ok(_) => db::TaskResultState::Completed,
-                Err(_) => db::TaskResultState::Failed,
+            let status = match &result {
+                Ok(_) => db::TaskResultStatus::Completed,
+                Err(_) => db::TaskResultStatus::Failed,
             };
 
             if let Err(e) = &result {
-                tracing::error!(task_id = %task_id, error = %e, "Task failed");
+                error!(task_id = %task_id, error = %e, "Task failed");
             }
 
             let task_result = db::TaskResult {
                 task_id,
                 start_at,
                 end_at,
-                state,
+                status,
             };
 
-            if let Err(e) = task_result.save(&context.db).await {
-                tracing::error!(task_id = %task_id, error = %e, "Failed to save task result");
+            if let Err(e) = task_result.save(&ctx.db).await {
+                error!(task_id = %task_id, error = %e, "Failed to save task result");
             }
         });
 
@@ -112,8 +102,8 @@ impl TaskHandler {
     pub fn stop(&mut self) {
         if let Some(handle) = self.handle.take() {
             handle.abort();
-            self.state = TaskState::Stopped;
-            tracing::info!(task_id = %self.task.id(), "Task stopped");
+            self.status = TaskStatus::Stopped;
+            info!(task_id = %self.task.id(), "Task stopped");
         }
     }
 }
@@ -122,18 +112,18 @@ impl TaskHandler {
 pub struct TaskService {
     scheduler: JobScheduler,
     tasks: Arc<Mutex<HashMap<Uuid, TaskHandler>>>,
-    context: TaskContext,
+    ctx: AppContext,
 }
 
 impl TaskService {
-    pub async fn new(context: TaskContext) -> Result<Self> {
+    pub async fn new(ctx: AppContext) -> Result<Self> {
         let scheduler = JobScheduler::new().await?;
         let tasks = Arc::new(Mutex::new(HashMap::new()));
 
         let service = Self {
             scheduler,
             tasks,
-            context: context,
+            ctx: ctx.clone(),
         };
 
         service
@@ -143,7 +133,7 @@ impl TaskService {
             .register_task(Arc::new(CatalogImportTask::default()))
             .await?;
 
-        let triggers = db::TaskTrigger::get_all(&service.context.db).await?;
+        let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {
             service.add_trigger(trigger).await?;
         }
@@ -168,15 +158,17 @@ impl TaskService {
         };
 
         let tasks = self.tasks.clone();
-        let context = self.context.clone();
+        let ctx = self.ctx.clone();
+        let task_service = self.clone();
 
-        let job = Job::new_async(cron.as_str(), move |_id, _lock| {
+        let job = Job::new_async(cron.as_str(), move |_uuid, _l| {
             let tasks = tasks.clone();
-            let context = context.clone();
+            let ctx = ctx.clone();
+            let task_service = task_service.clone();
 
             Box::pin(async move {
                 if let Some(handler) = tasks.lock().await.get_mut(&trigger.task_id) {
-                    handler.run(context);
+                    handler.run(ctx, task_service.into());
                 }
             })
         })?;
@@ -216,27 +208,30 @@ impl TaskService {
 
     pub async fn run_task(&self, task_id: Uuid) -> Result<()> {
         if let Some(handler) = self.tasks.lock().await.get_mut(&task_id) {
-            handler.run(self.context.clone());
+            handler.run(self.ctx.clone(), self.clone().into());
         }
         Ok(())
     }
 
     pub async fn run_startup_tasks(&self) -> Result<()> {
-        let triggers = db::TaskTrigger::get_all(&self.context.db).await?;
+        let triggers = db::TaskTrigger::get_all(&self.ctx.db).await?;
         let tasks = self.tasks.clone();
-        let context = self.context.clone();
+        let ctx = self.ctx.clone();
 
         for trigger in triggers {
             if trigger.kind == db::TaskTriggerKind::Startup {
                 let task_id = trigger.task_id;
                 let tasks_clone = tasks.clone();
-                let context = context.clone();
+                let ctx = ctx.clone();
 
-                tokio::spawn(async move {
-                    if let Some(handler) = tasks_clone.lock().await.get_mut(&task_id) {
-                        handler.run(context);
-                    } else {
-                        tracing::error!(task_id = %task_id, "Task handler not found for startup task");
+                tokio::spawn({
+                    let task_service = self.clone();
+                    async move {
+                        if let Some(handler) = tasks_clone.lock().await.get_mut(&task_id) {
+                            handler.run(ctx, task_service.into());
+                        } else {
+                            error!(task_id = %task_id, "Task handler not found for startup task");
+                        }
                     }
                 });
             }
@@ -268,15 +263,39 @@ impl Task for MediaScanTask {
     }
 
     fn name(&self) -> &str {
-        "Import Catalogs"
+        "Media Scan"
     }
 
     fn default_triggers(&self) -> Vec<db::TaskTrigger> {
         vec![]
     }
 
-    async fn run(self: Arc<Self>, context: TaskContext) -> Result<()> {
-      
+    async fn run(self: Arc<Self>, ctx: AppContext, _task_service: Arc<TaskService>) -> Result<()> {
+        let provider = AioMetaProvider {};
+        let media_list = db::Media::get_by_filter(
+            &ctx.db,
+            &db::MediaFilter {
+                kind: Some(vec![db::MediaKind::Movie]),
+                ..Default::default()
+            },
+        )
+        .await?
+        .records;
+
+        let updated_media = stream::iter(media_list)
+            .map(|media| {
+                let provider = &provider;
+                let ctx = ctx.clone();
+                async move { provider.apply(media, ctx).await }
+            })
+            .buffer_unordered(10)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<db::Media>>>()?;
+
+        db::Media::upsert(&ctx.db, &updated_media).await?;
+
         Ok(())
     }
 }
@@ -291,16 +310,15 @@ impl Task for CatalogImportTask {
     }
 
     fn name(&self) -> &str {
-        "Media scan"
+        "Catalog Import"
     }
 
     fn default_triggers(&self) -> Vec<db::TaskTrigger> {
         vec![]
     }
 
-    async fn run(self: Arc<Self>, context: TaskContext) -> Result<()> {
-        let manifest = context.aio.get_manifest().await?;
-
+    async fn run(self: Arc<Self>, ctx: AppContext, task_service: Arc<TaskService>) -> Result<()> {
+        let manifest = ctx.aio.get_manifest().await?;
         let start_time = Instant::now();
         let mut total_imported = 0;
 
@@ -311,23 +329,21 @@ impl Task for CatalogImportTask {
             .map(db::Media::from)
             .collect();
 
-        db::Media::upsert(&context.db, &media_items).await.unwrap();
+        db::Media::upsert(&ctx.db, &media_items).await?;
 
         info!("starting catalog import ({})", manifest.catalogs.len());
 
         for cat in manifest.catalogs {
             let aio_id = format!("{}:{}", cat.kind, cat.id);
 
-            // upsert category
             let mut media_cat = db::Media::get_by_filter(
-                &context.db,
+                &ctx.db,
                 &db::MediaFilter {
                     aio_id: Some(aio_id.clone()),
                     ..Default::default()
                 },
             )
-            .await
-            .unwrap()
+            .await?
             .records
             .first()
             .cloned()
@@ -339,10 +355,9 @@ impl Task for CatalogImportTask {
                 ..Default::default()
             });
 
-            media_cat.save(&context.db).await.unwrap();
+            media_cat.save(&ctx.db).await?;
 
-            let mut meta_stream =
-                context.aio.get_catalog_stream(&cat).await.chunks(900);
+            let mut meta_stream = ctx.aio.get_catalog_stream(&cat).await.chunks(900);
             let mut count = 0;
             while let Some(metas) = meta_stream.next().await {
                 let items: Vec<db::Media> = metas
@@ -355,17 +370,11 @@ impl Task for CatalogImportTask {
                             Vec::<db::Media>::new().into_iter()
                         }
                     })
-                    // .filter(|item| {
-                    //     matches!(
-                    //         item.kind,
-                    //         db::MediaKind::Movie | db::MediaKind::Series
-                    //     )
-                    // })
                     .collect();
 
                 if !items.is_empty() {
-                    if let Err(e) = db::Media::insert(&context.db, &items).await {
-                        tracing::error!("Failed to import chunk: {}", e);
+                    if let Err(e) = db::Media::insert(&ctx.db, &items).await {
+                        error!("Failed to import chunk: {}", e);
                     } else {
                         count += items.len();
                         total_imported += count;
@@ -384,6 +393,10 @@ impl Task for CatalogImportTask {
             "Import complete. Total media items imported: {}. Time taken: {:?}",
             total_imported, duration
         );
+
+        // Kick off MediaScanTask
+        let media_scan_task_id = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+        task_service.run_task(media_scan_task_id).await?;
 
         Ok(())
     }

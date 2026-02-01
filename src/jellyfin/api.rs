@@ -183,11 +183,11 @@ pub async fn users_authenticatebyname(
     auth_header: auth::JellyfinAuthHeader,
     Json(data): Json<jellyfin::AuthenticateUserByName>,
 ) -> Result<impl IntoResponse> {
-    let user = User::authenticate(&state.db, &data.username, &data.pw)
+    let user = User::authenticate(&state.ctx.db, &data.username, &data.pw)
         .await?
         .context_unauthorized("not found", "not foubd")?;
     let device = Device::new_from_header(auth_header, &user)?;
-    device.save(&state.db).await?;
+    device.save(&state.ctx.db).await?;
 
     Ok(Json(jellyfin::AuthenticationResult {
         access_token: Some(device.access_token),
@@ -213,7 +213,7 @@ pub async fn userviews(
     //}];
 
     let items = db::Media::get_by_filter(
-        &state.db,
+        &state.ctx.db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Catalog]),
             promoted: Some(true),
@@ -306,7 +306,7 @@ pub async fn get_items(
     let aio = session.aio;
 
     let parent = if let Some(parent_id) = q.parent_id.clone() {
-        db::Media::get_by_id(&state.db, &parent_id).await?
+        db::Media::get_by_id(&state.ctx.db, &parent_id).await?
     } else {
         None
     };
@@ -343,7 +343,7 @@ pub async fn get_items(
                 .into_iter()
                 .filter_map(|meta| match db::Media::try_from(meta.clone()) {
                     Ok(media) => {
-                        state.store.save(
+                        state.ctx.store.save(
                             media.id.clone(),
                             meta.clone(),
                             Duration::from_secs(360),
@@ -389,7 +389,7 @@ pub async fn get_items(
            // trace!(?q, "CATALOG");
 
             let mut result =
-                db::Media::get_by_jellyfin_filter(&state.db, &q, true).await?;
+                db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true).await?;
 
             return Ok(ItemsQueryResult {
                 total_count: result.total_count as i64,
@@ -400,7 +400,7 @@ pub async fn get_items(
         //  }
     }
     //trace!(?q, "get_items");
-    let mut result = db::Media::get_by_jellyfin_filter(&state.db, &q, false).await?;
+    let mut result = db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, false).await?;
 
     // handle details request
     if let Some(ids) = &q.ids {
@@ -410,7 +410,7 @@ pub async fn get_items(
                     Some(media.clone())
                 } else {
                     if let Some(meta) =
-                        state.store.get::<sdks::aio::Meta>(*ids.get(0).unwrap())
+                        state.ctx.store.get::<sdks::aio::Meta>(*ids.get(0).unwrap())
                     {
                         let mut media: db::Media = aio
                             .get_meta(meta.media_type.clone(), meta.id.clone())
@@ -418,9 +418,9 @@ pub async fn get_items(
                             .try_into()?;
 
                         // web client makes 2 simultenious request. So we get race conditions.
-                        if let Err(err) = media.save(&state.db).await {
+                        if let Err(err) = media.save(&state.ctx.db).await {
                             media = db::Media::get_by_filter(
-                                &state.db,
+                                &state.ctx.db,
                                 &db::MediaFilter {
                                     aio_id: media.aio_id.clone(),
 
@@ -446,8 +446,8 @@ pub async fn get_items(
                             f.contains(&jellyfin::ItemFields::MediaSources)
                         }))
                 {
-                    media.refresh_sources(&state.db, &state.aio).await?;
-                    media.sources(&state.db).await?;
+                    media.refresh_sources(&state.ctx.db, &state.ctx.aio).await?;
+                    media.sources(&state.ctx.db).await?;
 
                     if let Some(sources) = &media.sources {
                         trace!(streams_len = sources.len(), "sources");
@@ -628,7 +628,7 @@ pub async fn items_playbackinfo(
     //        .probe_in_place();
 
     //item.save(&session.item_store);
-    let media = db::Media::get_by_id(&state.db, &payload.media_source_id.unwrap_or(id))
+    let media = db::Media::get_by_id(&state.ctx.db, &payload.media_source_id.unwrap_or(id))
         .await?
         .context_not_found("not found", "not found")?;
 
@@ -735,13 +735,13 @@ pub async fn videos_stream(
     //let (id, media_type, stream_id) = utils::decode_media_token(&uuid)?;
     //  .log_err("Failed to decode media UUID")
 
-    let mut media = db::Media::get_by_id(&state.db, &q.media_source_id.unwrap_or(id))
+    let mut media = db::Media::get_by_id(&state.ctx.db, &q.media_source_id.unwrap_or(id))
         .await?
         .context_not_found("not found", "not found")?;
 
     if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
         media = media
-            .sources(&state.db)
+            .sources(&state.ctx.db)
             .await?
             .get(0)
             .context_not_found("not found", "not found")?

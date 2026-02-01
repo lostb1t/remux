@@ -112,7 +112,7 @@ impl TaskTrigger {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
-pub enum TaskResultState {
+pub enum TaskResultStatus {
     Completed,
     Failed,
     Stopped,
@@ -123,17 +123,17 @@ pub struct TaskResult {
     pub task_id: Uuid,
     pub start_at: NaiveDateTime,
     pub end_at: NaiveDateTime,
-    pub state: TaskResultState,
+    pub status: TaskResultStatus,
 }
 
 impl TaskResult {
-    pub fn new(task_id: Uuid, state: TaskResultState) -> Self {
+    pub fn new(task_id: Uuid, status: TaskResultStatus) -> Self {
         let now = Utc::now().naive_utc();
         Self {
             task_id,
             start_at: now,
             end_at: now,
-            state,
+            status,
         }
     }
 
@@ -142,17 +142,17 @@ impl TaskResult {
 
         sqlx::query!(
             r#"
-            INSERT INTO task_results (task_id, start_at, end_at, state)
+            INSERT INTO task_results (task_id, start_at, end_at, status)
             VALUES (?1, ?2, ?3, ?4)
             ON CONFLICT(task_id) DO UPDATE SET
                 start_at = excluded.start_at,
                 end_at   = excluded.end_at,
-                state    = excluded.state
+                status    = excluded.status
             "#,
             task_id,
             self.start_at,
             self.end_at,
-            self.state,
+            self.status,
         )
         .execute(db)
         .await?;
