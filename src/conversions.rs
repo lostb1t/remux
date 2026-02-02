@@ -98,7 +98,7 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             } else {
                 false
             },
-            //backdrop_image_tags: meta.background.clone().map(|url| vec![url]),
+            backdrop_image_tags: media.backdrop.clone().map(|url| vec![url]),
             // image_blur_hashes: Some(jellyfin::ImageBlurHashes {
             //     backdrop: {
             //         if let Some(img) = meta.background.clone() {
