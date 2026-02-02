@@ -350,7 +350,11 @@ impl Task for CatalogImportTask {
         info!("starting catalog import ({})", manifest.catalogs.len());
 
         for cat in manifest.catalogs {
-            let aio_id = format!("{}:{}", cat.kind, cat.id);
+               info!(
+               "Importing catalog {} {}",
+                cat.id, cat.kind
+            );  
+          let aio_id = format!("{}:{}", cat.kind, cat.id);
 
             let mut media_cat = db::Media::get_by_filter(
                 &ctx.db,
@@ -373,10 +377,10 @@ impl Task for CatalogImportTask {
 
             media_cat.save(&ctx.db).await?;
 
-            let mut meta_stream = ctx.aio.get_catalog_stream(&cat).await.chunks(900);
+            let mut meta_stream = ctx.aio.get_catalog_stream(&cat).await.chunks(500);
             let mut count = 0;
             while let Some(metas) = meta_stream.next().await {
-                let items: Vec<db::Media> = metas
+              let items: Vec<db::Media> = metas
                     .into_iter()
                     .unique_by(|meta| meta.id.clone())
                     .flat_map(|meta| match Vec::<db::Media>::try_from(meta) {
@@ -395,15 +399,19 @@ impl Task for CatalogImportTask {
                         count += items.len();
                         total_imported += count;
                     }
+                } else {
+                    drop(meta_stream);
+                    break;
                 }
 
                 if count > 1000 {
+                    drop(meta_stream);
                     break;
                 }
             }
 
             info!(
-                "Imported catalog {} | {} ({} items)",
+                "Finished Importing catalog {} | {} ({} items)",
                 cat.id, cat.kind, count
             );
         }

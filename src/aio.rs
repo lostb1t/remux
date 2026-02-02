@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 //use futures::{StreamExt, stream};
 use futures::stream::{self, Stream, StreamExt};
 use futures_util::TryStreamExt;
+use futures::future;
 use itertools::Itertools;
 use std::pin::Pin;
 use std::time::Duration;
@@ -209,45 +210,51 @@ impl AioService {
     }
 
     pub async fn get_catalog_stream(
-        &self,
-        cat: &sdks::aio::Catalog,
-    ) -> Pin<Box<dyn Stream<Item = sdks::aio::Meta> + Send>> {
-        let client = self.client.clone();
-        let kind = cat.kind.clone();
-        let id = cat.id.clone();
-        let mut page_size = 20;
+    &self,
+    cat: &sdks::aio::Catalog,
+) -> Pin<Box<dyn Stream<Item = sdks::aio::Meta> + Send>> {
+    let client = self.client.clone();
+    let kind = cat.kind.clone();
+    let id = cat.id.clone();
+    let mut page_size = 20;
 
-        let pages = stream::iter(0..999)
-            .map(move |page| {
-                let client = client.clone();
-                let kind = kind.clone();
-                let id = id.clone();
-                async move {
-                    client
-                        .execute(sdks::aio::CatalogEndpoint {
-                            kind,
-                            id,
-                            search: None,
-                            genre: None,
-                            skip: Some(page * page_size),
-                        })
-                        .await
+    let pages = stream::iter(0..999)
+        .map(move |page| {
+            let client = client.clone();
+            let kind = kind.clone();
+            let id = id.clone();
+            async move {
+                client
+                    .execute(sdks::aio::CatalogEndpoint {
+                        kind,
+                        id,
+                        search: None,
+                        genre: None,
+                        skip: Some(page * page_size),
+                    })
+                    .await
+            }
+        })
+        .buffer_unordered(10)
+        .take_while(|result| {
+            future::ready(
+                result
+                    .as_ref()
+                    .map(|response| !response.metas.is_empty())
+                    .unwrap_or(true),
+            )
+        })
+        .filter_map(|result| async move {
+            match result {
+                Ok(response) => Some(stream::iter(response.metas)),
+                Err(e) => {
+                    tracing::error!("Failed to fetch page: {}", e);
+                    None
                 }
-            })
-            .buffer_unordered(10);
+            }
+        })
+        .flatten();
 
-        let stream = pages
-            .filter_map(|result| async move {
-                match result {
-                    Ok(response) => Some(stream::iter(response.metas)),
-                    Err(e) => {
-                        tracing::error!("Failed to fetch page: {}", e);
-                        None
-                    }
-                }
-            })
-            .flatten();
-
-        Box::pin(stream)
-    }
+    Box::pin(pages)
+}
 }

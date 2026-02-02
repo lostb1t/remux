@@ -306,6 +306,8 @@ pub enum Status {
     // Returning Series
     #[serde(rename = "Returning Series")]
     ReturningSeries,
+    #[serde(rename = "In Production")]
+    InProduction,
 }
 
 #[skip_serializing_none]
