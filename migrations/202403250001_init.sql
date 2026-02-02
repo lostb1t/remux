@@ -102,3 +102,11 @@ CREATE TABLE task_results (
 
 CREATE INDEX idx_task_results_task_id
     ON task_results(task_id);
+    
+CREATE TABLE jellyfin_display_prefs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    client TEXT NOT NULL,
+    data TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);

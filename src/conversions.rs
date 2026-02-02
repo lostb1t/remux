@@ -15,6 +15,31 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::str::FromStr;
 
+
+
+impl From<db::JellyfinDisplayPrefs> for jellyfin::DisplayPreferencesDto {
+    fn from(prefs: db::JellyfinDisplayPrefs) -> Self {
+        let data = prefs.data;
+
+        Self {
+            id: Some(prefs.id),
+            view_type: data.view_type.clone(),
+            sort_by: data.sort_by.clone(),
+            index_by: data.index_by.clone(),
+            remember_indexing: data.remember_indexing,
+            primary_image_height: data.primary_image_height,
+            primary_image_width: data.primary_image_width,
+            custom_prefs: data.custom_prefs.clone(),
+            scroll_direction: data.scroll_direction.clone(),
+            show_backdrop: data.show_backdrop,
+            remember_sorting: data.remember_sorting,
+            sort_order: data.sort_order.clone(),
+            show_sidebar: data.show_sidebar,
+            client: prefs.client,
+        }
+    }
+}
+
 impl From<db::Media> for jellyfin::BaseItemDto {
     fn from(media: db::Media) -> Self {
         // dbg!(&meta);

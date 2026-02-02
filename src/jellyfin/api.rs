@@ -61,9 +61,7 @@ use tower::util::MapRequestLayer;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/users/authenticatebyname", post(users_authenticatebyname))
         .route("/system/info/public", get(system_info_public))
-        .route("/users/public", get(system_info_public))
         .route("/system/ping", get(system_ping))
         .route("/system/endpoint", get(system_endpoint))
         .route("/userviews", get(userviews))
@@ -81,7 +79,10 @@ pub fn routes() -> Router<AppState> {
         .route("/items/{id}", get(items_get))
         .route("/items/{id}/playbackinfo", post(items_playbackinfo))
         .route("/items/filters", get(items_filters))
+        .route("/users", get(users))
+                .route("/users/public", get(system_info_public))
         .route("/users/me", get(users_me))
+                .route("/users/authenticatebyname", post(users_authenticatebyname))
         .route("/users/{user_id}", get(users_me))
         .route("/users/{user_id}/items", get(items))
         .route("/users/{user_id}/items/latest", get(items_flat))
@@ -93,7 +94,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/videos/{id}/stream", get(videos_stream))
         .route("/playback/bitratetest", get(playback_bitratetest))
-        .route("/displaypreferences/usersettings", get(user_settings))
+        .route("/displaypreferences/{id}", get(get_display_preferences))
         .route("/system/info", get(system_info))
         // .route("/videos/master.m3u8", get(master_hls))
         // stubs. to implement
@@ -171,11 +172,45 @@ pub async fn user_configuration_update(
     Ok(Json(jellyfin::UserConfiguration::default()))
 }
 
-pub async fn user_settings(State(state): State<AppState>) -> Result<impl IntoResponse> {
-    Ok(Json(jellyfin::DisplayPreferencesDto {
-        id: Some("test".to_string()),
-        ..Default::default()
-    }))
+#[derive(Deserialize)]
+struct DisplayPrefQuery {
+    user_id: Option<Uuid>,
+    client: String,
+}
+
+pub async fn get_display_preferences(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(id): Path<String>,
+    Query(q): Query<DisplayPrefQuery>
+) -> Result<impl IntoResponse> {
+    let user = if let Some(user_id) = q.user_id {
+        db::User::get_by_id(&state.ctx.db, &user_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("User not found"))?
+    } else {
+        session.user
+    };
+
+    let result = db::JellyfinDisplayPrefs::get_by_filter(
+        &state.ctx.db,
+        &db::JellyfinDisplayPrefsFilter {
+          id: Some(vec![id]), 
+          client: Some(q.client.clone()),
+          user_id: Some(user.id),
+          ..Default::default()
+        },
+    )
+    .await?;
+
+    let prefs = if let Some(record) = result.records.first() {
+    record.clone()
+} else {
+    db::JellyfinDisplayPrefs::default()
+};
+
+
+    Ok(Json(jellyfin::DisplayPreferencesDto::from(prefs)))
 }
 
 pub async fn users_authenticatebyname(
@@ -195,6 +230,31 @@ pub async fn users_authenticatebyname(
         user: Some(user.into()),
         ..Default::default()
     }))
+}
+
+pub async fn users(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    let items = db::User::get_by_filter(
+        &state.ctx.db,
+        &db::UserFilter {
+          ..Default::default()
+        }
+    )
+    .await?
+    .records
+    .into_iter()
+    .map(|x| {
+        let mut item: jellyfin::UserDto = x.into();
+        //item.type_ = jellyfin::MediaType::CollectionFolder;
+        //item.collection_type = Some(jellyfin::CollectionType::Movies);
+        item
+    })
+    .collect::<Vec<jellyfin::UserDto>>();
+
+
+    Ok(Json(items))
 }
 
 /// This sbould hold dynamic collections
@@ -816,6 +876,8 @@ pub async fn videos_stream(
 
     todo!();
 }
+
+
 
 pub async fn users_me(
     State(state): State<AppState>,

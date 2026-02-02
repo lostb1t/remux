@@ -217,7 +217,7 @@ impl AioService {
         let id = cat.id.clone();
         let mut page_size = 20;
 
-        let pages = stream::iter(0..10)
+        let pages = stream::iter(0..999)
             .map(move |page| {
                 let client = client.clone();
                 let kind = kind.clone();

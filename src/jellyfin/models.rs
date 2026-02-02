@@ -506,10 +506,10 @@ pub struct DisplayPreferencesDto {
     pub primary_image_height: Option<i64>,
     pub primary_image_width: Option<i64>,
     pub custom_prefs: Option<HashMap<String, Option<String>>>,
-    pub scroll_direction: Option<ScrollDirection>,
+    pub scroll_direction: Option<String>,
     pub show_backdrop: Option<bool>,
     pub remember_sorting: Option<bool>,
-    pub sort_order: Option<SortOrder>,
+    pub sort_order: Option<String>,
     pub show_sidebar: Option<bool>,
     pub client: Option<String>,
 }
@@ -550,17 +550,20 @@ impl Default for DisplayPreferencesDto {
             primary_image_height: Some(250),
             primary_image_width: Some(250),
             custom_prefs: Some(custom_prefs),
-            scroll_direction: Some(ScrollDirection::Horizontal),
+            scroll_direction: Some(ScrollDirection::Horizontal.to_string()),
             show_backdrop: Some(true),
             remember_sorting: Some(false),
-            sort_order: Some(SortOrder::Ascending),
+            sort_order: Some(SortOrder::Ascending.to_string()),
             show_sidebar: Some(false),
             client: Some("emby".into()),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(
+    strum_macros::EnumString,
+    strum_macros::Display,
+Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum ScrollDirection {
     Horizontal,

@@ -380,6 +380,10 @@ impl Task for CatalogImportTask {
                         total_imported += count;
                     }
                 }
+                
+                if count > 1000 {
+                  break;
+                }
             }
 
             info!(

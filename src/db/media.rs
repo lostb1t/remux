@@ -1,4 +1,4 @@
-use super::FilterResult;
+use super::{FilterResult, QueryBuilderExt};
 use crate::aio;
 use crate::jellyfin;
 use crate::sdks;
@@ -693,41 +693,7 @@ impl Media {
     }
 }
 
-trait QueryBuilderExt<'q> {
-    fn push_in<T>(&mut self, column: &str, values: &'q Vec<T>)
-    where
-        T: Send
-            + Sync
-            + for<'a> sqlx::Encode<'a, sqlx::Sqlite>
-            + sqlx::Type<sqlx::Sqlite>
-            + 'q;
-}
 
-impl<'q> QueryBuilderExt<'q> for sqlx::QueryBuilder<'q, sqlx::Sqlite> {
-    fn push_in<T>(&mut self, column: &str, values: &'q Vec<T>)
-    where
-        T: Send
-            + Sync
-            + for<'a> sqlx::Encode<'a, sqlx::Sqlite>
-            + sqlx::Type<sqlx::Sqlite>
-            + 'q,
-    {
-        if values.is_empty() {
-            return;
-        };
-
-        self.push(" AND ");
-        self.push(column);
-        self.push(" IN (");
-
-        let mut separated = self.separated(", ");
-        for v in values {
-            separated.push_bind(v);
-        }
-
-        self.push(")");
-    }
-}
 
 impl From<sdks::aio::Catalog> for Media {
     fn from(source: sdks::aio::Catalog) -> Self {
