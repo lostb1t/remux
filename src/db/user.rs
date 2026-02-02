@@ -1,9 +1,6 @@
-use axum::response::Html;
-use reqwest;
 use super::{FilterResult, QueryBuilderExt};
 use crate::sdks;
 use crate::utils::get_uuid;
-use sqlx::Row;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -21,6 +18,7 @@ use axum::extract::Request;
 use axum::http::request::Parts;
 use axum::middleware;
 use axum::middleware::Next;
+use axum::response::Html;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::{
@@ -40,9 +38,11 @@ use config::Config;
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
+use reqwest;
 use reqwest::header::LOCATION;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::Row;
 use sqlx::SqlitePool;
 use std;
 use std::collections::HashMap;
@@ -173,48 +173,51 @@ impl User {
             ..Default::default()
         })
     }
-    
+
     pub async fn get_by_filter(
-    db: &sqlx::SqlitePool,
-    filter: &UserFilter,
-) -> Result<FilterResult<User>> {
-    let mut count_qb = sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM auth_users WHERE 1=1");
-    let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM auth_users WHERE 1=1");
+        db: &sqlx::SqlitePool,
+        filter: &UserFilter,
+    ) -> Result<FilterResult<User>> {
+        let mut count_qb = sqlx::QueryBuilder::new(
+            "SELECT COUNT(*) as count FROM auth_users WHERE 1=1",
+        );
+        let mut records_qb =
+            sqlx::QueryBuilder::new("SELECT * FROM auth_users WHERE 1=1");
 
-    for qb in [&mut count_qb, &mut records_qb] {
-        if let Some(id) = &filter.id {
+        for qb in [&mut count_qb, &mut records_qb] {
+            if let Some(id) = &filter.id {
                 qb.push_in("id", &id);
-         }
-        if let Some(username) = &filter.username {
-            qb.push(" AND username = ").push_bind(username);
+            }
+            if let Some(username) = &filter.username {
+                qb.push(" AND username = ").push_bind(username);
+            }
         }
-    }
 
-    if let Some(limit) = &filter.limit {
-        records_qb.push(" LIMIT ").push_bind(limit);
-    }
-
-    if let Some(offset) = &filter.offset {
-        records_qb.push(" OFFSET ").push_bind(offset);
-    }
-
-    let (count, records) = tokio::join!(
-        async {
-            let query = count_qb.build();
-            let row = query.fetch_one(db).await;
-            row.map(|r| r.get::<i64, _>(0) as usize)
-        },
-        async {
-            let query = records_qb.build_query_as::<User>();
-            query.fetch_all(db).await
+        if let Some(limit) = &filter.limit {
+            records_qb.push(" LIMIT ").push_bind(limit);
         }
-    );
 
-    Ok(FilterResult {
-        records: records?,
-        total_count: if filter.total_count { count? } else { 0 },
-    })
-}
+        if let Some(offset) = &filter.offset {
+            records_qb.push(" OFFSET ").push_bind(offset);
+        }
+
+        let (count, records) = tokio::join!(
+            async {
+                let query = count_qb.build();
+                let row = query.fetch_one(db).await;
+                row.map(|r| r.get::<i64, _>(0) as usize)
+            },
+            async {
+                let query = records_qb.build_query_as::<User>();
+                query.fetch_all(db).await
+            }
+        );
+
+        Ok(FilterResult {
+            records: records?,
+            total_count: if filter.total_count { count? } else { 0 },
+        })
+    }
 
     pub fn set_password(&mut self, password: &str) -> Result<()> {
         self.password_hash = Self::hash_password(password)?;
@@ -259,8 +262,8 @@ impl User {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct CustomData {
     pub id: String,
-   // #[serde(with = "serde_json")]
-   // pub data: Json
+    // #[serde(with = "serde_json")]
+    // pub data: Json
     //pub data: Option<HashMap<String, Option<String>>>,
 }
 
@@ -276,7 +279,7 @@ pub struct UserMediaInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct HomeSection {
     pub order: i64,
-    pub kind: String
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -293,7 +296,7 @@ pub struct JellyfinDisplayPrefsData {
     pub remember_sorting: Option<bool>,
     pub sort_order: Option<String>,
     pub show_sidebar: Option<bool>,
-    pub home_sections: Option<Vec<HomeSection>>
+    pub home_sections: Option<Vec<HomeSection>>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -301,7 +304,7 @@ pub struct JellyfinDisplayPrefs {
     pub id: String,
     pub user_id: Uuid,
     pub client: Option<String>,
-    pub data: sqlx::types::Json<JellyfinDisplayPrefsData>
+    pub data: sqlx::types::Json<JellyfinDisplayPrefsData>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -309,54 +312,57 @@ pub struct JellyfinDisplayPrefsFilter {
     pub id: Option<Vec<String>>,
     pub user_id: Option<Uuid>,
     pub client: Option<String>,
-        pub limit: Option<u32>,
+    pub limit: Option<u32>,
     pub offset: Option<u32>,
-        pub total_count: bool,
+    pub total_count: bool,
 }
 
 impl JellyfinDisplayPrefs {
     pub async fn get_by_filter(
-    db: &sqlx::SqlitePool,
-    filter: &JellyfinDisplayPrefsFilter,
-) -> Result<FilterResult<Self>> {
-    let mut count_qb = sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM jellyfin_display_prefs WHERE 1=1");
-    let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM jellyfin_display_prefs WHERE 1=1");
+        db: &sqlx::SqlitePool,
+        filter: &JellyfinDisplayPrefsFilter,
+    ) -> Result<FilterResult<Self>> {
+        let mut count_qb = sqlx::QueryBuilder::new(
+            "SELECT COUNT(*) as count FROM jellyfin_display_prefs WHERE 1=1",
+        );
+        let mut records_qb =
+            sqlx::QueryBuilder::new("SELECT * FROM jellyfin_display_prefs WHERE 1=1");
 
-    for qb in [&mut count_qb, &mut records_qb] {
-        if let Some(id) = &filter.id {
+        for qb in [&mut count_qb, &mut records_qb] {
+            if let Some(id) = &filter.id {
                 qb.push_in("id", &id);
-         }
-        if let Some(client) = &filter.client {
-            qb.push(" AND client = ").push_bind(client);
+            }
+            if let Some(client) = &filter.client {
+                qb.push(" AND client = ").push_bind(client);
+            }
+            if let Some(user_id) = &filter.user_id {
+                qb.push(" AND user_id = ").push_bind(user_id);
+            }
         }
-        if let Some(user_id) = &filter.user_id {
-            qb.push(" AND user_id = ").push_bind(user_id);
+
+        if let Some(limit) = &filter.limit {
+            records_qb.push(" LIMIT ").push_bind(limit);
         }
-    }
 
-    if let Some(limit) = &filter.limit {
-        records_qb.push(" LIMIT ").push_bind(limit);
-    }
-
-    if let Some(offset) = &filter.offset {
-        records_qb.push(" OFFSET ").push_bind(offset);
-    }
-
-    let (count, records) = tokio::join!(
-        async {
-            let query = count_qb.build();
-            let row = query.fetch_one(db).await;
-            row.map(|r| r.get::<i64, _>(0) as usize)
-        },
-        async {
-            let query = records_qb.build_query_as::<Self>();
-            query.fetch_all(db).await
+        if let Some(offset) = &filter.offset {
+            records_qb.push(" OFFSET ").push_bind(offset);
         }
-    );
 
-    Ok(FilterResult {
-        records: records?,
-        total_count: if filter.total_count { count? } else { 0 },
-    })
-}
+        let (count, records) = tokio::join!(
+            async {
+                let query = count_qb.build();
+                let row = query.fetch_one(db).await;
+                row.map(|r| r.get::<i64, _>(0) as usize)
+            },
+            async {
+                let query = records_qb.build_query_as::<Self>();
+                query.fetch_all(db).await
+            }
+        );
+
+        Ok(FilterResult {
+            records: records?,
+            total_count: if filter.total_count { count? } else { 0 },
+        })
+    }
 }

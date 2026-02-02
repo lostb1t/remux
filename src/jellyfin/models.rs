@@ -563,11 +563,24 @@ impl Default for DisplayPreferencesDto {
 #[derive(
     strum_macros::EnumString,
     strum_macros::Display,
-Debug, Clone, Serialize, Deserialize)]
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+)]
 #[serde(rename_all = "PascalCase")]
 pub enum ScrollDirection {
     Horizontal,
     Vertical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageType {
+    Primary,
+    Backdrop,
+    Logo,
+    Thumb,
 }
 
 #[skip_serializing_none]

@@ -304,7 +304,7 @@ pub enum Status {
     Continuing,
     Ended,
     // Returning Series
-     #[serde(rename = "Returning Series")]
+    #[serde(rename = "Returning Series")]
     ReturningSeries,
 }
 
@@ -346,7 +346,7 @@ pub struct Meta {
     pub episode: Option<i64>,
     pub season: Option<i64>,
     pub season_posters: Option<Vec<String>>,
-    
+
     // this can be a range 2012-2015
     // #[serde(deserialize_with = "deserialize_string_from_number")]
     //pub release_info: String,
@@ -417,8 +417,6 @@ impl Meta {
             .collect()
     }
 }
-
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {

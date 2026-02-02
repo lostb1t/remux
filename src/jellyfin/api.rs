@@ -80,9 +80,9 @@ pub fn routes() -> Router<AppState> {
         .route("/items/{id}/playbackinfo", post(items_playbackinfo))
         .route("/items/filters", get(items_filters))
         .route("/users", get(users))
-                .route("/users/public", get(system_info_public))
+        .route("/users/public", get(system_info_public))
         .route("/users/me", get(users_me))
-                .route("/users/authenticatebyname", post(users_authenticatebyname))
+        .route("/users/authenticatebyname", post(users_authenticatebyname))
         .route("/users/{user_id}", get(users_me))
         .route("/users/{user_id}/items", get(items))
         .route("/users/{user_id}/items/latest", get(items_flat))
@@ -182,7 +182,7 @@ pub async fn get_display_preferences(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(id): Path<String>,
-    Query(q): Query<DisplayPrefQuery>
+    Query(q): Query<DisplayPrefQuery>,
 ) -> Result<impl IntoResponse> {
     let user = if let Some(user_id) = q.user_id {
         db::User::get_by_id(&state.ctx.db, &user_id)
@@ -195,20 +195,19 @@ pub async fn get_display_preferences(
     let result = db::JellyfinDisplayPrefs::get_by_filter(
         &state.ctx.db,
         &db::JellyfinDisplayPrefsFilter {
-          id: Some(vec![id]), 
-          client: Some(q.client.clone()),
-          user_id: Some(user.id),
-          ..Default::default()
+            id: Some(vec![id]),
+            client: Some(q.client.clone()),
+            user_id: Some(user.id),
+            ..Default::default()
         },
     )
     .await?;
 
     let prefs = if let Some(record) = result.records.first() {
-    record.clone()
-} else {
-    db::JellyfinDisplayPrefs::default()
-};
-
+        record.clone()
+    } else {
+        db::JellyfinDisplayPrefs::default()
+    };
 
     Ok(Json(jellyfin::DisplayPreferencesDto::from(prefs)))
 }
@@ -239,8 +238,8 @@ pub async fn users(
     let items = db::User::get_by_filter(
         &state.ctx.db,
         &db::UserFilter {
-          ..Default::default()
-        }
+            ..Default::default()
+        },
     )
     .await?
     .records
@@ -252,7 +251,6 @@ pub async fn users(
         item
     })
     .collect::<Vec<jellyfin::UserDto>>();
-
 
     Ok(Json(items))
 }
@@ -446,7 +444,7 @@ pub async fn get_items(
             q.include_item_types =
                 Some(vec![parent.catalog_media_kind_enum().unwrap().into()]);
             //             q.include_item_types = Some(vec![jellyfin::MediaType::Movie]);
-           // trace!(?q, "CATALOG");
+            // trace!(?q, "CATALOG");
 
             let mut result =
                 db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true).await?;
@@ -460,7 +458,8 @@ pub async fn get_items(
         //  }
     }
     //trace!(?q, "get_items");
-    let mut result = db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, false).await?;
+    let mut result =
+        db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, false).await?;
 
     // handle details request
     if let Some(ids) = &q.ids {
@@ -637,20 +636,14 @@ pub async fn user_image(
 }
 
 #[derive(Deserialize)]
-enum ImageType {
-    Primary,
-}
-
-#[derive(Deserialize)]
 struct ImagePath {
-    id: String,
-    image_type: String,
+    id: Uuid,
+    image_type: jellyfin::ImageType,
     index: Option<usize>,
 }
 
 pub async fn items_images(
     State(state): State<AppState>,
-    // session: auth::AuthSession,
     Path(ImagePath {
         id,
         image_type,
@@ -658,16 +651,22 @@ pub async fn items_images(
     }): Path<ImagePath>,
     Query(q): Query<jellyfin::ImageQuery>,
 ) -> Result<impl IntoResponse> {
-    // trace!(%media_id.id, %image_type, ?index, ?q, "items_images");
-
-    // we replace tags with urls so use that first.
-    let mut url = q.tag;
-
-    if url.is_none() {
-        url = Some("https://placehold.co/600x400".to_string());
+    // If a tag is provided, use it directly as the URL
+    if let Some(url) = q.tag {
+        return Ok(Redirect::temporary(url.as_str()));
     }
 
-    Ok(Redirect::temporary(url.unwrap().as_str()))
+    let media = db::Media::get_by_id(&state.ctx.db, &id).await?.unwrap();
+
+    let url = match image_type {
+        jellyfin::ImageType::Primary => media.poster,
+        jellyfin::ImageType::Backdrop => media.backdrop,
+        jellyfin::ImageType::Logo => media.logo,
+        jellyfin::ImageType::Thumb => media.poster,
+    }
+    .unwrap_or_else(|| "https://placehold.co/600x400".to_string());
+
+    Ok(Redirect::temporary(url.as_str()))
 }
 
 pub async fn items_playbackinfo(
@@ -688,9 +687,10 @@ pub async fn items_playbackinfo(
     //        .probe_in_place();
 
     //item.save(&session.item_store);
-    let media = db::Media::get_by_id(&state.ctx.db, &payload.media_source_id.unwrap_or(id))
-        .await?
-        .context_not_found("not found", "not found")?;
+    let media =
+        db::Media::get_by_id(&state.ctx.db, &payload.media_source_id.unwrap_or(id))
+            .await?
+            .context_not_found("not found", "not found")?;
 
     //let stream = id
     //    .stream
@@ -795,9 +795,10 @@ pub async fn videos_stream(
     //let (id, media_type, stream_id) = utils::decode_media_token(&uuid)?;
     //  .log_err("Failed to decode media UUID")
 
-    let mut media = db::Media::get_by_id(&state.ctx.db, &q.media_source_id.unwrap_or(id))
-        .await?
-        .context_not_found("not found", "not found")?;
+    let mut media =
+        db::Media::get_by_id(&state.ctx.db, &q.media_source_id.unwrap_or(id))
+            .await?
+            .context_not_found("not found", "not found")?;
 
     if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
         media = media
@@ -876,8 +877,6 @@ pub async fn videos_stream(
 
     todo!();
 }
-
-
 
 pub async fn users_me(
     State(state): State<AppState>,

@@ -1,21 +1,23 @@
+use anyhow::{Context, Result, anyhow};
+use async_trait::async_trait;
+use chrono::Utc;
+use futures::stream::{self, StreamExt};
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio_cron_scheduler::{Job, JobScheduler};
 use tokio_cron_scheduler::job::JobId;
-use anyhow::{Result, anyhow, Context};
-use async_trait::async_trait;
-use chrono::Utc;
+use tokio_cron_scheduler::{Job, JobScheduler};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 use uuid::uuid;
-use futures::stream::{self, StreamExt};
-use itertools::Itertools;
-use tracing::{info, warn, error};
 
 // Assuming these are imported from your project:
-use crate::{db, aio, AppContext, meta_provider::MetaProvider, meta_provider::AioMetaProvider};
+use crate::{
+    AppContext, aio, db, meta_provider::AioMetaProvider, meta_provider::MetaProvider,
+};
 
 #[derive(Debug)]
 pub enum TaskStatus {
@@ -31,7 +33,11 @@ pub trait Task: Send + Sync {
     fn name(&self) -> &str;
     fn default_triggers(&self) -> Vec<db::TaskTrigger>;
 
-    async fn run(self: Arc<Self>, ctx: AppContext, task_service: Arc<TaskService>) -> Result<()>;
+    async fn run(
+        self: Arc<Self>,
+        ctx: AppContext,
+        task_service: Arc<TaskService>,
+    ) -> Result<()>;
 }
 
 pub struct TaskHandler {
@@ -227,7 +233,9 @@ impl TaskService {
                 tokio::spawn({
                     let task_service = self.clone();
                     async move {
-                        if let Some(handler) = tasks_clone.lock().await.get_mut(&task_id) {
+                        if let Some(handler) =
+                            tasks_clone.lock().await.get_mut(&task_id)
+                        {
                             handler.run(ctx, task_service.into());
                         } else {
                             error!(task_id = %task_id, "Task handler not found for startup task");
@@ -270,7 +278,11 @@ impl Task for MediaScanTask {
         vec![]
     }
 
-    async fn run(self: Arc<Self>, ctx: AppContext, _task_service: Arc<TaskService>) -> Result<()> {
+    async fn run(
+        self: Arc<Self>,
+        ctx: AppContext,
+        _task_service: Arc<TaskService>,
+    ) -> Result<()> {
         let provider = AioMetaProvider {};
         let media_list = db::Media::get_by_filter(
             &ctx.db,
@@ -317,7 +329,11 @@ impl Task for CatalogImportTask {
         vec![]
     }
 
-    async fn run(self: Arc<Self>, ctx: AppContext, task_service: Arc<TaskService>) -> Result<()> {
+    async fn run(
+        self: Arc<Self>,
+        ctx: AppContext,
+        task_service: Arc<TaskService>,
+    ) -> Result<()> {
         let manifest = ctx.aio.get_manifest().await?;
         let start_time = Instant::now();
         let mut total_imported = 0;
@@ -380,9 +396,9 @@ impl Task for CatalogImportTask {
                         total_imported += count;
                     }
                 }
-                
+
                 if count > 1000 {
-                  break;
+                    break;
                 }
             }
 

@@ -15,8 +15,6 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::str::FromStr;
 
-
-
 impl From<db::JellyfinDisplayPrefs> for jellyfin::DisplayPreferencesDto {
     fn from(prefs: db::JellyfinDisplayPrefs) -> Self {
         let data = prefs.data;
@@ -247,8 +245,6 @@ impl From<aio::Catalog> for jellyfin::BaseItemDto {
         }
     }
 }
-
-
 
 impl From<aio::MediaType> for jellyfin::MediaType {
     fn from(kind: aio::MediaType) -> Self {

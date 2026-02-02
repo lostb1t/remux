@@ -693,8 +693,6 @@ impl Media {
     }
 }
 
-
-
 impl From<sdks::aio::Catalog> for Media {
     fn from(source: sdks::aio::Catalog) -> Self {
         Media {
@@ -764,7 +762,7 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
     type Error = anyhow::Error;
     fn try_from(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
         let imdb_id = meta.imdb_id.clone().context("imdb_id is missing")?;
-        
+
         let media: Media = meta.clone().try_into()?;
 
         let mut media_instances = Vec::new();

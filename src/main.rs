@@ -79,9 +79,8 @@ mod utils;
 mod aio;
 mod db;
 mod jellyfin;
-mod tasks;
 mod meta_provider;
-
+mod tasks;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -152,22 +151,21 @@ async fn main() -> Result<()> {
 
         media.save(&conn).await?;
     }
-    
+
     let ctx = AppContext {
-    config: settings.clone(),
-    db: conn.clone(),
-    aio: aio::AioService::from_url(&settings.aio_url)?,
-    store: store::Store::new(100000),
-  };
+        config: settings.clone(),
+        db: conn.clone(),
+        aio: aio::AioService::from_url(&settings.aio_url)?,
+        store: store::Store::new(100000),
+    };
 
+    let task_service = tasks::TaskService::new(ctx.clone()).await?;
+    task_service.run_startup_tasks().await?;
 
-let task_service = tasks::TaskService::new(ctx.clone()).await?;
-task_service.run_startup_tasks().await?;
-
-let state = AppState {
-    ctx: ctx.clone(),
-    tasks: task_service,
-};  
+    let state = AppState {
+        ctx: ctx.clone(),
+        tasks: task_service,
+    };
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
