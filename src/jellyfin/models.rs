@@ -239,40 +239,43 @@ where
             .split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|s| match s.parse::<ItemFields>() {
-                Ok(v) => Ok(v),
-                Err(e) => {
-                    tracing::error!(
-                        value = %s,
-                        error = ?e,
-                        "ItemFields parse failed"
-                    );
-                    Err(e)
+            .filter_map(|s| {
+                match s.parse::<ItemFields>() {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::warn!(
+                            value = %s,
+                            error = ?e,
+                            "ItemFields parse failed, ignoring value"
+                        );
+                        None
+                    }
                 }
             })
-            .collect::<Result<Vec<_>, _>>(),
+            .collect::<Vec<_>>(),
 
         Some(FieldInput::Multiple(ss)) => ss
             .iter()
             .flat_map(|s| s.split(','))
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|s| match s.parse::<ItemFields>() {
-                Ok(v) => Ok(v),
-                Err(e) => {
-                    tracing::error!(
-                        value = %s,
-                        error = ?e,
-                        "ItemFields parse failed"
-                    );
-                    Err(e)
+            .filter_map(|s| {
+                match s.parse::<ItemFields>() {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::warn!(
+                            value = %s,
+                            error = ?e,
+                            "ItemFields parse failed, ignoring value"
+                        );
+                        None
+                    }
                 }
             })
-            .collect::<Result<Vec<_>, _>>(),
+            .collect::<Vec<_>>(),
 
         None => return Ok(None),
-    }
-    .map_err(serde::de::Error::custom)?;
+    };
 
     Ok(Some(fields))
 }
