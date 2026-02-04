@@ -52,9 +52,9 @@ services:
 - trailers
 - anything persistant like continue watching etc
 
-### Whats missing
+### Development
 
-install cargo make
+Install cargo make
 
 ```
 cargo install --force cargo-make
