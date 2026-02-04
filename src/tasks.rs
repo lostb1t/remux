@@ -358,7 +358,7 @@ impl Task for CatalogImportTask {
                 title: cat.name.clone(),
                 kind: db::MediaKind::Catalog,
                 aio_id: Some(aio_id),
-                catalog_kind: Some(db::CatalogKind::Manual.to_string()),
+                catalog_kind: Some(db::CatalogKind::Manual),
                 ..Default::default()
             });
 

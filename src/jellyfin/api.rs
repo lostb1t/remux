@@ -452,7 +452,7 @@ pub async fn get_items(
             // if parent.promoted {
             q.parent_id = None;
 
-            if let Some(kind) = parent.catalog_media_kind_enum() {
+            if let Some(kind) = parent.catalog_media_kind.clone() {
                 q.include_item_types = Some(vec![kind.into()]);
             } else {
                 q.include_item_types = Some(vec![

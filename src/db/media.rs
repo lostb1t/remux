@@ -246,7 +246,7 @@ pub struct Media {
     // catalog
     pub promoted: i64,
     // CatalogKind
-    pub catalog_kind: Option<String>,
+    pub catalog_kind: Option<CatalogKind>,
     // MediaKind
     pub catalog_media_kind: Option<MediaKind>,
 }
@@ -271,19 +271,7 @@ pub enum MediaError {
 }
 
 impl Media {
-    pub fn catalog_kind_enum(&self) -> Option<CatalogKind> {
-        match self.catalog_kind.clone() {
-            Some(s) => CatalogKind::try_from(s).ok(),
-            None => None,
-        }
-    }
-
-    pub fn catalog_media_kind_enum(&self) -> Option<MediaKind> {
-        match self.catalog_media_kind.clone() {
-            Some(s) => MediaKind::try_from(s).ok(),
-            None => None,
-        }
-    }
+  
 
     pub fn is_promoted(&self) -> bool {
         match self.promoted {

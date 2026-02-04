@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
             kind: db::MediaKind::Catalog,
             //aio_id: u.id,
             catalog_media_kind: Some(u.media_kind),
-            catalog_kind: Some(db::CatalogKind::Smart.to_string()),
+            catalog_kind: Some(db::CatalogKind::Smart),
             promoted: 1,
             ..Default::default()
         };
