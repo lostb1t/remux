@@ -35,6 +35,7 @@ use chrono::prelude::*;
 use chrono::{Duration, Utc};
 use config;
 use config::Config;
+use default2;
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
@@ -282,20 +283,26 @@ pub struct HomeSection {
     pub kind: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct JellyfinDisplayPrefsData {
     pub view_type: Option<String>,
     pub sort_by: Option<String>,
     pub index_by: Option<String>,
-    pub remember_indexing: Option<bool>,
-    pub primary_image_height: Option<i64>,
-    pub primary_image_width: Option<i64>,
+    #[default(false)]
+    pub remember_indexing: bool,
+    #[default(250)]
+    pub primary_image_height: i64,
+    #[default(250)]
+    pub primary_image_width: i64,
     pub custom_prefs: Option<HashMap<String, Option<String>>>,
-    pub scroll_direction: Option<String>,
-    pub show_backdrop: Option<bool>,
-    pub remember_sorting: Option<bool>,
-    pub sort_order: Option<String>,
-    pub show_sidebar: Option<bool>,
+    #[default("Horizontal".to_string())]
+    pub scroll_direction: String,
+    #[default(true)]
+    pub show_backdrop: bool,
+    pub remember_sorting: bool,
+    #[default("Ascending".to_string())]
+    pub sort_order: String,
+    pub show_sidebar: bool,
     pub home_sections: Option<Vec<HomeSection>>,
 }
 

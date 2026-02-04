@@ -84,7 +84,7 @@ reqwest-tracing = "0.5.8"
 serde_urlencoded = "0.7.1"
 config = "0.15.19"
 #ez-ffmpeg = { version = "0.6.0" }
-serde-aux = "0.5.1"
+serde-aux = "4.7.0"
 sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "uuid", "chrono" ] }
 argon2 = { version = "0.5.3", default-features = true}
 # argo depends on 0,8

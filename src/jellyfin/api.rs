@@ -38,6 +38,7 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
+use uuid::uuid;
 
 //use crate::db;
 //use anyhow::Result;
@@ -206,7 +207,10 @@ pub async fn get_display_preferences(
     let prefs = if let Some(record) = result.records.first() {
         record.clone()
     } else {
-        db::JellyfinDisplayPrefs::default()
+        db::JellyfinDisplayPrefs {
+            client: Some(q.client),
+            ..Default::default()
+        }
     };
 
     Ok(Json(jellyfin::DisplayPreferencesDto::from(prefs)))
@@ -262,18 +266,10 @@ pub async fn userviews(
 ) -> Result<impl IntoResponse> {
     let manifest = session.aio.get_manifest().await?;
 
-    //let mut items = vec![jellyfin::BaseItemDto {
-    //     name: Some("Collections".to_string()),
-    //    id: state.config.collection_id.clone(),
-    //    collection_type: Some(jellyfin::CollectionType::Boxsets),
-    //    is_folder: true,
-    //    ..Default::default()
-    //}];
-
-    let items = db::Media::get_by_filter(
+    let mut items = db::Media::get_by_filter(
         &state.ctx.db,
         &db::MediaFilter {
-            kind: Some(vec![db::MediaKind::Catalog]),
+            kind: Some(vec![db::MediaKind::Catalog, db::MediaKind::Folder]),
             promoted: Some(true),
             ..Default::default()
         },
@@ -283,13 +279,11 @@ pub async fn userviews(
     .into_iter()
     .map(|x| {
         let mut item: jellyfin::BaseItemDto = x.into();
-        item.type_ = jellyfin::MediaType::CollectionFolder;
-        item.collection_type = Some(jellyfin::CollectionType::Movies);
+        //item.type_ = jellyfin::MediaType::CollectionFolder;
+        //item.collection_type = Some(jellyfin::CollectionType::Movies);
         item
     })
     .collect::<Vec<jellyfin::BaseItemDto>>();
-
-    // items.extend(libs);
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items,
@@ -360,7 +354,7 @@ pub async fn get_items(
     mut q: jellyfin::GetItemsQuery,
     _count: bool,
 ) -> Result<ItemsQueryResult> {
-    // trace!(?q, "get_items");
+    trace!(?q, "get_items");
     let aio = session.aio;
 
     let parent = if let Some(parent_id) = q.parent_id.clone() {
@@ -368,7 +362,7 @@ pub async fn get_items(
     } else {
         None
     };
-    //let aio_search = session.user.get_aio_search()?;
+
     let search = q.search_term.clone().or(q.name_starts_with.clone());
     let skip = q.start_index.unwrap_or(0) as u32;
 
@@ -434,17 +428,43 @@ pub async fn get_items(
     let manifest = aio.get_manifest().await?;
 
     if let Some(parent) = &parent {
+        if parent.id == db::collection_uuid() {
+            let result = db::Media::get_by_filter(
+                &state.ctx.db,
+                &db::MediaFilter {
+                    kind: Some(vec![db::MediaKind::Catalog]),
+                    //promoted: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            return Ok(ItemsQueryResult {
+                total_count: result.total_count as i64,
+                items: result.records.into_vec(),
+            });
+        }
+
         // catalog get
         if parent.kind == db::MediaKind::Catalog {
             // cataloga
 
             // if parent.promoted {
             q.parent_id = None;
-            //}
-            q.include_item_types =
-                Some(vec![parent.catalog_media_kind_enum().unwrap().into()]);
+
+            if let Some(kind) = parent.catalog_media_kind_enum() {
+                q.include_item_types = Some(vec![kind.into()]);
+            } else {
+                q.include_item_types = Some(vec![
+                    db::MediaKind::Movie.into(),
+                    db::MediaKind::Series.into(),
+                ]);
+            }
             //             q.include_item_types = Some(vec![jellyfin::MediaType::Movie]);
             // trace!(?q, "CATALOG");
+            if q.limit.is_none() {
+                q.limit = Some(250);
+            }
 
             let mut result =
                 db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true).await?;

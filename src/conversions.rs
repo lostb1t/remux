@@ -78,9 +78,18 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             //         None
             //     }
             // },
+            media_type: {
+                match media.kind {
+                    db::MediaKind::Movie | db::MediaKind::Episode => {
+                        "Video".to_string()
+                    }
+                    _ => "Unknown".to_string(),
+                }
+            },
             is_place_holder: media.sources.as_ref().map(|sources| sources.is_empty()),
             premiere_date: media.released_at.clone().map(|d| d.and_utc()),
-            // community_rating: meta.imdb_rating.clone().and_then(|r| r.parse().ok()),
+            community_rating: media.rating_audience.clone(),
+            //critic_rating: media.rating_rt.clone().and_then(|r| r.parse().ok()),
             image_tags: Some(jellyfin::ImageTags {
                 primary: media.poster.clone(),
                 logo: media.logo.clone(),
@@ -93,6 +102,7 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             is_folder: if media.kind == db::MediaKind::Series
                 || media.kind == db::MediaKind::Catalog
                 || media.kind == db::MediaKind::Season
+                || media.kind == db::MediaKind::Folder
             {
                 true
             } else {
@@ -126,6 +136,7 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             // }),
             provider_ids: Some(jellyfin::ProviderIds {
                 imdb: media.imdb_id.clone(),
+                aio: media.aio_id.clone(),
                 ..Default::default()
             }),
             //genres: meta.genres.clone(),
@@ -149,8 +160,39 @@ impl From<db::Media> for jellyfin::BaseItemDto {
                 None => None,
             };
         }
-        // this shouldnt be done here but eh
+
+        if media.kind == db::MediaKind::Catalog {
+            item.collection_type = Some(
+                media
+                    .catalog_media_kind
+                    .map(|kind| kind.into())
+                    .unwrap_or(jellyfin::CollectionType::Unknown),
+            );
+            if media.promoted == 1 {
+                item.type_ = jellyfin::MediaType::CollectionFolder;
+            } else {
+                item.type_ = jellyfin::MediaType::BoxSet;
+            }
+        }
+
+        // soecial case (collections)
+        if media.kind == db::MediaKind::Folder {
+            item.collection_type = Some(jellyfin::CollectionType::Boxsets);
+            item.type_ = jellyfin::MediaType::CollectionFolder;
+        }
+
         item
+    }
+}
+
+impl From<db::MediaKind> for jellyfin::CollectionType {
+    fn from(kind: db::MediaKind) -> Self {
+        match kind {
+            db::MediaKind::Movie => jellyfin::CollectionType::Movies,
+            db::MediaKind::Series => jellyfin::CollectionType::Tvshows,
+            //db::MediaKind::Catalog => jellyfin::CollectionType::Boxsets,
+            _ => jellyfin::CollectionType::Unknown,
+        }
     }
 }
 

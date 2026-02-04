@@ -303,6 +303,7 @@ pub enum Status {
     Upcoming,
     Continuing,
     Ended,
+    Canceled,
     // Returning Series
     #[serde(rename = "Returning Series")]
     ReturningSeries,
@@ -321,7 +322,8 @@ pub struct Meta {
     pub director: Option<String>,
     pub description: Option<String>,
     pub genre: Option<Vec<String>>,
-    //pub imdb_rating: Option<f64>,
+    #[serde(deserialize_with = "deserialize_option_number_from_string")]
+    pub imdb_rating: Option<f64>,
     pub name: Option<String>,
     pub status: Option<Status>,
     pub released: Option<DateTime<Utc>>,

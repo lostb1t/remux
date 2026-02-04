@@ -52,7 +52,8 @@ impl MetaProvider for AioMetaProvider {
             .await
             .context("Failed to fetch metadata")?;
 
-        //  let media_new = meta.into();
+        let media_new: db::Media = meta.try_into()?;
+
         //media.title = metadata.title;
         //media.year = metadata.year;
         //media.genres = metadata.genres;

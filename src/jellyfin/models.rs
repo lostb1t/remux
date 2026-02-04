@@ -502,62 +502,16 @@ pub struct DisplayPreferencesDto {
     pub view_type: Option<String>,
     pub sort_by: Option<String>,
     pub index_by: Option<String>,
-    pub remember_indexing: Option<bool>,
-    pub primary_image_height: Option<i64>,
-    pub primary_image_width: Option<i64>,
+    pub remember_indexing: bool,
+    pub primary_image_height: i64,
+    pub primary_image_width: i64,
     pub custom_prefs: Option<HashMap<String, Option<String>>>,
-    pub scroll_direction: Option<String>,
-    pub show_backdrop: Option<bool>,
-    pub remember_sorting: Option<bool>,
-    pub sort_order: Option<String>,
-    pub show_sidebar: Option<bool>,
+    pub scroll_direction: String,
+    pub show_backdrop: bool,
+    pub remember_sorting: bool,
+    pub sort_order: String,
+    pub show_sidebar: bool,
     pub client: Option<String>,
-}
-
-impl Default for DisplayPreferencesDto {
-    fn default() -> Self {
-        use std::collections::HashMap;
-
-        // Build CustomPrefs from the provided JSON
-        let custom_prefs: HashMap<String, Option<String>> = vec![
-            ("homesection0", "smalllibrarytiles"),
-            ("homesection1", "latestmedia"),
-            ("homesection2", "none"),
-            ("homesection3", "none"),
-            ("homesection4", "none"),
-            ("homesection5", "none"),
-            ("homesection6", "none"),
-            ("homesection7", "none"),
-            ("homesection8", "none"),
-            ("homesection9", "none"),
-            ("chromecastVersion", "stable"),
-            ("skipForwardLength", "30000"),
-            ("skipBackLength", "10000"),
-            ("enableNextVideoInfoOverlay", "False"),
-            ("tvhome", ""),
-            ("dashboardTheme", "dark"),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), Some(v.to_string())))
-        .collect();
-
-        Self {
-            id: None,
-            view_type: None,
-            sort_by: Some("SortName".into()),
-            index_by: None,
-            remember_indexing: Some(false),
-            primary_image_height: Some(250),
-            primary_image_width: Some(250),
-            custom_prefs: Some(custom_prefs),
-            scroll_direction: Some(ScrollDirection::Horizontal.to_string()),
-            show_backdrop: Some(true),
-            remember_sorting: Some(false),
-            sort_order: Some(SortOrder::Ascending.to_string()),
-            show_sidebar: Some(false),
-            client: Some("emby".into()),
-        }
-    }
 }
 
 #[derive(
@@ -815,12 +769,14 @@ pub struct ImageBlurHashes {
     pub logo: Option<HashMap<String, String>>,
 }
 
+// todo: should be an hashmap
 #[skip_serializing_none]
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ProviderIds {
     pub imdb: Option<String>,
     pub tmdb: Option<String>,
+    pub aio: Option<String>,
 }
 
 #[skip_serializing_none]
@@ -956,7 +912,7 @@ pub struct BaseItemDto {
     //pub chapters: Option<Vec<ChapterInfo>>,
     pub location_type: Option<String>,
     pub iso_type: Option<String>,
-    #[default("Video".to_string())]
+    #[default("Unknown".to_string())]
     pub media_type: String,
     pub end_date: Option<String>,
     //pub locked_fields: Option<Vec<MetadataFields>>,

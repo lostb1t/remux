@@ -84,7 +84,12 @@ pub enum MediaKind {
     Series,
     Season,
     Episode,
+    Person,
+    Studio,
+    Genre,
     Catalog,
+    // purely here for jf
+    Folder,
     Source,
     #[default]
     Unknown,
@@ -174,6 +179,15 @@ impl TryFrom<String> for CatalogKind {
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
+pub struct MediaRelations {
+    #[default(get_uuid())]
+    pub id: Uuid,
+    pub left_media_id: Uuid,
+    pub right_media_id: Uuid,
+    pub weight: Option<i64>,
+}
+
+#[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MediaFilter {
     pub id: Option<Vec<Uuid>>,
     pub kind: Option<Vec<MediaKind>>,
@@ -204,8 +218,9 @@ pub struct Media {
     pub trailers: Option<sqlx::types::Json<Vec<String>>>,
     // in seconds
     pub runtime: Option<i64>,
-    pub rating_critic: Option<i64>,
-    pub rating_audience: Option<i64>,
+    pub rating_critic: Option<f64>,
+    pub rating_audience: Option<f64>,
+    pub certification: Option<String>,
     pub poster: Option<String>,
     pub logo: Option<String>,
     pub backdrop: Option<String>,
@@ -226,12 +241,13 @@ pub struct Media {
     pub url: Option<String>,
     pub probe_data: Option<String>,
     pub remote_data: Option<String>,
+
     // catalog
     pub promoted: i64,
-    //#[sqlx(try_from="String")]
-    //pub catalog_kind: Option<CatalogKind>,
+    // CatalogKind
     pub catalog_kind: Option<String>,
-    pub catalog_media_kind: Option<String>,
+    // MediaKind
+    pub catalog_media_kind: Option<MediaKind>,
 }
 
 // #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -732,8 +748,9 @@ impl TryFrom<sdks::aio::Meta> for Media {
             released_at: meta.released.map(|x| x.naive_utc()),
             runtime: meta.runtime.map(|d| d.num_seconds()),
             // rating_critic: meta.rating_critic,
-            //rating_audience: meta.imdb_rating,
+            rating_audience: meta.imdb_rating,
             description: meta.description,
+            certification: meta.certification,
             poster: meta.poster.or(meta.thumbnail),
             logo: meta.logo,
             backdrop: meta.background,
@@ -818,4 +835,21 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
 
         Ok(media_instances)
     }
+}
+
+pub fn collection_uuid() -> Uuid {
+    uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479")
+}
+
+pub async fn ensure_collection_folder(db: &SqlitePool) -> Result<()> {
+    Media {
+        id: collection_uuid(),
+        title: "Collections".to_string(),
+        kind: MediaKind::Folder,
+        promoted: 1,
+        ..Default::default()
+    }
+    .save(db)
+    .await?;
+    Ok(())
 }

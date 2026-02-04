@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS auth_users (
 CREATE TABLE media (
     id TEXT PRIMARY KEY NOT NULL,
     title TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('movie', 'series', 'season', 'episode', 'catalog', 'source', 'unknown')),
+    kind TEXT NOT NULL CHECK (kind IN ('movie', 'series', 'season', 'episode', 'catalog', 'source', 'folder', 'unknown')),
     imdb_id TEXT,
     aio_id TEXT,
     series_imdb_id TEXT,
@@ -31,8 +31,9 @@ CREATE TABLE media (
     idx INTEGER,
     released_at TIMESTAMP,
     runtime INTEGER,
-    rating_critic INTEGER,
-    rating_audience INTEGER,
+    rating_critic REAL,
+    rating_audience REAL,
+    certification TEXT,
     poster TEXT,
     logo TEXT,
     backdrop TEXT,
@@ -52,20 +53,21 @@ CREATE TABLE media (
     FOREIGN KEY (parent_id) REFERENCES media(id) ON DELETE CASCADE
 );
 
-
 CREATE INDEX idx_media_kind ON media(kind);
 CREATE INDEX idx_media_idx ON media(idx);
 CREATE INDEX idx_media_parent_id ON media(parent_id);
-
 
 CREATE UNIQUE INDEX uniq_meta
 ON media (kind, aio_id)
 WHERE kind IN ('movie', 'series', 'season', 'episode');
 
-CREATE TABLE catalog_media (
-    catalog_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    PRIMARY KEY (catalog_id, media_id)
+CREATE TABLE media_relations (
+    relation_id UUID PRIMARY KEY,
+    left_media_id UUID NOT NULL REFERENCES media(id),
+    right_media_id UUID NOT NULL REFERENCES media(id),
+    weight INT,
+    FOREIGN KEY (left_media_id) REFERENCES media(id),
+    FOREIGN KEY (right_media_id) REFERENCES media(id)
 );
 
 CREATE TABLE tasks (

@@ -338,24 +338,11 @@ impl Task for CatalogImportTask {
         let start_time = Instant::now();
         let mut total_imported = 0;
 
-        let media_items: Vec<db::Media> = manifest
-            .catalogs
-            .clone()
-            .into_iter()
-            .map(db::Media::from)
-            .collect();
-
-        db::Media::upsert(&ctx.db, &media_items).await?;
-
         info!("starting catalog import ({})", manifest.catalogs.len());
 
         for cat in manifest.catalogs {
-               info!(
-               "Importing catalog {} {}",
-                cat.id, cat.kind
-            );  
-          let aio_id = format!("{}:{}", cat.kind, cat.id);
-
+            info!("Importing catalog {} {}", cat.id, cat.kind);
+            let aio_id = format!("{}:{}", cat.kind, cat.id);
             let mut media_cat = db::Media::get_by_filter(
                 &ctx.db,
                 &db::MediaFilter {
@@ -380,7 +367,7 @@ impl Task for CatalogImportTask {
             let mut meta_stream = ctx.aio.get_catalog_stream(&cat).await.chunks(500);
             let mut count = 0;
             while let Some(metas) = meta_stream.next().await {
-              let items: Vec<db::Media> = metas
+                let items: Vec<db::Media> = metas
                     .into_iter()
                     .unique_by(|meta| meta.id.clone())
                     .flat_map(|meta| match Vec::<db::Media>::try_from(meta) {

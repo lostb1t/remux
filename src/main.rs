@@ -104,6 +104,8 @@ async fn main() -> Result<()> {
 
     db::migrate(&conn).await?;
 
+    db::ensure_collection_folder(&conn).await?;
+
     // FOR TWSTING ONLY
     // db::checkpoint_db(&conn).await;
 
@@ -143,7 +145,8 @@ async fn main() -> Result<()> {
         let mut media = db::Media {
             title: u.name,
             kind: db::MediaKind::Catalog,
-            catalog_media_kind: Some(u.media_kind.to_string()),
+            //aio_id: u.id,
+            catalog_media_kind: Some(u.media_kind),
             catalog_kind: Some(db::CatalogKind::Smart.to_string()),
             promoted: 1,
             ..Default::default()
