@@ -93,6 +93,7 @@ pub fn routes() -> Router<AppState> {
             "/users/{user_id}/groupingoptions",
             get(users_groupingoptions),
         )
+        .route("/users/{user_id}/playeditems/{id}", post(users_playeditems))
         .route("/videos/{id}/stream", get(videos_stream))
         .route("/playback/bitratetest", get(playback_bitratetest))
         .route("/displaypreferences/{id}", get(get_display_preferences))
@@ -769,7 +770,7 @@ pub async fn items_playbackinfo(
 
     let info = jellyfin::PlaybackInfoResponse {
         media_sources: vec![source],
-        play_session_id: Some("test".to_string()),
+        play_session_id: Some(utils::get_uuid().as_simple().to_string()),
         ..Default::default()
     };
 
@@ -905,7 +906,16 @@ pub async fn users_me(
     Ok(Json(jellyfin::UserDto::from(session.user)).into_response())
 }
 
-/// todo: actually @molement
+/// todo: actually implement
+pub async fn users_playeditems(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// todo: actually implement
 pub async fn playback_bitratetest(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {

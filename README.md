@@ -7,7 +7,7 @@ Aims to be compatible with all jellyfin clients (eventually)
 
 Status: Very experimental 🔥 it's a proof of concept
 
-Highly recommend using https://github.com/Viren070/AIOStreams to manage your addons.
+Only supports aiostreams for now https://github.com/Viren070/AIOStreams.
 
 create a config.toml in the /data dir
 
