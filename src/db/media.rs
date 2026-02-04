@@ -224,8 +224,9 @@ pub struct Media {
     pub poster: Option<String>,
     pub logo: Option<String>,
     pub backdrop: Option<String>,
-    pub parent_id: Option<Uuid>,
     pub idx: Option<i64>,
+    pub parent_idx: Option<i64>,
+    pub parent_id: Option<Uuid>,
     pub series_imdb_id: Option<String>,
     pub imdb_id: Option<String>,
     pub aio_id: Option<String>,
@@ -323,174 +324,182 @@ impl Media {
     }
 
     pub async fn save(&mut self, db: &sqlx::SqlitePool) -> Result<()> {
-        self.validate()?;
-        let updated_at = Utc::now();
+    self.validate()?;
+    let updated_at = Utc::now();
 
-        sqlx::query!(
-            r#"
-            INSERT INTO media (
-                id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind,catalog_media_kind,
-                remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
-            ON CONFLICT (id) DO UPDATE SET
-                title = excluded.title,
-                kind = excluded.kind,
-                idx = excluded.idx,
-                released_at = excluded.released_at,
-                runtime = excluded.runtime,
-                rating_critic = excluded.rating_critic,
-                rating_audience = excluded.rating_audience,
-                poster = excluded.poster,
-                logo = excluded.logo,
-                backdrop = excluded.backdrop,
-                description = excluded.description,
-                trailers = excluded.trailers,
-                url = excluded.url,
-                probe_data = excluded.probe_data,
-                remote_data = excluded.remote_data,
-                series_imdb_id = excluded.series_imdb_id,
-                imdb_id = excluded.imdb_id,
-                aio_id = excluded.aio_id,
-                promoted = excluded.promoted,
-                updated_at = excluded.updated_at
-            "#,
-            self.id,
-            self.title,
-            self.kind,
-            self.parent_id,
-            self.idx,
-            self.released_at,
-            self.runtime,
-            self.rating_critic,
-            self.rating_audience,
-            self.poster,
-             self.logo,
-              self.backdrop,
-               self.description,
-               self.trailers,
-            self.url,
-            self.probe_data,
-            self.promoted,
-            self.catalog_kind,
-            self.catalog_media_kind,
-            self.remote_data,
-            self.series_imdb_id,
-            self.aio_id,
-            self.imdb_id,
-            self.created_at,
-            updated_at
+    sqlx::query!(
+        r#"
+        INSERT INTO media (
+            id, title, kind, parent_id, idx, released_at, runtime,
+            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
+            remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at, certification, parent_idx
         )
-        .execute(db)
-        .await?;
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+        ON CONFLICT (id) DO UPDATE SET
+            title = excluded.title,
+            kind = excluded.kind,
+            idx = excluded.idx,
+            released_at = excluded.released_at,
+            runtime = excluded.runtime,
+            rating_critic = excluded.rating_critic,
+            rating_audience = excluded.rating_audience,
+            poster = excluded.poster,
+            logo = excluded.logo,
+            backdrop = excluded.backdrop,
+            description = excluded.description,
+            trailers = excluded.trailers,
+            url = excluded.url,
+            probe_data = excluded.probe_data,
+            remote_data = excluded.remote_data,
+            series_imdb_id = excluded.series_imdb_id,
+            imdb_id = excluded.imdb_id,
+            aio_id = excluded.aio_id,
+            promoted = excluded.promoted,
+            updated_at = excluded.updated_at,
+            certification = excluded.certification,
+            parent_idx = excluded.parent_idx
+        "#,
+        self.id,
+        self.title,
+        self.kind,
+        self.parent_id,
+        self.idx,
+        self.released_at,
+        self.runtime,
+        self.rating_critic,
+        self.rating_audience,
+        self.poster,
+        self.logo,
+        self.backdrop,
+        self.description,
+        self.trailers,
+        self.url,
+        self.probe_data,
+        self.promoted,
+        self.catalog_kind,
+        self.catalog_media_kind,
+        self.remote_data,
+        self.series_imdb_id,
+        self.aio_id,
+        self.imdb_id,
+        self.created_at,
+        updated_at,
+        self.certification,
+        self.parent_idx,
+    )
+    .execute(db)
+    .await?;
 
-        Ok(())
-    }
+    Ok(())
+}
 
     pub async fn insert(db: &sqlx::SqlitePool, items: &[Self]) -> Result<()> {
-        if items.is_empty() {
-            return Ok(());
-        }
-
-        let mut tx = db.begin().await?;
-        const BATCH_SIZE: usize = 900;
-
-        for chunk in items.chunks(BATCH_SIZE) {
-            let mut query_builder = sqlx::QueryBuilder::new(
-                "INSERT INTO media (
-                id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
-                remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at
-            )",
-            );
-            for item in chunk {
-                item.validate()?;
-            }
-            query_builder.push_values(chunk.iter(), |mut b, item| {
-                b.push_bind(&item.id)
-                    .push_bind(&item.title)
-                    .push_bind(&item.kind)
-                    .push_bind(&item.parent_id)
-                    .push_bind(&item.idx)
-                    .push_bind(&item.released_at)
-                    .push_bind(&item.runtime)
-                    .push_bind(&item.rating_critic)
-                    .push_bind(&item.rating_audience)
-                    .push_bind(&item.poster)
-                    .push_bind(&item.logo)
-                    .push_bind(&item.backdrop)
-                    .push_bind(&item.description)
-                    .push_bind(&item.trailers)
-                    .push_bind(&item.url)
-                    .push_bind(&item.probe_data)
-                    .push_bind(&item.promoted)
-                    .push_bind(&item.catalog_kind)
-                    .push_bind(&item.catalog_media_kind)
-                    .push_bind(&item.remote_data)
-                    .push_bind(&item.series_imdb_id)
-                    .push_bind(&item.imdb_id)
-                    .push_bind(&item.aio_id)
-                    .push_bind(&item.created_at)
-                    .push_bind(Utc::now());
-            });
-
-            query_builder.push(" ON CONFLICT DO NOTHING");
-
-            query_builder.build().execute(&mut *tx).await?;
-        }
-
-        tx.commit().await?;
-        Ok(())
+    if items.is_empty() {
+        return Ok(());
     }
 
-    pub async fn upsert(db: &sqlx::SqlitePool, items: &[Self]) -> Result<()> {
-        if items.is_empty() {
-            return Ok(());
-        }
+    let mut tx = db.begin().await?;
+    const BATCH_SIZE: usize = 900;
 
-        let mut tx = db.begin().await?;
-        const BATCH_SIZE: usize = 900;
-
-        for chunk in items.chunks(BATCH_SIZE) {
-            let mut query_builder = sqlx::QueryBuilder::new(
-                "INSERT INTO media (
+    for chunk in items.chunks(BATCH_SIZE) {
+        let mut query_builder = sqlx::QueryBuilder::new(
+            "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
-                remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at
+                remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx
             )",
-            );
+        );
+        for item in chunk {
+            item.validate()?;
+        }
+        query_builder.push_values(chunk.iter(), |mut b, item| {
+            b.push_bind(&item.id)
+                .push_bind(&item.title)
+                .push_bind(&item.kind)
+                .push_bind(&item.parent_id)
+                .push_bind(&item.idx)
+                .push_bind(&item.released_at)
+                .push_bind(&item.runtime)
+                .push_bind(&item.rating_critic)
+                .push_bind(&item.rating_audience)
+                .push_bind(&item.poster)
+                .push_bind(&item.logo)
+                .push_bind(&item.backdrop)
+                .push_bind(&item.description)
+                .push_bind(&item.trailers)
+                .push_bind(&item.url)
+                .push_bind(&item.probe_data)
+                .push_bind(&item.promoted)
+                .push_bind(&item.catalog_kind)
+                .push_bind(&item.catalog_media_kind)
+                .push_bind(&item.remote_data)
+                .push_bind(&item.series_imdb_id)
+                .push_bind(&item.imdb_id)
+                .push_bind(&item.aio_id)
+                .push_bind(&item.created_at)
+                .push_bind(Utc::now())
+                .push_bind(&item.certification)
+                .push_bind(&item.parent_idx);
+        });
 
-            query_builder.push_values(chunk.iter(), |mut b, item| {
-                b.push_bind(&item.id)
-                    .push_bind(&item.title)
-                    .push_bind(&item.kind)
-                    .push_bind(&item.parent_id)
-                    .push_bind(&item.idx)
-                    .push_bind(&item.released_at)
-                    .push_bind(&item.runtime)
-                    .push_bind(&item.rating_critic)
-                    .push_bind(&item.rating_audience)
-                    .push_bind(&item.poster)
-                    .push_bind(&item.logo)
-                    .push_bind(&item.backdrop)
-                    .push_bind(&item.description)
-                    .push_bind(&item.trailers)
-                    .push_bind(&item.url)
-                    .push_bind(&item.probe_data)
-                    .push_bind(&item.promoted)
-                    .push_bind(&item.catalog_kind)
-                    .push_bind(&item.catalog_media_kind)
-                    .push_bind(&item.remote_data)
-                    .push_bind(&item.series_imdb_id)
-                    .push_bind(&item.imdb_id)
-                    .push_bind(&item.aio_id)
-                    .push_bind(&item.created_at)
-                    .push_bind(Utc::now());
-            });
+        query_builder.push(" ON CONFLICT DO NOTHING");
 
-            query_builder.push(
-                " ON CONFLICT DO UPDATE SET
+        query_builder.build().execute(&mut *tx).await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+    pub async fn upsert(db: &sqlx::SqlitePool, items: &[Self]) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = db.begin().await?;
+    const BATCH_SIZE: usize = 900;
+
+    for chunk in items.chunks(BATCH_SIZE) {
+        let mut query_builder = sqlx::QueryBuilder::new(
+            "INSERT INTO media (
+                id, title, kind, parent_id, idx, released_at, runtime,
+                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
+                remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx
+            )",
+        );
+
+        query_builder.push_values(chunk.iter(), |mut b, item| {
+            b.push_bind(&item.id)
+                .push_bind(&item.title)
+                .push_bind(&item.kind)
+                .push_bind(&item.parent_id)
+                .push_bind(&item.idx)
+                .push_bind(&item.released_at)
+                .push_bind(&item.runtime)
+                .push_bind(&item.rating_critic)
+                .push_bind(&item.rating_audience)
+                .push_bind(&item.poster)
+                .push_bind(&item.logo)
+                .push_bind(&item.backdrop)
+                .push_bind(&item.description)
+                .push_bind(&item.trailers)
+                .push_bind(&item.url)
+                .push_bind(&item.probe_data)
+                .push_bind(&item.promoted)
+                .push_bind(&item.catalog_kind)
+                .push_bind(&item.catalog_media_kind)
+                .push_bind(&item.remote_data)
+                .push_bind(&item.series_imdb_id)
+                .push_bind(&item.imdb_id)
+                .push_bind(&item.aio_id)
+                .push_bind(&item.created_at)
+                .push_bind(Utc::now())
+                .push_bind(&item.certification)
+                .push_bind(&item.parent_idx);
+        });
+
+        query_builder.push(
+            " ON CONFLICT DO UPDATE SET
                 title = excluded.title,
                 id = excluded.id,
                 idx = excluded.idx,
@@ -510,15 +519,17 @@ impl Media {
                 remote_data = excluded.remote_data,
                 series_imdb_id = excluded.series_imdb_id,
                 updated_at = excluded.updated_at,
-                promoted = excluded.promoted",
-            );
+                promoted = excluded.promoted,
+                certification = excluded.certification,
+                parent_idx = excluded.parent_idx",
+        );
 
-            query_builder.build().execute(&mut *tx).await?;
-        }
-
-        tx.commit().await?;
-        Ok(())
+        query_builder.build().execute(&mut *tx).await?;
     }
+
+    tx.commit().await?;
+    Ok(())
+}
 
     pub async fn get_by_id(
         db: &SqlitePool,
@@ -706,6 +717,16 @@ impl Media {
             self.sources = Some(sources);
         };
         Ok(self.sources.clone().unwrap())
+    }
+    
+    pub fn media_key(&self) -> String {
+      
+      match self.kind {
+        MediaKind::Movie | MediaKind::Series => self.imdb_id.clone().unwrap(),
+        MediaKind::Season => format!("{}{}", self.series_imdb_id.clone().unwrap(), self.idx.unwrap()),
+        MediaKind::Episode => format!("{}{}{}", self.series_imdb_id.clone().unwrap(), self.parent_idx.unwrap(), self.idx.unwrap()),
+        _ => panic!("in the discoteq")
+      }
     }
 }
 

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO devices\n                (user_id, access_token, id, name, app_name, app_version)\n            VALUES\n                (?1, ?2, ?3, ?4, ?5, ?6)\n            ON CONFLICT(id, user_id) DO UPDATE SET\n                name = excluded.name,\n                access_token = excluded.access_token,\n                app_name    = excluded.app_name,\n                app_version = excluded.app_version\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "7b8f6dc3c2017c845577c978c9e4318d7c2b93b8b7214fb30e195d26ae9082e8"
+}

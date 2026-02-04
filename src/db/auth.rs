@@ -74,7 +74,7 @@ impl Device {
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query!(
             r#"
-            INSERT INTO auth_devices
+            INSERT INTO devices
                 (user_id, access_token, id, name, app_name, app_version)
             VALUES
                 (?1, ?2, ?3, ?4, ?5, ?6)
@@ -119,7 +119,7 @@ impl Device {
         let row = sqlx::query_as::<_, Self>(
             r#"
         SELECT *
-        FROM auth_devices
+        FROM devices
         WHERE access_token = ?1
         "#,
         )

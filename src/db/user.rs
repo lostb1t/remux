@@ -88,7 +88,7 @@ impl User {
     pub async fn save(&mut self, db: &SqlitePool) -> Result<()> {
         sqlx::query!(
             r#"
-            INSERT INTO auth_users (id, username, password_hash, aio_url)
+            INSERT INTO users (id, username, password_hash, aio_url)
             VALUES (?1, ?2, ?3, ?4)
             ON CONFLICT(id) DO UPDATE SET
                 username      = excluded.username,
@@ -109,7 +109,7 @@ impl User {
     pub async fn save_by_username(&mut self, db: &SqlitePool) -> Result<()> {
         sqlx::query!(
             r#"
-            INSERT INTO auth_users (id, username, password_hash, aio_url)
+            INSERT INTO users (id, username, password_hash, aio_url)
             VALUES (?1, ?2, ?3, ?4)
             ON CONFLICT(username) DO UPDATE SET
                 password_hash = excluded.password_hash,
@@ -130,7 +130,7 @@ impl User {
         let row = sqlx::query_as::<_, Self>(
             r#"
         SELECT *
-        FROM auth_users
+        FROM users
         WHERE id = ?1
         "#,
         )
@@ -148,7 +148,7 @@ impl User {
         let row = sqlx::query_as::<_, Self>(
             r#"
         SELECT *
-        FROM auth_users
+        FROM users
         WHERE username = ?1
         "#,
         )
@@ -180,10 +180,10 @@ impl User {
         filter: &UserFilter,
     ) -> Result<FilterResult<User>> {
         let mut count_qb = sqlx::QueryBuilder::new(
-            "SELECT COUNT(*) as count FROM auth_users WHERE 1=1",
+            "SELECT COUNT(*) as count FROM users WHERE 1=1",
         );
         let mut records_qb =
-            sqlx::QueryBuilder::new("SELECT * FROM auth_users WHERE 1=1");
+            sqlx::QueryBuilder::new("SELECT * FROM users WHERE 1=1");
 
         for qb in [&mut count_qb, &mut records_qb] {
             if let Some(id) = &filter.id {
@@ -269,12 +269,17 @@ pub struct CustomData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct UserMediaInfo {
-    //pub id: String,
+pub struct UserMediaData {
     pub user_id: Uuid,
-    pub media_id: Uuid,
+    pub media_id: Option<Uuid>,
+    pub media_key: String,
     pub is_fav: bool,
+    pub play_count: i64,
+    pub played_at: Option<NaiveDateTime>,
     pub playback_position: i64,
+    pub stream_id: Option<Uuid>,
+    pub subtitle_idx: Option<i64>,
+    pub audio_idx: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

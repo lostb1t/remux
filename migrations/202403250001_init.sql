@@ -1,8 +1,6 @@
--- Auth sessions table (SQLite)
-
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS auth_devices (
+CREATE TABLE IF NOT EXISTS devices (
     user_id      TEXT NOT NULL,
     id           TEXT NOT NULL,
     access_token TEXT NOT NULL UNIQUE,
@@ -13,7 +11,7 @@ CREATE TABLE IF NOT EXISTS auth_devices (
     PRIMARY KEY (user_id, id)
 );
 
-CREATE TABLE IF NOT EXISTS auth_users (
+CREATE TABLE IF NOT EXISTS users (
   id            TEXT NOT NULL PRIMARY KEY,
   username      TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
@@ -29,6 +27,7 @@ CREATE TABLE media (
     series_imdb_id TEXT,
     parent_id TEXT,
     idx INTEGER,
+    parent_idx INTEGER,
     released_at TIMESTAMP,
     runtime INTEGER,
     rating_critic REAL,
@@ -111,4 +110,20 @@ CREATE TABLE jellyfin_display_prefs (
     client TEXT NOT NULL,
     data TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE user_media_data (
+    user_id      TEXT NOT NULL,
+    media_id     TEXT,
+    media_key    TEXT NOT NULL,
+    is_fav       INT NOT NULL DEFAULT 0,
+    play_count   INT NOT NULL DEFAULT 0,
+    played_at    DATETIME NOT NULL,
+    playback_position INT NOT NULL DEFAULT 0,
+    stream_id    TEXT,
+    subtitle_idx INT,
+    audio_idx    INT,
+
+
+    PRIMARY KEY (user_id, media_id, media_key)
 );
