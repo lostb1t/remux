@@ -138,10 +138,10 @@ pub struct SpecialViewOptionDto {
     ScreamingKebabCase
 )]
 #[serde_as]
-#[derive(Default, Debug, Deserialize, Clone)]
+#[derive(default2::Default, Debug, Deserialize, Clone)]
 #[skip_serializing_none]
 pub struct GetItemsQuery {
-    pub user_id: Option<String>,
+    pub user_id: Option<Uuid>,
     pub max_official_rating: Option<String>,
     pub has_theme_song: Option<bool>,
     pub has_theme_video: Option<bool>,
@@ -172,6 +172,7 @@ pub struct GetItemsQuery {
     //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, SortOrder>>")]
     //pub sort_order: Option<SortOrder>,
     pub enable_images: Option<bool>,
+   // #[default(true)]
     pub enable_user_data: Option<bool>,
     pub enable_total_record_count: Option<bool>,
     pub enable_resumable: Option<bool>,

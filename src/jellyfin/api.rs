@@ -468,6 +468,8 @@ pub async fn get_items(
             if q.limit.is_none() {
                 q.limit = Some(250);
             }
+            
+            q.user_id = Some(session.user.id.clone());
 
             let mut result =
                 db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true).await?;
@@ -514,6 +516,8 @@ pub async fn get_items(
                             .get(0)
                             .unwrap()
                             .clone();
+                            
+
                         }
 
                         Some(media)
@@ -530,7 +534,8 @@ pub async fn get_items(
                 {
                     media.refresh_sources(&state.ctx.db, &state.ctx.aio).await?;
                     media.sources(&state.ctx.db).await?;
-
+                            // always load state for single
+                            media.user_state(&state.ctx.db, session.user.id).await?;
                     if let Some(sources) = &media.sources {
                         trace!(streams_len = sources.len(), "sources");
                     }

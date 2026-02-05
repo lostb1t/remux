@@ -59,6 +59,7 @@ use tracing::debug;
 use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
+use tracing::info;
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
@@ -526,8 +527,9 @@ impl Media {
     pub async fn get_by_id(
         db: &SqlitePool,
         id: &Uuid,
-    ) -> Result<Option<Self>, sqlx::Error> {
-        let row = sqlx::query_as::<_, Self>(
+    ) -> Result<Option<Self>, sqlx::Error> {  
+      
+      let row = sqlx::query_as::<_, Self>(
             r#"
         SELECT *
         FROM media
@@ -650,7 +652,20 @@ pub async fn get_by_filter(
                 id: filter.ids.clone(),
                 parent_id: filter.parent_id.clone(),
                 offset: filter.start_index.clone(),
+                include_user_state: filter.enable_user_data.is_none(),
                 total_count,
+                
+                user_state: {
+                if filter.enable_user_data.is_none() {
+                  Some(super::UserMediaStateFilter {
+                    user_id: filter.user_id,
+                    ..Default::default()
+                  })
+                }
+                else {
+                  None
+                }
+                },
                 //   parent_id: Some(self.id),
                 ..Default::default()
             },
@@ -763,6 +778,33 @@ pub async fn get_by_filter(
         };
         Ok(self.sources.clone().unwrap())
     }
+    
+    pub async fn user_state(
+        &mut self,
+        db: &SqlitePool,
+        user_id: Uuid,
+    ) -> Result<Option<super::UserMediaState>> {
+         info!("CALLED");
+         if self.user_state.is_none() {
+            let state = super::UserMediaState::get_by_filter(
+                db,
+                &super::UserMediaStateFilter {
+                    user_id: Some(user_id),
+                    media_key: Some(vec![self.media_key()]),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .records
+            .into_iter()
+            .next();
+
+            self.user_state = state;
+        }
+
+        Ok(self.user_state.clone())
+    }
+    
     
     pub fn media_key(&self) -> String {
       
