@@ -651,21 +651,21 @@ impl Media {
         }
     }
     
-    pub async fn mark_played(&self, db: &SqlitePool, user: &super::User) -> Result<()> {
+    pub async fn mark_played(&self, db: &SqlitePool, user: &super::User) -> Result<super::UserMediaState> {
         let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
         state.play_count = 1;
         state.played_at = Some(Local::now().naive_local());
         state.save(db).await?;
-        Ok(())
+        Ok(state)
     }
     
-    pub async fn mark_unplayed(&self, db: &SqlitePool, user: &super::User) -> Result<()> {
+    pub async fn mark_unplayed(&self, db: &SqlitePool, user: &super::User) -> Result<super::UserMediaState> {
         let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
         state.play_count = 0;
         state.played_at = None;
         state.playback_position = 0;
         state.save(db).await?;
-        Ok(())
+        Ok(state)
     }
 
 

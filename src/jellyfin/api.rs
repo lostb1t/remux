@@ -14,6 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::routing::get_service;
 use axum::routing::post;
+use axum::routing::delete;
 use axum_extra::extract::Query;
 use axum_extra::response::file_stream::FileStream;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
@@ -93,7 +94,8 @@ pub fn routes() -> Router<AppState> {
             "/users/{user_id}/groupingoptions",
             get(users_groupingoptions),
         )
-        .route("/users/{user_id}/playeditems/{id}", post(users_playeditems))
+        .route("/users/{user_id}/playeditems/{id}", post(post_users_playeditems))
+        .route("/users/{user_id}/playeditems/{id}", delete(delete_users_playeditems))
         .route("/videos/{id}/stream", get(videos_stream))
         .route("/playback/bitratetest", get(playback_bitratetest))
         .route("/displaypreferences/{id}", get(get_display_preferences))
@@ -906,16 +908,24 @@ pub async fn users_me(
     Ok(Json(jellyfin::UserDto::from(session.user)).into_response())
 }
 
-/// todo: actually implement
-pub async fn users_playeditems(
+pub async fn post_users_playeditems(
     State(state): State<AppState>,
     session: auth::AuthSession,
    Path((user_id, id)): Path<(Uuid, Uuid)>
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id).await?.context("not foubd")?;
-    media.mark_played(&state.ctx.db, &session.user).await?;
-    //let media_state = session.user.get_media_state(&state.ctx.db, &media).await?;
-    Ok(StatusCode::NO_CONTENT.into_response())
+    let state = media.mark_played(&state.ctx.db, &session.user).await?;
+    Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
+}
+
+pub async fn delete_users_playeditems(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+   Path((user_id, id)): Path<(Uuid, Uuid)>
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(&state.ctx.db, &id).await?.context("not foubd")?;
+    let state = media.mark_played(&state.ctx.db, &session.user).await?;
+    Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
 }
 
 /// todo: actually implement

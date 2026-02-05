@@ -275,6 +275,19 @@ impl From<db::User> for jellyfin::UserDto {
         }
     }
 }
+impl From<db::UserMediaState> for jellyfin::UserItemDataDto {
+    fn from(state: db::UserMediaState) -> Self {
+        jellyfin::UserItemDataDto {
+            played: Some(state.played_at.is_some()),
+            last_played_date: state.played_at.map(|x| x.and_utc()),
+            playback_position_ticks: Some(state.playback_position * 10_000), // Convert seconds to ticks (1 tick = 100 nanoseconds)
+            play_count: Some(state.play_count as i32),
+            is_favorite: Some(state.is_fav),
+            key: Some(state.media_key),
+            ..Default::default()
+        }
+    }
+}
 
 impl From<aio::Catalog> for jellyfin::BaseItemDto {
     fn from(item: aio::Catalog) -> Self {

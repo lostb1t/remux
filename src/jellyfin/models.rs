@@ -798,7 +798,7 @@ pub struct UserItemDataDto {
     pub played_percentage: Option<f32>,
     pub last_updated: Option<DateTime<Utc>>,
     pub key: Option<String>,
-    pub item_id: String,
+   // pub item_id: String,
 }
 
 #[skip_serializing_none]
