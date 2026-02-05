@@ -910,8 +910,11 @@ pub async fn users_me(
 pub async fn users_playeditems(
     State(state): State<AppState>,
     session: auth::AuthSession,
+   Path((user_id, id)): Path<(Uuid, Uuid)>
 ) -> Result<impl IntoResponse> {
-    
+    let media = db::Media::get_by_id(&state.ctx.db, &id).await?.context("not foubd")?;
+    media.mark_played(&state.ctx.db, &session.user).await?;
+    //let media_state = session.user.get_media_state(&state.ctx.db, &media).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

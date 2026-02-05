@@ -230,7 +230,7 @@ pub struct Media {
     pub series_imdb_id: Option<String>,
     pub imdb_id: Option<String>,
     pub aio_id: Option<String>,
-
+    //pub media_key: Option<String>,
     //pub series_id: Option<Uuid>,
     //pub season_id: Option<Uuid>,
     //pub description: Option<String>,
@@ -650,6 +650,24 @@ impl Media {
             Ok(None)
         }
     }
+    
+    pub async fn mark_played(&self, db: &SqlitePool, user: &super::User) -> Result<()> {
+        let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
+        state.play_count = 1;
+        state.played_at = Some(Local::now().naive_local());
+        state.save(db).await?;
+        Ok(())
+    }
+    
+    pub async fn mark_unplayed(&self, db: &SqlitePool, user: &super::User) -> Result<()> {
+        let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
+        state.play_count = 0;
+        state.played_at = None;
+        state.playback_position = 0;
+        state.save(db).await?;
+        Ok(())
+    }
+
 
     //pub async fn seasons(&self, db: &sqlx::SqlitePool) -> Result<Vec<Self>> {
     //    if let Some(seasons) = self.seasons {

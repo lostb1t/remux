@@ -112,9 +112,8 @@ CREATE TABLE jellyfin_display_prefs (
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
-CREATE TABLE user_media_data (
+CREATE TABLE user_media_state (
     user_id      TEXT NOT NULL,
-    media_id     TEXT,
     media_key    TEXT NOT NULL,
     is_fav       INT NOT NULL DEFAULT 0,
     play_count   INT NOT NULL DEFAULT 0,
@@ -124,6 +123,5 @@ CREATE TABLE user_media_data (
     subtitle_idx INT,
     audio_idx    INT,
 
-
-    PRIMARY KEY (user_id, media_id, media_key)
+    PRIMARY KEY (user_id, media_key)
 );

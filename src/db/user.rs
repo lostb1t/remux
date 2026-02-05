@@ -258,6 +258,14 @@ impl User {
             Ok(None)
         }
     }
+    
+    pub async fn get_media_state(
+        &self,
+        db: &SqlitePool,
+        media: &super::Media,
+    ) -> Result<Option<UserMediaState>> {
+        Ok(UserMediaState::get_by_user_and_media(db, self, media).await?)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -268,18 +276,94 @@ pub struct CustomData {
     //pub data: Option<HashMap<String, Option<String>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct UserMediaData {
+#[derive(Debug, Default, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct UserMediaState {
     pub user_id: Uuid,
-    pub media_id: Option<Uuid>,
+    pub stream_id: Option<Uuid>,
     pub media_key: String,
     pub is_fav: bool,
     pub play_count: i64,
     pub played_at: Option<NaiveDateTime>,
     pub playback_position: i64,
-    pub stream_id: Option<Uuid>,
+    //pub stream_id: Option<Uuid>,
     pub subtitle_idx: Option<i64>,
     pub audio_idx: Option<i64>,
+}
+
+impl UserMediaState {
+      pub async fn get_by_user_and_media(db: &SqlitePool, user: &User, media: &super::Media) -> Result<Option<Self>> {
+        let row = sqlx::query_as::<_, Self>(
+            r#"
+        SELECT *
+        FROM user_media_state
+        WHERE user_id = ?1 AND media_key = ?2
+        "#,
+        )
+        .bind(user.id)
+        .bind(media.aio_id.clone())
+        .fetch_optional(db)
+        .await?;
+
+        Ok(row)
+    }
+    
+    pub async fn get_or_new(
+    db: &SqlitePool,
+    user: &User,
+    media: &super::Media,
+) -> Result<Self> {
+    let row = Self::get_by_user_and_media(db, user, media).await?;
+    Ok(row.unwrap_or_else(|| Self {
+        user_id: user.id,
+        media_key: media.aio_id.clone().unwrap(),
+        ..Default::default()
+    }))
+}
+    
+    pub async fn save(&self, db: &SqlitePool) -> Result<()> {
+        debug!("Saving user media state for user {} and media key {}", self.user_id, self.media_key);
+
+        sqlx::query(
+            r#"
+            INSERT INTO user_media_state (
+                user_id,
+                stream_id,
+                media_key,
+                is_fav,
+                play_count,
+                played_at,
+                playback_position,
+                subtitle_idx,
+                audio_idx
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(user_id, media_key)
+            DO UPDATE SET
+                stream_id = excluded.stream_id,
+                is_fav = excluded.is_fav,
+                play_count = excluded.play_count,
+                played_at = excluded.played_at,
+                playback_position = excluded.playback_position,
+                subtitle_idx = excluded.subtitle_idx,
+                audio_idx = excluded.audio_idx
+            "#,
+        )
+        .bind(self.user_id)
+        .bind(self.stream_id)
+        .bind(&self.media_key)
+        .bind(self.is_fav)
+        .bind(self.play_count)
+        .bind(self.played_at)
+        .bind(self.playback_position)
+        .bind(self.subtitle_idx)
+        .bind(self.audio_idx)
+        .execute(db)
+        .await?;
+
+        Ok(())
+    }
+
+    
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
