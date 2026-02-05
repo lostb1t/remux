@@ -198,6 +198,8 @@ pub struct MediaFilter {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
     pub total_count: bool,
+    pub include_user_state: bool,
+    pub user_state: Option<super::UserMediaStateFilter>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -236,6 +238,8 @@ pub struct Media {
     //pub description: Option<String>,
     #[sqlx(skip)]
     pub sources: Option<Vec<Media>>,
+    #[sqlx(skip)]
+    pub user_state: Option<super::UserMediaState>,
     // pub seasons: Option<Vec<Media>>,
 
     // stream
@@ -537,61 +541,96 @@ impl Media {
         Ok(row)
     }
 
-    pub async fn get_by_filter(
-        db: &sqlx::SqlitePool,
-        filter: &MediaFilter,
-    ) -> Result<FilterResult<Media>> {
-        let mut count_qb =
-            sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM media WHERE 1=1");
-        let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
 
-        for qb in [&mut count_qb, &mut records_qb] {
-            if let Some(parent_id) = &filter.parent_id {
-                qb.push(" AND parent_id = ").push_bind(parent_id);
-            }
-            if let Some(aio_id) = &filter.aio_id {
-                qb.push(" AND aio_id = ").push_bind(aio_id);
-            }
-            if let Some(promoted) = &filter.promoted {
-                qb.push(" AND promoted = ").push_bind(promoted);
-            }
-            if let Some(aio_id) = &filter.aio_id {
-                qb.push(" AND aio_id = ").push_bind(aio_id);
-            }
+pub async fn get_by_filter(
+    db: &SqlitePool,
+    filter: &MediaFilter,
+) -> Result<FilterResult<Media>> {
+    let mut count_qb = sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM media WHERE 1=1");
+    let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
 
-            if let Some(kind) = &filter.kind {
-                qb.push_in("kind", &kind);
-            }
-            if let Some(id) = &filter.id {
-                qb.push_in("id", &id);
-            }
+    for qb in [&mut count_qb, &mut records_qb] {
+        if let Some(parent_id) = &filter.parent_id {
+            qb.push(" AND parent_id = ").push_bind(parent_id);
         }
-
-        if let Some(limit) = &filter.limit {
-            records_qb.push(" LIMIT ").push_bind(limit);
+        if let Some(aio_id) = &filter.aio_id {
+            qb.push(" AND aio_id = ").push_bind(aio_id);
         }
-
-        if let Some(offset) = &filter.offset {
-            records_qb.push(" OFFSET ").push_bind(offset);
+        if let Some(promoted) = &filter.promoted {
+            qb.push(" AND promoted = ").push_bind(promoted);
         }
-
-        let (count, records) = tokio::join!(
-            async {
-                let query = count_qb.build();
-                let row = query.fetch_one(db).await;
-                row.map(|r| r.get::<i64, _>(0) as usize)
-            },
-            async {
-                let query = records_qb.build_query_as::<Media>();
-                query.fetch_all(db).await
-            }
-        );
-
-        Ok(FilterResult {
-            records: records?,
-            total_count: if filter.total_count { count? } else { 0 },
-        })
+        if let Some(kind) = &filter.kind {
+            qb.push_in("kind", &kind);
+        }
+        if let Some(id) = &filter.id {
+            qb.push_in("id", &id);
+        }
+        if let Some(imdb_id) = &filter.imdb_id {
+            qb.push(" AND imdb_id = ").push_bind(imdb_id);
+        }
     }
+
+    if let Some(limit) = &filter.limit {
+        records_qb.push(" LIMIT ").push_bind(limit);
+    }
+    if let Some(offset) = &filter.offset {
+        records_qb.push(" OFFSET ").push_bind(offset);
+    }
+
+    let (count, records_result) = tokio::join!(
+        async {
+            let query = count_qb.build();
+            let row = query.fetch_one(db).await;
+            row.map(|r| r.get::<i64, _>(0) as usize)
+        },
+        async {
+            let query = records_qb.build_query_as::<Media>();
+            query.fetch_all(db).await
+        }
+    );
+
+    let mut records = records_result?;
+
+    if filter.include_user_state && filter.user_state.is_some() {
+        let user_state_filter = filter.user_state.as_ref().unwrap();
+        if let Some(user_id) = user_state_filter.user_id {
+            let media_keys: Vec<String> = records
+                .iter()
+                .map(|m| m.media_key())
+                .collect();
+
+            let states = super::UserMediaState::get_by_filter(
+                db,
+                &super::UserMediaStateFilter {
+                    user_id: Some(user_id),
+                    media_key: Some(media_keys),
+                    played: user_state_filter.played,
+                    favorite: user_state_filter.favorite,
+                    ..Default::default()
+                },
+            )
+            .await?
+            .records;
+
+            let states_map: HashMap<String, super::UserMediaState> = states
+                .into_iter()
+                .map(|state| (state.media_key.clone(), state))
+                .collect();
+
+            for media in &mut records {
+                if let Some(state) = states_map.get(&media.media_key()) {
+                    media.user_state = Some(state.clone());
+                }
+            }
+        }
+    }
+
+    Ok(FilterResult {
+        records,
+        total_count: if filter.total_count { count? } else { 0 },
+    })
+}
+
 
     pub async fn get_by_jellyfin_filter(
         db: &sqlx::SqlitePool,

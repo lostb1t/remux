@@ -115,7 +115,7 @@ CREATE TABLE jellyfin_display_prefs (
 CREATE TABLE user_media_state (
     user_id      TEXT NOT NULL,
     media_key    TEXT NOT NULL,
-    is_fav       INT NOT NULL DEFAULT 0,
+    favorite       INT NOT NULL DEFAULT 0,
     play_count   INT NOT NULL DEFAULT 0,
     played_at    DATETIME NOT NULL,
     playback_position INT NOT NULL DEFAULT 0,
