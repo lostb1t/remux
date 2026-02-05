@@ -61,7 +61,6 @@ impl From<db::Media> for jellyfin::BaseItemDto {
             //} else {
             //    None
             //
-            
             series_id: media.parent_id,
             season_id: media.parent_id,
             user_data: media.user_state.clone().map(|state| state.into()),

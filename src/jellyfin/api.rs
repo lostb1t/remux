@@ -11,10 +11,10 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::response::Redirect;
 use axum::response::{IntoResponse, Response};
+use axum::routing::delete;
 use axum::routing::get;
 use axum::routing::get_service;
 use axum::routing::post;
-use axum::routing::delete;
 use axum_extra::extract::Query;
 use axum_extra::response::file_stream::FileStream;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
@@ -94,8 +94,14 @@ pub fn routes() -> Router<AppState> {
             "/users/{user_id}/groupingoptions",
             get(users_groupingoptions),
         )
-        .route("/users/{user_id}/playeditems/{id}", post(post_users_playeditems))
-        .route("/users/{user_id}/playeditems/{id}", delete(delete_users_playeditems))
+        .route(
+            "/users/{user_id}/playeditems/{id}",
+            post(post_users_playeditems),
+        )
+        .route(
+            "/users/{user_id}/playeditems/{id}",
+            delete(delete_users_playeditems),
+        )
         .route("/videos/{id}/stream", get(videos_stream))
         .route("/playback/bitratetest", get(playback_bitratetest))
         .route("/displaypreferences/{id}", get(get_display_preferences))
@@ -468,7 +474,7 @@ pub async fn get_items(
             if q.limit.is_none() {
                 q.limit = Some(250);
             }
-            
+
             q.user_id = Some(session.user.id.clone());
 
             let mut result =
@@ -516,8 +522,6 @@ pub async fn get_items(
                             .get(0)
                             .unwrap()
                             .clone();
-                            
-
                         }
 
                         Some(media)
@@ -534,8 +538,8 @@ pub async fn get_items(
                 {
                     media.refresh_sources(&state.ctx.db, &state.ctx.aio).await?;
                     media.sources(&state.ctx.db).await?;
-                            // always load state for single
-                            media.user_state(&state.ctx.db, session.user.id).await?;
+                    // always load state for single
+                    media.user_state(&state.ctx.db, session.user.id).await?;
                     if let Some(sources) = &media.sources {
                         trace!(streams_len = sources.len(), "sources");
                     }
@@ -916,9 +920,11 @@ pub async fn users_me(
 pub async fn post_users_playeditems(
     State(state): State<AppState>,
     session: auth::AuthSession,
-   Path((user_id, id)): Path<(Uuid, Uuid)>
+    Path((user_id, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(&state.ctx.db, &id).await?.context("not foubd")?;
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context("not foubd")?;
     let state = media.mark_played(&state.ctx.db, &session.user).await?;
     Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
 }
@@ -926,9 +932,11 @@ pub async fn post_users_playeditems(
 pub async fn delete_users_playeditems(
     State(state): State<AppState>,
     session: auth::AuthSession,
-   Path((user_id, id)): Path<(Uuid, Uuid)>
+    Path((user_id, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(&state.ctx.db, &id).await?.context("not foubd")?;
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context("not foubd")?;
     let state = media.mark_played(&state.ctx.db, &session.user).await?;
     Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
 }

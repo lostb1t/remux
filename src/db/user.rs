@@ -179,11 +179,9 @@ impl User {
         db: &sqlx::SqlitePool,
         filter: &UserFilter,
     ) -> Result<FilterResult<User>> {
-        let mut count_qb = sqlx::QueryBuilder::new(
-            "SELECT COUNT(*) as count FROM users WHERE 1=1",
-        );
-        let mut records_qb =
-            sqlx::QueryBuilder::new("SELECT * FROM users WHERE 1=1");
+        let mut count_qb =
+            sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM users WHERE 1=1");
+        let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM users WHERE 1=1");
 
         for qb in [&mut count_qb, &mut records_qb] {
             if let Some(id) = &filter.id {
@@ -258,7 +256,7 @@ impl User {
             Ok(None)
         }
     }
-    
+
     pub async fn get_media_state(
         &self,
         db: &SqlitePool,
@@ -301,7 +299,11 @@ pub struct UserMediaStateFilter {
 }
 
 impl UserMediaState {
-      pub async fn get_by_user_and_media(db: &SqlitePool, user: &User, media: &super::Media) -> Result<Option<Self>> {
+    pub async fn get_by_user_and_media(
+        db: &SqlitePool,
+        user: &User,
+        media: &super::Media,
+    ) -> Result<Option<Self>> {
         let row = sqlx::query_as::<_, Self>(
             r#"
         SELECT *
@@ -316,22 +318,25 @@ impl UserMediaState {
 
         Ok(row)
     }
-    
+
     pub async fn get_or_new(
-    db: &SqlitePool,
-    user: &User,
-    media: &super::Media,
-) -> Result<Self> {
-    let row = Self::get_by_user_and_media(db, user, media).await?;
-    Ok(row.unwrap_or_else(|| Self {
-        user_id: user.id,
-        media_key: media.aio_id.clone().unwrap(),
-        ..Default::default()
-    }))
-}
-    
+        db: &SqlitePool,
+        user: &User,
+        media: &super::Media,
+    ) -> Result<Self> {
+        let row = Self::get_by_user_and_media(db, user, media).await?;
+        Ok(row.unwrap_or_else(|| Self {
+            user_id: user.id,
+            media_key: media.aio_id.clone().unwrap(),
+            ..Default::default()
+        }))
+    }
+
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
-        debug!("Saving user media state for user {} and media key {}", self.user_id, self.media_key);
+        debug!(
+            "Saving user media state for user {} and media key {}",
+            self.user_id, self.media_key
+        );
 
         sqlx::query(
             r#"
@@ -377,16 +382,18 @@ impl UserMediaState {
         db: &SqlitePool,
         filter: &UserMediaStateFilter,
     ) -> Result<FilterResult<Self>> {
-        let mut count_qb = sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM user_media_state WHERE 1=1");
-        let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM user_media_state WHERE 1=1");
+        let mut count_qb = sqlx::QueryBuilder::new(
+            "SELECT COUNT(*) as count FROM user_media_state WHERE 1=1",
+        );
+        let mut records_qb =
+            sqlx::QueryBuilder::new("SELECT * FROM user_media_state WHERE 1=1");
 
         for qb in [&mut count_qb, &mut records_qb] {
             if let Some(user_id) = &filter.user_id {
                 qb.push(" AND user_id = ").push_bind(user_id);
             }
             if let Some(media_keys) = &filter.media_key {
-                              qb.push_in("media_key", &media_keys); 
-                              
+                qb.push_in("media_key", &media_keys);
             }
             if let Some(played) = &filter.played {
                 qb.push(" AND play_count > 0");

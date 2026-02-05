@@ -172,7 +172,7 @@ pub struct GetItemsQuery {
     //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, SortOrder>>")]
     //pub sort_order: Option<SortOrder>,
     pub enable_images: Option<bool>,
-   // #[default(true)]
+    // #[default(true)]
     pub enable_user_data: Option<bool>,
     pub enable_total_record_count: Option<bool>,
     pub enable_resumable: Option<bool>,
@@ -240,17 +240,15 @@ where
             .split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .filter_map(|s| {
-                match s.parse::<ItemFields>() {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        tracing::warn!(
-                            value = %s,
-                            error = ?e,
-                            "ItemFields parse failed, ignoring value"
-                        );
-                        None
-                    }
+            .filter_map(|s| match s.parse::<ItemFields>() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(
+                        value = %s,
+                        error = ?e,
+                        "ItemFields parse failed, ignoring value"
+                    );
+                    None
                 }
             })
             .collect::<Vec<_>>(),
@@ -260,17 +258,15 @@ where
             .flat_map(|s| s.split(','))
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .filter_map(|s| {
-                match s.parse::<ItemFields>() {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        tracing::warn!(
-                            value = %s,
-                            error = ?e,
-                            "ItemFields parse failed, ignoring value"
-                        );
-                        None
-                    }
+            .filter_map(|s| match s.parse::<ItemFields>() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(
+                        value = %s,
+                        error = ?e,
+                        "ItemFields parse failed, ignoring value"
+                    );
+                    None
                 }
             })
             .collect::<Vec<_>>(),
@@ -799,7 +795,7 @@ pub struct UserItemDataDto {
     pub played_percentage: Option<f32>,
     pub last_updated: Option<DateTime<Utc>>,
     pub key: Option<String>,
-   // pub item_id: String,
+    // pub item_id: String,
 }
 
 #[skip_serializing_none]

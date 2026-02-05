@@ -56,10 +56,10 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing;
 use tracing::debug;
+use tracing::info;
 use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
-use tracing::info;
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
@@ -276,8 +276,6 @@ pub enum MediaError {
 }
 
 impl Media {
-  
-
     pub fn is_promoted(&self) -> bool {
         match self.promoted {
             0 => false,
@@ -317,10 +315,10 @@ impl Media {
     }
 
     pub async fn save(&mut self, db: &sqlx::SqlitePool) -> Result<()> {
-    self.validate()?;
-    let updated_at = Utc::now();
+        self.validate()?;
+        let updated_at = Utc::now();
 
-    sqlx::query!(
+        sqlx::query!(
         r#"
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
@@ -383,77 +381,77 @@ impl Media {
     .execute(db)
     .await?;
 
-    Ok(())
-}
+        Ok(())
+    }
 
     pub async fn insert(db: &sqlx::SqlitePool, items: &[Self]) -> Result<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
+        if items.is_empty() {
+            return Ok(());
+        }
 
-    let mut tx = db.begin().await?;
-    const BATCH_SIZE: usize = 900;
+        let mut tx = db.begin().await?;
+        const BATCH_SIZE: usize = 900;
 
-    for chunk in items.chunks(BATCH_SIZE) {
-        let mut query_builder = sqlx::QueryBuilder::new(
+        for chunk in items.chunks(BATCH_SIZE) {
+            let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
                 remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx
             )",
         );
-        for item in chunk {
-            item.validate()?;
+            for item in chunk {
+                item.validate()?;
+            }
+            query_builder.push_values(chunk.iter(), |mut b, item| {
+                b.push_bind(&item.id)
+                    .push_bind(&item.title)
+                    .push_bind(&item.kind)
+                    .push_bind(&item.parent_id)
+                    .push_bind(&item.idx)
+                    .push_bind(&item.released_at)
+                    .push_bind(&item.runtime)
+                    .push_bind(&item.rating_critic)
+                    .push_bind(&item.rating_audience)
+                    .push_bind(&item.poster)
+                    .push_bind(&item.logo)
+                    .push_bind(&item.backdrop)
+                    .push_bind(&item.description)
+                    .push_bind(&item.trailers)
+                    .push_bind(&item.url)
+                    .push_bind(&item.probe_data)
+                    .push_bind(&item.promoted)
+                    .push_bind(&item.catalog_kind)
+                    .push_bind(&item.catalog_media_kind)
+                    .push_bind(&item.remote_data)
+                    .push_bind(&item.series_imdb_id)
+                    .push_bind(&item.imdb_id)
+                    .push_bind(&item.aio_id)
+                    .push_bind(&item.created_at)
+                    .push_bind(Utc::now())
+                    .push_bind(&item.certification)
+                    .push_bind(&item.parent_idx);
+            });
+
+            query_builder.push(" ON CONFLICT DO NOTHING");
+
+            query_builder.build().execute(&mut *tx).await?;
         }
-        query_builder.push_values(chunk.iter(), |mut b, item| {
-            b.push_bind(&item.id)
-                .push_bind(&item.title)
-                .push_bind(&item.kind)
-                .push_bind(&item.parent_id)
-                .push_bind(&item.idx)
-                .push_bind(&item.released_at)
-                .push_bind(&item.runtime)
-                .push_bind(&item.rating_critic)
-                .push_bind(&item.rating_audience)
-                .push_bind(&item.poster)
-                .push_bind(&item.logo)
-                .push_bind(&item.backdrop)
-                .push_bind(&item.description)
-                .push_bind(&item.trailers)
-                .push_bind(&item.url)
-                .push_bind(&item.probe_data)
-                .push_bind(&item.promoted)
-                .push_bind(&item.catalog_kind)
-                .push_bind(&item.catalog_media_kind)
-                .push_bind(&item.remote_data)
-                .push_bind(&item.series_imdb_id)
-                .push_bind(&item.imdb_id)
-                .push_bind(&item.aio_id)
-                .push_bind(&item.created_at)
-                .push_bind(Utc::now())
-                .push_bind(&item.certification)
-                .push_bind(&item.parent_idx);
-        });
 
-        query_builder.push(" ON CONFLICT DO NOTHING");
-
-        query_builder.build().execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
     }
-
-    tx.commit().await?;
-    Ok(())
-}
 
     pub async fn upsert(db: &sqlx::SqlitePool, items: &[Self]) -> Result<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
+        if items.is_empty() {
+            return Ok(());
+        }
 
-    let mut tx = db.begin().await?;
-    const BATCH_SIZE: usize = 900;
+        let mut tx = db.begin().await?;
+        const BATCH_SIZE: usize = 900;
 
-    for chunk in items.chunks(BATCH_SIZE) {
-        let mut query_builder = sqlx::QueryBuilder::new(
+        for chunk in items.chunks(BATCH_SIZE) {
+            let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
@@ -461,38 +459,38 @@ impl Media {
             )",
         );
 
-        query_builder.push_values(chunk.iter(), |mut b, item| {
-            b.push_bind(&item.id)
-                .push_bind(&item.title)
-                .push_bind(&item.kind)
-                .push_bind(&item.parent_id)
-                .push_bind(&item.idx)
-                .push_bind(&item.released_at)
-                .push_bind(&item.runtime)
-                .push_bind(&item.rating_critic)
-                .push_bind(&item.rating_audience)
-                .push_bind(&item.poster)
-                .push_bind(&item.logo)
-                .push_bind(&item.backdrop)
-                .push_bind(&item.description)
-                .push_bind(&item.trailers)
-                .push_bind(&item.url)
-                .push_bind(&item.probe_data)
-                .push_bind(&item.promoted)
-                .push_bind(&item.catalog_kind)
-                .push_bind(&item.catalog_media_kind)
-                .push_bind(&item.remote_data)
-                .push_bind(&item.series_imdb_id)
-                .push_bind(&item.imdb_id)
-                .push_bind(&item.aio_id)
-                .push_bind(&item.created_at)
-                .push_bind(Utc::now())
-                .push_bind(&item.certification)
-                .push_bind(&item.parent_idx);
-        });
+            query_builder.push_values(chunk.iter(), |mut b, item| {
+                b.push_bind(&item.id)
+                    .push_bind(&item.title)
+                    .push_bind(&item.kind)
+                    .push_bind(&item.parent_id)
+                    .push_bind(&item.idx)
+                    .push_bind(&item.released_at)
+                    .push_bind(&item.runtime)
+                    .push_bind(&item.rating_critic)
+                    .push_bind(&item.rating_audience)
+                    .push_bind(&item.poster)
+                    .push_bind(&item.logo)
+                    .push_bind(&item.backdrop)
+                    .push_bind(&item.description)
+                    .push_bind(&item.trailers)
+                    .push_bind(&item.url)
+                    .push_bind(&item.probe_data)
+                    .push_bind(&item.promoted)
+                    .push_bind(&item.catalog_kind)
+                    .push_bind(&item.catalog_media_kind)
+                    .push_bind(&item.remote_data)
+                    .push_bind(&item.series_imdb_id)
+                    .push_bind(&item.imdb_id)
+                    .push_bind(&item.aio_id)
+                    .push_bind(&item.created_at)
+                    .push_bind(Utc::now())
+                    .push_bind(&item.certification)
+                    .push_bind(&item.parent_idx);
+            });
 
-        query_builder.push(
-            " ON CONFLICT DO UPDATE SET
+            query_builder.push(
+                " ON CONFLICT DO UPDATE SET
                 title = excluded.title,
                 id = excluded.id,
                 idx = excluded.idx,
@@ -515,21 +513,20 @@ impl Media {
                 promoted = excluded.promoted,
                 certification = excluded.certification,
                 parent_idx = excluded.parent_idx",
-        );
+            );
 
-        query_builder.build().execute(&mut *tx).await?;
+            query_builder.build().execute(&mut *tx).await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
     }
-
-    tx.commit().await?;
-    Ok(())
-}
 
     pub async fn get_by_id(
         db: &SqlitePool,
         id: &Uuid,
-    ) -> Result<Option<Self>, sqlx::Error> {  
-      
-      let row = sqlx::query_as::<_, Self>(
+    ) -> Result<Option<Self>, sqlx::Error> {
+        let row = sqlx::query_as::<_, Self>(
             r#"
         SELECT *
         FROM media
@@ -543,96 +540,93 @@ impl Media {
         Ok(row)
     }
 
+    pub async fn get_by_filter(
+        db: &SqlitePool,
+        filter: &MediaFilter,
+    ) -> Result<FilterResult<Media>> {
+        let mut count_qb =
+            sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM media WHERE 1=1");
+        let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
 
-pub async fn get_by_filter(
-    db: &SqlitePool,
-    filter: &MediaFilter,
-) -> Result<FilterResult<Media>> {
-    let mut count_qb = sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM media WHERE 1=1");
-    let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
-
-    for qb in [&mut count_qb, &mut records_qb] {
-        if let Some(parent_id) = &filter.parent_id {
-            qb.push(" AND parent_id = ").push_bind(parent_id);
+        for qb in [&mut count_qb, &mut records_qb] {
+            if let Some(parent_id) = &filter.parent_id {
+                qb.push(" AND parent_id = ").push_bind(parent_id);
+            }
+            if let Some(aio_id) = &filter.aio_id {
+                qb.push(" AND aio_id = ").push_bind(aio_id);
+            }
+            if let Some(promoted) = &filter.promoted {
+                qb.push(" AND promoted = ").push_bind(promoted);
+            }
+            if let Some(kind) = &filter.kind {
+                qb.push_in("kind", &kind);
+            }
+            if let Some(id) = &filter.id {
+                qb.push_in("id", &id);
+            }
+            if let Some(imdb_id) = &filter.imdb_id {
+                qb.push(" AND imdb_id = ").push_bind(imdb_id);
+            }
         }
-        if let Some(aio_id) = &filter.aio_id {
-            qb.push(" AND aio_id = ").push_bind(aio_id);
+
+        if let Some(limit) = &filter.limit {
+            records_qb.push(" LIMIT ").push_bind(limit);
         }
-        if let Some(promoted) = &filter.promoted {
-            qb.push(" AND promoted = ").push_bind(promoted);
+        if let Some(offset) = &filter.offset {
+            records_qb.push(" OFFSET ").push_bind(offset);
         }
-        if let Some(kind) = &filter.kind {
-            qb.push_in("kind", &kind);
-        }
-        if let Some(id) = &filter.id {
-            qb.push_in("id", &id);
-        }
-        if let Some(imdb_id) = &filter.imdb_id {
-            qb.push(" AND imdb_id = ").push_bind(imdb_id);
-        }
-    }
 
-    if let Some(limit) = &filter.limit {
-        records_qb.push(" LIMIT ").push_bind(limit);
-    }
-    if let Some(offset) = &filter.offset {
-        records_qb.push(" OFFSET ").push_bind(offset);
-    }
+        let (count, records_result) = tokio::join!(
+            async {
+                let query = count_qb.build();
+                let row = query.fetch_one(db).await;
+                row.map(|r| r.get::<i64, _>(0) as usize)
+            },
+            async {
+                let query = records_qb.build_query_as::<Media>();
+                query.fetch_all(db).await
+            }
+        );
 
-    let (count, records_result) = tokio::join!(
-        async {
-            let query = count_qb.build();
-            let row = query.fetch_one(db).await;
-            row.map(|r| r.get::<i64, _>(0) as usize)
-        },
-        async {
-            let query = records_qb.build_query_as::<Media>();
-            query.fetch_all(db).await
-        }
-    );
+        let mut records = records_result?;
 
-    let mut records = records_result?;
+        if filter.include_user_state && filter.user_state.is_some() {
+            let user_state_filter = filter.user_state.as_ref().unwrap();
+            if let Some(user_id) = user_state_filter.user_id {
+                let media_keys: Vec<String> =
+                    records.iter().map(|m| m.media_key()).collect();
 
-    if filter.include_user_state && filter.user_state.is_some() {
-        let user_state_filter = filter.user_state.as_ref().unwrap();
-        if let Some(user_id) = user_state_filter.user_id {
-            let media_keys: Vec<String> = records
-                .iter()
-                .map(|m| m.media_key())
-                .collect();
+                let states = super::UserMediaState::get_by_filter(
+                    db,
+                    &super::UserMediaStateFilter {
+                        user_id: Some(user_id),
+                        media_key: Some(media_keys),
+                        played: user_state_filter.played,
+                        favorite: user_state_filter.favorite,
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .records;
 
-            let states = super::UserMediaState::get_by_filter(
-                db,
-                &super::UserMediaStateFilter {
-                    user_id: Some(user_id),
-                    media_key: Some(media_keys),
-                    played: user_state_filter.played,
-                    favorite: user_state_filter.favorite,
-                    ..Default::default()
-                },
-            )
-            .await?
-            .records;
+                let states_map: HashMap<String, super::UserMediaState> = states
+                    .into_iter()
+                    .map(|state| (state.media_key.clone(), state))
+                    .collect();
 
-            let states_map: HashMap<String, super::UserMediaState> = states
-                .into_iter()
-                .map(|state| (state.media_key.clone(), state))
-                .collect();
-
-            for media in &mut records {
-                if let Some(state) = states_map.get(&media.media_key()) {
-                    media.user_state = Some(state.clone());
+                for media in &mut records {
+                    if let Some(state) = states_map.get(&media.media_key()) {
+                        media.user_state = Some(state.clone());
+                    }
                 }
             }
         }
+
+        Ok(FilterResult {
+            records,
+            total_count: if filter.total_count { count? } else { 0 },
+        })
     }
-
-    Ok(FilterResult {
-        records,
-        total_count: if filter.total_count { count? } else { 0 },
-    })
-}
-
 
     pub async fn get_by_jellyfin_filter(
         db: &sqlx::SqlitePool,
@@ -654,17 +648,16 @@ pub async fn get_by_filter(
                 offset: filter.start_index.clone(),
                 include_user_state: filter.enable_user_data.is_none(),
                 total_count,
-                
+
                 user_state: {
-                if filter.enable_user_data.is_none() {
-                  Some(super::UserMediaStateFilter {
-                    user_id: filter.user_id,
-                    ..Default::default()
-                  })
-                }
-                else {
-                  None
-                }
+                    if filter.enable_user_data.is_none() {
+                        Some(super::UserMediaStateFilter {
+                            user_id: filter.user_id,
+                            ..Default::default()
+                        })
+                    } else {
+                        None
+                    }
                 },
                 //   parent_id: Some(self.id),
                 ..Default::default()
@@ -704,16 +697,24 @@ pub async fn get_by_filter(
             Ok(None)
         }
     }
-    
-    pub async fn mark_played(&self, db: &SqlitePool, user: &super::User) -> Result<super::UserMediaState> {
+
+    pub async fn mark_played(
+        &self,
+        db: &SqlitePool,
+        user: &super::User,
+    ) -> Result<super::UserMediaState> {
         let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
         state.play_count = 1;
         state.played_at = Some(Local::now().naive_local());
         state.save(db).await?;
         Ok(state)
     }
-    
-    pub async fn mark_unplayed(&self, db: &SqlitePool, user: &super::User) -> Result<super::UserMediaState> {
+
+    pub async fn mark_unplayed(
+        &self,
+        db: &SqlitePool,
+        user: &super::User,
+    ) -> Result<super::UserMediaState> {
         let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
         state.play_count = 0;
         state.played_at = None;
@@ -721,7 +722,6 @@ pub async fn get_by_filter(
         state.save(db).await?;
         Ok(state)
     }
-
 
     //pub async fn seasons(&self, db: &sqlx::SqlitePool) -> Result<Vec<Self>> {
     //    if let Some(seasons) = self.seasons {
@@ -778,14 +778,14 @@ pub async fn get_by_filter(
         };
         Ok(self.sources.clone().unwrap())
     }
-    
+
     pub async fn user_state(
         &mut self,
         db: &SqlitePool,
         user_id: Uuid,
     ) -> Result<Option<super::UserMediaState>> {
-         info!("CALLED");
-         if self.user_state.is_none() {
+        info!("CALLED");
+        if self.user_state.is_none() {
             let state = super::UserMediaState::get_by_filter(
                 db,
                 &super::UserMediaStateFilter {
@@ -804,16 +804,23 @@ pub async fn get_by_filter(
 
         Ok(self.user_state.clone())
     }
-    
-    
+
     pub fn media_key(&self) -> String {
-      
-      match self.kind {
-        MediaKind::Movie | MediaKind::Series => self.imdb_id.clone().unwrap(),
-        MediaKind::Season => format!("{}{}", self.series_imdb_id.clone().unwrap(), self.idx.unwrap()),
-        MediaKind::Episode => format!("{}{}{}", self.series_imdb_id.clone().unwrap(), self.parent_idx.unwrap(), self.idx.unwrap()),
-        _ => panic!("in the discoteq")
-      }
+        match self.kind {
+            MediaKind::Movie | MediaKind::Series => self.imdb_id.clone().unwrap(),
+            MediaKind::Season => format!(
+                "{}{}",
+                self.series_imdb_id.clone().unwrap(),
+                self.idx.unwrap()
+            ),
+            MediaKind::Episode => format!(
+                "{}{}{}",
+                self.series_imdb_id.clone().unwrap(),
+                self.parent_idx.unwrap(),
+                self.idx.unwrap()
+            ),
+            _ => panic!("in the discoteq"),
+        }
     }
 }
 
