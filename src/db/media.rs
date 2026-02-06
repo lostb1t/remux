@@ -569,7 +569,28 @@ impl Media {
             }
 
             if let Some(user_state_filter) = &filter.user_state {
-
+                // Join with user_media_state table for filtering
+                qb.push(" AND EXISTS (")
+                    .push("SELECT 1 FROM user_media_state ums ")
+                    .push("WHERE ums.media_key = media.aio_id ");
+                
+                if let Some(user_id) = &user_state_filter.user_id {
+                    qb.push("AND ums.user_id = ").push_bind(user_id);
+                }
+                
+                if let Some(played) = &user_state_filter.played {
+                    if *played {
+                        qb.push(" AND ums.play_count > 0");
+                    } else {
+                        qb.push(" AND ums.play_count = 0");
+                    }
+                }
+                
+                if let Some(favorite) = &user_state_filter.favorite {
+                    qb.push(" AND ums.favorite = ").push_bind(favorite);
+                }
+                
+                qb.push(")");
             }
         }
 
