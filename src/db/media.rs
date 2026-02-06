@@ -567,6 +567,10 @@ impl Media {
             if let Some(imdb_id) = &filter.imdb_id {
                 qb.push(" AND imdb_id = ").push_bind(imdb_id);
             }
+
+            if let Some(user_state_filter) = &filter.user_state {
+
+            }
         }
 
         if let Some(limit) = &filter.limit {
@@ -590,16 +594,15 @@ impl Media {
 
         let mut records = records_result?;
 
-        if filter.include_user_state && filter.user_state.is_some() {
-            let user_state_filter = filter.user_state.as_ref().unwrap();
-            if let Some(user_id) = user_state_filter.user_id {
+        if filter.include_user_state {
+            if let Some(user_state_filter) = &filter.user_state {
                 let media_keys: Vec<String> =
                     records.iter().map(|m| m.media_key()).collect();
 
                 let states = super::UserMediaState::get_by_filter(
                     db,
                     &super::UserMediaStateFilter {
-                        user_id: Some(user_id),
+                        user_id: user_state_filter.user_id,
                         media_key: Some(media_keys),
                         played: user_state_filter.played,
                         favorite: user_state_filter.favorite,
@@ -614,9 +617,12 @@ impl Media {
                     .map(|state| (state.media_key.clone(), state))
                     .collect();
 
-                for media in &mut records {
-                    if let Some(state) = states_map.get(&media.media_key()) {
-                        media.user_state = Some(state.clone());
+                // Only attach user state if include_user_state is set
+                if filter.include_user_state {
+                    for media in &mut records {
+                        if let Some(state) = states_map.get(&media.media_key()) {
+                            media.user_state = Some(state.clone());
+                        }
                     }
                 }
             }
@@ -648,11 +654,17 @@ impl Media {
                 offset: filter.start_index.clone(),
                 include_user_state: filter.enable_user_data.is_none(),
                 total_count,
-
                 user_state: {
-                    if filter.enable_user_data.is_none() {
+                    let favorite = filter.is_favorite.or_else(|| {
+                        filter.filters.as_ref().and_then(|f| {
+                            f.contains(&jellyfin::ItemFilter::IsFavorite)
+                                .then_some(true)
+                        })
+                    });
+                    if favorite.is_some() {
                         Some(super::UserMediaStateFilter {
                             user_id: filter.user_id,
+                            favorite: favorite.clone(),
                             ..Default::default()
                         })
                     } else {
@@ -723,6 +735,28 @@ impl Media {
         Ok(state)
     }
 
+    pub async fn mark_favorite(
+        &self,
+        db: &SqlitePool,
+        user: &super::User,
+    ) -> Result<super::UserMediaState> {
+        let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
+        state.favorite = true;
+        state.save(db).await?;
+        Ok(state)
+    }
+
+    pub async fn unmark_favorite(
+        &self,
+        db: &SqlitePool,
+        user: &super::User,
+    ) -> Result<super::UserMediaState> {
+        let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
+        state.favorite = false;
+        state.save(db).await?;
+        Ok(state)
+    }
+
     //pub async fn seasons(&self, db: &sqlx::SqlitePool) -> Result<Vec<Self>> {
     //    if let Some(seasons) = self.seasons {
     //        Ok(seasons)
@@ -782,24 +816,12 @@ impl Media {
     pub async fn user_state(
         &mut self,
         db: &SqlitePool,
-        user_id: Uuid,
+        user: &super::User,
     ) -> Result<Option<super::UserMediaState>> {
-        info!("CALLED");
         if self.user_state.is_none() {
-            let state = super::UserMediaState::get_by_filter(
-                db,
-                &super::UserMediaStateFilter {
-                    user_id: Some(user_id),
-                    media_key: Some(vec![self.media_key()]),
-                    ..Default::default()
-                },
-            )
-            .await?
-            .records
-            .into_iter()
-            .next();
+            let state = super::UserMediaState::get_or_new(db, user, self).await?;
 
-            self.user_state = state;
+            self.user_state = Some(state);
         }
 
         Ok(self.user_state.clone())

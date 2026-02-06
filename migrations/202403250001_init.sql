@@ -117,7 +117,7 @@ CREATE TABLE user_media_state (
     media_key    TEXT NOT NULL,
     favorite       INT NOT NULL DEFAULT 0,
     play_count   INT NOT NULL DEFAULT 0,
-    played_at    DATETIME NOT NULL,
+    played_at    DATETIME,
     playback_position INT NOT NULL DEFAULT 0,
     stream_id    TEXT,
     subtitle_idx INT,

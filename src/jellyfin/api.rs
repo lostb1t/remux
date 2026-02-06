@@ -96,11 +96,19 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/users/{user_id}/playeditems/{id}",
-            post(post_users_playeditems),
+            post(mark_played),
         )
         .route(
             "/users/{user_id}/playeditems/{id}",
-            delete(delete_users_playeditems),
+            delete(unmark_played),
+        )
+        .route(
+            "/users/{user_id}/favoriteitems/{id}",
+            post(mark_favorite),
+        )
+        .route(
+            "/users/{user_id}/favoriteitems/{id}",
+            delete(unmark_favorite),
         )
         .route("/videos/{id}/stream", get(videos_stream))
         .route("/playback/bitratetest", get(playback_bitratetest))
@@ -363,7 +371,7 @@ pub async fn get_items(
     mut q: jellyfin::GetItemsQuery,
     _count: bool,
 ) -> Result<ItemsQueryResult> {
-    trace!(?q, "get_items");
+    //trace!(?q, "get_items");
     let aio = session.aio;
 
     let parent = if let Some(parent_id) = q.parent_id.clone() {
@@ -539,7 +547,8 @@ pub async fn get_items(
                     media.refresh_sources(&state.ctx.db, &state.ctx.aio).await?;
                     media.sources(&state.ctx.db).await?;
                     // always load state for single
-                    media.user_state(&state.ctx.db, session.user.id).await?;
+                    media.user_state(&state.ctx.db, &session.user).await?;
+                    
                     if let Some(sources) = &media.sources {
                         trace!(streams_len = sources.len(), "sources");
                     }
@@ -917,7 +926,31 @@ pub async fn users_me(
     Ok(Json(jellyfin::UserDto::from(session.user)).into_response())
 }
 
-pub async fn post_users_playeditems(
+pub async fn mark_favorite(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((user_id, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context("not foubd")?;
+    let state = media.mark_favorite(&state.ctx.db, &session.user).await?;
+    Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
+}
+
+pub async fn unmark_favorite(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((user_id, id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context("not foubd")?;
+    let state = media.unmark_favorite(&state.ctx.db, &session.user).await?;
+    Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
+}
+
+pub async fn mark_played(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path((user_id, id)): Path<(Uuid, Uuid)>,
@@ -929,7 +962,7 @@ pub async fn post_users_playeditems(
     Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
 }
 
-pub async fn delete_users_playeditems(
+pub async fn unmark_played(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path((user_id, id)): Path<(Uuid, Uuid)>,
