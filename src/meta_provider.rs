@@ -1,4 +1,4 @@
-use crate::{AppContext, aio, db};
+use crate::{AppContext, aio, db, sdks};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
@@ -39,6 +39,9 @@ pub trait MetaProvider: Send + Sync {
 
         Ok(results)
     }
+    
+  async fn get_seasons(&self, mut media: db::Media, ctx: AppContext) -> Result<Option<Vec<db::Media>>>;
+  async fn get_episodes(&self, mut media: db::Media, ctx: AppContext) -> Result<Option<Vec<db::Media>>>;
 }
 
 pub struct AioMetaProvider;
@@ -59,5 +62,13 @@ impl MetaProvider for AioMetaProvider {
         //media.genres = metadata.genres;
         Ok(media)
         // Ok(media_new<db::Media>[0])
+    }
+    
+    async fn get_seasons(&self, mut media: db::Media, ctx: AppContext) -> Result<Option<Vec<db::Media>>> {
+      
+Ok(None)
+    }
+    async fn get_episodes(&self, mut media: db::Media, ctx: AppContext) -> Result<Option<Vec<db::Media>>> {
+      Ok(None)
     }
 }

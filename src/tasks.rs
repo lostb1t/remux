@@ -416,3 +416,54 @@ impl Task for CatalogImportTask {
         Ok(())
     }
 }
+
+#[derive(Default)]
+pub struct SeriesSyncTask;
+
+#[async_trait]
+impl Task for SeriesSyncTask {
+    fn id(&self) -> Uuid {
+        uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479")
+    }
+
+    fn name(&self) -> &str {
+        "Series sync"
+    }
+
+    fn default_triggers(&self) -> Vec<db::TaskTrigger> {
+        vec![]
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        ctx: AppContext,
+        _task_service: Arc<TaskService>,
+    ) -> Result<()> {
+        let provider = AioMetaProvider {};
+        let media_list = db::Media::get_by_filter(
+            &ctx.db,
+            &db::MediaFilter {
+                kind: Some(vec![db::MediaKind::Series]),
+                ..Default::default()
+            },
+        )
+        .await?
+        .records;
+
+        let updated_media = stream::iter(media_list)
+            .map(|media| {
+                let provider = &provider;
+                let ctx = ctx.clone();
+                async move { provider.apply(media, ctx).await }
+            })
+            .buffer_unordered(10)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<db::Media>>>()?;
+
+        db::Media::upsert(&ctx.db, &updated_media).await?;
+
+        Ok(())
+    }
+}

@@ -973,6 +973,70 @@ pub struct BaseItemDto {
     //pub aio_stream: Option<sdks::aio::Stream>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionInfoDto {
+    //pub play_state: Option<PlayerStateInfo>,
+   // pub additional_users: Option<Vec<SessionUserInfo>>,
+    //pub capabilities: Option<ClientCapabilitiesDto>,
+    pub remote_end_point: Option<String>,
+    pub playable_media_types: Vec<MediaType>,
+    pub id: Option<String>,
+    pub user_id: String,
+    pub user_name: Option<String>,
+    pub client: Option<String>,
+    pub last_activity_date: DateTime<Utc>,
+    pub last_playback_check_in: DateTime<Utc>,
+    pub last_paused_date: Option<DateTime<Utc>>,
+    pub device_name: Option<String>,
+    pub device_type: Option<String>,
+    pub now_playing_item: Option<BaseItemDto>,
+    pub now_viewing_item: Option<BaseItemDto>,
+    pub device_id: Option<String>,
+    pub application_version: Option<String>,
+  //  pub transcoding_info: Option<TranscodingInfo>,
+    pub is_active: bool,
+    pub supports_media_control: bool,
+    pub supports_remote_control: bool,
+    pub now_playing_queue: Option<Vec<QueueItem>>,
+    pub now_playing_queue_full_items: Option<Vec<BaseItemDto>>,
+    pub has_custom_device_name: bool,
+    pub playlist_item_id: Option<String>,
+    pub server_id: Option<String>,
+    pub user_primary_image_tag: Option<String>,
+   // pub supported_commands: Vec<GeneralCommandType>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlaybackProgressInfo {
+    pub can_seek: bool,
+    pub item: BaseItemDto,
+    pub item_id: Uuid,
+    pub session_id: String,
+    pub media_source_id: String,
+    pub audio_stream_index: Option<i32>,
+    pub subtitle_stream_index: Option<i32>,
+    pub is_paused: bool,
+    pub is_muted: bool,
+    pub position_ticks: Option<i64>,
+    pub playback_start_time_ticks: Option<i64>,
+    pub volume_level: Option<i32>,
+    pub brightness: Option<i32>,
+    pub aspect_ratio: String,
+   // pub play_method: PlayMethod,
+    pub live_stream_id: String,
+    pub play_session_id: String,
+   // pub repeat_mode: RepeatMode,
+   // pub playback_order: PlaybackOrder,
+    pub now_playing_queue: Vec<QueueItem>,
+    pub playlist_item_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct QueueItem {
+    pub id: Uuid,
+    pub playlist_item_id: String
+}
+
 #[derive(
     Copy,
     Serialize,

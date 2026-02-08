@@ -125,9 +125,9 @@ pub fn routes() -> Router<AppState> {
         .route("/items/{id}/similar", get(mock_items))
         .route("/items/{id}/thememedia", get(stub_json))
         .route("/useritems/resume", get(mock_items))
-        .route("/sessions/playing", post(stub))
-        .route("/sessions/playing/progress", post(stub))
-        .route("/sessions/playing/stopped", post(stub))
+        .route("/sessions/playing", post(report_playback_start))
+        .route("/sessions/playing/progress", post(report_playback_progress))
+        .route("/sessions/playing/stopped", post(report_playback_stopped))
         .route("/userimage", get(user_image))
         .route("/sessions/capabilities/full", post(stub))
         .route("/quickconnect/enabled", post(stub))
@@ -985,6 +985,30 @@ pub async fn users_groupingoptions(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
     Ok(Json::<Vec<jellyfin::SpecialViewOptionDto>>(vec![]))
+}
+
+pub async fn report_playback_start(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Json(data): Json<jellyfin::PlaybackProgressInfo>,
+) -> Result<impl IntoResponse> {
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+pub async fn report_playback_progress(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Json(data): Json<jellyfin::PlaybackProgressInfo>,
+) -> Result<impl IntoResponse> {
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+pub async fn report_playback_stopped(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Json(data): Json<jellyfin::PlaybackProgressInfo>,
+) -> Result<impl IntoResponse> {
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 pub async fn stub(State(state): State<AppState>) -> Result<impl IntoResponse> {

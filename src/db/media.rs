@@ -944,25 +944,29 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
         media_instances.push(media.clone());
 
         if let MediaKind::Series = media.kind {
-            if let Some(episodes) = meta.videos {
-                let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Meta>> =
-                    episodes
-                        .into_iter()
-                        .filter_map(|ep| ep.season.map(|s| (s, ep)))
-                        .fold(
-                            std::collections::BTreeMap::new(),
-                            |mut acc, (season, ep)| {
-                                acc.entry(season).or_default().push(ep);
-                                acc
-                            },
-                        );
 
+            if let Some(episodes) = meta.videos {
+//info!("Found {} episodes", episodes.len());
+          let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Meta>> = episodes
+        .into_iter()
+        .filter_map(|ep| {
+            ep.season.map(|s| (s, ep))
+        })
+        .fold(
+            std::collections::BTreeMap::new(),
+            |mut acc, (season, ep)| {
+                acc.entry(season).or_default().push(ep);
+                acc
+            },
+        );
+//info!("Seasons map: {:?}", seasons);
                 for (season_idx, episodes) in seasons {
+
                     let season = Media {
                         title: format!("Season {}", season_idx),
                         kind: MediaKind::Season,
                         idx: Some(season_idx),
-                        //series_imdb_id: media.imdb_id.clone(),
+                        series_imdb_id: media.imdb_id.clone(),
                         aio_id: Some(format!(
                             "{}:{}",
                             media.imdb_id.clone().unwrap(),
