@@ -7,31 +7,40 @@ AXUM_ANYHOW_EXPOSE_ERRORS=1
 # HTTPS_PROXY="http://10.0.10.11:9090"
 DATABASE_URL = "sqlite://db.sqlite"
 WEB_PATH = "../jellyfin-web/dist"
+DB="db.sqlite"
 
-[tasks.sqlx-create]
+[env.test]
+DATABASE_URL = "sqlite://test.sqlite"
+DB="test.sqlite"
+
+[tasks.db-create]
 command = "cargo"
 args = ["sqlx", "database", "create"]
 
-[tasks.sqlx-prepare]
+[tasks.db-prepare]
 command = "cargo"
 args = ["sqlx", "prepare"]
 
-[tasks.sqlx-migrate]
+[tasks.db-migrate]
 command = "cargo"
 args = ["sqlx", "migrate", "run", "--source", "./migrations"]
 
-[tasks.deletedb]
+[tasks.db-remove]
 command = "rm"
-args = ["db.sqlite"]
+args = ["${DB}"]
 
-[tasks.resetdb]
-dependencies = ["deletedb", "sqlx-create", "sqlx-migrate", "sqlx-prepare"]
+[tasks.db-reset]
+dependencies = ["db-remove", "db-create", "db-migrate"]
 
+[tasks.test]
+#env = { "DATABASE_URL" = "sqlite://test.sqlite" }
+dependencies = ["db-reset"]
+command = "cargo"
+args = ["test"]
 
 [tasks.dev]
 command = "cargo"
 args = ["run"]
-#dependencies = ["sqlx-create", "sqlx-migrate", "sqlx-prepare"]
 watch = true
 
 [tasks.build-docker]

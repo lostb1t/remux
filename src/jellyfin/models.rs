@@ -976,7 +976,7 @@ pub struct BaseItemDto {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionInfoDto {
     //pub play_state: Option<PlayerStateInfo>,
-   // pub additional_users: Option<Vec<SessionUserInfo>>,
+    // pub additional_users: Option<Vec<SessionUserInfo>>,
     //pub capabilities: Option<ClientCapabilitiesDto>,
     pub remote_end_point: Option<String>,
     pub playable_media_types: Vec<MediaType>,
@@ -993,7 +993,7 @@ pub struct SessionInfoDto {
     pub now_viewing_item: Option<BaseItemDto>,
     pub device_id: Option<String>,
     pub application_version: Option<String>,
-  //  pub transcoding_info: Option<TranscodingInfo>,
+    //  pub transcoding_info: Option<TranscodingInfo>,
     pub is_active: bool,
     pub supports_media_control: bool,
     pub supports_remote_control: bool,
@@ -1003,7 +1003,7 @@ pub struct SessionInfoDto {
     pub playlist_item_id: Option<String>,
     pub server_id: Option<String>,
     pub user_primary_image_tag: Option<String>,
-   // pub supported_commands: Vec<GeneralCommandType>,
+    // pub supported_commands: Vec<GeneralCommandType>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1022,11 +1022,11 @@ pub struct PlaybackProgressInfo {
     pub volume_level: Option<i32>,
     pub brightness: Option<i32>,
     pub aspect_ratio: String,
-   // pub play_method: PlayMethod,
+    // pub play_method: PlayMethod,
     pub live_stream_id: String,
     pub play_session_id: String,
-   // pub repeat_mode: RepeatMode,
-   // pub playback_order: PlaybackOrder,
+    // pub repeat_mode: RepeatMode,
+    // pub playback_order: PlaybackOrder,
     pub now_playing_queue: Vec<QueueItem>,
     pub playlist_item_id: String,
 }
@@ -1034,7 +1034,7 @@ pub struct PlaybackProgressInfo {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QueueItem {
     pub id: Uuid,
-    pub playlist_item_id: String
+    pub playlist_item_id: String,
 }
 
 #[derive(

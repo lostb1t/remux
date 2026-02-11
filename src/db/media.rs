@@ -573,11 +573,11 @@ impl Media {
                 qb.push(" AND EXISTS (")
                     .push("SELECT 1 FROM user_media_state ums ")
                     .push("WHERE ums.media_key = media.aio_id ");
-                
+
                 if let Some(user_id) = &user_state_filter.user_id {
                     qb.push("AND ums.user_id = ").push_bind(user_id);
                 }
-                
+
                 if let Some(played) = &user_state_filter.played {
                     if *played {
                         qb.push(" AND ums.play_count > 0");
@@ -585,11 +585,11 @@ impl Media {
                         qb.push(" AND ums.play_count = 0");
                     }
                 }
-                
+
                 if let Some(favorite) = &user_state_filter.favorite {
                     qb.push(" AND ums.favorite = ").push_bind(favorite);
                 }
-                
+
                 qb.push(")");
             }
         }
@@ -653,6 +653,23 @@ impl Media {
             records,
             total_count: if filter.total_count { count? } else { 0 },
         })
+    }
+
+    pub async fn get_refreshable(db: &SqlitePool) -> Result<Vec<Self>> {
+        let rows = sqlx::query_as::<_, Self>(
+            r#"
+        SELECT *
+        FROM media
+        WHERE kind IN ($1, $2)
+        AND refreshed_at IS NULL
+        "#,
+        )
+        .bind(MediaKind::Movie)
+        .bind(MediaKind::Series)
+        .fetch_all(db)
+        .await?;
+
+        Ok(rows)
     }
 
     pub async fn get_by_jellyfin_filter(
@@ -944,24 +961,21 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
         media_instances.push(media.clone());
 
         if let MediaKind::Series = media.kind {
-
             if let Some(episodes) = meta.videos {
-//info!("Found {} episodes", episodes.len());
-          let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Meta>> = episodes
-        .into_iter()
-        .filter_map(|ep| {
-            ep.season.map(|s| (s, ep))
-        })
-        .fold(
-            std::collections::BTreeMap::new(),
-            |mut acc, (season, ep)| {
-                acc.entry(season).or_default().push(ep);
-                acc
-            },
-        );
-//info!("Seasons map: {:?}", seasons);
+                //info!("Found {} episodes", episodes.len());
+                let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Meta>> =
+                    episodes
+                        .into_iter()
+                        .filter_map(|ep| ep.season.map(|s| (s, ep)))
+                        .fold(
+                            std::collections::BTreeMap::new(),
+                            |mut acc, (season, ep)| {
+                                acc.entry(season).or_default().push(ep);
+                                acc
+                            },
+                        );
+                //info!("Seasons map: {:?}", seasons);
                 for (season_idx, episodes) in seasons {
-
                     let season = Media {
                         title: format!("Season {}", season_idx),
                         kind: MediaKind::Season,

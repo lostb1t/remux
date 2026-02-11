@@ -61,6 +61,9 @@ use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 use chrono::Datelike;
 use tower::util::MapRequestLayer;
 
+#[cfg(test)]
+use crate::test;
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/system/info/public", get(system_info_public))
@@ -94,18 +97,9 @@ pub fn routes() -> Router<AppState> {
             "/users/{user_id}/groupingoptions",
             get(users_groupingoptions),
         )
-        .route(
-            "/users/{user_id}/playeditems/{id}",
-            post(mark_played),
-        )
-        .route(
-            "/users/{user_id}/playeditems/{id}",
-            delete(unmark_played),
-        )
-        .route(
-            "/users/{user_id}/favoriteitems/{id}",
-            post(mark_favorite),
-        )
+        .route("/users/{user_id}/playeditems/{id}", post(mark_played))
+        .route("/users/{user_id}/playeditems/{id}", delete(unmark_played))
+        .route("/users/{user_id}/favoriteitems/{id}", post(mark_favorite))
         .route(
             "/users/{user_id}/favoriteitems/{id}",
             delete(unmark_favorite),
@@ -170,6 +164,17 @@ pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoRespo
 
 pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoResponse> {
     Ok(Json(json!("Remux Server")))
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn system_ping_test() {
+    let server = test::new_test_server().await.unwrap();
+
+    let response = server.get("/system/ping").await;
+
+    response.assert_status_ok();
+    //response.assert_text("Remux Server");
 }
 
 pub async fn system_endpoint(
@@ -548,7 +553,7 @@ pub async fn get_items(
                     media.sources(&state.ctx.db).await?;
                     // always load state for single
                     media.user_state(&state.ctx.db, &session.user).await?;
-                    
+
                     if let Some(sources) = &media.sources {
                         trace!(streams_len = sources.len(), "sources");
                     }
@@ -993,6 +998,49 @@ pub async fn report_playback_start(
     Json(data): Json<jellyfin::PlaybackProgressInfo>,
 ) -> Result<impl IntoResponse> {
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+#[sqlx::test]
+async fn report_playback_start_test() {
+    let server = test::new_test_server().await.unwrap();
+
+    let response = server
+        // .authorization("password12345")
+        .post(&"/sessions/playing")
+        .json(&json!(
+        {
+          "VolumeLevel": 100,
+          "IsMuted": false,
+          "IsPaused": false,
+          "RepeatMode": "RepeatNone",
+          "ShuffleMode": "Sorted",
+          "MaxStreamingBitrate": 3000000,
+          "PositionTicks": 10,
+          "PlaybackRate": 1,
+          "SubtitleStreamIndex": -1,
+          "SecondarySubtitleStreamIndex": -1,
+          "AudioStreamIndex": 1,
+          "BufferedRanges": [],
+          "PlayMethod": "Transcode",
+          "PlaySessionId": "02f91e00707347bcb4366a99db7dbc74",
+          "PlaylistItemId": "playlistItem0",
+          "MediaSourceId": "80ce1832bb797ffafaf65059b8b3dc9e",
+          "CanSeek": true,
+          "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+          "NowPlayingQueue": [
+            {
+              "Id": "80ce1832bb797ffafaf65059b8b3dc9e",
+              "PlaylistItemId": "playlistItem0"
+            }
+          ]
+
+                    }))
+        .await;
+
+    response.assert_status_ok();
+    response.assert_status_no_content();
+    //response.assert_text("pong!");
 }
 
 pub async fn report_playback_progress(

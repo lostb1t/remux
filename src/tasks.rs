@@ -284,28 +284,15 @@ impl Task for MediaScanTask {
         _task_service: Arc<TaskService>,
     ) -> Result<()> {
         let provider = AioMetaProvider {};
-        let media_list = db::Media::get_by_filter(
-            &ctx.db,
-            &db::MediaFilter {
-                kind: Some(vec![db::MediaKind::Movie]),
-                ..Default::default()
-            },
-        )
-        .await?
-        .records;
-
-        let updated_media = stream::iter(media_list)
-            .map(|media| {
-                let provider = &provider;
-                let ctx = ctx.clone();
-                async move { provider.apply(media, ctx).await }
-            })
-            .buffer_unordered(10)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<db::Media>>>()?;
-
+        let media_list = db::Media::get_refreshable(&ctx.db).await?;
+        let mut updated_media: Vec<db::Media> = vec![];
+        for media in media_list {
+            let mut refreshed = provider.refresh_tree(media, ctx.clone()).await?;
+            refreshed.into_iter().for_each(|mut x| {
+                x.refreshed_at = Some(Utc::now().naive_utc());
+                updated_media.push(x);
+            });
+        }
         db::Media::upsert(&ctx.db, &updated_media).await?;
 
         Ok(())
@@ -366,12 +353,40 @@ impl Task for CatalogImportTask {
 
             let mut meta_stream = ctx.aio.get_catalog_stream(&cat).await.chunks(500);
             let mut count = 0;
-            while let Some(metas) = meta_stream.next().await {
+            while let Some(mut metas) = meta_stream.next().await {
+                // metas.retain(|obj| obj.imdb_id.is_some());
+
+                // let imdb_ids: Vec<String> =
+                //     metas.iter().map(|m| m.imdb_id.clone().unwrap()).collect();
+
+                // let existing_imdb_ids = db::Media::get_by_filter(
+                //     &ctx.db,
+                //     &db::MediaFilter {
+                //         imdb_id: Some(imdb_ids),
+                //         ..Default::default()
+                //     },
+                // )
+                // .await?
+                // .records
+                //.iter()
+                //.filter_map(|m| m.imdb_id.as_deref())
+                // .collect();
+
+                // metas.retain(|m| {
+                //     !existing_imdb_ids.contains(m.imdb_id.as_deref().unwrap())
+                // });
+
                 let items: Vec<db::Media> = metas
                     .into_iter()
                     .unique_by(|meta| meta.id.clone())
                     .flat_map(|meta| match Vec::<db::Media>::try_from(meta) {
-                        Ok(items) => items.into_iter(),
+                        Ok(items) => {
+                            // check if catalog provides series tree
+                            //if meta.is_series() && meta.videos.is_none() {
+                            //return provider.get_series_tree().await?;
+                            //}
+                            items.into_iter()
+                        }
                         Err(e) => {
                             warn!(error = %e, "Failed to convert metadata, skipping");
                             Vec::<db::Media>::new().into_iter()

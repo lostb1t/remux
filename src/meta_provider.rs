@@ -3,6 +3,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
 
+pub struct MetaProviderService;
+
 #[async_trait]
 pub trait MetaProvider: Send + Sync {
     async fn apply(&self, mut media: db::Media, ctx: AppContext) -> Result<db::Media>;
@@ -39,16 +41,52 @@ pub trait MetaProvider: Send + Sync {
 
         Ok(results)
     }
-    
-  async fn get_seasons(&self, mut media: db::Media, ctx: AppContext) -> Result<Option<Vec<db::Media>>>;
-  async fn get_episodes(&self, mut media: db::Media, ctx: AppContext) -> Result<Option<Vec<db::Media>>>;
+
+    async fn refresh_tree(
+        &self,
+        media: db::Media,
+        ctx: AppContext,
+    ) -> Result<Vec<db::Media>> {
+        let mut all_media = Vec::new();
+        let media = self.apply(media, ctx.clone()).await?;
+        all_media.push(media.clone());
+
+        if media.kind == db::MediaKind::Series {
+            if let Some(seasons) = self.get_seasons(media.clone(), ctx.clone()).await? {
+                let seasons = self.apply_many(seasons, ctx.clone()).await?;
+                all_media.extend(seasons.clone());
+                for season in seasons {
+                    if let Some(episodes) =
+                        self.get_episodes(season.clone(), ctx.clone()).await?
+                    {
+                        let episodes = self.apply_many(episodes, ctx.clone()).await?;
+                        all_media.extend(episodes);
+                    }
+                }
+            }
+        }
+
+        Ok(all_media)
+    }
+
+    async fn get_seasons(
+        &self,
+        mut media: db::Media,
+        ctx: AppContext,
+    ) -> Result<Option<Vec<db::Media>>>;
+
+    async fn get_episodes(
+        &self,
+        mut media: db::Media,
+        ctx: AppContext,
+    ) -> Result<Option<Vec<db::Media>>>;
 }
 
 pub struct AioMetaProvider;
 
 #[async_trait]
 impl MetaProvider for AioMetaProvider {
-    async fn apply(&self, media: db::Media, ctx: AppContext) -> Result<db::Media> {
+    async fn apply(&self, mut media: db::Media, ctx: AppContext) -> Result<db::Media> {
         let meta = ctx
             .aio
             .get_meta(media.kind.clone().into(), media.aio_id.clone().unwrap())
@@ -57,18 +95,36 @@ impl MetaProvider for AioMetaProvider {
 
         let media_new: db::Media = meta.try_into()?;
 
-        //media.title = metadata.title;
+        media.title = media_new.title;
         //media.year = metadata.year;
         //media.genres = metadata.genres;
         Ok(media)
         // Ok(media_new<db::Media>[0])
     }
-    
-    async fn get_seasons(&self, mut media: db::Media, ctx: AppContext) -> Result<Option<Vec<db::Media>>> {
-      
-Ok(None)
+
+    async fn get_seasons(
+        &self,
+        mut media: db::Media,
+        ctx: AppContext,
+    ) -> Result<Option<Vec<db::Media>>> {
+        let meta = ctx
+            .aio
+            .get_meta(media.kind.clone().into(), media.aio_id.clone().unwrap())
+            .await
+            .context("Failed to fetch metadata")?;
+        let medias: Vec<db::Media> = meta.try_into()?;
+        let seasons = medias
+            .into_iter()
+            .filter(|x| x.kind == db::MediaKind::Season)
+            .collect();
+        Ok(Some(seasons))
     }
-    async fn get_episodes(&self, mut media: db::Media, ctx: AppContext) -> Result<Option<Vec<db::Media>>> {
-      Ok(None)
+
+    async fn get_episodes(
+        &self,
+        mut media: db::Media,
+        ctx: AppContext,
+    ) -> Result<Option<Vec<db::Media>>> {
+        Ok(None)
     }
 }

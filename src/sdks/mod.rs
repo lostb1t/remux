@@ -4,6 +4,8 @@ use md5;
 use moka::Expiry;
 use moka::sync::Cache;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -416,49 +418,30 @@ where
     }
 }
 
-#[tokio::test]
-async fn test_media_metadata_caching() {
-    use serde::{Deserialize, Serialize};
-    use std::time::Duration;
-
-    let client =
-        Arc::new(RestClient::new("https://your-media-server-api.com").unwrap());
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct MovieMetadata {
-        pub id: String,
-        pub title: String,
-        pub year: u32,
+fn deserialize_option_number_from_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNumber {
+        String(String),
+        Number(f64),
     }
 
-    #[derive(Clone)]
-    struct MovieEndpoint {
-        pub id: String,
-    }
-
-    impl Endpoint for MovieEndpoint {
-        type Output = MovieMetadata;
-
-        fn path(&self) -> String {
-            format!("movies/{}", self.id)
+    // Use Option to handle missing fields
+    let value = Option::<StringOrNumber>::deserialize(deserializer)?;
+    match value {
+        Some(StringOrNumber::String(s)) => {
+            if s.trim().is_empty() || s.to_lowercase() == "n/a" {
+                Ok(None)
+            } else {
+                s.parse::<f64>().map(Some).map_err(serde::de::Error::custom)
+            }
         }
-
-        fn cache_ttl(&self) -> Option<Duration> {
-            Some(Duration::from_secs(60))
-        }
+        Some(StringOrNumber::Number(n)) => Ok(Some(n)),
+        None => Ok(None), // Explicitly handle missing fields
     }
-
-    // First request (should hit the API)
-    let endpoint = MovieEndpoint {
-        id: "tt1234567".to_string(),
-    };
-    let metadata1 = client.execute(endpoint.clone()).await.unwrap();
-    println!("First request metadata: {:?}", metadata1);
-
-    // Second request (should hit the cache)
-    let metadata2 = client.execute(endpoint).await.unwrap();
-    println!("Second request metadata: {:?}", metadata2);
-
-    assert_eq!(metadata1.title, metadata2.title);
-    assert_eq!(metadata1.year, metadata2.year);
 }

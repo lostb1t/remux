@@ -63,7 +63,7 @@ cargo install --force cargo-make
 setup db
 
 ```
-cargo make resetdb
+cargo make db-reset
 ```
 
 run

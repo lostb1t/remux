@@ -102,3 +102,6 @@ tokio-cron-scheduler = "*"
 [features]
 default = []
 
+[dev-dependencies]
+axum-test = "18.7.0"
+

@@ -85,7 +85,16 @@ mod tasks;
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_logging();
+    let app =
+        tower::util::MapRequestLayer::new(rewrite_request_uri).layer(init_app().await?);
+    tracing::info!("starting webserver at 0.0.0.0:3000");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    axum::serve(listener, app.into_make_service()).await?;
 
+    Ok(())
+}
+
+async fn init_app() -> Result<Router> {
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
 
     let settings: Settings = config::Config::builder()
@@ -176,30 +185,20 @@ async fn main() -> Result<()> {
         .allow_headers(Any)
         .expose_headers(Any);
 
-    let app = tower::util::MapRequestLayer::new(rewrite_request_uri)
-        .layer(
-            Router::new()
-                .merge(jellyfin::api::routes())
-                .with_state(state)
-                .layer(on_error(|err| {
-                    tracing::error!(
-                        status = %err.status(),
-                        title = %err.title(),
-                        detail = %err.detail(),
-                        "api error"
-                    );
-                }))
-                .layer(tower_http::trace::TraceLayer::new_for_http())
-                .layer(cors)
-                .fallback_service(ServeDir::new(settings.web_path)),
-        )
-        .into_make_service();
-
-    tracing::info!("starting webserver at 0.0.0.0:3000");
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
+    Ok(Router::new()
+        .merge(jellyfin::api::routes())
+        .with_state(state)
+        .layer(on_error(|err| {
+            tracing::error!(
+                status = %err.status(),
+                title = %err.title(),
+                detail = %err.detail(),
+                "api error"
+            );
+        }))
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(cors)
+        .fallback_service(ServeDir::new(settings.web_path)))
 }
 
 #[derive(Clone)]
@@ -305,8 +304,8 @@ pub fn setup_logging() {
 
     let fmt_layer = fmt::layer()
         .with_line_number(true)
-        .without_time()
-        // .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+        //  .without_time()
+        .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
         .with_target(true)
         .compact();
 
@@ -330,4 +329,29 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
         req.uri().path()
     );
     Ok((StatusCode::NOT_FOUND, "404 - File not found"))
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+    use axum_test::TestServer;
+
+    pub async fn new_test_server() -> Result<TestServer> {
+        let app = init_app().await?;
+
+        Ok(
+            TestServer::builder()
+                .save_cookies()
+                //.authorization()
+                .expect_success_by_default()
+                .mock_transport()
+                .build(app)?, // .authorization("password12345")
+        )
+    }
+
+    pub async fn apply_auth(server: TestServer) -> TestServer {
+        server.add_header("x-custom-for-all", "common-value");
+        server
+    }
 }

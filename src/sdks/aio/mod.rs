@@ -322,7 +322,10 @@ pub struct Meta {
     pub director: Option<String>,
     pub description: Option<String>,
     pub genre: Option<Vec<String>>,
-    #[serde(deserialize_with = "deserialize_option_number_from_string")]
+    #[serde(
+        default,
+        deserialize_with = "super::deserialize_option_number_from_string"
+    )]
     pub imdb_rating: Option<f64>,
     pub name: Option<String>,
     pub status: Option<Status>,
@@ -343,6 +346,10 @@ pub struct Meta {
     pub thumbnail: Option<String>,
 
     pub awards: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "super::deserialize_option_number_from_string"
+    )]
     pub popularity: Option<f64>,
     pub id: String,
     pub genres: Option<Vec<String>>,
@@ -391,6 +398,10 @@ where
 }
 
 impl Meta {
+    pub fn is_series(&self) -> bool {
+        self.media_type == MediaType::Series
+    }
+
     pub fn get_season_numbers(&self) -> Vec<i64> {
         // dbg!(&self);
         if let Some(episodes) = self.videos.as_ref() {
