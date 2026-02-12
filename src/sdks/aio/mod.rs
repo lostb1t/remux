@@ -427,6 +427,10 @@ impl Meta {
             .filter(|e| e.season.map_or(false, |s| s == season_num))
             .collect()
     }
+    
+pub fn get_season_poster(&self, idx: i64) -> Option<&String> {
+    self.season_posters.as_ref()?.get(idx)
+}
 }
 
 #[skip_serializing_none]
