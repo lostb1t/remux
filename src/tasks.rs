@@ -328,6 +328,10 @@ impl Task for CatalogImportTask {
         info!("starting catalog import ({})", manifest.catalogs.len());
 
         for cat in manifest.catalogs {
+            if cat.id.contains("search") {
+              continue;
+            };
+
             info!("Importing catalog {} {}", cat.id, cat.kind);
             let aio_id = format!("{}:{}", cat.kind, cat.id);
             let mut media_cat = db::Media::get_by_filter(
@@ -426,7 +430,7 @@ impl Task for CatalogImportTask {
 
         // Kick off MediaScanTask
         let media_scan_task_id = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
-        task_service.run_task(media_scan_task_id).await?;
+        //task_service.run_task(media_scan_task_id).await?;
 
         Ok(())
     }

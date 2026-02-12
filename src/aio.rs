@@ -216,7 +216,19 @@ impl AioService {
         let client = self.client.clone();
         let kind = cat.kind.clone();
         let id = cat.id.clone();
-        let mut page_size = 20;
+        
+        // get page size. theres no default
+        let page_size = client
+                        .execute(sdks::aio::CatalogEndpoint {
+                            kind: kind.clone(),
+                            id: id.clone(),
+                            search: None,
+                            genre: None,
+                            skip: None,
+                        })
+                        .await.unwrap()
+                        .metas
+                        .len() as u32;
 
         let pages = stream::iter(0..999)
             .map(move |page| {

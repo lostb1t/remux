@@ -221,7 +221,7 @@ impl RestClient<NoAuth> {
         Ok(Self {
             http,
             base: url::Url::parse(
-                format!("{}/", base.trim_start_matches('/')).as_str(),
+                format!("{}/", base.trim_end_matches('/')).as_str(),
             )?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
@@ -251,7 +251,8 @@ impl<A: Auth + Clone> RestClient<A> {
         endpoint: EP,
     ) -> Result<EP::Output, ClientError> {
         let path = endpoint.path();
-        let mut url = self.base.join(&path.trim_start_matches('/')).unwrap();
+        //info!(?path);
+        let mut url = self.base.join(&path.trim_matches('/')).unwrap();
         let query = endpoint.query();
         if !query.is_empty() {
             url.query_pairs_mut()
@@ -264,7 +265,7 @@ impl<A: Auth + Clone> RestClient<A> {
                 return Ok(serde_json::from_str(&cached.value)?);
             }
         }
-
+       // info!(?url);
         let mut req = self
             .http
             .request(endpoint.method(), url.clone())
@@ -299,7 +300,7 @@ impl<A: Auth + Clone> RestClient<A> {
         let resp = req.send().await?;
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
-
+        //info!(?text);
         match status {
             401 => Err(ClientError::Unauthorized),
             s if (200..300).contains(&s) => {
