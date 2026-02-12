@@ -43,6 +43,10 @@ command = "cargo"
 args = ["run"]
 watch = true
 
+[tasks.run]
+command = "cargo"
+args = ["run"]
+
 [tasks.build-docker]
 command = "docker"
 args = ["buildx", "build", "-f", "docker/Dockerfile.dev",  "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:local", "."]

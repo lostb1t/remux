@@ -353,7 +353,7 @@ pub struct Meta {
     pub popularity: Option<f64>,
     pub id: String,
     pub genres: Option<Vec<String>>,
-    pub season_posters: Option<Vec<String>>,
+    // pub season_posters: Option<Vec<String>>,
     // this can be a range 2012-2015
     // #[serde(deserialize_with = "deserialize_string_from_number")]
     //pub release_info: String,
@@ -365,6 +365,28 @@ pub struct Meta {
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
+   #[serde(rename = "app_extras")]
+    pub app_extras: Option<AppExtras>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppExtras {
+    pub cast: Option<Vec<CastMember>>,
+    pub directors: Option<Vec<String>>,
+    pub writers: Option<Vec<String>>,
+    pub season_posters: Option<Vec<String>>,
+    pub certification: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CastMember {
+    pub name: Option<String>,
+    pub character: Option<String>,
+    pub photo: Option<String>,
 }
 
 //use std::time::Duration;
@@ -429,7 +451,10 @@ impl Meta {
     }
     
 pub fn get_season_poster(&self, idx: i64) -> Option<String> {
-    self.season_posters.as_ref()?.get(idx as usize).cloned()
+    self.app_extras
+        .as_ref()
+        .and_then(|extras| extras.season_posters.as_ref())
+        .and_then(|posters| posters.get(idx as usize).cloned())
 }
 }
 
