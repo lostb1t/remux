@@ -299,8 +299,6 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     req
 }
 
-
-
 pub fn setup_logging() {
     let filter_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,hyper=warn,sqlx=warn"));

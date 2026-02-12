@@ -2,6 +2,7 @@ use crate::{AppContext, aio, db, sdks};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
+use chrono::Utc;
 
 pub struct MetaProviderService;
 
@@ -26,7 +27,7 @@ pub trait MetaProvider: Send + Sync {
             let futures = chunk.iter().cloned().map(move |m| {
                 let ctx = ctx.clone();
                 let this = this.clone();
-                async move { this.apply(m, ctx).await }
+                async move { this.refresh_tree(m, ctx).await }
             });
 
             let chunk_results = stream::iter(futures)
@@ -98,6 +99,7 @@ impl MetaProvider for AioMetaProvider {
         media.title = media_new.title;
         //media.year = metadata.year;
         //media.genres = metadata.genres;
+        media.refreshed_at = Some(Utc::now().naive_utc());
         Ok(media)
         // Ok(media_new<db::Media>[0])
     }

@@ -285,14 +285,8 @@ impl Task for MediaScanTask {
     ) -> Result<()> {
         let provider = AioMetaProvider {};
         let media_list = db::Media::get_refreshable(&ctx.db).await?;
-        let mut updated_media: Vec<db::Media> = vec![];
-        for media in media_list {
-            let mut refreshed = provider.refresh_tree(media, ctx.clone()).await?;
-            refreshed.into_iter().for_each(|mut x| {
-                x.refreshed_at = Some(Utc::now().naive_utc());
-                updated_media.push(x);
-            });
-        }
+        //let mut updated_media: Vec<db::Media> = vec![];
+        let mut updated_media = provider.apply_many(media_list, ctx.clone()).await?;
         db::Media::upsert(&ctx.db, &updated_media).await?;
 
         Ok(())
@@ -430,7 +424,7 @@ impl Task for CatalogImportTask {
 
         // Kick off MediaScanTask
         let media_scan_task_id = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
-        //task_service.run_task(media_scan_task_id).await?;
+        task_service.run_task(media_scan_task_id).await?;
 
         Ok(())
     }
