@@ -373,11 +373,11 @@ pub struct Meta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppExtras {
-    pub cast: Option<Vec<CastMember>>,
-    pub directors: Option<Vec<String>>,
-    pub writers: Option<Vec<String>>,
+    //pub cast: Option<Vec<CastMember>>,
+    //pub directors: Option<Vec<String>>,
+    //pub writers: Option<Vec<String>>,
     pub season_posters: Option<Vec<Option<String>>>,
-    pub certification: Option<String>,
+    //pub certification: Option<String>,
 }
 
 #[skip_serializing_none]
