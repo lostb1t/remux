@@ -247,7 +247,7 @@ impl AioService {
                         .await
                 }
             })
-            .buffer_unordered(10)
+            .buffered(10)
             .take_while(|result| {
                 future::ready(
                     result
