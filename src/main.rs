@@ -234,7 +234,7 @@ pub struct Library {
 pub struct Settings {
     #[serde(default = "default_web_path")]
     pub web_path: String,
-    #[serde(serialize_with = "clean_aio_url")]
+    #[serde(deserialize_with = "clean_aio_url")]
     pub aio_url: String,
     pub users: Vec<UserConfig>,
     #[serde(default = "default_libraries")]
@@ -244,16 +244,20 @@ pub struct Settings {
     //pub collection_id: String,
 }
 
-fn clean_aio_url<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
+fn clean_aio_url<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
-    S: serde::Serializer,
+    D: serde::Deserializer<'de>,
 {
-    let cleaned = value
-        .trim_end_matches('/')
+    let url = String::deserialize(deserializer)?;
+    let cleaned = clean_aio_url_str(&url);
+    Ok(cleaned.to_string())
+}
+
+fn clean_aio_url_str(url: &str) -> &str {
+    url.trim_end_matches('/')
         .strip_suffix("manifest.json")
-        .unwrap_or(value.as_str())
-        .trim_end_matches('/');
-    serializer.serialize_str(cleaned)
+        .unwrap_or(url)
+        .trim_end_matches('/')
 }
 
 fn default_libraries() -> Vec<Library> {
