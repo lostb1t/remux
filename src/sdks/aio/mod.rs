@@ -15,7 +15,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 #[derive(
-    Default,
+  //  Default,
     //   strum_macros::EnumString,
     strum_macros::Display,
     Debug,
@@ -31,8 +31,8 @@ pub enum MediaType {
     Series,
     Tv,
     Events,
-    #[default]
-    Unknown,
+  //  #[default]
+   // Unknown,
 }
 
 #[derive(
@@ -215,7 +215,7 @@ pub struct CatalogResponse {
 }
 
 // #[skip_serializing_none]
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct MetaEndpoint {
     pub media_type: MediaType,
     pub id: String,
@@ -353,11 +353,7 @@ pub struct Meta {
     pub popularity: Option<f64>,
     pub id: String,
     pub genres: Option<Vec<String>>,
-
-    pub episode: Option<i64>,
-    pub season: Option<i64>,
     pub season_posters: Option<Vec<String>>,
-
     // this can be a range 2012-2015
     // #[serde(deserialize_with = "deserialize_string_from_number")]
     //pub release_info: String,
@@ -365,7 +361,7 @@ pub struct Meta {
     pub runtime: Option<Duration>,
 
     // #[serde(rename = "videos")]
-    pub videos: Option<Vec<Meta>>,
+    pub videos: Option<Vec<Episode>>,
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
@@ -415,7 +411,7 @@ impl Meta {
         }
     }
 
-    pub fn get_episode_by_id(&self, id: String) -> Option<&Meta> {
+    pub fn get_episode_by_id(&self, id: String) -> Option<&Episode> {
         if let Some(episodes) = &self.videos {
             episodes.into_iter().find(|e| e.id == id)
         } else {
@@ -423,7 +419,7 @@ impl Meta {
         }
     }
 
-    pub fn get_episodes(&self, season_num: i64) -> Vec<Meta> {
+    pub fn get_episodes(&self, season_num: i64) -> Vec<Episode> {
         self.videos
             .clone()
             .unwrap_or_default()
@@ -431,6 +427,24 @@ impl Meta {
             .filter(|e| e.season.map_or(false, |s| s == season_num))
             .collect()
     }
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Episode {
+    pub id: String,
+    pub name: Option<String>,
+    pub released: Option<DateTime<Utc>>,
+    pub thumbnail: Option<String>,
+    pub episode: Option<i64>,
+    pub season: Option<i64>,
+    pub overview: Option<String>,
+    pub number: Option<i64>,
+    pub description: Option<String>,
+    pub rating: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
+    pub runtime: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -552,7 +566,7 @@ pub struct ParsedFile {
     pub season_pack: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Search {
     #[serde(rename = "type")]
     pub kind: MediaType,

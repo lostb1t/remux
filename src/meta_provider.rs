@@ -87,12 +87,11 @@ impl MetaProvider for AioMetaProvider {
     async fn apply(&self, mut media: db::Media, ctx: AppContext) -> Result<db::Media> {
         let meta = ctx
             .aio
-            .get_meta(media.kind.clone().into(), media.aio_id.clone().unwrap())
-            .await
-            .context("Failed to fetch metadata")?;
+            .get_meta(media.kind.clone().into(), media.series_imdb_id.clone().or(media.imdb_id.clone()).unwrap())
+            .await?;
+           // .context("Failed to fetch metadata")?;
 
-        let media_new: db::Media = meta.try_into()?;
-
+        let media_new: db::Media = meta.try_into()?; 
         media.title = media_new.title;
         //media.year = metadata.year;
         //media.genres = metadata.genres;
@@ -106,11 +105,12 @@ impl MetaProvider for AioMetaProvider {
         mut media: db::Media,
         ctx: AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
+      //  dbg!(&media);
         let meta = ctx
             .aio
-            .get_meta(media.kind.clone().into(), media.aio_id.clone().unwrap())
-            .await
-            .context("Failed to fetch metadata")?;
+            .get_meta(media.kind.clone().into(), media.imdb_id.clone().unwrap())
+            .await?;
+           // .context("Failed to fetch metadata")?;
         let medias: Vec<db::Media> = meta.try_into()?;
         let seasons = medias
             .into_iter()

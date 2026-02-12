@@ -99,6 +99,7 @@ async fn init_app() -> Result<Router> {
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
 
     let settings: Settings = config::Config::builder()
+   // .set_default("server.host", "127.0.0.1")?
         .add_source(config::File::with_name(&cfg))
         .build()?
         .try_deserialize()?;
@@ -230,12 +231,14 @@ pub struct Library {
     pub media_kind: db::MediaKind,
 }
 
-#[derive(Deserialize, default2::Default, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Settings {
     #[serde(default = "default_web_path")]
     pub web_path: String,
     #[serde(deserialize_with = "clean_aio_url")]
     pub aio_url: String,
+   #[serde(default = 100)]
+    pub catalog_max_items: usize,
     pub users: Vec<UserConfig>,
     #[serde(default = "default_libraries")]
     pub libraries: Vec<Library>,

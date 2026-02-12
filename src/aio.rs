@@ -160,7 +160,7 @@ impl AioService {
                 sdks::aio::Search {
                     kind: media_type.into(),
                     id,
-                    ..Default::default()
+                    format: true
                 }
                 .with_cache(Duration::from_secs(360)),
             )

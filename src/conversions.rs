@@ -197,6 +197,30 @@ impl From<db::MediaKind> for jellyfin::CollectionType {
     }
 }
 
+//impl From<aio::Episode> for jellyfin::BaseItemDto {
+   // fn from(item: aio::Episode) -> Self {
+impl TryFrom<aio::Episode> for db::Media {
+    type Error = anyhow::Error;
+    fn try_from(meta: aio::Episode) -> Result<db::Media> {
+        Ok(db::Media {
+            title: meta.name.unwrap_or_default(),
+            kind: db::MediaKind::Episode,
+            released_at: meta.released.map(|x| x.naive_utc()),
+            runtime: meta.runtime.map(|d| d.num_seconds()),
+          //  rating_audience: meta.imdb_rating,
+            description: meta.overview,
+           // certification: meta.certification,
+            poster: meta.thumbnail,
+
+            //imdb_id: meta.imdb_id.clone(),
+          //  aio_id: meta.imdb_id.clone(),
+
+            //tmdb_id: Some(imdb_id.clone()),
+            ..Default::default()
+        })
+    }
+}
+
 //Resources
 
 // impl From<aio::Stream> for jellyfin::MediaSourceInfo {
@@ -317,7 +341,7 @@ impl From<jellyfin::MediaType> for aio::MediaType {
         match kind {
             jellyfin::MediaType::Movie => aio::MediaType::Movie,
             jellyfin::MediaType::Series => aio::MediaType::Series,
-            _ => aio::MediaType::Unknown,
+            _ => todo!(),
         }
     }
 }

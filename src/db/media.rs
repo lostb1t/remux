@@ -109,7 +109,7 @@ impl From<sdks::aio::MediaType> for MediaKind {
             sdks::aio::MediaType::Series | sdks::aio::MediaType::Tv => {
                 MediaKind::Series
             }
-            _ => MediaKind::Unknown,
+            _ => todo!(),
         }
     }
 }
@@ -119,8 +119,9 @@ impl From<MediaKind> for sdks::aio::MediaType {
         match kind {
             MediaKind::Movie => sdks::aio::MediaType::Movie,
             MediaKind::Series => sdks::aio::MediaType::Series,
+            MediaKind::Season => sdks::aio::MediaType::Series,
             // MediaKind::Catalog => jellyfin::MediaType::CollectionFolder,
-            _ => sdks::aio::MediaType::Unknown,
+            _ => todo!("{}", kind),
         }
     }
 }
@@ -963,7 +964,7 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
         if let MediaKind::Series = media.kind {
             if let Some(episodes) = meta.videos {
                 //info!("Found {} episodes", episodes.len());
-                let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Meta>> =
+                let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Episode>> =
                     episodes
                         .into_iter()
                         .filter_map(|ep| ep.season.map(|s| (s, ep)))

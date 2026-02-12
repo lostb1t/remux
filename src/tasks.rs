@@ -404,7 +404,7 @@ impl Task for CatalogImportTask {
                     break;
                 }
 
-                if count > 1000 {
+                if count > ctx.config.catalog_max_items {
                     drop(meta_stream);
                     break;
                 }
