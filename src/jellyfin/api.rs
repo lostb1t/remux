@@ -169,7 +169,7 @@ pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoRespo
 #[cfg(test)]
 #[tokio::test]
 async fn system_ping_test() {
-    let server = test::new_test_server().await.unwrap();
+    let server = crate::integration_test::new_test_server().await.unwrap();
 
     let response = server.get("/system/ping").await;
 
@@ -1003,7 +1003,7 @@ pub async fn report_playback_start(
 #[cfg(test)]
 #[sqlx::test]
 async fn report_playback_start_test() {
-    let server = test::new_test_server().await.unwrap();
+    let server = crate::integration_test::new_test_server().await.unwrap();
 
     let response = server
         // .authorization("password12345")

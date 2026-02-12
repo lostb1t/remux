@@ -1,6 +1,9 @@
 //#![feature(duration_constructors)]
 #![allow(warnings)]
 
+#[cfg(test)]
+mod test;
+
 use axum::response::Html;
 use reqwest;
 
@@ -344,7 +347,7 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
 }
 
 #[cfg(test)]
-mod test {
+mod integration_test {
 
     use super::*;
     use axum_test::TestServer;
@@ -362,7 +365,7 @@ mod test {
         )
     }
 
-    pub async fn apply_auth(server: TestServer) -> TestServer {
+    pub async fn apply_auth(mut server: TestServer) -> TestServer {
         server.add_header("x-custom-for-all", "common-value");
         server
     }

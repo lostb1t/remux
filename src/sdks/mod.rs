@@ -298,7 +298,7 @@ impl<A: Auth + Clone> RestClient<A> {
         let resp = req.send().await?;
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
-        info!(?text);
+        //info!(?text);
         match status {
             401 => Err(ClientError::Unauthorized),
             s if (200..300).contains(&s) => {

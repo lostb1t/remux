@@ -376,7 +376,7 @@ pub struct AppExtras {
     pub cast: Option<Vec<CastMember>>,
     pub directors: Option<Vec<String>>,
     pub writers: Option<Vec<String>>,
-    pub season_posters: Option<Vec<String>>,
+    pub season_posters: Option<Vec<Option<String>>>,
     pub certification: Option<String>,
 }
 
@@ -455,6 +455,7 @@ pub fn get_season_poster(&self, idx: i64) -> Option<String> {
         .as_ref()
         .and_then(|extras| extras.season_posters.as_ref())
         .and_then(|posters| posters.get(idx as usize).cloned())
+        .flatten()
 }
 }
 
