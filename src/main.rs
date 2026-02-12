@@ -61,6 +61,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry, fmt};
 use url::Url;
+
 use uuid::Uuid;
 
 //#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
@@ -298,23 +299,23 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     req
 }
 
+
+
 pub fn setup_logging() {
     let filter_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,hyper=warn,sqlx=warn"));
 
     let fmt_layer = fmt::layer()
-        .with_line_number(true)
-        //  .without_time()
-        .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
-        .with_target(true)
+        .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
+        .with_target(false)
+        .with_line_number(false)
+        .with_file(false)
         .compact();
 
     Registry::default()
         .with(filter_layer)
         .with(fmt_layer)
         .init();
-
-    //set_expose_errors(true);
 }
 
 async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {
