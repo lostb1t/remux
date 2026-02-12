@@ -104,8 +104,9 @@ async fn init_app() -> Result<Router> {
         .build()?
         .try_deserialize()?;
 
-    tracing::debug!("config: {:?}", settings);
+   debug!("config: {}", serde_json::to_string_pretty(&settings).unwrap());
 
+   
     let conn = db::connect(
         std::env::var("DATABASE_URL")
             .as_deref()
@@ -149,7 +150,6 @@ async fn init_app() -> Result<Router> {
     .collect::<Vec<String>>();
 
     for u in settings.libraries.clone() {
-        dbg!(&u);
         if libs_titles.contains(&u.name) {
             continue;
         }

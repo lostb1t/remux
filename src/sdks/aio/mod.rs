@@ -428,8 +428,8 @@ impl Meta {
             .collect()
     }
     
-pub fn get_season_poster(&self, idx: i64) -> Option<&String> {
-    self.season_posters.as_ref()?.get(idx)
+pub fn get_season_poster(&self, idx: i64) -> Option<String> {
+    self.season_posters.as_ref()?.get(idx as usize).cloned()
 }
 }
 

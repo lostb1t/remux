@@ -122,13 +122,14 @@ impl MetaProvider for AioMetaProvider {
             .await?;
 
         // .context("Failed to fetch metadata")?;
+        let meta_clone = meta.clone();
         let medias: Vec<db::Media> = meta.try_into()?;
         let seasons = medias
             .into_iter()
             .filter_map(|mut x| {
                 if x.kind == db::MediaKind::Season {
                     x.parent_id = Some(media.id);
-                    x.poster = meta.get_season_poster(media.idx);
+                    x.poster = media.idx.and_then(|idx| meta_clone.get_season_poster(idx));
                     Some(x)
                 } else {
                     None
