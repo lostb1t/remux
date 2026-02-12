@@ -149,6 +149,7 @@ async fn init_app() -> Result<Router> {
     .collect::<Vec<String>>();
 
     for u in settings.libraries.clone() {
+        dbg!(&u);
         if libs_titles.contains(&u.name) {
             continue;
         }
