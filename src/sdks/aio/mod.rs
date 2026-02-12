@@ -419,12 +419,12 @@ impl Meta {
         }
     }
 
-    pub fn get_episodes(&self, season_num: i64) -> Vec<Episode> {
+    pub fn get_episodes(&self, season_idx: i64) -> Vec<Episode> {
         self.videos
             .clone()
             .unwrap_or_default()
             .into_iter()
-            .filter(|e| e.season.map_or(false, |s| s == season_num))
+            .filter(|e| e.season.map_or(false, |s| s == season_idx))
             .collect()
     }
     

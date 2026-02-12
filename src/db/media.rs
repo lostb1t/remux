@@ -657,12 +657,13 @@ impl Media {
     }
 
     pub async fn get_refreshable(db: &SqlitePool) -> Result<Vec<Self>> {
-        let rows = sqlx::query_as::<_, Self>(
+      //           AND refreshed_at IS NULL
+       let rows = sqlx::query_as::<_, Self>(
             r#"
         SELECT *
         FROM media
         WHERE kind IN ($1, $2)
-        AND refreshed_at IS NULL
+
         "#,
         )
         .bind(MediaKind::Movie)
@@ -944,6 +945,12 @@ impl TryFrom<sdks::aio::Meta> for Media {
             //tmdb_id: Some(imdb_id.clone()),
             ..Default::default()
         };
+        
+                
+         //if media.kind ==MediaKind::Season {
+         //  media.title = format!("Season {}", media.idx.unwrap());
+
+         //} 
 
         // media_instances.push(media.clone());
 
@@ -962,12 +969,12 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
         media_instances.push(media.clone());
 
         if let MediaKind::Series = media.kind {
-            if let Some(episodes) = meta.videos {
+            if let Some(ref episodes) = meta.videos {
                 //info!("Found {} episodes", episodes.len());
                 let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Episode>> =
                     episodes
-                        .into_iter()
-                        .filter_map(|ep| ep.season.map(|s| (s, ep)))
+                        .iter()
+                        .filter_map(|ep| ep.season.map(|s| (s, ep.clone())))
                         .fold(
                             std::collections::BTreeMap::new(),
                             |mut acc, (season, ep)| {
@@ -987,11 +994,7 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
                             media.imdb_id.clone().unwrap(),
                             season_idx
                         )),
-                        poster: meta
-                            .season_posters
-                            .as_ref()
-                            .and_then(|posters| posters.get(season_idx as usize))
-                            .cloned(),
+                        poster: meta.get_season_poster(season_idx),
                         parent_id: Some(media.id),
                         ..Default::default()
                     };
