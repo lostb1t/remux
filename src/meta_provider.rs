@@ -114,7 +114,7 @@ impl MetaProvider for AioMetaProvider {
         mut media: db::Media,
         ctx: AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
-      //  dbg!(&media);
+        //  dbg!(&media);
         //return Ok(None);
         let meta = ctx
             .aio
@@ -123,16 +123,16 @@ impl MetaProvider for AioMetaProvider {
         // .context("Failed to fetch metadata")?;
         let medias: Vec<db::Media> = meta.try_into()?;
         let seasons = medias
-    .into_iter()
-    .filter_map(|mut x| {
-        if x.kind == db::MediaKind::Season {
-            x.parent_id = Some(media.id);
-            Some(x)
-        } else {
-            None
-        }
-    })
-    .collect();
+            .into_iter()
+            .filter_map(|mut x| {
+                if x.kind == db::MediaKind::Season {
+                    x.parent_id = Some(media.id);
+                    Some(x)
+                } else {
+                    None
+                }
+            })
+            .collect();
         Ok(Some(seasons))
     }
 

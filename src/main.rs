@@ -232,42 +232,46 @@ pub struct Library {
     pub media_kind: db::MediaKind,
 }
 
+fn default_web_path() -> String {
+    "/app/jellyfin-web".to_string()
+}
+
+fn default_catalog_max_items() -> usize {
+    100
+}
+
+fn default_users() -> Vec<UserConfig> {
+    Vec::new()
+}
+
+fn default_libraries() -> Vec<Library> {
+    vec![
+        Library {
+            name: "Movies".to_string(),
+            media_kind: db::MediaKind::Movie,
+        },
+        Library {
+            name: "Series".to_string(),
+            media_kind: db::MediaKind::Series,
+        },
+    ]
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Settings {
     #[serde(deserialize_with = "clean_aio_url")]
     pub aio_url: String,
-    #[serde(default)]
+    #[serde(default = "default_web_path")]
     pub web_path: String,
-    #[serde(default)]
+    #[serde(default = "default_catalog_max_items")]
     pub catalog_max_items: usize,
-    #[serde(default)]
+    #[serde(default = "default_users")]
     pub users: Vec<UserConfig>,
-    #[serde(default)]
+    #[serde(default = "default_libraries")]
     pub libraries: Vec<Library>,
     // we dont support folders
     //#[serde(default = "default_collection_id")]
     //pub collection_id: String,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            web_path: "/app/jellyfin-web".to_string(),
-            aio_url: String::new(),
-            catalog_max_items: 100,
-            users: Vec::new(),
-            libraries: vec![
-                Library {
-                    name: "Movies".to_string(),
-                    media_kind: db::MediaKind::Movie,
-                },
-                Library {
-                    name: "Series".to_string(),
-                    media_kind: db::MediaKind::Series,
-                },
-            ],
-        }
-    }
 }
 
 fn clean_aio_url<'de, D>(deserializer: D) -> Result<String, D::Error>
