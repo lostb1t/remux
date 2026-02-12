@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
 use chrono::Utc;
+use tracing::error;
 
 pub struct MetaProviderService;
 
@@ -24,19 +25,15 @@ pub trait MetaProvider: Send + Sync {
             let ctx = ctx.clone();
             let this = self.clone();
 
-            let futures = chunk.iter().cloned().map(move |m| {
+            for m in chunk {
                 let ctx = ctx.clone();
-                let this = this.clone();
-                async move { this.refresh_tree(m, ctx).await }
-            });
-
-            let chunk_results = stream::iter(futures)
-                .buffer_unordered(chunk_size)
-                .collect::<Vec<_>>()
-                .await;
-
-            for res in chunk_results {
-                results.push(res?);
+                let this = self.clone();
+                let media_title = m.title.clone();
+                
+                match this.refresh_tree(m.clone(), ctx).await {
+                    Ok(media_vec) => results.extend(media_vec),
+                    Err(e) => error!("Failed to process media '{}': {}", media_title, e),
+                }
             }
         }
 
