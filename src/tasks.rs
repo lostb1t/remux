@@ -323,7 +323,7 @@ impl Task for CatalogImportTask {
 
         for cat in manifest.catalogs {
             if cat.id.contains("search") {
-              continue;
+                continue;
             };
 
             info!("Importing catalog {} {}", cat.id, cat.kind);
@@ -353,7 +353,9 @@ impl Task for CatalogImportTask {
             let mut count = 0;
             while let Some(mut metas) = meta_stream.next().await {
                 // metas.retain(|obj| obj.imdb_id.is_some());
+                let remaining = ctx.config.catalog_max_items.saturating_sub(count);
 
+                metas = metas.into_iter().take(remaining).collect();
                 // let imdb_ids: Vec<String> =
                 //     metas.iter().map(|m| m.imdb_id.clone().unwrap()).collect();
 
@@ -373,6 +375,7 @@ impl Task for CatalogImportTask {
                 // metas.retain(|m| {
                 //     !existing_imdb_ids.contains(m.imdb_id.as_deref().unwrap())
                 // });
+                //if count > ctx.config.catalog_max_items {
 
                 let items: Vec<db::Media> = metas
                     .into_iter()

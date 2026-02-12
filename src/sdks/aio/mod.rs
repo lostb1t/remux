@@ -15,7 +15,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 #[derive(
-  //  Default,
+    //  Default,
     //   strum_macros::EnumString,
     strum_macros::Display,
     Debug,
@@ -31,8 +31,8 @@ pub enum MediaType {
     Series,
     Tv,
     Events,
-  //  #[default]
-   // Unknown,
+    //  #[default]
+    // Unknown,
 }
 
 #[derive(

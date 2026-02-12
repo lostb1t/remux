@@ -1,8 +1,8 @@
 use crate::{AppContext, aio, db, sdks};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use futures::stream::{self, StreamExt};
 use chrono::Utc;
+use futures::stream::{self, StreamExt};
 use tracing::error;
 
 pub struct MetaProviderService;
@@ -29,10 +29,12 @@ pub trait MetaProvider: Send + Sync {
                 let ctx = ctx.clone();
                 let this = self.clone();
                 let media_title = m.title.clone();
-                
+
                 match this.refresh_tree(m.clone(), ctx).await {
                     Ok(media_vec) => results.extend(media_vec),
-                    Err(e) => error!("Failed to process media '{}': {}", media_title, e),
+                    Err(e) => {
+                        error!("Failed to process media '{}': {}", media_title, e)
+                    }
                 }
             }
         }
@@ -87,11 +89,18 @@ impl MetaProvider for AioMetaProvider {
     async fn apply(&self, mut media: db::Media, ctx: AppContext) -> Result<db::Media> {
         let meta = ctx
             .aio
-            .get_meta(media.kind.clone().into(), media.series_imdb_id.clone().or(media.imdb_id.clone()).unwrap())
+            .get_meta(
+                media.kind.clone().into(),
+                media
+                    .series_imdb_id
+                    .clone()
+                    .or(media.imdb_id.clone())
+                    .unwrap(),
+            )
             .await?;
-           // .context("Failed to fetch metadata")?;
+        // .context("Failed to fetch metadata")?;
 
-        let media_new: db::Media = meta.try_into()?; 
+        let media_new: db::Media = meta.try_into()?;
         media.title = media_new.title;
         //media.year = metadata.year;
         //media.genres = metadata.genres;
@@ -105,12 +114,12 @@ impl MetaProvider for AioMetaProvider {
         mut media: db::Media,
         ctx: AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
-      //  dbg!(&media);
+        //  dbg!(&media);
         let meta = ctx
             .aio
             .get_meta(media.kind.clone().into(), media.imdb_id.clone().unwrap())
             .await?;
-           // .context("Failed to fetch metadata")?;
+        // .context("Failed to fetch metadata")?;
         let medias: Vec<db::Media> = meta.try_into()?;
         let seasons = medias
             .into_iter()

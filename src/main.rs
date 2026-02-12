@@ -99,7 +99,7 @@ async fn init_app() -> Result<Router> {
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
 
     let settings: Settings = config::Config::builder()
-   // .set_default("server.host", "127.0.0.1")?
+        // .set_default("server.host", "127.0.0.1")?
         .add_source(config::File::with_name(&cfg))
         .build()?
         .try_deserialize()?;
@@ -233,18 +233,40 @@ pub struct Library {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Settings {
-    #[serde(default = "default_web_path")]
-    pub web_path: String,
     #[serde(deserialize_with = "clean_aio_url")]
     pub aio_url: String,
-   #[serde(default = 100)]
+    #[serde(default)]
+    pub web_path: String,
+    #[serde(default)]
     pub catalog_max_items: usize,
+    #[serde(default)]
     pub users: Vec<UserConfig>,
-    #[serde(default = "default_libraries")]
+    #[serde(default)]
     pub libraries: Vec<Library>,
     // we dont support folders
     //#[serde(default = "default_collection_id")]
     //pub collection_id: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            web_path: "/app/jellyfin-web".to_string(),
+            aio_url: String::new(),
+            catalog_max_items: 100,
+            users: Vec::new(),
+            libraries: vec![
+                Library {
+                    name: "Movies".to_string(),
+                    media_kind: db::MediaKind::Movie,
+                },
+                Library {
+                    name: "Series".to_string(),
+                    media_kind: db::MediaKind::Series,
+                },
+            ],
+        }
+    }
 }
 
 fn clean_aio_url<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -261,27 +283,6 @@ fn clean_aio_url_str(url: &str) -> &str {
         .strip_suffix("manifest.json")
         .unwrap_or(url)
         .trim_end_matches('/')
-}
-
-fn default_libraries() -> Vec<Library> {
-    vec![
-        Library {
-            name: "Movies".to_string(),
-            media_kind: db::MediaKind::Movie,
-        },
-        Library {
-            name: "Series".to_string(),
-            media_kind: db::MediaKind::Series,
-        },
-    ]
-}
-
-fn default_collection_id() -> String {
-    "fd58cb0a-9d75-49b7-aa6a-c08cc335c2f6".to_string()
-}
-
-fn default_web_path() -> String {
-    "/app/jellyfin-web".to_string()
 }
 
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {

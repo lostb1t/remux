@@ -220,9 +220,7 @@ impl RestClient<NoAuth> {
         let cache = CACHE.clone();
         Ok(Self {
             http,
-            base: url::Url::parse(
-                format!("{}/", base.trim_end_matches('/')).as_str(),
-            )?,
+            base: url::Url::parse(format!("{}/", base.trim_end_matches('/')).as_str())?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
             cache,
@@ -265,7 +263,7 @@ impl<A: Auth + Clone> RestClient<A> {
                 return Ok(serde_json::from_str(&cached.value)?);
             }
         }
-       // info!(?url);
+        // info!(?url);
         let mut req = self
             .http
             .request(endpoint.method(), url.clone())

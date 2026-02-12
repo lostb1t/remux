@@ -160,7 +160,7 @@ impl AioService {
                 sdks::aio::Search {
                     kind: media_type.into(),
                     id,
-                    format: true
+                    format: true,
                 }
                 .with_cache(Duration::from_secs(360)),
             )
@@ -216,19 +216,20 @@ impl AioService {
         let client = self.client.clone();
         let kind = cat.kind.clone();
         let id = cat.id.clone();
-        
+
         // get page size. theres no default
         let page_size = client
-                        .execute(sdks::aio::CatalogEndpoint {
-                            kind: kind.clone(),
-                            id: id.clone(),
-                            search: None,
-                            genre: None,
-                            skip: None,
-                        })
-                        .await.unwrap()
-                        .metas
-                        .len() as u32;
+            .execute(sdks::aio::CatalogEndpoint {
+                kind: kind.clone(),
+                id: id.clone(),
+                search: None,
+                genre: None,
+                skip: None,
+            })
+            .await
+            .unwrap()
+            .metas
+            .len() as u32;
 
         let pages = stream::iter(0..999)
             .map(move |page| {
