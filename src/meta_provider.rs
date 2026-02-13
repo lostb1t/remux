@@ -17,7 +17,7 @@ async fn apply_many(
     media: Vec<db::Media>,
     ctx: AppContext,
 ) -> Result<Vec<db::Media>> {
-    let chunk_size = 10;
+    let chunk_size = 5;
     let this = self.clone();
 
     // Process media in parallel, with a concurrency limit of `chunk_size`
@@ -28,7 +28,7 @@ async fn apply_many(
             let media_title = m.title.clone();
             async move {
                 match this.refresh_tree(m, ctx).await {
-                    Ok(media_vec) => Ok(media_vec),
+                    Ok(media_vec) => Ok::<Vec<db::Media>, anyhow::Error>(media_vec),
                     Err(e) => {
                         error!("Failed to process media '{}': {}", media_title, e);
                         Ok(Vec::new()) // Return empty vec on error, or handle as needed
