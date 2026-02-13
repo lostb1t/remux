@@ -365,7 +365,7 @@ pub struct Meta {
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
-   #[serde(rename = "app_extras")]
+    #[serde(rename = "app_extras")]
     pub app_extras: Option<AppExtras>,
 }
 
@@ -449,14 +449,14 @@ impl Meta {
             .filter(|e| e.season.map_or(false, |s| s == season_idx))
             .collect()
     }
-    
-pub fn get_season_poster(&self, idx: i64) -> Option<String> {
-    self.app_extras
-        .as_ref()
-        .and_then(|extras| extras.season_posters.as_ref())
-        .and_then(|posters| posters.get(idx as usize).cloned())
-        .flatten()
-}
+
+    pub fn get_season_poster(&self, idx: i64) -> Option<String> {
+        self.app_extras
+            .as_ref()
+            .and_then(|extras| extras.season_posters.as_ref())
+            .and_then(|posters| posters.get(idx as usize).cloned())
+            .flatten()
+    }
 }
 
 #[skip_serializing_none]

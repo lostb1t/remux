@@ -16,7 +16,8 @@ use uuid::uuid;
 
 // Assuming these are imported from your project:
 use crate::{
-    AppContext, aio, db, meta_provider::{AioMetaProvider, MetaProvider},
+    AppContext, aio, db,
+    meta_provider::{AioMetaProvider, MetaProvider},
 };
 
 #[derive(Debug)]

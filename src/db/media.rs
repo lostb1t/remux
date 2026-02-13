@@ -120,7 +120,7 @@ impl From<MediaKind> for sdks::aio::MediaType {
             MediaKind::Movie => sdks::aio::MediaType::Movie,
             MediaKind::Series => sdks::aio::MediaType::Series,
             MediaKind::Season => sdks::aio::MediaType::Series,
-           MediaKind::Episode => sdks::aio::MediaType::Series,
+            MediaKind::Episode => sdks::aio::MediaType::Series,
             // MediaKind::Catalog => jellyfin::MediaType::CollectionFolder,
             _ => todo!("{}", kind),
         }
@@ -660,8 +660,8 @@ impl Media {
     }
 
     pub async fn get_refreshable(db: &SqlitePool) -> Result<Vec<Self>> {
-      //           AND refreshed_at IS NULL
-       let rows = sqlx::query_as::<_, Self>(
+        //           AND refreshed_at IS NULL
+        let rows = sqlx::query_as::<_, Self>(
             r#"
         SELECT *
         FROM media
@@ -987,12 +987,11 @@ impl TryFrom<sdks::aio::Meta> for Media {
             //tmdb_id: Some(imdb_id.clone()),
             ..Default::default()
         };
-        
-                
-         //if media.kind ==MediaKind::Season {
-         //  media.title = format!("Season {}", media.idx.unwrap());
 
-         //} 
+        //if media.kind ==MediaKind::Season {
+        //  media.title = format!("Season {}", media.idx.unwrap());
+
+        //}
 
         // media_instances.push(media.clone());
 
@@ -1044,8 +1043,7 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
 
                     for ep in episodes {
                         let mut episode: Media = ep.clone().try_into()?;
-                       
-                        
+
                         episode.idx = ep.episode;
                         episode.aio_id = Some(ep.id.clone());
                         episode.series_imdb_id = media.imdb_id.clone();

@@ -1,5 +1,5 @@
-use serde_json;
 use crate::sdks::aio::Meta;
+use serde_json;
 
 #[cfg(test)]
 mod tests {
@@ -46,7 +46,8 @@ mod tests {
         }"#;
 
         // Deserialize into Meta struct
-        let meta: Meta = serde_json::from_str(json_data).expect("Failed to deserialize Meta");
+        let meta: Meta =
+            serde_json::from_str(json_data).expect("Failed to deserialize Meta");
 
         // Verify basic fields
         assert_eq!(meta.name.as_deref(), Some("Stranger Things"));
@@ -55,17 +56,30 @@ mod tests {
         // Verify app_extras is populated
         assert!(meta.app_extras.is_some());
         let app_extras = meta.app_extras.as_ref().unwrap();
-        
+
         // Verify season posters are extracted
         assert!(app_extras.season_posters.is_some());
         let season_posters = app_extras.season_posters.as_ref().unwrap();
         assert_eq!(season_posters.len(), 3);
-        
+
         // Verify the poster URLs
-        assert_eq!(season_posters[0].as_deref(), Some("https://artworks.thetvdb.com/banners/v4/season/650459/posters/62974916c5a81.jpg"));
-        assert_eq!(season_posters[1].as_deref(), Some("https://artworks.thetvdb.com/banners/seasons/305288-1.jpg"));
-        assert_eq!(season_posters[2].as_deref(), Some("https://artworks.thetvdb.com/banners/v4/season/679296/posters/63dcca3e61c0f.jpg"));
-        
+        assert_eq!(
+            season_posters[0].as_deref(),
+            Some(
+                "https://artworks.thetvdb.com/banners/v4/season/650459/posters/62974916c5a81.jpg"
+            )
+        );
+        assert_eq!(
+            season_posters[1].as_deref(),
+            Some("https://artworks.thetvdb.com/banners/seasons/305288-1.jpg")
+        );
+        assert_eq!(
+            season_posters[2].as_deref(),
+            Some(
+                "https://artworks.thetvdb.com/banners/v4/season/679296/posters/63dcca3e61c0f.jpg"
+            )
+        );
+
         // Test get_season_poster method
         assert_eq!(
             meta.get_season_poster(0),
@@ -73,13 +87,15 @@ mod tests {
         );
         assert_eq!(
             meta.get_season_poster(1),
-            Some("https://artworks.thetvdb.com/banners/seasons/305288-1.jpg".to_string())
+            Some(
+                "https://artworks.thetvdb.com/banners/seasons/305288-1.jpg".to_string()
+            )
         );
         assert_eq!(
             meta.get_season_poster(2),
             Some("https://artworks.thetvdb.com/banners/v4/season/679296/posters/63dcca3e61c0f.jpg".to_string())
         );
-        
+
         // Test out-of-bounds season
         assert_eq!(meta.get_season_poster(3), None);
         assert_eq!(meta.get_season_poster(-1), None);
@@ -103,26 +119,39 @@ fn test_season_posters_with_null_elements() {
     }"#;
 
     // Deserialize into Meta struct
-    let meta: Meta = serde_json::from_str(json_data).expect("Failed to deserialize Meta");
+    let meta: Meta =
+        serde_json::from_str(json_data).expect("Failed to deserialize Meta");
 
     // Verify app_extras is populated
     assert!(meta.app_extras.is_some());
     let app_extras = meta.app_extras.as_ref().unwrap();
-    
+
     // Verify season posters are extracted
     assert!(app_extras.season_posters.is_some());
     let season_posters = app_extras.season_posters.as_ref().unwrap();
     assert_eq!(season_posters.len(), 4);
-    
+
     // Verify null and non-null elements
     assert_eq!(season_posters[0], None);
-    assert_eq!(season_posters[1].as_deref(), Some("https://example.com/poster1.jpg"));
+    assert_eq!(
+        season_posters[1].as_deref(),
+        Some("https://example.com/poster1.jpg")
+    );
     assert_eq!(season_posters[2], None);
-    assert_eq!(season_posters[3].as_deref(), Some("https://example.com/poster3.jpg"));
-    
+    assert_eq!(
+        season_posters[3].as_deref(),
+        Some("https://example.com/poster3.jpg")
+    );
+
     // Test get_season_poster method with null elements
     assert_eq!(meta.get_season_poster(0), None); // null element
-    assert_eq!(meta.get_season_poster(1), Some("https://example.com/poster1.jpg".to_string()));
+    assert_eq!(
+        meta.get_season_poster(1),
+        Some("https://example.com/poster1.jpg".to_string())
+    );
     assert_eq!(meta.get_season_poster(2), None); // null element
-    assert_eq!(meta.get_season_poster(3), Some("https://example.com/poster3.jpg".to_string()));
+    assert_eq!(
+        meta.get_season_poster(3),
+        Some("https://example.com/poster3.jpg".to_string())
+    );
 }

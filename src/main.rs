@@ -107,9 +107,11 @@ async fn init_app() -> Result<Router> {
         .build()?
         .try_deserialize()?;
 
-   debug!("config: {}", serde_json::to_string_pretty(&settings).unwrap());
+    debug!(
+        "config: {}",
+        serde_json::to_string_pretty(&settings).unwrap()
+    );
 
-   
     let conn = db::connect(
         std::env::var("DATABASE_URL")
             .as_deref()
