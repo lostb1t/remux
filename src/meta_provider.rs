@@ -19,7 +19,7 @@ pub trait MetaProvider: Send + Sync {
         // todo: optimize later
         let chunk_size = 5;
         let this = self.clone();
-        dbg!(&media.len());
+
         let results = stream::iter(media)
             .map(|m| {
                 let ctx = ctx.clone();
