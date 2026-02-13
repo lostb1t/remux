@@ -120,6 +120,7 @@ impl From<MediaKind> for sdks::aio::MediaType {
             MediaKind::Movie => sdks::aio::MediaType::Movie,
             MediaKind::Series => sdks::aio::MediaType::Series,
             MediaKind::Season => sdks::aio::MediaType::Series,
+           MediaKind::Episode => sdks::aio::MediaType::Series,
             // MediaKind::Catalog => jellyfin::MediaType::CollectionFolder,
             _ => todo!("{}", kind),
         }
@@ -1002,11 +1003,13 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
 
                     for ep in episodes {
                         let mut episode: Media = ep.clone().try_into()?;
+                       
+                        
                         episode.idx = ep.episode;
                         episode.aio_id = Some(ep.id.clone());
                         episode.series_imdb_id = media.imdb_id.clone();
                         episode.parent_id = Some(season.id);
-
+                        episode.parent_idx = Some(season_idx);
                         media_instances.push(episode);
                     }
                 }

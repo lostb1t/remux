@@ -260,7 +260,7 @@ impl<A: Auth + Clone> RestClient<A> {
 
         if let Some(ttl) = endpoint.cache_ttl() {
             if let Some(cached) = self.cache.get(&cache_key) {
-                return Ok(serde_json::from_str(&cached.value)?);
+              return Ok(serde_json::from_str(&cached.value)?);
             }
         }
         // info!(?url);

@@ -11,36 +11,42 @@ pub struct MetaProviderService;
 pub trait MetaProvider: Send + Sync {
     async fn apply(&self, mut media: db::Media, ctx: AppContext) -> Result<db::Media>;
 
-    async fn apply_many(
-        &self,
-        media: Vec<db::Media>,
-        ctx: AppContext,
-    ) -> Result<Vec<db::Media>> {
-        use futures::stream::{self, StreamExt};
 
-        let chunk_size = 10;
-        let mut results = Vec::with_capacity(media.len());
+async fn apply_many(
+    &self,
+    media: Vec<db::Media>,
+    ctx: AppContext,
+) -> Result<Vec<db::Media>> {
+    let chunk_size = 10;
+    let this = self.clone();
 
-        for chunk in media.chunks(chunk_size) {
+    // Process media in parallel, with a concurrency limit of `chunk_size`
+    let results = stream::iter(media)
+        .map(|m| {
             let ctx = ctx.clone();
-            let this = self.clone();
-
-            for m in chunk {
-                let ctx = ctx.clone();
-                let this = self.clone();
-                let media_title = m.title.clone();
-
-                match this.refresh_tree(m.clone(), ctx).await {
-                    Ok(media_vec) => results.extend(media_vec),
+            let this = this.clone();
+            let media_title = m.title.clone();
+            async move {
+                match this.refresh_tree(m, ctx).await {
+                    Ok(media_vec) => Ok(media_vec),
                     Err(e) => {
-                        error!("Failed to process media '{}': {}", media_title, e)
+                        error!("Failed to process media '{}': {}", media_title, e);
+                        Ok(Vec::new()) // Return empty vec on error, or handle as needed
                     }
                 }
             }
-        }
+        })
+        .buffer_unordered(chunk_size) // Limit concurrency
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()? // Flatten results
+        .into_iter()
+        .flatten()
+        .collect();
 
-        Ok(results)
-    }
+    Ok(results)
+}
 
     async fn refresh_tree(
         &self,
@@ -52,7 +58,8 @@ pub trait MetaProvider: Send + Sync {
         all_media.push(media.clone());
 
         if media.kind == db::MediaKind::Series {
-            let existing_seasons = db::Media::get_by_filter(
+
+          let existing_seasons = db::Media::get_by_filter(
                 &ctx.db,
                 &db::MediaFilter {
                     parent_id: Some(media.id),
@@ -62,16 +69,20 @@ pub trait MetaProvider: Send + Sync {
             ).await?.records;
             
             if let Some(mut seasons_new) = self.get_seasons(media.clone(), ctx.clone()).await? {
-                let existing_idxs: Vec<i64> = existing_seasons.iter().filter_map(|s| s.idx).collect();
-                seasons_new.retain(|x| x.idx.map(|idx| existing_idxs.contains(&idx)).unwrap_or(false));
-                
+
+               // let existing_idxs: Vec<i64> = existing_seasons.iter().filter_map(|s| s.idx).collect();
+                                                                          //dbg!(&seasons_new); 
+              //  seasons_new.retain(|x| x.idx.map(|idx| existing_idxs.contains(&idx)).unwrap_or(false));
+
                 let seasons_with_meta = self.apply_many(seasons_new.clone(), ctx.clone()).await?;
+
                 all_media.extend(seasons_with_meta);
                 
                 // Process episodes for each season
                 for season in seasons_new {
                     if let Some(episodes) = self.get_episodes(season.clone(), ctx.clone()).await? {
-                        let episodes = self.apply_many(episodes, ctx.clone()).await?;
+
+                      let episodes = self.apply_many(episodes, ctx.clone()).await?;
                         all_media.extend(episodes);
                     }
                 }
@@ -99,7 +110,8 @@ pub struct AioMetaProvider;
 #[async_trait]
 impl MetaProvider for AioMetaProvider {
     async fn apply(&self, mut media: db::Media, ctx: AppContext) -> Result<db::Media> {
-        let meta = ctx
+        //return Ok(media);
+       let meta = ctx
             .aio
             .get_meta(
                 media.kind.clone().into(),

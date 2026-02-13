@@ -203,7 +203,7 @@ impl TryFrom<aio::Episode> for db::Media {
     type Error = anyhow::Error;
     fn try_from(meta: aio::Episode) -> Result<db::Media> {
         Ok(db::Media {
-            title: meta.name.unwrap_or_default(),
+            title: meta.title.unwrap_or_default(),
             kind: db::MediaKind::Episode,
             released_at: meta.released.map(|x| x.naive_utc()),
             runtime: meta.runtime.map(|d| d.num_seconds()),

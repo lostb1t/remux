@@ -464,7 +464,7 @@ pub fn get_season_poster(&self, idx: i64) -> Option<String> {
 #[serde(rename_all = "camelCase")]
 pub struct Episode {
     pub id: String,
-    pub name: Option<String>,
+    pub title: Option<String>,
     pub released: Option<DateTime<Utc>>,
     pub thumbnail: Option<String>,
     pub episode: Option<i64>,
