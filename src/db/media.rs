@@ -242,8 +242,11 @@ pub struct Media {
     #[sqlx(skip)]
     pub sources: Option<Vec<Media>>,
     #[sqlx(skip)]
+    pub seasons: Option<Vec<Media>>,
+    #[sqlx(skip)]
+    pub episodes: Option<Vec<Media>>,
+    #[sqlx(skip)]
     pub user_state: Option<super::UserMediaState>,
-    // pub seasons: Option<Vec<Media>>,
 
     // stream
     pub url: Option<String>,
@@ -494,7 +497,6 @@ impl Media {
             query_builder.push(
                 " ON CONFLICT DO UPDATE SET
                 title = excluded.title,
-                id = excluded.id,
                 idx = excluded.idx,
                 released_at = excluded.released_at,
                 runtime = excluded.runtime,
@@ -798,13 +800,6 @@ impl Media {
         Ok(state)
     }
 
-    //pub async fn seasons(&self, db: &sqlx::SqlitePool) -> Result<Vec<Self>> {
-    //    if let Some(seasons) = self.seasons {
-    //        Ok(seasons)
-    //    } else {
-    //        Ok(vec![])
-    //    }
-    //}
     pub async fn refresh_sources(
         &self,
         db: &sqlx::SqlitePool,
@@ -852,6 +847,52 @@ impl Media {
             self.sources = Some(sources);
         };
         Ok(self.sources.clone().unwrap())
+    }
+
+    pub async fn seasons(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
+        if self.kind != MediaKind::Series {
+            return Ok(vec![]);
+        }
+
+        if self.seasons.is_none() {
+            let seasons = Self::get_by_filter(
+                db,
+                &MediaFilter {
+                    kind: Some(vec![MediaKind::Season]),
+                    parent_id: Some(self.id),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .records;
+
+            self.seasons = Some(seasons);
+        }
+
+        Ok(self.seasons.clone().unwrap())
+    }
+
+    pub async fn episodes(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
+        if self.kind != MediaKind::Season {
+            return Ok(vec![]);
+        }
+
+        if self.episodes.is_none() {
+            let episodes = Self::get_by_filter(
+                db,
+                &MediaFilter {
+                    kind: Some(vec![MediaKind::Episode]),
+                    parent_id: Some(self.id),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .records;
+
+            self.episodes = Some(episodes);
+        }
+
+        Ok(self.episodes.clone().unwrap())
     }
 
     pub async fn user_state(

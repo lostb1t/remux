@@ -18,7 +18,7 @@ async fn apply_many(
     ctx: AppContext,
 ) -> Result<Vec<db::Media>> {
     // todo: optimize later 
-    let chunk_size = 1;
+    let chunk_size = 10;
     let this = self.clone();
 
     let results = stream::iter(media)
@@ -54,36 +54,29 @@ async fn apply_many(
         ctx: AppContext,
     ) -> Result<Vec<db::Media>> {
         let mut all_media = Vec::new();
-        let media = self.apply(media, ctx.clone()).await?;
+        let mut media = self.apply(media, ctx.clone()).await?;
         all_media.push(media.clone());
 
         if media.kind == db::MediaKind::Series {
 
-          let existing_seasons = db::Media::get_by_filter(
-                &ctx.db,
-                &db::MediaFilter {
-                    parent_id: Some(media.id),
-                    kind: Some(vec![db::MediaKind::Season]),
-                    ..Default::default()
-                }
-            ).await?.records;
+          let mut seasons = media.seasons(&ctx.db).await?;
             
             if let Some(mut seasons_new) = self.get_seasons(media.clone(), ctx.clone()).await? {
 
-               // let existing_idxs: Vec<i64> = existing_seasons.iter().filter_map(|s| s.idx).collect();
+                 let existing_idxs: Vec<i64> = seasons.iter().filter_map(|s| s.idx).collect();
                                                                           //dbg!(&seasons_new); 
-              //  seasons_new.retain(|x| x.idx.map(|idx| existing_idxs.contains(&idx)).unwrap_or(false));
+                 seasons_new.retain(|x| x.idx.map(|idx| !existing_idxs.contains(&idx)).unwrap_or(false));
 
-                let seasons_with_meta = self.apply_many(seasons_new.clone(), ctx.clone()).await?;
+seasons.extend(seasons_new.clone());
+seasons = self.apply_many(seasons, ctx.clone()).await?;
 
-                all_media.extend(seasons_with_meta);
+                all_media.extend(seasons.clone());
                 
-                // Process episodes for each season
-                for season in seasons_new {
+                for season in seasons {
                     if let Some(episodes) = self.get_episodes(season.clone(), ctx.clone()).await? {
 
                       let episodes = self.apply_many(episodes, ctx.clone()).await?;
-                        all_media.extend(episodes);
+                      all_media.extend(episodes);
                     }
                 }
             }
@@ -205,12 +198,12 @@ impl MetaProvider for AioMetaProvider {
 
     async fn get_episodes(
         &self,
-        mut media: db::Media,
+        mut season: db::Media,
         ctx: AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
         let meta = ctx
             .aio
-            .get_meta(media.kind.clone().into(), media.series_imdb_id.clone().unwrap())
+            .get_meta(season.kind.clone().into(), season.series_imdb_id.clone().unwrap())
             .await?;
 
         let meta_clone = meta.clone();
@@ -218,8 +211,8 @@ impl MetaProvider for AioMetaProvider {
         let episodes = medias
             .into_iter()
             .filter_map(|mut x| {
-                if x.kind == db::MediaKind::Episode && x.parent_idx == media.idx {
-                    x.parent_id = Some(media.id);
+                if x.kind == db::MediaKind::Episode && x.parent_idx == season.idx {
+                    x.parent_id = Some(season.id);
                     Some(x)
                 } else {
                     None

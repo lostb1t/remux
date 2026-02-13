@@ -74,11 +74,14 @@ impl TaskHandler {
         let task_id = task.id();
 
         let handle = tokio::spawn(async move {
-            let start_at = Utc::now().naive_utc();
+            //let start_at = Utc::now().naive_utc();
+            let start_time = Utc::now().naive_utc();
+            let instant_start = Instant::now();
             let task_name = task.name().to_string();
             info!(name = %task_name, "starting task");
             let result = task.run(ctx.clone(), task_service).await;
-            info!(name = %task_name, "finished task");
+            let duration = instant_start.elapsed();
+            info!(name = %task_name, duration = format!("{}s", duration.as_secs()), "finished task");
 
             let end_at = Utc::now().naive_utc();
             let status = match &result {
@@ -92,7 +95,7 @@ impl TaskHandler {
 
             let task_result = db::TaskResult {
                 task_id,
-                start_at,
+                start_at: start_time,
                 end_at,
                 status,
             };
@@ -414,15 +417,15 @@ impl Task for CatalogImportTask {
             }
 
             info!(
-                "Finished Importing catalog {} | {} ({} items)",
+                "finished Importing catalog {} | {} ({} items)",
                 cat.id, cat.kind, count
             );
         }
 
         let duration = start_time.elapsed();
         info!(
-            "Import complete. Total media items imported: {}. Time taken: {:?}",
-            total_imported, duration
+            "import complete. Total media items imported: {}.",
+            total_imported
         );
 
         // Kick off MediaScanTask
