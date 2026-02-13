@@ -17,10 +17,10 @@ async fn apply_many(
     media: Vec<db::Media>,
     ctx: AppContext,
 ) -> Result<Vec<db::Media>> {
-    let chunk_size = 5;
+    // todo: optimize later 
+    let chunk_size = 1;
     let this = self.clone();
 
-    // Process media in parallel, with a concurrency limit of `chunk_size`
     let results = stream::iter(media)
         .map(|m| {
             let ctx = ctx.clone();
@@ -31,16 +31,16 @@ async fn apply_many(
                     Ok(media_vec) => Ok::<Vec<db::Media>, anyhow::Error>(media_vec),
                     Err(e) => {
                         error!("Failed to process media '{}': {}", media_title, e);
-                        Ok(Vec::new()) // Return empty vec on error, or handle as needed
+                        Ok(Vec::new()) 
                     }
                 }
             }
         })
-        .buffer_unordered(chunk_size) // Limit concurrency
+        .buffer_unordered(chunk_size)
         .collect::<Vec<_>>()
         .await
         .into_iter()
-        .collect::<Result<Vec<_>, _>>()? // Flatten results
+        .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .flatten()
         .collect();
