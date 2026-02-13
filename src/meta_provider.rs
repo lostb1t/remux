@@ -9,7 +9,7 @@ pub struct MetaProviderService;
 
 #[async_trait]
 pub trait MetaProvider: Send + Sync {
-    async fn apply(&self, mut media: db::Media, ctx: AppContext) -> Result<db::Media>;
+    async fn apply(&self, mut media: db::Media, ctx: &AppContext) -> Result<db::Media>;
 
     async fn apply_many(
         &self,
@@ -17,77 +17,75 @@ pub trait MetaProvider: Send + Sync {
         ctx: AppContext,
     ) -> Result<Vec<db::Media>> {
         // todo: optimize later
-        let chunk_size = 5;
-        let this = self.clone();
-
-        let results = stream::iter(media)
-            .map(|m| {
+        let chunk_size = 10;
+        
+                                  
+                                  let results = stream::iter(media)
+            .map(|mut m| {
                 let ctx = ctx.clone();
-                let this = this.clone();
                 let media_title = m.title.clone();
+                            //    dbg!(&media_title);
                 async move {
-                    match this.refresh_tree(m, ctx).await {
-                        Ok(media_vec) => Ok::<Vec<db::Media>, anyhow::Error>(media_vec),
+                    let mut media_list = match self.apply(m.clone(), &ctx).await {
+                        Ok(media_vec) => vec![media_vec],
                         Err(e) => {
                             error!("Failed to process media '{}': {}", media_title, e);
-                            Ok(Vec::new())
+                            Vec::new()
+                        }
+                    };
+                    //return Ok::<Vec<db::Media>, anyhow::Error>(media_list);
+                    if m.kind == db::MediaKind::Series {
+                        let mut seasons = m.seasons(&ctx.db).await.unwrap_or_default();
+
+                        if let Some(mut seasons_new) =
+                            self.get_seasons(m.clone(), ctx.clone()).await.ok().flatten()
+                        {
+                            let existing_idxs: Vec<i64> =
+                                seasons.iter().filter_map(|s| s.idx).collect();
+                            
+                            seasons_new.retain(|x| {
+                                x.idx
+                                    .map(|idx| !existing_idxs.contains(&idx))
+                                    .unwrap_or(false)
+                            });
+
+                            seasons.extend(seasons_new.clone());
+                                                              for s in &seasons {
+                                    media_list.push(self.apply(s.clone(), &ctx).await.unwrap_or_default());
+                                  }
+                            
+                            //seasons = this.apply_many(seasons, ctx.clone()).await.unwrap_or_default();
+
+                            //media_list.extend(seasons.clone());
+
+                            for season in seasons {
+                                if let Some(episodes) =
+                                    self.get_episodes(season.clone(), ctx.clone()).await.ok().flatten()
+                                {
+                                  //dbg!(&episodes.len());
+                                  for ep in episodes {
+                                    media_list.push(self.apply(ep, &ctx).await.unwrap_or_default());
+                                  }
+                                  //  let episodes = this.apply_many(episodes, ctx.clone()).await.unwrap_or_default();
+                                  //  media_list.extend(episodes);
+                                }
+                            }
                         }
                     }
+                    
+                    Ok::<Vec<db::Media>, anyhow::Error>(media_list)
                 }
             })
             .buffer_unordered(chunk_size)
             .collect::<Vec<_>>()
             .await
             .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<Vec<db::Media>>, _>>()?
             .into_iter()
             .flatten()
             .collect();
 
         Ok(results)
-    }
-
-    async fn refresh_tree(
-        &self,
-        media: db::Media,
-        ctx: AppContext,
-    ) -> Result<Vec<db::Media>> {
-        let mut all_media = Vec::new();
-        let mut media = self.apply(media, ctx.clone()).await?;
-        all_media.push(media.clone());
-
-        if media.kind == db::MediaKind::Series {
-            let mut seasons = media.seasons(&ctx.db).await?;
-
-            if let Some(mut seasons_new) =
-                self.get_seasons(media.clone(), ctx.clone()).await?
-            {
-                let existing_idxs: Vec<i64> =
-                    seasons.iter().filter_map(|s| s.idx).collect();
-                //dbg!(&seasons_new);
-                seasons_new.retain(|x| {
-                    x.idx
-                        .map(|idx| !existing_idxs.contains(&idx))
-                        .unwrap_or(false)
-                });
-
-                seasons.extend(seasons_new.clone());
-                seasons = self.apply_many(seasons, ctx.clone()).await?;
-
-                all_media.extend(seasons.clone());
-
-                for season in seasons {
-                    if let Some(episodes) =
-                        self.get_episodes(season.clone(), ctx.clone()).await?
-                    {
-                        let episodes = self.apply_many(episodes, ctx.clone()).await?;
-                        all_media.extend(episodes);
-                    }
-                }
-            }
-        }
-
-        Ok(all_media)
     }
 
     async fn get_seasons(
@@ -107,7 +105,7 @@ pub struct AioMetaProvider;
 
 #[async_trait]
 impl MetaProvider for AioMetaProvider {
-    async fn apply(&self, mut media: db::Media, ctx: AppContext) -> Result<db::Media> {
+    async fn apply(&self, mut media: db::Media, ctx: &AppContext) -> Result<db::Media> {
         //return Ok(media);
         let meta = ctx
             .aio

@@ -474,7 +474,7 @@ impl Task for SeriesSyncTask {
             .map(|media| {
                 let provider = &provider;
                 let ctx = ctx.clone();
-                async move { provider.apply(media, ctx).await }
+                async move { provider.apply(media, &ctx).await }
             })
             .buffer_unordered(10)
             .collect::<Vec<_>>()
