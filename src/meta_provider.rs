@@ -2,7 +2,9 @@ use crate::{AppContext, aio, db, sdks};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
-use tracing::error;
+use futures::stream::{self, StreamExt};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tracing::{error, info, warn};
 
 /// Enriches metadata fields on a single Media item.
 /// Providers are chained in order — first provider that finds data wins.
@@ -54,6 +56,8 @@ impl MetaProviderService {
 
     /// Sync the tree for a series: discover new seasons and episodes.
     /// Returns all child media (seasons + episodes) that should be upserted.
+    /// Tree providers return children with metadata already populated from the
+    /// same API response, so we skip redundant apply_meta calls here.
     pub async fn sync_tree(&self, series: &mut db::Media, ctx: &AppContext) -> Result<Vec<db::Media>> {
         if series.kind != db::MediaKind::Series {
             return Ok(vec![]);
@@ -64,25 +68,34 @@ impl MetaProviderService {
         let existing_season_idxs: Vec<i64> = existing_seasons.iter().filter_map(|s| s.idx).collect();
 
         for tree_provider in &self.tree_providers {
-            let mut new_seasons = tree_provider.get_seasons(series, ctx).await?;
-            new_seasons.retain(|s| {
-                s.idx.map(|idx| !existing_season_idxs.contains(&idx)).unwrap_or(false)
-            });
+            let new_seasons = match tree_provider.get_seasons(series, ctx).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(id = %series.id, error = %e, "failed to get seasons");
+                    continue;
+                }
+            };
+            let filtered_seasons: Vec<db::Media> = new_seasons
+                .into_iter()
+                .filter(|s| s.idx.map(|idx| !existing_season_idxs.contains(&idx)).unwrap_or(false))
+                .collect();
 
             let all_seasons: Vec<db::Media> = existing_seasons
                 .iter()
                 .cloned()
-                .chain(new_seasons.into_iter())
+                .chain(filtered_seasons.into_iter())
                 .collect();
 
-            for mut season in all_seasons {
-                self.apply_meta(&mut season, ctx).await?;
+            for season in all_seasons {
                 children.push(season.clone());
 
-                let episodes = tree_provider.get_episodes(&season, ctx).await?;
-                for mut ep in episodes {
-                    self.apply_meta(&mut ep, ctx).await?;
-                    children.push(ep);
+                match tree_provider.get_episodes(&season, ctx).await {
+                    Ok(episodes) => {
+                        children.extend(episodes);
+                    }
+                    Err(e) => {
+                        warn!(id = %season.id, error = %e, "failed to get episodes");
+                    }
                 }
             }
 
@@ -96,22 +109,47 @@ impl MetaProviderService {
     }
 
     /// Process a batch of media: enrich metadata and sync trees for series.
+    /// Runs up to 10 items concurrently. Errors on individual items are logged and skipped.
     pub async fn process(&self, media: Vec<db::Media>, ctx: &AppContext) -> Result<Vec<db::Media>> {
-        let mut results = vec![];
+        let total = media.len();
+        let counter = AtomicUsize::new(0);
 
-        for mut m in media {
-            if m.kind == db::MediaKind::Series {
-                self.apply_meta(&mut m, ctx).await?;
-                results.push(m.clone());
-                let children = self.sync_tree(&mut m, ctx).await?;
-                results.extend(children);
-            } else {
-                self.apply_meta(&mut m, ctx).await?;
-                results.push(m);
-            }
-        }
+        let results: Vec<Vec<db::Media>> = stream::iter(media)
+            .map(|mut m| {
+                let counter = &counter;
+                async move {
+                    let mut batch = vec![];
 
-        Ok(results)
+                    if let Err(e) = self.apply_meta(&mut m, ctx).await {
+                        warn!(id = %m.id, title = %m.title, error = %e, "failed to apply metadata, skipping");
+                        batch.push(m);
+                        return batch;
+                    }
+
+                    if m.kind == db::MediaKind::Series {
+                        batch.push(m.clone());
+                        match self.sync_tree(&mut m, ctx).await {
+                            Ok(children) => {
+                                let i = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                                //info!(title = %m.title, seasons_episodes = children.len(), "[{}/{}] synced series tree", i, total);
+                                batch.extend(children);
+                            }
+                            Err(e) => {
+                                warn!(id = %m.id, title = %m.title, error = %e, "failed to sync tree, skipping");
+                            }
+                        }
+                    } else {
+                        batch.push(m);
+                    }
+
+                    batch
+                }
+            })
+            .buffer_unordered(10)
+            .collect()
+            .await;
+
+        Ok(results.into_iter().flatten().collect())
     }
 }
 
@@ -217,6 +255,8 @@ impl TreeSyncProvider for AioTreeSyncProvider {
                 if x.kind == db::MediaKind::Season {
                     x.parent_id = Some(series.id);
                     x.poster = x.idx.and_then(|idx| meta_clone.get_season_poster(idx));
+                    x.title = format!("Season {}", x.idx.unwrap_or(1));
+                    x.refreshed_at = Some(Utc::now().naive_utc());
                     Some(x)
                 } else {
                     None
@@ -243,6 +283,14 @@ impl TreeSyncProvider for AioTreeSyncProvider {
             .filter_map(|mut x| {
                 if x.kind == db::MediaKind::Episode && x.parent_idx == season.idx {
                     x.parent_id = Some(season.id);
+                    if let Some(episode_num) = x.idx {
+                        if let Some(season_num) = x.parent_idx {
+                            x.title = format!("S{}E{} - {}", season_num, episode_num, x.title);
+                        } else {
+                            x.title = format!("E{} - {}", episode_num, x.title);
+                        }
+                    }
+                    x.refreshed_at = Some(Utc::now().naive_utc());
                     Some(x)
                 } else {
                     None
