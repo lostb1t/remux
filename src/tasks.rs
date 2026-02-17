@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use chrono::Utc;
-use futures::stream::{self, StreamExt};
+use futures::stream::StreamExt;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use uuid::uuid;
 // Assuming these are imported from your project:
 use crate::{
     AppContext, aio, db,
-    meta_provider::{AioMetaProvider, MetaProvider},
+    meta_provider::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService},
 };
 
 #[derive(Debug)]
@@ -287,10 +287,12 @@ impl Task for MediaScanTask {
         ctx: AppContext,
         _task_service: Arc<TaskService>,
     ) -> Result<()> {
-        let provider = AioMetaProvider {};
+        let service = MetaProviderService::new(
+            vec![Box::new(AioMetaProvider)],
+            vec![Box::new(AioTreeSyncProvider)],
+        );
         let media_list = db::Media::get_refreshable(&ctx.db).await?;
-        //let mut updated_media: Vec<db::Media> = vec![];
-        let mut updated_media = provider.apply_many(media_list, ctx.clone()).await?;
+        let updated_media = service.process(media_list, &ctx).await?;
         db::Media::upsert(&ctx.db, &updated_media).await?;
 
         Ok(())
@@ -459,7 +461,10 @@ impl Task for SeriesSyncTask {
         ctx: AppContext,
         _task_service: Arc<TaskService>,
     ) -> Result<()> {
-        let provider = AioMetaProvider {};
+        let service = MetaProviderService::new(
+            vec![Box::new(AioMetaProvider)],
+            vec![Box::new(AioTreeSyncProvider)],
+        );
         let media_list = db::Media::get_by_filter(
             &ctx.db,
             &db::MediaFilter {
@@ -470,18 +475,7 @@ impl Task for SeriesSyncTask {
         .await?
         .records;
 
-        let updated_media = stream::iter(media_list)
-            .map(|media| {
-                let provider = &provider;
-                let ctx = ctx.clone();
-                async move { provider.apply(media, &ctx).await }
-            })
-            .buffer_unordered(10)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<db::Media>>>()?;
-
+        let updated_media = service.process(media_list, &ctx).await?;
         db::Media::upsert(&ctx.db, &updated_media).await?;
 
         Ok(())
