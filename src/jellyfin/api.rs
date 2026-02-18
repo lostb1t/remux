@@ -559,6 +559,8 @@ pub async fn get_items(
                     }
                 }
 
+                media.load_relations(&state.ctx.db).await?;
+
                 return Ok(ItemsQueryResult {
                     items: vec![media.clone().into()],
                     total_count: 1,

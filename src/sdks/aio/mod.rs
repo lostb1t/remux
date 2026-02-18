@@ -365,7 +365,7 @@ pub struct Meta {
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
-    #[serde(rename = "app_extras")]
+    #[serde(default, rename = "app_extras", deserialize_with = "deserialize_app_extras")]
     pub app_extras: Option<AppExtras>,
 }
 
@@ -373,11 +373,11 @@ pub struct Meta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppExtras {
-    //pub cast: Option<Vec<CastMember>>,
-    //pub directors: Option<Vec<String>>,
-    //pub writers: Option<Vec<String>>,
+    pub cast: Option<Vec<CastMember>>,
+    pub directors: Option<Vec<String>>,
+    pub writers: Option<Vec<String>>,
     pub season_posters: Option<Vec<Option<String>>>,
-    //pub certification: Option<String>,
+    pub certification: Option<String>,
 }
 
 #[skip_serializing_none]
@@ -390,6 +390,17 @@ pub struct CastMember {
 }
 
 //use std::time::Duration;
+
+fn deserialize_app_extras<'de, D>(de: D) -> Result<Option<AppExtras>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(de)?;
+    match raw {
+        None => Ok(None),
+        Some(v) => Ok(serde_json::from_value(v).ok()),
+    }
+}
 
 fn deserialize_opt_duration_empty_ok<'de, D>(
     de: D,

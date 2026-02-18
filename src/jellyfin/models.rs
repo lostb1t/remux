@@ -861,9 +861,9 @@ pub struct BaseItemDto {
     pub parent_id: Option<Uuid>,
     #[default(MediaType::Movie)]
     pub type_: MediaType,
-    // pub people: Option<Vec<BaseItemPerson>>,
-    // pub studios: Option<Vec<NameLongIdPair>>,
-    //pub genre_items: Option<Vec<NameLongIdPair>>,
+    pub people: Option<Vec<BaseItemPerson>>,
+    pub studios: Option<Vec<NameIdPair>>,
+    pub genre_items: Option<Vec<NameIdPair>>,
     pub parent_logo_item_id: Option<String>,
     pub parent_backdrop_item_id: Option<String>,
     pub parent_backdrop_image_tags: Option<Vec<String>>,
@@ -971,6 +971,26 @@ pub struct BaseItemDto {
     //pub aio_media_type: Option<aio::MediaType>,
     // #[serde(skip)]
     //pub aio_stream: Option<sdks::aio::Stream>,
+}
+
+#[skip_serializing_none]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct BaseItemPerson {
+    pub id: Uuid,
+    pub name: String,
+    pub role: Option<String>,
+    #[serde(rename = "Type")]
+    pub type_: Option<String>,
+    pub primary_image_tag: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct NameIdPair {
+    pub id: Uuid,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

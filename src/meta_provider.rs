@@ -1,4 +1,4 @@
-use crate::{AppContext, aio, db, sdks};
+use crate::{AppContext, aio, db, sdks, utils};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -175,6 +175,7 @@ impl MetaProvider for AioMetaProvider {
             .get_meta(media.kind.clone().into(), imdb_id)
             .await?;
 
+        let meta_raw = meta.clone();
         let medias: Vec<db::Media> = meta.try_into()?;
         let found = match media.kind {
             db::MediaKind::Movie => {
@@ -222,6 +223,13 @@ impl MetaProvider for AioMetaProvider {
                     } else {
                         media.title = format!("E{} - {}", episode_num, media.title);
                     }
+                }
+            }
+
+            // Sync people/genre relations for movies and series
+            if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
+                if let Err(e) = sync_relations(media, &meta_raw, ctx).await {
+                    warn!(id = %media.id, error = %e, "failed to sync relations");
                 }
             }
 
@@ -299,4 +307,108 @@ impl TreeSyncProvider for AioTreeSyncProvider {
             .collect();
         Ok(episodes)
     }
+}
+
+/// Create Person/Genre media items and link them to a movie/series via media_relations.
+async fn sync_relations(
+    media: &db::Media,
+    meta: &sdks::aio::Meta,
+    ctx: &AppContext,
+) -> Result<()> {
+    let mut related_media: Vec<db::Media> = Vec::new();
+    let mut relations: Vec<db::MediaRelation> = Vec::new();
+
+    // Genres
+    if let Some(genres) = meta.genre.as_ref().or(meta.genres.as_ref()) {
+        for genre_name in genres {
+            let genre_id = utils::get_stable_uuid(format!("genre:{}", genre_name.to_lowercase()));
+            related_media.push(db::Media {
+                id: genre_id,
+                title: genre_name.clone(),
+                kind: db::MediaKind::Genre,
+                aio_id: Some(format!("genre:{}", genre_name.to_lowercase())),
+                ..Default::default()
+            });
+            relations.push(db::MediaRelation {
+                left_media_id: media.id,
+                right_media_id: genre_id,
+                role: None,
+                ..Default::default()
+            });
+        }
+    }
+
+    // Cast (actors)
+    if let Some(extras) = &meta.app_extras {
+        if let Some(cast) = &extras.cast {
+            for (i, member) in cast.iter().enumerate() {
+                if let Some(name) = &member.name {
+                    let person_id = utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+                    related_media.push(db::Media {
+                        id: person_id,
+                        title: name.clone(),
+                        kind: db::MediaKind::Person,
+                        poster: member.photo.clone(),
+                        aio_id: Some(format!("person:{}", name.to_lowercase())),
+                        ..Default::default()
+                    });
+                    relations.push(db::MediaRelation {
+                        left_media_id: media.id,
+                        right_media_id: person_id,
+                        weight: Some(i as i64),
+                        role: Some(db::RelationRole::Actor),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+
+        // Directors
+        if let Some(directors) = &extras.directors {
+            for (i, name) in directors.iter().enumerate() {
+                let person_id = utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+                related_media.push(db::Media {
+                    id: person_id,
+                    title: name.clone(),
+                    kind: db::MediaKind::Person,
+                    aio_id: Some(format!("person:{}", name.to_lowercase())),
+                    ..Default::default()
+                });
+                relations.push(db::MediaRelation {
+                    left_media_id: media.id,
+                    right_media_id: person_id,
+                    weight: Some(i as i64),
+                    role: Some(db::RelationRole::Director),
+                    ..Default::default()
+                });
+            }
+        }
+
+        // Writers
+        if let Some(writers) = &extras.writers {
+            for (i, name) in writers.iter().enumerate() {
+                let person_id = utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+                related_media.push(db::Media {
+                    id: person_id,
+                    title: name.clone(),
+                    kind: db::MediaKind::Person,
+                    aio_id: Some(format!("person:{}", name.to_lowercase())),
+                    ..Default::default()
+                });
+                relations.push(db::MediaRelation {
+                    left_media_id: media.id,
+                    right_media_id: person_id,
+                    weight: Some(i as i64),
+                    role: Some(db::RelationRole::Writer),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    // Insert related media (people/genres) then relations
+    db::Media::insert(&ctx.db, &related_media).await?;
+    db::MediaRelation::upsert(&ctx.db, &relations).await?;
+
+    Ok(())
 }

@@ -145,6 +145,51 @@ impl From<db::Media> for jellyfin::BaseItemDto {
                 .runtime
                 .map(|r| r.to_ticks(utils::TickUnit::Seconds).unwrap()),
 
+            genres: media.relations.as_ref().map(|rels| {
+                rels.iter()
+                    .filter(|(_, m)| m.kind == db::MediaKind::Genre)
+                    .map(|(_, m)| m.title.clone())
+                    .collect()
+            }),
+            genre_items: media.relations.as_ref().map(|rels| {
+                rels.iter()
+                    .filter(|(_, m)| m.kind == db::MediaKind::Genre)
+                    .map(|(_, m)| jellyfin::NameIdPair {
+                        id: m.id,
+                        name: m.title.clone(),
+                    })
+                    .collect()
+            }),
+            people: media.relations.as_ref().map(|rels| {
+                rels.iter()
+                    .filter(|(_, m)| m.kind == db::MediaKind::Person)
+                    .map(|(rel, m)| jellyfin::BaseItemPerson {
+                        id: m.id,
+                        name: m.title.clone(),
+                        role: rel.role.as_ref().map(|r| match r {
+                            db::RelationRole::Actor => "Actor".to_string(),
+                            db::RelationRole::Director => "Director".to_string(),
+                            db::RelationRole::Writer => "Writer".to_string(),
+                        }),
+                        type_: rel.role.as_ref().map(|r| match r {
+                            db::RelationRole::Actor => "Actor".to_string(),
+                            db::RelationRole::Director => "Director".to_string(),
+                            db::RelationRole::Writer => "Writer".to_string(),
+                        }),
+                        primary_image_tag: m.poster.clone(),
+                    })
+                    .collect()
+            }),
+            studios: media.relations.as_ref().map(|rels| {
+                rels.iter()
+                    .filter(|(_, m)| m.kind == db::MediaKind::Studio)
+                    .map(|(_, m)| jellyfin::NameIdPair {
+                        id: m.id,
+                        name: m.title.clone(),
+                    })
+                    .collect()
+            }),
+
             // only load sources from "prefetch"
             ..Default::default()
         };

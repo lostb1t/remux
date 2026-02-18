@@ -181,13 +181,81 @@ impl TryFrom<String> for CatalogKind {
     }
 }
 
+#[derive(
+    Default,
+    strum_macros::EnumString,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+pub enum RelationRole {
+    #[default]
+    Actor,
+    Director,
+    Writer,
+}
+
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
-pub struct MediaRelations {
+pub struct MediaRelation {
     #[default(get_uuid())]
-    pub id: Uuid,
+    pub relation_id: Uuid,
     pub left_media_id: Uuid,
     pub right_media_id: Uuid,
     pub weight: Option<i64>,
+    pub role: Option<RelationRole>,
+}
+
+impl MediaRelation {
+    pub async fn upsert(db: &sqlx::SqlitePool, items: &[Self]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = db.begin().await?;
+        const BATCH_SIZE: usize = 900;
+
+        for chunk in items.chunks(BATCH_SIZE) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, weight, role) ",
+            );
+
+            qb.push_values(chunk.iter(), |mut b, item| {
+                b.push_bind(&item.relation_id)
+                    .push_bind(&item.left_media_id)
+                    .push_bind(&item.right_media_id)
+                    .push_bind(&item.weight)
+                    .push_bind(&item.role);
+            });
+
+            qb.push(" ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight");
+
+            qb.build().execute(&mut *tx).await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn get_by_media_id(
+        db: &SqlitePool,
+        media_id: &Uuid,
+    ) -> Result<Vec<Self>> {
+        let rows = sqlx::query_as::<_, Self>(
+            "SELECT * FROM media_relations WHERE left_media_id = $1 ORDER BY weight ASC",
+        )
+        .bind(media_id)
+        .fetch_all(db)
+        .await?;
+
+        Ok(rows)
+    }
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -247,6 +315,8 @@ pub struct Media {
     pub episodes: Option<Vec<Media>>,
     #[sqlx(skip)]
     pub user_state: Option<super::UserMediaState>,
+    #[sqlx(skip)]
+    pub relations: Option<Vec<(MediaRelation, Media)>>,
 
     // stream
     pub url: Option<String>,
@@ -907,6 +977,37 @@ impl Media {
         }
 
         Ok(self.user_state.clone())
+    }
+
+    pub async fn load_relations(&mut self, db: &SqlitePool) -> Result<()> {
+        if self.relations.is_some() {
+            return Ok(());
+        }
+
+        let rels = MediaRelation::get_by_media_id(db, &self.id).await?;
+        if rels.is_empty() {
+            self.relations = Some(vec![]);
+            return Ok(());
+        }
+
+        let media_ids: Vec<Uuid> = rels.iter().map(|r| r.right_media_id).collect();
+        let related = Self::get_by_filter(db, &MediaFilter {
+            id: Some(media_ids),
+            ..Default::default()
+        }).await?.records;
+
+        let map: std::collections::HashMap<Uuid, Media> =
+            related.into_iter().map(|m| (m.id, m)).collect();
+
+        let pairs = rels
+            .into_iter()
+            .filter_map(|rel| {
+                map.get(&rel.right_media_id).map(|m| (rel, m.clone()))
+            })
+            .collect();
+
+        self.relations = Some(pairs);
+        Ok(())
     }
 
     pub fn media_key(&self) -> String {
