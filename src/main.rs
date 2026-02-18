@@ -84,6 +84,7 @@ mod aio;
 mod db;
 mod jellyfin;
 mod meta_provider;
+mod playback_session;
 mod tasks;
 
 /// Route auto-registration via `#[get("/path")]`, `#[post("/path")]`, etc.

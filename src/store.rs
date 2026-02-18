@@ -79,6 +79,10 @@ impl Store {
                 .map(|arc| (*arc).clone())
         })
     }
+
+    pub fn delete(&self, key: impl Into<String>) {
+        self.inner.invalidate(&key.into());
+    }
 }
 
 #[derive(Clone, Default)]

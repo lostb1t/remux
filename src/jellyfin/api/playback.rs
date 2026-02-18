@@ -3,12 +3,14 @@ use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use remux_macros::{get, post};
+use remux_macros::{delete, get, post};
 use axum_extra::extract::Query;
+use chrono::{Local, Utc};
 use futures_util::StreamExt;
 use futures_util::TryStreamExt;
 use headers;
 use http::StatusCode;
+use serde::Deserialize;
 use serde_json::json;
 use std::io;
 use tracing::info;
@@ -19,6 +21,7 @@ use crate::AppState;
 use crate::db;
 use crate::db::auth;
 use crate::jellyfin;
+use crate::playback_session::PlaybackSession;
 use crate::sdks;
 use crate::utils;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
@@ -232,52 +235,294 @@ pub async fn playback_bitratetest(
 pub async fn report_playback_start(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Json(data): Json<jellyfin::PlaybackProgressInfo>,
+    Json(data): Json<jellyfin::PlaybackStartInfo>,
 ) -> Result<impl IntoResponse> {
+    let play_session_id = data
+        .play_session_id
+        .clone()
+        .unwrap_or_else(|| utils::get_uuid().as_simple().to_string());
+
+    let item_id = data.item_id.unwrap_or_default();
+
+    let ps = PlaybackSession {
+        play_session_id: play_session_id.clone(),
+        user_id: session.user.id,
+        item_id,
+        media_source_id: data.media_source_id.clone(),
+        device_id: session.device.id.clone(),
+        client_name: session.device.app_name.clone(),
+        position_ticks: data.position_ticks.unwrap_or(0),
+        is_paused: data.is_paused,
+        is_muted: data.is_muted,
+        volume_level: data.volume_level,
+        audio_stream_index: data.audio_stream_index,
+        subtitle_stream_index: data.subtitle_stream_index,
+        play_method: data.play_method.clone(),
+        started_at: Utc::now(),
+        last_activity: Utc::now(),
+    };
+
+    ps.save(&state.ctx.store);
+    info!(play_session_id, %item_id, "Playback started");
+
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[cfg(test)]
-#[sqlx::test]
-async fn report_playback_start_test() {
-    let server = crate::integration_test::new_test_server().await.unwrap();
+mod tests {
+    use http::header::HeaderValue;
+    use http::StatusCode;
+    use serde_json::json;
 
-    let response = server
-        // .authorization("password12345")
-        .post(&"/sessions/playing")
-        .json(&json!(
-        {
-          "VolumeLevel": 100,
-          "IsMuted": false,
-          "IsPaused": false,
-          "RepeatMode": "RepeatNone",
-          "ShuffleMode": "Sorted",
-          "MaxStreamingBitrate": 3000000,
-          "PositionTicks": 10,
-          "PlaybackRate": 1,
-          "SubtitleStreamIndex": -1,
-          "SecondarySubtitleStreamIndex": -1,
-          "AudioStreamIndex": 1,
-          "BufferedRanges": [],
-          "PlayMethod": "Transcode",
-          "PlaySessionId": "02f91e00707347bcb4366a99db7dbc74",
-          "PlaylistItemId": "playlistItem0",
-          "MediaSourceId": "80ce1832bb797ffafaf65059b8b3dc9e",
-          "CanSeek": true,
-          "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
-          "NowPlayingQueue": [
-            {
-              "Id": "80ce1832bb797ffafaf65059b8b3dc9e",
-              "PlaylistItemId": "playlistItem0"
-            }
-          ]
+    const AUTH_HEADER: &str = "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\"";
 
-                    }))
-        .await;
+    async fn authenticated_server() -> (axum_test::TestServer, String) {
+        let server = crate::integration_test::new_test_server().await.unwrap();
 
-    response.assert_status_ok();
-    response.assert_status_no_content();
-    //response.assert_text("pong!");
+        let resp = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({
+                "Username": "test",
+                "Pw": "test"
+            }))
+            .await;
+
+        let body: serde_json::Value = resp.json();
+        let token = body["AccessToken"].as_str().unwrap().to_string();
+        (server, token)
+    }
+
+    fn auth_header_with_token(token: &str) -> String {
+        format!(
+            "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\", Token=\"{}\"",
+            token
+        )
+    }
+
+    #[tokio::test]
+    async fn test_playback_start() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let resp = server
+            .post("/sessions/playing")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "VolumeLevel": 100,
+                "IsMuted": false,
+                "IsPaused": false,
+                "RepeatMode": "RepeatNone",
+                "MaxStreamingBitrate": 3000000,
+                "PositionTicks": 0,
+                "PlayMethod": "DirectPlay",
+                "PlaySessionId": "test-session-001",
+                "MediaSourceId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "CanSeek": true,
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "NowPlayingQueue": [
+                    {
+                        "Id": "80ce1832bb797ffafaf65059b8b3dc9e",
+                        "PlaylistItemId": "playlistItem0"
+                    }
+                ]
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_playback_start_minimal_payload() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // Clients may send very minimal payloads
+        let resp = server
+            .post("/sessions/playing")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": "test-session-minimal"
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_playback_progress() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // Start playback first
+        server
+            .post("/sessions/playing")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": "test-session-progress",
+                "PositionTicks": 0
+            }))
+            .await;
+
+        // Report progress
+        let resp = server
+            .post("/sessions/playing/progress")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": "test-session-progress",
+                "PositionTicks": 300000000,
+                "IsPaused": false,
+                "IsMuted": false,
+                "VolumeLevel": 80,
+                "AudioStreamIndex": 1,
+                "SubtitleStreamIndex": 0
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_playback_stopped() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // Start playback
+        server
+            .post("/sessions/playing")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": "test-session-stop",
+                "PositionTicks": 0
+            }))
+            .await;
+
+        // Stop playback
+        let resp = server
+            .post("/sessions/playing/stopped")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": "test-session-stop",
+                "PositionTicks": 500000000
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_playback_full_lifecycle() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let psid = "test-session-lifecycle";
+
+        // 1. Start
+        let resp = server
+            .post("/sessions/playing")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": psid,
+                "PositionTicks": 0,
+                "CanSeek": true,
+                "PlayMethod": "DirectPlay"
+            }))
+            .await;
+        resp.assert_status(StatusCode::NO_CONTENT);
+
+        // 2. Progress updates
+        for ticks in [100_000_000i64, 200_000_000, 500_000_000] {
+            let resp = server
+                .post("/sessions/playing/progress")
+                .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+                .json(&json!({
+                    "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                    "PlaySessionId": psid,
+                    "PositionTicks": ticks,
+                    "IsPaused": false,
+                    "IsMuted": false
+                }))
+                .await;
+            resp.assert_status(StatusCode::NO_CONTENT);
+        }
+
+        // 3. Ping
+        let resp = server
+            .post(&format!("/sessions/playing/ping?PlaySessionId={}", psid))
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .await;
+        resp.assert_status(StatusCode::NO_CONTENT);
+
+        // 4. Stop
+        let resp = server
+            .post("/sessions/playing/stopped")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": psid,
+                "PositionTicks": 600_000_000i64
+            }))
+            .await;
+        resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_ping_session() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let resp = server
+            .post("/sessions/playing/ping?PlaySessionId=some-session-id")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .await;
+
+        resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_playback_progress_without_start_is_noop() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // Progress with non-existent session should still return 204
+        let resp = server
+            .post("/sessions/playing/progress")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": "nonexistent-session",
+                "PositionTicks": 100000000
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_playback_stopped_without_start_is_noop() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let resp = server
+            .post("/sessions/playing/stopped")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": "nonexistent-session",
+                "PositionTicks": 100000000
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::NO_CONTENT);
+    }
 }
 
 #[post("/sessions/playing/progress")]
@@ -286,6 +531,29 @@ pub async fn report_playback_progress(
     session: auth::AuthSession,
     Json(data): Json<jellyfin::PlaybackProgressInfo>,
 ) -> Result<impl IntoResponse> {
+    if let Some(ref psid) = data.play_session_id {
+        if let Some(mut ps) = PlaybackSession::get(&state.ctx.store, psid) {
+            ps.position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
+            ps.is_paused = data.is_paused;
+            ps.is_muted = data.is_muted;
+            ps.volume_level = data.volume_level.or(ps.volume_level);
+            ps.audio_stream_index = data.audio_stream_index.or(ps.audio_stream_index);
+            ps.subtitle_stream_index = data.subtitle_stream_index.or(ps.subtitle_stream_index);
+            ps.last_activity = Utc::now();
+            ps.save(&state.ctx.store);
+
+            // persist position to db
+            let item_id = data.item_id.unwrap_or(ps.item_id);
+            if let Ok(Some(media)) = db::Media::get_by_id(&state.ctx.db, &item_id).await {
+                let position_seconds = ps.position_ticks / 10_000_000;
+                let mut ms = db::UserMediaState::get_or_new(&state.ctx.db, &session.user, &media).await?;
+                ms.playback_position = position_seconds;
+                ms.audio_idx = ps.audio_stream_index.map(|x| x as i64);
+                ms.subtitle_idx = ps.subtitle_stream_index.map(|x| x as i64);
+                ms.save(&state.ctx.db).await?;
+            }
+        }
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -293,12 +561,79 @@ pub async fn report_playback_progress(
 pub async fn report_playback_stopped(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Json(data): Json<jellyfin::PlaybackProgressInfo>,
+    Json(data): Json<jellyfin::PlaybackStopInfo>,
 ) -> Result<impl IntoResponse> {
+    if let Some(ref psid) = data.play_session_id {
+        let ps = PlaybackSession::remove(&state.ctx.store, psid);
+
+        let item_id = data.item_id.or(ps.as_ref().map(|s| s.item_id));
+        let final_ticks = data.position_ticks.or(ps.as_ref().map(|s| s.position_ticks));
+
+        if let Some(item_id) = item_id {
+            if let Ok(Some(media)) = db::Media::get_by_id(&state.ctx.db, &item_id).await {
+                let position_seconds = final_ticks.unwrap_or(0) / 10_000_000;
+                let mut ms = db::UserMediaState::get_or_new(&state.ctx.db, &session.user, &media).await?;
+                ms.playback_position = position_seconds;
+                // If watched to near the end (>= 90%), mark as played
+                if let Some(runtime) = media.runtime {
+                    let runtime_seconds = runtime;
+                    if runtime_seconds > 0 && position_seconds >= (runtime_seconds * 90 / 100) {
+                        ms.play_count += 1;
+                        ms.played_at = Some(Local::now().naive_local());
+                        ms.playback_position = 0;
+                    }
+                }
+                ms.save(&state.ctx.db).await?;
+            }
+        }
+
+        info!(play_session_id = psid, "Playback stopped");
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PingQuery {
+    #[serde(alias = "playSessionId", alias = "PlaySessionId")]
+    pub play_session_id: String,
+}
+
+#[post("/sessions/playing/ping")]
+pub async fn ping_playback_session(
+    State(state): State<AppState>,
+    Query(q): Query<PingQuery>,
+) -> Result<impl IntoResponse> {
+    PlaybackSession::ping(&state.ctx.store, &q.play_session_id);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[post("/sessions/capabilities/full")]
 pub async fn sessions_capabilities_full(State(state): State<AppState>) -> Result<impl IntoResponse> {
     stub(State(state)).await
+}
+
+#[post("/userplayeditems/{id}")]
+pub async fn user_mark_played(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context_not_found("not found", "not found")?;
+    let ms = media.mark_played(&state.ctx.db, &session.user).await?;
+    Ok(Json(jellyfin::UserItemDataDto::from(ms)).into_response())
+}
+
+#[delete("/userplayeditems/{id}")]
+pub async fn user_unmark_played(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context_not_found("not found", "not found")?;
+    let ms = media.mark_unplayed(&state.ctx.db, &session.user).await?;
+    Ok(Json(jellyfin::UserItemDataDto::from(ms)).into_response())
 }

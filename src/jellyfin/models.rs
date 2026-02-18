@@ -1038,13 +1038,36 @@ pub struct SessionInfoDto {
     // pub supported_commands: Vec<GeneralCommandType>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[skip_serializing_none]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PlaybackStartInfo {
+    pub can_seek: bool,
+    pub item_id: Option<Uuid>,
+    pub session_id: Option<String>,
+    pub media_source_id: Option<String>,
+    pub audio_stream_index: Option<i32>,
+    pub subtitle_stream_index: Option<i32>,
+    pub is_paused: bool,
+    pub is_muted: bool,
+    pub position_ticks: Option<i64>,
+    pub volume_level: Option<i32>,
+    pub play_method: Option<String>,
+    pub live_stream_id: Option<String>,
+    pub play_session_id: Option<String>,
+    pub repeat_mode: Option<String>,
+    pub now_playing_queue: Option<Vec<QueueItem>>,
+    pub playlist_item_id: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
 pub struct PlaybackProgressInfo {
     pub can_seek: bool,
-    pub item: BaseItemDto,
-    pub item_id: Uuid,
-    pub session_id: String,
-    pub media_source_id: String,
+    pub item_id: Option<Uuid>,
+    pub session_id: Option<String>,
+    pub media_source_id: Option<String>,
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub is_paused: bool,
@@ -1053,19 +1076,35 @@ pub struct PlaybackProgressInfo {
     pub playback_start_time_ticks: Option<i64>,
     pub volume_level: Option<i32>,
     pub brightness: Option<i32>,
-    pub aspect_ratio: String,
-    // pub play_method: PlayMethod,
-    pub live_stream_id: String,
-    pub play_session_id: String,
-    // pub repeat_mode: RepeatMode,
-    // pub playback_order: PlaybackOrder,
-    pub now_playing_queue: Vec<QueueItem>,
-    pub playlist_item_id: String,
+    pub aspect_ratio: Option<String>,
+    pub play_method: Option<String>,
+    pub live_stream_id: Option<String>,
+    pub play_session_id: Option<String>,
+    pub repeat_mode: Option<String>,
+    pub now_playing_queue: Option<Vec<QueueItem>>,
+    pub playlist_item_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[skip_serializing_none]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct PlaybackStopInfo {
+    pub item_id: Option<Uuid>,
+    pub session_id: Option<String>,
+    pub media_source_id: Option<String>,
+    pub position_ticks: Option<i64>,
+    pub live_stream_id: Option<String>,
+    pub play_session_id: Option<String>,
+    pub next_media_type: Option<String>,
+    pub playlist_item_id: Option<String>,
+    pub now_playing_queue: Option<Vec<QueueItem>>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct QueueItem {
     pub id: Uuid,
+    #[serde(default)]
     pub playlist_item_id: String,
 }
 
