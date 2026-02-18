@@ -11,10 +11,7 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::response::Redirect;
 use axum::response::{IntoResponse, Response};
-use axum::routing::delete;
-use axum::routing::get;
-use axum::routing::get_service;
-use axum::routing::post;
+use remux_macros::{delete, get, post, route};
 use axum_extra::extract::Query;
 use axum_extra::response::file_stream::FileStream;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE};
@@ -64,81 +61,11 @@ use tower::util::MapRequestLayer;
 #[cfg(test)]
 use crate::test;
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/system/info/public", get(system_info_public))
-        .route("/system/ping", get(system_ping))
-        .route("/system/endpoint", get(system_endpoint))
-        .route("/userviews", get(userviews))
-        .route("/userviews/groupingoptions", get(userviews_groupingoptions))
-        .route("/library/virtualfolders", get(library_virtualfolders))
-        .route("/items/suggestions", get(items_suggestions))
-        .route("/shows/{id}/seasons", get(shows_seasons))
-        .route("/shows/{id}/episodes", get(shows_episodes))
-        .route("/items/latest", get(items_flat))
-        .route("/persons", get(persons))
-        .route("/items", get(items))
-        .route("/Items", get(items))
-        .route("/items/{id}/images/{image_type}", get(items_images))
-        .route("/items/{id}/images/{image_type}/{index}", get(items_images))
-        .route("/items/{id}", get(items_get))
-        .route("/items/{id}/playbackinfo", post(items_playbackinfo))
-        .route("/items/filters", get(items_filters))
-        .route("/users", get(users))
-        .route("/users/public", get(system_info_public))
-        .route("/users/me", get(users_me))
-        .route("/users/authenticatebyname", post(users_authenticatebyname))
-        .route("/users/{user_id}", get(users_me))
-        .route("/users/{user_id}/items", get(items))
-        .route("/users/{user_id}/items/latest", get(items_flat))
-        .route("/users/{user_id}/items/{id}", get(users_items_get))
-        .route("/users/{user_id}/views", get(userviews))
-        .route(
-            "/users/{user_id}/groupingoptions",
-            get(users_groupingoptions),
-        )
-        .route("/users/{user_id}/playeditems/{id}", post(mark_played))
-        .route("/users/{user_id}/playeditems/{id}", delete(unmark_played))
-        .route("/users/{user_id}/favoriteitems/{id}", post(mark_favorite))
-        .route(
-            "/users/{user_id}/favoriteitems/{id}",
-            delete(unmark_favorite),
-        )
-        .route("/videos/{id}/stream", get(videos_stream))
-        .route("/playback/bitratetest", get(playback_bitratetest))
-        .route("/displaypreferences/{id}", get(get_display_preferences))
-        .route("/displaypreferences/{id}", post(update_display_preferences))
-        .route("/system/info", get(system_info))
-        // .route("/videos/master.m3u8", get(master_hls))
-        // stubs. to implement
-        .route("/shows/nextup", get(mock_items))
-        .route("/users/{user_id}/items/resume", get(mock_items))
-        .route("/users/{user_id}/items/similar", get(mock_items))
-        .route("/users/{user_id}/intros", get(mock_items))
-        .route("/users/{user_id}/items/{id}/intros", get(mock_items))
-        .route("/users/{user_id}/configuration", post(user_configuration_update))
-        .route("/items/{id}/similar", get(mock_items))
-        .route("/items/{id}/thememedia", get(stub_json))
-        .route("/useritems/resume", get(mock_items))
-        .route("/sessions/playing", post(report_playback_start))
-        .route("/sessions/playing/progress", post(report_playback_progress))
-        .route("/sessions/playing/stopped", post(report_playback_stopped))
-        .route("/userimage", get(user_image))
-        .route("/sessions/capabilities/full", post(stub))
-        .route("/quickconnect/enabled", post(stub))
-        .route("/branding/configuration", post(stub))
-        .route("/branding/configuration", get(stub))
-        .route("/quickconnect/enabled", get(stub))
-        .route("/syncplay/list", get(mock_items))
-
-    //.map_request(rewrite_request_uri)
-    //.layer(MapRequestLayer::new(rewrite_request_uri))
-    // .route("/jellyfin/Items/{id}/Image/{image_type}", get_service(ServeFile::new("assets/placeholder_poster.jpg")))
-}
 
 //#[route(get, "/jellyfin/System/Info/Public")]
 
 /// TODO: make a real server id
+#[get("/system/info/public")]
 pub async fn system_info_public(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
@@ -154,6 +81,7 @@ pub async fn system_info_public(
     }))
 }
 
+#[get("/system/info")]
 pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoResponse> {
     Ok(Json(jellyfin::SystemInfo {
         id: Some(server_id()),
@@ -163,6 +91,7 @@ pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoRespo
     }))
 }
 
+#[get("/system/ping")]
 pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoResponse> {
     Ok(Json(json!("Remux Server")))
 }
@@ -178,6 +107,7 @@ async fn system_ping_test() {
     //response.assert_text("Remux Server");
 }
 
+#[get("/system/endpoint")]
 pub async fn system_endpoint(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
@@ -188,6 +118,7 @@ pub async fn system_endpoint(
     })))
 }
 
+#[post("/users/{user_id}/configuration")]
 pub async fn user_configuration_update(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -203,6 +134,7 @@ struct DisplayPrefQuery {
     client: String,
 }
 
+#[get("/displaypreferences/{id}")]
 pub async fn get_display_preferences(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -240,6 +172,7 @@ pub async fn get_display_preferences(
     Ok(Json(jellyfin::DisplayPreferencesDto::from(prefs)))
 }
 
+#[post("/displaypreferences/{id}")]
 pub async fn update_display_preferences(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -267,6 +200,7 @@ pub async fn update_display_preferences(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[post("/users/authenticatebyname")]
 pub async fn users_authenticatebyname(
     State(state): State<AppState>,
     auth_header: auth::JellyfinAuthHeader,
@@ -286,6 +220,7 @@ pub async fn users_authenticatebyname(
     }))
 }
 
+#[get("/users")]
 pub async fn users(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -311,6 +246,7 @@ pub async fn users(
 }
 
 /// This sbould hold dynamic collections
+#[get("/userviews")]
 pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -342,6 +278,7 @@ pub async fn userviews(
     }))
 }
 
+#[get("/userviews/groupingoptions")]
 pub async fn userviews_groupingoptions(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -356,6 +293,7 @@ pub async fn userviews_groupingoptions(
     // )))
 }
 
+#[get("/library/virtualfolders")]
 pub async fn library_virtualfolders(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -367,6 +305,7 @@ pub async fn library_virtualfolders(
     // )))
 }
 
+#[get("/items/suggestions")]
 pub async fn items_suggestions(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
@@ -387,6 +326,7 @@ pub async fn items_suggestions(
     }))
 }
 
+#[get("/persons")]
 pub async fn persons(State(state): State<AppState>) -> Result<impl IntoResponse> {
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: vec![],
@@ -604,6 +544,7 @@ pub async fn get_items(
     })
 }
 
+#[get("/items/latest")]
 pub async fn items_flat(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -613,6 +554,7 @@ pub async fn items_flat(
     Ok(Json::<Vec<jellyfin::BaseItemDto>>(items.items))
 }
 
+#[get("/items")]
 pub async fn items(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -652,6 +594,7 @@ pub async fn item(
         .cloned());
 }
 
+#[get("/items/{id}")]
 pub async fn items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -660,6 +603,7 @@ pub async fn items_get(
     return Ok(Json(item(state, session, id).await?).into_response());
 }
 
+#[get("/users/{user_id}/items/{id}")]
 pub async fn users_items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -668,6 +612,7 @@ pub async fn users_items_get(
     return Ok(Json(item(state, session, id).await?).into_response());
 }
 
+#[get("/shows/{id}/seasons")]
 pub async fn shows_seasons(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -684,6 +629,7 @@ pub async fn shows_seasons(
     }))
 }
 
+#[get("/shows/{id}/episodes")]
 pub async fn shows_episodes(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -703,6 +649,7 @@ pub async fn shows_episodes(
     }))
 }
 
+#[get("/userimage")]
 pub async fn user_image(
     State(state): State<AppState>,
     // Query(q): Query<jellyfin::ImageQuery>,
@@ -712,23 +659,12 @@ pub async fn user_image(
     Ok(Redirect::temporary(url.unwrap().as_str()))
 }
 
-#[derive(Deserialize)]
-struct ImagePath {
+async fn items_images_inner(
+    state: AppState,
     id: Uuid,
     image_type: jellyfin::ImageType,
-    index: Option<usize>,
-}
-
-pub async fn items_images(
-    State(state): State<AppState>,
-    Path(ImagePath {
-        id,
-        image_type,
-        index,
-    }): Path<ImagePath>,
-    Query(q): Query<jellyfin::ImageQuery>,
-) -> Result<impl IntoResponse> {
-    // If a tag is provided, use it directly as the URL
+    q: jellyfin::ImageQuery,
+) -> Result<Redirect> {
     if let Some(url) = q.tag {
         return Ok(Redirect::temporary(url.as_str()));
     }
@@ -746,6 +682,25 @@ pub async fn items_images(
     Ok(Redirect::temporary(url.as_str()))
 }
 
+#[get("/items/{id}/images/{image_type}")]
+pub async fn items_images(
+    State(state): State<AppState>,
+    Path((id, image_type)): Path<(Uuid, jellyfin::ImageType)>,
+    Query(q): Query<jellyfin::ImageQuery>,
+) -> Result<impl IntoResponse> {
+    items_images_inner(state, id, image_type, q).await
+}
+
+#[get("/items/{id}/images/{image_type}/{index}")]
+pub async fn items_images_indexed(
+    State(state): State<AppState>,
+    Path((id, image_type, _index)): Path<(Uuid, jellyfin::ImageType, usize)>,
+    Query(q): Query<jellyfin::ImageQuery>,
+) -> Result<impl IntoResponse> {
+    items_images_inner(state, id, image_type, q).await
+}
+
+#[post("/items/{id}/playbackinfo")]
 pub async fn items_playbackinfo(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -834,6 +789,7 @@ pub async fn items_playbackinfo(
     Ok(Json(info))
 }
 
+#[get("/items/filters")]
 pub async fn items_filters(State(state): State<AppState>) -> Result<impl IntoResponse> {
     /// genres is actually tags?
     use strum::IntoEnumIterator;
@@ -861,6 +817,7 @@ pub async fn items_filters(State(state): State<AppState>) -> Result<impl IntoRes
 ///
 /// If the `static_` query parameter is set to `true`, the response will be a static
 /// video stream. Otherwise, a `jellyfin::PlaybackInfoResponse` is returned.
+#[get("/videos/{id}/stream")]
 pub async fn videos_stream(
     // range: Option<axum_extra::TypedHeader<headers::Range>>,
     headers: headers::HeaderMap,
@@ -955,6 +912,7 @@ pub async fn videos_stream(
     todo!();
 }
 
+#[get("/users/me")]
 pub async fn users_me(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -962,6 +920,7 @@ pub async fn users_me(
     Ok(Json(jellyfin::UserDto::from(session.user)).into_response())
 }
 
+#[post("/users/{user_id}/favoriteitems/{id}")]
 pub async fn mark_favorite(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -974,6 +933,7 @@ pub async fn mark_favorite(
     Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
 }
 
+#[delete("/users/{user_id}/favoriteitems/{id}")]
 pub async fn unmark_favorite(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -986,6 +946,7 @@ pub async fn unmark_favorite(
     Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
 }
 
+#[post("/users/{user_id}/playeditems/{id}")]
 pub async fn mark_played(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -998,6 +959,7 @@ pub async fn mark_played(
     Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
 }
 
+#[delete("/users/{user_id}/playeditems/{id}")]
 pub async fn unmark_played(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -1011,18 +973,21 @@ pub async fn unmark_played(
 }
 
 /// todo: actually implement
+#[get("/playback/bitratetest")]
 pub async fn playback_bitratetest(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[get("/users/{user_id}/groupingoptions")]
 pub async fn users_groupingoptions(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
     Ok(Json::<Vec<jellyfin::SpecialViewOptionDto>>(vec![]))
 }
 
+#[post("/sessions/playing")]
 pub async fn report_playback_start(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -1074,6 +1039,7 @@ async fn report_playback_start_test() {
     //response.assert_text("pong!");
 }
 
+#[post("/sessions/playing/progress")]
 pub async fn report_playback_progress(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -1082,6 +1048,7 @@ pub async fn report_playback_progress(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[post("/sessions/playing/stopped")]
 pub async fn report_playback_stopped(
     State(state): State<AppState>,
     session: auth::AuthSession,
@@ -1130,6 +1097,110 @@ pub async fn mock_items(State(state): State<AppState>) -> Result<impl IntoRespon
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         ..Default::default()
     }))
+}
+
+
+// ===== Route aliases (same handler, different path) =====
+
+#[get("/users/public")]
+pub async fn users_public(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    system_info_public(State(state)).await
+}
+
+#[get("/users/{user_id}")]
+pub async fn users_get_by_id(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    users_me(State(state), session).await
+}
+
+#[get("/users/{user_id}/items")]
+pub async fn users_items(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Query(q): Query<jellyfin::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    items(State(state), session, Query(q)).await
+}
+
+#[get("/users/{user_id}/items/latest")]
+pub async fn users_items_latest(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Query(q): Query<jellyfin::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    items_flat(State(state), session, Query(q)).await
+}
+
+#[get("/users/{user_id}/views")]
+pub async fn users_views(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    userviews(State(state), session).await
+}
+
+// ===== Named stubs (empty responses for unimplemented endpoints) =====
+
+#[get("/shows/nextup")]
+pub async fn shows_nextup(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
+}
+
+#[get("/users/{user_id}/items/resume")]
+pub async fn users_items_resume(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
+}
+
+#[get("/users/{user_id}/items/similar")]
+pub async fn users_items_similar(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
+}
+
+#[get("/users/{user_id}/intros")]
+pub async fn users_intros(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
+}
+
+#[get("/users/{user_id}/items/{id}/intros")]
+pub async fn users_items_intros(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
+}
+
+#[get("/items/{id}/similar")]
+pub async fn items_similar(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
+}
+
+#[get("/items/{id}/thememedia")]
+pub async fn items_thememedia(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    stub_json(State(state)).await
+}
+
+#[get("/useritems/resume")]
+pub async fn useritems_resume(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
+}
+
+#[get("/syncplay/list")]
+pub async fn syncplay_list(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
+}
+
+#[post("/sessions/capabilities/full")]
+pub async fn sessions_capabilities_full(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    stub(State(state)).await
+}
+
+#[route("/quickconnect/enabled", method = "GET", method = "POST")]
+pub async fn quickconnect_enabled(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    stub(State(state)).await
+}
+
+#[route("/branding/configuration", method = "GET", method = "POST")]
+pub async fn branding_configuration(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    stub(State(state)).await
 }
 
 #[cfg(test)]

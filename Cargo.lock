@@ -2654,6 +2654,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
+name = "remux-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
+]
+
+[[package]]
 name = "remux-server"
 version = "0.1.0"
 dependencies = [
@@ -2682,12 +2691,14 @@ dependencies = [
  "futures-util",
  "headers",
  "http",
+ "inventory",
  "isolang",
  "itertools",
  "md5",
  "merge",
  "moka",
  "rand 0.8.5",
+ "remux-macros",
  "reqwest",
  "reqwest-middleware",
  "reqwest-retry",

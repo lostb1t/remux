@@ -86,6 +86,18 @@ mod jellyfin;
 mod meta_provider;
 mod tasks;
 
+/// Route auto-registration via `#[get("/path")]`, `#[post("/path")]`, etc.
+pub struct RouteRegistration(pub fn(axum::Router<AppState>) -> axum::Router<AppState>);
+inventory::collect!(RouteRegistration);
+
+pub fn collect_routes() -> axum::Router<AppState> {
+    let mut router = axum::Router::new();
+    for entry in inventory::iter::<RouteRegistration> {
+        router = (entry.0)(router);
+    }
+    router
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_logging();
@@ -194,7 +206,7 @@ async fn init_app() -> Result<Router> {
         .expose_headers(Any);
 
     Ok(Router::new()
-        .merge(jellyfin::api::routes())
+        .merge(collect_routes())
         .with_state(state)
         .layer(on_error(|err| {
             tracing::error!(

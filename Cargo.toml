@@ -94,6 +94,8 @@ rand = { version = "0.8", features = ["getrandom"] }
 md5 = "0.8.0"
 #cron_tab = { version = "0.2", features = ["sync", "async"] }
 tokio-cron-scheduler = "*"
+inventory = "0.3"
+remux-macros = { path = "remux-macros" }
 
 #[target.'cfg(any(target_arch = "arm", target_arch = "aarch64"))'.dependencies]
 #ez_ffmpeg_arm = { package = "ez-ffmpeg", path = "vendor/ez-ffmpeg" }
@@ -106,4 +108,7 @@ default = []
 
 [dev-dependencies]
 axum-test = "18.7.0"
+
+[workspace]
+members = [".", "remux-macros"]
 
