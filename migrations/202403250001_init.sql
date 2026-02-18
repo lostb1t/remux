@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE media (
     id TEXT PRIMARY KEY NOT NULL,
     title TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('movie', 'series', 'season', 'episode', 'catalog', 'source', 'folder', 'unknown')),
+    kind TEXT NOT NULL CHECK (kind IN ('movie', 'series', 'season', 'episode', 'person', 'studio', 'genre', 'catalog', 'source', 'folder', 'unknown')),
     imdb_id TEXT,
     aio_id TEXT,
     series_imdb_id TEXT,
@@ -65,9 +65,13 @@ CREATE TABLE media_relations (
     left_media_id UUID NOT NULL REFERENCES media(id),
     right_media_id UUID NOT NULL REFERENCES media(id),
     weight INT,
+    role TEXT CHECK (role IN ('actor', 'director', 'writer')),
     FOREIGN KEY (left_media_id) REFERENCES media(id),
     FOREIGN KEY (right_media_id) REFERENCES media(id)
 );
+
+CREATE UNIQUE INDEX uniq_media_relation
+ON media_relations (left_media_id, right_media_id, COALESCE(role, ''));
 
 CREATE TABLE tasks (
     id TEXT PRIMARY KEY,
