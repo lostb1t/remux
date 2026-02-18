@@ -6,7 +6,6 @@ use anyhow::Context;
 use anyhow::anyhow;
 use axum::Extension;
 use axum::Json;
-use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::response::Redirect;
