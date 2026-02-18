@@ -107,6 +107,7 @@ pub fn routes() -> Router<AppState> {
         .route("/videos/{id}/stream", get(videos_stream))
         .route("/playback/bitratetest", get(playback_bitratetest))
         .route("/displaypreferences/{id}", get(get_display_preferences))
+        .route("/displaypreferences/{id}", post(update_display_preferences))
         .route("/system/info", get(system_info))
         // .route("/videos/master.m3u8", get(master_hls))
         // stubs. to implement
@@ -115,7 +116,7 @@ pub fn routes() -> Router<AppState> {
         .route("/users/{user_id}/items/similar", get(mock_items))
         .route("/users/{user_id}/intros", get(mock_items))
         .route("/users/{user_id}/items/{id}/intros", get(mock_items))
-        .route("/users/{user_id}/configuration", post(stub))
+        .route("/users/{user_id}/configuration", post(user_configuration_update))
         .route("/items/{id}/similar", get(mock_items))
         .route("/items/{id}/thememedia", get(stub_json))
         .route("/useritems/resume", get(mock_items))
@@ -192,7 +193,8 @@ pub async fn user_configuration_update(
     session: auth::AuthSession,
     Json(payload): Json<jellyfin::UserConfiguration>,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(jellyfin::UserConfiguration::default()))
+    db::User::save_configuration(&state.ctx.db, &session.user.id, &payload).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[derive(Deserialize)]
@@ -236,6 +238,33 @@ pub async fn get_display_preferences(
     };
 
     Ok(Json(jellyfin::DisplayPreferencesDto::from(prefs)))
+}
+
+pub async fn update_display_preferences(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(id): Path<String>,
+    Query(q): Query<DisplayPrefQuery>,
+    Json(payload): Json<jellyfin::DisplayPreferencesDto>,
+) -> Result<impl IntoResponse> {
+    let user = if let Some(user_id) = q.user_id {
+        db::User::get_by_id(&state.ctx.db, &user_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("User not found"))?
+    } else {
+        session.user
+    };
+
+    let prefs = db::JellyfinDisplayPrefs {
+        id: id.clone(),
+        user_id: user.id,
+        client: Some(q.client.clone()),
+        data: sqlx::types::Json(db::JellyfinDisplayPrefsData::from(payload)),
+    };
+
+    prefs.save(&state.ctx.db).await?;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 pub async fn users_authenticatebyname(
@@ -1102,4 +1131,137 @@ pub async fn mock_items(State(state): State<AppState>) -> Result<impl IntoRespon
         ..Default::default()
     }))
 }
-//fn id_encode
+
+#[cfg(test)]
+mod e2e_tests {
+    use super::*;
+    use http::header::HeaderValue;
+    use serde_json::json;
+
+    const AUTH_HEADER: &str = "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\"";
+
+    async fn authenticated_server() -> (axum_test::TestServer, String) {
+        let server = crate::integration_test::new_test_server().await.unwrap();
+
+        let resp = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({
+                "Username": "test",
+                "Pw": "test"
+            }))
+            .await;
+
+        let body: serde_json::Value = resp.json();
+        let token = body["AccessToken"].as_str().unwrap().to_string();
+        (server, token)
+    }
+
+    fn auth_header_with_token(token: &str) -> String {
+        format!(
+            "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\", Token=\"{}\"",
+            token
+        )
+    }
+
+    #[tokio::test]
+    async fn test_update_display_preferences() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // POST to save display preferences
+        let resp = server
+            .post("/displaypreferences/usersettings")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_query_params(&[("userId", ""), ("client", "emby")])
+            .json(&json!({
+                "Id": "usersettings",
+                "SortBy": "SortName",
+                "RememberIndexing": false,
+                "PrimaryImageHeight": 250,
+                "PrimaryImageWidth": 250,
+                "ScrollDirection": "Horizontal",
+                "ShowBackdrop": true,
+                "RememberSorting": false,
+                "SortOrder": "Ascending",
+                "ShowSidebar": false,
+                "Client": "emby",
+                "CustomPrefs": {
+                    "chromecastVersion": "stable",
+                    "skipForwardLength": "30000",
+                    "skipBackLength": "10000",
+                    "enableNextVideoInfoOverlay": "True",
+                    "tvhome": "",
+                    "dashboardTheme": ""
+                }
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::NO_CONTENT);
+
+        // GET to verify the saved preferences are returned
+        let resp = server
+            .get("/displaypreferences/usersettings")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_query_params(&[("userId", ""), ("client", "emby")])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["SortBy"], "SortName");
+        assert_eq!(body["ShowBackdrop"], true);
+        assert_eq!(body["ScrollDirection"], "Horizontal");
+        assert_eq!(body["SortOrder"], "Ascending");
+        assert_eq!(body["CustomPrefs"]["chromecastVersion"], "stable");
+    }
+
+    #[tokio::test]
+    async fn test_update_user_configuration() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // Get user ID from /users/me
+        let resp = server
+            .get("/users/me")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .await;
+
+        resp.assert_status_ok();
+        let user: serde_json::Value = resp.json();
+        let user_id = user["Id"].as_str().unwrap();
+
+        // POST user configuration
+        let resp = server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleLanguagePreference": "eng",
+                "DisplayMissingEpisodes": false,
+                "SubtitleMode": "Default",
+                "EnableLocalPassword": false,
+                "HidePlayedInLatest": true,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": true
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::NO_CONTENT);
+
+        // GET user again to verify configuration was persisted
+        let resp = server
+            .get("/users/me")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .await;
+
+        resp.assert_status_ok();
+        let user: serde_json::Value = resp.json();
+        assert_eq!(user["Configuration"]["SubtitleLanguagePreference"], "eng");
+        assert_eq!(user["Configuration"]["EnableNextEpisodeAutoPlay"], true);
+        assert_eq!(user["Configuration"]["HidePlayedInLatest"], true);
+    }
+}

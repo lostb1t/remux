@@ -477,19 +477,31 @@ pub struct QueryFiltersLegacy {
 #[serde(rename_all = "PascalCase")]
 pub struct UserConfiguration {
     pub audio_language_preference: Option<String>,
+    #[serde(default)]
     pub play_default_audio_track: Option<bool>,
     pub subtitle_language_preference: Option<String>,
+    #[serde(default)]
     pub display_missing_episodes: Option<bool>,
-    pub grouped_folders: Option<Vec<String>>,
+    #[serde(default)]
+    pub grouped_folders: Vec<String>,
     pub subtitle_mode: Option<String>,
+    #[serde(default)]
     pub display_collections_view: Option<bool>,
+    #[serde(default)]
     pub enable_local_password: Option<bool>,
-    pub ordered_views: Option<Vec<String>>,
-    pub latest_items_excludes: Option<Vec<String>>,
-    pub my_media_excludes: Option<Vec<String>>,
+    #[serde(default)]
+    pub ordered_views: Vec<String>,
+    #[serde(default)]
+    pub latest_items_excludes: Vec<String>,
+    #[serde(default)]
+    pub my_media_excludes: Vec<String>,
+    #[serde(default)]
     pub hide_played_in_latest: Option<bool>,
+    #[serde(default)]
     pub remember_audio_selections: Option<bool>,
+    #[serde(default)]
     pub remember_subtitle_selections: Option<bool>,
+    #[serde(default)]
     pub enable_next_episode_auto_play: Option<bool>,
     pub cast_receiver_id: Option<String>,
 }

@@ -38,6 +38,26 @@ impl From<db::JellyfinDisplayPrefs> for jellyfin::DisplayPreferencesDto {
     }
 }
 
+impl From<jellyfin::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
+    fn from(dto: jellyfin::DisplayPreferencesDto) -> Self {
+        Self {
+            view_type: dto.view_type,
+            sort_by: dto.sort_by,
+            index_by: dto.index_by,
+            remember_indexing: dto.remember_indexing,
+            primary_image_height: dto.primary_image_height,
+            primary_image_width: dto.primary_image_width,
+            custom_prefs: dto.custom_prefs,
+            scroll_direction: dto.scroll_direction,
+            show_backdrop: dto.show_backdrop,
+            remember_sorting: dto.remember_sorting,
+            sort_order: dto.sort_order,
+            show_sidebar: dto.show_sidebar,
+            home_sections: None,
+        }
+    }
+}
+
 impl From<db::Media> for jellyfin::BaseItemDto {
     fn from(media: db::Media) -> Self {
         // dbg!(&meta);
@@ -337,10 +357,15 @@ impl From<aio::Subtitle> for jellyfin::MediaStream {
 
 impl From<db::User> for jellyfin::UserDto {
     fn from(user: db::User) -> Self {
+        let config = user
+            .configuration
+            .map(|c| c.0)
+            .unwrap_or_default();
         jellyfin::UserDto {
             server_id: server_id(),
             name: user.username,
             id: user.id,
+            configuration: Some(config),
             ..Default::default()
         }
     }

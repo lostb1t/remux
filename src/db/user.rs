@@ -73,6 +73,7 @@ pub struct User {
     pub password_hash: String,
     #[serde(skip_serializing)]
     pub aio_url: Option<String>,
+    pub configuration: Option<sqlx::types::Json<crate::jellyfin::UserConfiguration>>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -86,20 +87,22 @@ pub struct UserFilter {
 
 impl User {
     pub async fn save(&mut self, db: &SqlitePool) -> Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
-            INSERT INTO users (id, username, password_hash, aio_url)
-            VALUES (?1, ?2, ?3, ?4)
+            INSERT INTO users (id, username, password_hash, aio_url, configuration)
+            VALUES (?1, ?2, ?3, ?4, ?5)
             ON CONFLICT(id) DO UPDATE SET
                 username      = excluded.username,
                 password_hash = excluded.password_hash,
-                aio_url       = excluded.aio_url
+                aio_url       = excluded.aio_url,
+                configuration = excluded.configuration
             "#,
-            self.id,
-            self.username,
-            self.password_hash,
-            self.aio_url
         )
+        .bind(self.id)
+        .bind(&self.username)
+        .bind(&self.password_hash)
+        .bind(&self.aio_url)
+        .bind(&self.configuration)
         .execute(db)
         .await?;
 
@@ -107,22 +110,39 @@ impl User {
     }
 
     pub async fn save_by_username(&mut self, db: &SqlitePool) -> Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
-            INSERT INTO users (id, username, password_hash, aio_url)
-            VALUES (?1, ?2, ?3, ?4)
+            INSERT INTO users (id, username, password_hash, aio_url, configuration)
+            VALUES (?1, ?2, ?3, ?4, ?5)
             ON CONFLICT(username) DO UPDATE SET
                 password_hash = excluded.password_hash,
                 aio_url       = excluded.aio_url
             "#,
-            self.id,
-            self.username,
-            self.password_hash,
-            self.aio_url
         )
+        .bind(self.id)
+        .bind(&self.username)
+        .bind(&self.password_hash)
+        .bind(&self.aio_url)
+        .bind(&self.configuration)
         .execute(db)
         .await?;
 
+        Ok(())
+    }
+
+    pub async fn save_configuration(
+        db: &SqlitePool,
+        id: &Uuid,
+        config: &crate::jellyfin::UserConfiguration,
+    ) -> Result<()> {
+        let json = sqlx::types::Json(config.clone());
+        sqlx::query(
+            r#"UPDATE users SET configuration = ?1 WHERE id = ?2"#,
+        )
+        .bind(&json)
+        .bind(id)
+        .execute(db)
+        .await?;
         Ok(())
     }
 
@@ -477,6 +497,27 @@ pub struct JellyfinDisplayPrefsFilter {
 }
 
 impl JellyfinDisplayPrefs {
+    pub async fn save(&self, db: &SqlitePool) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO jellyfin_display_prefs (id, user_id, client, data)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
+                client  = excluded.client,
+                data    = excluded.data
+            "#,
+        )
+        .bind(&self.id)
+        .bind(self.user_id)
+        .bind(&self.client)
+        .bind(&self.data)
+        .execute(db)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn get_by_filter(
         db: &sqlx::SqlitePool,
         filter: &JellyfinDisplayPrefsFilter,

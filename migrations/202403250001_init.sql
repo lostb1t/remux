@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
   id            TEXT NOT NULL PRIMARY KEY,
   username      TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  aio_url       TEXT
+  aio_url       TEXT,
+  configuration TEXT
 );
 
 CREATE TABLE media (
