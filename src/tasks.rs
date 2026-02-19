@@ -81,7 +81,7 @@ pub struct TaskHandlerSnapshot {
 
 impl TaskHandler {
     pub fn new(task: Arc<dyn Task>) -> Self {
-        Self {
+        Self a{
             status: TaskStatus::Idle,
             task,
             jobs: Vec::new(),
