@@ -144,7 +144,7 @@ async fn init_app() -> Result<Router> {
         let mut user = db::User {
             id: utils::get_stable_uuid(u.key),
             username: u.username,
-            //aio_url: u.aio_url,
+            is_admin: u.is_admin,
             password_hash: db::User::hash_password(&u.password)?,
             ..Default::default()
         };
@@ -241,6 +241,7 @@ pub struct UserConfig {
     pub key: String,
     pub username: String,
     pub password: String,
+    pub is_admin: bool,
     //pub aio_url: String,
 }
 

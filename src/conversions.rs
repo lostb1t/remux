@@ -366,6 +366,7 @@ impl From<db::User> for jellyfin::UserDto {
             name: user.username,
             id: user.id,
             configuration: Some(config),
+            policy: jellyfin::UserPolicy { is_administrator: user.is_admin, ..Default::default() },
             ..Default::default()
         }
     }

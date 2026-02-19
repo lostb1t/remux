@@ -74,6 +74,7 @@ pub struct User {
     #[serde(skip_serializing)]
     pub aio_url: Option<String>,
     pub configuration: Option<sqlx::types::Json<crate::jellyfin::UserConfiguration>>,
+    pub is_admin: bool,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -89,13 +90,14 @@ impl User {
     pub async fn save(&mut self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO users (id, username, password_hash, aio_url, configuration)
-            VALUES (?1, ?2, ?3, ?4, ?5)
+            INSERT INTO users (id, username, password_hash, aio_url, configuration, is_admin)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ON CONFLICT(id) DO UPDATE SET
                 username      = excluded.username,
                 password_hash = excluded.password_hash,
                 aio_url       = excluded.aio_url,
-                configuration = excluded.configuration
+                configuration = excluded.configuration,
+                is_admin      = excluded.is_admin
             "#,
         )
         .bind(self.id)
@@ -103,6 +105,7 @@ impl User {
         .bind(&self.password_hash)
         .bind(&self.aio_url)
         .bind(&self.configuration)
+        .bind(self.is_admin)
         .execute(db)
         .await?;
 
@@ -112,18 +115,20 @@ impl User {
     pub async fn save_by_username(&mut self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO users (id, username, password_hash, aio_url, configuration)
-            VALUES (?1, ?2, ?3, ?4, ?5)
+            INSERT INTO users (id, username, password_hash, aio_url, configuration, is_admin)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ON CONFLICT(username) DO UPDATE SET
                 password_hash = excluded.password_hash,
-                aio_url       = excluded.aio_url
-            "#,
+                aio_url       = excluded.aio_url,
+                is_admin      = excluded.is_admin
+            "#, 
         )
         .bind(self.id)
         .bind(&self.username)
         .bind(&self.password_hash)
         .bind(&self.aio_url)
         .bind(&self.configuration)
+        .bind(self.is_admin)
         .execute(db)
         .await?;
 
