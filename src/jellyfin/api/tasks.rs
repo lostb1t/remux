@@ -62,7 +62,7 @@ pub async fn scheduled_tasks(
         task_infos.push(jellyfin::TaskInfo {
             name: task.name().to_string(),
             state: Some(state_str.to_string()),
-            current_progress_percentage: None,
+            current_progress_percentage: Some(handler.current_progress),  // Include progress from handler
             id: task.key().to_string(),
             last_execution_result,
             triggers: Some(Vec::new()), // Empty triggers for now
@@ -157,8 +157,7 @@ pub async fn start_task(
     Path(task_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl axum::response::IntoResponse> {
-    // Try to start the task by key
-    state.tasks.run_task_by_key(&task_id).await?;
+    state.tasks.run_task(&task_id).await?;
     
     Ok(StatusCode::NO_CONTENT)
 }
@@ -169,8 +168,7 @@ pub async fn stop_task(
     Path(task_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<impl axum::response::IntoResponse> {
-    // Try to stop the task by key
-    state.tasks.stop_task_by_key(&task_id).await?;
+    state.tasks.stop_task(&task_id).await?;
     
     Ok(StatusCode::NO_CONTENT)
 }

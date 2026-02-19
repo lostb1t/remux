@@ -53,6 +53,11 @@ pub trait Task: Send + Sync {
     }
     fn default_triggers(&self) -> Vec<db::TaskTrigger>;
 
+    /// Set the current progress percentage (0.0 to 100.0)
+    fn set_progress(&self, _percentage: f64) {
+        // Default no-op implementation
+    }
+
     async fn run(
         self: Arc<Self>,
         ctx: AppContext,
@@ -65,11 +70,13 @@ pub struct TaskHandler {
     pub task: Arc<dyn Task>,
     pub jobs: Vec<JobId>,
     pub handle: Option<JoinHandle<()>>,
+    pub current_progress: f64,  // Add progress tracking (0.0 to 100.0)
 }
 pub struct TaskHandlerSnapshot {
     pub status: TaskStatus,
     pub task: Arc<dyn Task>,
     pub jobs: Vec<JobId>,
+    pub current_progress: f64,  // Include progress in snapshot
 }
 
 impl TaskHandler {
@@ -79,7 +86,14 @@ impl TaskHandler {
             task,
             jobs: Vec::new(),
             handle: None,
+            current_progress: 0.0,  // Start at 0%
         }
+    }
+
+    /// Update the current progress percentage
+    pub fn set_progress(&mut self, percentage: f64) {
+        // Clamp to 0.0-100.0 range
+        self.current_progress = percentage.clamp(0.0, 100.0);
     }
 
     pub fn to_snapshot(&self) -> TaskHandlerSnapshot {
@@ -87,6 +101,7 @@ impl TaskHandler {
             status: self.status.clone(),
             task: self.task.clone(),
             jobs: self.jobs.clone(),
+            current_progress: self.current_progress,  // Include current progress
         }
     }
 
@@ -262,15 +277,8 @@ impl TaskService {
         Ok(())
     }
 
-    /// Run a task by its UUID (kept for backward compatibility, but tasks now use keys)
-    pub async fn run_task(&self, _task_id: Uuid) -> Result<()> {
-        // Tasks now use keys instead of UUIDs, so this method is deprecated
-        // Keep it for compatibility but it won't find anything
-        Ok(())
-    }
-
     /// Run a task by its key (primary method)
-    pub async fn run_task_by_key(&self, task_key: &str) -> Result<()> {
+    pub async fn run_task(&self, task_key: &str) -> Result<()> {
         if let Some(handler) = self.tasks.lock().await.get_mut(task_key) {
             handler.run(self.ctx.clone(), self.clone().into());
         }
@@ -306,21 +314,7 @@ impl TaskService {
         Ok(())
     }
 
-    /// Stop a task by its UUID (backward compatibility)
-    pub async fn stop_task(&self, task_id: Uuid) -> Result<()> {
-        // Try to find by UUID first
-        if let Some(handler) = self.tasks.lock().await.values()
-            .find(|h| false) { // Always false since we don't use UUIDs anymore
-            let task_key = handler.key().to_string();
-            if let Some(handler) = self.tasks.lock().await.get_mut(&task_key) {
-                handler.stop();
-            }
-        }
-        Ok(())
-    }
-
-    /// Stop a task by its key (primary method)
-    pub async fn stop_task_by_key(&self, task_key: &str) -> Result<()> {
+    pub async fn stop_task(&self, task_key: &str) -> Result<()> {
         if let Some(handler) = self.tasks.lock().await.get_mut(task_key) {
             handler.stop();
         }
@@ -547,7 +541,7 @@ impl Task for CatalogImportTask {
         );
 
         // Kick off RefreshLibraryTask using its key
-        task_service.run_task_by_key("RefreshLibrary").await?;
+        task_service.run_task("RefreshLibrary").await?;
 
         Ok(())
     }
