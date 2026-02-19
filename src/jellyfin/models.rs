@@ -12,6 +12,8 @@ use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
+
+
 //generate_api!(
 //    spec = "src/sdks/jellyfin/openapi.json", // The OpenAPI document
 //    interface = Builder
@@ -25,6 +27,18 @@ use serde::Serialize;
 use serde_alias::serde_alias;
 use serde_with::formats::CommaSeparator;
 use serde_with::{DisplayFromStr, StringWithSeparator, serde_as};
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct QueryResult<T> {
+    /// Gets or sets the items.
+    pub items: Vec<T>,
+    /// Gets or sets the total number of records available.
+    pub total_record_count: i64,
+    /// Gets or sets the index of the first record in Items.
+    pub start_index: i32,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -186,6 +200,49 @@ pub struct ItemCounts {
     pub book_count: i32,
     /// The item count.
     pub item_count: i32,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct DeviceInfo {
+    /// Gets or sets the name.
+    pub name: Option<String>,
+    /// Gets or sets the custom name.
+    pub custom_name: Option<String>,
+    /// Gets or sets the access token.
+    pub access_token: Option<String>,
+    /// Gets or sets the identifier.
+    pub id: Option<String>,
+    /// Gets or sets the last name of the user.
+    pub last_user_name: Option<String>,
+    /// Gets or sets the name of the application.
+    pub app_name: Option<String>,
+    /// Gets or sets the application version.
+    pub app_version: Option<String>,
+    /// Gets or sets the last user identifier.
+    pub last_user_id: Option<Uuid>,
+    /// Gets or sets the date last modified.
+    pub date_last_activity: Option<DateTime<Utc>>,
+    /// Gets or sets the icon URL.
+    pub icon_url: Option<String>,
+}
+
+impl From<&crate::db::auth::Device> for DeviceInfo {
+    fn from(device: &crate::db::auth::Device) -> Self {
+        Self {
+            name: Some(device.name.clone()),
+            custom_name: None, // TODO: Add custom name to Device model
+            access_token: Some(device.access_token.clone()),
+            id: Some(device.id.clone()),
+            last_user_name: None, // TODO: Track last user name
+            app_name: Some(device.app_name.clone()),
+            app_version: Some(device.app_version.clone()),
+            last_user_id: Some(device.user_id),
+            date_last_activity: Some(chrono::Utc::now()), // Use current time as default
+            icon_url: None,
+        }
+    }
 }
 
 // Placeholder for CollectionTypeOptions and LibraryOptions.

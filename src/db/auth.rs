@@ -129,6 +129,38 @@ impl Device {
 
         Ok(row)
     }
+
+    /// Get all devices
+    pub async fn get_all(db: &SqlitePool) -> Result<Vec<Self>> {
+        let devices = sqlx::query_as::<_, Self>(
+            r#"
+            SELECT *
+            FROM devices
+            ORDER BY name
+            "#,
+        )
+        .fetch_all(db)
+        .await?;
+
+        Ok(devices)
+    }
+
+    /// Get devices by user ID
+    pub async fn get_by_user_id(db: &SqlitePool, user_id: &Uuid) -> Result<Vec<Self>> {
+        let devices = sqlx::query_as::<_, Self>(
+            r#"
+            SELECT *
+            FROM devices
+            WHERE user_id = ?1
+            ORDER BY name
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(db)
+        .await?;
+
+        Ok(devices)
+    }
 }
 
 #[derive(Clone)]

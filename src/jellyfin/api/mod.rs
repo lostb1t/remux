@@ -4,6 +4,7 @@ pub mod items;
 pub mod shows;
 pub mod images;
 pub mod playback;
+pub mod devices;
 
 use axum::Json;
 use axum::extract::State;
