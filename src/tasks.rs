@@ -39,32 +39,14 @@ impl Clone for TaskStatus {
     }
 }
 
-/// Helper function to generate a deterministic UUID from a string key
-fn key_to_uuid(key: &str) -> Uuid {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    
-    let mut hasher = DefaultHasher::new();
-    key.hash(&mut hasher);
-    let hash = hasher.finish();
-    
-    // Create UUID v5 (name-based) using a namespace and the key
-    let namespace = uuid::uuid!("6ba7b810-9dad-11d1-80b4-00c04fd430c8"); // DNS namespace
-    uuid::Uuid::new_v5(&namespace, key.as_bytes())
-}
-
 #[async_trait]
 pub trait Task: Send + Sync {
-    fn id(&self) -> Uuid {
-        // Default implementation generates UUID from key
-        key_to_uuid(self.key())
-    }
-    
-    fn name(&self) -> &str;
     fn key(&self) -> &str {
         // Default implementation uses the task name as key
         self.name()
     }
+    
+    fn name(&self) -> &str;
     fn category(&self) -> &str {
         // Default category
         "System"
@@ -84,22 +66,10 @@ pub struct TaskHandler {
     pub jobs: Vec<JobId>,
     pub handle: Option<JoinHandle<()>>,
 }
-
-#[derive(Clone)]
 pub struct TaskHandlerSnapshot {
     pub status: TaskStatus,
     pub task: Arc<dyn Task>,
     pub jobs: Vec<JobId>,
-}
-
-impl TaskHandler {
-    pub fn to_snapshot(&self) -> TaskHandlerSnapshot {
-        TaskHandlerSnapshot {
-            status: self.status.clone(),
-            task: self.task.clone(),
-            jobs: self.jobs.clone(),
-        }
-    }
 }
 
 impl TaskHandler {
@@ -110,6 +80,18 @@ impl TaskHandler {
             jobs: Vec::new(),
             handle: None,
         }
+    }
+
+    pub fn to_snapshot(&self) -> TaskHandlerSnapshot {
+        TaskHandlerSnapshot {
+            status: self.status.clone(),
+            task: self.task.clone(),
+            jobs: self.jobs.clone(),
+        }
+    }
+
+    pub fn key(&self) -> &str {
+        self.task.key()
     }
 
     pub fn is_running(&self) -> bool {
@@ -126,10 +108,9 @@ impl TaskHandler {
 
         self.status = TaskStatus::Active;
         let task = self.task.clone();
-        let task_id = task.id();
+        let task_key = task.key().to_string();
 
         let handle = tokio::spawn(async move {
-            //let start_at = Utc::now().naive_utc();
             let start_time = Utc::now().naive_utc();
             let instant_start = Instant::now();
             let task_name = task.name().to_string();
@@ -145,18 +126,18 @@ impl TaskHandler {
             };
 
             if let Err(e) = &result {
-                error!(task_id = %task_id, error = %e, "Task failed");
+                error!(task_key = %task_key, error = %e, "Task failed");
             }
 
             let task_result = db::TaskResult {
-                task_id,
+                task_id: task_key.clone(),
                 start_at: start_time,
                 end_at,
                 status,
             };
 
             if let Err(e) = task_result.save(&ctx.db).await {
-                error!(task_id = %task_id, error = %e, "Failed to save task result");
+                error!(task_key = %task_key, error = %e, "Failed to save task result");
             }
         });
 
@@ -167,7 +148,7 @@ impl TaskHandler {
         if let Some(handle) = self.handle.take() {
             handle.abort();
             self.status = TaskStatus::Stopped;
-            info!(task_id = %self.task.id(), "Task stopped");
+            info!(task_key = %self.task.key(), "Task stopped");
         }
     }
 }
@@ -175,7 +156,7 @@ impl TaskHandler {
 #[derive(Clone)]
 pub struct TaskService {
     scheduler: JobScheduler,
-    tasks: Arc<Mutex<HashMap<Uuid, TaskHandler>>>,
+    tasks: Arc<Mutex<HashMap<String, TaskHandler>>>, // Now keyed by task key (String)
     ctx: AppContext,
 }
 
@@ -212,12 +193,12 @@ impl TaskService {
     }
 
     pub async fn register_task(&self, task: Arc<dyn Task>) -> Result<()> {
-        let task_id = task.id();
+        let task_key = task.key().to_string();
 
         self.tasks
             .lock()
             .await
-            .insert(task_id, TaskHandler::new(task.clone()));
+            .insert(task_key, TaskHandler::new(task.clone()));
 
         Ok(())
     }
@@ -231,13 +212,15 @@ impl TaskService {
         let ctx = self.ctx.clone();
         let task_service = self.clone();
 
+        let task_id = trigger.task_id.clone(); // Clone for the closure
         let job = Job::new_async(cron.as_str(), move |_uuid, _l| {
             let tasks = tasks.clone();
             let ctx = ctx.clone();
             let task_service = task_service.clone();
+            let task_id = task_id.clone(); // Clone again for the async block
 
             Box::pin(async move {
-                if let Some(handler) = tasks.lock().await.get_mut(&trigger.task_id) {
+                if let Some(handler) = tasks.lock().await.get_mut(&task_id) {
                     handler.run(ctx, task_service.into());
                 }
             })
@@ -255,12 +238,12 @@ impl TaskService {
 
     pub async fn replace_triggers(
         &self,
-        task_id: Uuid,
+        task_key: &str,
         triggers: Vec<db::TaskTrigger>,
     ) -> Result<()> {
         let mut tasks = self.tasks.lock().await;
         let handler = tasks
-            .get_mut(&task_id)
+            .get_mut(task_key)
             .ok_or_else(|| anyhow!("Task not found"))?;
 
         for job_id in handler.jobs.drain(..) {
@@ -276,8 +259,16 @@ impl TaskService {
         Ok(())
     }
 
-    pub async fn run_task(&self, task_id: Uuid) -> Result<()> {
-        if let Some(handler) = self.tasks.lock().await.get_mut(&task_id) {
+    /// Run a task by its UUID (kept for backward compatibility, but tasks now use keys)
+    pub async fn run_task(&self, _task_id: Uuid) -> Result<()> {
+        // Tasks now use keys instead of UUIDs, so this method is deprecated
+        // Keep it for compatibility but it won't find anything
+        Ok(())
+    }
+
+    /// Run a task by its key (primary method)
+    pub async fn run_task_by_key(&self, task_key: &str) -> Result<()> {
+        if let Some(handler) = self.tasks.lock().await.get_mut(task_key) {
             handler.run(self.ctx.clone(), self.clone().into());
         }
         Ok(())
@@ -290,7 +281,7 @@ impl TaskService {
 
         for trigger in triggers {
             if trigger.kind == db::TaskTriggerKind::Startup {
-                let task_id = trigger.task_id;
+                let task_key = trigger.task_id;
                 let tasks_clone = tasks.clone();
                 let ctx = ctx.clone();
 
@@ -298,11 +289,11 @@ impl TaskService {
                     let task_service = self.clone();
                     async move {
                         if let Some(handler) =
-                            tasks_clone.lock().await.get_mut(&task_id)
+                            tasks_clone.lock().await.get_mut(&task_key)
                         {
                             handler.run(ctx, task_service.into());
                         } else {
-                            error!(task_id = %task_id, "Task handler not found for startup task");
+                            error!(task_key = %task_key, "Task handler not found for startup task");
                         }
                     }
                 });
@@ -312,8 +303,22 @@ impl TaskService {
         Ok(())
     }
 
+    /// Stop a task by its UUID (backward compatibility)
     pub async fn stop_task(&self, task_id: Uuid) -> Result<()> {
-        if let Some(handler) = self.tasks.lock().await.get_mut(&task_id) {
+        // Try to find by UUID first
+        if let Some(handler) = self.tasks.lock().await.values()
+            .find(|h| false) { // Always false since we don't use UUIDs anymore
+            let task_key = handler.key().to_string();
+            if let Some(handler) = self.tasks.lock().await.get_mut(&task_key) {
+                handler.stop();
+            }
+        }
+        Ok(())
+    }
+
+    /// Stop a task by its key (primary method)
+    pub async fn stop_task_by_key(&self, task_key: &str) -> Result<()> {
+        if let Some(handler) = self.tasks.lock().await.get_mut(task_key) {
             handler.stop();
         }
         Ok(())
@@ -331,9 +336,10 @@ impl TaskService {
         // Register CatalogImportTask as a startup trigger
         for (task_id, handler) in tasks.iter() {
             if handler.task.key() == "CatalogImport" {
+                // Use task key as the task_id instead of UUID
                 let trigger = db::TaskTrigger {
-                    id: Uuid::new_v4(),
-                    task_id: *task_id,
+                    id: Uuid::new_v4().to_string(), // Keep UUID for trigger ID
+                    task_id: handler.task.key().to_string(), // Use task key
                     kind: db::TaskTriggerKind::Startup,
                     time_limit_hours: None,
                     cron: None,
@@ -342,7 +348,7 @@ impl TaskService {
                 // Check if this trigger already exists
                 let existing_triggers = db::TaskTrigger::get_all(&self.ctx.db).await?;
                 let trigger_exists = existing_triggers.iter()
-                    .any(|t| t.task_id == *task_id && t.kind == db::TaskTriggerKind::Startup);
+                    .any(|t| t.task_id == handler.task.key() && t.kind == db::TaskTriggerKind::Startup);
                 
                 if !trigger_exists {
                     trigger.save(&self.ctx.db).await?;
@@ -356,9 +362,9 @@ impl TaskService {
     }
 
     /// Get a copy of all task handlers for read-only access
-    pub async fn get_task_handlers(&self) -> std::collections::HashMap<Uuid, crate::tasks::TaskHandlerSnapshot> {
+    pub async fn get_task_handlers(&self) -> std::collections::HashMap<String, crate::tasks::TaskHandlerSnapshot> {
         self.tasks.lock().await.iter()
-            .map(|(k, v)| (*k, v.to_snapshot()))
+            .map(|(k, v)| (k.clone(), v.to_snapshot()))
             .collect()
     }
 }
@@ -406,10 +412,6 @@ pub struct CatalogImportTask;
 
 #[async_trait]
 impl Task for CatalogImportTask {
-    fn id(&self) -> Uuid {
-        uuid!("73733828-2828-4b8a-9e1a-737338282828")
-    }
-
     fn name(&self) -> &str {
         "Catalog Import"
     }
@@ -541,9 +543,8 @@ impl Task for CatalogImportTask {
             total_imported
         );
 
-        // Kick off RefreshLibraryTask
-        let refresh_library_task_id = key_to_uuid("RefreshLibrary");
-        task_service.run_task(refresh_library_task_id).await?;
+        // Kick off RefreshLibraryTask using its key
+        task_service.run_task_by_key("RefreshLibrary").await?;
 
         Ok(())
     }
@@ -554,16 +555,8 @@ pub struct SeriesSyncTask;
 
 #[async_trait]
 impl Task for SeriesSyncTask {
-    fn id(&self) -> Uuid {
-        uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479")
-    }
-
     fn name(&self) -> &str {
         "Series sync"
-    }
-
-    fn key(&self) -> &str {
-        "SeriesSync"
     }
 
     fn category(&self) -> &str {

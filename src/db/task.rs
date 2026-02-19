@@ -34,8 +34,8 @@ impl TryFrom<String> for TaskTriggerKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TaskTrigger {
-    pub id: Uuid,
-    pub task_id: Uuid,
+    pub id: String,  // Keep as string for compatibility
+    pub task_id: String,  // Now uses task key instead of UUID
     pub kind: TaskTriggerKind,
     pub time_limit_hours: Option<i64>,
     pub cron: Option<String>,
@@ -44,8 +44,8 @@ pub struct TaskTrigger {
 impl Default for TaskTrigger {
     fn default() -> Self {
         Self {
-            id: get_uuid(),
-            task_id: Uuid::nil(),
+            id: get_uuid().to_string(),
+            task_id: String::new(),
             kind: TaskTriggerKind::Schedule,
             time_limit_hours: None,
             cron: None,
@@ -55,8 +55,9 @@ impl Default for TaskTrigger {
 
 impl TaskTrigger {
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
-        let id = self.id.to_string();
-        let task_id = self.task_id.to_string();
+        // Both id and task_id are already strings
+        let id = &self.id;
+        let task_id = &self.task_id;
 
         sqlx::query!(
             r#"
@@ -120,17 +121,17 @@ pub enum TaskResultStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TaskResult {
-    pub task_id: Uuid,
+    pub task_id: String,  // Now uses task key instead of UUID
     pub start_at: NaiveDateTime,
     pub end_at: NaiveDateTime,
     pub status: TaskResultStatus,
 }
 
 impl TaskResult {
-    pub fn new(task_id: Uuid, status: TaskResultStatus) -> Self {
+    pub fn new(task_id: &str, status: TaskResultStatus) -> Self {
         let now = Utc::now().naive_utc();
         Self {
-            task_id,
+            task_id: task_id.to_string(),
             start_at: now,
             end_at: now,
             status,
@@ -138,7 +139,8 @@ impl TaskResult {
     }
 
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
-        let task_id = self.task_id.to_string();
+        // task_id is already a string
+        let task_id = &self.task_id;
 
         sqlx::query!(
             r#"
@@ -160,9 +162,7 @@ impl TaskResult {
         Ok(())
     }
 
-    pub async fn get_by_task_id(db: &SqlitePool, task_id: Uuid) -> Result<Option<Self>> {
-        let task_id_str = task_id.to_string();
-
+    pub async fn get_by_task_id(db: &SqlitePool, task_id: &str) -> Result<Option<Self>> {
         Ok(sqlx::query_as::<_, Self>(
             r#"
             SELECT *
@@ -172,7 +172,7 @@ impl TaskResult {
             LIMIT 1
             "#,
         )
-        .bind(task_id_str)
+        .bind(task_id)
         .fetch_optional(db)
         .await?)
     }
