@@ -175,6 +175,9 @@ impl TaskService {
             .register_task(Arc::new(RefreshLibraryTask::default()))
             .await?;
         service
+            .register_task(Arc::new(RefreshLibraryTask::default()))
+            .await?;
+        service
             .register_task(Arc::new(CatalogImportTask::default()))
             .await?;
         service

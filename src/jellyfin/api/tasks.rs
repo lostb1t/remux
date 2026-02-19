@@ -69,6 +69,7 @@ pub async fn scheduled_tasks(
             description: Some(task.name().to_string()),
             category: Some(task.category().to_string()),
             is_hidden: Some(false),
+            is_enabled: Some(true), // Tasks are enabled by default
             key: Some(task.key().to_string()),
             last_execution_date: last_execution_date,
             can_be_terminated: Some(true),
@@ -76,13 +77,8 @@ pub async fn scheduled_tasks(
         });
     }
     
-    let total_count = task_infos.len() as i64;
-    let response = jellyfin::TaskQueryResult {
-        items: task_infos,
-        total_record_count: total_count,
-    };
-    
-    Ok(Json(response))
+    // Return direct array like Jellyfin does, not wrapped in QueryResult
+    Ok(Json(task_infos))
 }
 
 /// Get task by ID
@@ -145,6 +141,7 @@ pub async fn get_task_by_id(
         description: Some(task.name().to_string()),
         category: Some(task.category().to_string()),
         is_hidden: Some(false),
+        is_enabled: Some(true), // Tasks are enabled by default
         key: Some(task.key().to_string()),
         last_execution_date: last_execution_date,
         can_be_terminated: Some(true),

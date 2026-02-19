@@ -1639,6 +1639,8 @@ pub struct TaskInfo {
     pub category: Option<String>,
     /// Gets or sets a value indicating whether this task is hidden.
     pub is_hidden: Option<bool>,
+    /// Gets or sets a value indicating whether this task is enabled.
+    pub is_enabled: Option<bool>,
     /// Gets or sets the key.
     pub key: Option<String>,
     /// Gets or sets the last execution date.
