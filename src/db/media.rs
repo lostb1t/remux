@@ -1027,6 +1027,20 @@ impl Media {
             _ => panic!("in the discoteq"),
         }
     }
+
+    /// Count items by kind
+    pub async fn count_by_kind(db: &SqlitePool, kind: &MediaKind) -> Result<i64> {
+        let result = Self::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![kind.clone()]),
+                total_count: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(result.total_count as i64)
+    }
 }
 
 impl From<sdks::aio::Catalog> for Media {

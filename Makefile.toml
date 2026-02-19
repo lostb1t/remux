@@ -27,7 +27,7 @@ args = ["sqlx", "migrate", "run", "--source", "./migrations"]
 
 [tasks.db-remove]
 command = "rm"
-args = ["${DB}"]
+args = ["-f", "${DB}"]
 
 [tasks.db-reset]
 dependencies = ["db-remove", "db-create", "db-migrate"]

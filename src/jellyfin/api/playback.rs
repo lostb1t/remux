@@ -523,6 +523,47 @@ mod tests {
 
         resp.assert_status(StatusCode::NO_CONTENT);
     }
+
+    #[tokio::test]
+    async fn test_get_sessions_empty() {
+        let (server, _token) = authenticated_server().await;
+
+        let resp = server
+            .get("/sessions")
+            .await;
+
+        resp.assert_status_ok();
+        let sessions: Vec<crate::jellyfin::SessionInfoDto> = resp.json();
+        assert_eq!(sessions.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_sessions_with_active_session() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // Start a playback session
+        let psid = "test-session-get";
+        server
+            .post("/sessions/playing")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PlaySessionId": psid,
+                "PositionTicks": 0
+            }))
+            .await;
+
+        // Get all sessions
+        let resp = server
+            .get("/sessions")
+            .await;
+
+        resp.assert_status_ok();
+        let sessions: Vec<crate::jellyfin::SessionInfoDto> = resp.json();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, Some(psid.to_string()));
+    }
 }
 
 #[post("/sessions/playing/progress")]
@@ -610,6 +651,49 @@ pub async fn ping_playback_session(
 #[post("/sessions/capabilities/full")]
 pub async fn sessions_capabilities_full(State(state): State<AppState>) -> Result<impl IntoResponse> {
     stub(State(state)).await
+}
+
+/// Get all active sessions
+#[get("/sessions")]
+pub async fn get_sessions(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    // Get all active playback sessions using the PlaybackSession::get_all method
+    let playback_sessions = PlaybackSession::get_all(&state.ctx.store);
+    
+    let sessions = playback_sessions
+        .into_iter()
+        .map(|session| {
+            jellyfin::SessionInfoDto {
+                id: Some(session.play_session_id.clone()),
+                user_id: session.user_id.to_string(),
+                user_name: None, // TODO: Get username from user ID
+                client: Some(session.client_name.clone()),
+                last_activity_date: session.last_activity,
+                last_playback_check_in: session.last_activity,
+                last_paused_date: None, // TODO: Track paused state in PlaybackSession
+                device_name: Some(session.device_id.clone()),
+                device_type: None,
+                now_playing_item: None, // TODO: Get media info
+                now_viewing_item: None,
+                device_id: Some(session.device_id.clone()),
+                application_version: None,
+                is_active: true,
+                supports_media_control: true,
+                supports_remote_control: true,
+                has_custom_device_name: false,
+                playlist_item_id: None,
+                server_id: Some(crate::utils::server_id()),
+                user_primary_image_tag: None,
+                playable_media_types: vec![],
+                remote_end_point: None,
+                now_playing_queue: None,
+                now_playing_queue_full_items: None,
+            }
+        })
+        .collect::<Vec<jellyfin::SessionInfoDto>>();
+
+    Ok(Json(sessions))
 }
 
 #[post("/userplayeditems/{id}")]

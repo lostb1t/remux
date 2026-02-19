@@ -108,6 +108,86 @@ pub struct VirtualFolderInfo {
     pub refresh_status: Option<String>,
 }
 
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct FolderStorageInfo {
+    /// The path of the folder.
+    pub path: Option<String>,
+    /// The free space of the underlying storage device.
+    pub free_space: Option<i64>,
+    /// The used space of the underlying storage device.
+    pub used_space: Option<i64>,
+    /// The kind of storage device.
+    pub storage_type: Option<String>,
+    /// The Device Identifier.
+    pub device_id: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct LibraryStorageInfo {
+    /// The Library Id.
+    pub id: Option<String>,
+    /// The name of the library.
+    pub name: Option<String>,
+    /// The storage informations about the folders used in a library.
+    pub folders: Option<Vec<FolderStorageInfo>>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct SystemStorageInfo {
+    /// The program data path.
+    pub program_data_folder: Option<FolderStorageInfo>,
+    /// The web UI resources path.
+    pub web_folder: Option<FolderStorageInfo>,
+    /// The items by name path.
+    pub image_cache_folder: Option<FolderStorageInfo>,
+    /// The cache path.
+    pub cache_folder: Option<FolderStorageInfo>,
+    /// The log path.
+    pub log_folder: Option<FolderStorageInfo>,
+    /// The internal metadata path.
+    pub internal_metadata_folder: Option<FolderStorageInfo>,
+    /// The transcode path.
+    pub transcoding_temp_folder: Option<FolderStorageInfo>,
+    /// The storage informations of all libraries.
+    pub libraries: Option<Vec<LibraryStorageInfo>>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct ItemCounts {
+    /// The movie count.
+    pub movie_count: i32,
+    /// The series count.
+    pub series_count: i32,
+    /// The episode count.
+    pub episode_count: i32,
+    /// The artist count.
+    pub artist_count: i32,
+    /// The program count.
+    pub program_count: i32,
+    /// The trailer count.
+    pub trailer_count: i32,
+    /// The song count.
+    pub song_count: i32,
+    /// The album count.
+    pub album_count: i32,
+    /// The music video count.
+    pub music_video_count: i32,
+    /// The box set count.
+    pub box_set_count: i32,
+    /// The book count.
+    pub book_count: i32,
+    /// The item count.
+    pub item_count: i32,
+}
+
 // Placeholder for CollectionTypeOptions and LibraryOptions.
 // You'll need to define these according to your needs.
 #[derive(Debug, Serialize, Deserialize)]

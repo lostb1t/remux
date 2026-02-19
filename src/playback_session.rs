@@ -54,4 +54,15 @@ impl PlaybackSession {
             debug!("Pinged session: {}", play_session_id);
         }
     }
+
+    /// Get all active playback sessions
+    pub fn get_all(store: &Store) -> Vec<Self> {
+        store.scan_keys(SESSION_PREFIX)
+            .into_iter()
+            .filter_map(|key| {
+                let session_id = key.trim_start_matches(SESSION_PREFIX);
+                Self::get(store, &session_id)
+            })
+            .collect()
+    }
 }

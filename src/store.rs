@@ -83,6 +83,17 @@ impl Store {
     pub fn delete(&self, key: impl Into<String>) {
         self.inner.invalidate(&key.into());
     }
+
+    /// Scan all keys with a given prefix
+    pub fn scan_keys(&self, prefix: &str) -> Vec<String> {
+        self.inner.iter().filter_map(|(key, _)| {
+            if key.starts_with(prefix) {
+                Some((*key).clone())
+            } else {
+                None
+            }
+        }).collect()
+    }
 }
 
 #[derive(Clone, Default)]
