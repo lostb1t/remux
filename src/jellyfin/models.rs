@@ -40,6 +40,54 @@ pub struct QueryResult<T> {
     pub start_index: i32,
 }
 
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct ServerConfiguration {
+    /// Gets or sets a value indicating whether to enable prometheus metrics exporting.
+    pub enable_metrics: Option<bool>,
+    /// Gets or sets a value indicating whether this instance is port authorized.
+    pub is_port_authorized: Option<bool>,
+    /// Gets or sets a value indicating whether quick connect is available for use on this server.
+    pub quick_connect_available: Option<bool>,
+    /// Gets or sets a value indicating whether [enable case-sensitive item ids].
+    pub enable_case_sensitive_item_ids: Option<bool>,
+    /// Gets or sets the metadata path.
+    pub metadata_path: Option<String>,
+    /// Gets or sets the preferred metadata language.
+    pub preferred_metadata_language: Option<String>,
+    /// Gets or sets the metadata country code.
+    pub metadata_country_code: Option<String>,
+    /// Gets or sets the path to the FFmpeg executable.
+    pub ffmpeg_path: Option<String>,
+    /// Gets or sets the path to the FFprobe executable.
+    pub ffprobe_path: Option<String>,
+    /// Gets or sets the cache path.
+    pub cache_path: Option<String>,
+    /// Gets or sets the number of days we should retain log files.
+    pub log_file_retention_days: Option<i32>,
+    /// Gets or sets a value indicating whether this instance is first run.
+    pub is_startup_wizard_completed: Option<bool>,
+    /// Gets or sets the server name.
+    pub server_name: Option<String>,
+    /// Gets or sets the UI language culture.
+    pub ui_language_culture: Option<String>,
+    /// Gets or sets a value indicating whether to enable automatic updates.
+    pub enable_automatic_updates: Option<bool>,
+    /// Gets or sets the path to the transcode temp folder.
+    pub transcoding_temp_path: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct LocalizationOption {
+    /// Gets or sets the name.
+    pub name: String,
+    /// Gets or sets the value.
+    pub value: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct AuthenticateUserByName {

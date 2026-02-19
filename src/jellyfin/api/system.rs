@@ -49,6 +49,36 @@ pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoRespo
 pub async fn system_info_storage(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
+
+/// Get server configuration
+#[get("/system/configuration")]
+pub async fn system_configuration(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    // Return a basic server configuration
+    // In a real implementation, this would come from a configuration file/database
+    let config = jellyfin::ServerConfiguration {
+        enable_metrics: Some(false),
+        is_port_authorized: Some(true),
+        quick_connect_available: Some(true),
+        enable_case_sensitive_item_ids: Some(true),
+        metadata_path: Some("/metadata".to_string()),
+        preferred_metadata_language: Some("en".to_string()),
+        metadata_country_code: Some("US".to_string()),
+        ffmpeg_path: Some("/usr/bin/ffmpeg".to_string()),
+        ffprobe_path: Some("/usr/bin/ffprobe".to_string()),
+        cache_path: Some("/cache".to_string()),
+        log_file_retention_days: Some(3),
+        is_startup_wizard_completed: Some(true),
+        server_name: Some("Remux Server".to_string()),
+        ui_language_culture: Some("en-US".to_string()),
+        enable_automatic_updates: Some(false),
+        transcoding_temp_path: Some("/transcodes".to_string()),
+        ..Default::default()
+    };
+
+    Ok(Json(config))
+}
     // Create storage information following the Jellyfin SystemStorageInfo structure
     let system_storage_info = jellyfin::SystemStorageInfo {
         program_data_folder: Some(jellyfin::FolderStorageInfo {
