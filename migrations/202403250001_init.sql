@@ -90,9 +90,17 @@ CREATE TABLE task_triggers (
 
 CREATE INDEX idx_task_triggers_task_id
     ON task_triggers(task_id);
+
+-- Insert default triggers using task keys instead of UUIDs
+-- These ensure essential tasks run at startup
+INSERT INTO task_triggers (id, task_id, kind, time_limit_hours, cron)
+VALUES 
+    -- CatalogImport task runs at startup to import media catalogs
+    ('f47ac10b-58cc-4372-a567-0e02b2c3d479', 'CatalogImport', 'startup', NULL, NULL),
     
--- Task triggers are now registered by the application based on task keys
--- This allows for dynamic task registration without hardcoded UUIDs
+    -- RefreshLibrary task runs at startup to refresh media metadata
+    ('5a8b9c0d-1e2f-3a4b-5c6d-7e8f9a0b1c2d', 'RefreshLibrary', 'startup', NULL, NULL);
+
 CREATE TABLE task_results (
     task_id TEXT PRIMARY KEY,
     start_at DATETIME NOT NULL,

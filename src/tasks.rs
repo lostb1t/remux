@@ -51,7 +51,6 @@ pub trait Task: Send + Sync {
         // Default category
         "System"
     }
-    fn default_triggers(&self) -> Vec<db::TaskTrigger>;
 
     /// Set the current progress percentage (0.0 to 100.0)
     fn set_progress(&self, _percentage: f64) {
@@ -81,7 +80,7 @@ pub struct TaskHandlerSnapshot {
 
 impl TaskHandler {
     pub fn new(task: Arc<dyn Task>) -> Self {
-        Self a{
+        Self {
             status: TaskStatus::Idle,
             task,
             jobs: Vec::new(),
@@ -198,9 +197,6 @@ impl TaskService {
         service
             .register_task(Arc::new(SeriesSyncTask::default()))
             .await?;
-
-        // Register default triggers for tasks
-        service.register_default_triggers().await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {
@@ -326,37 +322,7 @@ impl TaskService {
         Ok(())
     }
 
-    /// Register default triggers for tasks
-    pub async fn register_default_triggers(&self) -> Result<()> {
-        let tasks = self.tasks.lock().await;
-        
-        // Register CatalogImportTask as a startup trigger
-        for (task_id, handler) in tasks.iter() {
-            if handler.task.key() == "CatalogImport" {
-                // Use task key as the task_id instead of UUID
-                let trigger = db::TaskTrigger {
-                    id: Uuid::new_v4().to_string(), // Keep UUID for trigger ID
-                    task_id: handler.task.key().to_string(), // Use task key
-                    kind: db::TaskTriggerKind::Startup,
-                    time_limit_hours: None,
-                    cron: None,
-                };
-                
-                // Check if this trigger already exists
-                let existing_triggers = db::TaskTrigger::get_all(&self.ctx.db).await?;
-                let trigger_exists = existing_triggers.iter()
-                    .any(|t| t.task_id == handler.task.key() && t.kind == db::TaskTriggerKind::Startup);
-                
-                if !trigger_exists {
-                    trigger.save(&self.ctx.db).await?;
-                    self.add_trigger(trigger).await?;
-                }
-                break;
-            }
-        }
-        
-        Ok(())
-    }
+
 
     /// Get a copy of all task handlers for read-only access
     pub async fn get_task_handlers(&self) -> std::collections::HashMap<String, crate::tasks::TaskHandlerSnapshot> {
@@ -381,10 +347,6 @@ impl Task for RefreshLibraryTask {
 
     fn category(&self) -> &str {
         "Library"
-    }
-
-    fn default_triggers(&self) -> Vec<db::TaskTrigger> {
-        vec![]
     }
 
     async fn run(
@@ -419,10 +381,6 @@ impl Task for CatalogImportTask {
 
     fn category(&self) -> &str {
         "Library"
-    }
-
-    fn default_triggers(&self) -> Vec<db::TaskTrigger> {
-        vec![]
     }
 
     async fn run(
@@ -558,10 +516,6 @@ impl Task for SeriesSyncTask {
 
     fn category(&self) -> &str {
         "Library"
-    }
-
-    fn default_triggers(&self) -> Vec<db::TaskTrigger> {
-        vec![]
     }
 
     async fn run(
