@@ -14,6 +14,7 @@ RUN apt-get update \
 
 COPY vendor ./vendor
 COPY Cargo.toml Cargo.lock ./
+COPY remux-macros ./remux-macros
 RUN cargo fetch
 
 COPY . .
