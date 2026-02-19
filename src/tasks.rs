@@ -28,10 +28,47 @@ pub enum TaskStatus {
     Failed(anyhow::Error),
 }
 
+impl Clone for TaskStatus {
+    fn clone(&self) -> Self {
+        match self {
+            TaskStatus::Idle => TaskStatus::Idle,
+            TaskStatus::Active => TaskStatus::Active,
+            TaskStatus::Stopped => TaskStatus::Stopped,
+            TaskStatus::Failed(err) => TaskStatus::Failed(anyhow::anyhow!(err.to_string())),
+        }
+    }
+}
+
+/// Helper function to generate a deterministic UUID from a string key
+fn key_to_uuid(key: &str) -> Uuid {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let hash = hasher.finish();
+    
+    // Create UUID v5 (name-based) using a namespace and the key
+    let namespace = uuid::uuid!("6ba7b810-9dad-11d1-80b4-00c04fd430c8"); // DNS namespace
+    uuid::Uuid::new_v5(&namespace, key.as_bytes())
+}
+
 #[async_trait]
 pub trait Task: Send + Sync {
-    fn id(&self) -> Uuid;
+    fn id(&self) -> Uuid {
+        // Default implementation generates UUID from key
+        key_to_uuid(self.key())
+    }
+    
     fn name(&self) -> &str;
+    fn key(&self) -> &str {
+        // Default implementation uses the task name as key
+        self.name()
+    }
+    fn category(&self) -> &str {
+        // Default category
+        "System"
+    }
     fn default_triggers(&self) -> Vec<db::TaskTrigger>;
 
     async fn run(
@@ -46,6 +83,23 @@ pub struct TaskHandler {
     pub task: Arc<dyn Task>,
     pub jobs: Vec<JobId>,
     pub handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+pub struct TaskHandlerSnapshot {
+    pub status: TaskStatus,
+    pub task: Arc<dyn Task>,
+    pub jobs: Vec<JobId>,
+}
+
+impl TaskHandler {
+    pub fn to_snapshot(&self) -> TaskHandlerSnapshot {
+        TaskHandlerSnapshot {
+            status: self.status.clone(),
+            task: self.task.clone(),
+            jobs: self.jobs.clone(),
+        }
+    }
 }
 
 impl TaskHandler {
@@ -137,7 +191,7 @@ impl TaskService {
         };
 
         service
-            .register_task(Arc::new(MediaScanTask::default()))
+            .register_task(Arc::new(RefreshLibraryTask::default()))
             .await?;
         service
             .register_task(Arc::new(CatalogImportTask::default()))
@@ -263,19 +317,30 @@ impl TaskService {
         self.scheduler.start().await?;
         Ok(())
     }
+
+    /// Get a copy of all task handlers for read-only access
+    pub async fn get_task_handlers(&self) -> std::collections::HashMap<Uuid, crate::tasks::TaskHandlerSnapshot> {
+        self.tasks.lock().await.iter()
+            .map(|(k, v)| (*k, v.to_snapshot()))
+            .collect()
+    }
 }
 
 #[derive(Default)]
-pub struct MediaScanTask;
+pub struct RefreshLibraryTask;
 
 #[async_trait]
-impl Task for MediaScanTask {
-    fn id(&self) -> Uuid {
-        uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479")
+impl Task for RefreshLibraryTask {
+    fn name(&self) -> &str {
+        "Refresh Library"
     }
 
-    fn name(&self) -> &str {
-        "Media Scan"
+    fn key(&self) -> &str {
+        "RefreshLibrary"
+    }
+
+    fn category(&self) -> &str {
+        "Library"
     }
 
     fn default_triggers(&self) -> Vec<db::TaskTrigger> {
@@ -310,6 +375,14 @@ impl Task for CatalogImportTask {
 
     fn name(&self) -> &str {
         "Catalog Import"
+    }
+
+    fn key(&self) -> &str {
+        "CatalogImport"
+    }
+
+    fn category(&self) -> &str {
+        "Library"
     }
 
     fn default_triggers(&self) -> Vec<db::TaskTrigger> {
@@ -431,9 +504,9 @@ impl Task for CatalogImportTask {
             total_imported
         );
 
-        // Kick off MediaScanTask
-        let media_scan_task_id = uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479");
-        task_service.run_task(media_scan_task_id).await?;
+        // Kick off RefreshLibraryTask
+        let refresh_library_task_id = key_to_uuid("RefreshLibrary");
+        task_service.run_task(refresh_library_task_id).await?;
 
         Ok(())
     }
@@ -450,6 +523,14 @@ impl Task for SeriesSyncTask {
 
     fn name(&self) -> &str {
         "Series sync"
+    }
+
+    fn key(&self) -> &str {
+        "SeriesSync"
+    }
+
+    fn category(&self) -> &str {
+        "Library"
     }
 
     fn default_triggers(&self) -> Vec<db::TaskTrigger> {

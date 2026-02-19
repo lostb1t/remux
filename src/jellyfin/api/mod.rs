@@ -6,6 +6,7 @@ pub mod images;
 pub mod playback;
 pub mod devices;
 pub mod localization;
+pub mod tasks;
 
 use axum::Json;
 use axum::extract::State;

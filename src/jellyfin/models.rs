@@ -1617,6 +1617,86 @@ pub enum VideoRangeType {
     Hdr10Plus,
 }
 
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct TaskInfo {
+    /// Gets or sets the name.
+    pub name: String,
+    /// Gets or sets the state.
+    pub state: Option<String>,
+    /// Gets or sets the current progress percentage.
+    pub current_progress_percentage: Option<f64>,
+    /// Gets or sets the id.
+    pub id: String,
+    /// Gets or sets the last execution result.
+    pub last_execution_result: Option<TaskResult>,
+    /// Gets or sets the triggers.
+    pub triggers: Option<Vec<TaskTriggerInfo>>,
+    /// Gets or sets the description.
+    pub description: Option<String>,
+    /// Gets or sets the category.
+    pub category: Option<String>,
+    /// Gets or sets a value indicating whether this task is hidden.
+    pub is_hidden: Option<bool>,
+    /// Gets or sets the key.
+    pub key: Option<String>,
+    /// Gets or sets the last execution date.
+    pub last_execution_date: Option<String>,
+    /// Gets or sets the can_be_terminated.
+    pub can_be_terminated: Option<bool>,
+    /// Gets or sets the can_be_deleted.
+    pub can_be_deleted: Option<bool>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct TaskResult {
+    /// Gets or sets the status.
+    pub status: Option<String>,
+    /// Gets or sets the name.
+    pub name: Option<String>,
+    /// Gets or sets the id.
+    pub id: Option<String>,
+    /// Gets or sets the key.
+    pub key: Option<String>,
+    /// Gets or sets the error_message.
+    pub error_message: Option<String>,
+    /// Gets or sets the long_error_message.
+    pub long_error_message: Option<String>,
+    /// Gets or sets the start_time_utc.
+    pub start_time_utc: Option<String>,
+    /// Gets or sets the end_time_utc.
+    pub end_time_utc: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct TaskTriggerInfo {
+    /// Gets or sets the type.
+    pub r#type: Option<String>,
+    /// Gets or sets the time_of_day_ticks.
+    pub time_of_day_ticks: Option<i64>,
+    /// Gets or sets the interval_ticks.
+    pub interval_ticks: Option<i64>,
+    /// Gets or sets the day_of_week.
+    pub day_of_week: Option<String>,
+    /// Gets or sets the max_runtime_ticks.
+    pub max_runtime_ticks: Option<i64>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct TaskQueryResult {
+    /// Gets or sets the items.
+    pub items: Vec<TaskInfo>,
+    /// Gets or sets the total number of records available.
+    pub total_record_count: i64,
+}
+
 #[derive(
     Copy,
     Serialize,

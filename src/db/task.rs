@@ -159,4 +159,21 @@ impl TaskResult {
 
         Ok(())
     }
+
+    pub async fn get_by_task_id(db: &SqlitePool, task_id: Uuid) -> Result<Option<Self>> {
+        let task_id_str = task_id.to_string();
+
+        Ok(sqlx::query_as::<_, Self>(
+            r#"
+            SELECT *
+            FROM task_results
+            WHERE task_id = ?1
+            ORDER BY end_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(task_id_str)
+        .fetch_optional(db)
+        .await?)
+    }
 }
