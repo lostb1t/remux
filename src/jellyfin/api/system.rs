@@ -175,6 +175,46 @@ pub async fn system_configuration(
     Ok(Json(system_storage_info))
 }
 
+
+
+#[get("/system/endpoint")]
+pub async fn system_endpoint(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(json!({
+        "IsLocal": false,
+        "IsInNetwork": false,
+
+    })))
+}
+
+#[get("/syncplay/list")]
+pub async fn syncplay_list(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
+}
+
+#[route("/quickconnect/enabled", method = "GET", method = "POST")]
+pub async fn quickconnect_enabled(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    stub(State(state)).await
+}
+
+#[route("/branding/configuration", method = "GET", method = "POST")]
+pub async fn branding_configuration(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    stub(State(state)).await
+}
+
+/// Get activity log entries
+#[get("/system/activitylog/entries")]
+pub async fn system_activity_log(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    // Return an empty activity log
+    Ok(Json(json!({
+        "Items": [],
+        "TotalRecordCount": 0
+    })))
+}
+
 #[cfg(test)]
 #[tokio::test]
 async fn system_ping_test() {
@@ -207,33 +247,23 @@ async fn system_info_storage_test() {
     assert_eq!(libraries.len(), 2);
     
     // Check library names
-    let library_names: Vec<_> = libraries.iter().filter_map(|lib| lib.name.as_ref()).collect();
-    assert!(library_names.contains(&"Movies"));
-    assert!(library_names.contains(&"TV Shows"));
+    let library_names: Vec<String> = libraries.iter().filter_map(|lib| lib.name.clone()).collect();
+    assert!(library_names.contains(&"Movies".to_string()));
+    assert!(library_names.contains(&"TV Shows".to_string()));
 }
 
-#[get("/system/endpoint")]
-pub async fn system_endpoint(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse> {
-    Ok(Json(json!({
-        "IsLocal": false,
-        "IsInNetwork": false,
+#[cfg(test)]
+#[tokio::test]
+async fn system_activity_log_test() {
+    let server = crate::integration_test::new_test_server().await.unwrap();
 
-    })))
-}
+    let response = server.get("/system/activitylog/entries").await;
 
-#[get("/syncplay/list")]
-pub async fn syncplay_list(State(state): State<AppState>) -> Result<impl IntoResponse> {
-    mock_items(State(state)).await
-}
-
-#[route("/quickconnect/enabled", method = "GET", method = "POST")]
-pub async fn quickconnect_enabled(State(state): State<AppState>) -> Result<impl IntoResponse> {
-    stub(State(state)).await
-}
-
-#[route("/branding/configuration", method = "GET", method = "POST")]
-pub async fn branding_configuration(State(state): State<AppState>) -> Result<impl IntoResponse> {
-    stub(State(state)).await
+    response.assert_status_ok();
+    let log_result: serde_json::Value = response.json();
+    
+    // Check that we have the expected structure
+    assert!(log_result["Items"].is_array());
+    assert_eq!(log_result["Items"].as_array().unwrap().len(), 0);
+    assert_eq!(log_result["TotalRecordCount"].as_i64().unwrap(), 0);
 }
