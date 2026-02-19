@@ -196,6 +196,12 @@ impl TaskService {
         service
             .register_task(Arc::new(CatalogImportTask::default()))
             .await?;
+        service
+            .register_task(Arc::new(SeriesSyncTask::default()))
+            .await?;
+
+        // Register default triggers for tasks
+        service.register_default_triggers().await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {
@@ -315,6 +321,37 @@ impl TaskService {
 
     pub async fn start(&self) -> Result<()> {
         self.scheduler.start().await?;
+        Ok(())
+    }
+
+    /// Register default triggers for tasks
+    pub async fn register_default_triggers(&self) -> Result<()> {
+        let tasks = self.tasks.lock().await;
+        
+        // Register CatalogImportTask as a startup trigger
+        for (task_id, handler) in tasks.iter() {
+            if handler.task.key() == "CatalogImport" {
+                let trigger = db::TaskTrigger {
+                    id: Uuid::new_v4(),
+                    task_id: *task_id,
+                    kind: db::TaskTriggerKind::Startup,
+                    time_limit_hours: None,
+                    cron: None,
+                };
+                
+                // Check if this trigger already exists
+                let existing_triggers = db::TaskTrigger::get_all(&self.ctx.db).await?;
+                let trigger_exists = existing_triggers.iter()
+                    .any(|t| t.task_id == *task_id && t.kind == db::TaskTriggerKind::Startup);
+                
+                if !trigger_exists {
+                    trigger.save(&self.ctx.db).await?;
+                    self.add_trigger(trigger).await?;
+                }
+                break;
+            }
+        }
+        
         Ok(())
     }
 

@@ -91,15 +91,8 @@ CREATE TABLE task_triggers (
 CREATE INDEX idx_task_triggers_task_id
     ON task_triggers(task_id);
     
-INSERT INTO task_triggers (
-    id,
-    task_id,
-    kind,
-    time_limit_hours,
-    cron
-)
-VALUES
-    (x'f47ac10b58cc4372a5670e02b2c3d479', x'7373382828284b8a9e1a737338282828', 'startup', NULL, NULL);
+-- Task triggers are now registered by the application based on task keys
+-- This allows for dynamic task registration without hardcoded UUIDs
 CREATE TABLE task_results (
     task_id TEXT PRIMARY KEY,
     start_at DATETIME NOT NULL,
