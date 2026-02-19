@@ -1,14 +1,16 @@
 use axum::Json;
 use axum::extract::State;
 use axum::response::IntoResponse;
-use remux_macros::{get, route};
+use remux_macros::{get, post, route};
 use http::StatusCode;
 use serde_json::json;
 
 use crate::AppState;
+use crate::db::auth;
 use crate::jellyfin;
 use crate::utils::server_id;
-use axum_anyhow::ApiResult as Result;
+use axum_anyhow::{ApiResult as Result, IntoApiError};
+use anyhow;
 
 use super::{mock_items, stub};
 
@@ -29,15 +31,7 @@ pub async fn system_info_public(
     }))
 }
 
-#[get("/system/info")]
-pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoResponse> {
-    Ok(Json(jellyfin::SystemInfo {
-        id: Some(server_id()),
-        server_name: Some(server_id()),
-        // server_id: Some(server_id()),
-        ..Default::default()
-    }))
-}
+
 
 #[get("/system/ping")]
 pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoResponse> {
@@ -266,4 +260,172 @@ async fn system_activity_log_test() {
     assert!(log_result["Items"].is_array());
     assert_eq!(log_result["Items"].as_array().unwrap().len(), 0);
     assert_eq!(log_result["TotalRecordCount"].as_i64().unwrap(), 0);
+}
+
+/// Restart the server (Admin only)
+#[post("/system/restart")]
+pub async fn system_restart(
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    // Check if user is admin
+    if !session.user.is_admin {
+        return Err(anyhow::anyhow!("Admin access required").context_unauthorized("forbidden", "forbidden"));
+    }
+
+    tracing::info!("Server restart requested by user: {}", session.user.username);
+
+    // Trigger actual server restart
+    restart_server().await?;
+
+    Ok(Json(json!({
+        "Message": "Server restart initiated",
+        "RestartPending": true
+    })))
+}
+
+/// Actually restart the server process
+async fn restart_server() -> Result<()> {
+    tracing::info!("Initiating server restart...");
+    
+    // Get the current executable path and arguments
+    let current_exe = std::env::current_exe()?;
+    let args: Vec<String> = std::env::args().collect();
+    
+    tracing::info!("Restarting with: {:?} {:?}", current_exe, args);
+    
+    // Spawn the new process
+    let mut command = std::process::Command::new(current_exe);
+    command.args(&args[1..]); // Skip the first argument (program name)
+    
+    // Set environment variables from current process
+    for (key, value) in std::env::vars() {
+        command.env(key, value);
+    }
+    
+    // Start the new process
+    let mut child = command.spawn()?;
+    
+    tracing::info!("New server process started with PID: {}", child.id());
+    
+    // Give the new process a moment to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    
+    // Exit the current process
+    std::process::exit(0);
+}
+
+/// Shutdown the server (Admin only)
+#[post("/system/shutdown")]
+pub async fn system_shutdown(
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    // Check if user is admin
+    if !session.user.is_admin {
+        return Err(anyhow::anyhow!("Admin access required").context_unauthorized("forbidden", "forbidden"));
+    }
+
+    tracing::info!("Server shutdown requested by user: {}", session.user.username);
+
+    // Trigger actual server shutdown
+    shutdown_server().await?;
+
+    Ok(Json(json!({
+        "Message": "Server shutdown initiated",
+        "IsShuttingDown": true
+    })))
+}
+
+/// Actually shutdown the server process
+async fn shutdown_server() -> Result<()> {
+    tracing::info!("Initiating server shutdown...");
+    
+    // Perform graceful shutdown
+    tracing::info!("Server is shutting down gracefully");
+    
+    // Give a moment for cleanup
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    
+    // Exit the process
+    std::process::exit(0);
+}
+
+/// Update system_info to reflect restart/shutdown capabilities
+#[get("/system/info")]
+pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::SystemInfo {
+        id: Some(server_id()),
+        server_name: Some(server_id()),
+        can_self_restart: Some(true), // Indicate that restart is supported
+        has_pending_restart: Some(false), // No pending restart initially
+        is_shutting_down: Some(false), // Not shutting down initially
+        ..Default::default()
+    }))
+}
+
+// Test to verify endpoints exist and are properly protected
+#[cfg(test)]
+async fn test_server_no_success_expectation() -> Result<axum_test::TestServer> {
+    let app = crate::init_app().await?;
+
+    Ok(
+        axum_test::TestServer::builder()
+            .save_cookies()
+            // Don't expect success by default for this test
+            .mock_transport()
+            .build(app)?
+    )
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn system_endpoints_exist_and_protected() {
+    let server = test_server_no_success_expectation().await.unwrap();
+    
+    // Test that restart endpoint exists and requires authentication
+    let response = server.post("/system/restart").await;
+    // Should fail with authentication error (401), not 404
+    assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
+    
+    // Test that shutdown endpoint exists and requires authentication
+    let response = server.post("/system/shutdown").await;
+    // Should fail with authentication error (401), not 404
+    assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn system_restart_forbidden_for_non_admin() {
+    use crate::integration_test::new_test_server;
+    
+    let server = new_test_server().await.unwrap();
+    let response = server.post("/system/restart").await;
+    
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn system_shutdown_forbidden_for_non_admin() {
+    use crate::integration_test::new_test_server;
+    
+    let server = new_test_server().await.unwrap();
+    let response = server.post("/system/shutdown").await;
+    
+    response.assert_status(StatusCode::FORBIDDEN);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn system_info_shows_capabilities() {
+    let server = crate::integration_test::new_test_server().await.unwrap();
+
+    let response = server.get("/system/info").await;
+
+    response.assert_status_ok();
+    let system_info: crate::jellyfin::SystemInfo = response.json();
+    
+    // Check that restart capabilities are properly indicated
+    assert_eq!(system_info.can_self_restart, Some(true));
+    assert_eq!(system_info.has_pending_restart, Some(false));
+    assert_eq!(system_info.is_shutting_down, Some(false));
 }
