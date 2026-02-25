@@ -273,6 +273,7 @@ pub struct MediaFilter {
     pub total_count: bool,
     pub include_user_state: bool,
     pub user_state: Option<super::UserMediaStateFilter>,
+    pub genre_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -699,6 +700,17 @@ impl Media {
                 qb.push(" AND imdb_id = ").push_bind(imdb_id);
             }
 
+            if let Some(genre_ids) = &filter.genre_ids {
+                if !genre_ids.is_empty() {
+                    qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
+                    let mut sep = qb.separated(", ");
+                    for id in genre_ids {
+                        sep.push_bind(id);
+                    }
+                    qb.push("))");
+                }
+            }
+
             if let Some(user_state_filter) = &filter.user_state {
                 // Join with user_media_state table for filtering
                 qb.push(" AND EXISTS (")
@@ -842,6 +854,12 @@ impl Media {
                         None
                     }
                 },
+                genre_ids: filter.genre_ids.as_ref().map(|ids| {
+                    ids.iter()
+                        .flat_map(|s| s.split(','))
+                        .filter_map(|s| s.trim().parse::<Uuid>().ok())
+                        .collect()
+                }),
                 //   parent_id: Some(self.id),
                 ..Default::default()
             },
