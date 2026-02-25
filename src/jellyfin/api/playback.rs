@@ -36,7 +36,7 @@ pub async fn items_playbackinfo(
     Path(id): Path<Uuid>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    items_playbackinfo_inner(state, id, payload.media_source_id).await
+    items_playbackinfo_inner(state, id, payload.media_source_id, payload.device_profile).await
 }
 
 #[get("/items/{id}/playbackinfo")]
@@ -45,13 +45,14 @@ pub async fn items_playbackinfo_get(
     Path(id): Path<Uuid>,
     Query(q): Query<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    items_playbackinfo_inner(state, id, q.media_source_id).await
+    items_playbackinfo_inner(state, id, q.media_source_id, q.device_profile).await
 }
 
 async fn items_playbackinfo_inner(
     state: AppState,
     id: Uuid,
     media_source_id: Option<Uuid>,
+    device_profile: Option<jellyfin::DeviceProfile>,
 ) -> Result<impl IntoResponse> {
     trace!(?id, ?media_source_id, "items_playbackinfo");
 
@@ -63,14 +64,24 @@ async fn items_playbackinfo_inner(
     let mut source: jellyfin::MediaSourceInfo = media.into();
     source.probe_in_place()?;
 
-    // Enable transcoding and provide the HLS transcode URL
+    // Pick container/protocol from the client's device profile, falling back to ts/hls
+    let (trans_container, trans_protocol) = device_profile
+        .as_ref()
+        .and_then(|p| p.video_transcoding_profile())
+        .map(|p| (
+            p.container.clone().unwrap_or_else(|| "ts".to_string()),
+            p.protocol.clone().unwrap_or_else(|| "hls".to_string()),
+        ))
+        .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
+
     let play_session_id = utils::get_uuid().as_simple().to_string();
     source.supports_transcoding = Some(true);
     source.transcoding_url = Some(format!(
         "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=h264&AudioCodec=aac",
         id, play_session_id, source.id
     ));
-    source.transcoding_container = Some("ts".to_string());
+    source.transcoding_container = Some(trans_container);
+    source.transcoding_sub_protocol = Some(trans_protocol);
 
     let info = jellyfin::PlaybackInfoResponse {
         media_sources: vec![source],

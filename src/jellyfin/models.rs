@@ -517,6 +517,32 @@ pub struct VideoStreamQuery {
     pub live_stream_id: Option<String>,
 }
 
+#[derive(Default, Debug, Deserialize, Clone)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct TranscodingProfile {
+    pub container: Option<String>,
+    pub protocol: Option<String>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    #[serde(rename = "Type")]
+    pub type_: Option<String>, // "Video", "Audio", "Photo"
+}
+
+#[derive(Default, Debug, Deserialize, Clone)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct DeviceProfile {
+    pub transcoding_profiles: Vec<TranscodingProfile>,
+}
+
+impl DeviceProfile {
+    /// Returns the first video transcoding profile, if any.
+    pub fn video_transcoding_profile(&self) -> Option<&TranscodingProfile> {
+        self.transcoding_profiles.iter().find(|p| {
+            p.type_.as_deref().map(|t| t.eq_ignore_ascii_case("Video")).unwrap_or(false)
+        })
+    }
+}
+
 #[serde_alias(CamelCase, PascalCase)]
 #[derive(Default, Debug, Deserialize)]
 #[serde(default)]
@@ -543,6 +569,7 @@ pub struct PlaybackInfoQuery {
     pub allow_video_stream_copy: Option<bool>,
     pub allow_audio_stream_copy: Option<bool>,
     pub always_burn_in_subtitle_when_transcoding: Option<bool>,
+    pub device_profile: Option<DeviceProfile>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -621,7 +648,7 @@ pub struct MediaSourceInfo {
     pub transcoding_container: Option<String>,
     /// Media streaming protocol.
     /// Lowercase for backwards compatibility.
-    //  pub transcoding_sub_protocol: Option<MediaStreamProtocol>,
+    pub transcoding_sub_protocol: Option<String>,
     pub transcoding_url: Option<String>,
     // pub type_: Option<MediaSourceType>,
     #[default(false)]

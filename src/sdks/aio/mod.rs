@@ -301,10 +301,10 @@ pub struct Trailer {
 #[strum(serialize_all = "lowercase")]
 pub enum Status {
     Upcoming,
+    Planned,
     Continuing,
     Ended,
     Canceled,
-    // Returning Series
     #[serde(rename = "Returning Series")]
     ReturningSeries,
     #[serde(rename = "In Production")]
