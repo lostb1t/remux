@@ -13,3 +13,4 @@ config.toml
 .git
 .env
 config.toml
+transcode_sessions

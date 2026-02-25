@@ -531,7 +531,16 @@ pub struct TranscodingProfile {
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct DeviceProfile {
+    pub name: Option<String>,
+    pub max_streaming_bitrate: Option<i64>,
+    pub max_static_bitrate: Option<i64>,
+    pub music_streaming_transcoding_bitrate: Option<i64>,
+    pub max_static_music_bitrate: Option<i64>,
+    pub direct_play_profiles: Vec<DirectPlayProfile>,
     pub transcoding_profiles: Vec<TranscodingProfile>,
+    pub container_profiles: Vec<ContainerProfile>,
+    pub codec_profiles: Vec<CodecProfile>,
+    pub subtitle_profiles: Vec<SubtitleProfile>,
 }
 
 impl DeviceProfile {
@@ -541,10 +550,113 @@ impl DeviceProfile {
             p.type_.as_deref().map(|t| t.eq_ignore_ascii_case("Video")).unwrap_or(false)
         })
     }
+
+    /// Returns true if the device supports direct play for the given media source.
+    pub fn supports_direct_play(&self, media_source: &MediaSourceInfo) -> bool {
+        // Check if any direct play profile matches the media source
+        for profile in &self.direct_play_profiles {
+            if profile.supports_media_source(media_source) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+#[derive(Default, Debug, Deserialize, Clone)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct DirectPlayProfile {
+    pub container: Option<String>,
+    pub audio_codec: Option<String>,
+    pub video_codec: Option<String>,
+    #[serde(rename = "Type")]
+    pub type_: Option<String>, // "Video", "Audio", etc.
+}
+
+impl DirectPlayProfile {
+    pub fn supports_media_source(&self, media_source: &MediaSourceInfo) -> bool {
+        // Check container match
+        if let (Some(profile_container), Some(source_container)) = (&self.container, &media_source.container) {
+            if !self.supports_container(source_container) {
+                return false;
+            }
+        }
+
+        // Check video codec match
+        if let (Some(profile_video_codec), Some(video_stream)) = (&self.video_codec, media_source.video_stream()) {
+            if let Some(video_codec) = &video_stream.codec {
+                if !self.supports_video_codec(video_codec) {
+                    return false;
+                }
+            }
+        }
+
+        // Check audio codec match
+        if let (Some(profile_audio_codec), Some(audio_stream)) = (&self.audio_codec, media_source.audio_stream()) {
+            if let Some(audio_codec) = &audio_stream.codec {
+                if !self.supports_audio_codec(audio_codec) {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    pub fn supports_container(&self, container: &str) -> bool {
+        self.container.as_ref().map(|c| {
+            c.split(',').any(|c| c.eq_ignore_ascii_case(container))
+        }).unwrap_or(true)
+    }
+
+    pub fn supports_video_codec(&self, codec: &str) -> bool {
+        self.video_codec.as_ref().map(|v| {
+            v.split(',').any(|v| v.eq_ignore_ascii_case(codec))
+        }).unwrap_or(true)
+    }
+
+    pub fn supports_audio_codec(&self, codec: &str) -> bool {
+        self.audio_codec.as_ref().map(|a| {
+            a.split(',').any(|a| a.eq_ignore_ascii_case(codec))
+        }).unwrap_or(true)
+    }
+}
+
+#[derive(Default, Debug, Deserialize, Clone)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct ContainerProfile {
+    pub type_: Option<String>, // "Video", "Audio", etc.
+    pub container: Option<String>,
+    pub conditions: Vec<ProfileCondition>,
+}
+
+#[derive(Default, Debug, Deserialize, Clone)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct CodecProfile {
+    pub type_: Option<String>, // "Video", "Audio", etc.
+    pub codec: Option<String>,
+    pub conditions: Vec<ProfileCondition>,
+}
+
+#[derive(Default, Debug, Deserialize, Clone)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct SubtitleProfile {
+    pub format: Option<String>,
+    pub method: Option<String>,
+}
+
+#[derive(Default, Debug, Deserialize, Clone)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct ProfileCondition {
+    pub condition: Option<String>,
+    pub property: Option<String>,
+    pub value: Option<String>,
+    #[serde(rename = "IsRequired")]
+    pub is_required: Option<bool>,
 }
 
 #[serde_alias(CamelCase, PascalCase)]
-#[derive(Default, Debug, Deserialize)]
+#[derive(Default, Debug, Deserialize, Clone)]
 #[serde(default)]
 #[serde_as]
 pub struct PlaybackInfoQuery {
@@ -674,6 +786,27 @@ impl MediaSourceInfo {
         self.path = path;
 
         Ok(())
+    }
+
+    /// Returns the first video stream, if any.
+    pub fn video_stream(&self) -> Option<&MediaStream> {
+        self.media_streams.iter().find(|s| {
+            matches!(s.type_, Some(MediaStreamType::Video))
+        })
+    }
+
+    /// Returns the first audio stream, if any.
+    pub fn audio_stream(&self) -> Option<&MediaStream> {
+        self.media_streams.iter().find(|s| {
+            matches!(s.type_, Some(MediaStreamType::Audio))
+        })
+    }
+
+    /// Returns the first subtitle stream, if any.
+    pub fn subtitle_stream(&self) -> Option<&MediaStream> {
+        self.media_streams.iter().find(|s| {
+            matches!(s.type_, Some(MediaStreamType::Subtitle))
+        })
     }
 
 }

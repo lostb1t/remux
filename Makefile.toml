@@ -41,7 +41,7 @@ args = ["test"]
 [tasks.dev]
 command = "cargo"
 args = ["run"]
-watch = true
+watch = { watch = ["./src"]}
 
 [tasks.run]
 command = "cargo"

@@ -137,9 +137,9 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
         media_streams: streams,
         container,
         run_time_ticks,
-        supports_direct_play: Some(true),
-        supports_direct_stream: Some(true),
-        supports_transcoding: Some(true),
+      //  supports_direct_play: Some(true),
+      //  supports_direct_stream: Some(true),
+        //supports_transcoding: Some(true),
         ..Default::default()
     })
 }

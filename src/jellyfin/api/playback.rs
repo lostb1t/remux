@@ -36,7 +36,10 @@ pub async fn items_playbackinfo(
     Path(id): Path<Uuid>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    items_playbackinfo_inner(state, id, payload.media_source_id, payload.device_profile).await
+    let query_params = payload.clone();
+    let media_source_id = payload.media_source_id;
+    let device_profile = payload.device_profile;
+    items_playbackinfo_inner(state, id, media_source_id, device_profile, query_params).await
 }
 
 #[get("/items/{id}/playbackinfo")]
@@ -45,7 +48,10 @@ pub async fn items_playbackinfo_get(
     Path(id): Path<Uuid>,
     Query(q): Query<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    items_playbackinfo_inner(state, id, q.media_source_id, q.device_profile).await
+    let query_params = q.clone();
+    let media_source_id = q.media_source_id;
+    let device_profile = q.device_profile;
+    items_playbackinfo_inner(state, id, media_source_id, device_profile, query_params).await
 }
 
 async fn items_playbackinfo_inner(
@@ -53,6 +59,7 @@ async fn items_playbackinfo_inner(
     id: Uuid,
     media_source_id: Option<Uuid>,
     device_profile: Option<jellyfin::DeviceProfile>,
+    query_params: jellyfin::PlaybackInfoQuery,
 ) -> Result<impl IntoResponse> {
     trace!(?id, ?media_source_id, "items_playbackinfo");
 
@@ -64,24 +71,60 @@ async fn items_playbackinfo_inner(
     let mut source: jellyfin::MediaSourceInfo = media.into();
     source.probe_in_place()?;
 
-    // Pick container/protocol from the client's device profile, falling back to ts/hls
-    let (trans_container, trans_protocol) = device_profile
+    // Determine if transcoding is needed based on device profile and query parameters
+    let needs_transcoding = device_profile
         .as_ref()
-        .and_then(|p| p.video_transcoding_profile())
-        .map(|p| (
-            p.container.clone().unwrap_or_else(|| "ts".to_string()),
-            p.protocol.clone().unwrap_or_else(|| "hls".to_string()),
-        ))
-        .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
+        .map(|profile| {
+            // Check if transcoding is explicitly enabled/disabled
+            let transcoding_enabled = query_params.enable_transcoding.unwrap_or(false);
+            
+            // Check if direct play is enabled/disabled
+            let direct_play_enabled = query_params.enable_direct_play.unwrap_or(true);
+            let direct_play_supported = profile.supports_direct_play(&source);
+            
+            tracing::debug!(
+                "Playback decision - Transcoding enabled: {}, Direct play enabled: {}, Direct play supported: {}",
+                transcoding_enabled, direct_play_enabled, direct_play_supported
+            );
+            
+            // Transcode if:
+            // 1. Transcoding is explicitly enabled, OR
+            // 2. Direct play is not supported by the device (even if direct play is enabled)
+            // 3. Direct play is explicitly disabled
+            // This matches Jellyfin's logic where direct play is preferred when supported
+            transcoding_enabled || !direct_play_supported || !direct_play_enabled
+        })
+        .unwrap_or(true); // Default to transcoding if no device profile
+    
+    tracing::debug!("playback decision - needs transcoding: {}", needs_transcoding);
 
     let play_session_id = utils::get_uuid().as_simple().to_string();
-    source.supports_transcoding = Some(true);
-    source.transcoding_url = Some(format!(
-        "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=h264&AudioCodec=aac",
-        id, play_session_id, source.id
-    ));
-    source.transcoding_container = Some(trans_container);
-    source.transcoding_sub_protocol = Some(trans_protocol);
+
+    if needs_transcoding {
+        // Pick container/protocol from the client's device profile, falling back to ts/hls
+        let (trans_container, trans_protocol) = device_profile
+            .as_ref()
+            .and_then(|p| p.video_transcoding_profile())
+            .map(|p| (
+                p.container.clone().unwrap_or_else(|| "ts".to_string()),
+                p.protocol.clone().unwrap_or_else(|| "hls".to_string()),
+            ))
+            .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
+
+        source.supports_transcoding = Some(true);
+        source.transcoding_url = Some(format!(
+            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=h264&AudioCodec=aac",
+            id, play_session_id, source.id
+        ));
+        source.transcoding_container = Some(trans_container);
+        source.transcoding_sub_protocol = Some(trans_protocol);
+        source.supports_direct_play = Some(false);
+        source.supports_direct_stream = Some(false);
+    } else {
+        // Direct play - no transcoding needed
+        source.supports_transcoding = Some(false);
+        source.supports_direct_play = Some(true);
+    }
 
     let info = jellyfin::PlaybackInfoResponse {
         media_sources: vec![source],
@@ -740,9 +783,15 @@ pub async fn master_hls_video(
     Query(q): Query<jellyfin::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     info!("master_hls_video: item_id={}, q={:?}", id, q);
+    
+    // Add debugging info for crash diagnosis
+    tracing::debug!("Starting HLS session setup for item {} with session ID: {:?}", 
+                    id, q.play_session_id);
 
     let play_session_id = q.play_session_id
         .unwrap_or_else(|| utils::get_uuid().as_simple().to_string());
+    
+    tracing::debug!("Using play session ID: {}", play_session_id);
 
     let video_codec = q.video_codec.unwrap_or_else(|| "copy".to_string());
     let audio_codec = q.audio_codec.unwrap_or_else(|| "aac".to_string());
@@ -799,6 +848,8 @@ pub async fn master_hls_video(
             subtitle_stream_index: q.subtitle_stream_index.map(|v| v as i32),
         };
 
+        // Spawn the transcode task with proper error handling
+        let session_clone = session.clone();
         tokio::spawn(async move {
             if let Err(e) = crate::transcode::engine::start_transcode(session_clone, params).await {
                 tracing::error!("Transcode failed: {:#}", e);
