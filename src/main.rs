@@ -86,6 +86,7 @@ mod jellyfin;
 mod meta_provider;
 mod playback_session;
 mod tasks;
+mod transcode;
 
 /// Route auto-registration via `#[get("/path")]`, `#[post("/path")]`, etc.
 pub struct RouteRegistration(pub fn(axum::Router<AppState>) -> axum::Router<AppState>);
@@ -190,6 +191,7 @@ async fn init_app() -> Result<Router> {
         db: conn.clone(),
         aio: aio::AioService::from_url(&settings.aio_url)?,
         store: store::Store::new(100000),
+        transcode: transcode::session::TranscodeSessionManager::new("transcode_sessions"),
     };
 
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
@@ -228,6 +230,7 @@ pub struct AppContext {
     pub db: sqlx::SqlitePool,
     pub aio: aio::AioService,
     pub store: store::Store,
+    pub transcode: transcode::session::TranscodeSessionManager,
 }
 
 #[derive(Clone)]

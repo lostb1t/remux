@@ -1740,3 +1740,20 @@ pub enum CollectionType {
     #[serde(rename = "folders")]
     Folders,
 }
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct HlsVideoQuery {
+    pub play_session_id: Option<String>,
+    pub media_source_id: Option<Uuid>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub segment_length: Option<i32>,
+    pub start_time_ticks: Option<i64>,
+    pub max_width: Option<i32>,
+    pub max_height: Option<i32>,
+    pub video_bit_rate: Option<i32>,
+    pub audio_bit_rate: Option<i32>,
+    pub audio_stream_index: Option<i32>,
+    pub subtitle_stream_index: Option<i32>,
+}
