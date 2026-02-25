@@ -18,7 +18,6 @@ use crate::{
     meta_provider::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService},
 };
 
-// --- Progress reporting ---
 
 #[derive(Clone)]
 pub struct ProgressReporter(Arc<AtomicU64>);
@@ -34,7 +33,6 @@ impl ProgressReporter {
     }
 }
 
-// --- Task status ---
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskStatus {
@@ -44,7 +42,6 @@ pub enum TaskStatus {
     Failed(String),
 }
 
-// --- Task trait ---
 
 #[async_trait]
 pub trait Task: Send + Sync + 'static {
@@ -62,19 +59,16 @@ pub trait Task: Send + Sync + 'static {
     ) -> Result<()>;
 }
 
-// --- TaskView (read-only snapshot for API consumers) ---
-
 pub struct TaskView {
     pub task: Arc<dyn Task>,
     pub status: TaskStatus,
     pub progress: f64,
 }
 
-// --- TaskHandler ---
 
 pub struct TaskHandler {
     task: Arc<dyn Task>,
-    pub jobs: Vec<JobId>,
+    jobs: Vec<JobId>,
     status: Arc<Mutex<TaskStatus>>,
     progress: Arc<AtomicU64>,
     handle: Option<JoinHandle<()>>,
@@ -165,7 +159,6 @@ impl TaskHandler {
     }
 }
 
-// --- TaskService ---
 
 #[derive(Clone)]
 pub struct TaskService {
@@ -294,8 +287,6 @@ impl TaskService {
             .collect()
     }
 }
-
-// --- Task implementations ---
 
 pub struct RefreshLibraryTask;
 
