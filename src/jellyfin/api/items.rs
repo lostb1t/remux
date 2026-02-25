@@ -97,7 +97,7 @@ pub async fn get_items(
     }
 
     // Handle recursive lookup for any item type
-    if q.recursive == Some(true) && q.parent_id.is_some() {
+    if q.recursive && q.parent_id.is_some() {
         // Recursive function to find all items of requested types under a parent
         async fn find_items_recursive(
             db: &sqlx::SqlitePool,

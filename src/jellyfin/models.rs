@@ -377,7 +377,7 @@ pub struct GetItemsQuery {
     pub studio_ids: Option<Vec<String>>,
     pub exclude_artist_ids: Option<Vec<String>>,
     pub ids: Option<Vec<Uuid>>,
-    pub recursive: Option<bool>,
+    pub recursive: bool,
 }
 
 impl GetItemsQuery {

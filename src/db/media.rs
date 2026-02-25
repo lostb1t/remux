@@ -268,6 +268,7 @@ pub struct MediaFilter {
     pub promoted: Option<bool>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+    pub recursive: bool,
     pub total_count: bool,
     pub include_user_state: bool,
     pub user_state: Option<super::UserMediaStateFilter>,
@@ -618,13 +619,42 @@ impl Media {
         db: &SqlitePool,
         filter: &MediaFilter,
     ) -> Result<FilterResult<Media>> {
-        let mut count_qb =
-            sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM media WHERE 1=1");
-        let mut records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
+        let use_recursive = filter.recursive && filter.parent_id.is_some();
+
+        let mut count_qb;
+        let mut records_qb;
+
+        if use_recursive {
+            let parent_id = filter.parent_id.as_ref().unwrap();
+
+            count_qb = sqlx::QueryBuilder::new(
+                "WITH RECURSIVE subtree AS (SELECT id FROM media WHERE parent_id = ",
+            );
+            count_qb.push_bind(parent_id);
+            count_qb.push(
+                " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
+                ) SELECT COUNT(*) as count FROM media WHERE id IN (SELECT id FROM subtree) AND 1=1",
+            );
+
+            records_qb = sqlx::QueryBuilder::new(
+                "WITH RECURSIVE subtree AS (SELECT id FROM media WHERE parent_id = ",
+            );
+            records_qb.push_bind(parent_id);
+            records_qb.push(
+                " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
+                ) SELECT * FROM media WHERE id IN (SELECT id FROM subtree) AND 1=1",
+            );
+        } else {
+            count_qb =
+                sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM media WHERE 1=1");
+            records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
+        }
 
         for qb in [&mut count_qb, &mut records_qb] {
-            if let Some(parent_id) = &filter.parent_id {
-                qb.push(" AND parent_id = ").push_bind(parent_id);
+            if !use_recursive {
+                if let Some(parent_id) = &filter.parent_id {
+                    qb.push(" AND parent_id = ").push_bind(parent_id);
+                }
             }
             if let Some(aio_id) = &filter.aio_id {
                 qb.push(" AND aio_id = ").push_bind(aio_id);
@@ -765,6 +795,7 @@ impl Media {
                 id: filter.ids.clone(),
                 parent_id: filter.parent_id.clone(),
                 offset: filter.start_index.clone(),
+                recursive: filter.recursive,
                 include_user_state: filter.enable_user_data.is_none(),
                 total_count,
                 user_state: {
