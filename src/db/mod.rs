@@ -5,9 +5,11 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 pub mod auth;
 pub mod media;
+pub mod settings;
 pub mod task;
 pub mod user;
 pub use media::*;
+pub use settings::*;
 pub use task::*;
 pub use user::*;
 
