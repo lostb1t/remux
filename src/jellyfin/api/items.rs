@@ -46,7 +46,7 @@ pub async fn get_items(
 
     //  trace!(?q, "get_items");
 
-    // only support Movie and Series for search and catalogs
+    // only support Movie, Series, and Episode for search and catalogs
     if search.is_some()
         || parent
             .clone()
@@ -55,7 +55,7 @@ pub async fn get_items(
         let types = q.get_requested_item_types();
         // if types.len() != 0 {
         if types.len() == 0
-            || ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series]
+            || ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series, jellyfin::MediaType::Episode]
                 .contains(&types[0])
         {
             return Ok(ItemsQueryResult {
@@ -94,6 +94,100 @@ pub async fn get_items(
             });
         }
         //  }
+    }
+
+    // Handle recursive lookup for any item type
+    if q.recursive == Some(true) && q.parent_id.is_some() {
+        // Recursive function to find all items of requested types under a parent
+        async fn find_items_recursive(
+            db: &sqlx::SqlitePool,
+            parent_id: Uuid,
+            requested_kinds: Vec<db::MediaKind>,
+            limit: Option<u32>,
+            offset: Option<u32>,
+        ) -> Result<Vec<db::Media>> {
+            let mut all_items = Vec::new();
+            
+            // First, check if this parent has items of the requested types directly
+            if !requested_kinds.is_empty() {
+                let direct_items = db::Media::get_by_filter(
+                    db,
+                    &db::MediaFilter {
+                        parent_id: Some(parent_id),
+                        kind: Some(requested_kinds.clone()),
+                        ..Default::default()
+                    },
+                ).await?;
+                
+                all_items.extend(direct_items.records);
+            }
+            
+            // Then, recursively check all child containers (seasons, folders, etc.)
+            let child_containers = db::Media::get_by_filter(
+                db,
+                &db::MediaFilter {
+                    parent_id: Some(parent_id),
+                    kind: Some(vec![
+                        db::MediaKind::Season,
+                        db::MediaKind::Series,
+                        db::MediaKind::Folder,
+                        db::MediaKind::Catalog,
+                    ]),
+                    ..Default::default()
+                },
+            ).await?;
+            
+            // Recursively search each child container
+            for container in child_containers.records {
+                let child_items = Box::pin(find_items_recursive(
+                    db, container.id, requested_kinds.clone(), limit, offset
+                )).await?;
+                all_items.extend(child_items);
+            }
+            
+            Ok(all_items)
+        }
+
+        // Get the requested media kinds from the query
+        let requested_types = q.get_requested_item_types();
+        let requested_kinds = requested_types
+            .into_iter()
+            .map(|t| t.into())
+            .collect::<Vec<db::MediaKind>>();
+
+        if let Some(parent_id) = q.parent_id {
+            let all_items = find_items_recursive(
+                &state.ctx.db,
+                parent_id,
+                requested_kinds,
+                q.limit,
+                q.start_index,
+            ).await?;
+
+            // Convert Media to BaseItemDto
+            let item_dtos = all_items
+                .into_iter()
+                .map(|media| media.into())
+                .collect::<Vec<_>>();
+
+            // Apply limit and offset for pagination
+            let mut paginated_items = item_dtos;
+            if let Some(limit) = q.limit {
+                let start = q.start_index.unwrap_or(0) as usize;
+                let end = start + limit as usize;
+                if start < paginated_items.len() {
+                    paginated_items = paginated_items[start..end.min(paginated_items.len())].to_vec();
+                } else {
+                    paginated_items.clear();
+                }
+            }
+
+            let total_count = paginated_items.len() as i64;
+            return Ok(ItemsQueryResult {
+                items: paginated_items,
+                total_count: total_count,
+            });
+        }
     }
 
     // if q.filters.is_some() {

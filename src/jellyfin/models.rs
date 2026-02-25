@@ -377,16 +377,17 @@ pub struct GetItemsQuery {
     pub studio_ids: Option<Vec<String>>,
     pub exclude_artist_ids: Option<Vec<String>>,
     pub ids: Option<Vec<Uuid>>,
+    pub recursive: Option<bool>,
 }
 
 impl GetItemsQuery {
     pub fn get_requested_item_types(&self) -> Vec<MediaType> {
-        let mut requested: Vec<MediaType> = vec![MediaType::Movie, MediaType::Series];
+        let mut requested: Vec<MediaType> = vec![MediaType::Movie, MediaType::Series, MediaType::Episode];
 
         if let Some(include_types) = &self.include_item_types {
             requested = include_types
                 .iter()
-                .filter(|t| matches!(t, MediaType::Movie | MediaType::Series))
+                .filter(|t| matches!(t, MediaType::Movie | MediaType::Series | MediaType::Episode))
                 .cloned()
                 .collect();
         }
