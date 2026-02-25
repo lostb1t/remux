@@ -81,17 +81,8 @@ async fn items_playbackinfo_inner(
             // Check if direct play is enabled/disabled
             let direct_play_enabled = query_params.enable_direct_play.unwrap_or(true);
             let direct_play_supported = profile.supports_direct_play(&source);
+
             
-            tracing::debug!(
-                "Playback decision - Transcoding enabled: {}, Direct play enabled: {}, Direct play supported: {}",
-                transcoding_enabled, direct_play_enabled, direct_play_supported
-            );
-            
-            // Transcode if:
-            // 1. Transcoding is explicitly enabled, OR
-            // 2. Direct play is not supported by the device (even if direct play is enabled)
-            // 3. Direct play is explicitly disabled
-            // This matches Jellyfin's logic where direct play is preferred when supported
             transcoding_enabled || !direct_play_supported || !direct_play_enabled
         })
         .unwrap_or(true); // Default to transcoding if no device profile

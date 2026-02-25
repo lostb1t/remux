@@ -795,7 +795,7 @@ impl Media {
                 id: filter.ids.clone(),
                 parent_id: filter.parent_id.clone(),
                 offset: filter.start_index.clone(),
-recursive: filter.recursive.unwrap_or(false),
+                recursive: filter.recursive.unwrap_or(false),
                 include_user_state: filter.enable_user_data.is_none(),
                 total_count,
                 user_state: {
