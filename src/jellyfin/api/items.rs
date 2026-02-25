@@ -379,6 +379,14 @@ pub async fn library_virtualfolders(
     // )))
 }
 
+#[get("/items/{id}/metadataeditor")]
+pub async fn items_metadata_editor(
+    State(_state): State<AppState>,
+    Path(_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::MetadataEditorInfo::default()))
+}
+
 #[get("/items/{id}/similar")]
 pub async fn items_similar(State(state): State<AppState>) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
