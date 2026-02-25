@@ -478,16 +478,43 @@ pub struct VideoStreamQuery {
     pub media_source_id: Option<Uuid>,
     pub device_id: Option<String>,
     pub audio_codec: Option<String>,
+    pub video_codec: Option<String>,
+    pub video_bit_rate: Option<i64>,
+    pub audio_bit_rate: Option<i64>,
+    pub audio_channels: Option<i64>,
+    pub max_audio_channels: Option<i64>,
+    pub audio_sample_rate: Option<i64>,
+    pub max_audio_bit_depth: Option<i64>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub max_width: Option<i64>,
+    pub max_height: Option<i64>,
+    pub framerate: Option<f32>,
+    pub max_framerate: Option<f32>,
+    pub profile: Option<String>,
+    pub level: Option<String>,
+    pub subtitle_stream_index: Option<i64>,
+    pub subtitle_method: Option<String>,
+    pub subtitle_codec: Option<String>,
+    pub start_time_ticks: Option<i64>,
+    pub copy_timestamps: Option<bool>,
+    pub transcode_reasons: Option<String>,
+    pub require_avc: Option<bool>,
+    pub de_interlace: Option<bool>,
+    pub max_ref_frames: Option<i64>,
+    pub max_video_bit_depth: Option<i64>,
+    pub transcoding_max_audio_channels: Option<i64>,
     pub enable_auto_stream_copy: Option<bool>,
     pub allow_video_stream_copy: Option<bool>,
     pub allow_audio_stream_copy: Option<bool>,
     pub break_on_non_key_frames: Option<bool>,
     pub audio_stream_index: Option<i64>,
     pub video_stream_index: Option<i64>,
-    pub context: Option<String>, // Could use enum "Streaming" | "Static"
+    pub context: Option<String>,
     pub stream_options: Option<std::collections::HashMap<String, Option<String>>>,
     pub enable_audio_vbr_encoding: Option<bool>,
     pub always_burn_in_subtitle_when_transcoding: Option<bool>,
+    pub live_stream_id: Option<String>,
 }
 
 #[serde_alias(CamelCase, PascalCase)]
@@ -496,12 +523,15 @@ pub struct VideoStreamQuery {
 #[serde_as]
 pub struct PlaybackInfoQuery {
     pub user_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_streaming_bitrate: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub start_time_ticks: Option<i64>,
-    #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub audio_stream_index: Option<i64>,
-    #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub subtitle_stream_index: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
     pub max_audio_channels: Option<i64>,
     #[serde_as(deserialize_as = "serde_with::DefaultOnError")]
     pub media_source_id: Option<Uuid>,
@@ -603,10 +633,8 @@ pub struct MediaSourceInfo {
 
 impl MediaSourceInfo {
     pub fn probe_in_place(&mut self) -> anyhow::Result<()> {
-        let path = self.path.clone().ok_or_else(|| anyhow!("missing url"))?;
-        let info = ffprobe::ffprobe(path)?;
-
-        let probed: MediaSourceInfo = info.into();
+        let url = self.path.clone().ok_or_else(|| anyhow!("missing url"))?;
+        let probed = crate::transcode::probing::probe_media(&url)?;
 
         let id = self.id.clone();
         let name = self.name.clone();
@@ -620,6 +648,7 @@ impl MediaSourceInfo {
 
         Ok(())
     }
+
 }
 impl From<db::Media> for MediaSourceInfo {
     fn from(source: db::Media) -> Self {
@@ -638,11 +667,19 @@ impl From<db::Media> for MediaSourceInfo {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum PlaybackErrorCode {
+    NotAllowed,
+    NoCompatibleStream,
+    RateLimitExceeded,
+}
+
 #[skip_serializing_none]
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct PlaybackInfoResponse {
-    // pub error_code: Option<PlaybackErrorCode>,
+    pub error_code: Option<PlaybackErrorCode>,
     pub media_sources: Vec<MediaSourceInfo>,
     pub play_session_id: Option<String>,
 }
@@ -878,8 +915,8 @@ impl Default for UserPolicy {
     }
 }
 
-#[derive(Default, Deserialize, PartialEq, Serialize, Clone, Debug)]
 #[skip_serializing_none]
+#[derive(Default, Deserialize, PartialEq, Serialize, Clone, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct MediaStream {
     pub aspect_ratio: Option<String>,

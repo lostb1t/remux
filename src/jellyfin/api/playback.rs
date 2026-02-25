@@ -15,8 +15,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::io;
 use tokio_util::io::ReaderStream;
-use tracing::info;
-use tracing::trace;
+use tracing::{info, trace};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -35,83 +34,47 @@ pub async fn items_playbackinfo(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
-    // Query(q): Query<jellyfin::PlaybackInfoQuery>,
     Json(payload): Json<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    trace!(?id, ?payload, "items_playbackinfo");
+    items_playbackinfo_inner(state, id, payload.media_source_id).await
+}
 
-    //let mut item = session.item_store.get(&id);
-    //let source = item.media_sources_mut(&session.aio)
-    //        .await?
-    //        .iter_mut()
-    //        .find(|x| (q.media_source_id || x.id) == item.id)
-    //        .expect("media source not found")
-    //        .probe_in_place();
+#[get("/items/{id}/playbackinfo")]
+pub async fn items_playbackinfo_get(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<jellyfin::PlaybackInfoQuery>,
+) -> Result<impl IntoResponse> {
+    items_playbackinfo_inner(state, id, q.media_source_id).await
+}
 
-    //item.save(&session.item_store);
+async fn items_playbackinfo_inner(
+    state: AppState,
+    id: Uuid,
+    media_source_id: Option<Uuid>,
+) -> Result<impl IntoResponse> {
+    trace!(?id, ?media_source_id, "items_playbackinfo");
+
     let media =
-        db::Media::get_by_id(&state.ctx.db, &payload.media_source_id.unwrap_or(id))
+        db::Media::get_by_id(&state.ctx.db, &media_source_id.unwrap_or(id))
             .await?
             .context_not_found("not found", "not found")?;
 
-    //let stream = id
-    //    .stream
-    //    .clone()
-    //    .or_else(|| {
-    //        payload
-    //            .media_source_id
-    //            .as_ref()
-    //            .and_then(|m| m.stream.clone())
-    //    })
-    //    .context_not_found("not", "not")?;
-
-    // let stream = session.aio.get_stream(
-    //     id.jellyfin_media_type.into(),
-    //     id.id.clone(),
-    //     stream_id
-    // ).await?;
-
-    //let mut source: jellyfin::MediaSourceInfo =
-    //    stream_into_media_source_info(id.id, id.jellyfin_media_type, stream);
-
     let mut source: jellyfin::MediaSourceInfo = media.into();
     source.probe_in_place()?;
-    let subtitles: Vec<sdks::aio::Subtitle> = vec![];
 
-    // info on tracks: https://github.com/jellyfin/Swiftfin/blob/main/Shared/Extensions/JellyfinAPI/MediaStream.swift#L219
-
-    // Codec: "subrip" - Subtitle format codec (SRT)
-    // TimeBase: "1/1000" - Time base in milliseconds
-    // VideoRange: "Unknown" - Video color range (not applicable for subtitles)
-    // VideoRangeType: "Unknown" - Color range type unknown
-    // AudioSpatialFormat: "None" - No audio spatial format (subtitle)
-    // LocalizedUndefined: "Undefined" - Label for undefined flag
-    // LocalizedDefault: "Default" - Label for default flag
-    // LocalizedForced: "Forced" - Label for forced subtitle flag
-    // LocalizedExternal: "External" - Label for external subtitle source
-    // LocalizedHearingImpaired: "Hearing Impaired" - Label for hearing impaired subtitles
-    // DisplayTitle: "Undefined - SUBRIP - External" - Combined display title
-    // IsInterlaced: false - Not interlaced (not applicable)
-    // IsAVC: false - Not AVC video codec (subtitle)
-    // IsDefault: false - Not default subtitle stream
-    // IsForced: false - Not forced subtitle
-    // IsHearingImpaired: false - Not hearing impaired subtitles
-    // Height: 0 - Video height (not applicable)
-    // Width: 0 - Video width (not applicable)
-    // Type: "Subtitle" - Stream type is subtitle
-    // Index: 0 - Stream index
-    // IsExternal: true - Subtitle is external
-    // DeliveryMethod: "External" - Delivered as external file
-    // DeliveryUrl: "/Videos/657a70e0-ad75-82d8-2e64-c3a30c186a03/657a70e0ad7582d82e64c3a30c186a03/Subtitles/0/0/Stream.vtt?api_key=68068a69a1594bc1a1f34b394259630c" - URL for fetching subtitle stream
-    // IsExternalUrl: false - DeliveryUrl is not an external URL
-    // IsTextSubtitleStream: true - This is a text subtitle stream
-    // SupportsExternalStream: true - External subtitle streams supported
-    // Path: "/media/test/Ghosts.2021.S01E05.720p.AMZN.WEBRip.x264-GalaxyTV.srt" - Local file path for subtitle
-    // Level: 0 - Subtitle level or priority
+    // Enable transcoding and provide the HLS transcode URL
+    let play_session_id = utils::get_uuid().as_simple().to_string();
+    source.supports_transcoding = Some(true);
+    source.transcoding_url = Some(format!(
+        "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=h264&AudioCodec=aac",
+        id, play_session_id, source.id
+    ));
+    source.transcoding_container = Some("ts".to_string());
 
     let info = jellyfin::PlaybackInfoResponse {
         media_sources: vec![source],
-        play_session_id: Some(utils::get_uuid().as_simple().to_string()),
+        play_session_id: Some(play_session_id),
         ..Default::default()
     };
 
@@ -129,19 +92,36 @@ pub async fn items_playbackinfo(
 /// # Static
 ///
 /// If the `static_` query parameter is set to `true`, the response will be a static
-/// video stream. Otherwise, a `jellyfin::PlaybackInfoResponse` is returned.
+/// video stream. Otherwise, a progressive transcode is started.
 #[get("/videos/{id}/stream")]
 pub async fn videos_stream(
-    // range: Option<axum_extra::TypedHeader<headers::Range>>,
     headers: headers::HeaderMap,
     State(state): State<AppState>,
-    //session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<jellyfin::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    //let (id, media_type, stream_id) = utils::decode_media_token(&uuid)?;
-    //  .log_err("Failed to decode media UUID")
+    videos_stream_inner(headers, state, id, q).await
+}
 
+#[get("/videos/{id}/stream.{container}")]
+pub async fn videos_stream_by_container(
+    headers: headers::HeaderMap,
+    State(state): State<AppState>,
+    Path((id, container)): Path<(Uuid, String)>,
+    Query(mut q): Query<jellyfin::VideoStreamQuery>,
+) -> Result<impl IntoResponse> {
+    if q.container.is_none() {
+        q.container = Some(container);
+    }
+    videos_stream_inner(headers, state, id, q).await
+}
+
+async fn videos_stream_inner(
+    headers: headers::HeaderMap,
+    state: AppState,
+    id: Uuid,
+    q: jellyfin::VideoStreamQuery,
+) -> Result<impl IntoResponse> {
     let mut media =
         db::Media::get_by_id(&state.ctx.db, &q.media_source_id.unwrap_or(id))
             .await?
@@ -155,29 +135,14 @@ pub async fn videos_stream(
             .context_not_found("not found", "not found")?
             .clone();
     }
-    // trace!(?media, ?q, "videos_stream");
 
-    // filter by id
-    //let stream = id
-    //    .stream
-    //    .clone()
-    //    .or_else(|| q.media_source_id.as_ref().and_then(|m| m.stream.clone()))
-    //    .context_not_found("not", "not")?;
+    let url = media.url.clone()
+        .context_not_found("no url", "media source has no URL")?;
 
-    //let stream = session.aio.get_stream(
-    //    id.jellyfin_media_type.into(),
-    //    id.id,
-    //    stream_id
-    //).await?;
-
-    if q.static_.unwrap_or(false) {
+    // Direct play: proxy the original stream with range support
+    if q.static_.unwrap_or(false) || q.video_codec.is_none() {
         info!("starting direct playback for: {:?}", &media.title);
-        let mut req = reqwest::Client::new().get(media.url.unwrap());
-        // if let Some(axum_extra::TypedHeader(range)) = range {
-        //     // let s = format!("{:?}", range);
-        //     // req = req.header(axum::http::header::RANGE, s);
-        //     req = req.header(http::header::RANGE, range);
-        // }
+        let mut req = reqwest::Client::new().get(&url);
         if let Some(v) = headers.get(http::header::RANGE) {
             req = req.header(http::header::RANGE, v.clone());
         }
@@ -191,7 +156,6 @@ pub async fn videos_stream(
 
         trace!(?status, ?headers_in, "videos_stream");
 
-        // Build outgoing response with same status
         let mut resp_out = axum::response::Response::builder()
             .status(status)
             .body(body)
@@ -201,7 +165,6 @@ pub async fn videos_stream(
             use axum::http::header;
             let out_headers = resp_out.headers_mut();
             for (k, v) in headers_in.iter() {
-                // Skip hop-by-hop headers
                 match k.as_str().to_ascii_lowercase().as_str() {
                     "content-length" | "content-type" | "accept-ranges"
                     | "content-range" | "last-modified" => {}
@@ -210,7 +173,6 @@ pub async fn videos_stream(
                 out_headers.insert(k, v.clone());
             }
 
-            // If upstream didn't set Content-Type, default to mp4 for static direct play
             if !out_headers.contains_key(header::CONTENT_TYPE) {
                 out_headers.insert(
                     header::CONTENT_TYPE,
@@ -222,16 +184,50 @@ pub async fn videos_stream(
         return Ok(resp_out);
     }
 
-    todo!();
+    // Progressive transcode: pipe ffmpeg output directly to response
+    let container = q.container.as_deref().unwrap_or("mp4").to_string();
+    let video_codec = q.video_codec.unwrap_or_else(|| "copy".to_string());
+    let audio_codec = q.audio_codec.unwrap_or_else(|| "aac".to_string());
+
+    info!(
+        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={})",
+        &media.title, container, video_codec, audio_codec
+    );
+
+    let params = crate::transcode::engine::ProgressiveTranscodeParams {
+        input_url: url,
+        container: container.clone(),
+        video_codec,
+        audio_codec,
+        start_time_ticks: q.start_time_ticks,
+        max_width: q.max_width.map(|v| v as u32),
+        max_height: q.max_height.map(|v| v as u32),
+        video_bitrate: q.video_bit_rate.map(|v| v as u32),
+        audio_bitrate: q.audio_bit_rate.map(|v| v as u32),
+        audio_channels: q.audio_channels.map(|v| v as u32),
+        audio_stream_index: q.audio_stream_index.map(|v| v as i32),
+        subtitle_stream_index: q.subtitle_stream_index.map(|v| v as i32),
+    };
+
+    let stdout = crate::transcode::engine::start_progressive_transcode(params)?;
+    let stream = ReaderStream::new(stdout);
+    let body = Body::from_stream(stream);
+
+    let content_type = match container.as_str() {
+        "ts" | "mpegts" => "video/mp2t",
+        "webm" => "video/webm",
+        "mkv" | "matroska" => "video/x-matroska",
+        _ => "video/mp4",
+    };
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Cache-Control", "no-cache, no-store")
+        .body(body)
+        .unwrap())
 }
 
-/// todo: actually implement
-#[get("/playback/bitratetest")]
-pub async fn playback_bitratetest(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse> {
-    Ok(StatusCode::NO_CONTENT.into_response())
-}
 
 #[post("/sessions/playing")]
 pub async fn report_playback_start(
@@ -813,12 +809,29 @@ pub async fn master_hls_video(
         .unwrap())
 }
 
+/// Variant HLS playlist - alternate URL used by some clients.
+#[get("/videos/{id}/main.m3u8")]
+pub async fn variant_hls_video_alt(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<jellyfin::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    variant_hls_video_inner(state, q).await
+}
+
 /// Serves the variant (child) HLS playlist generated by the transcoding engine.
 #[get("/videos/{id}/main/stream.m3u8")]
 pub async fn variant_hls_video(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Query(q): Query<jellyfin::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    variant_hls_video_inner(state, q).await
+}
+
+async fn variant_hls_video_inner(
+    state: AppState,
+    q: jellyfin::HlsVideoQuery,
 ) -> Result<impl IntoResponse> {
     let play_session_id = q.play_session_id
         .context_not_found("missing", "PlaySessionId is required")?;
@@ -853,11 +866,38 @@ pub async fn variant_hls_video(
 }
 
 /// Serves individual HLS segment files.
-#[get("/videos/{id}/main/{segment_id}.ts")]
+/// Captures the full segment filename (e.g. "segment_00001.ts") and strips the extension.
+#[get("/videos/{id}/main/{segment_file}")]
 pub async fn hls_segment(
     State(state): State<AppState>,
-    Path((id, segment_id)): Path<(Uuid, String)>,
+    Path((id, segment_file)): Path<(Uuid, String)>,
     Query(q): Query<jellyfin::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    let segment_id = strip_segment_extension(&segment_file);
+    hls_segment_inner(state, segment_id, q).await
+}
+
+/// Jellyfin-compatible HLS segment route: /Videos/{id}/hls1/{playlistId}/{segmentFile}
+#[get("/videos/{id}/hls1/{playlist_id}/{segment_file}")]
+pub async fn hls1_segment(
+    State(state): State<AppState>,
+    Path((id, _playlist_id, segment_file)): Path<(Uuid, String, String)>,
+    Query(q): Query<jellyfin::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    let segment_id = strip_segment_extension(&segment_file);
+    hls_segment_inner(state, segment_id, q).await
+}
+
+fn strip_segment_extension(filename: &str) -> String {
+    filename.rsplit_once('.')
+        .map(|(name, _ext)| name.to_string())
+        .unwrap_or_else(|| filename.to_string())
+}
+
+async fn hls_segment_inner(
+    state: AppState,
+    segment_id: String,
+    q: jellyfin::HlsVideoQuery,
 ) -> Result<impl IntoResponse> {
     let play_session_id = q.play_session_id
         .context_not_found("missing", "PlaySessionId is required")?;
@@ -865,15 +905,7 @@ pub async fn hls_segment(
     let session = state.ctx.transcode.get(&play_session_id)
         .context_not_found("not found", "transcode session not found")?;
 
-    // segment_id already includes the name (e.g. "segment_00001")
-    // The .ts extension is part of the route pattern
-    let segment_name = if segment_id.ends_with(".ts") {
-        segment_id.trim_end_matches(".ts").to_string()
-    } else {
-        segment_id.clone()
-    };
-
-    let segment_path = session.read().await.segment_path(&segment_name);
+    let segment_path = session.read().await.segment_path(&segment_id);
 
     // Wait for the segment to be written (up to 60 seconds)
     let mut attempts = 0;
@@ -883,7 +915,7 @@ pub async fn hls_segment(
     }
 
     if !segment_path.exists() {
-        return Err(anyhow!("Segment {} not ready after timeout", segment_name).into());
+        return Err(anyhow!("Segment {} not ready after timeout", segment_id).into());
     }
 
     // Update last accessed
@@ -912,4 +944,34 @@ pub async fn delete_transcoding(
         state.ctx.transcode.stop(&play_session_id).await;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Returns additional parts for a multi-file video item.
+#[get("/videos/{id}/additionalparts")]
+pub async fn video_additional_parts(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::BaseItemDtoQueryResult::default()))
+}
+
+/// Bitrate test endpoint - returns a body of the requested size for bandwidth measurement.
+#[get("/playback/bitratetest")]
+pub async fn playback_bitratetest_sized(
+    Query(q): Query<BitrateTestQuery>,
+) -> Result<impl IntoResponse> {
+    let size = q.size.unwrap_or(100_000).min(10_000_000) as usize;
+    let body = vec![0u8; size];
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/octet-stream")
+        .header("Content-Length", size.to_string())
+        .body(Body::from(body))
+        .unwrap())
+}
+
+#[derive(Deserialize)]
+pub struct BitrateTestQuery {
+    #[serde(alias = "Size", alias = "size")]
+    pub size: Option<u64>,
 }
