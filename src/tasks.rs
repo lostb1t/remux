@@ -1,106 +1,92 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::StreamExt;
 use itertools::Itertools;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 use tokio_cron_scheduler::job::JobId;
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::{error, info, warn};
-use uuid::Uuid;
-use uuid::uuid;
 
-// Assuming these are imported from your project:
 use crate::{
-    AppContext, aio, db,
+    AppContext, db,
     meta_provider::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService},
 };
 
-#[derive(Debug)]
+// --- Progress reporting ---
+
+#[derive(Clone)]
+pub struct ProgressReporter(Arc<AtomicU64>);
+
+impl ProgressReporter {
+    fn new(inner: Arc<AtomicU64>) -> Self {
+        Self(inner)
+    }
+
+    pub fn set(&self, pct: f64) {
+        self.0.store(pct.clamp(0.0, 100.0).to_bits(), Ordering::Relaxed);
+    }
+}
+
+// --- Task status ---
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum TaskStatus {
     Idle,
-    Active,
+    Running,
     Stopped,
-    Failed(anyhow::Error),
+    Failed(String),
 }
 
-impl Clone for TaskStatus {
-    fn clone(&self) -> Self {
-        match self {
-            TaskStatus::Idle => TaskStatus::Idle,
-            TaskStatus::Active => TaskStatus::Active,
-            TaskStatus::Stopped => TaskStatus::Stopped,
-            TaskStatus::Failed(err) => TaskStatus::Failed(anyhow::anyhow!(err.to_string())),
-        }
-    }
-}
+// --- Task trait ---
 
 #[async_trait]
-pub trait Task: Send + Sync {
-    fn key(&self) -> &str {
-        // Default implementation uses the task name as key
-        self.name()
-    }
-    
+pub trait Task: Send + Sync + 'static {
+    fn key(&self) -> &str;
     fn name(&self) -> &str;
     fn category(&self) -> &str {
-        // Default category
         "System"
     }
 
-    /// Set the current progress percentage (0.0 to 100.0)
-    fn set_progress(&self, _percentage: f64) {
-        // Default no-op implementation
-    }
-
     async fn run(
-        self: Arc<Self>,
+        &self,
         ctx: AppContext,
-        task_service: Arc<TaskService>,
+        tasks: Arc<TaskService>,
+        progress: ProgressReporter,
     ) -> Result<()>;
 }
 
-pub struct TaskHandler {
-    pub status: TaskStatus,
+// --- TaskView (read-only snapshot for API consumers) ---
+
+pub struct TaskView {
     pub task: Arc<dyn Task>,
-    pub jobs: Vec<JobId>,
-    pub handle: Option<JoinHandle<()>>,
-    pub current_progress: f64,  // Add progress tracking (0.0 to 100.0)
+    pub status: TaskStatus,
+    pub progress: f64,
 }
-pub struct TaskHandlerSnapshot {
-    pub status: TaskStatus,
-    pub task: Arc<dyn Task>,
+
+// --- TaskHandler ---
+
+pub struct TaskHandler {
+    task: Arc<dyn Task>,
     pub jobs: Vec<JobId>,
-    pub current_progress: f64,  // Include progress in snapshot
+    status: Arc<Mutex<TaskStatus>>,
+    progress: Arc<AtomicU64>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl TaskHandler {
-    pub fn new(task: Arc<dyn Task>) -> Self {
+    fn new(task: Arc<dyn Task>) -> Self {
         Self {
-            status: TaskStatus::Idle,
             task,
             jobs: Vec::new(),
+            status: Arc::new(Mutex::new(TaskStatus::Idle)),
+            progress: Arc::new(AtomicU64::new(0)),
             handle: None,
-            current_progress: 0.0,  // Start at 0%
-        }
-    }
-
-    /// Update the current progress percentage
-    pub fn set_progress(&mut self, percentage: f64) {
-        // Clamp to 0.0-100.0 range
-        self.current_progress = percentage.clamp(0.0, 100.0);
-    }
-
-    pub fn to_snapshot(&self) -> TaskHandlerSnapshot {
-        TaskHandlerSnapshot {
-            status: self.status.clone(),
-            task: self.task.clone(),
-            jobs: self.jobs.clone(),
-            current_progress: self.current_progress,  // Include current progress
         }
     }
 
@@ -109,10 +95,15 @@ impl TaskHandler {
     }
 
     pub fn is_running(&self) -> bool {
-        self.handle
-            .as_ref()
-            .map(|h| !h.is_finished())
-            .unwrap_or(false)
+        self.handle.as_ref().map(|h| !h.is_finished()).unwrap_or(false)
+    }
+
+    pub fn view(&self) -> TaskView {
+        TaskView {
+            task: self.task.clone(),
+            status: self.status.lock().unwrap().clone(),
+            progress: f64::from_bits(self.progress.load(Ordering::Relaxed)),
+        }
     }
 
     pub fn run(&mut self, ctx: AppContext, task_service: Arc<TaskService>) {
@@ -120,38 +111,44 @@ impl TaskHandler {
             return;
         }
 
-        self.status = TaskStatus::Active;
+        self.progress.store(0u64, Ordering::Relaxed);
+        *self.status.lock().unwrap() = TaskStatus::Running;
+
         let task = self.task.clone();
         let task_key = task.key().to_string();
+        let status = self.status.clone();
+        let progress = ProgressReporter::new(self.progress.clone());
 
         let handle = tokio::spawn(async move {
-            let start_time = Utc::now().naive_utc();
-            let instant_start = Instant::now();
-            let task_name = task.name().to_string();
-            info!(name = %task_name, "starting task");
-            let result = task.run(ctx.clone(), task_service).await;
-            let duration = instant_start.elapsed();
-            info!(name = %task_name, duration = format!("{}s", duration.as_secs()), "finished task");
+            let start_at = Utc::now().naive_utc();
+            let instant = Instant::now();
+            info!(task = %task.name(), "starting");
 
-            let end_at = Utc::now().naive_utc();
-            let status = match &result {
-                Ok(_) => db::TaskResultStatus::Completed,
-                Err(_) => db::TaskResultStatus::Failed,
+            let result = task.run(ctx.clone(), task_service, progress).await;
+            let elapsed = instant.elapsed();
+
+            let (new_status, db_status) = match &result {
+                Ok(_) => {
+                    info!(task = %task.name(), elapsed = ?elapsed, "completed");
+                    (TaskStatus::Idle, db::TaskResultStatus::Completed)
+                }
+                Err(e) => {
+                    error!(task = %task_key, error = %e, "failed");
+                    (TaskStatus::Failed(e.to_string()), db::TaskResultStatus::Failed)
+                }
             };
 
-            if let Err(e) = &result {
-                error!(task_key = %task_key, error = %e, "Task failed");
-            }
+            *status.lock().unwrap() = new_status;
 
             let task_result = db::TaskResult {
                 task_id: task_key.clone(),
-                start_at: start_time,
-                end_at,
-                status,
+                start_at,
+                end_at: Utc::now().naive_utc(),
+                status: db_status,
             };
 
             if let Err(e) = task_result.save(&ctx.db).await {
-                error!(task_key = %task_key, error = %e, "Failed to save task result");
+                error!(task = %task_key, error = %e, "failed to save result");
             }
         });
 
@@ -161,42 +158,31 @@ impl TaskHandler {
     pub fn stop(&mut self) {
         if let Some(handle) = self.handle.take() {
             handle.abort();
-            self.status = TaskStatus::Stopped;
-            info!(task_key = %self.task.key(), "Task stopped");
+            *self.status.lock().unwrap() = TaskStatus::Stopped;
+            info!(task = %self.task.key(), "stopped");
         }
     }
 }
 
+// --- TaskService ---
+
 #[derive(Clone)]
 pub struct TaskService {
     scheduler: JobScheduler,
-    tasks: Arc<Mutex<HashMap<String, TaskHandler>>>, // Now keyed by task key (String)
+    tasks: Arc<AsyncMutex<HashMap<String, TaskHandler>>>,
     ctx: AppContext,
 }
 
 impl TaskService {
     pub async fn new(ctx: AppContext) -> Result<Self> {
         let scheduler = JobScheduler::new().await?;
-        let tasks = Arc::new(Mutex::new(HashMap::new()));
+        let tasks = Arc::new(AsyncMutex::new(HashMap::new()));
 
-        let service = Self {
-            scheduler,
-            tasks,
-            ctx: ctx.clone(),
-        };
+        let service = Self { scheduler, tasks, ctx: ctx.clone() };
 
-        service
-            .register_task(Arc::new(RefreshLibraryTask::default()))
-            .await?;
-        service
-            .register_task(Arc::new(RefreshLibraryTask::default()))
-            .await?;
-        service
-            .register_task(Arc::new(CatalogImportTask::default()))
-            .await?;
-        service
-            .register_task(Arc::new(SeriesSyncTask::default()))
-            .await?;
+        service.register_task(Arc::new(RefreshLibraryTask)).await?;
+        service.register_task(Arc::new(CatalogImportTask)).await?;
+        service.register_task(Arc::new(SeriesSyncTask)).await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {
@@ -207,13 +193,8 @@ impl TaskService {
     }
 
     pub async fn register_task(&self, task: Arc<dyn Task>) -> Result<()> {
-        let task_key = task.key().to_string();
-
-        self.tasks
-            .lock()
-            .await
-            .insert(task_key, TaskHandler::new(task.clone()));
-
+        let key = task.key().to_string();
+        self.tasks.lock().await.insert(key, TaskHandler::new(task));
         Ok(())
     }
 
@@ -225,17 +206,17 @@ impl TaskService {
         let tasks = self.tasks.clone();
         let ctx = self.ctx.clone();
         let task_service = self.clone();
+        let task_id = trigger.task_id.clone();
 
-        let task_id = trigger.task_id.clone(); // Clone for the closure
         let job = Job::new_async(cron.as_str(), move |_uuid, _l| {
             let tasks = tasks.clone();
             let ctx = ctx.clone();
-            let task_service = task_service.clone();
-            let task_id = task_id.clone(); // Clone again for the async block
+            let task_service = Arc::new(task_service.clone());
+            let task_id = task_id.clone();
 
             Box::pin(async move {
                 if let Some(handler) = tasks.lock().await.get_mut(&task_id) {
-                    handler.run(ctx, task_service.into());
+                    handler.run(ctx, task_service);
                 }
             })
         })?;
@@ -258,7 +239,7 @@ impl TaskService {
         let mut tasks = self.tasks.lock().await;
         let handler = tasks
             .get_mut(task_key)
-            .ok_or_else(|| anyhow!("Task not found"))?;
+            .ok_or_else(|| anyhow!("Task not found: {task_key}"))?;
 
         for job_id in handler.jobs.drain(..) {
             let _ = self.scheduler.remove(&job_id).await;
@@ -273,40 +254,20 @@ impl TaskService {
         Ok(())
     }
 
-    /// Run a task by its key (primary method)
     pub async fn run_task(&self, task_key: &str) -> Result<()> {
         if let Some(handler) = self.tasks.lock().await.get_mut(task_key) {
-            handler.run(self.ctx.clone(), self.clone().into());
+            handler.run(self.ctx.clone(), Arc::new(self.clone()));
         }
         Ok(())
     }
 
     pub async fn run_startup_tasks(&self) -> Result<()> {
         let triggers = db::TaskTrigger::get_all(&self.ctx.db).await?;
-        let tasks = self.tasks.clone();
-        let ctx = self.ctx.clone();
-
         for trigger in triggers {
             if trigger.kind == db::TaskTriggerKind::Startup {
-                let task_key = trigger.task_id;
-                let tasks_clone = tasks.clone();
-                let ctx = ctx.clone();
-
-                tokio::spawn({
-                    let task_service = self.clone();
-                    async move {
-                        if let Some(handler) =
-                            tasks_clone.lock().await.get_mut(&task_key)
-                        {
-                            handler.run(ctx, task_service.into());
-                        } else {
-                            error!(task_key = %task_key, "Task handler not found for startup task");
-                        }
-                    }
-                });
+                self.run_task(&trigger.task_id).await?;
             }
         }
-
         Ok(())
     }
 
@@ -322,37 +283,31 @@ impl TaskService {
         Ok(())
     }
 
-
-
-    /// Get a copy of all task handlers for read-only access
-    pub async fn get_task_handlers(&self) -> std::collections::HashMap<String, crate::tasks::TaskHandlerSnapshot> {
-        self.tasks.lock().await.iter()
-            .map(|(k, v)| (k.clone(), v.to_snapshot()))
+    pub async fn get_task_handlers(&self) -> HashMap<String, TaskView> {
+        self.tasks
+            .lock()
+            .await
+            .iter()
+            .map(|(k, v)| (k.clone(), v.view()))
             .collect()
     }
 }
 
-#[derive(Default)]
+// --- Task implementations ---
+
 pub struct RefreshLibraryTask;
 
 #[async_trait]
 impl Task for RefreshLibraryTask {
-    fn name(&self) -> &str {
-        "Refresh Library"
-    }
-
-    fn key(&self) -> &str {
-        "RefreshLibrary"
-    }
-
-    fn category(&self) -> &str {
-        "Library"
-    }
+    fn key(&self) -> &str { "RefreshLibrary" }
+    fn name(&self) -> &str { "Refresh Library" }
+    fn category(&self) -> &str { "Library" }
 
     async fn run(
-        self: Arc<Self>,
+        &self,
         ctx: AppContext,
-        _task_service: Arc<TaskService>,
+        _tasks: Arc<TaskService>,
+        _progress: ProgressReporter,
     ) -> Result<()> {
         let service = MetaProviderService::new(
             vec![Box::new(AioMetaProvider)],
@@ -361,45 +316,35 @@ impl Task for RefreshLibraryTask {
         let media_list = db::Media::get_refreshable(&ctx.db).await?;
         let updated_media = service.process(media_list, &ctx).await?;
         db::Media::upsert(&ctx.db, &updated_media).await?;
-
         Ok(())
     }
 }
 
-#[derive(Default)]
 pub struct CatalogImportTask;
 
 #[async_trait]
 impl Task for CatalogImportTask {
-    fn name(&self) -> &str {
-        "Catalog Import"
-    }
-
-    fn key(&self) -> &str {
-        "CatalogImport"
-    }
-
-    fn category(&self) -> &str {
-        "Library"
-    }
+    fn key(&self) -> &str { "CatalogImport" }
+    fn name(&self) -> &str { "Catalog Import" }
+    fn category(&self) -> &str { "Library" }
 
     async fn run(
-        self: Arc<Self>,
+        &self,
         ctx: AppContext,
-        task_service: Arc<TaskService>,
+        tasks: Arc<TaskService>,
+        _progress: ProgressReporter,
     ) -> Result<()> {
         let manifest = ctx.aio.get_manifest().await?;
-        let start_time = Instant::now();
         let mut total_imported = 0;
 
-        info!("starting catalog import ({})", manifest.catalogs.len());
+        info!("starting catalog import ({} catalogs)", manifest.catalogs.len());
 
         for cat in manifest.catalogs {
             if cat.id.contains("search") {
                 continue;
-            };
+            }
 
-            info!("Importing catalog {} {}", cat.id, cat.kind);
+            info!("importing catalog {} {}", cat.id, cat.kind);
             let aio_id = format!("{}:{}", cat.kind, cat.id);
             let mut media_cat = db::Media::get_by_filter(
                 &ctx.db,
@@ -424,104 +369,63 @@ impl Task for CatalogImportTask {
 
             let mut meta_stream = ctx.aio.get_catalog_stream(&cat).await.chunks(500);
             let mut count = 0;
+
             while let Some(mut metas) = meta_stream.next().await {
-                // metas.retain(|obj| obj.imdb_id.is_some());
                 let remaining = ctx.config.catalog_max_items.saturating_sub(count);
-
                 metas = metas.into_iter().take(remaining).collect();
-                // let imdb_ids: Vec<String> =
-                //     metas.iter().map(|m| m.imdb_id.clone().unwrap()).collect();
-
-                // let existing_imdb_ids = db::Media::get_by_filter(
-                //     &ctx.db,
-                //     &db::MediaFilter {
-                //         imdb_id: Some(imdb_ids),
-                //         ..Default::default()
-                //     },
-                // )
-                // .await?
-                // .records
-                //.iter()
-                //.filter_map(|m| m.imdb_id.as_deref())
-                // .collect();
-
-                // metas.retain(|m| {
-                //     !existing_imdb_ids.contains(m.imdb_id.as_deref().unwrap())
-                // });
-                //if count > ctx.config.catalog_max_items {
 
                 let items: Vec<db::Media> = metas
                     .into_iter()
                     .unique_by(|meta| meta.id.clone())
                     .flat_map(|meta| match Vec::<db::Media>::try_from(meta) {
-                        Ok(items) => {
-                            // check if catalog provides series tree
-                            //if meta.is_series() && meta.videos.is_none() {
-                            //return provider.get_series_tree().await?;
-                            //}
-                            items.into_iter()
-                        }
+                        Ok(items) => items.into_iter(),
                         Err(e) => {
-                            warn!(error = %e, "Failed to convert metadata, skipping");
+                            warn!(error = %e, "failed to convert metadata, skipping");
                             Vec::<db::Media>::new().into_iter()
                         }
                     })
                     .collect();
 
-                if !items.is_empty() {
-                    if let Err(e) = db::Media::insert(&ctx.db, &items).await {
-                        error!("Failed to import chunk: {}", e);
-                    } else {
-                        count += items.len();
-                        total_imported += count;
-                    }
-                } else {
-                    drop(meta_stream);
+                if items.is_empty() {
                     break;
                 }
 
-                if count > ctx.config.catalog_max_items {
-                    drop(meta_stream);
+                if let Err(e) = db::Media::insert(&ctx.db, &items).await {
+                    error!("failed to import chunk: {}", e);
+                } else {
+                    count += items.len();
+                    total_imported += count;
+                }
+
+                if count >= ctx.config.catalog_max_items {
                     break;
                 }
             }
 
-            info!(
-                "finished Importing catalog {} | {} ({} items)",
-                cat.id, cat.kind, count
-            );
+            info!("finished importing catalog {} {} ({} items)", cat.id, cat.kind, count);
         }
 
-        let duration = start_time.elapsed();
-        info!(
-            "import complete. Total media items imported: {}.",
-            total_imported
-        );
+        info!("import complete, total: {}", total_imported);
 
-        // Kick off RefreshLibraryTask using its key
-        task_service.run_task("RefreshLibrary").await?;
+        tasks.run_task("RefreshLibrary").await?;
 
         Ok(())
     }
 }
 
-#[derive(Default)]
 pub struct SeriesSyncTask;
 
 #[async_trait]
 impl Task for SeriesSyncTask {
-    fn name(&self) -> &str {
-        "Series sync"
-    }
-
-    fn category(&self) -> &str {
-        "Library"
-    }
+    fn key(&self) -> &str { "SeriesSync" }
+    fn name(&self) -> &str { "Series Sync" }
+    fn category(&self) -> &str { "Library" }
 
     async fn run(
-        self: Arc<Self>,
+        &self,
         ctx: AppContext,
-        _task_service: Arc<TaskService>,
+        _tasks: Arc<TaskService>,
+        _progress: ProgressReporter,
     ) -> Result<()> {
         let service = MetaProviderService::new(
             vec![Box::new(AioMetaProvider)],

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::jellyfin;
-use crate::tasks::{TaskStatus, TaskHandlerSnapshot};
+use crate::tasks::{TaskStatus, TaskView};
 use axum_anyhow::ApiResult as Result;
 
 #[cfg(test)]
@@ -33,11 +33,11 @@ pub async fn scheduled_tasks(
         // Convert task status to Jellyfin format
         let state_str = match &handler.status {
             TaskStatus::Idle => "Idle",
-            TaskStatus::Active => "Running",
+            TaskStatus::Running => "Running",
             TaskStatus::Stopped => "Stopped",
             TaskStatus::Failed(_) => "Failed",
         };
-        
+
         // Convert last result to Jellyfin format
         let (last_execution_result, last_execution_date) = match last_result {
             Some(db_result) => {
@@ -58,11 +58,11 @@ pub async fn scheduled_tasks(
             },
             None => (None, None),
         };
-        
+
         task_infos.push(jellyfin::TaskInfo {
             name: task.name().to_string(),
             state: Some(state_str.to_string()),
-            current_progress_percentage: Some(handler.current_progress),  // Include progress from handler
+            current_progress_percentage: Some(handler.progress),
             id: task.key().to_string(),
             last_execution_result,
             triggers: Some(Vec::new()), // Empty triggers for now
@@ -105,7 +105,7 @@ pub async fn get_task_by_id(
     // Convert task status to Jellyfin format
     let state_str = match &handler.status {
         TaskStatus::Idle => "Idle",
-        TaskStatus::Active => "Running",
+        TaskStatus::Running => "Running",
         TaskStatus::Stopped => "Stopped",
         TaskStatus::Failed(_) => "Failed",
     };
