@@ -29,7 +29,8 @@ impl ProgressReporter {
     }
 
     pub fn set(&self, pct: f64) {
-        self.0.store(pct.clamp(0.0, 100.0).to_bits(), Ordering::Relaxed);
+        let rounded = (pct.clamp(0.0, 100.0) * 10.0).round() / 10.0;
+        self.0.store(rounded.to_bits(), Ordering::Relaxed);
     }
 }
 
@@ -193,7 +194,7 @@ impl TaskService {
     }
 
     pub async fn register_task(&self, task: Arc<dyn Task>) -> Result<()> {
-        let key = task.key().to_string();
+        let key = task.key().to_lowercase();
         self.tasks.lock().await.insert(key, TaskHandler::new(task));
         Ok(())
     }
@@ -224,7 +225,7 @@ impl TaskService {
         let job_id = job.guid();
         self.scheduler.add(job).await?;
 
-        if let Some(handler) = self.tasks.lock().await.get_mut(&trigger.task_id) {
+        if let Some(handler) = self.tasks.lock().await.get_mut(&trigger.task_id.to_lowercase()) {
             handler.jobs.push(job_id);
         }
 
@@ -236,9 +237,10 @@ impl TaskService {
         task_key: &str,
         triggers: Vec<db::TaskTrigger>,
     ) -> Result<()> {
+        let key = task_key.to_lowercase();
         let mut tasks = self.tasks.lock().await;
         let handler = tasks
-            .get_mut(task_key)
+            .get_mut(&key)
             .ok_or_else(|| anyhow!("Task not found: {task_key}"))?;
 
         for job_id in handler.jobs.drain(..) {
@@ -255,7 +257,7 @@ impl TaskService {
     }
 
     pub async fn run_task(&self, task_key: &str) -> Result<()> {
-        if let Some(handler) = self.tasks.lock().await.get_mut(task_key) {
+        if let Some(handler) = self.tasks.lock().await.get_mut(&task_key.to_lowercase()) {
             handler.run(self.ctx.clone(), Arc::new(self.clone()));
         }
         Ok(())
@@ -272,7 +274,7 @@ impl TaskService {
     }
 
     pub async fn stop_task(&self, task_key: &str) -> Result<()> {
-        if let Some(handler) = self.tasks.lock().await.get_mut(task_key) {
+        if let Some(handler) = self.tasks.lock().await.get_mut(&task_key.to_lowercase()) {
             handler.stop();
         }
         Ok(())
@@ -332,18 +334,20 @@ impl Task for CatalogImportTask {
         &self,
         ctx: AppContext,
         tasks: Arc<TaskService>,
-        _progress: ProgressReporter,
+        progress: ProgressReporter,
     ) -> Result<()> {
         let manifest = ctx.aio.get_manifest().await?;
         let mut total_imported = 0;
 
-        info!("starting catalog import ({} catalogs)", manifest.catalogs.len());
+        let catalogs: Vec<_> = manifest.catalogs.into_iter()
+            .filter(|c| !c.id.contains("search"))
+            .collect();
+        let total = catalogs.len();
 
-        for cat in manifest.catalogs {
-            if cat.id.contains("search") {
-                continue;
-            }
+        info!("starting catalog import ({} catalogs)", total);
 
+        for (i, cat) in catalogs.into_iter().enumerate() {
+            progress.set(i as f64 / total as f64 * 100.0);
             info!("importing catalog {} {}", cat.id, cat.kind);
             let aio_id = format!("{}:{}", cat.kind, cat.id);
             let mut media_cat = db::Media::get_by_filter(

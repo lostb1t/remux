@@ -89,12 +89,17 @@ impl TaskTrigger {
 
     pub async fn get_all(db: &SqlitePool) -> Result<Vec<Self>> {
         Ok(sqlx::query_as::<_, Self>(
-            r#"
-            SELECT
-            *
-            FROM task_triggers
-            "#,
+            r#"SELECT * FROM task_triggers"#,
         )
+        .fetch_all(db)
+        .await?)
+    }
+
+    pub async fn get_by_task_id(db: &SqlitePool, task_id: &str) -> Result<Vec<Self>> {
+        Ok(sqlx::query_as::<_, Self>(
+            r#"SELECT * FROM task_triggers WHERE LOWER(task_id) = LOWER(?1)"#,
+        )
+        .bind(task_id)
         .fetch_all(db)
         .await?)
     }

@@ -12,72 +12,119 @@ use axum_anyhow::ApiResult as Result;
 #[cfg(test)]
 use crate::integration_test;
 
+// 1 tick = 100 nanoseconds (Windows FILETIME / .NET TimeSpan)
+const TICKS_PER_SECOND: i64 = 10_000_000;
+const TICKS_PER_HOUR: i64 = 3600 * TICKS_PER_SECOND;
+const TICKS_PER_MINUTE: i64 = 60 * TICKS_PER_SECOND;
+
+fn db_trigger_to_jellyfin(trigger: &jellyfin::db::TaskTrigger) -> jellyfin::TaskTriggerInfo {
+    let (trigger_type, time_of_day_ticks) = match trigger.kind {
+        jellyfin::db::TaskTriggerKind::Startup => ("StartupTrigger", None),
+        jellyfin::db::TaskTriggerKind::Schedule => {
+            let ticks = trigger.cron.as_deref().and_then(cron_to_time_of_day_ticks);
+            ("DailyTrigger", ticks)
+        }
+    };
+
+    jellyfin::TaskTriggerInfo {
+        r#type: Some(trigger_type.to_string()),
+        time_of_day_ticks,
+        max_runtime_ticks: trigger.time_limit_hours.map(|h| h * TICKS_PER_HOUR),
+        interval_ticks: None,
+        day_of_week: None,
+    }
+}
+
+/// Parse `MIN HOUR * * *` cron expressions into ticks-since-midnight.
+/// Returns None for anything more complex.
+fn cron_to_time_of_day_ticks(cron: &str) -> Option<i64> {
+    let mut parts = cron.split_whitespace();
+    let min: i64 = parts.next()?.parse().ok()?;
+    let hour: i64 = parts.next()?.parse().ok()?;
+    Some(hour * TICKS_PER_HOUR + min * TICKS_PER_MINUTE)
+}
+
+fn task_info(
+    handler: &TaskView,
+    triggers: Vec<jellyfin::db::TaskTrigger>,
+    last_result: Option<jellyfin::db::TaskResult>,
+) -> jellyfin::TaskInfo {
+    let task = &handler.task;
+
+    let state_str = match &handler.status {
+        TaskStatus::Idle => "Idle",
+        TaskStatus::Running => "Running",
+        TaskStatus::Stopped => "Stopped",
+        TaskStatus::Failed(_) => "Failed",
+    };
+
+    let (last_execution_result, last_execution_date) = match last_result {
+        Some(r) => {
+            let result = jellyfin::TaskResult {
+                status: Some(match r.status {
+                    jellyfin::db::TaskResultStatus::Completed => "Completed",
+                    jellyfin::db::TaskResultStatus::Failed => "Failed",
+                    jellyfin::db::TaskResultStatus::Stopped => "Stopped",
+                }.to_string()),
+                name: Some(task.name().to_string()),
+                id: Some(task.key().to_string()),
+                key: Some(task.key().to_string()),
+                start_time_utc: Some(r.start_at.to_string()),
+                end_time_utc: Some(r.end_at.to_string()),
+                ..Default::default()
+            };
+            (Some(result), Some(r.end_at.to_string()))
+        }
+        None => (None, None),
+    };
+
+    jellyfin::TaskInfo {
+        name: task.name().to_string(),
+        state: Some(state_str.to_string()),
+        current_progress_percentage: Some(handler.progress),
+        id: task.key().to_string(),
+        key: Some(task.key().to_string()),
+        last_execution_result,
+        last_execution_date,
+        triggers: Some(triggers.iter().map(db_trigger_to_jellyfin).collect()),
+        description: Some(task.name().to_string()),
+        category: Some(task.category().to_string()),
+        is_hidden: Some(false),
+        is_enabled: Some(true),
+        can_be_terminated: Some(true),
+        can_be_deleted: Some(false),
+    }
+}
+
 /// Get scheduled tasks
 #[get("/scheduledtasks")]
 pub async fn scheduled_tasks(
     State(state): State<AppState>,
 ) -> Result<impl axum::response::IntoResponse> {
-    // Get all registered tasks from the task service
     let task_handlers = state.tasks.get_task_handlers().await;
-    
-    // Convert task handlers to Jellyfin TaskInfo format
-    let mut task_infos: Vec<jellyfin::TaskInfo> = Vec::new();
-    
-    for (_, handler) in task_handlers.iter() {
-        let task = handler.task.clone();
-        
-        // Get the last execution result from database using task key
-        let task_key = task.key();
-        let last_result = jellyfin::db::TaskResult::get_by_task_id(&state.ctx.db, task_key).await.ok().flatten();
-        
-        // Convert task status to Jellyfin format
-        let state_str = match &handler.status {
-            TaskStatus::Idle => "Idle",
-            TaskStatus::Running => "Running",
-            TaskStatus::Stopped => "Stopped",
-            TaskStatus::Failed(_) => "Failed",
-        };
 
-        // Convert last result to Jellyfin format
-        let (last_execution_result, last_execution_date) = match last_result {
-            Some(db_result) => {
-                let execution_result = jellyfin::TaskResult {
-                    status: Some(match db_result.status {
-                        jellyfin::db::TaskResultStatus::Completed => "Completed",
-                        jellyfin::db::TaskResultStatus::Failed => "Failed",
-                        jellyfin::db::TaskResultStatus::Stopped => "Stopped",
-                    }.to_string()),
-                    name: Some(task.name().to_string()),
-                    id: Some(task.key().to_string()),
-                    key: Some(task.key().to_string()),
-                    start_time_utc: Some(db_result.start_at.to_string()),
-                    end_time_utc: Some(db_result.end_at.to_string()),
-                    ..Default::default()
-                };
-                (Some(execution_result), Some(db_result.end_at.to_string()))
-            },
-            None => (None, None),
-        };
-
-        task_infos.push(jellyfin::TaskInfo {
-            name: task.name().to_string(),
-            state: Some(state_str.to_string()),
-            current_progress_percentage: Some(handler.progress),
-            id: task.key().to_string(),
-            last_execution_result,
-            triggers: Some(Vec::new()), // Empty triggers for now
-            description: Some(task.name().to_string()),
-            category: Some(task.category().to_string()),
-            is_hidden: Some(false),
-            is_enabled: Some(true), // Tasks are enabled by default
-            key: Some(task.key().to_string()),
-            last_execution_date: last_execution_date,
-            can_be_terminated: Some(true),
-            can_be_deleted: Some(false),
-        });
+    // Fetch all triggers once and group by lowercase task_id to avoid N+1
+    let all_triggers = jellyfin::db::TaskTrigger::get_all(&state.ctx.db).await?;
+    let mut triggers_by_task: std::collections::HashMap<String, Vec<jellyfin::db::TaskTrigger>> =
+        std::collections::HashMap::new();
+    for trigger in all_triggers {
+        triggers_by_task
+            .entry(trigger.task_id.to_lowercase())
+            .or_default()
+            .push(trigger);
     }
-    
-    // Return direct array like Jellyfin does, not wrapped in QueryResult
+
+    let mut task_infos: Vec<jellyfin::TaskInfo> = Vec::new();
+
+    for (key, handler) in task_handlers.iter() {
+        let last_result = jellyfin::db::TaskResult::get_by_task_id(&state.ctx.db, key)
+            .await
+            .ok()
+            .flatten();
+        let triggers = triggers_by_task.remove(key).unwrap_or_default();
+        task_infos.push(task_info(handler, triggers, last_result));
+    }
+
     Ok(Json(task_infos))
 }
 
@@ -88,67 +135,17 @@ pub async fn get_task_by_id(
     State(state): State<AppState>,
 ) -> Result<impl axum::response::IntoResponse> {
     let task_handlers = state.tasks.get_task_handlers().await;
-    
-    // Find the task by key
-    let task_handler = task_handlers.get(&task_id);
-    
-    if task_handler.is_none() {
-        return Err(anyhow::anyhow!("Task not found").into());
-    }
-    
-    let handler = task_handler.unwrap();
-    let task = handler.task.clone();
-    
-    // Get the last execution result from database
-    let last_result = jellyfin::db::TaskResult::get_by_task_id(&state.ctx.db, &task_id).await.ok().flatten();
-    
-    // Convert task status to Jellyfin format
-    let state_str = match &handler.status {
-        TaskStatus::Idle => "Idle",
-        TaskStatus::Running => "Running",
-        TaskStatus::Stopped => "Stopped",
-        TaskStatus::Failed(_) => "Failed",
-    };
-    
-    // Convert last result to Jellyfin format
-    let (last_execution_result, last_execution_date) = match last_result {
-        Some(db_result) => {
-            let execution_result = jellyfin::TaskResult {
-                status: Some(match db_result.status {
-                    jellyfin::db::TaskResultStatus::Completed => "Completed",
-                    jellyfin::db::TaskResultStatus::Failed => "Failed",
-                    jellyfin::db::TaskResultStatus::Stopped => "Stopped",
-                }.to_string()),
-                name: Some(task.name().to_string()),
-                id: Some(task.key().to_string()),
-                key: Some(task.key().to_string()),
-                start_time_utc: Some(db_result.start_at.to_string()),
-                end_time_utc: Some(db_result.end_at.to_string()),
-                ..Default::default()
-            };
-            (Some(execution_result), Some(db_result.end_at.to_string()))
-        },
-        None => (None, None),
-    };
-    
-    let task_info = jellyfin::TaskInfo {
-        name: task.name().to_string(),
-        state: Some(state_str.to_string()),
-        current_progress_percentage: None,
-        id: task.key().to_string(),
-        last_execution_result,
-        triggers: Some(Vec::new()), // TODO: Implement trigger retrieval
-        description: Some(task.name().to_string()),
-        category: Some(task.category().to_string()),
-        is_hidden: Some(false),
-        is_enabled: Some(true), // Tasks are enabled by default
-        key: Some(task.key().to_string()),
-        last_execution_date: last_execution_date,
-        can_be_terminated: Some(true),
-        can_be_deleted: Some(false),
-    };
-    
-    Ok(Json(task_info))
+    let handler = task_handlers
+        .get(&task_id)
+        .ok_or_else(|| anyhow::anyhow!("Task not found"))?;
+
+    let last_result = jellyfin::db::TaskResult::get_by_task_id(&state.ctx.db, &task_id)
+        .await
+        .ok()
+        .flatten();
+    let triggers = jellyfin::db::TaskTrigger::get_by_task_id(&state.ctx.db, &task_id).await?;
+
+    Ok(Json(task_info(handler, triggers, last_result)))
 }
 
 /// Start specified task
@@ -158,7 +155,6 @@ pub async fn start_task(
     State(state): State<AppState>,
 ) -> Result<impl axum::response::IntoResponse> {
     state.tasks.run_task(&task_id).await?;
-    
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -169,7 +165,6 @@ pub async fn stop_task(
     State(state): State<AppState>,
 ) -> Result<impl axum::response::IntoResponse> {
     state.tasks.stop_task(&task_id).await?;
-    
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -180,27 +175,26 @@ pub async fn update_task_triggers(
     State(state): State<AppState>,
     Json(trigger_infos): Json<Vec<jellyfin::TaskTriggerInfo>>,
 ) -> Result<impl axum::response::IntoResponse> {
-    // Convert Jellyfin triggers to our internal format
     let triggers: Vec<jellyfin::db::TaskTrigger> = trigger_infos
         .into_iter()
-        .map(|trigger_info| {
-            jellyfin::db::TaskTrigger {
-                id: Uuid::new_v4().to_string(),
-                task_id: task_id.clone(),
-                kind: match trigger_info.r#type.as_deref() {
-                    Some("Daily") => jellyfin::db::TaskTriggerKind::Schedule,
-                    Some("Startup") => jellyfin::db::TaskTriggerKind::Startup,
-                    _ => jellyfin::db::TaskTriggerKind::Schedule,
-                },
-                time_limit_hours: None, // TODO: Implement time limit
-                cron: None, // TODO: Implement cron parsing
-            }
+        .map(|t| jellyfin::db::TaskTrigger {
+            id: Uuid::new_v4().to_string(),
+            task_id: task_id.clone(),
+            kind: match t.r#type.as_deref() {
+                Some("StartupTrigger") => jellyfin::db::TaskTriggerKind::Startup,
+                _ => jellyfin::db::TaskTriggerKind::Schedule,
+            },
+            time_limit_hours: t.max_runtime_ticks.map(|ticks| ticks / TICKS_PER_HOUR),
+            cron: t.time_of_day_ticks.map(|ticks| {
+                let total_secs = ticks / TICKS_PER_SECOND;
+                let hour = total_secs / 3600;
+                let min = (total_secs % 3600) / 60;
+                format!("{min} {hour} * * *")
+            }),
         })
         .collect();
-    
-    // Update triggers for the task
+
     state.tasks.replace_triggers(&task_id, triggers).await?;
-    
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -213,15 +207,12 @@ async fn scheduled_tasks_test() {
 
     response.assert_status_ok();
     let task_result: crate::jellyfin::TaskQueryResult = response.json();
-    
-    // Check that we have at least some tasks (should have MediaScanTask and CatalogImportTask)
+
     assert!(task_result.items.len() >= 2);
-    
-    // Check that we have the expected structure
+
     let task_names: Vec<String> = task_result.items.iter().map(|task| task.name.clone()).collect();
     assert!(task_names.contains(&"Media Scan".to_string()) || task_names.contains(&"Catalog Import".to_string()));
-    
-    // Check that all tasks have required fields
+
     for task in &task_result.items {
         assert!(task.id.len() > 0);
         assert!(task.name.len() > 0);
