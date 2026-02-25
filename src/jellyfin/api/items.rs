@@ -379,6 +379,30 @@ pub async fn library_virtualfolders(
     // )))
 }
 
+#[get("/genres")]
+pub async fn genres(
+    State(state): State<AppState>,
+    Query(q): Query<jellyfin::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    let related_kinds: Vec<db::MediaKind> = q
+        .include_item_types
+        .unwrap_or_default()
+        .into_iter()
+        .map(db::MediaKind::from)
+        .filter(|k| !matches!(k, db::MediaKind::Unknown))
+        .collect();
+
+    let genres = db::Media::get_genres(&state.ctx.db, &related_kinds).await?;
+    let total = genres.len() as i64;
+
+    Ok(Json(jellyfin::BaseItemDtoQueryResult {
+        items: genres.into_iter().map(jellyfin::BaseItemDto::from).collect(),
+        total_record_count: total,
+        start_index: q.start_index.unwrap_or(0),
+        ..Default::default()
+    }))
+}
+
 #[get("/items/{id}/metadataeditor")]
 pub async fn items_metadata_editor(
     State(_state): State<AppState>,

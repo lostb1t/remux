@@ -344,7 +344,9 @@ pub struct GetItemsQuery {
     //#[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
     #[serde(deserialize_with = "deserialize_fields", default)]
     pub fields: Option<Vec<ItemFields>>,
+    #[serde(deserialize_with = "deserialize_media_types", default)]
     pub exclude_item_types: Option<Vec<MediaType>>,
+    #[serde(deserialize_with = "deserialize_media_types", default)]
     pub include_item_types: Option<Vec<MediaType>>,
     pub is_favorite: Option<bool>,
     pub image_type_limit: Option<i64>,
@@ -461,6 +463,53 @@ where
     };
 
     Ok(Some(fields))
+}
+
+pub fn deserialize_media_types<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<MediaType>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Input {
+        Single(String),
+        Multiple(Vec<String>),
+    }
+
+    let input = Option::<Input>::deserialize(deserializer)?;
+
+    let types = match input {
+        Some(Input::Single(s)) => s
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| match s.parse::<MediaType>() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(value = %s, "MediaType parse failed, ignoring value");
+                    None
+                }
+            })
+            .collect(),
+        Some(Input::Multiple(ss)) => ss
+            .iter()
+            .flat_map(|s| s.split(','))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| match s.parse::<MediaType>() {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(value = %s, "MediaType parse failed, ignoring value");
+                    None
+                }
+            })
+            .collect(),
+        None => return Ok(None),
+    };
+
+    Ok(Some(types))
 }
 
 #[derive(Default, Debug, Deserialize)]

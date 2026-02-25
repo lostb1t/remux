@@ -135,6 +135,7 @@ impl From<MediaKind> for jellyfin::MediaType {
             MediaKind::Season => jellyfin::MediaType::Season,
             MediaKind::Episode => jellyfin::MediaType::Episode,
             MediaKind::Catalog => jellyfin::MediaType::BoxSet,
+            MediaKind::Genre => jellyfin::MediaType::Genre,
             // MediaKind::Catalog => jellyfin::MediaType::CollectionFolder,
             _ => jellyfin::MediaType::Unknown,
         }
@@ -595,6 +596,32 @@ impl Media {
 
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Return distinct Genre records linked (via media_relations) to media of the given kinds.
+    /// If `related_kinds` is empty, all genres are returned.
+    pub async fn get_genres(
+        db: &SqlitePool,
+        related_kinds: &[MediaKind],
+    ) -> Result<Vec<Self>> {
+        let mut qb = sqlx::QueryBuilder::new("SELECT DISTINCT g.* FROM media g");
+
+        if !related_kinds.is_empty() {
+            qb.push(" JOIN media_relations mr ON mr.right_media_id = g.id");
+            qb.push(" JOIN media m ON mr.left_media_id = m.id");
+            qb.push(" WHERE g.kind = 'genre' AND m.kind IN (");
+            let mut sep = qb.separated(", ");
+            for k in related_kinds {
+                sep.push_bind(k);
+            }
+            qb.push(")");
+        } else {
+            qb.push(" WHERE g.kind = 'genre'");
+        }
+
+        qb.push(" ORDER BY g.title ASC");
+
+        Ok(qb.build_query_as::<Self>().fetch_all(db).await?)
     }
 
     pub async fn get_by_id(
