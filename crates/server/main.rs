@@ -76,7 +76,7 @@ use uuid::Uuid;
 //mod auth;
 mod conversions;
 mod errors;
-mod sdks;
+pub use shared::sdks;
 mod store;
 mod utils;
 //mod user;
