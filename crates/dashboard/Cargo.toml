@@ -1,0 +1,11 @@
+[package]
+name = "dashboard"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { version = "0.7", features = ["web"] }
+
+[profile.release]
+opt-level = "z"
+lto = true

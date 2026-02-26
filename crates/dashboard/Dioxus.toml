@@ -1,0 +1,11 @@
+[application]
+name = "dashboard"
+default_platform = "web"
+
+[web.app]
+title = "Remux Admin"
+base_path = "/admin"
+
+[web.resource]
+style = []
+script = []

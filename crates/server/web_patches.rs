@@ -17,4 +17,13 @@ pub static CSS: &str = r##"
 
 /// JS injected before `</body>` of every HTML response.
 /// Leave empty to skip injection entirely.
-pub static JS: &str = "";
+pub static JS: &str = r#"
+// Redirect Jellyfin's admin dashboard links to our custom admin
+document.addEventListener('click', function(e) {
+  var a = e.target.closest('a[href]');
+  if (a && a.getAttribute('href') === '#/dashboard') {
+    e.preventDefault();
+    window.location.href = '/admin';
+  }
+}, true);
+"#;

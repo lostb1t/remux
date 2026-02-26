@@ -51,7 +51,7 @@ use timed;
 use tower::Layer;
 use tower::util::MapRequestLayer;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing;
 use tracing::debug;
 use tracing::info;
@@ -163,8 +163,15 @@ async fn init_app() -> Result<Router> {
         .allow_headers(Any)
         .expose_headers(Any);
 
+    let dashboard_index =
+        format!("{}/index.html", settings.dashboard_path);
     Ok(Router::new()
         .merge(collect_routes())
+        .nest_service(
+            "/admin",
+            ServeDir::new(&settings.dashboard_path)
+                .fallback(ServeFile::new(dashboard_index)),
+        )
         .with_state(state)
         .layer(on_error(|err| {
             tracing::error!(
@@ -200,6 +207,10 @@ fn default_web_path() -> String {
     "/app/jellyfin-web".to_string()
 }
 
+fn default_dashboard_path() -> String {
+    "/app/dashboard".to_string()
+}
+
 fn default_catalog_max_items() -> usize {
     100
 }
@@ -210,6 +221,8 @@ pub struct Settings {
     pub aio_url: String,
     #[serde(default = "default_web_path")]
     pub web_path: String,
+    #[serde(default = "default_dashboard_path")]
+    pub dashboard_path: String,
     #[serde(default = "default_catalog_max_items")]
     pub catalog_max_items: usize,
 }

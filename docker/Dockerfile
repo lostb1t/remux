@@ -12,12 +12,21 @@ RUN apt-get update \
         libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Install dioxus CLI and wasm target for dashboard build
+RUN rustup target add wasm32-unknown-unknown \
+    && cargo install dioxus-cli --locked
+
 COPY vendor ./vendor
 COPY Cargo.toml Cargo.lock ./
-COPY remux-macros ./remux-macros
+COPY crates/remux-macros ./crates/remux-macros
+COPY crates/server/Cargo.toml ./crates/server/Cargo.toml
+COPY crates/dashboard ./crates/dashboard
 RUN cargo fetch
 
 COPY . .
+
+# Build dashboard WASM (outputs to crates/dashboard/dist/)
+RUN cd crates/dashboard && dx build --release
 
 ENV SQLX_OFFLINE=true
 RUN cargo build --release
@@ -32,6 +41,7 @@ RUN apt update \
 
 WORKDIR /app
 COPY --from=builder /app/target/release/remux-server .
+COPY --from=builder /app/crates/dashboard/dist /app/dashboard
 COPY --from=jf /jellyfin/jellyfin-web ${WEB_PATH}
 
 EXPOSE 3000

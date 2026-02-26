@@ -1,3 +1,6 @@
+[config]
+default_to_workspace = false
+
 [env]
 RUST_LOG = "info,axum=info,tower_http=info,remux_server=debug,hyper=warn,sqlx=error"
 RUST_BACKTRACE = 0
@@ -23,7 +26,7 @@ args = ["sqlx", "prepare"]
 
 [tasks.db-migrate]
 command = "cargo"
-args = ["sqlx", "migrate", "run", "--source", "./migrations"]
+args = ["sqlx", "migrate", "run", "--source", "./crates/server/migrations"]
 
 [tasks.db-remove]
 command = "rm"
@@ -41,7 +44,7 @@ args = ["test"]
 [tasks.dev]
 command = "cargo"
 args = ["run"]
-watch = { watch = ["./src"]}
+watch = { watch = ["./crates/server"]}
 
 [tasks.run]
 command = "cargo"
