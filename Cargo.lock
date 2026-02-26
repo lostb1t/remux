@@ -2892,6 +2892,8 @@ dependencies = [
  "futures-util",
  "headers",
  "http",
+ "http-body",
+ "http-body-util",
  "inventory",
  "isolang",
  "itertools 0.14.0",

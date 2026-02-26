@@ -40,6 +40,8 @@ chrono = { version = "0.4", features = ["serde"] }
 serde_with = { version = "3", features = ["chrono", "macros"] }
 uuid = { version = "1.8", features = ["v5", "serde"] }
 http = "1.4.0"
+http-body = "1.0"
+http-body-util = "0.1"
 tokio-util = { version = "0.7", features = ["compat"] }
 futures-util = "0.3.31"
 axum-extra = { version = "0.12.5", features = [

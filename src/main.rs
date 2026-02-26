@@ -87,6 +87,8 @@ mod meta_provider;
 mod playback_session;
 mod tasks;
 mod transcode;
+mod web_patches;
+mod web_transform;
 
 /// Route auto-registration via `#[get("/path")]`, `#[post("/path")]`, etc.
 pub struct RouteRegistration(pub fn(axum::Router<AppState>) -> axum::Router<AppState>);
@@ -221,7 +223,9 @@ async fn init_app() -> Result<Router> {
         }))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
-        .fallback_service(ServeDir::new(settings.web_path)))
+        .fallback_service(
+            web_transform::TransformLayer::new().layer(ServeDir::new(settings.web_path)),
+        ))
 }
 
 #[derive(Clone)]
