@@ -507,6 +507,15 @@ type VaListType = *mut ffmpeg_sys_next::__va_list_tag_powerpc;
 #[cfg(target_arch = "s390x")]
 type VaListType = *mut ffmpeg_sys_next::__va_list_tag_s390x;
 
+#[cfg_attr(
+    all(
+        target_arch = "aarch64",
+        not(target_vendor = "apple"),
+        not(target_os = "uefi"),
+        not(windows),
+    ),
+    allow(improper_ctypes_definitions)
+)]
 unsafe extern "C" fn ffmpeg_log_callback(
     ptr: *mut libc::c_void,
     level: libc::c_int,
