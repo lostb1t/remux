@@ -43,6 +43,18 @@ pub struct QueryResult<T> {
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
+pub struct BrandingOptions {
+    /// Gets or sets the login disclaimer.
+    pub login_disclaimer: Option<String>,
+    /// Gets or sets the custom CSS.
+    pub custom_css: Option<String>,
+    /// Gets or sets a value indicating whether to enable the splashscreen.
+    pub splashscreen_enabled: Option<bool>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
 pub struct ServerConfiguration {
     /// Gets or sets a value indicating whether to enable prometheus metrics exporting.
     pub enable_metrics: Option<bool>,

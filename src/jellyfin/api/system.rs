@@ -208,9 +208,47 @@ pub async fn quickconnect_enabled(State(state): State<AppState>) -> Result<impl 
     stub(State(state)).await
 }
 
-#[route("/branding/configuration", method = "GET", method = "POST")]
-pub async fn branding_configuration(State(state): State<AppState>) -> Result<impl IntoResponse> {
-    stub(State(state)).await
+const BRANDING_CONFIG_KEY: &str = "branding_configuration";
+
+fn default_branding_configuration() -> jellyfin::BrandingOptions {
+    jellyfin::BrandingOptions {
+        login_disclaimer: None,
+        custom_css: None,
+        splashscreen_enabled: Some(false),
+    }
+}
+
+#[get("/branding/configuration")]
+pub async fn get_branding_configuration(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    let config = match crate::db::Settings::get(&state.ctx.db, BRANDING_CONFIG_KEY).await? {
+        Some(json) => serde_json::from_str(&json)
+            .unwrap_or_else(|_| default_branding_configuration()),
+        None => default_branding_configuration(),
+    };
+    Ok(Json(config))
+}
+
+#[post("/branding/configuration")]
+pub async fn update_branding_configuration_legacy(
+    State(state): State<AppState>,
+    Json(config): Json<jellyfin::BrandingOptions>,
+) -> Result<impl IntoResponse> {
+    let json = serde_json::to_string(&config)?;
+    crate::db::Settings::set(&state.ctx.db, BRANDING_CONFIG_KEY, &json).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// Jellyfin web posts branding updates here (System/Configuration/Branding)
+#[post("/system/configuration/branding")]
+pub async fn update_branding_configuration(
+    State(state): State<AppState>,
+    Json(config): Json<jellyfin::BrandingOptions>,
+) -> Result<impl IntoResponse> {
+    let json = serde_json::to_string(&config)?;
+    crate::db::Settings::set(&state.ctx.db, BRANDING_CONFIG_KEY, &json).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Get activity log entries
