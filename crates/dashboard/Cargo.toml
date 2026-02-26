@@ -8,6 +8,11 @@ dioxus = { version = "0.7", features = ["web"] }
 serde = { version = "1", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-net = { version = "0.6", features = ["http"] }
+gloo-storage = { version = "0.3" }
+shared = { path = "../shared" }
+uuid = { version = "1", features = ["v4", "serde", "js"] }
+http = "1"
 
 [profile.release]
 opt-level = "z"
