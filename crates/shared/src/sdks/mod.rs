@@ -377,3 +377,24 @@ where
         None => Ok(None),
     }
 }
+
+impl From<aio::MediaType> for jellyfin::MediaType {
+    fn from(kind: aio::MediaType) -> Self {
+        match kind {
+            aio::MediaType::Movie => jellyfin::MediaType::Movie,
+            aio::MediaType::Series => jellyfin::MediaType::Series,
+            _ => jellyfin::MediaType::Unknown,
+        }
+    }
+}
+
+impl From<jellyfin::MediaType> for aio::MediaType {
+    fn from(kind: jellyfin::MediaType) -> Self {
+        match kind {
+            jellyfin::MediaType::Movie => aio::MediaType::Movie,
+            jellyfin::MediaType::Series => aio::MediaType::Series,
+            _ => todo!(),
+        }
+    }
+}
+
