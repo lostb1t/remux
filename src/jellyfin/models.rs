@@ -2042,3 +2042,38 @@ pub struct HlsVideoQuery {
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct NetworkConfiguration {
+    pub require_https: Option<bool>,
+    pub base_url: Option<String>,
+    pub public_https_port: Option<i32>,
+    pub http_server_port_number: Option<i32>,
+    pub https_port_number: Option<i32>,
+    pub enable_https: Option<bool>,
+    pub is_port_authorized: Option<bool>,
+    pub auto_discovery: Option<bool>,
+    pub enable_u_pn_p: Option<bool>,
+    pub enable_i_pv4: Option<bool>,
+    pub enable_i_pv6: Option<bool>,
+    pub internal_http_port: Option<i32>,
+    pub internal_https_port: Option<i32>,
+    pub public_http_port: Option<i32>,
+    pub local_network_subnets: Option<Vec<String>>,
+    pub local_network_addresses: Option<Vec<String>>,
+    pub known_proxies: Option<Vec<String>>,
+    pub ignore_virtual_interfaces: Option<bool>,
+    pub virtual_interface_names: Option<Vec<String>>,
+    pub enable_published_server_uri_by_request: Option<bool>,
+    pub published_server_uri_by_subnet: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct AuthenticationInfo {
+    pub access_token: Option<String>,
+    pub app_name: Option<String>,
+    pub date_created: Option<chrono::DateTime<chrono::Utc>>,
+    pub is_active: Option<bool>,
+}

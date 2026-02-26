@@ -7,6 +7,8 @@ pub mod playback;
 pub mod devices;
 pub mod localization;
 pub mod tasks;
+pub mod networking;
+pub mod api_keys;
 
 use axum::Json;
 use axum::extract::State;

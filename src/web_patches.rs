@@ -3,8 +3,8 @@
 /// minified JS internals, so it survives jellyfin-web bundle updates.
 pub static CSS: &str = r#"
   /* ── Sidebar ─────────────────────────────────────────────── */
-  /* Hide the entire Live TV section (header + all links beneath it) */
   [aria-labelledby="livetv-subheader"] { display: none !important; }
+  [aria-labelledby="plugins-subheader"] { display: none !important; }
 "#;
 
 /// JS injected before `</body>` of every HTML response.

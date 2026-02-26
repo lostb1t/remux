@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS api_keys (
+    access_token TEXT NOT NULL PRIMARY KEY,
+    app_name     TEXT NOT NULL,
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
