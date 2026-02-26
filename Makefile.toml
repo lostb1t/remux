@@ -48,9 +48,9 @@ dependencies = ["dev-server", "dev-dash"]
 
 [tasks.dev-server]
 command = "cargo"
-args = ["run"]
+args = ["run" , "-p", "remux-server"]
 watch = true
-cwd = "crates/server"
+#cwd = "crates/server"
 
 [tasks.dev-dash]
 command = "dx"
