@@ -13,6 +13,17 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
 
+/// Gracefully deserializes `Option<T>` where `T: FromStr`.
+/// Returns `None` on missing, null, empty string, or any parse failure.
+fn deserialize_optional<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    T: FromStr,
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(d)?;
+    Ok(s.and_then(|s| s.parse().ok()))
+}
+
 
 //generate_api!(
 //    spec = "src/sdks/jellyfin/openapi.json", // The OpenAPI document
@@ -704,7 +715,8 @@ pub struct CodecProfile {
 #[serde(rename_all = "PascalCase", default)]
 pub struct SubtitleProfile {
     pub format: Option<String>,
-    pub method: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional")]
+    pub method: Option<SubtitleDeliveryMethod>,
 }
 
 #[derive(Default, Debug, Deserialize, Clone)]
@@ -939,7 +951,8 @@ pub struct UserConfiguration {
     pub display_missing_episodes: Option<bool>,
     #[serde(default)]
     pub grouped_folders: Vec<String>,
-    pub subtitle_mode: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional")]
+    pub subtitle_mode: Option<SubtitleMode>,
     #[serde(default)]
     pub display_collections_view: Option<bool>,
     #[serde(default)]
@@ -973,10 +986,12 @@ pub struct DisplayPreferencesDto {
     pub primary_image_height: i64,
     pub primary_image_width: i64,
     pub custom_prefs: Option<HashMap<String, Option<String>>>,
-    pub scroll_direction: String,
+    #[serde(default, deserialize_with = "deserialize_optional")]
+    pub scroll_direction: Option<ScrollDirection>,
     pub show_backdrop: bool,
     pub remember_sorting: bool,
-    pub sort_order: String,
+    #[serde(default, deserialize_with = "deserialize_optional")]
+    pub sort_order: Option<SortOrder>,
     pub show_sidebar: bool,
     pub client: Option<String>,
 }
@@ -990,9 +1005,50 @@ pub struct DisplayPreferencesDto {
     Deserialize,
 )]
 #[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
 pub enum ScrollDirection {
     Horizontal,
     Vertical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
+pub enum PlayMethod {
+    Transcode,
+    DirectStream,
+    DirectPlay,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
+pub enum RepeatMode {
+    RepeatNone,
+    RepeatAll,
+    RepeatOne,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
+pub enum SubtitleDeliveryMethod {
+    Encode,
+    Embed,
+    External,
+    Hls,
+    Drop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
+pub enum SubtitleMode {
+    Default,
+    Always,
+    OnlyForced,
+    None,
+    Smart,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1045,26 +1101,16 @@ impl Default for UserDto {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize,
+    strum_macros::EnumString, strum_macros::Display,
+)]
+#[serde(rename_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
 pub enum SyncPlayUserAccessType {
     CreateAndJoinGroups,
     JoinGroups,
     None,
-}
-
-fn deserialize_sync_play_access<'de, D>(
-    deserializer: D,
-) -> Result<Option<SyncPlayUserAccessType>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let opt: Option<String> = Option::deserialize(deserializer)?;
-    Ok(match opt.as_deref() {
-        Some("CreateAndJoinGroups") => Some(SyncPlayUserAccessType::CreateAndJoinGroups),
-        Some("JoinGroups") => Some(SyncPlayUserAccessType::JoinGroups),
-        Some("None") => Some(SyncPlayUserAccessType::None),
-        _ => None, // covers "", null, missing, unknown
-    })
 }
 
 #[skip_serializing_none]
@@ -1112,11 +1158,7 @@ pub struct UserPolicy {
     pub remote_client_bitrate_limit: Option<i64>,
     pub authentication_provider_id: Option<String>,
     pub password_reset_provider_id: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_sync_play_access",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, deserialize_with = "deserialize_optional", skip_serializing_if = "Option::is_none")]
     pub sync_play_access: Option<SyncPlayUserAccessType>,
 }
 
@@ -1549,10 +1591,12 @@ pub struct PlaybackStartInfo {
     pub is_muted: bool,
     pub position_ticks: Option<i64>,
     pub volume_level: Option<i32>,
-    pub play_method: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional")]
+    pub play_method: Option<PlayMethod>,
     pub live_stream_id: Option<String>,
     pub play_session_id: Option<String>,
-    pub repeat_mode: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional")]
+    pub repeat_mode: Option<RepeatMode>,
     pub now_playing_queue: Option<Vec<QueueItem>>,
     pub playlist_item_id: Option<String>,
 }
@@ -1574,10 +1618,12 @@ pub struct PlaybackProgressInfo {
     pub volume_level: Option<i32>,
     pub brightness: Option<i32>,
     pub aspect_ratio: Option<String>,
-    pub play_method: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional")]
+    pub play_method: Option<PlayMethod>,
     pub live_stream_id: Option<String>,
     pub play_session_id: Option<String>,
-    pub repeat_mode: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional")]
+    pub repeat_mode: Option<RepeatMode>,
     pub now_playing_queue: Option<Vec<QueueItem>>,
     pub playlist_item_id: Option<String>,
 }

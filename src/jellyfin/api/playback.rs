@@ -300,7 +300,7 @@ pub async fn report_playback_start(
         volume_level: data.volume_level,
         audio_stream_index: data.audio_stream_index,
         subtitle_stream_index: data.subtitle_stream_index,
-        play_method: data.play_method.clone(),
+        play_method: data.play_method.as_ref().map(|m| m.to_string()),
         started_at: Utc::now(),
         last_activity: Utc::now(),
     };
