@@ -5,7 +5,7 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use remux_macros::{delete, get, post};
 use axum_extra::extract::Query;
-use chrono::{Local, Utc};
+use chrono::{Duration, Local, Utc};
 use futures_util::StreamExt;
 use futures_util::TryStreamExt;
 use headers;
@@ -696,34 +696,61 @@ pub async fn sessions_capabilities_full(State(state): State<AppState>) -> Result
     stub(State(state)).await
 }
 
+#[derive(Deserialize, Default)]
+struct SessionsQuery {
+    #[serde(rename = "activeWithinSeconds", alias = "ActiveWithinSeconds")]
+    active_within_seconds: Option<i64>,
+}
+
 /// Get all active sessions
 #[get("/sessions")]
 pub async fn get_sessions(
     State(state): State<AppState>,
+    Query(q): Query<SessionsQuery>,
 ) -> Result<impl IntoResponse> {
-    // Get all active playback sessions using the PlaybackSession::get_all method
+    let cutoff = q.active_within_seconds.map(|s| Utc::now() - Duration::seconds(s));
+    let devices = auth::Device::get_all(&state.ctx.db).await?;
     let playback_sessions = PlaybackSession::get_all(&state.ctx.store);
-    
-    let sessions = playback_sessions
+
+    let sessions = devices
         .into_iter()
-        .map(|session| {
+        .filter(|device| {
+            if let Some(cutoff) = cutoff {
+                device.last_activity_at.map_or(true, |t| t >= cutoff)
+            } else {
+                true
+            }
+        })
+        .map(|device| {
+            // Attach now-playing info if this device has an active playback session.
+            let now_playing = playback_sessions
+                .iter()
+                .find(|s| s.device_id == device.id)
+                .and_then(|s| {
+                    // Minimal stub so clients know something is playing.
+                    Some(jellyfin::BaseItemDto {
+                        id: s.item_id,
+                        ..Default::default()
+                    })
+                });
+
             jellyfin::SessionInfoDto {
-                id: Some(session.play_session_id.clone()),
-                user_id: session.user_id.to_string(),
-                user_name: None, // TODO: Get username from user ID
-                client: Some(session.client_name.clone()),
-                last_activity_date: session.last_activity,
-                last_playback_check_in: session.last_activity,
-                last_paused_date: None, // TODO: Track paused state in PlaybackSession
-                device_name: Some(session.device_id.clone()),
+                id: Some(device.id.clone()),
+                user_id: device.user_id.to_string(),
+                user_name: None,
+                client: Some(device.app_name.clone()),
+                last_activity_date: device.last_activity_at.unwrap_or_else(Utc::now),
+                last_playback_check_in: device.last_activity_at.unwrap_or_else(Utc::now),
+                last_paused_date: None,
+                device_name: Some(device.name.clone()),
                 device_type: None,
-                now_playing_item: None, // TODO: Get media info
+                now_playing_item: now_playing,
                 now_viewing_item: None,
-                device_id: Some(session.device_id.clone()),
-                application_version: None,
+                device_id: Some(device.id.clone()),
+                application_version: Some(device.app_version.clone()),
                 is_active: true,
-                supports_media_control: true,
-                supports_remote_control: true,
+                supports_media_control: false,
+                supports_remote_control: false,
                 has_custom_device_name: false,
                 playlist_item_id: None,
                 server_id: Some(crate::utils::server_id()),

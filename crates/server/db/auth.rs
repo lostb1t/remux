@@ -69,6 +69,7 @@ pub struct Device {
     pub name: String,
     pub app_name: String,
     pub app_version: String,
+    pub last_activity_at: Option<DateTime<Utc>>,
 }
 
 impl Device {
@@ -146,6 +147,19 @@ impl Device {
         Ok(devices)
     }
 
+    /// Update last_activity_at to now.
+    pub async fn touch(&self, db: &SqlitePool) -> Result<()> {
+        sqlx::query(
+            "UPDATE devices SET last_activity_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') \
+             WHERE id = ? AND user_id = ?",
+        )
+        .bind(&self.id)
+        .bind(self.user_id)
+        .execute(db)
+        .await?;
+        Ok(())
+    }
+
     /// Get devices by user ID
     pub async fn get_by_user_id(db: &SqlitePool, user_id: &Uuid) -> Result<Vec<Self>> {
         let devices = sqlx::query_as::<_, Self>(
@@ -191,6 +205,7 @@ impl FromRequestParts<AppState> for AuthSession {
         let device = Device::get_by_access_token(&state.ctx.db, token)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
+        let _ = device.touch(&state.ctx.db).await;
         let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
