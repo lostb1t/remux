@@ -1,4 +1,5 @@
 pub mod system;
+pub mod startup;
 pub mod users;
 pub mod items;
 pub mod shows;

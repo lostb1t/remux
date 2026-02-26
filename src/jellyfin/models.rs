@@ -64,41 +64,73 @@ pub struct BrandingOptions {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, default2::Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct ServerConfiguration {
     /// Gets or sets a value indicating whether to enable prometheus metrics exporting.
+    #[default(Some(false))]
     pub enable_metrics: Option<bool>,
     /// Gets or sets a value indicating whether this instance is port authorized.
+    #[default(Some(true))]
     pub is_port_authorized: Option<bool>,
     /// Gets or sets a value indicating whether quick connect is available for use on this server.
+    #[default(Some(true))]
     pub quick_connect_available: Option<bool>,
     /// Gets or sets a value indicating whether [enable case-sensitive item ids].
+    #[default(Some(true))]
     pub enable_case_sensitive_item_ids: Option<bool>,
     /// Gets or sets the metadata path.
+    #[default(Some("/metadata".to_string()))]
     pub metadata_path: Option<String>,
     /// Gets or sets the preferred metadata language.
+    #[default(Some("en".to_string()))]
     pub preferred_metadata_language: Option<String>,
     /// Gets or sets the metadata country code.
+    #[default(Some("US".to_string()))]
     pub metadata_country_code: Option<String>,
     /// Gets or sets the path to the FFmpeg executable.
+    #[default(Some("/usr/bin/ffmpeg".to_string()))]
     pub ffmpeg_path: Option<String>,
     /// Gets or sets the path to the FFprobe executable.
+    #[default(Some("/usr/bin/ffprobe".to_string()))]
     pub ffprobe_path: Option<String>,
     /// Gets or sets the cache path.
+    #[default(Some("/cache".to_string()))]
     pub cache_path: Option<String>,
     /// Gets or sets the number of days we should retain log files.
+    #[default(Some(3))]
     pub log_file_retention_days: Option<i32>,
     /// Gets or sets a value indicating whether this instance is first run.
+    #[default(Some(false))]
     pub is_startup_wizard_completed: Option<bool>,
     /// Gets or sets the server name.
+    #[default(Some("Remux Server".to_string()))]
     pub server_name: Option<String>,
     /// Gets or sets the UI language culture.
+    #[default(Some("en-US".to_string()))]
     pub ui_language_culture: Option<String>,
     /// Gets or sets a value indicating whether to enable automatic updates.
+    #[default(Some(false))]
     pub enable_automatic_updates: Option<bool>,
     /// Gets or sets the path to the transcode temp folder.
+    #[default(Some("/transcodes".to_string()))]
     pub transcoding_temp_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct StartupConfiguration {
+    pub server_name: Option<String>,
+    pub preferred_metadata_language: Option<String>,
+    pub metadata_country_code: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct StartupUser {
+    pub name: Option<String>,
+    pub password: Option<String>,
+    pub password_confirm: Option<String>,
 }
 
 #[skip_serializing_none]
@@ -180,6 +212,7 @@ pub struct VirtualFolderInfo {
     pub collection_type: Option<CollectionType>,
     pub library_options: LibraryOptions,
     pub item_id: Option<String>,
+    pub primary_image_item_id: Option<String>,
     pub refresh_progress: Option<f64>,
     pub refresh_status: Option<String>,
 }

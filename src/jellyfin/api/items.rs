@@ -397,7 +397,6 @@ pub async fn library_mediafolders(
 #[get("/library/virtualfolders")]
 pub async fn library_virtualfolders(
     State(state): State<AppState>,
-    session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let folders = db::Media::get_by_filter(
         &state.ctx.db,

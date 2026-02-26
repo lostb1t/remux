@@ -21,6 +21,7 @@ use axum::{
     routing::{get, post},
 };
 use axum_anyhow::ApiError;
+use axum_anyhow::IntoApiError;
 use axum_anyhow::on_error;
 use axum_anyhow::set_expose_errors;
 use axum_anyhow::{ApiResult, OptionExt, ResultExt};
@@ -252,7 +253,8 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let raw = parts
+        // 1. Standard MediaBrowser/Emby Authorization header
+        if let Some(raw) = parts
             .headers
             .get(http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
@@ -262,8 +264,32 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
                     .get("X-Emby-Authorization")
                     .and_then(|v| v.to_str().ok())
             })
-            .context_unauthorized("forbidden", "forbidden")?;
+        {
+            return Ok(JellyfinAuthHeader::from_str(raw)?);
+        }
 
-        Ok(JellyfinAuthHeader::from_str(raw)?)
+        // 2. Bare token headers (X-Emby-Token / X-MediaBrowser-Token)
+        if let Some(token) = parts
+            .headers
+            .get("X-Emby-Token")
+            .or_else(|| parts.headers.get("X-MediaBrowser-Token"))
+            .and_then(|v| v.to_str().ok())
+        {
+            return Ok(JellyfinAuthHeader { token: Some(token.to_string()), ..Default::default() });
+        }
+
+        // 3. api_key / ApiKey query parameter
+        if let Some(query) = parts.uri.query() {
+            for pair in query.split('&') {
+                let mut kv = pair.splitn(2, '=');
+                if let (Some(key), Some(val)) = (kv.next(), kv.next()) {
+                    if key.eq_ignore_ascii_case("api_key") || key.eq_ignore_ascii_case("apikey") {
+                        return Ok(JellyfinAuthHeader { token: Some(val.to_string()), ..Default::default() });
+                    }
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("missing auth").context_unauthorized("forbidden", "forbidden"))
     }
 }

@@ -15,16 +15,16 @@ use anyhow;
 
 use super::{mock_items, stub};
 
-/// TODO: make a real server id
 #[get("/system/info/public")]
 pub async fn system_info_public(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
+    let config = crate::db::Settings::get_config(&state.ctx.db).await?;
     Ok(Json(jellyfin::PublicSystemInfo {
         local_address: Some("".to_string()),
-        server_name: Some("Remux".to_string()),
+        server_name: config.server_name,
         product_name: Some("Jellyfin Server".to_string()),
-        startup_wizard_completed: Some(true),
+        startup_wizard_completed: config.is_startup_wizard_completed,
         version: Some("10.10.7".to_string()),
         operating_system: Some("".to_string()),
         id: Some(server_id()),
@@ -140,41 +140,12 @@ pub async fn system_info_storage(
     Ok(Json(system_storage_info))
 }
 
-const SERVER_CONFIG_KEY: &str = "server_configuration";
-
-fn default_server_configuration() -> jellyfin::ServerConfiguration {
-    jellyfin::ServerConfiguration {
-        enable_metrics: Some(false),
-        is_port_authorized: Some(true),
-        quick_connect_available: Some(true),
-        enable_case_sensitive_item_ids: Some(true),
-        metadata_path: Some("/metadata".to_string()),
-        preferred_metadata_language: Some("en".to_string()),
-        metadata_country_code: Some("US".to_string()),
-        ffmpeg_path: Some("/usr/bin/ffmpeg".to_string()),
-        ffprobe_path: Some("/usr/bin/ffprobe".to_string()),
-        cache_path: Some("/cache".to_string()),
-        log_file_retention_days: Some(3),
-        is_startup_wizard_completed: Some(true),
-        server_name: Some("Remux Server".to_string()),
-        ui_language_culture: Some("en-US".to_string()),
-        enable_automatic_updates: Some(false),
-        transcoding_temp_path: Some("/transcodes".to_string()),
-        ..Default::default()
-    }
-}
-
 /// Get server configuration
 #[get("/system/configuration")]
 pub async fn system_configuration(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
-    let config = match crate::db::Settings::get(&state.ctx.db, SERVER_CONFIG_KEY).await? {
-        Some(json) => serde_json::from_str(&json)
-            .unwrap_or_else(|_| default_server_configuration()),
-        None => default_server_configuration(),
-    };
-    Ok(Json(config))
+    Ok(Json(crate::db::Settings::get_config(&state.ctx.db).await?))
 }
 
 /// Update server configuration
@@ -183,8 +154,7 @@ pub async fn update_system_configuration(
     State(state): State<AppState>,
     Json(config): Json<jellyfin::ServerConfiguration>,
 ) -> Result<impl IntoResponse> {
-    let json = serde_json::to_string(&config)?;
-    crate::db::Settings::set(&state.ctx.db, SERVER_CONFIG_KEY, &json).await?;
+    crate::db::Settings::set_config(&state.ctx.db, &config).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -425,15 +395,15 @@ async fn shutdown_server() -> Result<()> {
     std::process::exit(0);
 }
 
-/// Update system_info to reflect restart/shutdown capabilities
 #[get("/system/info")]
 pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    let config = crate::db::Settings::get_config(&state.ctx.db).await?;
     Ok(Json(jellyfin::SystemInfo {
         id: Some(server_id()),
-        server_name: Some(server_id()),
-        can_self_restart: Some(true), // Indicate that restart is supported
-        has_pending_restart: Some(false), // No pending restart initially
-        is_shutting_down: Some(false), // Not shutting down initially
+        server_name: config.server_name,
+        can_self_restart: Some(true),
+        has_pending_restart: Some(false),
+        is_shutting_down: Some(false),
         ..Default::default()
     }))
 }

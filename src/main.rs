@@ -152,7 +152,7 @@ async fn init_app() -> Result<Router> {
             ..Default::default()
         };
 
-        user.save_by_username(&conn).await?;
+       // user.save_by_username(&conn).await?;
     }
 
     // libraries
@@ -185,7 +185,7 @@ async fn init_app() -> Result<Router> {
             ..Default::default()
         };
 
-        media.save(&conn).await?;
+       // media.save(&conn).await?;
     }
 
     let ctx = AppContext {
