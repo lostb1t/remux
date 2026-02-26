@@ -27,9 +27,9 @@ pub async fn post_startup_configuration(
     Json(body): Json<jellyfin::StartupConfiguration>,
 ) -> Result<impl IntoResponse> {
     let mut config = crate::db::Settings::get_config(&state.ctx.db).await?;
-    if let Some(v) = body.server_name { config.server_name = Some(v); }
-    if let Some(v) = body.preferred_metadata_language { config.preferred_metadata_language = Some(v); }
-    if let Some(v) = body.metadata_country_code { config.metadata_country_code = Some(v); }
+    config.server_name = body.server_name.or(config.server_name);
+    config.preferred_metadata_language = body.preferred_metadata_language.or(config.preferred_metadata_language);
+    config.metadata_country_code = body.metadata_country_code.or(config.metadata_country_code);
     crate::db::Settings::set_config(&state.ctx.db, &config).await?;
     Ok(StatusCode::NO_CONTENT)
 }
