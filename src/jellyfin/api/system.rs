@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
 use remux_macros::{get, post, route};
 use http::StatusCode;
 use serde_json::json;
@@ -249,6 +250,27 @@ pub async fn update_branding_configuration(
     let json = serde_json::to_string(&config)?;
     crate::db::Settings::set(&state.ctx.db, BRANDING_CONFIG_KEY, &json).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn branding_css_response(state: &AppState) -> Result<Response> {
+    let config = match crate::db::Settings::get(&state.ctx.db, BRANDING_CONFIG_KEY).await? {
+        Some(json) => serde_json::from_str::<jellyfin::BrandingOptions>(&json).ok(),
+        None => None,
+    };
+    match config.and_then(|c| c.custom_css).filter(|s| !s.is_empty()) {
+        Some(css) => Ok(([(header::CONTENT_TYPE, "text/css")], css).into_response()),
+        None => Ok(StatusCode::NO_CONTENT.into_response()),
+    }
+}
+
+#[get("/branding/css")]
+pub async fn get_branding_css(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    branding_css_response(&state).await
+}
+
+#[get("/branding/css.css")]
+pub async fn get_branding_css_dotcss(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    branding_css_response(&state).await
 }
 
 /// Get activity log entries
