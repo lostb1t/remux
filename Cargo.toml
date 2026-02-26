@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/dashboard", "crates/server", "crates/remux-macros"]
+members = ["crates/dashboard", "crates/server", "crates/remux-macros", "crates/shared"]
 default-members = ["crates/server", "crates/remux-macros"]
 
 [patch.crates-io]

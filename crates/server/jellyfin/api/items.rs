@@ -78,7 +78,7 @@ pub async fn get_items(
                             meta.clone(),
                             Duration::from_secs(360),
                         );
-                        Some(jellyfin::BaseItemDto::from(media))
+                        Some(jellyfin::db_media_to_item(media))
                     }
                     Err(e) => {
                         warn!("Failed to convert item to Media: {}", e);
@@ -119,7 +119,7 @@ pub async fn get_items(
 
             return Ok(ItemsQueryResult {
                 total_count: result.total_count as i64,
-                items: result.records.into_vec(),
+                items: result.records.into_iter().map(jellyfin::db_media_to_item).collect(),
             });
         }
 
@@ -131,11 +131,11 @@ pub async fn get_items(
             q.parent_id = None;
 
             if let Some(kind) = parent.catalog_media_kind.clone() {
-                q.include_item_types = Some(vec![kind.into()]);
+                q.include_item_types = Some(vec![jellyfin::db_media_kind_to_type(kind)]);
             } else {
                 q.include_item_types = Some(vec![
-                    db::MediaKind::Movie.into(),
-                    db::MediaKind::Series.into(),
+                    jellyfin::MediaType::Movie,
+                    jellyfin::MediaType::Series,
                 ]);
             }
             //             q.include_item_types = Some(vec![jellyfin::MediaType::Movie]);
@@ -151,7 +151,7 @@ pub async fn get_items(
 
             return Ok(ItemsQueryResult {
                 total_count: result.total_count as i64,
-                items: result.records.into_vec(),
+                items: result.records.into_iter().map(jellyfin::db_media_to_item).collect(),
             });
         }
 
@@ -218,7 +218,7 @@ pub async fn get_items(
                 media.load_relations(&state.ctx.db).await?;
 
                 return Ok(ItemsQueryResult {
-                    items: vec![media.clone().into()],
+                    items: vec![jellyfin::db_media_to_item(media.clone())],
                     total_count: 1,
                 });
             }
@@ -226,7 +226,7 @@ pub async fn get_items(
     }
 
     Ok(ItemsQueryResult {
-        items: result.records.into_vec(),
+        items: result.records.into_iter().map(jellyfin::db_media_to_item).collect(),
         total_count: 999_999,
     })
 }
@@ -383,7 +383,7 @@ pub async fn library_mediafolders(
     .await?
     .records
     .into_iter()
-    .map(|x| jellyfin::BaseItemDto::from(x))
+    .map(|x| jellyfin::db_media_to_item(x))
     .collect::<Vec<_>>();
 
     let total = items.len() as i64;
@@ -412,7 +412,7 @@ pub async fn library_virtualfolders(
     .map(|m| {
         let collection_type = m
             .catalog_media_kind
-            .map(|k| jellyfin::CollectionType::from(k));
+            .map(|k| jellyfin::db_media_kind_to_collection_type(k));
         jellyfin::VirtualFolderInfo {
             name: Some(m.title.clone()),
             item_id: Some(m.id.to_string()),
@@ -442,7 +442,7 @@ pub async fn genres(
     let total = genres.len() as i64;
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
-        items: genres.into_iter().map(jellyfin::BaseItemDto::from).collect(),
+        items: genres.into_iter().map(jellyfin::db_media_to_item).collect(),
         total_record_count: total,
         start_index: q.start_index.unwrap_or(0),
         ..Default::default()

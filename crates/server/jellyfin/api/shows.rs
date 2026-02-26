@@ -72,7 +72,7 @@ pub async fn userviews(
     .records
     .into_iter()
     .map(|x| {
-        let mut item: jellyfin::BaseItemDto = x.into();
+        let mut item = jellyfin::db_media_to_item(x);
         //item.type_ = jellyfin::MediaType::CollectionFolder;
         //item.collection_type = Some(jellyfin::CollectionType::Movies);
         item

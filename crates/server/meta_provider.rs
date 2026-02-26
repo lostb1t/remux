@@ -172,11 +172,11 @@ impl MetaProvider for AioMetaProvider {
 
         let meta = ctx
             .aio
-            .get_meta(media.kind.clone().into(), imdb_id)
+            .get_meta(db::media_kind_to_aio(&media.kind), imdb_id)
             .await?;
 
         let meta_raw = meta.clone();
-        let medias: Vec<db::Media> = meta.try_into()?;
+        let medias: Vec<db::Media> = db::aio_meta_to_medias(meta)?;
         let found = match media.kind {
             db::MediaKind::Movie => {
                 medias.into_iter().find(|x| x.kind == db::MediaKind::Movie)
@@ -252,11 +252,11 @@ impl TreeSyncProvider for AioTreeSyncProvider {
 
         let meta = ctx
             .aio
-            .get_meta(series.kind.clone().into(), imdb_id)
+            .get_meta(db::media_kind_to_aio(&series.kind), imdb_id)
             .await?;
 
         let meta_clone = meta.clone();
-        let medias: Vec<db::Media> = meta.try_into()?;
+        let medias: Vec<db::Media> = db::aio_meta_to_medias(meta)?;
         let seasons = medias
             .into_iter()
             .filter_map(|mut x| {
@@ -282,10 +282,10 @@ impl TreeSyncProvider for AioTreeSyncProvider {
 
         let meta = ctx
             .aio
-            .get_meta(season.kind.clone().into(), imdb_id)
+            .get_meta(db::media_kind_to_aio(&season.kind), imdb_id)
             .await?;
 
-        let medias: Vec<db::Media> = meta.try_into()?;
+        let medias: Vec<db::Media> = db::aio_meta_to_medias(meta)?;
         let episodes = medias
             .into_iter()
             .filter_map(|mut x| {

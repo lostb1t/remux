@@ -64,6 +64,7 @@ tempfile = "3.20.0"
 ffprobe = { git = "https://github.com/theduke/ffprobe-rs.git", branch = "main" }
 #http-cache-reqwest = { version = "0.16", default-features = true, features = ["manager-moka"] }
 reqwest-middleware = { version = "0.4", default-features = false, features = ["rustls-tls"] }
+shared = { path = "../shared", features = ["native"] }
 isolang = { version = "2.4.0", features = ["list_languages"] }
 timed = "0.2.1"
 async-trait = "0.1.88"

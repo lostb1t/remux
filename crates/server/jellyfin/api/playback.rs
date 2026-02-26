@@ -22,6 +22,7 @@ use crate::AppState;
 use crate::db;
 use crate::db::auth;
 use crate::jellyfin;
+use crate::jellyfin::MediaSourceInfoExt;
 use crate::playback_session::PlaybackSession;
 use crate::sdks;
 use crate::utils;
@@ -68,7 +69,7 @@ async fn items_playbackinfo_inner(
             .await?
             .context_not_found("not found", "not found")?;
 
-    let mut source: jellyfin::MediaSourceInfo = media.into();
+    let mut source = jellyfin::media_source_from_db(media);
     source.probe_in_place()?;
 
     // Determine if transcoding is needed based on device profile and query parameters
@@ -776,7 +777,7 @@ pub async fn user_mark_played(
         .await?
         .context_not_found("not found", "not found")?;
     let ms = media.mark_played(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::UserItemDataDto::from(ms)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(ms)).into_response())
 }
 
 #[delete("/userplayeditems/{id}")]
@@ -789,7 +790,7 @@ pub async fn user_unmark_played(
         .await?
         .context_not_found("not found", "not found")?;
     let ms = media.mark_unplayed(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::UserItemDataDto::from(ms)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(ms)).into_response())
 }
 
 /// Jellyfin-compatible master HLS playlist endpoint.

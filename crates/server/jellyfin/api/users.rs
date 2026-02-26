@@ -74,7 +74,7 @@ pub async fn get_display_preferences(
         }
     };
 
-    Ok(Json(jellyfin::DisplayPreferencesDto::from(prefs)))
+    Ok(Json(jellyfin::db_display_prefs_to_dto(prefs)))
 }
 
 #[post("/displaypreferences/{id}")]
@@ -120,7 +120,7 @@ pub async fn users_authenticatebyname(
     Ok(Json(jellyfin::AuthenticationResult {
         access_token: Some(device.access_token),
         server_id: server_id(),
-        user: Some(user.into()),
+        user: Some(jellyfin::db_user_to_dto(user)),
         ..Default::default()
     }))
 }
@@ -140,7 +140,7 @@ pub async fn users(
     .records
     .into_iter()
     .map(|x| {
-        let mut item: jellyfin::UserDto = x.into();
+        let mut item = jellyfin::db_user_to_dto(x);
         //item.type_ = jellyfin::MediaType::CollectionFolder;
         //item.collection_type = Some(jellyfin::CollectionType::Movies);
         item
@@ -165,7 +165,7 @@ pub async fn users_me(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(jellyfin::UserDto::from(session.user)).into_response())
+    Ok(Json(jellyfin::db_user_to_dto(session.user)).into_response())
 }
 
 #[post("/users/{user_id}/favoriteitems/{id}")]
@@ -178,7 +178,7 @@ pub async fn mark_favorite(
         .await?
         .context("not foubd")?;
     let state = media.mark_favorite(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(state)).into_response())
 }
 
 #[delete("/users/{user_id}/favoriteitems/{id}")]
@@ -191,7 +191,7 @@ pub async fn unmark_favorite(
         .await?
         .context("not foubd")?;
     let state = media.unmark_favorite(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(state)).into_response())
 }
 
 #[post("/users/{user_id}/playeditems/{id}")]
@@ -204,7 +204,7 @@ pub async fn mark_played(
         .await?
         .context("not foubd")?;
     let state = media.mark_played(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(state)).into_response())
 }
 
 #[delete("/users/{user_id}/playeditems/{id}")]
@@ -217,7 +217,7 @@ pub async fn unmark_played(
         .await?
         .context("not foubd")?;
     let state = media.mark_unplayed(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(state)).into_response())
 }
 
 #[get("/users/{user_id}/groupingoptions")]
@@ -246,7 +246,7 @@ pub async fn create_user(
     )?;
     user.save(&state.ctx.db).await?;
     let _ = state.ctx.ws_tx.send(WsEvent::UserUpdated(user.id));
-    Ok((StatusCode::OK, Json(jellyfin::UserDto::from(user))).into_response())
+    Ok((StatusCode::OK, Json(jellyfin::db_user_to_dto(user))).into_response())
 }
 
 #[delete("/users/{user_id}")]
@@ -361,7 +361,7 @@ pub async fn users_get_by_id(
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if user_id == session.user.id {
-        return Ok(Json(jellyfin::UserDto::from(session.user)).into_response());
+        return Ok(Json(jellyfin::db_user_to_dto(session.user)).into_response());
     }
     if !session.user.is_admin {
         return Err(anyhow::anyhow!("Forbidden")
@@ -370,7 +370,7 @@ pub async fn users_get_by_id(
     let user = db::User::get_by_id(&state.ctx.db, &user_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("User not found").context_not_found("not found", "user not found"))?;
-    Ok(Json(jellyfin::UserDto::from(user)).into_response())
+    Ok(Json(jellyfin::db_user_to_dto(user)).into_response())
 }
 
 #[get("/users/{user_id}/items/{id}")]

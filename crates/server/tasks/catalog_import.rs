@@ -68,7 +68,7 @@ impl Task for CatalogImportTask {
                 let items: Vec<db::Media> = metas
                     .into_iter()
                     .unique_by(|meta| meta.id.clone())
-                    .flat_map(|meta| match Vec::<db::Media>::try_from(meta) {
+                    .flat_map(|meta| match db::aio_meta_to_medias(meta) {
                         Ok(items) => items.into_iter(),
                         Err(e) => {
                             warn!(error = %e, "failed to convert metadata, skipping");

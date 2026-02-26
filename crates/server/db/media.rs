@@ -114,31 +114,11 @@ impl From<sdks::aio::MediaType> for MediaKind {
     }
 }
 
-impl From<MediaKind> for sdks::aio::MediaType {
-    fn from(kind: MediaKind) -> Self {
-        match kind {
-            MediaKind::Movie => sdks::aio::MediaType::Movie,
-            MediaKind::Series => sdks::aio::MediaType::Series,
-            MediaKind::Season => sdks::aio::MediaType::Series,
-            MediaKind::Episode => sdks::aio::MediaType::Series,
-            // MediaKind::Catalog => jellyfin::MediaType::CollectionFolder,
-            _ => todo!("{}", kind),
-        }
-    }
-}
-
-impl From<MediaKind> for jellyfin::MediaType {
-    fn from(kind: MediaKind) -> Self {
-        match kind {
-            MediaKind::Movie => jellyfin::MediaType::Movie,
-            MediaKind::Series => jellyfin::MediaType::Series,
-            MediaKind::Season => jellyfin::MediaType::Season,
-            MediaKind::Episode => jellyfin::MediaType::Episode,
-            MediaKind::Catalog => jellyfin::MediaType::BoxSet,
-            MediaKind::Genre => jellyfin::MediaType::Genre,
-            // MediaKind::Catalog => jellyfin::MediaType::CollectionFolder,
-            _ => jellyfin::MediaType::Unknown,
-        }
+pub fn media_kind_to_aio(kind: &MediaKind) -> sdks::aio::MediaType {
+    match kind {
+        MediaKind::Movie => sdks::aio::MediaType::Movie,
+        MediaKind::Series | MediaKind::Season | MediaKind::Episode => sdks::aio::MediaType::Series,
+        _ => sdks::aio::MediaType::Movie,
     }
 }
 
@@ -876,7 +856,7 @@ impl Media {
         let mut item = jellyfin::BaseItemDto {
             id: self.id,
             server_id: server_id(),
-            type_: self.kind.clone().into(),
+            type_: jellyfin::db_media_kind_to_type(self.kind.clone()),
             parent_id: self.parent_id,
             index_number: self.idx,
             name: Some(match self.kind {
@@ -951,10 +931,7 @@ impl Media {
         db: &sqlx::SqlitePool,
         aio: &aio::AioService,
     ) -> Result<Vec<Self>> {
-        let kind = match &self.kind {
-            MediaKind::Movie => MediaKind::Movie.into(),
-            _ => MediaKind::Series.into(),
-        };
+        let kind = media_kind_to_aio(&self.kind);
         let streams = aio.get_streams(kind, self.aio_id.clone().unwrap()).await?;
 
         let items = streams
@@ -1190,10 +1167,8 @@ impl TryFrom<sdks::aio::Meta> for Media {
     }
 }
 
-impl TryFrom<sdks::aio::Meta> for Vec<Media> {
-    type Error = anyhow::Error;
-    fn try_from(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
-        let imdb_id = meta.imdb_id.clone().context("imdb_id is missing")?;
+pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
+    let imdb_id = meta.imdb_id.clone().context("imdb_id is missing")?;
 
         let media: Media = meta.clone().try_into()?;
 
@@ -1246,8 +1221,7 @@ impl TryFrom<sdks::aio::Meta> for Vec<Media> {
             }
         }
 
-        Ok(media_instances)
-    }
+    Ok(media_instances)
 }
 
 pub fn collection_uuid() -> Uuid {

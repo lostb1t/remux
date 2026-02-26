@@ -172,11 +172,11 @@ async fn init_app() -> Result<Router> {
     Ok(Router::new()
         .route("/websocket", get(ws::ws_handler))
         .merge(collect_routes())
-       // .nest_service(
-       //     "/admin",
-       //     ServeDir::new(&settings.dashboard_path)
-       //         .fallback(ServeFile::new(dashboard_index)),
-       // )
+        .nest_service(
+            "/admin",
+            ServeDir::new(&settings.dashboard_path)
+                .fallback(ServeFile::new(dashboard_index)),
+        )
         .with_state(state)
         .layer(on_error(|err| {
             tracing::error!(

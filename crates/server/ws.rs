@@ -136,7 +136,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSes
                 match result {
                     Ok(WsEvent::UserUpdated(user_id)) => {
                         if let Ok(Some(user)) = db::User::get_by_id(&state.ctx.db, &user_id).await {
-                            if !send_msg(&mut socket, SessionMessageType::USER_UPDATED, Some(jellyfin::UserDto::from(user))).await {
+                            if !send_msg(&mut socket, SessionMessageType::USER_UPDATED, Some(jellyfin::db_user_to_dto(user))).await {
                                 return;
                             }
                         }

@@ -33,7 +33,7 @@ pub async fn get_devices(
     // Convert to Jellyfin DeviceInfo format
     let device_infos: Vec<jellyfin::DeviceInfo> = devices
         .iter()
-        .map(|device| jellyfin::DeviceInfo::from(device))
+        .map(|device| jellyfin::device_info_from(device))
         .collect();
 
     // Return as QueryResult format
