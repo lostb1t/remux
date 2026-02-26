@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
-use shared::sdks::jellyfin::{AuthenticateUserByName, GetSessions, JellyfinAuth, PublicSystemInfo, SessionInfoDto};
+use shared::sdks::jellyfin::{AuthenticateUserByName, GetScheduledTasks, GetSessions, JellyfinAuth, PublicSystemInfo, SessionInfoDto, TaskInfo};
 use shared::sdks::{ClientError, RestClient};
 use uuid::Uuid;
 
@@ -295,9 +295,6 @@ fn ServerInfoCard(app_state: AppState) -> Element {
                 } else if let Some(info) = server_info.read().as_ref() {
                     KvRow { label: "Name", value: info.server_name.clone().unwrap_or_default() }
                     KvRow { label: "Version", value: info.version.clone().unwrap_or_default() }
-                    KvRow { label: "Product", value: info.product_name.clone().unwrap_or_default() }
-                    KvRow { label: "OS", value: info.operating_system.clone().unwrap_or_default() }
-                    KvRow { label: "Server ID", value: info.id.clone().unwrap_or_default() }
                 }
             }
         }
@@ -381,6 +378,99 @@ fn SessionsCard(app_state: AppState) -> Element {
 }
 
 #[component]
+fn TasksCard(app_state: AppState) -> Element {
+    let mut tasks: Signal<Vec<TaskInfo>> = use_signal(Vec::new);
+    let mut loading = use_signal(|| true);
+    let mut error = use_signal(|| Option::<String>::None);
+
+    use_effect(move || {
+        let client = app_state.client.clone();
+        spawn(async move {
+            match client.execute(GetScheduledTasks { is_hidden: Some(false) }).await {
+                Ok(t) => { tasks.set(t); error.set(None); }
+                Err(e) => error.set(Some(format!("Failed to fetch tasks: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Scheduled Tasks" }
+            }
+            div { class: "card-body",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else if let Some(err) = error.read().as_ref() {
+                    span { class: "loading-text", style: "color:var(--error)", "{err}" }
+                } else if tasks.read().is_empty() {
+                    div { class: "empty-state", "No tasks found" }
+                } else {
+                    for task in tasks.read().iter() {
+                        TaskRow { task: task.clone() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn TaskRow(task: TaskInfo) -> Element {
+    let state = task.state.as_deref().unwrap_or("Idle");
+    let is_running = state == "Running";
+
+    let badge_class = match state {
+        "Running"    => "task-badge task-badge-running",
+        "Completed"  => "task-badge task-badge-completed",
+        "Failed"     => "task-badge task-badge-failed",
+        _            => "task-badge task-badge-idle",
+    };
+
+    // Last result status shown when idle
+    let last_status = task.last_execution_result
+        .as_ref()
+        .and_then(|r| r.status.as_deref())
+        .unwrap_or("");
+
+    let display_state = if is_running { state } else { last_status };
+    let display_badge = if is_running {
+        badge_class
+    } else {
+        match last_status {
+            "Completed" => "task-badge task-badge-completed",
+            "Failed"    => "task-badge task-badge-failed",
+            _           => "task-badge task-badge-idle",
+        }
+    };
+
+    rsx! {
+        div { class: "task-row",
+            div { style: "min-width:0; flex:1",
+                div { class: "task-name", "{task.name}" }
+                if let Some(cat) = &task.category {
+                    div { class: "task-category", "{cat}" }
+                }
+                if is_running {
+                    if let Some(pct) = task.current_progress_percentage {
+                        div { class: "task-progress-bar",
+                            div {
+                                class: "task-progress-fill",
+                                style: "width:{pct:.0}%",
+                            }
+                        }
+                    }
+                }
+            }
+            if !display_state.is_empty() {
+                span { class: "{display_badge}", "{display_state}" }
+            }
+        }
+    }
+}
+
+#[component]
 fn Dashboard(on_logout: EventHandler) -> Element {
     let server = match get_stored_server() {
         Some(s) => s,
@@ -409,6 +499,7 @@ fn Dashboard(on_logout: EventHandler) -> Element {
 
                 ServerInfoCard { app_state: app_state.clone() }
                 SessionsCard { app_state: app_state.clone() }
+                TasksCard { app_state: app_state.clone() }
             }
         }
     }

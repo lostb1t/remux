@@ -30,6 +30,26 @@ impl Endpoint for GetSessions {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct GetScheduledTasks {
+    pub is_hidden: Option<bool>,
+}
+
+impl Endpoint for GetScheduledTasks {
+    type Output = Vec<TaskInfo>;
+
+    fn path(&self) -> String {
+        "/scheduledtasks".into()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        match self.is_hidden {
+            Some(v) => vec![("isHidden".into(), v.to_string())],
+            None => vec![],
+        }
+    }
+}
+
 impl Endpoint for AuthenticateUserByName {
     type Output = AuthenticateUserByNameResult;
 

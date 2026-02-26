@@ -391,6 +391,86 @@ html, body {
   padding: 20px 0;
 }
 
+/* ── Task rows ───────────────────────────────────────────────────── */
+.task-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.task-row:last-child { border-bottom: none; }
+
+.task-name {
+  font-size: .85rem;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.task-category {
+  font-family: var(--font-mono);
+  font-size: .65rem;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
+
+.task-progress-bar {
+  margin-top: 7px;
+  height: 3px;
+  background: var(--border);
+  border-radius: 99px;
+  overflow: hidden;
+  width: 100%;
+  max-width: 200px;
+}
+
+.task-progress-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 99px;
+  transition: width .3s ease;
+}
+
+.task-badge {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.task-badge-running {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.task-badge-completed {
+  color: var(--success);
+  border-color: rgba(16, 185, 129, .3);
+  background: rgba(16, 185, 129, .08);
+}
+
+.task-badge-failed {
+  color: var(--error);
+  border-color: rgba(239, 68, 68, .3);
+  background: var(--error-glow);
+}
+
+.task-badge-idle {
+  color: var(--text-dim);
+  border-color: var(--border);
+  background: transparent;
+}
+
 /* ── Loading skeleton ────────────────────────────────────────────── */
 .loading-text {
   font-family: var(--font-mono);

@@ -1963,7 +1963,7 @@ pub enum VideoRangeType {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct TaskInfo {
     /// Gets or sets the name.
@@ -1997,7 +1997,7 @@ pub struct TaskInfo {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct TaskResult {
     /// Gets or sets the status.
@@ -2019,7 +2019,7 @@ pub struct TaskResult {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct TaskTriggerInfo {
     /// Gets or sets the type.
