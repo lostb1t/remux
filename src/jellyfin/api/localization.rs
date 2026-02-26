@@ -59,3 +59,8 @@ pub async fn get_localization_options(
 
     Ok(Json(options))
 }
+
+#[get("/localization/parentalratings")]
+pub async fn get_parental_ratings(State(_state): State<AppState>) -> Result<impl IntoResponse> {
+    Ok(Json(Vec::<serde_json::Value>::new()))
+}

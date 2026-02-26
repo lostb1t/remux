@@ -367,6 +367,33 @@ pub async fn items_filters(State(state): State<AppState>) -> Result<impl IntoRes
     }))
 }
 
+#[get("/library/mediafolders")]
+pub async fn library_mediafolders(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    let items = db::Media::get_by_filter(
+        &state.ctx.db,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::Catalog, db::MediaKind::Folder]),
+            promoted: Some(true),
+            ..Default::default()
+        },
+    )
+    .await?
+    .records
+    .into_iter()
+    .map(|x| jellyfin::BaseItemDto::from(x))
+    .collect::<Vec<_>>();
+
+    let total = items.len() as i64;
+    Ok(Json(jellyfin::BaseItemDtoQueryResult {
+        items,
+        total_record_count: total,
+        ..Default::default()
+    }))
+}
+
 #[get("/library/virtualfolders")]
 pub async fn library_virtualfolders(
     State(state): State<AppState>,
@@ -419,4 +446,9 @@ pub async fn items_similar(State(state): State<AppState>) -> Result<impl IntoRes
 #[get("/items/{id}/thememedia")]
 pub async fn items_thememedia(State(state): State<AppState>) -> Result<impl IntoResponse> {
     stub_json(State(state)).await
+}
+
+#[get("/channels")]
+pub async fn channels(State(state): State<AppState>) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
 }
