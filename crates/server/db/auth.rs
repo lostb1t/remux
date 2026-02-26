@@ -209,7 +209,7 @@ impl FromRequestParts<AppState> for AuthSession {
         let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
-        let aio = crate::aio::AioService::from_url(&state.ctx.config.aio_url)?;
+        let aio = state.ctx.aio.clone();
         Ok(AuthSession { device, user, aio })
     }
 }
