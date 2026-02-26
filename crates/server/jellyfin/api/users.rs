@@ -15,6 +15,7 @@ use crate::db::auth;
 use crate::db::user::User;
 use crate::jellyfin;
 use crate::utils::server_id;
+use crate::ws::WsEvent;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 
 use super::mock_items;
@@ -244,6 +245,7 @@ pub async fn create_user(
         None,
     )?;
     user.save(&state.ctx.db).await?;
+    let _ = state.ctx.ws_tx.send(WsEvent::UserUpdated(user.id));
     Ok((StatusCode::OK, Json(jellyfin::UserDto::from(user))).into_response())
 }
 
@@ -262,6 +264,7 @@ pub async fn delete_user(
             .context_bad_request("invalid", "cannot delete own account"));
     }
     db::User::delete(&state.ctx.db, &user_id).await?;
+    let _ = state.ctx.ws_tx.send(WsEvent::UserDeleted(user_id));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -295,6 +298,7 @@ pub async fn change_password(
     let new_pw = payload.new_pw.as_deref().unwrap_or("");
     user.set_password(new_pw)?;
     user.save(&state.ctx.db).await?;
+    let _ = state.ctx.ws_tx.send(WsEvent::UserUpdated(user_id));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -315,6 +319,7 @@ pub async fn update_user_policy(
     user.is_admin = policy.is_administrator;
     user.policy = Some(sqlx::types::Json(policy));
     user.save(&state.ctx.db).await?;
+    let _ = state.ctx.ws_tx.send(WsEvent::UserUpdated(user_id));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -338,6 +343,7 @@ pub async fn update_user(
         user.configuration = Some(sqlx::types::Json(config));
     }
     user.save(&state.ctx.db).await?;
+    let _ = state.ctx.ws_tx.send(WsEvent::UserUpdated(user_id));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

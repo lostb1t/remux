@@ -89,6 +89,7 @@ mod tasks;
 mod transcode;
 mod web_patches;
 mod web_transform;
+mod ws;
 
 /// Route auto-registration via `#[get("/path")]`, `#[post("/path")]`, etc.
 pub struct RouteRegistration(pub fn(axum::Router<AppState>) -> axum::Router<AppState>);
@@ -141,12 +142,15 @@ async fn init_app() -> Result<Router> {
     // FOR TWSTING ONLY
     // db::checkpoint_db(&conn).await;
 
+    let (ws_tx, _) = tokio::sync::broadcast::channel(128);
+
     let ctx = AppContext {
         config: settings.clone(),
         db: conn.clone(),
         aio: aio::AioService::from_url(&settings.aio_url)?,
         store: store::Store::new(100000),
         transcode: transcode::session::TranscodeSessionManager::new("transcode_sessions"),
+        ws_tx,
     };
 
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
@@ -166,12 +170,13 @@ async fn init_app() -> Result<Router> {
     let dashboard_index =
         format!("{}/index.html", settings.dashboard_path);
     Ok(Router::new()
+        .route("/websocket", get(ws::ws_handler))
         .merge(collect_routes())
-        .nest_service(
-            "/admin",
-            ServeDir::new(&settings.dashboard_path)
-                .fallback(ServeFile::new(dashboard_index)),
-        )
+       // .nest_service(
+       //     "/admin",
+       //     ServeDir::new(&settings.dashboard_path)
+       //         .fallback(ServeFile::new(dashboard_index)),
+       // )
         .with_state(state)
         .layer(on_error(|err| {
             tracing::error!(
@@ -195,6 +200,7 @@ pub struct AppContext {
     pub aio: aio::AioService,
     pub store: store::Store,
     pub transcode: transcode::session::TranscodeSessionManager,
+    pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,
 }
 
 #[derive(Clone)]

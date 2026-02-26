@@ -11,7 +11,7 @@ use tokio_cron_scheduler::job::JobId;
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::{error, info};
 
-use crate::{AppContext, db};
+use crate::{AppContext, db, ws};
 
 mod catalog_import;
 mod refresh_library;
@@ -134,6 +134,7 @@ impl TaskHandler {
             let (new_status, db_status) = match &result {
                 Ok(_) => {
                     info!(task = %task.name(), elapsed = ?elapsed, "completed");
+                    let _ = ctx.ws_tx.send(ws::WsEvent::LibraryChanged);
                     (TaskStatus::Idle, db::TaskResultStatus::Completed)
                 }
                 Err(e) => {

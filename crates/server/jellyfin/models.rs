@@ -1589,6 +1589,7 @@ pub struct NameIdPair {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct SessionInfoDto {
     //pub play_state: Option<PlayerStateInfo>,
     // pub additional_users: Option<Vec<SessionUserInfo>>,
