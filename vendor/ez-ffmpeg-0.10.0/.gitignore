@@ -1,0 +1,10 @@
+/target
+examples/*/target
+.lock
+.DS_Store
+.idea/
+output.mp4
+output.aac
+output.flv
+output.jpg
+Cargo.lock

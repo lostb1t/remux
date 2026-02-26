@@ -85,7 +85,7 @@ moka = { version = "0.12.12", features = ["sync"] }
 reqwest-tracing = "0.5.8"
 serde_urlencoded = "0.7.1"
 config = "0.15.19"
-#ez-ffmpeg = { version = "0.6.0" }
+ez-ffmpeg = { version = "0.10.0" }
 serde-aux = "4.7.0"
 sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "uuid", "chrono" ] }
 argon2 = { version = "0.5.3", default-features = true}
@@ -96,7 +96,7 @@ md5 = "0.8.0"
 tokio-cron-scheduler = "*"
 inventory = "0.3"
 remux-macros = { path = "remux-macros" }
-ez-ffmpeg = { path = "vendor/ez-ffmpeg", features = ["async"] }
+#ez-ffmpeg = { path = "vendor/ez-ffmpeg", features = ["async"] }
 dashmap = "5.5"
 #[target.'cfg(any(target_arch = "arm", target_arch = "aarch64"))'.dependencies]
 #ez_ffmpeg_arm = { package = "ez-ffmpeg", path = "vendor/ez-ffmpeg" }
@@ -109,6 +109,9 @@ default = []
 
 [dev-dependencies]
 axum-test = "18.7.0"
+
+[patch.crates-io]
+ez-ffmpeg = { path = "vendor/ez-ffmpeg-0.10.0" }
 
 [workspace]
 members = [".", "remux-macros"]
