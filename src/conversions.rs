@@ -360,6 +360,18 @@ impl From<db::User> for jellyfin::UserDto {
         let config = user.configuration.map(|c| c.0).unwrap_or_default();
         let mut policy = user.policy.map(|p| p.0).unwrap_or_default();
         policy.is_administrator = user.is_admin;
+        // Replace empty strings with proper defaults for fields that clients
+        // decode as strict enums or require non-empty values.
+        let defaults = jellyfin::UserPolicy::default();
+        macro_rules! default_if_empty {
+            ($field:ident) => {
+                if policy.$field.as_deref() == Some("") {
+                    policy.$field = defaults.$field;
+                }
+            };
+        }
+        default_if_empty!(authentication_provider_id);
+        default_if_empty!(password_reset_provider_id);
         jellyfin::UserDto {
             server_id: server_id(),
             name: user.username,

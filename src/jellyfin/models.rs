@@ -1045,6 +1045,28 @@ impl Default for UserDto {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SyncPlayUserAccessType {
+    CreateAndJoinGroups,
+    JoinGroups,
+    None,
+}
+
+fn deserialize_sync_play_access<'de, D>(
+    deserializer: D,
+) -> Result<Option<SyncPlayUserAccessType>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    Ok(match opt.as_deref() {
+        Some("CreateAndJoinGroups") => Some(SyncPlayUserAccessType::CreateAndJoinGroups),
+        Some("JoinGroups") => Some(SyncPlayUserAccessType::JoinGroups),
+        Some("None") => Some(SyncPlayUserAccessType::None),
+        _ => None, // covers "", null, missing, unknown
+    })
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -1090,7 +1112,12 @@ pub struct UserPolicy {
     pub remote_client_bitrate_limit: Option<i64>,
     pub authentication_provider_id: Option<String>,
     pub password_reset_provider_id: Option<String>,
-    pub sync_play_access: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_sync_play_access",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sync_play_access: Option<SyncPlayUserAccessType>,
 }
 
 impl Default for UserPolicy {
@@ -1143,7 +1170,7 @@ impl Default for UserPolicy {
                     .into(),
             ),
             remote_client_bitrate_limit: None,
-            sync_play_access: None,
+            sync_play_access: Some(SyncPlayUserAccessType::CreateAndJoinGroups),
         }
     }
 }

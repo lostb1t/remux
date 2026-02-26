@@ -13,13 +13,11 @@ pub struct ApiKey {
 impl ApiKey {
     pub async fn create(db: &SqlitePool, app_name: &str) -> Result<Self> {
         let token = uuid::Uuid::new_v4().to_string().replace('-', "");
-        sqlx::query!(
-            "INSERT INTO api_keys (access_token, app_name) VALUES (?1, ?2)",
-            token,
-            app_name,
-        )
-        .execute(db)
-        .await?;
+        sqlx::query("INSERT INTO api_keys (access_token, app_name) VALUES (?1, ?2)")
+            .bind(&token)
+            .bind(app_name)
+            .execute(db)
+            .await?;
         Ok(Self::get_by_token(db, &token).await?.unwrap())
     }
 
@@ -41,7 +39,8 @@ impl ApiKey {
     }
 
     pub async fn delete(db: &SqlitePool, token: &str) -> Result<()> {
-        sqlx::query!("DELETE FROM api_keys WHERE access_token = ?1", token)
+        sqlx::query("DELETE FROM api_keys WHERE access_token = ?1")
+            .bind(token)
             .execute(db)
             .await?;
         Ok(())
