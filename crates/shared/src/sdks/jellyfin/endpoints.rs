@@ -10,6 +10,26 @@ impl Endpoint for PublicSystemInfo {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct GetSessions {
+    pub active_within_seconds: Option<i64>,
+}
+
+impl Endpoint for GetSessions {
+    type Output = Vec<SessionInfoDto>;
+
+    fn path(&self) -> String {
+        "/sessions".into()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        match self.active_within_seconds {
+            Some(s) => vec![("activeWithinSeconds".into(), s.to_string())],
+            None => vec![],
+        }
+    }
+}
+
 impl Endpoint for AuthenticateUserByName {
     type Output = AuthenticateUserByNameResult;
 

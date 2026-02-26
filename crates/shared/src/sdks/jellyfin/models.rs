@@ -1530,7 +1530,7 @@ pub struct NameIdPair {
     pub name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct SessionInfoDto {
     //pub play_state: Option<PlayerStateInfo>,

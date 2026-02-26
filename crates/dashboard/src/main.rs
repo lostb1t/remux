@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
-use shared::sdks::jellyfin::{AuthenticateUserByName, JellyfinAuth, PublicSystemInfo};
+use shared::sdks::jellyfin::{AuthenticateUserByName, GetSessions, JellyfinAuth, PublicSystemInfo, SessionInfoDto};
 use shared::sdks::{ClientError, RestClient};
 use uuid::Uuid;
 
@@ -60,6 +60,12 @@ impl AppState {
         
         Self { server, client }
     }
+}
+
+/// Extracts HH:MM from a DateTime Display string ("2026-02-26 18:30:38 UTC").
+fn fmt_time(dt: impl std::fmt::Display) -> String {
+    let s = dt.to_string();
+    s.chars().skip(11).take(5).collect()
 }
 
 fn get_origin() -> String {
@@ -326,6 +332,76 @@ fn ServerInfoCard(app_state: AppState) -> Element {
 }
 
 #[component]
+fn SessionsCard(app_state: AppState) -> Element {
+    let mut sessions: Signal<Vec<SessionInfoDto>> = use_signal(Vec::new);
+    let mut loading = use_signal(|| true);
+    let mut error = use_signal(|| Option::<String>::None);
+
+    use_effect(move || {
+        let client = app_state.client.clone();
+        spawn(async move {
+            match client.execute(GetSessions { active_within_seconds: Some(960) }).await {
+                Ok(s) => {
+                    sessions.set(s);
+                    error.set(None);
+                }
+                Err(e) => error.set(Some(format!("Failed to fetch sessions: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    rsx! {
+        div {
+            class: "bg-gray-800 rounded-lg p-6 shadow-lg",
+            h2 { class: "text-xl font-semibold mb-4 text-gray-100", "Active Devices" }
+
+            if *loading.read() {
+                div { class: "text-gray-400", "Loading…" }
+            } else if let Some(err) = error.read().as_ref() {
+                div { class: "text-red-400 text-sm", "{err}" }
+            } else if sessions.read().is_empty() {
+                div { class: "text-gray-500 text-sm", "No active devices in the last 16 minutes." }
+            } else {
+                div { class: "space-y-3",
+                    for session in sessions.read().iter() {
+                        div {
+                            class: "flex items-start justify-between gap-4 py-3 border-b border-gray-700 last:border-0",
+                            // Left: device + user info
+                            div { class: "min-w-0",
+                                div { class: "flex items-center gap-2 flex-wrap",
+                                    span { class: "text-gray-100 font-medium",
+                                        "{session.device_name.as_deref().unwrap_or(\"Unknown device\")}"
+                                    }
+                                    span { class: "text-xs text-gray-400 bg-gray-700 px-2 py-0.5 rounded",
+                                        "{session.client.as_deref().unwrap_or(\"\")}"
+                                        if let Some(v) = &session.application_version {
+                                            " {v}"
+                                        }
+                                    }
+                                }
+                                div { class: "text-sm text-gray-400 mt-0.5",
+                                    "{session.user_name.as_deref().unwrap_or(\"Unknown user\")}"
+                                }
+                                if let Some(item) = &session.now_playing_item {
+                                    div { class: "text-sm text-blue-400 mt-1",
+                                        "▶ {item.name.as_deref().unwrap_or(\"Unknown\")}"
+                                    }
+                                }
+                            }
+                            // Right: last active
+                            div { class: "shrink-0 text-xs text-gray-500 whitespace-nowrap pt-0.5",
+                                "{fmt_time(session.last_activity_date)}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 fn Dashboard(on_logout: EventHandler) -> Element {
     let server = match get_stored_server() {
         Some(s) => s,
@@ -352,12 +428,10 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                     }
                 }
                 
-                // Server Info Card
-                div { class: "mb-8",
+                div { class: "mb-6",
                     ServerInfoCard { app_state: app_state.clone() }
                 }
-                
-                p { class: "text-gray-400 mt-8", "Dashboard under construction." }
+                SessionsCard { app_state: app_state.clone() }
             }
         }
     }
