@@ -399,11 +399,31 @@ pub async fn library_virtualfolders(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = session.aio.get_manifest().await?;
-    Ok(StatusCode::NO_CONTENT.into_response())
-    // Ok(Json(json!(
-    //     crate::jellyfin::get_virtual_folders(&state).await?
-    // )))
+    let folders = db::Media::get_by_filter(
+        &state.ctx.db,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::Catalog, db::MediaKind::Folder]),
+            promoted: Some(true),
+            ..Default::default()
+        },
+    )
+    .await?
+    .records
+    .into_iter()
+    .map(|m| {
+        let collection_type = m
+            .catalog_media_kind
+            .map(|k| jellyfin::CollectionType::from(k));
+        jellyfin::VirtualFolderInfo {
+            name: Some(m.title.clone()),
+            item_id: Some(m.id.to_string()),
+            collection_type,
+            ..Default::default()
+        }
+    })
+    .collect::<Vec<_>>();
+
+    Ok(Json(folders))
 }
 
 #[get("/genres")]

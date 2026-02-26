@@ -164,21 +164,12 @@ pub struct SystemInfo {
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct VirtualFolderInfo {
-    /// The name of the virtual folder.
-    pub name: String,
-    /// The locations (paths) associated with the virtual folder.
-    // pub locations: Vec<String>,
-    /// The type of the collection.
-    pub collection_type: Option<CollectionTypeOptions>,
-    /// Library-specific options.
-    // pub library_options: LibraryOptions,
-    /// The item identifier.
+    pub name: Option<String>,
+    pub locations: Vec<String>,
+    pub collection_type: Option<CollectionType>,
+    pub library_options: LibraryOptions,
     pub item_id: Option<String>,
-    /// The primary image item identifier.
-    pub primary_image_item_id: Option<String>,
-    /// Progress of the refresh operation (0.0 to 1.0).
     pub refresh_progress: Option<f64>,
-    /// The status of the refresh operation.
     pub refresh_status: Option<String>,
 }
 
@@ -312,9 +303,18 @@ pub enum CollectionTypeOptions {
     // Define your variants here
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
 pub struct LibraryOptions {
-    // Define your fields here
+    pub enable_photos: Option<bool>,
+    pub enable_realtime_monitor: Option<bool>,
+    pub enable_chapter_image_extraction: Option<bool>,
+    pub extract_chapter_images_during_library_scan: Option<bool>,
+    pub prefer_embedded_titles: Option<bool>,
+    pub enable_internet_providers: Option<bool>,
+    pub enable_automatic_series_grouping: Option<bool>,
+    pub save_local_metadata: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
