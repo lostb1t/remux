@@ -136,25 +136,10 @@ async fn init_app() -> Result<Router> {
     .await?;
 
     db::migrate(&conn).await?;
-
     db::ensure_collection_folder(&conn).await?;
 
     // FOR TWSTING ONLY
     // db::checkpoint_db(&conn).await;
-
-    // users
-    for u in settings.users.clone() {
-        let mut user = db::User {
-            id: utils::get_stable_uuid(u.key),
-            username: u.username,
-            is_admin: u.is_admin,
-            password_hash: db::User::hash_password(&u.password)?,
-            ..Default::default()
-        };
-
-       // user.save_by_username(&conn).await?;
-    }
-
 
     let ctx = AppContext {
         config: settings.clone(),
@@ -211,25 +196,12 @@ pub struct AppState {
     pub tasks: tasks::TaskService,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserConfig {
-    pub key: String,
-    pub username: String,
-    pub password: String,
-    pub is_admin: bool,
-    //pub aio_url: String,
-}
-
 fn default_web_path() -> String {
     "/app/jellyfin-web".to_string()
 }
 
 fn default_catalog_max_items() -> usize {
     100
-}
-
-fn default_users() -> Vec<UserConfig> {
-    Vec::new()
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -240,8 +212,6 @@ pub struct Settings {
     pub web_path: String,
     #[serde(default = "default_catalog_max_items")]
     pub catalog_max_items: usize,
-    #[serde(default = "default_users")]
-    pub users: Vec<UserConfig>,
 }
 
 fn clean_aio_url<'de, D>(deserializer: D) -> Result<String, D::Error>

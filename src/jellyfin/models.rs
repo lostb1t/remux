@@ -12,6 +12,14 @@ use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
+use crate::sdks::aio;
+use crate::utils::{get_uuid, server_id};
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::Serialize;
+use serde_alias::serde_alias;
+use serde_with::formats::CommaSeparator;
+use serde_with::{DisplayFromStr, StringWithSeparator, serde_as};
 
 /// Gracefully deserializes `Option<T>` where `T: FromStr`.
 /// Returns `None` on missing, null, empty string, or any parse failure.
@@ -23,21 +31,6 @@ where
     let s: Option<String> = Option::deserialize(d)?;
     Ok(s.and_then(|s| s.parse().ok()))
 }
-
-
-//generate_api!(
-//    spec = "src/sdks/jellyfin/openapi.json", // The OpenAPI document
-//    interface = Builder
-//);
-
-use crate::sdks::aio;
-use crate::utils::{get_uuid, server_id};
-use serde::Deserialize;
-use serde::Deserializer;
-use serde::Serialize;
-use serde_alias::serde_alias;
-use serde_with::formats::CommaSeparator;
-use serde_with::{DisplayFromStr, StringWithSeparator, serde_as};
 
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize, Default)]
