@@ -54,6 +54,12 @@ pub async fn post_startup_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// POST /Startup/RemoteAccess — no-op, we don't configure remote access during wizard
+#[post("/startup/remoteaccess")]
+pub async fn post_startup_remote_access() -> Result<impl IntoResponse> {
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// POST /Startup/Complete — mark the wizard as done
 #[post("/startup/complete")]
 pub async fn post_startup_complete(

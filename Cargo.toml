@@ -64,7 +64,7 @@ tempfile = "3.20.0"
 ffprobe = { git = "https://github.com/theduke/ffprobe-rs.git", branch = "main" }
 #http-cache-reqwest = { version = "0.16", default-features = true, features = ["manager-moka"] }
 reqwest-middleware = { version = "0.4", default-features = false, features = ["rustls-tls"] }
-isolang = "2.4.0"
+isolang = { version = "2.4.0", features = ["list_languages"] }
 timed = "0.2.1"
 async-trait = "0.1.88"
 # axum-proxy = "0.5.0"
@@ -100,6 +100,7 @@ inventory = "0.3"
 remux-macros = { path = "remux-macros" }
 #ez-ffmpeg = { path = "vendor/ez-ffmpeg", features = ["async"] }
 dashmap = "5.5"
+rust_iso3166 = "0.1.14"
 #[target.'cfg(any(target_arch = "arm", target_arch = "aarch64"))'.dependencies]
 #ez_ffmpeg_arm = { package = "ez-ffmpeg", path = "vendor/ez-ffmpeg" }
 

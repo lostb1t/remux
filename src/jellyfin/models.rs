@@ -145,6 +145,24 @@ pub struct LocalizationOption {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
+pub struct CountryInfo {
+    pub name: String,
+    pub display_name: String,
+    pub two_letter_iso_region_name: String,
+    pub three_letter_iso_region_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct CultureDto {
+    pub name: String,
+    pub display_name: String,
+    pub two_letter_iso_language_name: String,
+    pub three_letter_iso_language_name: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "PascalCase")]
 pub struct AuthenticateUserByName {
     //#[serde(alias = "Password")]
     pub pw: String,

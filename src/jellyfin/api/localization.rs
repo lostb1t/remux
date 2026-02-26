@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::response::IntoResponse;
+use isolang::Language;
 use remux_macros::get;
 
 use crate::AppState;
@@ -58,6 +59,33 @@ pub async fn get_localization_options(
     ];
 
     Ok(Json(options))
+}
+
+#[get("/localization/countries")]
+pub async fn get_countries(State(_state): State<AppState>) -> Result<impl IntoResponse> {
+    let countries = rust_iso3166::ALL.iter().map(|c| jellyfin::CountryInfo {
+        name: c.name.to_string(),
+        display_name: c.name.to_string(),
+        two_letter_iso_region_name: c.alpha2.to_string(),
+        three_letter_iso_region_name: c.alpha3.to_string(),
+    }).collect::<Vec<_>>();
+    Ok(Json(countries))
+}
+
+#[get("/localization/cultures")]
+pub async fn get_cultures(State(_state): State<AppState>) -> Result<impl IntoResponse> {
+    let cultures = isolang::languages()
+        .filter_map(|lang| {
+            let two = lang.to_639_1()?;
+            Some(jellyfin::CultureDto {
+                name: two.to_string(),
+                display_name: lang.to_name().to_string(),
+                two_letter_iso_language_name: two.to_string(),
+                three_letter_iso_language_name: vec![lang.to_639_3().to_string()],
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(cultures))
 }
 
 #[get("/localization/parentalratings")]
