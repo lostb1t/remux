@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
 use shared::sdks::jellyfin::{AuthenticateUserByName, JellyfinAuth, PublicSystemInfo};
-use shared::sdks::ClientError;
+use shared::sdks::{ClientError, RestClient};
 use uuid::Uuid;
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
@@ -26,6 +26,40 @@ struct StoredServer {
 #[serde(rename_all = "PascalCase")]
 struct StoredCredentials {
     servers: Vec<StoredServer>,
+}
+
+/// Application state that can be shared across components
+#[derive(Clone)]
+struct AppState {
+    server: StoredServer,
+    client: RestClient<JellyfinAuth>,
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("server", &self.server)
+            .field("client", &"<RestClient>")
+            .finish()
+    }
+}
+
+impl PartialEq for AppState {
+    fn eq(&self, other: &Self) -> bool {
+        self.server.id == other.server.id
+    }
+}
+
+impl AppState {
+    fn new(server: StoredServer) -> Self {
+        let device_id = get_or_create_device_id();
+        let auth = JellyfinAuth::new(&device_id).with_token(server.access_token.clone());
+        let client = shared::sdks::jellyfin::client(&server.manual_address)
+            .unwrap_or_else(|_| panic!("Failed to create client for server: {}", server.manual_address))
+            .with_auth(auth);
+        
+        Self { server, client }
+    }
 }
 
 fn get_origin() -> String {
@@ -118,7 +152,7 @@ fn Login(on_login: EventHandler) -> Element {
             let client = match shared::sdks::jellyfin::client(&url) {
                 Ok(c) => c.with_auth(JellyfinAuth::new(&device_id)),
                 Err(e) => {
-                    error.set(Some(format!("Bad server URL: {e}")));
+                    error.set(Some(format!("Bad server URL: {}", e)));
                     loading.set(false);
                     return;
                 }
@@ -145,7 +179,7 @@ fn Login(on_login: EventHandler) -> Element {
                     error.set(Some("Invalid username or password".into()));
                 }
                 Err(e) => {
-                    error.set(Some(format!("Login failed: {e}")));
+                    error.set(Some(format!("Login failed: {}", e)));
                 }
             }
 
@@ -226,7 +260,80 @@ fn Login(on_login: EventHandler) -> Element {
 }
 
 #[component]
+fn ServerInfoCard(app_state: AppState) -> Element {
+    let mut server_info: Signal<Option<PublicSystemInfo>> = use_signal(|| None);
+    let mut loading = use_signal(|| true);
+    let mut error = use_signal(|| Option::<String>::None);
+
+    // Fetch server info on component mount
+    use_effect(move || {
+        let client = app_state.client.clone();
+        spawn(async move {
+            match client.execute(PublicSystemInfo::default()).await {
+                Ok(info) => {
+                    server_info.set(Some(info));
+                    error.set(None);
+                }
+                Err(e) => {
+                    error.set(Some(format!("Failed to fetch server info: {}", e)));
+                }
+            }
+            loading.set(false);
+        });
+    });
+
+    rsx! {
+        div {
+            class: "bg-gray-800 rounded-lg p-6 shadow-lg",
+            h2 { class: "text-xl font-semibold mb-4 text-gray-100", "Server Information" }
+            
+            if *loading.read() {
+                div { class: "text-gray-400", "Loading server info..." }
+            } else if let Some(err) = error.read().as_ref() {
+                div { class: "text-red-400", "{err}" }
+            } else if let Some(info) = server_info.read().as_ref() {
+                div { class: "space-y-3",
+                    div { class: "flex justify-between",
+                        span { class: "text-gray-400", "Server Name:" }
+                        span { class: "text-gray-100 font-medium", "{info.server_name.clone().unwrap_or_default()}" }
+                    }
+                    div { class: "flex justify-between",
+                        span { class: "text-gray-400", "Version:" }
+                        span { class: "text-gray-100 font-medium", "{info.version.clone().unwrap_or_default()}" }
+                    }
+                    div { class: "flex justify-between",
+                        span { class: "text-gray-400", "Product:" }
+                        span { class: "text-gray-100 font-medium", "{info.product_name.clone().unwrap_or_default()}" }
+                    }
+                    div { class: "flex justify-between",
+                        span { class: "text-gray-400", "Server ID:" }
+                        span { class: "text-gray-100 font-medium text-sm", "{info.id.clone().unwrap_or_default()}" }
+                    }
+                    div { class: "flex justify-between",
+                        span { class: "text-gray-400", "OS:" }
+                        span { class: "text-gray-100 font-medium", "{info.operating_system.clone().unwrap_or_default()}" }
+                    }
+                    div { class: "flex justify-between",
+                        span { class: "text-gray-400", "Startup Complete:" }
+                        span { class: "text-gray-100 font-medium", 
+                            if info.startup_wizard_completed.unwrap_or(false) { "Yes" } else { "No" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 fn Dashboard(on_logout: EventHandler) -> Element {
+    let server = match get_stored_server() {
+        Some(s) => s,
+        None => return rsx! { div { "Not logged in" } },
+    };
+    
+    let app_state = AppState::new(server);
+
     rsx! {
         div {
             class: "min-h-screen bg-gray-900 text-white p-8",
@@ -244,7 +351,13 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                         "Sign Out"
                     }
                 }
-                p { class: "text-gray-400", "Dashboard under construction." }
+                
+                // Server Info Card
+                div { class: "mb-8",
+                    ServerInfoCard { app_state: app_state.clone() }
+                }
+                
+                p { class: "text-gray-400 mt-8", "Dashboard under construction." }
             }
         }
     }
