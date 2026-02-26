@@ -6,6 +6,3 @@ default_platform = "web"
 title = "Remux Admin"
 base_path = "/admin"
 
-[web.resource]
-style = []
-script = []
