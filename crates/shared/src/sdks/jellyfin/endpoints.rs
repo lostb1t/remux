@@ -2,6 +2,14 @@ use super::{Body, Endpoint};
 use http::Method;
 use super::models::*;
 
+impl Endpoint for PublicSystemInfo {
+    type Output = PublicSystemInfo;
+
+    fn path(&self) -> String {
+        "/system/info/public".into()
+    }
+}
+
 impl Endpoint for AuthenticateUserByName {
     type Output = AuthenticateUserByNameResult;
 

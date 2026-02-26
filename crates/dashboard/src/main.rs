@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
-use shared::sdks::jellyfin::{AuthenticateUserByName, JellyfinAuth};
+use shared::sdks::jellyfin::{AuthenticateUserByName, JellyfinAuth, PublicSystemInfo};
 use shared::sdks::ClientError;
 use uuid::Uuid;
 
@@ -72,24 +72,50 @@ fn App() -> Element {
 
 #[component]
 fn Login(on_login: EventHandler) -> Element {
+    // None = still probing, Some(url) = found at url, Some("") = not found, show host field
+    let mut server_url: Signal<Option<String>> = use_signal(|| None);
+    let mut host_input = use_signal(String::new);
     let mut username = use_signal(String::new);
     let mut password = use_signal(String::new);
     let mut error = use_signal(|| Option::<String>::None);
     let mut loading = use_signal(|| false);
 
+    // Probe the server at the current origin on mount.
+    use_effect(move || {
+        spawn(async move {
+            let origin = get_origin();
+            let reachable = match shared::sdks::jellyfin::client(&origin) {
+                Ok(c) => c.execute(PublicSystemInfo::default()).await.is_ok(),
+                Err(_) => false,
+            };
+            server_url.set(Some(if reachable { origin } else { String::new() }));
+        });
+    });
+
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
 
+        let url = match server_url.peek().clone() {
+            Some(u) if !u.is_empty() => u,
+            _ => {
+                let h = host_input.peek().trim().to_string();
+                if h.is_empty() {
+                    error.set(Some("Please enter the server URL".into()));
+                    return;
+                }
+                h
+            }
+        };
+
         let u = username.peek().clone();
         let p = password.peek().clone();
-        let origin = get_origin();
         let device_id = get_or_create_device_id();
 
         loading.set(true);
         error.set(None);
 
         spawn(async move {
-            let client = match shared::sdks::jellyfin::client(&origin) {
+            let client = match shared::sdks::jellyfin::client(&url) {
                 Ok(c) => c.with_auth(JellyfinAuth::new(&device_id)),
                 Err(e) => {
                     error.set(Some(format!("Bad server URL: {e}")));
@@ -105,7 +131,7 @@ fn Login(on_login: EventHandler) -> Element {
                         store_credentials(StoredServer {
                             id: result.server_id,
                             name: "Remux".to_string(),
-                            manual_address: origin,
+                            manual_address: url,
                             access_token: token,
                             user_id: user.id.to_string(),
                             date_last_accessed: 0.0,
@@ -134,43 +160,64 @@ fn Login(on_login: EventHandler) -> Element {
                 class: "bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md",
                 h1 { class: "text-2xl font-bold text-white mb-6 text-center", "Remux Admin" }
 
-                if let Some(err) = error.read().as_ref() {
-                    div {
-                        class: "mb-4 p-3 bg-red-900 text-red-200 rounded text-sm",
-                        "{err}"
+                if server_url.read().is_none() {
+                    p { class: "text-gray-400 text-sm text-center", "Connecting…" }
+                } else {
+                    if let Some(err) = error.read().as_ref() {
+                        div {
+                            class: "mb-4 p-3 bg-red-900 text-red-200 rounded text-sm",
+                            "{err}"
+                        }
                     }
-                }
 
-                form {
-                    onsubmit: on_submit,
-                    div { class: "mb-4",
-                        label { class: "block text-gray-300 text-sm mb-1", r#for: "username", "Username" }
-                        input {
-                            id: "username",
-                            r#type: "text",
-                            class: "w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500 focus:outline-none",
-                            value: "{username}",
-                            oninput: move |e| username.set(e.value()),
-                            required: true,
-                            autocomplete: "username",
+                    form {
+                        onsubmit: on_submit,
+
+                        // Host field — only shown when server wasn't auto-discovered
+                        if server_url.read().as_deref() == Some("") {
+                            div { class: "mb-4",
+                                label { class: "block text-gray-300 text-sm mb-1", r#for: "host", "Server URL" }
+                                input {
+                                    id: "host",
+                                    r#type: "url",
+                                    class: "w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500 focus:outline-none",
+                                    placeholder: "http://192.168.1.x:8096",
+                                    value: "{host_input}",
+                                    oninput: move |e| host_input.set(e.value()),
+                                    required: true,
+                                }
+                            }
                         }
-                    }
-                    div { class: "mb-6",
-                        label { class: "block text-gray-300 text-sm mb-1", r#for: "password", "Password" }
-                        input {
-                            id: "password",
-                            r#type: "password",
-                            class: "w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500 focus:outline-none",
-                            value: "{password}",
-                            oninput: move |e| password.set(e.value()),
-                            autocomplete: "current-password",
+
+                        div { class: "mb-4",
+                            label { class: "block text-gray-300 text-sm mb-1", r#for: "username", "Username" }
+                            input {
+                                id: "username",
+                                r#type: "text",
+                                class: "w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500 focus:outline-none",
+                                value: "{username}",
+                                oninput: move |e| username.set(e.value()),
+                                required: true,
+                                autocomplete: "username",
+                            }
                         }
-                    }
-                    button {
-                        r#type: "submit",
-                        class: "w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded disabled:opacity-50 transition-colors",
-                        disabled: *loading.read(),
-                        if *loading.read() { "Signing in…" } else { "Sign In" }
+                        div { class: "mb-6",
+                            label { class: "block text-gray-300 text-sm mb-1", r#for: "password", "Password" }
+                            input {
+                                id: "password",
+                                r#type: "password",
+                                class: "w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500 focus:outline-none",
+                                value: "{password}",
+                                oninput: move |e| password.set(e.value()),
+                                autocomplete: "current-password",
+                            }
+                        }
+                        button {
+                            r#type: "submit",
+                            class: "w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded disabled:opacity-50 transition-colors",
+                            disabled: *loading.read(),
+                            if *loading.read() { "Signing in…" } else { "Sign In" }
+                        }
                     }
                 }
             }
