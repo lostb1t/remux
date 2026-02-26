@@ -1148,6 +1148,21 @@ impl Default for UserPolicy {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CreateUserByName {
+    pub name: String,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UpdateUserPassword {
+    pub current_pw: Option<String>,
+    pub new_pw: Option<String>,
+    pub reset_password: Option<bool>,
+}
+
 #[skip_serializing_none]
 #[derive(Default, Deserialize, PartialEq, Serialize, Clone, Debug)]
 #[serde(rename_all = "PascalCase")]

@@ -15,7 +15,7 @@ use crate::db::auth;
 use crate::db::user::User;
 use crate::jellyfin;
 use crate::utils::server_id;
-use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
+use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 
 use super::mock_items;
 use super::system::system_info_public;
@@ -215,7 +215,7 @@ pub async fn unmark_played(
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .context("not foubd")?;
-    let state = media.mark_played(&state.ctx.db, &session.user).await?;
+    let state = media.mark_unplayed(&state.ctx.db, &session.user).await?;
     Ok(Json(jellyfin::UserItemDataDto::from(state)).into_response())
 }
 
@@ -224,6 +224,121 @@ pub async fn users_groupingoptions(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
     Ok(Json::<Vec<jellyfin::SpecialViewOptionDto>>(vec![]))
+}
+
+#[post("/users/new")]
+pub async fn create_user(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Json(payload): Json<jellyfin::CreateUserByName>,
+) -> Result<impl IntoResponse> {
+    if !session.user.is_admin {
+        return Err(anyhow::anyhow!("Admin access required")
+            .context_unauthorized("forbidden", "forbidden"));
+    }
+    let password = payload.password.as_deref().unwrap_or("");
+    let mut user = User::new_with_password(
+        String::new(),
+        payload.name,
+        password,
+        None,
+    )?;
+    user.save(&state.ctx.db).await?;
+    Ok((StatusCode::OK, Json(jellyfin::UserDto::from(user))).into_response())
+}
+
+#[delete("/users/{user_id}")]
+pub async fn delete_user(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(user_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    if !session.user.is_admin {
+        return Err(anyhow::anyhow!("Admin access required")
+            .context_unauthorized("forbidden", "forbidden"));
+    }
+    if user_id == session.user.id {
+        return Err(anyhow::anyhow!("Cannot delete yourself")
+            .context_bad_request("invalid", "cannot delete own account"));
+    }
+    db::User::delete(&state.ctx.db, &user_id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[post("/users/{user_id}/password")]
+pub async fn change_password(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(user_id): Path<Uuid>,
+    Json(payload): Json<jellyfin::UpdateUserPassword>,
+) -> Result<impl IntoResponse> {
+    let is_self = user_id == session.user.id;
+    let is_admin = session.user.is_admin;
+
+    if !is_self && !is_admin {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_unauthorized("forbidden", "forbidden"));
+    }
+
+    let mut user = db::User::get_by_id(&state.ctx.db, &user_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("User not found"))?;
+
+    if is_self && !is_admin {
+        let current = payload.current_pw.as_deref().unwrap_or("");
+        if !user.verify_password(current)? {
+            return Err(anyhow::anyhow!("Current password is incorrect")
+                .context_unauthorized("invalid", "invalid password"));
+        }
+    }
+
+    let new_pw = payload.new_pw.as_deref().unwrap_or("");
+    user.set_password(new_pw)?;
+    user.save(&state.ctx.db).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[post("/users/{user_id}/policy")]
+pub async fn update_user_policy(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(user_id): Path<Uuid>,
+    Json(policy): Json<jellyfin::UserPolicy>,
+) -> Result<impl IntoResponse> {
+    if !session.user.is_admin {
+        return Err(anyhow::anyhow!("Admin access required")
+            .context_unauthorized("forbidden", "forbidden"));
+    }
+    let mut user = db::User::get_by_id(&state.ctx.db, &user_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("User not found"))?;
+    user.is_admin = policy.is_administrator;
+    user.policy = Some(sqlx::types::Json(policy));
+    user.save(&state.ctx.db).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[post("/users/{user_id}")]
+pub async fn update_user(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(user_id): Path<Uuid>,
+    Json(payload): Json<jellyfin::UserDto>,
+) -> Result<impl IntoResponse> {
+    let is_self = user_id == session.user.id;
+    if !is_self && !session.user.is_admin {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_unauthorized("forbidden", "forbidden"));
+    }
+    let mut user = db::User::get_by_id(&state.ctx.db, &user_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("User not found"))?;
+    user.username = payload.name;
+    if let Some(config) = payload.configuration {
+        user.configuration = Some(sqlx::types::Json(config));
+    }
+    user.save(&state.ctx.db).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 // ===== Route aliases (same handler, different path) =====
@@ -237,8 +352,19 @@ pub async fn users_public(State(state): State<AppState>) -> Result<impl IntoResp
 pub async fn users_get_by_id(
     State(state): State<AppState>,
     session: auth::AuthSession,
+    Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    users_me(State(state), session).await
+    if user_id == session.user.id {
+        return Ok(Json(jellyfin::UserDto::from(session.user)).into_response());
+    }
+    if !session.user.is_admin {
+        return Err(anyhow::anyhow!("Forbidden")
+            .context_unauthorized("forbidden", "forbidden"));
+    }
+    let user = db::User::get_by_id(&state.ctx.db, &user_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("User not found").context_not_found("not found", "user not found"))?;
+    Ok(Json(jellyfin::UserDto::from(user)).into_response())
 }
 
 #[get("/users/{user_id}/items/{id}")]

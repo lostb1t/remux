@@ -357,16 +357,15 @@ impl From<aio::Subtitle> for jellyfin::MediaStream {
 
 impl From<db::User> for jellyfin::UserDto {
     fn from(user: db::User) -> Self {
-        let config = user
-            .configuration
-            .map(|c| c.0)
-            .unwrap_or_default();
+        let config = user.configuration.map(|c| c.0).unwrap_or_default();
+        let mut policy = user.policy.map(|p| p.0).unwrap_or_default();
+        policy.is_administrator = user.is_admin;
         jellyfin::UserDto {
             server_id: server_id(),
             name: user.username,
             id: user.id,
             configuration: Some(config),
-            policy: jellyfin::UserPolicy { is_administrator: user.is_admin, ..Default::default() },
+            policy,
             ..Default::default()
         }
     }

@@ -75,6 +75,7 @@ pub struct User {
     pub aio_url: Option<String>,
     pub configuration: Option<sqlx::types::Json<crate::jellyfin::UserConfiguration>>,
     pub is_admin: bool,
+    pub policy: Option<sqlx::types::Json<crate::jellyfin::UserPolicy>>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -90,14 +91,15 @@ impl User {
     pub async fn save(&mut self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO users (id, username, password_hash, aio_url, configuration, is_admin)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            INSERT INTO users (id, username, password_hash, aio_url, configuration, is_admin, policy)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ON CONFLICT(id) DO UPDATE SET
                 username      = excluded.username,
                 password_hash = excluded.password_hash,
                 aio_url       = excluded.aio_url,
                 configuration = excluded.configuration,
-                is_admin      = excluded.is_admin
+                is_admin      = excluded.is_admin,
+                policy        = excluded.policy
             "#,
         )
         .bind(self.id)
@@ -106,6 +108,7 @@ impl User {
         .bind(&self.aio_url)
         .bind(&self.configuration)
         .bind(self.is_admin)
+        .bind(&self.policy)
         .execute(db)
         .await?;
 
@@ -115,13 +118,13 @@ impl User {
     pub async fn save_by_username(&mut self, db: &SqlitePool) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO users (id, username, password_hash, aio_url, configuration, is_admin)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            INSERT INTO users (id, username, password_hash, aio_url, configuration, is_admin, policy)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ON CONFLICT(username) DO UPDATE SET
                 password_hash = excluded.password_hash,
                 aio_url       = excluded.aio_url,
                 is_admin      = excluded.is_admin
-            "#, 
+            "#,
         )
         .bind(self.id)
         .bind(&self.username)
@@ -129,6 +132,7 @@ impl User {
         .bind(&self.aio_url)
         .bind(&self.configuration)
         .bind(self.is_admin)
+        .bind(&self.policy)
         .execute(db)
         .await?;
 
@@ -280,6 +284,14 @@ impl User {
         } else {
             Ok(None)
         }
+    }
+
+    pub async fn delete(db: &SqlitePool, id: &Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM users WHERE id = ?1")
+            .bind(id)
+            .execute(db)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn get_media_state(
