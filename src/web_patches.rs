@@ -1,13 +1,12 @@
-pub struct Patch {
-    pub search: &'static str,
-    pub replace: &'static str,
-}
+/// CSS injected into `<head>` of every HTML response.
+/// Targets stable `data-*` attributes and semantic class names rather than
+/// minified JS internals, so it survives jellyfin-web bundle updates.
+pub static CSS: &str = r#"
+  /* ── Sidebar ─────────────────────────────────────────────── */
+  /* Hide the entire Live TV section (header + all links beneath it) */
+  [aria-labelledby="livetv-subheader"] { display: none !important; }
+"#;
 
-/// All patches are applied to every JS and HTML response.
-/// If `search` is not found in a file the replacement is a no-op.
-pub static PATCHES: &[Patch] = &[
-    // Patches will be added here once we identify the relevant
-    // strings in the jellyfin-web bundle.
-    // Example:
-    // Patch { search: "id=\"txtMediaPath\"", replace: "id=\"txtMediaPath\" hidden" },
-];
+/// JS injected before `</body>` of every HTML response.
+/// Leave empty to skip injection entirely.
+pub static JS: &str = "";

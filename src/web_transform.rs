@@ -14,7 +14,7 @@ use http::Request;
 use http_body_util::BodyExt;
 use tower::{Layer, Service};
 
-use crate::web_patches::PATCHES;
+use crate::web_patches::{CSS, JS};
 
 // ── Cache ────────────────────────────────────────────────────────────────────
 
@@ -90,47 +90,54 @@ where
         Box::pin(async move {
             let response = fut.await?;
 
-            // Only transform JS and HTML
-            let is_text = response
+            // Only transform HTML — JS/CSS/fonts/images pass through untouched.
+            let is_html = response
                 .headers()
                 .get(http::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
-                .map(|ct| ct.contains("javascript") || ct.contains("html"))
+                .map(|ct| ct.contains("html"))
                 .unwrap_or(false);
 
             let (parts, body) = response.into_parts();
 
-            if !is_text || PATCHES.is_empty() {
-                let bytes = body
-                    .collect()
-                    .await
-                    .map(|c| c.to_bytes())
-                    .unwrap_or_default();
+            if !is_html {
+                let bytes = body.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
                 return Ok(Response::from_parts(parts, Body::from(bytes)));
             }
 
-            // Cache hit
+            // Cache hit — reuse previously transformed bytes, rebuild response with
+            // fresh headers (ETag, Date, etc. come from `parts`).
             if let Some(cached) = cache.get(&path) {
-                return Ok(Response::from_parts(parts, Body::from(cached)));
+                let mut response = Response::from_parts(parts, Body::from(cached.clone()));
+                response.headers_mut().insert(
+                    http::header::CONTENT_LENGTH,
+                    http::HeaderValue::from(cached.len()),
+                );
+                return Ok(response);
             }
 
-            // Buffer → transform → cache
-            let bytes = body
-                .collect()
-                .await
-                .map(|c| c.to_bytes())
-                .unwrap_or_default();
-            let mut text = String::from_utf8_lossy(&bytes).into_owned();
+            // Buffer → inject → cache
+            let bytes = body.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
+            let mut html = String::from_utf8_lossy(&bytes).into_owned();
 
-            for patch in PATCHES {
-                if text.contains(patch.search) {
-                    text = text.replace(patch.search, patch.replace);
-                }
+            if !CSS.is_empty() {
+                let tag = format!("<style data-remux>{CSS}</style></head>");
+                html = html.replace("</head>", &tag);
             }
 
-            let out = Bytes::from(text.into_bytes());
+            if !JS.is_empty() {
+                let tag = format!("<script data-remux>{JS}</script></body>");
+                html = html.replace("</body>", &tag);
+            }
+
+            let out = Bytes::from(html.into_bytes());
             cache.insert(path, out.clone());
-            Ok(Response::from_parts(parts, Body::from(out)))
+            let mut response = Response::from_parts(parts, Body::from(out.clone()));
+            response.headers_mut().insert(
+                http::header::CONTENT_LENGTH,
+                http::HeaderValue::from(out.len()),
+            );
+            Ok(response)
         })
     }
 }
