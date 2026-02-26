@@ -161,6 +161,8 @@ pub struct AuthenticationResult {
     pub user: Option<UserDto>,
 }
 
+pub type AuthenticateUserByNameResult = AuthenticationResult;
+
 #[skip_serializing_none]
 #[derive(Default, Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "PascalCase")]

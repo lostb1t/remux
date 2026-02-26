@@ -1,26 +1,22 @@
-use super::{BasicAuth, ClientError, Endpoint, RestClient};
+use super::{Body, Endpoint};
 use http::Method;
+use super::models::*;
 
-use anyhow::Result;
-//use chrono::{DateTime, Utc};
-use crate::utils;
-use chrono::{DateTime, Duration, Utc};
-use serde::Deserializer;
-use serde::de::Error as _;
-use serde::{Deserialize, Serialize};
-use serde_with::skip_serializing_none;
-use std::collections::HashMap;
-use std::str::FromStr;
-use uuid::Uuid;
-use models::*;
-
-#[derive(Debug, Clone)]
-pub struct AuthenticateUserByNameEndpoint;
-
-impl Endpoint for AuthenticateUserByNameEndpoint {
-    type Output = AuthenticateUserByName;
+impl Endpoint for AuthenticateUserByName {
+    type Output = AuthenticateUserByNameResult;
 
     fn path(&self) -> String {
         "/users/authenticatebyname".into()
+    }
+
+    fn method(&self) -> Method {
+        Method::POST
+    }
+
+    fn body(&self) -> Body {
+        Body::Json(serde_json::json!({
+            "Username": self.username,
+            "Pw": self.pw,
+        }))
     }
 }

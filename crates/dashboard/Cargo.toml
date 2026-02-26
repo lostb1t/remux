@@ -13,6 +13,7 @@ gloo-storage = { version = "0.3" }
 shared = { path = "../shared" }
 uuid = { version = "1", features = ["v4", "serde", "js"] }
 http = "1"
+web-sys = { version = "0.3", features = ["Window", "Location"] }
 
 [profile.release]
 opt-level = "z"

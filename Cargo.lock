@@ -1114,9 +1114,15 @@ name = "dashboard"
 version = "0.1.0"
 dependencies = [
  "dioxus",
+ "gloo-net",
+ "gloo-storage",
  "gloo-timers",
+ "http",
  "reqwest",
  "serde",
+ "shared",
+ "uuid",
+ "web-sys",
 ]
 
 [[package]]
@@ -2262,6 +2268,21 @@ dependencies = [
  "thiserror 1.0.69",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "gloo-storage"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbc8031e8c92758af912f9bc08fbbadd3c6f3cfcbf6b64cdf3d6a81f0139277a"
+dependencies = [
+ "gloo-utils",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "wasm-bindgen",
  "web-sys",
 ]
 
