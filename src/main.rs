@@ -155,38 +155,6 @@ async fn init_app() -> Result<Router> {
        // user.save_by_username(&conn).await?;
     }
 
-    // libraries
-    let libs_titles = db::Media::get_by_filter(
-        &conn,
-        &db::MediaFilter {
-            kind: Some(vec![db::MediaKind::Catalog]),
-            promoted: Some(true),
-            ..Default::default()
-        },
-    )
-    .await?
-    .records
-    .into_iter()
-    .map(|m| m.title)
-    .collect::<Vec<String>>();
-
-    for u in settings.libraries.clone() {
-        if libs_titles.contains(&u.name) {
-            continue;
-        }
-
-        let mut media = db::Media {
-            title: u.name,
-            kind: db::MediaKind::Catalog,
-            //aio_id: u.id,
-            catalog_media_kind: Some(u.media_kind),
-            catalog_kind: Some(db::CatalogKind::Smart),
-            promoted: 1,
-            ..Default::default()
-        };
-
-       // media.save(&conn).await?;
-    }
 
     let ctx = AppContext {
         config: settings.clone(),
@@ -252,12 +220,6 @@ pub struct UserConfig {
     //pub aio_url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Library {
-    pub name: String,
-    pub media_kind: db::MediaKind,
-}
-
 fn default_web_path() -> String {
     "/app/jellyfin-web".to_string()
 }
@@ -270,19 +232,6 @@ fn default_users() -> Vec<UserConfig> {
     Vec::new()
 }
 
-fn default_libraries() -> Vec<Library> {
-    vec![
-        Library {
-            name: "Movies".to_string(),
-            media_kind: db::MediaKind::Movie,
-        },
-        Library {
-            name: "Series".to_string(),
-            media_kind: db::MediaKind::Series,
-        },
-    ]
-}
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Settings {
     #[serde(deserialize_with = "clean_aio_url")]
@@ -293,11 +242,6 @@ pub struct Settings {
     pub catalog_max_items: usize,
     #[serde(default = "default_users")]
     pub users: Vec<UserConfig>,
-    #[serde(default = "default_libraries")]
-    pub libraries: Vec<Library>,
-    // we dont support folders
-    //#[serde(default = "default_collection_id")]
-    //pub collection_id: String,
 }
 
 fn clean_aio_url<'de, D>(deserializer: D) -> Result<String, D::Error>
