@@ -209,14 +209,20 @@ impl FromRequestParts<AppState> for AuthSession {
         let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
-        // Build AioService from the current DB-persisted URL so that changes made
-        // after startup (e.g. via the setup wizard) are picked up automatically.
-        let aio = crate::db::Settings::get_config(&state.ctx.db)
-            .await
-            .ok()
-            .and_then(|cfg| cfg.aio_url)
-            .filter(|s| !s.is_empty())
-            .and_then(|url| crate::aio::AioService::from_url(&url).ok());
+        // Prefer state.ctx.aio (long-lived, shared Arc cache) so cached
+        // manifest/catalog responses survive across requests.  Only fall back
+        // to building a fresh client when ctx.aio is None, which happens when
+        // the AIO URL was configured after startup via the setup wizard.
+        let aio = if let Some(ref existing) = state.ctx.aio {
+            Some(existing.clone())
+        } else {
+            crate::db::Settings::get_config(&state.ctx.db)
+                .await
+                .ok()
+                .and_then(|cfg| cfg.aio_url)
+                .filter(|s| !s.is_empty())
+                .and_then(|url| crate::aio::AioService::from_url(&url).ok())
+        };
         Ok(AuthSession { device, user, aio })
     }
 }

@@ -130,7 +130,7 @@ fn App() -> Element {
                 div { class: "login-page",
                     div { class: "login-card",
                         div { class: "login-header",
-                            span { class: "login-brand-label", "Remux" }
+                            a { href: "/", class: "login-brand-label", "Remux" }
                             p { class: "connecting", "Starting up…" }
                         }
                     }
@@ -845,7 +845,7 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                                 span {
                                                     class: "task-badge task-badge-running",
                                                     style: "font-size:.6rem;padding:2px 6px",
-                                                    "Promoted"
+                                                    "Library"
                                                 }
                                             }
                                         }

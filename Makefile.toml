@@ -63,7 +63,7 @@ cwd = "crates/dashboard"
 command = "dx"
 args = ["build"]
 cwd = "crates/dashboard"
-#watch = {watch = ["./src"]}
+watch = {watch = ["${PWD}/crates/dashboard/src"]}
 
 [tasks.build-docker]
 command = "docker"

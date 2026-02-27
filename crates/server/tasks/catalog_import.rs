@@ -22,18 +22,24 @@ impl Task for CatalogImportTask {
         tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        // Read the current settings from DB so that changes made after server
-        // startup (e.g. via the setup wizard) are picked up automatically.
-        let db_settings = crate::db::Settings::get_config(&ctx.db).await.ok();
-        let aio_url = db_settings.as_ref()
-            .and_then(|c| c.aio_url.as_deref())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_default();
-        if aio_url.is_empty() {
-            anyhow::bail!("AIO URL not configured — complete the setup wizard first");
-        }
-        let aio = crate::aio::AioService::from_url(aio_url)?;
-        let catalog_max_items: usize = db_settings.as_ref()
+        // Prefer ctx.aio (long-lived, has a warm in-memory cache) so cached
+        // manifest/catalog responses are reused across task runs.  Only fall
+        // back to building a fresh client when ctx.aio is None, which happens
+        // when the AIO URL was configured after startup via the setup wizard.
+        let aio = if let Some(ref existing) = ctx.aio {
+            existing.clone()
+        } else {
+            let url = crate::db::Settings::get_config(&ctx.db).await.ok()
+                .and_then(|c| c.aio_url)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_default();
+            if url.is_empty() {
+                anyhow::bail!("AIO URL not configured — complete the setup wizard first");
+            }
+            crate::aio::AioService::from_url(&url)?
+        };
+
+        let catalog_max_items: usize = crate::db::Settings::get_config(&ctx.db).await.ok()
             .and_then(|c| c.catalog_max_items)
             .unwrap_or(5000) as usize;
 
