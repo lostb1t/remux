@@ -10,6 +10,7 @@ AXUM_ANYHOW_EXPOSE_ERRORS=1
 # HTTPS_PROXY="http://10.0.10.11:9090"
 DATABASE_URL = "sqlite://db.sqlite"
 WEB_PATH = "../jellyfin-web/dist"
+DASHBOARD_PATH="/root/Projects/remux-server/target/dx/dashboard/debug/web/public"
 DB="db.sqlite"
 
 [env.test]
@@ -45,7 +46,7 @@ args = ["test"]
 #command = "cargo"
 #args = ["run"]
 #dependencies = ["dev-server", "dev-dash"]
-run_task = { name = ["dev-server", "dev-dash"], fork = true, parallel = true }
+run_task = { name = ["dev-server", "dev-build-dash"], fork = true, parallel = true }
 
 [tasks.dev-server]
 command = "cargo"
@@ -53,11 +54,16 @@ args = ["run" , "-p", "remux-server"]
 watch = true
 #cwd = "crates/server"
 
-[tasks.dev-dash]
+[tasks.dev-serve-dash]
 command = "dx"
 args = ["serve", "--addr", "0.0.0.0", "--port", "8888"]
 cwd = "crates/dashboard"
 
+[tasks.dev-build-dash]
+command = "dx"
+args = ["build"]
+cwd = "crates/dashboard"
+#watch = {watch = ["./src"]}
 
 [tasks.build-docker]
 command = "docker"
