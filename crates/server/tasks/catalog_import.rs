@@ -41,7 +41,7 @@ impl Task for CatalogImportTask {
 
         let catalog_max_items: usize = crate::db::Settings::get_config(&ctx.db).await.ok()
             .and_then(|c| c.catalog_max_items)
-            .unwrap_or(5000) as usize;
+            .unwrap_or(250) as usize;
 
         let manifest = aio.get_manifest().await?;
         let mut total_imported = 0;
