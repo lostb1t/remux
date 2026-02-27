@@ -46,7 +46,7 @@ pub struct BrandingOptions {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, default2::Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct ServerConfiguration {
     /// Gets or sets a value indicating whether to enable prometheus metrics exporting.
@@ -97,17 +97,23 @@ pub struct ServerConfiguration {
     /// Gets or sets the path to the transcode temp folder.
     #[default(Some("/transcodes".to_string()))]
     pub transcoding_temp_path: Option<String>,
+    /// Remux: AIO service base URL.
+    pub aio_url: Option<String>,
+    /// Remux: maximum number of items imported per catalog.
+    pub catalog_max_items: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct StartupConfiguration {
     pub server_name: Option<String>,
     pub preferred_metadata_language: Option<String>,
     pub metadata_country_code: Option<String>,
+    /// Remux: AIO service base URL set during wizard.
+    pub aio_url: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct StartupUser {
     pub name: Option<String>,
@@ -206,7 +212,7 @@ pub struct SystemInfo {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 pub struct VirtualFolderInfo {
     pub name: Option<String>,
@@ -217,6 +223,31 @@ pub struct VirtualFolderInfo {
     pub primary_image_item_id: Option<String>,
     pub refresh_progress: Option<f64>,
     pub refresh_status: Option<String>,
+    /// Remux extension: "manual" or "smart"
+    pub collection_kind: Option<String>,
+    /// Remux extension: whether this collection is shown in library home
+    pub promoted: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CreateVirtualFolderPayload {
+    pub name: String,
+    /// Jellyfin collection type: "movies" or "tvshows"
+    pub collection_type: Option<String>,
+    /// Remux extension: "manual" or "smart"
+    pub collection_kind: Option<String>,
+    pub promoted: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UpdateVirtualFolderPayload {
+    pub id: String,
+    pub name: String,
+    pub collection_type: Option<String>,
+    pub collection_kind: Option<String>,
+    pub promoted: Option<bool>,
 }
 
 #[skip_serializing_none]
@@ -334,7 +365,7 @@ pub enum CollectionTypeOptions {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct LibraryOptions {
     pub enable_photos: Option<bool>,
@@ -2137,3 +2168,4 @@ pub struct AuthenticationInfo {
     pub date_created: Option<chrono::DateTime<chrono::Utc>>,
     pub is_active: Option<bool>,
 }
+

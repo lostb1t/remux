@@ -17,6 +17,7 @@ pub async fn get_startup_configuration(
         server_name: config.server_name,
         preferred_metadata_language: config.preferred_metadata_language,
         metadata_country_code: config.metadata_country_code,
+        aio_url: config.aio_url,
     }))
 }
 
@@ -30,6 +31,9 @@ pub async fn post_startup_configuration(
     config.server_name = body.server_name.or(config.server_name);
     config.preferred_metadata_language = body.preferred_metadata_language.or(config.preferred_metadata_language);
     config.metadata_country_code = body.metadata_country_code.or(config.metadata_country_code);
+    if let Some(url) = body.aio_url {
+        config.aio_url = Some(url);
+    }
     crate::db::Settings::set_config(&state.ctx.db, &config).await?;
     Ok(StatusCode::NO_CONTENT)
 }

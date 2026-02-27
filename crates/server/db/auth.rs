@@ -182,7 +182,7 @@ impl Device {
 pub struct AuthSession {
     pub device: Device,
     pub user: db::User,
-    pub aio: crate::aio::AioService,
+    pub aio: Option<crate::aio::AioService>,
 }
 
 //#[async_trait]
@@ -209,7 +209,14 @@ impl FromRequestParts<AppState> for AuthSession {
         let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
-        let aio = state.ctx.aio.clone();
+        // Build AioService from the current DB-persisted URL so that changes made
+        // after startup (e.g. via the setup wizard) are picked up automatically.
+        let aio = crate::db::Settings::get_config(&state.ctx.db)
+            .await
+            .ok()
+            .and_then(|cfg| cfg.aio_url)
+            .filter(|s| !s.is_empty())
+            .and_then(|url| crate::aio::AioService::from_url(&url).ok());
         Ok(AuthSession { device, user, aio })
     }
 }

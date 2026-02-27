@@ -22,7 +22,19 @@ impl Task for CatalogImportTask {
         tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        let manifest = ctx.aio.get_manifest().await?;
+        // Read the current AIO URL from DB so that changes made after server
+        // startup (e.g. via the setup wizard) are picked up automatically.
+        let aio_url = crate::db::Settings::get_config(&ctx.db).await
+            .ok()
+            .and_then(|c| c.aio_url)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default();
+        if aio_url.is_empty() {
+            anyhow::bail!("AIO URL not configured — complete the setup wizard first");
+        }
+        let aio = crate::aio::AioService::from_url(&aio_url)?;
+
+        let manifest = aio.get_manifest().await?;
         let mut total_imported = 0;
 
         let catalogs: Vec<_> = manifest.catalogs.into_iter()
@@ -50,15 +62,15 @@ impl Task for CatalogImportTask {
             .cloned()
             .unwrap_or_else(|| db::Media {
                 title: cat.name.clone(),
-                kind: db::MediaKind::Catalog,
+                kind: db::MediaKind::Collection,
                 aio_id: Some(aio_id),
-                catalog_kind: Some(db::CatalogKind::Manual),
+                collection_kind: Some(db::CollectionKind::Manual),
                 ..Default::default()
             });
 
             media_cat.save(&ctx.db).await?;
 
-            let mut meta_stream = ctx.aio.get_catalog_stream(&cat).await.chunks(500);
+            let mut meta_stream = aio.get_catalog_stream(&cat).await.chunks(500);
             let mut count = 0;
 
             while let Some(mut metas) = meta_stream.next().await {

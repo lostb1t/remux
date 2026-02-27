@@ -88,7 +88,7 @@ pub enum MediaKind {
     Person,
     Studio,
     Genre,
-    Catalog,
+    Collection,
     // purely here for jf
     Folder,
     Source,
@@ -148,13 +148,13 @@ impl From<jellyfin::MediaType> for MediaKind {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
-pub enum CatalogKind {
+pub enum CollectionKind {
     #[default]
     Manual,
     Smart,
 }
 
-impl TryFrom<String> for CatalogKind {
+impl TryFrom<String> for CollectionKind {
     type Error = strum::ParseError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
@@ -306,12 +306,12 @@ pub struct Media {
     pub probe_data: Option<String>,
     pub remote_data: Option<String>,
 
-    // catalog
+    // collection
     pub promoted: i64,
-    // CatalogKind
-    pub catalog_kind: Option<CatalogKind>,
+    // CollectionKind
+    pub collection_kind: Option<CollectionKind>,
     // MediaKind
-    pub catalog_media_kind: Option<MediaKind>,
+    pub collection_media_kind: Option<MediaKind>,
 }
 
 // #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -374,13 +374,13 @@ impl Media {
 
     pub async fn save(&mut self, db: &sqlx::SqlitePool) -> Result<()> {
         self.validate()?;
-        let updated_at = Utc::now();
+        let updated_at = Utc::now().naive_utc();
 
-        sqlx::query!(
+        sqlx::query(
         r#"
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
-            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
+            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
             remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at, certification, parent_idx
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
@@ -408,36 +408,36 @@ impl Media {
             certification = excluded.certification,
             parent_idx = excluded.parent_idx
         "#,
-        self.id,
-        self.title,
-        self.kind,
-        self.parent_id,
-        self.idx,
-        self.released_at,
-        self.runtime,
-        self.rating_critic,
-        self.rating_audience,
-        self.poster,
-        self.logo,
-        self.backdrop,
-        self.description,
-        self.trailers,
-        self.url,
-        self.probe_data,
-        self.promoted,
-        self.catalog_kind,
-        self.catalog_media_kind,
-        self.remote_data,
-        self.series_imdb_id,
-        self.aio_id,
-        self.imdb_id,
-        self.created_at,
-        updated_at,
-        self.certification,
-        self.parent_idx,
-    )
-    .execute(db)
-    .await?;
+        )
+        .bind(self.id)
+        .bind(&self.title)
+        .bind(&self.kind)
+        .bind(self.parent_id)
+        .bind(self.idx)
+        .bind(self.released_at)
+        .bind(self.runtime)
+        .bind(self.rating_critic)
+        .bind(self.rating_audience)
+        .bind(&self.poster)
+        .bind(&self.logo)
+        .bind(&self.backdrop)
+        .bind(&self.description)
+        .bind(&self.trailers)
+        .bind(&self.url)
+        .bind(&self.probe_data)
+        .bind(self.promoted)
+        .bind(&self.collection_kind)
+        .bind(&self.collection_media_kind)
+        .bind(&self.remote_data)
+        .bind(&self.series_imdb_id)
+        .bind(&self.aio_id)
+        .bind(&self.imdb_id)
+        .bind(self.created_at)
+        .bind(updated_at)
+        .bind(&self.certification)
+        .bind(self.parent_idx)
+        .execute(db)
+        .await?;
 
         Ok(())
     }
@@ -454,7 +454,7 @@ impl Media {
             let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
+                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx
             )",
         );
@@ -479,8 +479,8 @@ impl Media {
                     .push_bind(&item.url)
                     .push_bind(&item.probe_data)
                     .push_bind(&item.promoted)
-                    .push_bind(&item.catalog_kind)
-                    .push_bind(&item.catalog_media_kind)
+                    .push_bind(&item.collection_kind)
+                    .push_bind(&item.collection_media_kind)
                     .push_bind(&item.remote_data)
                     .push_bind(&item.series_imdb_id)
                     .push_bind(&item.imdb_id)
@@ -512,7 +512,7 @@ impl Media {
             let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, catalog_kind, catalog_media_kind,
+                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx
             )",
         );
@@ -535,8 +535,8 @@ impl Media {
                     .push_bind(&item.url)
                     .push_bind(&item.probe_data)
                     .push_bind(&item.promoted)
-                    .push_bind(&item.catalog_kind)
-                    .push_bind(&item.catalog_media_kind)
+                    .push_bind(&item.collection_kind)
+                    .push_bind(&item.collection_media_kind)
                     .push_bind(&item.remote_data)
                     .push_bind(&item.series_imdb_id)
                     .push_bind(&item.imdb_id)
@@ -871,6 +871,14 @@ impl Media {
         Ok(item)
     }
 
+    pub async fn delete(db: &SqlitePool, id: &Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM media WHERE id = $1")
+            .bind(id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
+
     pub async fn parent(&self, db: &sqlx::SqlitePool) -> Result<Option<Self>> {
         if let Some(parent_id) = &self.parent_id {
             Ok(Self::get_by_id(db, parent_id).await?)
@@ -1100,7 +1108,7 @@ impl From<sdks::aio::Catalog> for Media {
     fn from(source: sdks::aio::Catalog) -> Self {
         Media {
             title: source.name,
-            kind: MediaKind::Catalog,
+            kind: MediaKind::Collection,
             aio_id: Some(source.id.clone()),
             ..Default::default()
         }

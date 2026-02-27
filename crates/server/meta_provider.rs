@@ -172,6 +172,8 @@ impl MetaProvider for AioMetaProvider {
 
         let meta = ctx
             .aio
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("AIO not configured"))?
             .get_meta(db::media_kind_to_aio(&media.kind), imdb_id)
             .await?;
 
@@ -252,6 +254,8 @@ impl TreeSyncProvider for AioTreeSyncProvider {
 
         let meta = ctx
             .aio
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("AIO not configured"))?
             .get_meta(db::media_kind_to_aio(&series.kind), imdb_id)
             .await?;
 
@@ -282,6 +286,8 @@ impl TreeSyncProvider for AioTreeSyncProvider {
 
         let meta = ctx
             .aio
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("AIO not configured"))?
             .get_meta(db::media_kind_to_aio(&season.kind), imdb_id)
             .await?;
 

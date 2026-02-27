@@ -82,7 +82,7 @@ pub fn db_media_kind_to_type(kind: db::MediaKind) -> MediaType {
         db::MediaKind::Series => MediaType::Series,
         db::MediaKind::Season => MediaType::Season,
         db::MediaKind::Episode => MediaType::Episode,
-        db::MediaKind::Catalog => MediaType::BoxSet,
+        db::MediaKind::Collection => MediaType::BoxSet,
         db::MediaKind::Genre => MediaType::Genre,
         _ => MediaType::Unknown,
     }
@@ -141,7 +141,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         db::MediaKind::Series => MediaType::Series,
         db::MediaKind::Season => MediaType::Season,
         db::MediaKind::Episode => MediaType::Episode,
-        db::MediaKind::Catalog => MediaType::BoxSet,
+        db::MediaKind::Collection => MediaType::BoxSet,
         db::MediaKind::Genre => MediaType::Genre,
         _ => MediaType::Unknown,
     };
@@ -176,7 +176,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         is_folder: matches!(
             media.kind,
             db::MediaKind::Series
-                | db::MediaKind::Catalog
+                | db::MediaKind::Collection
                 | db::MediaKind::Season
                 | db::MediaKind::Folder
         ),
@@ -244,10 +244,10 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         };
     }
 
-    if media.kind == db::MediaKind::Catalog {
+    if media.kind == db::MediaKind::Collection {
         item.collection_type = Some(
             media
-                .catalog_media_kind
+                .collection_media_kind
                 .map(db_media_kind_to_collection_type)
                 .unwrap_or(CollectionType::Unknown),
         );

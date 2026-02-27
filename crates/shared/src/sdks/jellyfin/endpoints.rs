@@ -84,6 +84,138 @@ impl Endpoint for StopTask {
     }
 }
 
+// ── Virtual folder (Collection) endpoints ─────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetVirtualFolders;
+
+impl Endpoint for GetVirtualFolders {
+    type Output = Vec<VirtualFolderInfo>;
+    fn path(&self) -> String { "/library/virtualfolders".into() }
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateVirtualFolder {
+    pub payload: CreateVirtualFolderPayload,
+}
+
+impl Endpoint for CreateVirtualFolder {
+    type Output = VirtualFolderInfo;
+    fn path(&self) -> String { "/library/virtualfolders".into() }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateVirtualFolder {
+    pub payload: UpdateVirtualFolderPayload,
+}
+
+impl Endpoint for UpdateVirtualFolder {
+    type Output = ();
+    fn path(&self) -> String { "/library/virtualfolders/LibraryOptions".into() }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteVirtualFolder {
+    pub name: String,
+}
+
+impl Endpoint for DeleteVirtualFolder {
+    type Output = ();
+    fn path(&self) -> String { "/library/virtualfolders".into() }
+    fn method(&self) -> Method { Method::DELETE }
+    fn query(&self) -> Vec<(String, String)> {
+        vec![("name".into(), self.name.clone())]
+    }
+}
+
+// ── System configuration ───────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetSystemConfiguration;
+
+impl Endpoint for GetSystemConfiguration {
+    type Output = ServerConfiguration;
+    fn path(&self) -> String { "/system/configuration".into() }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateSystemConfiguration {
+    pub config: ServerConfiguration,
+}
+
+impl Endpoint for UpdateSystemConfiguration {
+    type Output = ();
+    fn path(&self) -> String { "/system/configuration".into() }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
+    }
+}
+
+// ── Startup wizard endpoints ───────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetStartupConfiguration;
+
+impl Endpoint for GetStartupConfiguration {
+    type Output = StartupConfiguration;
+    fn path(&self) -> String { "/startup/configuration".into() }
+}
+
+#[derive(Debug, Clone)]
+pub struct PostStartupConfiguration {
+    pub payload: StartupConfiguration,
+}
+
+impl Endpoint for PostStartupConfiguration {
+    type Output = ();
+    fn path(&self) -> String { "/startup/configuration".into() }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PostStartupUser {
+    pub payload: StartupUser,
+}
+
+impl Endpoint for PostStartupUser {
+    type Output = ();
+    fn path(&self) -> String { "/startup/user".into() }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PostStartupRemoteAccess;
+
+impl Endpoint for PostStartupRemoteAccess {
+    type Output = ();
+    fn path(&self) -> String { "/startup/remoteaccess".into() }
+    fn method(&self) -> Method { Method::POST }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PostStartupComplete;
+
+impl Endpoint for PostStartupComplete {
+    type Output = ();
+    fn path(&self) -> String { "/startup/complete".into() }
+    fn method(&self) -> Method { Method::POST }
+}
+
 impl Endpoint for AuthenticateUserByName {
     type Output = AuthenticateUserByNameResult;
 

@@ -119,8 +119,7 @@ async fn init_app() -> Result<Router> {
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
 
     let settings: Settings = config::Config::builder()
-        // .set_default("server.host", "127.0.0.1")?
-        .add_source(config::File::with_name(&cfg))
+        .add_source(config::File::with_name(&cfg).required(false))
         .build()?
         .try_deserialize()?;
 
@@ -139,15 +138,54 @@ async fn init_app() -> Result<Router> {
     db::migrate(&conn).await?;
     db::ensure_collection_folder(&conn).await?;
 
+    // Merge DB settings (DB wins; seed DB from file config on first run)
+    let mut db_config = crate::db::Settings::get_config(&conn).await?;
+    let mut db_dirty = false;
+
+    let effective_aio_url = match db_config.aio_url.as_deref().filter(|s| !s.is_empty()) {
+        Some(url) => url.to_string(),
+        None => {
+            if !settings.aio_url.is_empty() {
+                db_config.aio_url = Some(settings.aio_url.clone());
+                db_dirty = true;
+            }
+            settings.aio_url.clone()
+        }
+    };
+
+    let effective_catalog_max_items = match db_config.catalog_max_items {
+        Some(n) => n as usize,
+        None => {
+            db_config.catalog_max_items = Some(settings.catalog_max_items as i64);
+            db_dirty = true;
+            settings.catalog_max_items
+        }
+    };
+
+    if db_dirty {
+        crate::db::Settings::set_config(&conn, &db_config).await?;
+    }
+
+    let mut effective_settings = settings.clone();
+    effective_settings.aio_url = effective_aio_url;
+    effective_settings.catalog_max_items = effective_catalog_max_items;
+
+
     // FOR TWSTING ONLY
     // db::checkpoint_db(&conn).await;
 
     let (ws_tx, _) = tokio::sync::broadcast::channel(128);
 
+    let aio = if effective_settings.aio_url.is_empty() {
+        None
+    } else {
+        Some(aio::AioService::from_url(&effective_settings.aio_url)?)
+    };
+
     let ctx = AppContext {
-        config: settings.clone(),
+        config: effective_settings,
         db: conn.clone(),
-        aio: aio::AioService::from_url(&settings.aio_url)?,
+        aio,
         store: store::Store::new(100000),
         transcode: transcode::session::TranscodeSessionManager::new("transcode_sessions"),
         ws_tx,
@@ -197,7 +235,7 @@ async fn init_app() -> Result<Router> {
 pub struct AppContext {
     pub config: Settings,
     pub db: sqlx::SqlitePool,
-    pub aio: aio::AioService,
+    pub aio: Option<aio::AioService>,
     pub store: store::Store,
     pub transcode: transcode::session::TranscodeSessionManager,
     pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,
@@ -221,9 +259,14 @@ fn default_catalog_max_items() -> usize {
     100
 }
 
+fn default_aio_url() -> String {
+    String::new()
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Settings {
-    #[serde(deserialize_with = "clean_aio_url")]
+    /// AIO base URL — optional in file config; DB value overrides if set.
+    #[serde(default = "default_aio_url", deserialize_with = "clean_aio_url")]
     pub aio_url: String,
     #[serde(default = "default_web_path")]
     pub web_path: String,

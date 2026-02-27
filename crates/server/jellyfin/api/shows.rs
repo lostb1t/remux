@@ -10,7 +10,7 @@ use crate::AppState;
 use crate::db;
 use crate::db::auth;
 use crate::jellyfin;
-use axum_anyhow::ApiResult as Result;
+use axum_anyhow::{ApiResult as Result, OptionExt};
 
 use super::mock_items;
 use super::items::get_items;
@@ -58,12 +58,14 @@ pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = session.aio.get_manifest().await?;
+    let manifest = session.aio.as_ref()
+        .context_bad_request("AIO not configured", "Complete the setup wizard first")?
+        .get_manifest().await?;
 
     let mut items = db::Media::get_by_filter(
         &state.ctx.db,
         &db::MediaFilter {
-            kind: Some(vec![db::MediaKind::Catalog, db::MediaKind::Folder]),
+            kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
             promoted: Some(true),
             ..Default::default()
         },
@@ -90,7 +92,9 @@ pub async fn userviews_groupingoptions(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = session.aio.get_manifest().await?;
+    let _manifest = session.aio.as_ref()
+        .context_bad_request("AIO not configured", "Complete the setup wizard first")?
+        .get_manifest().await?;
 
     // Ok(Json(json!(
     // )))

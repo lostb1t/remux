@@ -1,7 +1,15 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
-use shared::sdks::jellyfin::{AuthenticateUserByName, GetScheduledTasks, GetSessions, JellyfinAuth, PublicSystemInfo, SessionInfoDto, StartTask, StopTask, TaskInfo};
+use shared::sdks::jellyfin::{
+    AuthenticateUserByName, CreateVirtualFolder, CreateVirtualFolderPayload,
+    DeleteVirtualFolder, GetScheduledTasks, GetSessions, GetSystemConfiguration,
+    GetStartupConfiguration, GetVirtualFolders, JellyfinAuth, PostStartupComplete,
+    PostStartupConfiguration, PostStartupUser, PublicSystemInfo, ServerConfiguration,
+    SessionInfoDto, StartTask, StartupConfiguration, StartupUser, StopTask,
+    TaskInfo, UpdateSystemConfiguration, UpdateVirtualFolder,
+    UpdateVirtualFolderPayload, VirtualFolderInfo,
+};
 use shared::sdks::{ClientError, RestClient};
 use uuid::Uuid;
 
@@ -95,16 +103,54 @@ fn main() {
 
 #[component]
 fn App() -> Element {
+    // None = still checking, Some(true) = wizard needed, Some(false) = normal flow
+    let mut wizard_needed: Signal<Option<bool>> = use_signal(|| None);
     let mut logged_in = use_signal(|| get_stored_server().is_some());
+
+    use_effect(move || {
+        spawn(async move {
+            let origin = get_origin();
+            let needed = match shared::sdks::jellyfin::client(&origin) {
+                Ok(c) => c.execute(PublicSystemInfo::default()).await
+                    .ok()
+                    .and_then(|info| info.startup_wizard_completed)
+                    .map(|done| !done)  // wizard needed = wizard NOT yet completed
+                    .unwrap_or(false),
+                Err(_) => false,
+            };
+            wizard_needed.set(Some(needed));
+        });
+    });
 
     rsx! {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
         document::Link { rel: "stylesheet", href: THEME_CSS }
-        if *logged_in.read() {
-            Dashboard { on_logout: move |_| logged_in.set(false) }
-        } else {
-            Login { on_login: move |_| logged_in.set(true) }
-        }
+        {match *wizard_needed.read() {
+            None => rsx! {
+                div { class: "login-page",
+                    div { class: "login-card",
+                        div { class: "login-header",
+                            span { class: "login-brand-label", "Remux" }
+                            p { class: "connecting", "Starting up…" }
+                        }
+                    }
+                }
+            },
+            Some(true) => rsx! {
+                Wizard {
+                    on_complete: move |_| {
+                        wizard_needed.set(Some(false));
+                    }
+                }
+            },
+            Some(false) => rsx! {
+                if *logged_in.read() {
+                    Dashboard { on_logout: move |_| logged_in.set(false) }
+                } else {
+                    Login { on_login: move |_| logged_in.set(true) }
+                }
+            },
+        }}
     }
 }
 
@@ -559,6 +605,8 @@ enum Page {
     Overview,
     Devices,
     Tasks,
+    Collections,
+    Settings,
 }
 
 #[component]
@@ -584,9 +632,11 @@ fn Dashboard(on_logout: EventHandler) -> Element {
     let mut current_page = use_signal(|| Page::Overview);
 
     let page_title = match *current_page.read() {
-        Page::Overview => "Overview",
-        Page::Devices => "Devices",
-        Page::Tasks => "Scheduled Tasks",
+        Page::Overview    => "Overview",
+        Page::Devices     => "Devices",
+        Page::Tasks       => "Scheduled Tasks",
+        Page::Collections => "Collections",
+        Page::Settings    => "Settings",
     };
 
     rsx! {
@@ -623,6 +673,16 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                         label: "Tasks",
                         active: *current_page.read() == Page::Tasks,
                         on_click: move |_| { current_page.set(Page::Tasks); sidebar_open.set(false); },
+                    }
+                    NavItem {
+                        label: "Collections",
+                        active: *current_page.read() == Page::Collections,
+                        on_click: move |_| { current_page.set(Page::Collections); sidebar_open.set(false); },
+                    }
+                    NavItem {
+                        label: "Settings",
+                        active: *current_page.read() == Page::Settings,
+                        on_click: move |_| { current_page.set(Page::Settings); sidebar_open.set(false); },
                     }
                 }
 
@@ -665,6 +725,723 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                         },
                         Page::Tasks => rsx! {
                             TasksCard { app_state: app_state.clone() }
+                        },
+                        Page::Collections => rsx! {
+                            CollectionsPage { app_state: app_state.clone() }
+                        },
+                        Page::Settings => rsx! {
+                            SettingsPage { app_state: app_state.clone() }
+                        },
+                    }}
+                }
+            }
+        }
+    }
+}
+
+// ── Collections page ───────────────────────────────────────────────
+
+/// Which collection is currently being edited (None = creating new).
+#[derive(Clone, PartialEq, Debug)]
+enum FormMode {
+    Create,
+    Edit(VirtualFolderInfo),
+}
+
+#[component]
+fn CollectionsPage(app_state: AppState) -> Element {
+    let mut collections: Signal<Vec<VirtualFolderInfo>> = use_signal(Vec::new);
+    let mut loading   = use_signal(|| true);
+    let mut error     = use_signal(|| Option::<String>::None);
+    let mut refresh   = use_signal(|| 0_u32);
+    let mut form_mode: Signal<Option<FormMode>> = use_signal(|| None);
+
+    let app_state_effect = app_state.clone();
+    use_effect(move || {
+        let _r = *refresh.read();
+        loading.set(true);
+        let client = app_state_effect.client.clone();
+        spawn(async move {
+            match client.execute(GetVirtualFolders).await {
+                Ok(list) => {
+                    // Only show Collection-type items (exclude plain Folders)
+                    let cols = list.into_iter()
+                        .filter(|f| f.collection_kind.is_some())
+                        .collect();
+                    collections.set(cols);
+                    error.set(None);
+                }
+                Err(e) => error.set(Some(format!("Failed to load collections: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    rsx! {
+        if let Some(mode) = form_mode.read().clone() {
+            CollectionForm {
+                mode,
+                app_state: app_state.clone(),
+                on_done: move |_| {
+                    form_mode.set(None);
+                    let v = *refresh.peek() + 1;
+                    refresh.set(v);
+                },
+                on_cancel: move |_| form_mode.set(None),
+            }
+        }
+
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Collections" }
+                if form_mode.read().is_none() {
+                    button {
+                        class: "btn btn-primary",
+                        style: "height:32px;font-size:.68rem",
+                        onclick: move |_| form_mode.set(Some(FormMode::Create)),
+                        "+ New Collection"
+                    }
+                }
+            }
+            div { class: "card-body",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else if let Some(err) = error.read().as_ref() {
+                    span { class: "loading-text", style: "color:var(--error)", "{err}" }
+                } else if collections.read().is_empty() {
+                    div { class: "empty-state", "No collections yet" }
+                } else {
+                    for col in collections.read().clone() {
+                        {
+                            let col_edit = col.clone();
+                            let col_del  = col.clone();
+                            let client_del = app_state.client.clone();
+                            let key = col.item_id.clone().unwrap_or_default();
+                            let name = col.name.clone().unwrap_or_default();
+                            let col_type_label = match col.collection_type.as_ref() {
+                                Some(ct) => match ct {
+                                    shared::sdks::jellyfin::CollectionType::Movies  => "Movies",
+                                    shared::sdks::jellyfin::CollectionType::Tvshows => "TV Shows",
+                                    _ => "Unknown",
+                                },
+                                None => "Unknown",
+                            };
+                            let col_kind_label = match col.collection_kind.as_deref() {
+                                Some("smart")  => "Smart",
+                                Some("manual") => "Manual",
+                                _ => "",
+                            };
+                            let promoted = col.promoted.unwrap_or(false);
+                            rsx! {
+                                div { class: "catalog-row", key: "{key}",
+                                    div {
+                                        div { class: "catalog-name", "{name}" }
+                                        div { class: "catalog-meta",
+                                            span { class: "session-client-badge", "{col_type_label}" }
+                                            if !col_kind_label.is_empty() {
+                                                span { class: "session-client-badge", "{col_kind_label}" }
+                                            }
+                                            if promoted {
+                                                span {
+                                                    class: "task-badge task-badge-running",
+                                                    style: "font-size:.6rem;padding:2px 6px",
+                                                    "Promoted"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    div { class: "catalog-actions",
+                                        button {
+                                            class: "btn btn-ghost",
+                                            style: "height:30px;font-size:.68rem;padding:0 10px",
+                                            onclick: move |_| form_mode.set(Some(FormMode::Edit(col_edit.clone()))),
+                                            "Edit"
+                                        }
+                                        button {
+                                            class: "btn btn-ghost",
+                                            style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                            onclick: move |_| {
+                                                let name = col_del.name.clone().unwrap_or_default();
+                                                let c    = client_del.clone();
+                                                spawn(async move {
+                                                    let _ = c.execute(DeleteVirtualFolder { name }).await;
+                                                    let v = *refresh.peek() + 1;
+                                                    refresh.set(v);
+                                                });
+                                            },
+                                            "Delete"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn CollectionForm(
+    mode: FormMode,
+    app_state: AppState,
+    on_done: EventHandler,
+    on_cancel: EventHandler,
+) -> Element {
+    let is_edit = matches!(mode, FormMode::Edit(_));
+    let existing: Option<VirtualFolderInfo> = match &mode {
+        FormMode::Edit(f) => Some(f.clone()),
+        FormMode::Create  => None,
+    };
+
+    let mut title       = use_signal(|| existing.as_ref().and_then(|f| f.name.clone()).unwrap_or_default());
+    let mut promoted    = use_signal(|| existing.as_ref().and_then(|f| f.promoted).unwrap_or(false));
+    let mut col_type    = use_signal(|| {
+        existing.as_ref()
+            .and_then(|f| f.collection_type.as_ref())
+            .map(|ct| match ct {
+                shared::sdks::jellyfin::CollectionType::Movies  => "movies".to_string(),
+                shared::sdks::jellyfin::CollectionType::Tvshows => "tvshows".to_string(),
+                _ => "movies".to_string(),
+            })
+            .unwrap_or_else(|| "movies".to_string())
+    });
+    let mut col_kind    = use_signal(|| {
+        existing.as_ref()
+            .and_then(|f| f.collection_kind.clone())
+            .unwrap_or_else(|| "smart".to_string())
+    });
+    let mut saving      = use_signal(|| false);
+    let mut err         = use_signal(|| Option::<String>::None);
+
+    let on_submit = move |e: Event<FormData>| {
+        e.prevent_default();
+        let client = app_state.client.clone();
+        let item_id = existing.as_ref().and_then(|f| f.item_id.clone());
+        let name = title.peek().clone();
+        let ct   = col_type.peek().clone();
+        let ck   = col_kind.peek().clone();
+        let prm  = *promoted.peek();
+        saving.set(true);
+        err.set(None);
+        spawn(async move {
+            let result = if let Some(id) = item_id {
+                client.execute(UpdateVirtualFolder {
+                    payload: UpdateVirtualFolderPayload {
+                        id,
+                        name,
+                        collection_type: Some(ct),
+                        collection_kind: Some(ck),
+                        promoted: Some(prm),
+                    },
+                }).await
+            } else {
+                client.execute(CreateVirtualFolder {
+                    payload: CreateVirtualFolderPayload {
+                        name,
+                        collection_type: Some(ct),
+                        collection_kind: Some(ck),
+                        promoted: Some(prm),
+                    },
+                }).await.map(|_| ())
+            };
+            match result {
+                Ok(_)  => on_done.call(()),
+                Err(e) => { err.set(Some(format!("{e}"))); saving.set(false); }
+            }
+        });
+    };
+
+    rsx! {
+        div { class: "form-panel",
+            p { class: "form-panel-title",
+                if is_edit { "Edit Collection" } else { "New Collection" }
+            }
+
+            if let Some(e) = err.read().as_ref() {
+                div { class: "alert-error", "{e}" }
+            }
+
+            form {
+                onsubmit: on_submit,
+                style: "display:flex;flex-direction:column;gap:14px",
+
+                div { class: "field",
+                    label { class: "field-label", r#for: "col-title", "Title" }
+                    input {
+                        id: "col-title",
+                        r#type: "text",
+                        class: "field-input",
+                        required: true,
+                        value: "{title}",
+                        oninput: move |e| title.set(e.value()),
+                    }
+                }
+
+                div { class: "field",
+                    label { class: "field-label", r#for: "col-type", "Content Type" }
+                    select {
+                        id: "col-type",
+                        class: "select-input",
+                        value: "{col_type}",
+                        onchange: move |e| col_type.set(e.value()),
+                        option { value: "movies",  "Movies"   }
+                        option { value: "tvshows", "TV Shows" }
+                    }
+                }
+
+                div { class: "field",
+                    label { class: "field-label", r#for: "col-kind", "Collection Kind" }
+                    select {
+                        id: "col-kind",
+                        class: "select-input",
+                        value: "{col_kind}",
+                        onchange: move |e| col_kind.set(e.value()),
+                        option { value: "smart",  "Smart"  }
+                        option { value: "manual", "Manual" }
+                    }
+                }
+
+                div { class: "toggle-row",
+                    span { class: "toggle-label", "Promoted (show in library)" }
+                    label { class: "toggle",
+                        input {
+                            r#type: "checkbox",
+                            checked: *promoted.read(),
+                            onchange: move |e| promoted.set(e.checked()),
+                        }
+                        span { class: "toggle-track" }
+                    }
+                }
+
+                div { class: "form-actions",
+                    button {
+                        r#type: "button",
+                        class: "btn btn-ghost",
+                        onclick: move |_| on_cancel.call(()),
+                        "Cancel"
+                    }
+                    button {
+                        r#type: "submit",
+                        class: "btn btn-primary",
+                        disabled: *saving.read(),
+                        if *saving.read() { "Saving…" } else { "Save" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Settings page ───────────────────────────────────────────────────
+
+#[component]
+fn SettingsPage(app_state: AppState) -> Element {
+    let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
+    let mut server_name       = use_signal(String::new);
+    let mut aio_url           = use_signal(String::new);
+    let mut catalog_max_items = use_signal(|| 100_i64);
+    let mut loading = use_signal(|| true);
+    let mut saving  = use_signal(|| false);
+    let mut error   = use_signal(|| Option::<String>::None);
+    let mut saved   = use_signal(|| false);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load.client.clone();
+        spawn(async move {
+            match client.execute(GetSystemConfiguration).await {
+                Ok(cfg) => {
+                    server_name.set(cfg.server_name.clone().unwrap_or_default());
+                    aio_url.set(cfg.aio_url.clone().unwrap_or_default());
+                    catalog_max_items.set(cfg.catalog_max_items.unwrap_or(100));
+                    base_cfg.set(Some(cfg));
+                }
+                Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    let on_submit = move |e: Event<FormData>| {
+        e.prevent_default();
+        let client = app_state.client.clone();
+        let name = server_name.peek().clone();
+        let url  = aio_url.peek().clone();
+        let max  = *catalog_max_items.peek();
+
+        let mut cfg = base_cfg.peek().clone().unwrap_or_default();
+        cfg.server_name       = Some(name);
+        cfg.aio_url           = Some(url);
+        cfg.catalog_max_items = Some(max);
+
+        saving.set(true);
+        error.set(None);
+        saved.set(false);
+        spawn(async move {
+            match client.execute(UpdateSystemConfiguration { config: cfg }).await {
+                Ok(_)  => saved.set(true),
+                Err(e) => error.set(Some(format!("Failed to save: {e}"))),
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "General Settings" }
+            }
+            div { class: "card-body",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else {
+                    if let Some(err) = error.read().as_ref() {
+                        div { class: "alert-error", "{err}" }
+                    }
+                    if *saved.read() {
+                        div { class: "alert-success", "Settings saved." }
+                    }
+
+                    form {
+                        onsubmit: on_submit,
+                        style: "display:flex;flex-direction:column;gap:14px",
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-name", "Server Name" }
+                            input {
+                                id: "s-name",
+                                r#type: "text",
+                                class: "field-input",
+                                value: "{server_name}",
+                                oninput: move |e| server_name.set(e.value()),
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-aio", "AIO URL" }
+                            input {
+                                id: "s-aio",
+                                r#type: "url",
+                                class: "field-input",
+                                placeholder: "http://192.168.1.x:5000",
+                                value: "{aio_url}",
+                                oninput: move |e| aio_url.set(e.value()),
+                            }
+                            p { class: "field-hint",
+                                "Base URL of the AIO media backend."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-max", "Catalog Max Items" }
+                            input {
+                                id: "s-max",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "1",
+                                value: "{catalog_max_items}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        catalog_max_items.set(n);
+                                    }
+                                },
+                            }
+                            p { class: "field-hint",
+                                "Maximum number of items imported per collection."
+                            }
+                        }
+
+                        div { class: "form-actions",
+                            button {
+                                r#type: "submit",
+                                class: "btn btn-primary",
+                                disabled: *saving.read(),
+                                if *saving.read() { "Saving…" } else { "Save Settings" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Setup wizard ────────────────────────────────────────────────────
+
+#[component]
+fn WizardStep(n: u8, label: &'static str, active: bool, done: bool) -> Element {
+    let dot_class = if done {
+        "wizard-step-dot wizard-step-done"
+    } else if active {
+        "wizard-step-dot wizard-step-active"
+    } else {
+        "wizard-step-dot"
+    };
+    rsx! {
+        div { class: "wizard-step",
+            div { class: "{dot_class}",
+                if done { "✓" } else { "{n}" }
+            }
+            span { class: "wizard-step-label", "{label}" }
+        }
+    }
+}
+
+#[component]
+fn Wizard(on_complete: EventHandler) -> Element {
+    let mut step      = use_signal(|| 0_u8);
+    let mut server_name = use_signal(String::new);
+    let mut aio_url   = use_signal(String::new);
+    let mut username  = use_signal(String::new);
+    let mut password  = use_signal(String::new);
+    let mut password2 = use_signal(String::new);
+    let mut saving    = use_signal(|| false);
+    let mut error     = use_signal(|| Option::<String>::None);
+
+    // Pre-fill from current startup config (in case the wizard was partially run)
+    use_effect(move || {
+        let origin = get_origin();
+        spawn(async move {
+            if let Ok(c) = shared::sdks::jellyfin::client(&origin) {
+                if let Ok(cfg) = c.execute(GetStartupConfiguration::default()).await {
+                    if let Some(name) = cfg.server_name.filter(|s| !s.is_empty()) {
+                        server_name.set(name);
+                    }
+                    if let Some(url) = cfg.aio_url.filter(|s| !s.is_empty()) {
+                        aio_url.set(url);
+                    }
+                }
+            }
+        });
+    });
+
+    rsx! {
+        div { class: "wizard-page",
+            div { class: "wizard-card",
+
+                div { class: "wizard-steps",
+                    WizardStep { n: 1, label: "Server",  active: *step.read() == 0, done: *step.read() > 0 }
+                    div { class: "wizard-step-line" }
+                    WizardStep { n: 2, label: "Account", active: *step.read() == 1, done: *step.read() > 1 }
+                    div { class: "wizard-step-line" }
+                    WizardStep { n: 3, label: "Done",    active: *step.read() == 2, done: false }
+                }
+
+                div { class: "wizard-header",
+                    span { class: "login-brand-label", "Remux" }
+                    h2 { class: "wizard-title",
+                        {match *step.read() {
+                            0 => "Server Configuration",
+                            1 => "Create Admin Account",
+                            _ => "Setup Complete",
+                        }}
+                    }
+                }
+
+                div { class: "wizard-body",
+                    if let Some(err) = error.read().as_ref() {
+                        div { class: "alert-error", style: "margin-bottom:16px", "{err}" }
+                    }
+
+                    {match *step.read() {
+
+                        // ── Step 0: server info ────────────────────
+                        0 => rsx! {
+                            form {
+                                onsubmit: move |e| {
+                                    e.prevent_default();
+                                    let origin = get_origin();
+                                    let name = server_name.peek().clone();
+                                    let url  = aio_url.peek().clone();
+                                    saving.set(true);
+                                    error.set(None);
+                                    spawn(async move {
+                                        match shared::sdks::jellyfin::client(&origin) {
+                                            Ok(c) => match c.execute(PostStartupConfiguration {
+                                                payload: StartupConfiguration {
+                                                    server_name: Some(name),
+                                                    aio_url: Some(url),
+                                                    ..Default::default()
+                                                },
+                                            }).await {
+                                                Ok(_)  => step.set(1),
+                                                Err(e) => error.set(Some(format!("{e}"))),
+                                            },
+                                            Err(e) => error.set(Some(format!("Client error: {e}"))),
+                                        }
+                                        saving.set(false);
+                                    });
+                                },
+                                style: "display:flex;flex-direction:column;gap:16px",
+
+                                p { class: "wizard-desc",
+                                    "Give your server a name and point it at the AIO backend."
+                                }
+
+                                div { class: "field",
+                                    label { class: "field-label", r#for: "w-name", "Server Name" }
+                                    input {
+                                        id: "w-name",
+                                        r#type: "text",
+                                        class: "field-input",
+                                        placeholder: "My Remux Server",
+                                        value: "{server_name}",
+                                        oninput: move |e| server_name.set(e.value()),
+                                    }
+                                }
+
+                                div { class: "field",
+                                    label { class: "field-label", r#for: "w-aio", "AIO URL" }
+                                    input {
+                                        id: "w-aio",
+                                        r#type: "url",
+                                        class: "field-input",
+                                        placeholder: "http://192.168.1.x:5000",
+                                        required: true,
+                                        value: "{aio_url}",
+                                        oninput: move |e| aio_url.set(e.value()),
+                                    }
+                                    p { class: "field-hint",
+                                        "Base URL of the AIO media backend (no trailing slash)."
+                                    }
+                                }
+
+                                div { class: "wizard-actions",
+                                    button {
+                                        r#type: "submit",
+                                        class: "btn btn-primary",
+                                        disabled: *saving.read(),
+                                        if *saving.read() { "Saving…" } else { "Next →" }
+                                    }
+                                }
+                            }
+                        },
+
+                        // ── Step 1: admin account ──────────────────
+                        1 => rsx! {
+                            form {
+                                onsubmit: move |e| {
+                                    e.prevent_default();
+                                    let origin = get_origin();
+                                    let name = username.peek().clone();
+                                    let pw   = password.peek().clone();
+                                    let pw2  = password2.peek().clone();
+                                    if name.is_empty() {
+                                        error.set(Some("Username is required".into()));
+                                        return;
+                                    }
+                                    if pw != pw2 {
+                                        error.set(Some("Passwords do not match".into()));
+                                        return;
+                                    }
+                                    saving.set(true);
+                                    error.set(None);
+                                    spawn(async move {
+                                        match shared::sdks::jellyfin::client(&origin) {
+                                            Ok(c) => match c.execute(PostStartupUser {
+                                                payload: StartupUser {
+                                                    name: Some(name),
+                                                    password: Some(pw.clone()),
+                                                    password_confirm: Some(pw),
+                                                },
+                                            }).await {
+                                                Ok(_)  => step.set(2),
+                                                Err(e) => error.set(Some(format!("{e}"))),
+                                            },
+                                            Err(e) => error.set(Some(format!("Client error: {e}"))),
+                                        }
+                                        saving.set(false);
+                                    });
+                                },
+                                style: "display:flex;flex-direction:column;gap:16px",
+
+                                p { class: "wizard-desc",
+                                    "Create the administrator account you will use to log in."
+                                }
+
+                                div { class: "field",
+                                    label { class: "field-label", r#for: "w-user", "Username" }
+                                    input {
+                                        id: "w-user",
+                                        r#type: "text",
+                                        class: "field-input",
+                                        required: true,
+                                        value: "{username}",
+                                        oninput: move |e| username.set(e.value()),
+                                        autocomplete: "username",
+                                    }
+                                }
+                                div { class: "field",
+                                    label { class: "field-label", r#for: "w-pw", "Password" }
+                                    input {
+                                        id: "w-pw",
+                                        r#type: "password",
+                                        class: "field-input",
+                                        required: true,
+                                        value: "{password}",
+                                        oninput: move |e| password.set(e.value()),
+                                        autocomplete: "new-password",
+                                    }
+                                }
+                                div { class: "field",
+                                    label { class: "field-label", r#for: "w-pw2", "Confirm Password" }
+                                    input {
+                                        id: "w-pw2",
+                                        r#type: "password",
+                                        class: "field-input",
+                                        required: true,
+                                        value: "{password2}",
+                                        oninput: move |e| password2.set(e.value()),
+                                        autocomplete: "new-password",
+                                    }
+                                }
+
+                                div { class: "wizard-actions wizard-actions-split",
+                                    button {
+                                        r#type: "button",
+                                        class: "btn btn-ghost",
+                                        onclick: move |_| { error.set(None); step.set(0); },
+                                        "← Back"
+                                    }
+                                    button {
+                                        r#type: "submit",
+                                        class: "btn btn-primary",
+                                        disabled: *saving.read(),
+                                        if *saving.read() { "Creating…" } else { "Next →" }
+                                    }
+                                }
+                            }
+                        },
+
+                        // ── Step 2: finish ─────────────────────────
+                        _ => rsx! {
+                            div { style: "display:flex;flex-direction:column;gap:20px",
+                                p { class: "wizard-desc",
+                                    "Your server is configured and the admin account has been created. "
+                                    "Click Finish to complete setup and go to the login page."
+                                }
+                                div { class: "wizard-actions",
+                                    button {
+                                        class: "btn btn-primary",
+                                        style: "width:100%",
+                                        disabled: *saving.read(),
+                                        onclick: move |_| {
+                                            let origin = get_origin();
+                                            saving.set(true);
+                                            error.set(None);
+                                            spawn(async move {
+                                                if let Ok(c) = shared::sdks::jellyfin::client(&origin) {
+                                                    let _ = c.execute(PostStartupComplete::default()).await;
+                                                }
+                                                on_complete.call(());
+                                            });
+                                        },
+                                        if *saving.read() { "Finishing…" } else { "Finish Setup" }
+                                    }
+                                }
+                            }
                         },
                     }}
                 }
