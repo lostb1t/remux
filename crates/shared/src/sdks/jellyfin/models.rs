@@ -109,8 +109,35 @@ pub struct StartupConfiguration {
     pub server_name: Option<String>,
     pub preferred_metadata_language: Option<String>,
     pub metadata_country_code: Option<String>,
-    /// Remux: AIO service base URL set during wizard.
+    #[serde(deserialize_with = "clean_aio_url")]
     pub aio_url: Option<String>,
+}
+
+fn clean_aio_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let url: Option<String> = Option::deserialize(deserializer)?;
+    match url {
+        Some(url) => {
+            let cleaned = clean_aio_url_str(&url);
+            if cleaned.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(cleaned.to_string()))
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+fn clean_aio_url_str(url: &str) -> &str {
+    url.trim_end_matches('/')
+    .strip_suffix("/")
+        .strip_suffix("manifest.json")
+        .strip_suffix("configure")
+        .unwrap_or(url)
+        .trim_end_matches('/')
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

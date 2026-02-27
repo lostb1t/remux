@@ -136,11 +136,6 @@ async fn init_app() -> Result<Router> {
     db::migrate(&conn).await?;
     db::ensure_collection_folder(&conn).await?;
 
-
-
-    
-
-
     // FOR TWSTING ONLY
     // db::checkpoint_db(&conn).await;
 
@@ -229,10 +224,6 @@ fn default_db_url() -> String {
     "sqlite:///data/db.sqlite?mode=rwc".to_string()
 }
 
-fn default_aio_url() -> String {
-    String::new()
-}
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Config {
     #[serde(default = "default_web_path")]
@@ -243,21 +234,7 @@ pub struct Config {
     pub db_url: String,
 }
 
-fn clean_aio_url<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let url = String::deserialize(deserializer)?;
-    let cleaned = clean_aio_url_str(&url);
-    Ok(cleaned.to_string())
-}
 
-fn clean_aio_url_str(url: &str) -> &str {
-    url.trim_end_matches('/')
-        .strip_suffix("manifest.json")
-        .unwrap_or(url)
-        .trim_end_matches('/')
-}
 
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     let uri = req.uri();
