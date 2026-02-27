@@ -50,6 +50,40 @@ impl Endpoint for GetScheduledTasks {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct StartTask {
+    pub task_id: String,
+}
+
+impl Endpoint for StartTask {
+    type Output = ();
+
+    fn path(&self) -> String {
+        format!("/scheduledtasks/running/{}", self.task_id)
+    }
+
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StopTask {
+    pub task_id: String,
+}
+
+impl Endpoint for StopTask {
+    type Output = ();
+
+    fn path(&self) -> String {
+        format!("/scheduledtasks/running/{}", self.task_id)
+    }
+
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+}
+
 impl Endpoint for AuthenticateUserByName {
     type Output = AuthenticateUserByNameResult;
 

@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
-use shared::sdks::jellyfin::{AuthenticateUserByName, GetScheduledTasks, GetSessions, JellyfinAuth, PublicSystemInfo, SessionInfoDto, TaskInfo};
+use shared::sdks::jellyfin::{AuthenticateUserByName, GetScheduledTasks, GetSessions, JellyfinAuth, PublicSystemInfo, SessionInfoDto, StartTask, StopTask, TaskInfo};
 use shared::sdks::{ClientError, RestClient};
 use uuid::Uuid;
 
@@ -382,9 +382,13 @@ fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) 
     let mut tasks: Signal<Vec<TaskInfo>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
+    let mut refresh: Signal<u32> = use_signal(|| 0);
 
+    let app_state_effect = app_state.clone();
     use_effect(move || {
-        let client = app_state.client.clone();
+        let _r = *refresh.read(); // re-run effect when refresh increments
+        loading.set(true);
+        let client = app_state_effect.client.clone();
         spawn(async move {
             match client.execute(GetScheduledTasks { is_hidden: Some(false) }).await {
                 Ok(t) => { tasks.set(t); error.set(None); }
@@ -416,10 +420,24 @@ fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) 
                                     if running_only { "No tasks currently running" } else { "No tasks found" }
                                 }
                             }
+                        } else if running_only {
+                            rsx! {
+                                for task in visible {
+                                    TaskRow { key: "{task.id}", task }
+                                }
+                            }
                         } else {
                             rsx! {
                                 for task in visible {
-                                    TaskRow { task }
+                                    TaskPageRow {
+                                        key: "{task.id}",
+                                        task,
+                                        app_state: app_state.clone(),
+                                        on_refresh: move |_| {
+                                            let v = *refresh.peek() + 1;
+                                            refresh.set(v);
+                                        },
+                                    }
                                 }
                             }
                         }
@@ -430,17 +448,45 @@ fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) 
     }
 }
 
+/// Wraps `TaskRow` with start/stop controls; used on the Tasks page.
 #[component]
-fn TaskRow(task: TaskInfo) -> Element {
+fn TaskPageRow(task: TaskInfo, app_state: AppState, on_refresh: EventHandler) -> Element {
+    let start_id = task.id.clone();
+    let stop_id  = task.id.clone();
+    let c_start  = app_state.client.clone();
+    let c_stop   = app_state.client.clone();
+
+    rsx! {
+        TaskRow {
+            task,
+            on_start: move |_| {
+                let id = start_id.clone();
+                let c  = c_start.clone();
+                spawn(async move {
+                    let _ = c.execute(StartTask { task_id: id }).await;
+                    on_refresh.call(());
+                });
+            },
+            on_stop: move |_| {
+                let id = stop_id.clone();
+                let c  = c_stop.clone();
+                spawn(async move {
+                    let _ = c.execute(StopTask { task_id: id }).await;
+                    on_refresh.call(());
+                });
+            },
+        }
+    }
+}
+
+#[component]
+fn TaskRow(
+    task: TaskInfo,
+    #[props(optional)] on_start: Option<EventHandler>,
+    #[props(optional)] on_stop: Option<EventHandler>,
+) -> Element {
     let state = task.state.as_deref().unwrap_or("Idle");
     let is_running = state == "Running";
-
-    let badge_class = match state {
-        "Running"    => "task-badge task-badge-running",
-        "Completed"  => "task-badge task-badge-completed",
-        "Failed"     => "task-badge task-badge-failed",
-        _            => "task-badge task-badge-idle",
-    };
 
     // Last result status shown when idle
     let last_status = task.last_execution_result
@@ -450,7 +496,7 @@ fn TaskRow(task: TaskInfo) -> Element {
 
     let display_state = if is_running { state } else { last_status };
     let display_badge = if is_running {
-        badge_class
+        "task-badge task-badge-running"
     } else {
         match last_status {
             "Completed" => "task-badge task-badge-completed",
@@ -458,6 +504,8 @@ fn TaskRow(task: TaskInfo) -> Element {
             _           => "task-badge task-badge-idle",
         }
     };
+
+    let has_controls = on_start.is_some() || on_stop.is_some();
 
     rsx! {
         div { class: "task-row",
@@ -477,8 +525,30 @@ fn TaskRow(task: TaskInfo) -> Element {
                     }
                 }
             }
-            if !display_state.is_empty() {
-                span { class: "{display_badge}", "{display_state}" }
+            div { class: "task-right",
+                if !display_state.is_empty() {
+                    span { class: "{display_badge}", "{display_state}" }
+                }
+                if has_controls {
+                    div { class: "task-actions",
+                        if !is_running {
+                            button {
+                                class: "btn btn-ghost task-btn",
+                                title: "Run now",
+                                onclick: move |_| { if let Some(ref h) = on_start { h.call(()); } },
+                                "▶"
+                            }
+                        }
+                        if is_running {
+                            button {
+                                class: "btn btn-ghost task-btn",
+                                title: "Stop",
+                                onclick: move |_| { if let Some(ref h) = on_stop { h.call(()); } },
+                                "■"
+                            }
+                        }
+                    }
+                }
             }
         }
     }

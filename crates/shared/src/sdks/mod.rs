@@ -233,8 +233,11 @@ impl<A: Auth + Clone> RestClient<A> {
         match status {
             401 => Err(ClientError::Unauthorized),
             s if (200..300).contains(&s) => {
+                // 204 No Content and similar empty responses: treat as JSON null so
+                // endpoints with `type Output = ()` deserialize successfully.
+                let parse_body = if text.is_empty() { "null" } else { &text };
                 let result: Result<EP::Output, ClientError> =
-                    serde_json::from_str::<EP::Output>(&text)
+                    serde_json::from_str::<EP::Output>(parse_body)
                         .map_err(|e| ClientError::Json {
                             status: s,
                             source: e,
