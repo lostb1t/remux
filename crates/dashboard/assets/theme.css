@@ -392,6 +392,23 @@ html, body {
 }
 
 /* ── Task rows ───────────────────────────────────────────────────── */
+/* ── Task groups ─────────────────────────────────────────────────── */
+.task-group + .task-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.task-group-header {
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--text-muted);
+  padding: 4px 0 6px;
+}
+
 .task-row {
   display: flex;
   align-items: flex-start;
@@ -401,7 +418,7 @@ html, body {
   border-bottom: 1px solid var(--border);
 }
 
-.task-row:last-child { border-bottom: none; }
+.task-group .task-row:last-child { border-bottom: none; }
 
 .task-name {
   font-size: .85rem;

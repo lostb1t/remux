@@ -11,7 +11,7 @@ pub struct CatalogImportTask;
 #[async_trait]
 impl Task for CatalogImportTask {
     fn key(&self) -> &str { "CatalogImport" }
-    fn name(&self) -> &str { "Catalog Import" }
+    fn name(&self) -> &str { "Collection Import" }
     fn category(&self) -> &str { "Library" }
 
     async fn run(

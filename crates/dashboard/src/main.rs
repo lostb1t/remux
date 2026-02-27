@@ -475,16 +475,29 @@ fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) 
                                 }
                             }
                         } else {
+                            // Group by category (BTreeMap → alphabetical order)
+                            let mut groups: std::collections::BTreeMap<String, Vec<TaskInfo>> =
+                                std::collections::BTreeMap::new();
+                            for task in visible {
+                                let cat = task.category.clone().unwrap_or_else(|| "Other".to_string());
+                                groups.entry(cat).or_default().push(task);
+                            }
                             rsx! {
-                                for task in visible {
-                                    TaskPageRow {
-                                        key: "{task.id}",
-                                        task,
-                                        app_state: app_state.clone(),
-                                        on_refresh: move |_| {
-                                            let v = *refresh.peek() + 1;
-                                            refresh.set(v);
-                                        },
+                                for (cat, group_tasks) in groups {
+                                    div { class: "task-group", key: "{cat}",
+                                        div { class: "task-group-header", "{cat}" }
+                                        for task in group_tasks {
+                                            TaskPageRow {
+                                                key: "{task.id}",
+                                                task,
+                                                show_category: false,
+                                                app_state: app_state.clone(),
+                                                on_refresh: move |_| {
+                                                    let v = *refresh.peek() + 1;
+                                                    refresh.set(v);
+                                                },
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -498,7 +511,12 @@ fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) 
 
 /// Wraps `TaskRow` with start/stop controls; used on the Tasks page.
 #[component]
-fn TaskPageRow(task: TaskInfo, app_state: AppState, on_refresh: EventHandler) -> Element {
+fn TaskPageRow(
+    task: TaskInfo,
+    app_state: AppState,
+    on_refresh: EventHandler,
+    #[props(default = true)] show_category: bool,
+) -> Element {
     let start_id = task.id.clone();
     let stop_id  = task.id.clone();
     let c_start  = app_state.client.clone();
@@ -507,6 +525,7 @@ fn TaskPageRow(task: TaskInfo, app_state: AppState, on_refresh: EventHandler) ->
     rsx! {
         TaskRow {
             task,
+            show_category,
             on_start: move |_| {
                 let id = start_id.clone();
                 let c  = c_start.clone();
@@ -530,6 +549,7 @@ fn TaskPageRow(task: TaskInfo, app_state: AppState, on_refresh: EventHandler) ->
 #[component]
 fn TaskRow(
     task: TaskInfo,
+    #[props(default = true)] show_category: bool,
     #[props(optional)] on_start: Option<EventHandler>,
     #[props(optional)] on_stop: Option<EventHandler>,
 ) -> Element {
@@ -559,8 +579,10 @@ fn TaskRow(
         div { class: "task-row",
             div { style: "min-width:0; flex:1",
                 div { class: "task-name", "{task.name}" }
-                if let Some(cat) = &task.category {
-                    div { class: "task-category", "{cat}" }
+                if show_category {
+                    if let Some(cat) = &task.category {
+                        div { class: "task-category", "{cat}" }
+                    }
                 }
                 if is_running {
                     if let Some(pct) = task.current_progress_percentage {

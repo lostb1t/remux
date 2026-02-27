@@ -33,7 +33,7 @@ impl CollectionImportTask {
 impl Task for CollectionImportTask {
     fn key(&self) -> &str { &self.key }
     fn name(&self) -> &str { &self.display_name }
-    fn category(&self) -> &str { "Library" }
+    fn category(&self) -> &str { "Collections" }
 
     async fn run(
         &self,
