@@ -145,7 +145,11 @@ pub async fn get_items(
 
         // catalog get
         if parent.kind == db::MediaKind::Collection {
-            q.parent_id = None;
+            // Catalog collections store items with parent_id = collection.id.
+            // Smart/Manual collections use a global query (no parent_id filter).
+            if parent.collection_kind != Some(db::CollectionKind::Catalog) {
+                q.parent_id = None;
+            }
 
             if let Some(kind) = parent.collection_media_kind.clone() {
                 q.include_item_types = Some(vec![jellyfin::db_media_kind_to_type(kind)]);

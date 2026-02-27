@@ -909,6 +909,28 @@ html, body {
   justify-content: space-between;
 }
 
+/* ── Import progress bar ─────────────────────────────────────────── */
+.catalog-row-wrap {
+    display: flex;
+    flex-direction: column;
+}
+
+.import-progress {
+    height: 3px;
+    background: var(--border);
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    overflow: hidden;
+    margin: 0 1px;
+}
+
+.import-progress-bar {
+    height: 100%;
+    background: var(--primary);
+    border-radius: inherit;
+    transition: width .4s ease;
+    min-width: 2px;
+}
+
 /* ── Modal overlay ───────────────────────────────────────────────── */
 .modal-backdrop {
     position: fixed;

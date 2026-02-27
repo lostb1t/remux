@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
+use gloo_timers::future::TimeoutFuture;
 use serde::{Deserialize, Serialize};
 use shared::sdks::jellyfin::{
     AioCatalogInfo, AuthenticateUserByName, BaseItemDto, CreateVirtualFolder,
@@ -636,7 +637,7 @@ fn Dashboard(on_logout: EventHandler) -> Element {
         Page::Overview    => "Overview",
         Page::Devices     => "Devices",
         Page::Tasks       => "Scheduled Tasks",
-        Page::Collections => "Collections",
+        Page::Collections => "Library",
         Page::Settings    => "Settings",
     };
 
@@ -666,7 +667,7 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                         on_click: move |_| { current_page.set(Page::Overview); sidebar_open.set(false); },
                     }
                     NavItem {
-                        label: "Collections",
+                        label: "Library",
                         active: *current_page.read() == Page::Collections,
                         on_click: move |_| { current_page.set(Page::Collections); sidebar_open.set(false); },
                     }
@@ -793,6 +794,26 @@ fn CollectionsPage(app_state: AppState) -> Element {
         });
     });
 
+    // Poll tasks every 2s while any catalog import is running.
+    {
+        let poll_client = app_state.client.clone();
+        use_effect(move || {
+            let any_running = tasks_list.read().iter().any(|t| {
+                t.key.as_ref().map_or(false, |k| k.starts_with("catalog_import:"))
+                    && t.state.as_deref() == Some("Running")
+            });
+            if any_running {
+                let client = poll_client.clone();
+                spawn(async move {
+                    TimeoutFuture::new(2_000).await;
+                    if let Ok(t) = client.execute(GetScheduledTasks { is_hidden: Some(false) }).await {
+                        tasks_list.set(t);
+                    }
+                });
+            }
+        });
+    }
+
     rsx! {
         div { class: "card",
             div { class: "card-header",
@@ -839,26 +860,28 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                 Some("catalog") => "Catalog",
                                 _ => "",
                             };
-                            rsx! {
-                                div { class: "catalog-row", key: "{col_id_str}",
-                                    div {
-                                        div { class: "catalog-name", "{name}" }
-                                        div { class: "catalog-meta",
-                                            span { class: "session-client-badge", "{col_type_label}" }
-                                            if !col_kind_label.is_empty() {
-                                                span { class: "session-client-badge", "{col_kind_label}" }
+                            {
+                                let task_id   = import_task.as_ref().map(|t| t.id.clone());
+                                let is_running = import_task.as_ref()
+                                    .and_then(|t| t.state.as_deref()) == Some("Running");
+                                let progress_pct = import_task.as_ref()
+                                    .and_then(|t| t.current_progress_percentage)
+                                    .unwrap_or(0.0);
+                                rsx! {
+                                    div { class: "catalog-row-wrap", key: "{col_id_str}",
+                                        div { class: "catalog-row",
+                                            div {
+                                                div { class: "catalog-name", "{name}" }
+                                                div { class: "catalog-meta",
+                                                    span { class: "session-client-badge", "{col_type_label}" }
+                                                    if !col_kind_label.is_empty() {
+                                                        span { class: "session-client-badge", "{col_kind_label}" }
+                                                    }
+                                                }
                                             }
-                                        }
-                                    }
-                                    div { class: "catalog-actions",
-                                        if is_catalog {
-                                            {
-                                                let task_id = import_task.as_ref().map(|t| t.id.clone());
-                                                let is_running = import_task.as_ref()
-                                                    .and_then(|t| t.state.as_deref())
-                                                    == Some("Running");
-                                                if let Some(tid) = task_id {
-                                                    rsx! {
+                                            div { class: "catalog-actions",
+                                                if is_catalog {
+                                                    if let Some(tid) = task_id {
                                                         button {
                                                             class: "btn btn-ghost",
                                                             style: "height:30px;font-size:.68rem;padding:0 10px",
@@ -868,33 +891,47 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                                                 let c  = client_import.clone();
                                                                 spawn(async move {
                                                                     let _ = c.execute(StartTask { task_id: id }).await;
+                                                                    // Kick-start the polling loop: fetch tasks after
+                                                                    // a short delay so we pick up the Running state.
+                                                                    TimeoutFuture::new(400).await;
+                                                                    if let Ok(t) = c.execute(GetScheduledTasks { is_hidden: Some(false) }).await {
+                                                                        tasks_list.set(t);
+                                                                    }
                                                                 });
                                                             },
                                                             if is_running { "Importing…" } else { "Import" }
                                                         }
                                                     }
-                                                } else { rsx! {} }
+                                                }
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:30px;font-size:.68rem;padding:0 10px",
+                                                    onclick: move |_| form_mode.set(Some(FormMode::Edit(col_edit.clone()))),
+                                                    "Edit"
+                                                }
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                                    onclick: move |_| {
+                                                        let name = col_del.name.clone().unwrap_or_default();
+                                                        let c    = client_del.clone();
+                                                        spawn(async move {
+                                                            let _ = c.execute(DeleteVirtualFolder { name }).await;
+                                                            let v = *refresh.peek() + 1;
+                                                            refresh.set(v);
+                                                        });
+                                                    },
+                                                    "Delete"
+                                                }
                                             }
                                         }
-                                        button {
-                                            class: "btn btn-ghost",
-                                            style: "height:30px;font-size:.68rem;padding:0 10px",
-                                            onclick: move |_| form_mode.set(Some(FormMode::Edit(col_edit.clone()))),
-                                            "Edit"
-                                        }
-                                        button {
-                                            class: "btn btn-ghost",
-                                            style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
-                                            onclick: move |_| {
-                                                let name = col_del.name.clone().unwrap_or_default();
-                                                let c    = client_del.clone();
-                                                spawn(async move {
-                                                    let _ = c.execute(DeleteVirtualFolder { name }).await;
-                                                    let v = *refresh.peek() + 1;
-                                                    refresh.set(v);
-                                                });
-                                            },
-                                            "Delete"
+                                        if is_running {
+                                            div { class: "import-progress",
+                                                div {
+                                                    class: "import-progress-bar",
+                                                    style: "width:{progress_pct:.1}%",
+                                                }
+                                            }
                                         }
                                     }
                                 }

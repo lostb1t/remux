@@ -76,6 +76,7 @@ impl Task for CollectionImportTask {
 
         info!("importing catalog {} for collection {}", aio_id, self.collection_id);
 
+        let collection_id = self.collection_id;
         let mut meta_stream = aio.get_catalog_stream(&catalog).await.chunks(500);
         let mut count = 0;
 
@@ -92,7 +93,13 @@ impl Task for CollectionImportTask {
                 .into_iter()
                 .unique_by(|meta| meta.id.clone())
                 .flat_map(|meta| match db::aio_meta_to_medias(meta) {
-                    Ok(items) => items.into_iter(),
+                    Ok(mut items) => {
+                        // Link the top-level item (movie/series) to this collection.
+                        if let Some(top) = items.first_mut() {
+                            top.parent_id = Some(collection_id);
+                        }
+                        items.into_iter()
+                    }
                     Err(e) => {
                         warn!(error = %e, "failed to convert metadata, skipping");
                         Vec::<db::Media>::new().into_iter()
@@ -104,7 +111,7 @@ impl Task for CollectionImportTask {
                 break;
             }
 
-            if let Err(e) = db::Media::insert(&ctx.db, &items).await {
+            if let Err(e) = db::Media::upsert(&ctx.db, &items).await {
                 error!("failed to import chunk: {}", e);
             } else {
                 count += items.len();
