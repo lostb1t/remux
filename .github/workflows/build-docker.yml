@@ -71,6 +71,7 @@ jobs:
           outputs: type=image,name-canonical=true,push=true
           cache-from: type=gha,scope=build-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=build-${{ env.PLATFORM_PAIR }}
+
       - name: Export digest
         run: |
           mkdir -p ${{ runner.temp }}/digests

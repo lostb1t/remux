@@ -9,16 +9,9 @@ Status: Very experimental 🔥 it's a proof of concept
 
 Only supports aiostreams for now https://github.com/Viren070/AIOStreams.
 
-create a config.toml in the /data dir
-
-```toml
-aio_url = "https://<your_aiostreams_manifest_url>"
-
-[[users]]
-key = "test_user"
-username = "test"
-password = "test"
-```
+A self-hosted, Jellyfin-compatible media server that acts as a full replacement for Jellyfin.
+It integrates Stremio add-ons directly into the Jellyfin ecosystem by exposing a fully compatible Jellyfin API layer, allowing existing Jellyfin clients to work without modification.
+Built in Rust for high performance, low resource usage, and an optimized streaming experience.
 
 Run the image as follows
 
@@ -32,6 +25,9 @@ services:
     volumes:
       /remux/data:/data
 ```
+
+Open up it up in your browser and start importing catalogs byt creating
+new collections backed by aio catalogs.
 
 ### Whats included
 
