@@ -1,57 +1,55 @@
 FROM jellyfin/jellyfin:10.11.6 AS jf
 
-FROM lukemathwalker/cargo-chef:latest-rust-slim-bookworm AS chef
+# ── Recipe planner (Bookworm is fine, no FFmpeg needed here) ─────────────────
+FROM lukemathwalker/cargo-chef:latest-rust-slim-bookworm AS planner
 WORKDIR /app
-
-FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM chef AS builder
+# ── Builder: Debian Trixie has FFmpeg 7.x in official apt repos ──────────────
+FROM debian:trixie-slim AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl ca-certificates \
-        clang pkg-config \
-        ffmpeg libavutil-dev libavcodec-dev libavformat-dev libavfilter-dev libavdevice-dev libswresample-dev libswscale-dev \
-        build-essential \
-        libssl-dev \
+        clang pkg-config build-essential libssl-dev \
+        ffmpeg libavutil-dev libavcodec-dev libavformat-dev \
+        libavfilter-dev libavdevice-dev libswresample-dev libswscale-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dioxus CLI and wasm target for dashboard build
-RUN rustup target add wasm32-unknown-unknown \
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN cargo install cargo-chef --locked \
+    && rustup target add wasm32-unknown-unknown \
     && cargo install dioxus-cli --locked
 
-# Dep-layer: only invalidated when Cargo.lock/Cargo.toml/vendor changes
 COPY vendor ./vendor
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
-# Source + build — only user crates compiled here
 COPY . .
-
-# Build dashboard WASM (outputs to crates/dashboard/dist/)
 RUN cd crates/dashboard && dx build --release
 
 ENV SQLX_OFFLINE=true
-RUN cargo build --release -p remux-server
+RUN cargo build --release -p remux-server && strip target/release/remux-server
 
-RUN strip target/release/remux-server
-
-FROM debian:bookworm-slim AS release
+# ── Runtime ──────────────────────────────────────────────────────────────────
+FROM debian:trixie-slim AS release
+ENV DEBIAN_FRONTEND=noninteractive
 ENV WEB_PATH=/app/jellyfin-web
 ENV DASHBOARD_PATH=/app/dashboard
 
-RUN apt update \
-    && apt install -y ffmpeg \
-    && apt clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=builder /app/target/release/remux-server .
-COPY --from=builder /app/crates/dashboard/dist /app/dashboard
+COPY --from=builder /app/target/dx/dashboard/release/web/public /app/dashboard
 COPY --from=jf /jellyfin/jellyfin-web ${WEB_PATH}
 
 EXPOSE 3000
-
 CMD ["./remux-server"]
