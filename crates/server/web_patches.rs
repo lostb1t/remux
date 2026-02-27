@@ -5,32 +5,54 @@ pub static CSS: &str = r##"
   /* ── Sidebar: whole sections ─────────────────────────────── */
   [aria-labelledby="livetv-subheader"]    { display: none !important; }
   [aria-labelledby="plugins-subheader"]   { display: none !important; }
-
-  /* ── Sidebar: individual items ───────────────────────────── */
-  li:has(a[href="#/dashboard/networking"])        { display: none !important; }
-  li:has(a[href="#/dashboard/backups"])           { display: none !important; }
-  li:has(a[href="#/dashboard/logs"])              { display: none !important; }
-  li:has(a[href="#/dashboard/libraries/nfo"])     { display: none !important; }
-  li:has(a[href="#/dashboard/libraries/display"]) { display: none !important; }
-  li:has(a[href="#/dashboard/playback/trickplay"]) { display: none !important; }
 "##;
 
 /// JS injected before `</body>` of every HTML response.
-/// Leave empty to skip injection entirely.
+/// Intercepts React Router (History API) navigation to /wizard and /dashboard
+/// and redirects to our admin UI at /admin.
 pub static JS: &str = r#"
 (function () {
-  var ADMIN = ['/wizardstart', '/startup/wizard', '/dashboard'];
-  function checkHash() {
-    var h = location.hash.replace(/^#\/?/, '');
+  var ADMIN = ['/wizard', '/dashboard'];
+
+  function matchesAdmin(p) {
     for (var i = 0; i < ADMIN.length; i++) {
-      var p = ADMIN[i].slice(1);
-      if (h === p || h.startsWith(p + '/') || h.startsWith(p + '?')) {
-        location.replace('/admin');
-        return;
-      }
+      var a = ADMIN[i];
+      if (p === a || p.startsWith(a + '/') || p.startsWith(a + '?')) return true;
     }
+    return false;
   }
-  checkHash();
-  window.addEventListener('hashchange', checkHash);
+
+  // Check both pathname and hash (createHashRouter stores route in hash)
+  function checkUrl(url) {
+    try {
+      var u = new URL(String(url), location.href);
+      if (matchesAdmin(u.pathname)) { location.replace('/admin'); return true; }
+      if (u.hash) {
+        var h = '/' + u.hash.replace(/^#\/?/, '');
+        if (matchesAdmin(h)) { location.replace('/admin'); return true; }
+      }
+    } catch(e) {}
+    return false;
+  }
+
+  function checkCurrent() {
+    return checkUrl(location.href);
+  }
+
+  if (checkCurrent()) return;
+
+  // Intercept React Router History API (covers both BrowserRouter and HashRouter)
+  var _push = history.pushState.bind(history);
+  var _replace = history.replaceState.bind(history);
+  history.pushState = function(s, t, url) {
+    if (url && checkUrl(url)) return;
+    return _push(s, t, url);
+  };
+  history.replaceState = function(s, t, url) {
+    if (url && checkUrl(url)) return;
+    return _replace(s, t, url);
+  };
+  window.addEventListener('popstate', checkCurrent);
+  window.addEventListener('hashchange', checkCurrent);
 }());
 "#;

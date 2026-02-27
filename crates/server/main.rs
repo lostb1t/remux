@@ -120,6 +120,7 @@ async fn init_app() -> Result<Router> {
 
     let settings: Settings = config::Config::builder()
         .add_source(config::File::with_name(&cfg).required(false))
+        .add_source(config::Environment::default())
         .build()?
         .try_deserialize()?;
 
