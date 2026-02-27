@@ -22,7 +22,7 @@ where
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct QueryResult<T> {
     /// Gets or sets the items.
@@ -247,10 +247,11 @@ pub struct VirtualFolderInfo {
     pub primary_image_item_id: Option<String>,
     pub refresh_progress: Option<f64>,
     pub refresh_status: Option<String>,
-    /// Remux extension: "manual" or "smart"
+    /// Remux extension: "manual", "smart", or "catalog"
     pub collection_kind: Option<String>,
     /// Remux extension: whether this collection is shown in library home
     pub promoted: Option<bool>,
+    pub collection_max_items: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -259,9 +260,10 @@ pub struct CreateVirtualFolderPayload {
     pub name: String,
     /// Jellyfin collection type: "movies" or "tvshows"
     pub collection_type: Option<String>,
-    /// Remux extension: "manual" or "smart"
+    /// Remux extension: "manual", "smart", or "catalog"
     pub collection_kind: Option<String>,
     pub promoted: Option<bool>,
+    pub collection_max_items: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -272,6 +274,7 @@ pub struct UpdateVirtualFolderPayload {
     pub collection_type: Option<String>,
     pub collection_kind: Option<String>,
     pub promoted: Option<bool>,
+    pub collection_max_items: Option<i64>,
 }
 
 #[skip_serializing_none]
@@ -1482,6 +1485,7 @@ pub struct BaseItemDto {
     //pub artist_items: Option<Vec<NameIdPair>>,
     //pub album: Option<String>,
     pub collection_type: Option<CollectionType>,
+    pub collection_kind: Option<String>,
     pub display_order: Option<String>,
     pub album_id: Option<String>,
     pub album_primary_image_tag: Option<String>,

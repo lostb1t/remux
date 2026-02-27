@@ -2,13 +2,13 @@ use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
 use shared::sdks::jellyfin::{
-    AuthenticateUserByName, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteVirtualFolder, GetScheduledTasks, GetSessions, GetSystemConfiguration,
-    GetStartupConfiguration, GetVirtualFolders, JellyfinAuth, PostStartupComplete,
+    AuthenticateUserByName, BaseItemDto, CreateVirtualFolder, CreateVirtualFolderPayload,
+    DeleteVirtualFolder, GetItems, GetScheduledTasks, GetSessions, GetSystemConfiguration,
+    GetStartupConfiguration, JellyfinAuth, PostStartupComplete,
     PostStartupConfiguration, PostStartupUser, PublicSystemInfo, ServerConfiguration,
     SessionInfoDto, StartTask, StartupConfiguration, StartupUser, StopTask,
     TaskInfo, UpdateSystemConfiguration, UpdateVirtualFolder,
-    UpdateVirtualFolderPayload, VirtualFolderInfo,
+    UpdateVirtualFolderPayload,
 };
 use shared::sdks::{ClientError, RestClient};
 use uuid::Uuid;
@@ -665,6 +665,11 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                         on_click: move |_| { current_page.set(Page::Overview); sidebar_open.set(false); },
                     }
                     NavItem {
+                        label: "Collections",
+                        active: *current_page.read() == Page::Collections,
+                        on_click: move |_| { current_page.set(Page::Collections); sidebar_open.set(false); },
+                    }
+                    NavItem {
                         label: "Devices",
                         active: *current_page.read() == Page::Devices,
                         on_click: move |_| { current_page.set(Page::Devices); sidebar_open.set(false); },
@@ -674,11 +679,7 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                         active: *current_page.read() == Page::Tasks,
                         on_click: move |_| { current_page.set(Page::Tasks); sidebar_open.set(false); },
                     }
-                    NavItem {
-                        label: "Collections",
-                        active: *current_page.read() == Page::Collections,
-                        on_click: move |_| { current_page.set(Page::Collections); sidebar_open.set(false); },
-                    }
+
                     NavItem {
                         label: "Settings",
                         active: *current_page.read() == Page::Settings,
@@ -742,15 +743,25 @@ fn Dashboard(on_logout: EventHandler) -> Element {
 // ── Collections page ───────────────────────────────────────────────
 
 /// Which collection is currently being edited (None = creating new).
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 enum FormMode {
     Create,
-    Edit(VirtualFolderInfo),
+    Edit(BaseItemDto),
+}
+
+impl PartialEq for FormMode {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FormMode::Create, FormMode::Create) => true,
+            (FormMode::Edit(a), FormMode::Edit(b)) => a.id == b.id,
+            _ => false,
+        }
+    }
 }
 
 #[component]
 fn CollectionsPage(app_state: AppState) -> Element {
-    let mut collections: Signal<Vec<VirtualFolderInfo>> = use_signal(Vec::new);
+    let mut collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
     let mut loading   = use_signal(|| true);
     let mut error     = use_signal(|| Option::<String>::None);
     let mut refresh   = use_signal(|| 0_u32);
@@ -762,13 +773,12 @@ fn CollectionsPage(app_state: AppState) -> Element {
         loading.set(true);
         let client = app_state_effect.client.clone();
         spawn(async move {
-            match client.execute(GetVirtualFolders).await {
-                Ok(list) => {
-                    // Only show Collection-type items (exclude plain Folders)
-                    let cols = list.into_iter()
-                        .filter(|f| f.collection_kind.is_some())
-                        .collect();
-                    collections.set(cols);
+            match client.execute(GetItems {
+                include_item_types: vec!["BoxSet".to_string(), "CollectionFolder".to_string()],
+                recursive: false,
+            }).await {
+                Ok(result) => {
+                    collections.set(result.items);
                     error.set(None);
                 }
                 Err(e) => error.set(Some(format!("Failed to load collections: {e}"))),
@@ -778,29 +788,14 @@ fn CollectionsPage(app_state: AppState) -> Element {
     });
 
     rsx! {
-        if let Some(mode) = form_mode.read().clone() {
-            CollectionForm {
-                mode,
-                app_state: app_state.clone(),
-                on_done: move |_| {
-                    form_mode.set(None);
-                    let v = *refresh.peek() + 1;
-                    refresh.set(v);
-                },
-                on_cancel: move |_| form_mode.set(None),
-            }
-        }
-
         div { class: "card",
             div { class: "card-header",
                 span { class: "card-title", "Collections" }
-                if form_mode.read().is_none() {
-                    button {
-                        class: "btn btn-primary",
-                        style: "height:32px;font-size:.68rem",
-                        onclick: move |_| form_mode.set(Some(FormMode::Create)),
-                        "+ New Collection"
-                    }
+                button {
+                    class: "btn btn-primary",
+                    style: "height:32px;font-size:.68rem",
+                    onclick: move |_| form_mode.set(Some(FormMode::Create)),
+                    "+ New Collection"
                 }
             }
             div { class: "card-body",
@@ -816,22 +811,22 @@ fn CollectionsPage(app_state: AppState) -> Element {
                             let col_edit = col.clone();
                             let col_del  = col.clone();
                             let client_del = app_state.client.clone();
-                            let key = col.item_id.clone().unwrap_or_default();
+                            let key = col.id.to_string();
                             let name = col.name.clone().unwrap_or_default();
                             let col_type_label = match col.collection_type.as_ref() {
                                 Some(ct) => match ct {
                                     shared::sdks::jellyfin::CollectionType::Movies  => "Movies",
-                                    shared::sdks::jellyfin::CollectionType::Tvshows => "TV Shows",
+                                    shared::sdks::jellyfin::CollectionType::Tvshows => "Shows",
                                     _ => "Unknown",
                                 },
                                 None => "Unknown",
                             };
                             let col_kind_label = match col.collection_kind.as_deref() {
-                                Some("smart")  => "Smart",
-                                Some("manual") => "Manual",
+                                Some("smart")   => "Smart",
+                                Some("manual")  => "Manual",
+                                Some("catalog") => "Catalog",
                                 _ => "",
                             };
-                            let promoted = col.promoted.unwrap_or(false);
                             rsx! {
                                 div { class: "catalog-row", key: "{key}",
                                     div {
@@ -840,13 +835,6 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                             span { class: "session-client-badge", "{col_type_label}" }
                                             if !col_kind_label.is_empty() {
                                                 span { class: "session-client-badge", "{col_kind_label}" }
-                                            }
-                                            if promoted {
-                                                span {
-                                                    class: "task-badge task-badge-running",
-                                                    style: "font-size:.6rem;padding:2px 6px",
-                                                    "Library"
-                                                }
                                             }
                                         }
                                     }
@@ -879,6 +867,23 @@ fn CollectionsPage(app_state: AppState) -> Element {
                 }
             }
         }
+
+        if let Some(mode) = form_mode.read().clone() {
+            div { class: "modal-backdrop",
+                div { class: "modal",
+                    CollectionForm {
+                        mode,
+                        app_state: app_state.clone(),
+                        on_done: move |_| {
+                            form_mode.set(None);
+                            let v = *refresh.peek() + 1;
+                            refresh.set(v);
+                        },
+                        on_cancel: move |_| form_mode.set(None),
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -890,13 +895,13 @@ fn CollectionForm(
     on_cancel: EventHandler,
 ) -> Element {
     let is_edit = matches!(mode, FormMode::Edit(_));
-    let existing: Option<VirtualFolderInfo> = match &mode {
+    let existing: Option<BaseItemDto> = match &mode {
         FormMode::Edit(f) => Some(f.clone()),
         FormMode::Create  => None,
     };
 
     let mut title       = use_signal(|| existing.as_ref().and_then(|f| f.name.clone()).unwrap_or_default());
-    let mut promoted    = use_signal(|| existing.as_ref().and_then(|f| f.promoted).unwrap_or(false));
+    let mut promoted    = use_signal(|| false);
     let mut col_type    = use_signal(|| {
         existing.as_ref()
             .and_then(|f| f.collection_type.as_ref())
@@ -912,17 +917,25 @@ fn CollectionForm(
             .and_then(|f| f.collection_kind.clone())
             .unwrap_or_else(|| "smart".to_string())
     });
+    let mut max_items   = use_signal(|| {
+        "250".to_string()
+    });
     let mut saving      = use_signal(|| false);
     let mut err         = use_signal(|| Option::<String>::None);
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state.client.clone();
-        let item_id = existing.as_ref().and_then(|f| f.item_id.clone());
+        let item_id = existing.as_ref().map(|f| f.id.to_string());
         let name = title.peek().clone();
         let ct   = col_type.peek().clone();
         let ck   = col_kind.peek().clone();
         let prm  = *promoted.peek();
+        let max  = if ck == "catalog" {
+            max_items.peek().parse::<i64>().ok()
+        } else {
+            None
+        };
         saving.set(true);
         err.set(None);
         spawn(async move {
@@ -934,6 +947,7 @@ fn CollectionForm(
                         collection_type: Some(ct),
                         collection_kind: Some(ck),
                         promoted: Some(prm),
+                        collection_max_items: max,
                     },
                 }).await
             } else {
@@ -943,6 +957,7 @@ fn CollectionForm(
                         collection_type: Some(ct),
                         collection_kind: Some(ck),
                         promoted: Some(prm),
+                        collection_max_items: max,
                     },
                 }).await.map(|_| ())
             };
@@ -954,80 +969,94 @@ fn CollectionForm(
     };
 
     rsx! {
-        div { class: "form-panel",
-            p { class: "form-panel-title",
-                if is_edit { "Edit Collection" } else { "New Collection" }
+        p { class: "modal-title",
+            if is_edit { "Edit Collection" } else { "New Collection" }
+        }
+
+        if let Some(e) = err.read().as_ref() {
+            div { class: "alert-error", "{e}" }
+        }
+
+        form {
+            onsubmit: on_submit,
+            style: "display:flex;flex-direction:column;gap:14px",
+
+            div { class: "field",
+                label { class: "field-label", r#for: "col-title", "Title" }
+                input {
+                    id: "col-title",
+                    r#type: "text",
+                    class: "field-input",
+                    required: true,
+                    value: "{title}",
+                    oninput: move |e| title.set(e.value()),
+                }
             }
 
-            if let Some(e) = err.read().as_ref() {
-                div { class: "alert-error", "{e}" }
+            div { class: "field",
+                label { class: "field-label", r#for: "col-type", "Content Type" }
+                select {
+                    id: "col-type",
+                    class: "select-input",
+                    value: "{col_type}",
+                    onchange: move |e| col_type.set(e.value()),
+                    option { value: "movies",  "Movies"   }
+                    option { value: "tvshows", "TV Shows" }
+                }
             }
 
-            form {
-                onsubmit: on_submit,
-                style: "display:flex;flex-direction:column;gap:14px",
+            div { class: "field",
+                label { class: "field-label", r#for: "col-kind", "Collection Kind" }
+                select {
+                    id: "col-kind",
+                    class: "select-input",
+                    value: "{col_kind}",
+                    onchange: move |e| col_kind.set(e.value()),
+                    option { value: "smart",   "Smart"   }
+                    option { value: "manual",  "Manual"  }
+                    option { value: "catalog", "Catalog" }
+                }
+            }
 
+            if col_kind.read().as_str() == "catalog" {
                 div { class: "field",
-                    label { class: "field-label", r#for: "col-title", "Title" }
+                    label { class: "field-label", r#for: "col-max", "Max Items" }
                     input {
-                        id: "col-title",
-                        r#type: "text",
+                        id: "col-max",
+                        r#type: "number",
                         class: "field-input",
-                        required: true,
-                        value: "{title}",
-                        oninput: move |e| title.set(e.value()),
+                        min: "1",
+                        placeholder: "250",
+                        value: "{max_items}",
+                        oninput: move |e| max_items.set(e.value()),
                     }
                 }
+            }
 
-                div { class: "field",
-                    label { class: "field-label", r#for: "col-type", "Content Type" }
-                    select {
-                        id: "col-type",
-                        class: "select-input",
-                        value: "{col_type}",
-                        onchange: move |e| col_type.set(e.value()),
-                        option { value: "movies",  "Movies"   }
-                        option { value: "tvshows", "TV Shows" }
+            div { class: "toggle-row",
+                span { class: "toggle-label", "Promoted to Library" }
+                label { class: "toggle",
+                    input {
+                        r#type: "checkbox",
+                        checked: *promoted.read(),
+                        onchange: move |e| promoted.set(e.checked()),
                     }
+                    span { class: "toggle-track" }
                 }
+            }
 
-                div { class: "field",
-                    label { class: "field-label", r#for: "col-kind", "Collection Kind" }
-                    select {
-                        id: "col-kind",
-                        class: "select-input",
-                        value: "{col_kind}",
-                        onchange: move |e| col_kind.set(e.value()),
-                        option { value: "smart",  "Smart"  }
-                        option { value: "manual", "Manual" }
-                    }
+            div { class: "form-actions",
+                button {
+                    r#type: "button",
+                    class: "btn btn-ghost",
+                    onclick: move |_| on_cancel.call(()),
+                    "Cancel"
                 }
-
-                div { class: "toggle-row",
-                    span { class: "toggle-label", "Promoted (show in library)" }
-                    label { class: "toggle",
-                        input {
-                            r#type: "checkbox",
-                            checked: *promoted.read(),
-                            onchange: move |e| promoted.set(e.checked()),
-                        }
-                        span { class: "toggle-track" }
-                    }
-                }
-
-                div { class: "form-actions",
-                    button {
-                        r#type: "button",
-                        class: "btn btn-ghost",
-                        onclick: move |_| on_cancel.call(()),
-                        "Cancel"
-                    }
-                    button {
-                        r#type: "submit",
-                        class: "btn btn-primary",
-                        disabled: *saving.read(),
-                        if *saving.read() { "Saving…" } else { "Save" }
-                    }
+                button {
+                    r#type: "submit",
+                    class: "btn btn-primary",
+                    disabled: *saving.read(),
+                    if *saving.read() { "Saving…" } else { "Save" }
                 }
             }
         }

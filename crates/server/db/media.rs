@@ -129,6 +129,7 @@ impl From<jellyfin::MediaType> for MediaKind {
             jellyfin::MediaType::Series => MediaKind::Series,
             jellyfin::MediaType::Season => MediaKind::Season,
             jellyfin::MediaType::Episode => MediaKind::Episode,
+            jellyfin::MediaType::BoxSet => MediaKind::Collection,
             _ => MediaKind::Unknown,
         }
     }
@@ -152,6 +153,8 @@ pub enum CollectionKind {
     #[default]
     Manual,
     Smart,
+    // aio catalog
+    Catalog
 }
 
 impl TryFrom<String> for CollectionKind {
@@ -312,6 +315,7 @@ pub struct Media {
     pub collection_kind: Option<CollectionKind>,
     // MediaKind
     pub collection_media_kind: Option<MediaKind>,
+    pub collection_max_items: Option<i64>,
 }
 
 // #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -380,10 +384,10 @@ impl Media {
         r#"
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
-            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
+            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
             remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at, certification, parent_idx
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -404,6 +408,9 @@ impl Media {
             imdb_id = excluded.imdb_id,
             aio_id = excluded.aio_id,
             promoted = excluded.promoted,
+            collection_kind = excluded.collection_kind,
+            collection_media_kind = excluded.collection_media_kind,
+            collection_max_items = excluded.collection_max_items,
             updated_at = excluded.updated_at,
             certification = excluded.certification,
             parent_idx = excluded.parent_idx
@@ -428,6 +435,7 @@ impl Media {
         .bind(self.promoted)
         .bind(&self.collection_kind)
         .bind(&self.collection_media_kind)
+        .bind(self.collection_max_items)
         .bind(&self.remote_data)
         .bind(&self.series_imdb_id)
         .bind(&self.aio_id)

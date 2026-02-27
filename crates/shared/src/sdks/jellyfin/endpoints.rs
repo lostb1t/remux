@@ -84,6 +84,33 @@ impl Endpoint for StopTask {
     }
 }
 
+// ── Items ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetItems {
+    pub include_item_types: Vec<String>,
+    pub recursive: bool,
+}
+
+impl Endpoint for GetItems {
+    type Output = QueryResult<BaseItemDto>;
+
+    fn path(&self) -> String {
+        "/items".into()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        let mut q = vec![];
+        if !self.include_item_types.is_empty() {
+            q.push(("IncludeItemTypes".into(), self.include_item_types.join(",")));
+        }
+        if self.recursive {
+            q.push(("Recursive".into(), "true".into()));
+        }
+        q
+    }
+}
+
 // ── Virtual folder (Collection) endpoints ─────────────────────────
 
 #[derive(Debug, Clone, Default)]

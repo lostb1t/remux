@@ -251,6 +251,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .map(db_media_kind_to_collection_type)
                 .unwrap_or(CollectionType::Unknown),
         );
+        item.collection_kind = media.collection_kind.as_ref().map(|k| k.to_string());
         if media.promoted == 1 {
             item.type_ = MediaType::CollectionFolder;
         } else {

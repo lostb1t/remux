@@ -106,6 +106,23 @@ pub async fn get_items(
     //     });
     // }
 
+    let requested = q.get_requested_item_types();
+    if requested.iter().any(|t| matches!(t, jellyfin::MediaType::BoxSet | jellyfin::MediaType::CollectionFolder)) {
+        let records = db::Media::get_by_filter(
+            &state.ctx.db,
+            &db::MediaFilter {
+                kind: Some(vec![db::MediaKind::Collection]),
+                ..Default::default()
+            },
+        )
+        .await?
+        .records;
+        return Ok(ItemsQueryResult {
+            total_count: records.len() as i64,
+            items: records.into_iter().map(jellyfin::db_media_to_item).collect(),
+        });
+    }
+
     let manifest = aio.get_manifest().await?;
 
     if let Some(parent) = &parent {
@@ -430,6 +447,7 @@ fn media_to_virtual_folder(m: db::Media) -> jellyfin::VirtualFolderInfo {
         collection_type,
         collection_kind: m.collection_kind.as_ref().map(|k| k.to_string()),
         promoted: Some(m.is_promoted()),
+        collection_max_items: m.collection_max_items,
         ..Default::default()
     }
 }
@@ -441,6 +459,7 @@ struct VirtualFolderRequest {
     collection_type: Option<String>,
     collection_kind: Option<String>,
     promoted: Option<bool>,
+    collection_max_items: Option<i64>,
 }
 
 #[post("/library/virtualfolders")]
@@ -471,6 +490,7 @@ pub async fn create_virtual_folder(
         kind: db::MediaKind::Collection,
         collection_kind: Some(collection_kind),
         collection_media_kind,
+        collection_max_items: payload.collection_max_items,
         promoted,
         ..Default::default()
     };
@@ -488,6 +508,7 @@ struct UpdateVirtualFolderRequest {
     collection_type: Option<String>,
     collection_kind: Option<String>,
     promoted: Option<bool>,
+    collection_max_items: Option<i64>,
 }
 
 #[post("/library/virtualfolders/LibraryOptions")]
@@ -523,12 +544,13 @@ pub async fn update_virtual_folder(
     let updated_at = Utc::now().naive_utc();
 
     sqlx::query(
-        "UPDATE media SET title = $1, promoted = $2, collection_media_kind = $3, collection_kind = $4, updated_at = $5 WHERE id = $6",
+        "UPDATE media SET title = $1, promoted = $2, collection_media_kind = $3, collection_kind = $4, collection_max_items = $5, updated_at = $6 WHERE id = $7",
     )
     .bind(&payload.name)
     .bind(promoted)
     .bind(collection_media_kind.as_ref().map(|k| k.to_string()))
     .bind(collection_kind.as_ref().map(|k| k.to_string()))
+    .bind(payload.collection_max_items)
     .bind(updated_at)
     .bind(payload.id)
     .execute(&state.ctx.db)
