@@ -26,7 +26,6 @@ RUN rustup target add wasm32-unknown-unknown \
 COPY vendor ./vendor
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
-RUN cargo chef cook --release --target wasm32-unknown-unknown --recipe-path recipe.json
 
 # Source + build — only user crates compiled here
 COPY . .

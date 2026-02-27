@@ -67,7 +67,7 @@ watch = {watch = ["${PWD}/crates/dashboard/src"]}
 
 [tasks.build-docker]
 command = "docker"
-args = ["buildx", "build", "--network", "host", "-f", "docker/Dockerfile",  "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:local", "."]
+args = ["buildx", "build", "--network", "host", "-f", "docker/Dockerfile", "-t", "ghcr.io/lostb1t/remux-server:local", "."]
 
 [tasks.build]
 command = "docker"
