@@ -1,7 +1,13 @@
 FROM jellyfin/jellyfin:10.11.6 AS jf
 
-FROM rust:slim-bookworm AS builder
+FROM lukemathwalker/cargo-chef:latest-rust-slim-bookworm AS chef
 WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -16,20 +22,22 @@ RUN apt-get update \
 RUN rustup target add wasm32-unknown-unknown \
     && cargo install dioxus-cli --locked
 
+# Dep-layer: only invalidated when Cargo.lock/Cargo.toml/vendor changes
 COPY vendor ./vendor
-COPY Cargo.toml Cargo.lock ./
-COPY crates/remux-macros ./crates/remux-macros
-COPY crates/server/Cargo.toml ./crates/server/Cargo.toml
-COPY crates/dashboard ./crates/dashboard
-RUN cargo fetch
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --target wasm32-unknown-unknown --recipe-path recipe.json
 
+# Source + build — only user crates compiled here
 COPY . .
 
 # Build dashboard WASM (outputs to crates/dashboard/dist/)
 RUN cd crates/dashboard && dx build --release
 
 ENV SQLX_OFFLINE=true
-RUN cargo build --release
+RUN cargo build --release -p remux-server
+
+RUN strip target/release/remux-server
 
 FROM debian:bookworm-slim AS release
 ENV WEB_PATH=/app/jellyfin-web
