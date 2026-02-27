@@ -33,7 +33,6 @@ use axum_anyhow::{ApiResult, OptionExt, ResultExt};
 use chrono::prelude::*;
 use chrono::{Duration, Utc};
 use config;
-use config::Config;
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
@@ -118,7 +117,7 @@ async fn main() -> Result<()> {
 async fn init_app() -> Result<Router> {
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
 
-    let settings: Settings = config::Config::builder()
+    let config: Config = config::Config::builder()
         .add_source(config::File::with_name(&cfg).required(false))
         .add_source(config::Environment::default())
         .build()?
@@ -126,50 +125,20 @@ async fn init_app() -> Result<Router> {
 
     debug!(
         "config: {}",
-        serde_json::to_string_pretty(&settings).unwrap()
+        serde_json::to_string_pretty(&config).unwrap()
     );
 
     let conn = db::connect(
-        std::env::var("DATABASE_URL")
-            .as_deref()
-            .unwrap_or("sqlite:///data/db.sqlite?mode=rwc"),
+    &config.db_url,
     )
     .await?;
 
     db::migrate(&conn).await?;
     db::ensure_collection_folder(&conn).await?;
 
-    // Merge DB settings (DB wins; seed DB from file config on first run)
-    let mut db_config = crate::db::Settings::get_config(&conn).await?;
-    let mut db_dirty = false;
 
-    let effective_aio_url = match db_config.aio_url.as_deref().filter(|s| !s.is_empty()) {
-        Some(url) => url.to_string(),
-        None => {
-            if !settings.aio_url.is_empty() {
-                db_config.aio_url = Some(settings.aio_url.clone());
-                db_dirty = true;
-            }
-            settings.aio_url.clone()
-        }
-    };
 
-    let effective_catalog_max_items = match db_config.catalog_max_items {
-        Some(n) => n as usize,
-        None => {
-            db_config.catalog_max_items = Some(settings.catalog_max_items as i64);
-            db_dirty = true;
-            settings.catalog_max_items
-        }
-    };
-
-    if db_dirty {
-        crate::db::Settings::set_config(&conn, &db_config).await?;
-    }
-
-    let mut effective_settings = settings.clone();
-    effective_settings.aio_url = effective_aio_url;
-    effective_settings.catalog_max_items = effective_catalog_max_items;
+    
 
 
     // FOR TWSTING ONLY
@@ -177,14 +146,15 @@ async fn init_app() -> Result<Router> {
 
     let (ws_tx, _) = tokio::sync::broadcast::channel(128);
 
-    let aio = if effective_settings.aio_url.is_empty() {
+    let mut settings = crate::db::Settings::get_config(&conn).await?;
+    let aio = if settings.aio_url.is_empty() {
         None
     } else {
-        Some(aio::AioService::from_url(&effective_settings.aio_url)?)
+        Some(aio::AioService::from_url(&settings.aio_url)?)
     };
 
     let ctx = AppContext {
-        config: effective_settings,
+        config,
         db: conn.clone(),
         aio,
         store: store::Store::new(100000),
@@ -207,13 +177,13 @@ async fn init_app() -> Result<Router> {
         .expose_headers(Any);
 
     let dashboard_index =
-        format!("{}/index.html", settings.dashboard_path);
+        format!("{}/index.html", config.dashboard_path);
     Ok(Router::new()
         .route("/websocket", get(ws::ws_handler))
         .merge(collect_routes())
         .nest_service(
             "/admin",
-            ServeDir::new(&settings.dashboard_path)
+            ServeDir::new(&config.dashboard_path)
                 .fallback(ServeFile::new(dashboard_index)),
         )
         .with_state(state)
@@ -228,13 +198,13 @@ async fn init_app() -> Result<Router> {
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
         .fallback_service(
-            web_transform::TransformLayer::new().layer(ServeDir::new(settings.web_path)),
+            web_transform::TransformLayer::new().layer(ServeDir::new(config.web_path)),
         ))
 }
 
 #[derive(Clone)]
 pub struct AppContext {
-    pub config: Settings,
+    pub config: Config,
     pub db: sqlx::SqlitePool,
     pub aio: Option<aio::AioService>,
     pub store: store::Store,
@@ -256,8 +226,8 @@ fn default_dashboard_path() -> String {
     "/app/dashboard".to_string()
 }
 
-fn default_catalog_max_items() -> usize {
-    100
+fn default_db_url() -> String {
+    "sqlite:///data/db.sqlite?mode=rwc".to_string()
 }
 
 fn default_aio_url() -> String {
@@ -265,16 +235,13 @@ fn default_aio_url() -> String {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct Settings {
-    /// AIO base URL — optional in file config; DB value overrides if set.
-    #[serde(default = "default_aio_url", deserialize_with = "clean_aio_url")]
-    pub aio_url: String,
+pub struct Config {
     #[serde(default = "default_web_path")]
     pub web_path: String,
     #[serde(default = "default_dashboard_path")]
     pub dashboard_path: String,
-    #[serde(default = "default_catalog_max_items")]
-    pub catalog_max_items: usize,
+    #[serde(default = "default_db_url")]
+    pub db_url: String,
 }
 
 fn clean_aio_url<'de, D>(deserializer: D) -> Result<String, D::Error>
