@@ -460,6 +460,7 @@ struct VirtualFolderRequest {
     collection_kind: Option<String>,
     promoted: Option<bool>,
     collection_max_items: Option<i64>,
+    aio_id: Option<String>,
 }
 
 #[post("/library/virtualfolders")]
@@ -488,14 +489,21 @@ pub async fn create_virtual_folder(
     let mut media = db::Media {
         title: payload.name,
         kind: db::MediaKind::Collection,
-        collection_kind: Some(collection_kind),
+        collection_kind: Some(collection_kind.clone()),
         collection_media_kind,
         collection_max_items: payload.collection_max_items,
+        aio_id: payload.aio_id,
         promoted,
         ..Default::default()
     };
 
     media.save(&state.ctx.db).await?;
+
+    if collection_kind == db::CollectionKind::Catalog {
+        let _ = state.tasks.register_task(std::sync::Arc::new(
+            crate::tasks::CollectionImportTask::new(media.id, &media.title)
+        )).await;
+    }
 
     Ok(Json(media_to_virtual_folder(media)))
 }
@@ -587,9 +595,33 @@ pub async fn delete_virtual_folder(
     .find(|m| m.title == q.name);
 
     let media = result.context_not_found("Not Found", "Collection not found")?;
+
+    if matches!(media.collection_kind, Some(db::CollectionKind::Catalog)) {
+        let key = crate::tasks::CollectionImportTask::key_for(media.id);
+        let _ = state.tasks.deregister_task(&key).await;
+    }
+
     db::Media::delete(&state.ctx.db, &media.id).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[get("/aio/catalogs")]
+pub async fn aio_catalogs(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    let aio = session.aio
+        .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
+    let manifest = aio.get_manifest().await?;
+    let catalogs: Vec<jellyfin::AioCatalogInfo> = manifest.catalogs.into_iter()
+        .filter(|c| !c.id.contains("search"))
+        .map(|c| jellyfin::AioCatalogInfo {
+            aio_id: format!("{}:{}", c.kind, c.id),
+            name: c.name,
+        })
+        .collect();
+    Ok(Json(catalogs))
 }
 
 fn parse_collection_type(s: &str) -> Option<db::MediaKind> {

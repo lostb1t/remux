@@ -2,8 +2,9 @@ use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
 use shared::sdks::jellyfin::{
-    AuthenticateUserByName, BaseItemDto, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteVirtualFolder, GetItems, GetScheduledTasks, GetSessions, GetSystemConfiguration,
+    AioCatalogInfo, AuthenticateUserByName, BaseItemDto, CreateVirtualFolder,
+    CreateVirtualFolderPayload, DeleteVirtualFolder, GetAioCatalogs, GetItems,
+    GetScheduledTasks, GetSessions, GetSystemConfiguration,
     GetStartupConfiguration, JellyfinAuth, PostStartupComplete,
     PostStartupConfiguration, PostStartupUser, PublicSystemInfo, ServerConfiguration,
     SessionInfoDto, StartTask, StartupConfiguration, StartupUser, StopTask,
@@ -762,6 +763,7 @@ impl PartialEq for FormMode {
 #[component]
 fn CollectionsPage(app_state: AppState) -> Element {
     let mut collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
+    let mut tasks_list:  Signal<Vec<TaskInfo>>    = use_signal(Vec::new);
     let mut loading   = use_signal(|| true);
     let mut error     = use_signal(|| Option::<String>::None);
     let mut refresh   = use_signal(|| 0_u32);
@@ -773,15 +775,19 @@ fn CollectionsPage(app_state: AppState) -> Element {
         loading.set(true);
         let client = app_state_effect.client.clone();
         spawn(async move {
-            match client.execute(GetItems {
-                include_item_types: vec!["BoxSet".to_string(), "CollectionFolder".to_string()],
-                recursive: false,
-            }).await {
-                Ok(result) => {
-                    collections.set(result.items);
-                    error.set(None);
-                }
+            let (cols_result, tasks_result) = futures::join!(
+                client.execute(GetItems {
+                    include_item_types: vec!["BoxSet".to_string(), "CollectionFolder".to_string()],
+                    recursive: false,
+                }),
+                client.execute(GetScheduledTasks { is_hidden: Some(false) }),
+            );
+            match cols_result {
+                Ok(result) => { collections.set(result.items); error.set(None); }
                 Err(e) => error.set(Some(format!("Failed to load collections: {e}"))),
+            }
+            if let Ok(t) = tasks_result {
+                tasks_list.set(t);
             }
             loading.set(false);
         });
@@ -811,7 +817,13 @@ fn CollectionsPage(app_state: AppState) -> Element {
                             let col_edit = col.clone();
                             let col_del  = col.clone();
                             let client_del = app_state.client.clone();
-                            let key = col.id.to_string();
+                            let client_import = app_state.client.clone();
+                            let col_id_str = col.id.to_string();
+                            let task_key = format!("catalog_import:{}", col_id_str);
+                            let import_task = tasks_list.read().iter()
+                                .find(|t| t.key.as_deref() == Some(&task_key))
+                                .cloned();
+                            let is_catalog = col.collection_kind.as_deref() == Some("catalog");
                             let name = col.name.clone().unwrap_or_default();
                             let col_type_label = match col.collection_type.as_ref() {
                                 Some(ct) => match ct {
@@ -828,7 +840,7 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                 _ => "",
                             };
                             rsx! {
-                                div { class: "catalog-row", key: "{key}",
+                                div { class: "catalog-row", key: "{col_id_str}",
                                     div {
                                         div { class: "catalog-name", "{name}" }
                                         div { class: "catalog-meta",
@@ -839,6 +851,31 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                         }
                                     }
                                     div { class: "catalog-actions",
+                                        if is_catalog {
+                                            {
+                                                let task_id = import_task.as_ref().map(|t| t.id.clone());
+                                                let is_running = import_task.as_ref()
+                                                    .and_then(|t| t.state.as_deref())
+                                                    == Some("Running");
+                                                if let Some(tid) = task_id {
+                                                    rsx! {
+                                                        button {
+                                                            class: "btn btn-ghost",
+                                                            style: "height:30px;font-size:.68rem;padding:0 10px",
+                                                            disabled: is_running,
+                                                            onclick: move |_| {
+                                                                let id = tid.clone();
+                                                                let c  = client_import.clone();
+                                                                spawn(async move {
+                                                                    let _ = c.execute(StartTask { task_id: id }).await;
+                                                                });
+                                                            },
+                                                            if is_running { "Importing…" } else { "Import" }
+                                                        }
+                                                    }
+                                                } else { rsx! {} }
+                                            }
+                                        }
                                         button {
                                             class: "btn btn-ghost",
                                             style: "height:30px;font-size:.68rem;padding:0 10px",
@@ -920,8 +957,25 @@ fn CollectionForm(
     let mut max_items   = use_signal(|| {
         "250".to_string()
     });
+    let mut aio_id      = use_signal(String::new);
+    let mut aio_catalogs: Signal<Vec<AioCatalogInfo>> = use_signal(Vec::new);
     let mut saving      = use_signal(|| false);
     let mut err         = use_signal(|| Option::<String>::None);
+
+    // Fetch AIO catalogs when kind=catalog (create mode only)
+    {
+        let client = app_state.client.clone();
+        use_effect(move || {
+            if !is_edit && col_kind.read().as_str() == "catalog" {
+                let client = client.clone();
+                spawn(async move {
+                    if let Ok(catalogs) = client.execute(GetAioCatalogs).await {
+                        aio_catalogs.set(catalogs);
+                    }
+                });
+            }
+        });
+    }
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
@@ -933,6 +987,12 @@ fn CollectionForm(
         let prm  = *promoted.peek();
         let max  = if ck == "catalog" {
             max_items.peek().parse::<i64>().ok()
+        } else {
+            None
+        };
+        let aid  = if ck == "catalog" && item_id.is_none() {
+            let v = aio_id.peek().clone();
+            if v.is_empty() { None } else { Some(v) }
         } else {
             None
         };
@@ -958,6 +1018,7 @@ fn CollectionForm(
                         collection_kind: Some(ck),
                         promoted: Some(prm),
                         collection_max_items: max,
+                        aio_id: aid,
                     },
                 }).await.map(|_| ())
             };
@@ -1011,6 +1072,7 @@ fn CollectionForm(
                     id: "col-kind",
                     class: "select-input",
                     value: "{col_kind}",
+                    disabled: is_edit,
                     onchange: move |e| col_kind.set(e.value()),
                     option { value: "smart",   "Smart"   }
                     option { value: "manual",  "Manual"  }
@@ -1019,6 +1081,37 @@ fn CollectionForm(
             }
 
             if col_kind.read().as_str() == "catalog" {
+                if !is_edit {
+                    div { class: "field",
+                        label { class: "field-label", r#for: "col-aio", "AIO Catalog" }
+                        {
+                            let cats = aio_catalogs.read();
+                            if cats.is_empty() {
+                                rsx! {
+                                    select {
+                                        id: "col-aio",
+                                        class: "select-input",
+                                        disabled: true,
+                                        option { "Loading catalogs…" }
+                                    }
+                                }
+                            } else {
+                                rsx! {
+                                    select {
+                                        id: "col-aio",
+                                        class: "select-input",
+                                        value: "{aio_id}",
+                                        onchange: move |e| aio_id.set(e.value()),
+                                        for cat in cats.iter() {
+                                            option { value: "{cat.aio_id}", "{cat.name}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 div { class: "field",
                     label { class: "field-label", r#for: "col-max", "Max Items" }
                     input {

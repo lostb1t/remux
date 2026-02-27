@@ -1224,6 +1224,7 @@ name = "dashboard"
 version = "0.1.0"
 dependencies = [
  "dioxus",
+ "futures",
  "gloo-net",
  "gloo-storage",
  "gloo-timers",

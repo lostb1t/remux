@@ -84,6 +84,16 @@ impl Endpoint for StopTask {
     }
 }
 
+// ── AIO catalogs ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetAioCatalogs;
+
+impl Endpoint for GetAioCatalogs {
+    type Output = Vec<AioCatalogInfo>;
+    fn path(&self) -> String { "/aio/catalogs".into() }
+}
+
 // ── Items ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]

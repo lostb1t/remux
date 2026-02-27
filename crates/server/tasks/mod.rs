@@ -14,12 +14,15 @@ use tracing::{error, info};
 use crate::{AppContext, db, ws};
 
 mod catalog_import;
+mod collection_import;
 mod refresh_library;
 mod series_sync;
 
 use catalog_import::CatalogImportTask;
 use refresh_library::RefreshLibraryTask;
 use series_sync::SeriesSyncTask;
+
+pub use collection_import::CollectionImportTask;
 
 // --- Progress reporting ---
 
@@ -280,6 +283,18 @@ impl TaskService {
     pub async fn stop_task(&self, task_key: &str) -> Result<()> {
         if let Some(handler) = self.tasks.lock().await.get_mut(&task_key.to_lowercase()) {
             handler.stop();
+        }
+        Ok(())
+    }
+
+    pub async fn deregister_task(&self, key: &str) -> Result<()> {
+        let key = key.to_lowercase();
+        let mut tasks = self.tasks.lock().await;
+        if let Some(mut handler) = tasks.remove(&key) {
+            handler.stop();
+            for job_id in &handler.jobs {
+                let _ = self.scheduler.remove(job_id).await;
+            }
         }
         Ok(())
     }

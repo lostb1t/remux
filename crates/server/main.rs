@@ -157,6 +157,23 @@ async fn init_app() -> Result<Router> {
     };
 
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
+
+    // Register per-collection import tasks for existing catalog collections.
+    let catalog_collections = db::Media::get_by_filter(
+        &conn,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::Collection]),
+            ..Default::default()
+        },
+    ).await?;
+    for media in catalog_collections.records {
+        if media.collection_kind == Some(db::CollectionKind::Catalog) {
+            task_service.register_task(Arc::new(
+                tasks::CollectionImportTask::new(media.id, &media.title)
+            )).await?;
+        }
+    }
+
     task_service.run_startup_tasks().await?;
 
     let state = AppState {

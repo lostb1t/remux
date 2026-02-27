@@ -264,6 +264,17 @@ pub struct CreateVirtualFolderPayload {
     pub collection_kind: Option<String>,
     pub promoted: Option<bool>,
     pub collection_max_items: Option<i64>,
+    /// AIO catalog aio_id, required when collection_kind = "catalog"
+    pub aio_id: Option<String>,
+}
+
+/// Remux extension: an AIO catalog available for mapping to a collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct AioCatalogInfo {
+    /// Composite AIO identifier: "{kind}:{id}"
+    pub aio_id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
