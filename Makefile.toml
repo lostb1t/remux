@@ -10,7 +10,7 @@ AXUM_ANYHOW_EXPOSE_ERRORS=1
 # HTTPS_PROXY="http://10.0.10.11:9090"
 WEB_PATH = "../jellyfin-web/dist"
 DASHBOARD_PATH="./target/dx/dashboard/debug/web/public"
-DATABASE_URL = "sqlite://db.sqlite"
+DB_URL = "sqlite://db.sqlite"
 DB="db.sqlite"
 
 [env.test]

@@ -2,5 +2,5 @@
 resolver = "3"
 members = ["crates/dashboard", "crates/server", "crates/remux-macros", "crates/shared"]
 
-#[patch.crates-io]
-#ez-ffmpeg = { path = "vendor/ez-ffmpeg-0.10.0" }
+[patch.crates-io]
+ez-ffmpeg = { path = "vendor/ez-ffmpeg-0.10.0" }

@@ -234,8 +234,6 @@ pub struct Config {
     pub db_url: String,
 }
 
-
-
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     let uri = req.uri();
     let path = uri.path().replace("/emby", "");

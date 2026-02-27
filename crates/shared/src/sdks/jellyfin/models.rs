@@ -132,12 +132,9 @@ where
 }
 
 fn clean_aio_url_str(url: &str) -> &str {
-    url.trim_end_matches('/')
-    .strip_suffix("/")
-        .strip_suffix("manifest.json")
-        .strip_suffix("configure")
-        .unwrap_or(url)
-        .trim_end_matches('/')
+    let url = url.trim_end_matches('/');
+    let url = url.strip_suffix("/manifest.json").unwrap_or(url);
+    url.strip_suffix("/configure").unwrap_or(url)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
