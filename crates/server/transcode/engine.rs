@@ -52,7 +52,7 @@ pub async fn start_transcode(
     session: Arc<RwLock<TranscodeSession>>,
     params: TranscodeParams,
 ) -> Result<()> {
-    use ez_ffmpeg::{FfmpegContext, FfmpegScheduler, Input, Output};
+    use crate::ez_ffmpeg::{FfmpegContext, FfmpegScheduler, Input, Output};
 
     // Update state to Running
     {

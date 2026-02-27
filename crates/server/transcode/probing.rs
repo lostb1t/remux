@@ -49,8 +49,8 @@ fn map_container(format: &str) -> String {
 
 /// Probe a media URL and return a Jellyfin MediaSourceInfo directly.
 pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
-    use ez_ffmpeg::stream_info::{find_all_stream_infos, StreamInfo};
-    use ez_ffmpeg::container_info::{get_duration_us, get_format};
+    use crate::ez_ffmpeg::stream_info::{find_all_stream_infos, StreamInfo};
+    use crate::ez_ffmpeg::container_info::{get_duration_us, get_format};
 
     tracing::debug!(url, "probing media");
 
