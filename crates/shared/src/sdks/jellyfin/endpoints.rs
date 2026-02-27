@@ -1,6 +1,7 @@
 use super::{Body, Endpoint};
 use http::Method;
 use super::models::*;
+use uuid::Uuid;
 
 impl Endpoint for PublicSystemInfo {
     type Output = PublicSystemInfo;
@@ -251,6 +252,87 @@ impl Endpoint for PostStartupComplete {
     type Output = ();
     fn path(&self) -> String { "/startup/complete".into() }
     fn method(&self) -> Method { Method::POST }
+}
+
+// ── Users ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetUsers;
+
+impl Endpoint for GetUsers {
+    type Output = Vec<UserDto>;
+    fn path(&self) -> String { "/users".into() }
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateUser {
+    pub name: String,
+    pub password: String,
+}
+
+impl Endpoint for CreateUser {
+    type Output = UserDto;
+    fn path(&self) -> String { "/users/new".into() }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::json!({ "Name": self.name, "Password": self.password }))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteUser {
+    pub user_id: Uuid,
+}
+
+impl Endpoint for DeleteUser {
+    type Output = ();
+    fn path(&self) -> String { format!("/users/{}", self.user_id) }
+    fn method(&self) -> Method { Method::DELETE }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateUser {
+    pub user_id: Uuid,
+    pub dto: UserDto,
+}
+
+impl Endpoint for UpdateUser {
+    type Output = ();
+    fn path(&self) -> String { format!("/users/{}", self.user_id) }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.dto).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateUserPolicy {
+    pub user_id: Uuid,
+    pub policy: UserPolicy,
+}
+
+impl Endpoint for UpdateUserPolicy {
+    type Output = ();
+    fn path(&self) -> String { format!("/users/{}/policy", self.user_id) }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.policy).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AdminSetPassword {
+    pub user_id: Uuid,
+    pub new_pw: String,
+}
+
+impl Endpoint for AdminSetPassword {
+    type Output = ();
+    fn path(&self) -> String { format!("/users/{}/password", self.user_id) }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::json!({ "NewPw": self.new_pw }))
+    }
 }
 
 impl Endpoint for AuthenticateUserByName {
