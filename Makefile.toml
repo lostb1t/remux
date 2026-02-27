@@ -67,7 +67,7 @@ cwd = "crates/dashboard"
 
 [tasks.build-docker]
 command = "docker"
-args = ["buildx", "build", "-f", "docker/Dockerfile.dev",  "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:local", "."]
+args = ["buildx", "build", "-f", "docker/Dockerfile",  "--platform", "linux/arm64", "-t", "ghcr.io/lostb1t/remux-server:local", "."]
 
 [tasks.build]
 command = "docker"

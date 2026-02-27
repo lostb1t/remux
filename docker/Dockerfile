@@ -1,4 +1,4 @@
-FROM jellyfin/jellyfin:10.11.5 AS jf
+FROM jellyfin/jellyfin:10.11.6 AS jf
 
 FROM rust:slim-bookworm AS builder
 WORKDIR /app
@@ -33,6 +33,7 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim AS release
 ENV WEB_PATH=/app/jellyfin-web
+ENV DASHBOARD_PATH=/app/dashboard
 
 RUN apt update \
     && apt install -y ffmpeg \
