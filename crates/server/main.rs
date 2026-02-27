@@ -147,10 +147,9 @@ async fn init_app() -> Result<Router> {
     let (ws_tx, _) = tokio::sync::broadcast::channel(128);
 
     let mut settings = crate::db::Settings::get_config(&conn).await?;
-    let aio = if settings.aio_url.is_empty() {
-        None
-    } else {
-        Some(aio::AioService::from_url(&settings.aio_url)?)
+    let aio = match settings.aio_url.as_deref() {
+        Some(url) if !url.is_empty() => Some(aio::AioService::from_url(url)?),
+        _ => None,
     };
 
     let ctx = AppContext {
@@ -177,13 +176,13 @@ async fn init_app() -> Result<Router> {
         .expose_headers(Any);
 
     let dashboard_index =
-        format!("{}/index.html", config.dashboard_path);
+        format!("{}/index.html", ctx.config.dashboard_path);
     Ok(Router::new()
         .route("/websocket", get(ws::ws_handler))
         .merge(collect_routes())
         .nest_service(
             "/admin",
-            ServeDir::new(&config.dashboard_path)
+            ServeDir::new(&ctx.config.dashboard_path)
                 .fallback(ServeFile::new(dashboard_index)),
         )
         .with_state(state)
@@ -198,7 +197,7 @@ async fn init_app() -> Result<Router> {
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
         .fallback_service(
-            web_transform::TransformLayer::new().layer(ServeDir::new(config.web_path)),
+            web_transform::TransformLayer::new().layer(ServeDir::new(ctx.config.web_path.clone())),
         ))
 }
 

@@ -22,17 +22,20 @@ impl Task for CatalogImportTask {
         tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        // Read the current AIO URL from DB so that changes made after server
+        // Read the current settings from DB so that changes made after server
         // startup (e.g. via the setup wizard) are picked up automatically.
-        let aio_url = crate::db::Settings::get_config(&ctx.db).await
-            .ok()
-            .and_then(|c| c.aio_url)
+        let db_settings = crate::db::Settings::get_config(&ctx.db).await.ok();
+        let aio_url = db_settings.as_ref()
+            .and_then(|c| c.aio_url.as_deref())
             .filter(|s| !s.is_empty())
             .unwrap_or_default();
         if aio_url.is_empty() {
             anyhow::bail!("AIO URL not configured — complete the setup wizard first");
         }
-        let aio = crate::aio::AioService::from_url(&aio_url)?;
+        let aio = crate::aio::AioService::from_url(aio_url)?;
+        let catalog_max_items: usize = db_settings.as_ref()
+            .and_then(|c| c.catalog_max_items)
+            .unwrap_or(5000) as usize;
 
         let manifest = aio.get_manifest().await?;
         let mut total_imported = 0;
@@ -74,7 +77,7 @@ impl Task for CatalogImportTask {
             let mut count = 0;
 
             while let Some(mut metas) = meta_stream.next().await {
-                let remaining = ctx.config.catalog_max_items.saturating_sub(count);
+                let remaining = catalog_max_items.saturating_sub(count);
                 metas = metas.into_iter().take(remaining).collect();
 
                 let items: Vec<db::Media> = metas
@@ -100,7 +103,7 @@ impl Task for CatalogImportTask {
                     total_imported += count;
                 }
 
-                if count >= ctx.config.catalog_max_items {
+                if count >= catalog_max_items {
                     break;
                 }
             }
