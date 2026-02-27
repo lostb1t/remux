@@ -8,9 +8,9 @@ CONFIG = "./config"
 AXUM_ANYHOW_EXPOSE_ERRORS=1
 # HTTP_PROXY="http://10.0.10.11:9090"
 # HTTPS_PROXY="http://10.0.10.11:9090"
-DATABASE_URL = "sqlite://db.sqlite"
 WEB_PATH = "../jellyfin-web/dist"
-DASHBOARD_PATH="/root/Projects/remux-server/target/dx/dashboard/debug/web/public"
+DASHBOARD_PATH="./target/dx/dashboard/debug/web/public"
+DATABASE_URL = "sqlite://db.sqlite"
 DB="db.sqlite"
 
 [env.test]

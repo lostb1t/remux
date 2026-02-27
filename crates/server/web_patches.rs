@@ -18,12 +18,19 @@ pub static CSS: &str = r##"
 /// JS injected before `</body>` of every HTML response.
 /// Leave empty to skip injection entirely.
 pub static JS: &str = r#"
-// Redirect Jellyfin's admin dashboard links to our custom admin
-document.addEventListener('click', function(e) {
-  var a = e.target.closest('a[href]');
-  //if (a && a.getAttribute('href') === '#/dashboard') {
-  //  e.preventDefault();
-  //  window.location.href = '/admin';
-  //}
-}, true);
+(function () {
+  var ADMIN = ['/wizardstart', '/startup/wizard', '/dashboard'];
+  function checkHash() {
+    var h = location.hash.replace(/^#\/?/, '');
+    for (var i = 0; i < ADMIN.length; i++) {
+      var p = ADMIN[i].slice(1);
+      if (h === p || h.startsWith(p + '/') || h.startsWith(p + '?')) {
+        location.replace('/admin');
+        return;
+      }
+    }
+  }
+  checkHash();
+  window.addEventListener('hashchange', checkHash);
+}());
 "#;
