@@ -378,7 +378,7 @@ fn SessionsCard(app_state: AppState) -> Element {
 }
 
 #[component]
-fn TasksCard(app_state: AppState) -> Element {
+fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) -> Element {
     let mut tasks: Signal<Vec<TaskInfo>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
@@ -397,18 +397,32 @@ fn TasksCard(app_state: AppState) -> Element {
     rsx! {
         div { class: "card",
             div { class: "card-header",
-                span { class: "card-title", "Scheduled Tasks" }
+                span { class: "card-title", if running_only { "Running Tasks" } else { "Scheduled Tasks" } }
             }
             div { class: "card-body",
                 if *loading.read() {
                     span { class: "loading-text", "Loading…" }
                 } else if let Some(err) = error.read().as_ref() {
                     span { class: "loading-text", style: "color:var(--error)", "{err}" }
-                } else if tasks.read().is_empty() {
-                    div { class: "empty-state", "No tasks found" }
                 } else {
-                    for task in tasks.read().iter() {
-                        TaskRow { task: task.clone() }
+                    {
+                        let visible: Vec<_> = tasks.read().iter()
+                            .filter(|t| !running_only || t.state.as_deref() == Some("Running"))
+                            .cloned()
+                            .collect();
+                        if visible.is_empty() {
+                            rsx! {
+                                div { class: "empty-state",
+                                    if running_only { "No tasks currently running" } else { "No tasks found" }
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                for task in visible {
+                                    TaskRow { task }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -470,6 +484,24 @@ fn TaskRow(task: TaskInfo) -> Element {
     }
 }
 
+#[derive(Clone, PartialEq, Debug)]
+enum Page {
+    Overview,
+    Devices,
+    Tasks,
+}
+
+#[component]
+fn NavItem(label: &'static str, active: bool, on_click: EventHandler) -> Element {
+    rsx! {
+        button {
+            class: if active { "nav-item nav-item-active" } else { "nav-item" },
+            onclick: move |_| on_click.call(()),
+            "{label}"
+        }
+    }
+}
+
 #[component]
 fn Dashboard(on_logout: EventHandler) -> Element {
     let server = match get_stored_server() {
@@ -478,17 +510,56 @@ fn Dashboard(on_logout: EventHandler) -> Element {
     };
 
     let app_state = AppState::new(server);
+    let mut sidebar_open = use_signal(|| false);
+    let mut current_page = use_signal(|| Page::Overview);
+
+    let page_title = match *current_page.read() {
+        Page::Overview => "Overview",
+        Page::Devices => "Devices",
+        Page::Tasks => "Scheduled Tasks",
+    };
 
     rsx! {
-        div { class: "page",
-            div { class: "shell",
-                div { class: "page-header",
-                    div {
-                        span { class: "brand-label", "Remux" }
-                        h1 { class: "brand-title", "Admin Dashboard" }
+        div { class: "layout",
+            // Mobile backdrop
+            if *sidebar_open.read() {
+                div {
+                    class: "sidebar-overlay",
+                    onclick: move |_| sidebar_open.set(false),
+                }
+            }
+
+            // Sidebar
+            nav {
+                class: if *sidebar_open.read() { "sidebar sidebar-open" } else { "sidebar" },
+
+                div { class: "sidebar-brand",
+                    span { class: "brand-label", "Remux" }
+                    h1 { class: "brand-title", style: "font-size:1.1rem;margin:0", "Dashboard" }
+                }
+
+                div { class: "sidebar-nav",
+                    NavItem {
+                        label: "Overview",
+                        active: *current_page.read() == Page::Overview,
+                        on_click: move |_| { current_page.set(Page::Overview); sidebar_open.set(false); },
                     }
+                    NavItem {
+                        label: "Devices",
+                        active: *current_page.read() == Page::Devices,
+                        on_click: move |_| { current_page.set(Page::Devices); sidebar_open.set(false); },
+                    }
+                    NavItem {
+                        label: "Tasks",
+                        active: *current_page.read() == Page::Tasks,
+                        on_click: move |_| { current_page.set(Page::Tasks); sidebar_open.set(false); },
+                    }
+                }
+
+                div { class: "sidebar-footer",
                     button {
                         class: "btn btn-ghost",
+                        style: "width:100%",
                         onclick: move |_| {
                             LocalStorage::delete(CREDENTIALS_KEY);
                             on_logout.call(());
@@ -496,10 +567,37 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                         "Sign Out"
                     }
                 }
+            }
 
-                ServerInfoCard { app_state: app_state.clone() }
-                SessionsCard { app_state: app_state.clone() }
-                TasksCard { app_state: app_state.clone() }
+            // Main content
+            div { class: "main",
+                div { class: "main-header",
+                    button {
+                        class: "hamburger",
+                        onclick: move |_| {
+                            let open = !*sidebar_open.read();
+                            sidebar_open.set(open);
+                        },
+                        "☰"
+                    }
+                    h2 { class: "main-title", "{page_title}" }
+                }
+
+                div { class: "shell",
+                    {match *current_page.read() {
+                        Page::Overview => rsx! {
+                            ServerInfoCard { app_state: app_state.clone() }
+                            SessionsCard { app_state: app_state.clone() }
+                            TasksCard { app_state: app_state.clone(), running_only: true }
+                        },
+                        Page::Devices => rsx! {
+                            SessionsCard { app_state: app_state.clone() }
+                        },
+                        Page::Tasks => rsx! {
+                            TasksCard { app_state: app_state.clone() }
+                        },
+                    }}
+                }
             }
         }
     }
