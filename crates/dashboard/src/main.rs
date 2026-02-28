@@ -1259,7 +1259,7 @@ fn ImportsPage(app_state: AppState) -> Element {
                                     let cat_aio_id = cat.aio_id.clone();
                                     let cat_name = cat.name.clone();
                                     let enabled = cat.enabled.unwrap_or(false);
-                                    let max_items_str = cat.max_items.map(|n| n.to_string()).unwrap_or_default();
+                                    let max_items_str = cat.max_items.unwrap_or(250).to_string();
                                     let mut local_max = use_signal(|| max_items_str.clone());
                                     // Per-catalog task state
                                     let task_id_opt = cat.media_id.clone()
