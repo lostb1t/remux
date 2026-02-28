@@ -209,10 +209,8 @@ impl FromRequestParts<AppState> for AuthSession {
         let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
-        // Prefer state.ctx.aio (long-lived, shared Arc cache) so cached
-        // manifest/catalog responses survive across requests.  Only fall back
-        // to building a fresh client when ctx.aio is None, which happens when
-        // the AIO URL was configured after startup via the setup wizard.
+        // AioService is cheap to create — the HTTP response cache is global,
+        // so recreating the client per-request does not cause cache misses.
         let aio = if let Some(ref existing) = state.ctx.aio {
             Some(existing.clone())
         } else {

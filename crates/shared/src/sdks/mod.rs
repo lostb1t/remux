@@ -10,11 +10,20 @@ use std::fmt;
 use std::iter;
 use std::ops;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use std::time::Duration;
 
 pub mod aio;
 pub mod tmdb;
 pub mod jellyfin;
+
+struct CacheEntry {
+    body: String,
+    expires_at: Instant,
+}
+
+static HTTP_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CacheEntry>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn hash_key(key: &str) -> String {
     let result = md5::compute(key.as_bytes());
@@ -138,7 +147,6 @@ pub struct RestClient<A: Auth = NoAuth> {
     base: url::Url,
     auth: Arc<A>,
     map_error: fn(u16, &str, &str) -> ClientError,
-    cache: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl RestClient<NoAuth> {
@@ -148,7 +156,6 @@ impl RestClient<NoAuth> {
             base: url::Url::parse(format!("{}/", base.trim_end_matches('/')).as_str())?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
-            cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
@@ -160,7 +167,6 @@ impl<A: Auth + Clone> RestClient<A> {
             base: self.base,
             auth: Arc::new(auth),
             map_error: self.map_error,
-            cache: self.cache,
         }
     }
 
@@ -183,15 +189,17 @@ impl<A: Auth + Clone> RestClient<A> {
         let cache_key = hash_key(&url.to_string());
 
         if endpoint.cache_ttl().is_some() {
-            if let Ok(cache) = self.cache.lock() {
-                if let Some(cached) = cache.get(&cache_key) {
-                    return Ok(serde_json::from_str(cached)
-                        .map_err(|e| ClientError::Json {
-                            status: 0,
-                            source: e,
-                            endpoint: Some(url.to_string()),
-                            body: None,
-                        })?);
+            if let Ok(cache) = HTTP_CACHE.lock() {
+                if let Some(entry) = cache.get(&cache_key) {
+                    if entry.expires_at > Instant::now() {
+                        return Ok(serde_json::from_str(&entry.body)
+                            .map_err(|e| ClientError::Json {
+                                status: 0,
+                                source: e,
+                                endpoint: Some(url.to_string()),
+                                body: None,
+                            })?);
+                    }
                 }
             }
         }
@@ -245,9 +253,12 @@ impl<A: Auth + Clone> RestClient<A> {
                             body: Some(text.clone()),
                         });
                 if result.is_ok() {
-                    if endpoint.cache_ttl().is_some() {
-                        if let Ok(mut cache) = self.cache.lock() {
-                            cache.insert(cache_key, text);
+                    if let Some(ttl) = endpoint.cache_ttl() {
+                        if let Ok(mut cache) = HTTP_CACHE.lock() {
+                            cache.insert(cache_key, CacheEntry {
+                                body: text.clone(),
+                                expires_at: Instant::now() + ttl,
+                            });
                         }
                     }
                 }
