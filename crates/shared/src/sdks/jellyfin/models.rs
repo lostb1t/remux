@@ -1432,6 +1432,45 @@ pub struct UserItemDataDto {
     // pub item_id: String,
 }
 
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum RemuxCollectionKind {
+    #[default]
+    Manual,
+    Smart,
+}
+
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum RemuxMediaKind {
+    #[default]
+    Movie,
+    Series,
+    Season,
+    Episode,
+    Collection,
+    Catalog,
+    Folder,
+    Genre,
+    Person,
+    Studio,
+}
+
+/// Remux-specific fields not part of the Jellyfin spec, nested under `Remux`
+/// on BaseItemDto so they're easy to ignore by standard Jellyfin clients.
+#[skip_serializing_none]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RemuxInfo {
+    pub collection_kind: Option<RemuxCollectionKind>,
+    pub collection_media_kind: Option<RemuxMediaKind>,
+    pub collection_max_items: Option<i64>,
+    pub collection_catalog_filter: Option<Vec<Uuid>>,
+    pub promoted: Option<bool>,
+}
+
 #[skip_serializing_none]
 #[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -1607,6 +1646,7 @@ pub struct BaseItemDto {
     //pub aio_media_type: Option<aio::MediaType>,
     // #[serde(skip)]
     //pub aio_stream: Option<sdks::aio::Stream>,
+    pub remux: Option<RemuxInfo>,
 }
 
 #[skip_serializing_none]

@@ -235,6 +235,15 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 })
                 .collect()
         }),
+        remux: Some(RemuxInfo {
+            collection_kind: media.collection_kind.as_ref()
+                .and_then(|k| k.to_string().parse().ok()),
+            collection_media_kind: media.collection_media_kind.as_ref()
+                .and_then(|k| k.to_string().parse().ok()),
+            collection_max_items: media.collection_max_items,
+            collection_catalog_filter: Some(media.catalog_filter_ids()),
+            promoted: Some(media.promoted != 0),
+        }),
         ..Default::default()
     };
 

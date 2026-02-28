@@ -932,10 +932,10 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                         },
                                         None => "Unknown",
                                     };
-                                    let col_kind_label = match col.collection_kind.as_deref() {
-                                        Some("smart")  => "Smart",
-                                        Some("manual") => "Manual",
-                                        _ => "",
+                                    let col_kind_label = match col.remux.as_ref().and_then(|r| r.collection_kind.as_ref()) {
+                                        Some(shared::sdks::jellyfin::RemuxCollectionKind::Smart)  => "Smart",
+                                        Some(shared::sdks::jellyfin::RemuxCollectionKind::Manual) => "Manual",
+                                        None => "",
                                     };
                                     rsx! {
                                         div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]", key: "{col_id_str}",
@@ -945,6 +945,9 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                                     span { class: "session-client-badge", "{col_type_label}" }
                                                     if !col_kind_label.is_empty() {
                                                         span { class: "session-client-badge", "{col_kind_label}" }
+                                                    }
+                                                    if col.remux.as_ref().and_then(|r| r.promoted).unwrap_or(false) {
+                                                        span { class: "task-badge task-badge-running", "Library" }
                                                     }
                                                 }
                                             }
@@ -1013,7 +1016,12 @@ fn CollectionForm(
     };
 
     let mut title       = use_signal(|| existing.as_ref().and_then(|f| f.name.clone()).unwrap_or_default());
-    let mut promoted    = use_signal(|| false);
+    let mut promoted    = use_signal(|| {
+        existing.as_ref()
+            .and_then(|f| f.remux.as_ref())
+            .and_then(|r| r.promoted)
+            .unwrap_or(false)
+    });
     let mut col_type    = use_signal(|| {
         existing.as_ref()
             .and_then(|f| f.collection_type.as_ref())
@@ -1026,13 +1034,17 @@ fn CollectionForm(
     });
     let mut col_kind    = use_signal(|| {
         existing.as_ref()
-            .and_then(|f| f.collection_kind.clone())
+            .and_then(|f| f.remux.as_ref())
+            .and_then(|r| r.collection_kind.as_ref())
+            .map(|k| k.to_string())
             .unwrap_or_else(|| "smart".to_string())
     });
     // Selected catalog UUIDs for smart collection filter
     let mut catalog_filter: Signal<Vec<String>> = use_signal(|| {
         existing.as_ref()
-            .and_then(|f| f.collection_catalog_filter.clone())
+            .and_then(|f| f.remux.as_ref())
+            .and_then(|r| r.collection_catalog_filter.as_ref())
+            .map(|ids| ids.iter().map(|id| id.to_string()).collect())
             .unwrap_or_default()
     });
     let mut aio_catalogs: Signal<Vec<AioCatalogInfo>> = use_signal(Vec::new);
