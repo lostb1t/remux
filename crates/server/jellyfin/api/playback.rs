@@ -3,7 +3,6 @@ use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use remux_macros::{delete, get, post};
 use axum_extra::extract::Query;
 use chrono::{Duration, Local, Utc};
 use futures_util::StreamExt;
@@ -11,6 +10,7 @@ use futures_util::TryStreamExt;
 use headers;
 use http::Response;
 use http::StatusCode;
+use remux_macros::{delete, get, post};
 use serde::Deserialize;
 use serde_json::json;
 use std::io;
@@ -40,7 +40,8 @@ pub async fn items_playbackinfo(
     let query_params = payload.clone();
     let media_source_id = payload.media_source_id;
     let device_profile = payload.device_profile;
-    items_playbackinfo_inner(state, id, media_source_id, device_profile, query_params).await
+    items_playbackinfo_inner(state, id, media_source_id, device_profile, query_params)
+        .await
 }
 
 #[get("/items/{id}/playbackinfo")]
@@ -52,7 +53,8 @@ pub async fn items_playbackinfo_get(
     let query_params = q.clone();
     let media_source_id = q.media_source_id;
     let device_profile = q.device_profile;
-    items_playbackinfo_inner(state, id, media_source_id, device_profile, query_params).await
+    items_playbackinfo_inner(state, id, media_source_id, device_profile, query_params)
+        .await
 }
 
 async fn items_playbackinfo_inner(
@@ -64,10 +66,9 @@ async fn items_playbackinfo_inner(
 ) -> Result<impl IntoResponse> {
     trace!(?id, ?media_source_id, "items_playbackinfo");
 
-    let media =
-        db::Media::get_by_id(&state.ctx.db, &media_source_id.unwrap_or(id))
-            .await?
-            .context_not_found("not found", "not found")?;
+    let media = db::Media::get_by_id(&state.ctx.db, &media_source_id.unwrap_or(id))
+        .await?
+        .context_not_found("not found", "not found")?;
 
     let mut source = jellyfin::media_source_from_db(media);
     source.probe_in_place()?;
@@ -78,17 +79,19 @@ async fn items_playbackinfo_inner(
         .map(|profile| {
             // Check if transcoding is explicitly enabled/disabled
             let transcoding_enabled = query_params.enable_transcoding.unwrap_or(false);
-            
+
             // Check if direct play is enabled/disabled
             let direct_play_enabled = query_params.enable_direct_play.unwrap_or(true);
             let direct_play_supported = profile.supports_direct_play(&source);
 
-            
             transcoding_enabled || !direct_play_supported || !direct_play_enabled
         })
         .unwrap_or(true); // Default to transcoding if no device profile
-    
-    tracing::debug!("playback decision - needs transcoding: {}", needs_transcoding);
+
+    tracing::debug!(
+        "playback decision - needs transcoding: {}",
+        needs_transcoding
+    );
 
     let play_session_id = utils::get_uuid().as_simple().to_string();
 
@@ -97,10 +100,12 @@ async fn items_playbackinfo_inner(
         let (trans_container, trans_protocol) = device_profile
             .as_ref()
             .and_then(|p| p.video_transcoding_profile())
-            .map(|p| (
-                p.container.clone().unwrap_or_else(|| "ts".to_string()),
-                p.protocol.clone().unwrap_or_else(|| "hls".to_string()),
-            ))
+            .map(|p| {
+                (
+                    p.container.clone().unwrap_or_else(|| "ts".to_string()),
+                    p.protocol.clone().unwrap_or_else(|| "hls".to_string()),
+                )
+            })
             .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
         source.supports_transcoding = Some(true);
@@ -182,7 +187,9 @@ async fn videos_stream_inner(
             .clone();
     }
 
-    let url = media.url.clone()
+    let url = media
+        .url
+        .clone()
         .context_not_found("no url", "media source has no URL")?;
 
     // Direct play: proxy the original stream with range support
@@ -274,7 +281,6 @@ async fn videos_stream_inner(
         .unwrap())
 }
 
-
 #[post("/sessions/playing")]
 pub async fn report_playback_start(
     State(state): State<AppState>,
@@ -314,8 +320,8 @@ pub async fn report_playback_start(
 
 #[cfg(test)]
 mod tests {
-    use http::header::HeaderValue;
     use http::StatusCode;
+    use http::header::HeaderValue;
     use serde_json::json;
 
     const AUTH_HEADER: &str = "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\"";
@@ -354,7 +360,10 @@ mod tests {
 
         let resp = server
             .post("/sessions/playing")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "VolumeLevel": 100,
                 "IsMuted": false,
@@ -387,7 +396,10 @@ mod tests {
         // Clients may send very minimal payloads
         let resp = server
             .post("/sessions/playing")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                 "PlaySessionId": "test-session-minimal"
@@ -405,7 +417,10 @@ mod tests {
         // Start playback first
         server
             .post("/sessions/playing")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                 "PlaySessionId": "test-session-progress",
@@ -416,7 +431,10 @@ mod tests {
         // Report progress
         let resp = server
             .post("/sessions/playing/progress")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                 "PlaySessionId": "test-session-progress",
@@ -440,7 +458,10 @@ mod tests {
         // Start playback
         server
             .post("/sessions/playing")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                 "PlaySessionId": "test-session-stop",
@@ -451,7 +472,10 @@ mod tests {
         // Stop playback
         let resp = server
             .post("/sessions/playing/stopped")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                 "PlaySessionId": "test-session-stop",
@@ -471,7 +495,10 @@ mod tests {
         // 1. Start
         let resp = server
             .post("/sessions/playing")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                 "PlaySessionId": psid,
@@ -486,7 +513,10 @@ mod tests {
         for ticks in [100_000_000i64, 200_000_000, 500_000_000] {
             let resp = server
                 .post("/sessions/playing/progress")
-                .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+                .add_header(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_str(&auth).unwrap(),
+                )
                 .json(&json!({
                     "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                     "PlaySessionId": psid,
@@ -501,14 +531,20 @@ mod tests {
         // 3. Ping
         let resp = server
             .post(&format!("/sessions/playing/ping?PlaySessionId={}", psid))
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .await;
         resp.assert_status(StatusCode::NO_CONTENT);
 
         // 4. Stop
         let resp = server
             .post("/sessions/playing/stopped")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                 "PlaySessionId": psid,
@@ -525,7 +561,10 @@ mod tests {
 
         let resp = server
             .post("/sessions/playing/ping?PlaySessionId=some-session-id")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .await;
 
         resp.assert_status(StatusCode::NO_CONTENT);
@@ -539,7 +578,10 @@ mod tests {
         // Progress with non-existent session should still return 204
         let resp = server
             .post("/sessions/playing/progress")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                 "PlaySessionId": "nonexistent-session",
@@ -557,7 +599,10 @@ mod tests {
 
         let resp = server
             .post("/sessions/playing/stopped")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                 "PlaySessionId": "nonexistent-session",
@@ -572,9 +617,7 @@ mod tests {
     async fn test_get_sessions_empty() {
         let (server, _token) = authenticated_server().await;
 
-        let resp = server
-            .get("/sessions")
-            .await;
+        let resp = server.get("/sessions").await;
 
         resp.assert_status_ok();
         let sessions: Vec<crate::jellyfin::SessionInfoDto> = resp.json();
@@ -591,7 +634,10 @@ mod tests {
         let psid = "test-session-get";
         server
             .post("/sessions/playing")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
                 "PlaySessionId": psid,
@@ -600,9 +646,7 @@ mod tests {
             .await;
 
         // Get all sessions
-        let resp = server
-            .get("/sessions")
-            .await;
+        let resp = server.get("/sessions").await;
 
         resp.assert_status_ok();
         let sessions: Vec<crate::jellyfin::SessionInfoDto> = resp.json();
@@ -627,15 +671,22 @@ pub async fn report_playback_progress(
             ps.is_muted = data.is_muted;
             ps.volume_level = data.volume_level.or(ps.volume_level);
             ps.audio_stream_index = data.audio_stream_index.or(ps.audio_stream_index);
-            ps.subtitle_stream_index = data.subtitle_stream_index.or(ps.subtitle_stream_index);
+            ps.subtitle_stream_index =
+                data.subtitle_stream_index.or(ps.subtitle_stream_index);
             ps.last_activity = Utc::now();
             ps.save(&state.ctx.store);
 
             // persist position to db
             let item_id = data.item_id.unwrap_or(ps.item_id);
-            if let Ok(Some(media)) = db::Media::get_by_id(&state.ctx.db, &item_id).await {
+            if let Ok(Some(media)) = db::Media::get_by_id(&state.ctx.db, &item_id).await
+            {
                 let position_seconds = ps.position_ticks / 10_000_000;
-                let mut ms = db::UserMediaState::get_or_new(&state.ctx.db, &session.user, &media).await?;
+                let mut ms = db::UserMediaState::get_or_new(
+                    &state.ctx.db,
+                    &session.user,
+                    &media,
+                )
+                .await?;
                 ms.playback_position = position_seconds;
                 ms.audio_idx = ps.audio_stream_index.map(|x| x as i64);
                 ms.subtitle_idx = ps.subtitle_stream_index.map(|x| x as i64);
@@ -656,17 +707,27 @@ pub async fn report_playback_stopped(
         let ps = PlaybackSession::remove(&state.ctx.store, psid);
 
         let item_id = data.item_id.or(ps.as_ref().map(|s| s.item_id));
-        let final_ticks = data.position_ticks.or(ps.as_ref().map(|s| s.position_ticks));
+        let final_ticks = data
+            .position_ticks
+            .or(ps.as_ref().map(|s| s.position_ticks));
 
         if let Some(item_id) = item_id {
-            if let Ok(Some(media)) = db::Media::get_by_id(&state.ctx.db, &item_id).await {
+            if let Ok(Some(media)) = db::Media::get_by_id(&state.ctx.db, &item_id).await
+            {
                 let position_seconds = final_ticks.unwrap_or(0) / 10_000_000;
-                let mut ms = db::UserMediaState::get_or_new(&state.ctx.db, &session.user, &media).await?;
+                let mut ms = db::UserMediaState::get_or_new(
+                    &state.ctx.db,
+                    &session.user,
+                    &media,
+                )
+                .await?;
                 ms.playback_position = position_seconds;
                 // If watched to near the end (>= 90%), mark as played
                 if let Some(runtime) = media.runtime {
                     let runtime_seconds = runtime;
-                    if runtime_seconds > 0 && position_seconds >= (runtime_seconds * 90 / 100) {
+                    if runtime_seconds > 0
+                        && position_seconds >= (runtime_seconds * 90 / 100)
+                    {
                         ms.play_count += 1;
                         ms.played_at = Some(Local::now().naive_local());
                         ms.playback_position = 0;
@@ -697,7 +758,9 @@ pub async fn ping_playback_session(
 }
 
 #[post("/sessions/capabilities/full")]
-pub async fn sessions_capabilities_full(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn sessions_capabilities_full(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
     stub(State(state)).await
 }
 
@@ -713,7 +776,9 @@ pub async fn get_sessions(
     State(state): State<AppState>,
     Query(q): Query<SessionsQuery>,
 ) -> Result<impl IntoResponse> {
-    let cutoff = q.active_within_seconds.map(|s| Utc::now() - Duration::seconds(s));
+    let cutoff = q
+        .active_within_seconds
+        .map(|s| Utc::now() - Duration::seconds(s));
     let devices = auth::Device::get_all(&state.ctx.db).await?;
     let playback_sessions = PlaybackSession::get_all(&state.ctx.store);
 
@@ -745,7 +810,9 @@ pub async fn get_sessions(
                 user_name: None,
                 client: Some(device.app_name.clone()),
                 last_activity_date: device.last_activity_at.unwrap_or_else(Utc::now),
-                last_playback_check_in: device.last_activity_at.unwrap_or_else(Utc::now),
+                last_playback_check_in: device
+                    .last_activity_at
+                    .unwrap_or_else(Utc::now),
                 last_paused_date: None,
                 device_name: Some(device.name.clone()),
                 device_type: None,
@@ -806,14 +873,18 @@ pub async fn master_hls_video(
     Query(q): Query<jellyfin::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     info!("master_hls_video: item_id={}, q={:?}", id, q);
-    
-    // Add debugging info for crash diagnosis
-    tracing::debug!("Starting HLS session setup for item {} with session ID: {:?}", 
-                    id, q.play_session_id);
 
-    let play_session_id = q.play_session_id
+    // Add debugging info for crash diagnosis
+    tracing::debug!(
+        "Starting HLS session setup for item {} with session ID: {:?}",
+        id,
+        q.play_session_id
+    );
+
+    let play_session_id = q
+        .play_session_id
         .unwrap_or_else(|| utils::get_uuid().as_simple().to_string());
-    
+
     tracing::debug!("Using play session ID: {}", play_session_id);
 
     let video_codec = q.video_codec.unwrap_or_else(|| "copy".to_string());
@@ -831,7 +902,9 @@ pub async fn master_hls_video(
             .context_not_found("not found", "media not found")?;
 
         let mut resolved_media = media.clone();
-        if resolved_media.kind == db::MediaKind::Movie || resolved_media.kind == db::MediaKind::Episode {
+        if resolved_media.kind == db::MediaKind::Movie
+            || resolved_media.kind == db::MediaKind::Episode
+        {
             resolved_media = resolved_media
                 .sources(&state.ctx.db)
                 .await?
@@ -840,7 +913,8 @@ pub async fn master_hls_video(
                 .clone();
         }
 
-        let input_url = resolved_media.url
+        let input_url = resolved_media
+            .url
             .context_not_found("no url", "media source has no URL")?;
 
         let session = state.ctx.transcode.create(
@@ -874,7 +948,9 @@ pub async fn master_hls_video(
         // Spawn the transcode task with proper error handling
         let session_clone = session.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::transcode::engine::start_transcode(session_clone, params).await {
+            if let Err(e) =
+                crate::transcode::engine::start_transcode(session_clone, params).await
+            {
                 tracing::error!("Transcode failed: {:#}", e);
             }
         });
@@ -884,7 +960,8 @@ pub async fn master_hls_video(
 
     // Generate and return the master playlist
     let session_read = session.read().await;
-    let master_playlist = crate::transcode::engine::generate_master_playlist(&session_read);
+    let master_playlist =
+        crate::transcode::engine::generate_master_playlist(&session_read);
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -918,10 +995,14 @@ async fn variant_hls_video_inner(
     state: AppState,
     q: jellyfin::HlsVideoQuery,
 ) -> Result<impl IntoResponse> {
-    let play_session_id = q.play_session_id
+    let play_session_id = q
+        .play_session_id
         .context_not_found("missing", "PlaySessionId is required")?;
 
-    let session = state.ctx.transcode.get(&play_session_id)
+    let session = state
+        .ctx
+        .transcode
+        .get(&play_session_id)
         .context_not_found("not found", "transcode session not found")?;
 
     let playlist_path = session.read().await.variant_playlist_path();
@@ -974,7 +1055,8 @@ pub async fn hls1_segment(
 }
 
 fn strip_segment_extension(filename: &str) -> String {
-    filename.rsplit_once('.')
+    filename
+        .rsplit_once('.')
         .map(|(name, _ext)| name.to_string())
         .unwrap_or_else(|| filename.to_string())
 }
@@ -984,10 +1066,14 @@ async fn hls_segment_inner(
     segment_id: String,
     q: jellyfin::HlsVideoQuery,
 ) -> Result<impl IntoResponse> {
-    let play_session_id = q.play_session_id
+    let play_session_id = q
+        .play_session_id
         .context_not_found("missing", "PlaySessionId is required")?;
 
-    let session = state.ctx.transcode.get(&play_session_id)
+    let session = state
+        .ctx
+        .transcode
+        .get(&play_session_id)
         .context_not_found("not found", "transcode session not found")?;
 
     let segment_path = session.read().await.segment_path(&segment_id);

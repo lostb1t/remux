@@ -62,13 +62,18 @@ pub async fn get_localization_options(
 }
 
 #[get("/localization/countries")]
-pub async fn get_countries(State(_state): State<AppState>) -> Result<impl IntoResponse> {
-    let countries = rust_iso3166::ALL.iter().map(|c| jellyfin::CountryInfo {
-        name: c.name.to_string(),
-        display_name: c.name.to_string(),
-        two_letter_iso_region_name: c.alpha2.to_string(),
-        three_letter_iso_region_name: c.alpha3.to_string(),
-    }).collect::<Vec<_>>();
+pub async fn get_countries(
+    State(_state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    let countries = rust_iso3166::ALL
+        .iter()
+        .map(|c| jellyfin::CountryInfo {
+            name: c.name.to_string(),
+            display_name: c.name.to_string(),
+            two_letter_iso_region_name: c.alpha2.to_string(),
+            three_letter_iso_region_name: c.alpha3.to_string(),
+        })
+        .collect::<Vec<_>>();
     Ok(Json(countries))
 }
 
@@ -89,6 +94,8 @@ pub async fn get_cultures(State(_state): State<AppState>) -> Result<impl IntoRes
 }
 
 #[get("/localization/parentalratings")]
-pub async fn get_parental_ratings(State(_state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn get_parental_ratings(
+    State(_state): State<AppState>,
+) -> Result<impl IntoResponse> {
     Ok(Json(Vec::<serde_json::Value>::new()))
 }

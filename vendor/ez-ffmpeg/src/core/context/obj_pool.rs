@@ -4,11 +4,16 @@ pub(crate) struct ObjPool<T> {
     queue: Arc<SegQueue<T>>,
     create_fn: fn() -> crate::error::Result<T>,
     unref_fn: fn(&mut T),
-    is_null_fn: fn(& T) -> bool,
+    is_null_fn: fn(&T) -> bool,
 }
 
 impl<T> ObjPool<T> {
-    pub(crate) fn new(initial_size: usize, create_fn: fn() -> crate::error::Result<T>, unref_fn: fn(&mut T),is_null_fn: fn(& T) -> bool,) -> crate::error::Result<Self> {
+    pub(crate) fn new(
+        initial_size: usize,
+        create_fn: fn() -> crate::error::Result<T>,
+        unref_fn: fn(&mut T),
+        is_null_fn: fn(&T) -> bool,
+    ) -> crate::error::Result<Self> {
         let queue = SegQueue::new();
         for _ in 0..initial_size {
             queue.push(create_fn()?);

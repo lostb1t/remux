@@ -64,7 +64,9 @@ pub fn get_format(input: impl Into<String>) -> Result<String, ffmpeg_next::Error
 ///     println!("{}: {}", key, value);
 /// }
 /// ```
-pub fn get_metadata(input: impl Into<String>) -> Result<Vec<(String, String)>, ffmpeg_next::Error> {
+pub fn get_metadata(
+    input: impl Into<String>,
+) -> Result<Vec<(String, String)>, ffmpeg_next::Error> {
     // Open the media file using `format::input` and get the `FormatContext`
     let format_context = format::input(&input.into())?;
 

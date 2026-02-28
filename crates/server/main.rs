@@ -82,11 +82,11 @@ mod utils;
 mod aio;
 mod db;
 mod jellyfin;
+mod log_capture;
 mod meta_provider;
 mod playback_session;
 mod tasks;
 mod transcode;
-mod log_capture;
 mod web_patches;
 mod web_transform;
 mod ws;
@@ -106,7 +106,8 @@ pub fn collect_routes() -> axum::Router<AppState> {
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_logging();
-    let app = tower::util::MapRequestLayer::new(rewrite_request_uri).layer(init_app().await?);
+    let app =
+        tower::util::MapRequestLayer::new(rewrite_request_uri).layer(init_app().await?);
     tracing::info!("starting webserver at 0.0.0.0:3000");
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     axum::serve(listener, app.into_make_service()).await?;
@@ -128,10 +129,7 @@ async fn init_app() -> Result<Router> {
 
 pub async fn init_app_with_config(config: Config) -> Result<Router> {
     log_capture::init_file(&config.log_file);
-    debug!(
-        "config: {}",
-        serde_json::to_string_pretty(&config).unwrap()
-    );
+    debug!("config: {}", serde_json::to_string_pretty(&config).unwrap());
 
     let conn = db::connect(&config.db_url).await?;
 
@@ -147,7 +145,9 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
         config,
         db: conn.clone(),
         store: store::Store::new(100000),
-        transcode: transcode::session::TranscodeSessionManager::new("transcode_sessions"),
+        transcode: transcode::session::TranscodeSessionManager::new(
+            "transcode_sessions",
+        ),
         ws_tx,
     };
 
@@ -161,11 +161,14 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
             promoted: Some(true),
             ..Default::default()
         },
-    ).await?;
+    )
+    .await?;
     for cat in enabled_catalogs.records {
-        task_service.register_task(std::sync::Arc::new(
-            tasks::CatalogItemImportTask::new(cat.id, &cat.title)
-        )).await?;
+        task_service
+            .register_task(std::sync::Arc::new(tasks::CatalogItemImportTask::new(
+                cat.id, &cat.title,
+            )))
+            .await?;
     }
 
     task_service.run_startup_tasks().await?;
@@ -181,8 +184,7 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
         .allow_headers(Any)
         .expose_headers(Any);
 
-    let dashboard_index =
-        format!("{}/index.html", ctx.config.dashboard_path);
+    let dashboard_index = format!("{}/index.html", ctx.config.dashboard_path);
     Ok(Router::new()
         .route("/websocket", get(ws::ws_handler))
         .merge(collect_routes())
@@ -203,7 +205,8 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
         .fallback_service(
-            web_transform::TransformLayer::new().layer(ServeDir::new(ctx.config.web_path.clone())),
+            web_transform::TransformLayer::new()
+                .layer(ServeDir::new(ctx.config.web_path.clone())),
         ))
 }
 

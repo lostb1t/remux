@@ -12,10 +12,15 @@ fn main() {
         //    - Format the watermark image to have a transparent background.
         //    - Apply a transparency effect (adjust the alpha channel).
         //    - Overlay the watermark image onto the video at the position (10, 10).
-        .filter_desc("[1:v]scale=100:-1,format=rgba,lut=a=val*0.7[wm];[0:v][wm]overlay=10:10")
+        .filter_desc(
+            "[1:v]scale=100:-1,format=rgba,lut=a=val*0.7[wm];[0:v][wm]overlay=10:10",
+        )
         // 5. Specify the output video file where the result will be saved
         .output(Output::from("output.mp4"))
-        .build().unwrap() // Build the context
-        .start().unwrap() // Start the transcoding process
-        .wait().unwrap(); // Wait for the process to complete
+        .build()
+        .unwrap() // Build the context
+        .start()
+        .unwrap() // Start the transcoding process
+        .wait()
+        .unwrap(); // Wait for the process to complete
 }

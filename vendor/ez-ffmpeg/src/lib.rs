@@ -98,25 +98,24 @@
 //! please ensure that your usage complies with FFmpeg's license.
 
 pub mod core;
-pub mod util;
 pub mod error;
+pub mod util;
 
+pub use self::core::codec;
+pub use self::core::container_info;
 pub use self::core::context::ffmpeg_context::FfmpegContext;
 pub use self::core::context::input::Input;
 pub use self::core::context::output::Output;
-pub use self::core::scheduler::ffmpeg_scheduler::FfmpegScheduler;
-pub use self::core::container_info;
-pub use self::core::stream_info;
-pub use self::core::packet_scanner;
 pub use self::core::device;
-pub use self::core::hwaccel;
-pub use self::core::codec;
 pub use self::core::filter;
+pub use self::core::hwaccel;
+pub use self::core::packet_scanner;
+pub use self::core::scheduler::ffmpeg_scheduler::FfmpegScheduler;
+pub use self::core::stream_info;
 
-pub use ffmpeg_sys_next::AVRational;
-pub use ffmpeg_sys_next::AVMediaType;
 pub use ffmpeg_next::Frame;
-
+pub use ffmpeg_sys_next::AVMediaType;
+pub use ffmpeg_sys_next::AVRational;
 
 #[cfg(feature = "opengl")]
 pub mod opengl;

@@ -101,7 +101,10 @@ impl TaskHandler {
     }
 
     pub fn is_running(&self) -> bool {
-        self.handle.as_ref().map(|h| !h.is_finished()).unwrap_or(false)
+        self.handle
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false)
     }
 
     pub fn view(&self) -> TaskView {
@@ -141,7 +144,10 @@ impl TaskHandler {
                 }
                 Err(e) => {
                     error!(task = %task_key, error = %e, "failed");
-                    (TaskStatus::Failed(e.to_string()), db::TaskResultStatus::Failed)
+                    (
+                        TaskStatus::Failed(e.to_string()),
+                        db::TaskResultStatus::Failed,
+                    )
                 }
             };
 
@@ -185,7 +191,11 @@ impl TaskService {
         let scheduler = JobScheduler::new().await?;
         let tasks = Arc::new(AsyncMutex::new(HashMap::new()));
 
-        let service = Self { scheduler, tasks, ctx: ctx.clone() };
+        let service = Self {
+            scheduler,
+            tasks,
+            ctx: ctx.clone(),
+        };
 
         service.register_task(Arc::new(RefreshLibraryTask)).await?;
         service.register_task(Arc::new(CatalogImportTask)).await?;
@@ -231,7 +241,12 @@ impl TaskService {
         let job_id = job.guid();
         self.scheduler.add(job).await?;
 
-        if let Some(handler) = self.tasks.lock().await.get_mut(&trigger.task_id.to_lowercase()) {
+        if let Some(handler) = self
+            .tasks
+            .lock()
+            .await
+            .get_mut(&trigger.task_id.to_lowercase())
+        {
             handler.jobs.push(job_id);
         }
 
@@ -263,7 +278,8 @@ impl TaskService {
     }
 
     pub async fn run_task(&self, task_key: &str) -> Result<()> {
-        if let Some(handler) = self.tasks.lock().await.get_mut(&task_key.to_lowercase()) {
+        if let Some(handler) = self.tasks.lock().await.get_mut(&task_key.to_lowercase())
+        {
             handler.run(self.ctx.clone(), Arc::new(self.clone()));
         }
         Ok(())
@@ -280,7 +296,8 @@ impl TaskService {
     }
 
     pub async fn stop_task(&self, task_key: &str) -> Result<()> {
-        if let Some(handler) = self.tasks.lock().await.get_mut(&task_key.to_lowercase()) {
+        if let Some(handler) = self.tasks.lock().await.get_mut(&task_key.to_lowercase())
+        {
             handler.stop();
         }
         Ok(())

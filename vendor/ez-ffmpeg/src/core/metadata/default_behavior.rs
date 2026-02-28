@@ -2,8 +2,8 @@
 // Based on FFmpeg ffmpeg_mux_init.c:2784-2983
 
 use ffmpeg_sys_next::{
-    av_dict_copy, av_dict_set, av_mallocz, av_realloc_f, av_rescale_q, AVChapter, AVFormatContext,
-    AV_DICT_DONT_OVERWRITE, AV_TIME_BASE_Q,
+    av_dict_copy, av_dict_set, av_mallocz, av_realloc_f, av_rescale_q, AVChapter,
+    AVFormatContext, AV_DICT_DONT_OVERWRITE, AV_TIME_BASE_Q,
 };
 use std::cmp::{max, min};
 use std::ffi::c_void;
@@ -42,7 +42,7 @@ pub unsafe fn copy_metadata_default(
     output_ctx: *mut AVFormatContext,
     output_stream_count: usize,
     stream_input_mapping: &[(usize, (usize, usize))], // (output_stream_idx, (input_file_idx, input_stream_idx))
-    encoding_streams: &[usize],                       // indices of streams being encoded
+    encoding_streams: &[usize], // indices of streams being encoded
     recording_time_set: bool,
     auto_copy_enabled: bool, // from Output::auto_copy_metadata
     skip_global_copy: bool,
@@ -146,8 +146,10 @@ pub unsafe fn copy_metadata_default(
             }
             let output_stream = &mut *output_stream_ptr;
 
-            let input_streams =
-                std::slice::from_raw_parts(input_ref.streams, input_ref.nb_streams as usize);
+            let input_streams = std::slice::from_raw_parts(
+                input_ref.streams,
+                input_ref.nb_streams as usize,
+            );
             let input_stream_ptr = input_streams[input_stream_idx];
             if input_stream_ptr.is_null() {
                 continue;
@@ -214,7 +216,8 @@ pub unsafe fn copy_chapters_from_input(
     let start_time = mux_start_time_us.unwrap_or(0);
     let recording_time = mux_recording_time_us.unwrap_or(i64::MAX);
 
-    let chapters = std::slice::from_raw_parts(input_ref.chapters, input_ref.nb_chapters as usize);
+    let chapters =
+        std::slice::from_raw_parts(input_ref.chapters, input_ref.nb_chapters as usize);
     let mut out_count = output_ref.nb_chapters;
 
     for &chapter_ptr in chapters {

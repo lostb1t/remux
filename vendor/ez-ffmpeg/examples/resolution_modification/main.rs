@@ -11,7 +11,10 @@ fn main() {
         // Specify the output video file
         .output("output.mp4")
         // Build the context, start the process and wait for completion
-        .build().unwrap()
-        .start().unwrap()
-        .wait().unwrap();
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
+        .wait()
+        .unwrap();
 }

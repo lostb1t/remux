@@ -1,14 +1,14 @@
-use std::str::FromStr;
 use chrono::{DateTime, Utc};
-use serde_aux::prelude::*;
-use serde_with::skip_serializing_none;
-use std::collections::HashMap;
-use uuid::Uuid;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde_alias::serde_alias;
+use serde_aux::prelude::*;
 use serde_with::serde_as;
+use serde_with::skip_serializing_none;
+use std::collections::HashMap;
+use std::str::FromStr;
+use uuid::Uuid;
 
 /// Gracefully deserializes `Option<T>` where `T: FromStr`.
 /// Returns `None` on missing, null, empty string, or any parse failure.
@@ -86,7 +86,7 @@ pub struct ServerConfiguration {
     #[default(Some(false))]
     pub is_startup_wizard_completed: Option<bool>,
     /// Gets or sets the server name.
-    #[default(Some("Remux Server".to_string()))]
+    #[default(Some("Remux".to_string()))]
     pub server_name: Option<String>,
     /// Gets or sets the UI language culture.
     #[default(Some("en-US".to_string()))]
@@ -197,13 +197,12 @@ pub type AuthenticateUserByNameResult = AuthenticationResult;
 #[derive(Default, Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PublicSystemInfo {
-    pub id: Option<String>,
-    pub local_address: Option<String>,
-    pub operating_system: Option<String>,
-    pub product_name: Option<String>,
-    pub server_name: Option<String>,
-    pub startup_wizard_completed: Option<bool>,
-    pub version: Option<String>,
+    pub id: String,
+    pub local_address: String,
+    pub product_name: String,
+    pub server_name: String,
+    pub startup_wizard_completed: bool,
+    pub version: String,
 }
 
 #[skip_serializing_none]
@@ -422,7 +421,6 @@ pub struct DeviceInfo {
     pub icon_url: Option<String>,
 }
 
-
 // Placeholder for CollectionTypeOptions and LibraryOptions.
 // You'll need to define these according to your needs.
 #[derive(Debug, Serialize, Deserialize)]
@@ -523,12 +521,18 @@ pub struct GetItemsQuery {
 
 impl GetItemsQuery {
     pub fn get_requested_item_types(&self) -> Vec<MediaType> {
-        let mut requested: Vec<MediaType> = vec![MediaType::Movie, MediaType::Series, MediaType::Episode];
+        let mut requested: Vec<MediaType> =
+            vec![MediaType::Movie, MediaType::Series, MediaType::Episode];
 
         if let Some(include_types) = &self.include_item_types {
             requested = include_types
                 .iter()
-                .filter(|t| matches!(t, MediaType::Movie | MediaType::Series | MediaType::Episode))
+                .filter(|t| {
+                    matches!(
+                        t,
+                        MediaType::Movie | MediaType::Series | MediaType::Episode
+                    )
+                })
                 .cloned()
                 .collect();
         }
@@ -736,7 +740,10 @@ impl DeviceProfile {
     /// Returns the first video transcoding profile, if any.
     pub fn video_transcoding_profile(&self) -> Option<&TranscodingProfile> {
         self.transcoding_profiles.iter().find(|p| {
-            p.type_.as_deref().map(|t| t.eq_ignore_ascii_case("Video")).unwrap_or(false)
+            p.type_
+                .as_deref()
+                .map(|t| t.eq_ignore_ascii_case("Video"))
+                .unwrap_or(false)
         })
     }
 
@@ -765,14 +772,18 @@ pub struct DirectPlayProfile {
 impl DirectPlayProfile {
     pub fn supports_media_source(&self, media_source: &MediaSourceInfo) -> bool {
         // Check container match
-        if let (Some(profile_container), Some(source_container)) = (&self.container, &media_source.container) {
+        if let (Some(profile_container), Some(source_container)) =
+            (&self.container, &media_source.container)
+        {
             if !self.supports_container(source_container) {
                 return false;
             }
         }
 
         // Check video codec match
-        if let (Some(profile_video_codec), Some(video_stream)) = (&self.video_codec, media_source.video_stream()) {
+        if let (Some(profile_video_codec), Some(video_stream)) =
+            (&self.video_codec, media_source.video_stream())
+        {
             if let Some(video_codec) = &video_stream.codec {
                 if !self.supports_video_codec(video_codec) {
                     return false;
@@ -781,7 +792,9 @@ impl DirectPlayProfile {
         }
 
         // Check audio codec match
-        if let (Some(profile_audio_codec), Some(audio_stream)) = (&self.audio_codec, media_source.audio_stream()) {
+        if let (Some(profile_audio_codec), Some(audio_stream)) =
+            (&self.audio_codec, media_source.audio_stream())
+        {
             if let Some(audio_codec) = &audio_stream.codec {
                 if !self.supports_audio_codec(audio_codec) {
                     return false;
@@ -793,21 +806,24 @@ impl DirectPlayProfile {
     }
 
     pub fn supports_container(&self, container: &str) -> bool {
-        self.container.as_ref().map(|c| {
-            c.split(',').any(|c| c.eq_ignore_ascii_case(container))
-        }).unwrap_or(true)
+        self.container
+            .as_ref()
+            .map(|c| c.split(',').any(|c| c.eq_ignore_ascii_case(container)))
+            .unwrap_or(true)
     }
 
     pub fn supports_video_codec(&self, codec: &str) -> bool {
-        self.video_codec.as_ref().map(|v| {
-            v.split(',').any(|v| v.eq_ignore_ascii_case(codec))
-        }).unwrap_or(true)
+        self.video_codec
+            .as_ref()
+            .map(|v| v.split(',').any(|v| v.eq_ignore_ascii_case(codec)))
+            .unwrap_or(true)
     }
 
     pub fn supports_audio_codec(&self, codec: &str) -> bool {
-        self.audio_codec.as_ref().map(|a| {
-            a.split(',').any(|a| a.eq_ignore_ascii_case(codec))
-        }).unwrap_or(true)
+        self.audio_codec
+            .as_ref()
+            .map(|a| a.split(',').any(|a| a.eq_ignore_ascii_case(codec)))
+            .unwrap_or(true)
     }
 }
 
@@ -963,25 +979,24 @@ pub struct MediaSourceInfo {
 impl MediaSourceInfo {
     /// Returns the first video stream, if any.
     pub fn video_stream(&self) -> Option<&MediaStream> {
-        self.media_streams.iter().find(|s| {
-            matches!(s.type_, Some(MediaStreamType::Video))
-        })
+        self.media_streams
+            .iter()
+            .find(|s| matches!(s.type_, Some(MediaStreamType::Video)))
     }
 
     /// Returns the first audio stream, if any.
     pub fn audio_stream(&self) -> Option<&MediaStream> {
-        self.media_streams.iter().find(|s| {
-            matches!(s.type_, Some(MediaStreamType::Audio))
-        })
+        self.media_streams
+            .iter()
+            .find(|s| matches!(s.type_, Some(MediaStreamType::Audio)))
     }
 
     /// Returns the first subtitle stream, if any.
     pub fn subtitle_stream(&self) -> Option<&MediaStream> {
-        self.media_streams.iter().find(|s| {
-            matches!(s.type_, Some(MediaStreamType::Subtitle))
-        })
+        self.media_streams
+            .iter()
+            .find(|s| matches!(s.type_, Some(MediaStreamType::Subtitle)))
     }
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1094,7 +1109,16 @@ pub enum ScrollDirection {
     Vertical,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
 #[serde(rename_all = "PascalCase")]
 #[strum(serialize_all = "PascalCase")]
 pub enum PlayMethod {
@@ -1103,7 +1127,16 @@ pub enum PlayMethod {
     DirectPlay,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
 #[serde(rename_all = "PascalCase")]
 #[strum(serialize_all = "PascalCase")]
 pub enum RepeatMode {
@@ -1112,7 +1145,16 @@ pub enum RepeatMode {
     RepeatOne,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
 #[serde(rename_all = "PascalCase")]
 #[strum(serialize_all = "PascalCase")]
 pub enum SubtitleDeliveryMethod {
@@ -1123,7 +1165,16 @@ pub enum SubtitleDeliveryMethod {
     Drop,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
 #[serde(rename_all = "PascalCase")]
 #[strum(serialize_all = "PascalCase")]
 pub enum SubtitleMode {
@@ -1185,8 +1236,14 @@ impl Default for UserDto {
 }
 
 #[derive(
-    Debug, Clone, PartialEq, Eq, Serialize, Deserialize,
-    strum_macros::EnumString, strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
 )]
 #[serde(rename_all = "PascalCase")]
 #[strum(serialize_all = "PascalCase")]
@@ -1241,7 +1298,11 @@ pub struct UserPolicy {
     pub remote_client_bitrate_limit: Option<i64>,
     pub authentication_provider_id: Option<String>,
     pub password_reset_provider_id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sync_play_access: Option<SyncPlayUserAccessType>,
 }
 
@@ -1432,7 +1493,17 @@ pub struct UserItemDataDto {
     // pub item_id: String,
 }
 
-#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[derive(
+    Default,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum RemuxCollectionKind {
@@ -1441,7 +1512,17 @@ pub enum RemuxCollectionKind {
     Smart,
 }
 
-#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString, strum_macros::Display)]
+#[derive(
+    Default,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum RemuxMediaKind {
@@ -2276,4 +2357,3 @@ pub struct AuthenticationInfo {
     pub date_created: Option<chrono::DateTime<chrono::Utc>>,
     pub is_active: Option<bool>,
 }
-

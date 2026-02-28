@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use crate::core::context::output::VSyncMethod;
 use crate::core::context::{FrameBox, PacketBox, Stream};
 use crossbeam_channel::{Receiver, Sender};
 use ffmpeg_sys_next::{AVCodec, AVMediaType, AVStream};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct EncoderStream {

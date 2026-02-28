@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use remux_macros::{get, post, delete};
+use remux_macros::{delete, get, post};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -17,7 +17,9 @@ const TICKS_PER_SECOND: i64 = 10_000_000;
 const TICKS_PER_HOUR: i64 = 3600 * TICKS_PER_SECOND;
 const TICKS_PER_MINUTE: i64 = 60 * TICKS_PER_SECOND;
 
-fn db_trigger_to_jellyfin(trigger: &jellyfin::db::TaskTrigger) -> jellyfin::TaskTriggerInfo {
+fn db_trigger_to_jellyfin(
+    trigger: &jellyfin::db::TaskTrigger,
+) -> jellyfin::TaskTriggerInfo {
     let (trigger_type, time_of_day_ticks) = match trigger.kind {
         jellyfin::db::TaskTriggerKind::Startup => ("StartupTrigger", None),
         jellyfin::db::TaskTriggerKind::Schedule => {
@@ -61,11 +63,14 @@ fn task_info(
     let (last_execution_result, last_execution_date) = match last_result {
         Some(r) => {
             let result = jellyfin::TaskResult {
-                status: Some(match r.status {
-                    jellyfin::db::TaskResultStatus::Completed => "Completed",
-                    jellyfin::db::TaskResultStatus::Failed => "Failed",
-                    jellyfin::db::TaskResultStatus::Stopped => "Stopped",
-                }.to_string()),
+                status: Some(
+                    match r.status {
+                        jellyfin::db::TaskResultStatus::Completed => "Completed",
+                        jellyfin::db::TaskResultStatus::Failed => "Failed",
+                        jellyfin::db::TaskResultStatus::Stopped => "Stopped",
+                    }
+                    .to_string(),
+                ),
                 name: Some(task.name().to_string()),
                 id: Some(task.key().to_string()),
                 key: Some(task.key().to_string()),
@@ -105,8 +110,10 @@ pub async fn scheduled_tasks(
 
     // Fetch all triggers once and group by lowercase task_id to avoid N+1
     let all_triggers = jellyfin::db::TaskTrigger::get_all(&state.ctx.db).await?;
-    let mut triggers_by_task: std::collections::HashMap<String, Vec<jellyfin::db::TaskTrigger>> =
-        std::collections::HashMap::new();
+    let mut triggers_by_task: std::collections::HashMap<
+        String,
+        Vec<jellyfin::db::TaskTrigger>,
+    > = std::collections::HashMap::new();
     for trigger in all_triggers {
         triggers_by_task
             .entry(trigger.task_id.to_lowercase())
@@ -143,7 +150,8 @@ pub async fn get_task_by_id(
         .await
         .ok()
         .flatten();
-    let triggers = jellyfin::db::TaskTrigger::get_by_task_id(&state.ctx.db, &task_id).await?;
+    let triggers =
+        jellyfin::db::TaskTrigger::get_by_task_id(&state.ctx.db, &task_id).await?;
 
     Ok(Json(task_info(handler, triggers, last_result)))
 }
@@ -211,7 +219,10 @@ async fn scheduled_tasks_test() {
     assert!(tasks.len() >= 2);
 
     let task_names: Vec<String> = tasks.iter().map(|task| task.name.clone()).collect();
-    assert!(task_names.contains(&"Media Scan".to_string()) || task_names.contains(&"Catalog Import".to_string()));
+    assert!(
+        task_names.contains(&"Media Scan".to_string())
+            || task_names.contains(&"Catalog Import".to_string())
+    );
 
     for task in &tasks {
         assert!(task.id.len() > 0);

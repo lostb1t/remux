@@ -7,7 +7,9 @@ use crate::core::scheduler::dec_task::dec_init;
 use crate::core::scheduler::demux_task::demux_init;
 use crate::core::scheduler::enc_task::enc_init;
 use crate::core::scheduler::filter_task::filter_graph_init;
-use crate::core::scheduler::frame_filter_pipeline::{input_pipeline_init, output_pipeline_init};
+use crate::core::scheduler::frame_filter_pipeline::{
+    input_pipeline_init, output_pipeline_init,
+};
 use crate::core::scheduler::input_controller::InputController;
 use crate::core::scheduler::mux_task::{mux_init, ready_to_init_mux};
 use crate::error::{AllocFrameError, AllocPacketError};
@@ -108,7 +110,7 @@ impl<S: 'static> FfmpegScheduler<S> {
             thread_sync: self.thread_sync,
             result: self.result,
             state: Default::default(),
-            _guard: self._guard,  // Pass guard to maintain Drop protection across state transitions
+            _guard: self._guard, // Pass guard to maintain Drop protection across state transitions
         }
     }
 
@@ -135,7 +137,6 @@ impl<S: 'static> FfmpegScheduler<S> {
 }
 
 impl FfmpegScheduler<Initialization> {
-
     /// Creates a new [`FfmpegScheduler`] in the **initialization** state from the given [`FfmpegContext`].
     /// This is the first step to orchestrating an FFmpeg job: you prepare your
     /// inputs, outputs, and filters using [`FfmpegContext`], then pass it here.
@@ -179,13 +180,14 @@ impl FfmpegScheduler<Initialization> {
     /// // Now it's in Running state, you can wait or pause/abort, etc.
     /// ```
     pub fn start(mut self) -> crate::error::Result<FfmpegScheduler<Running>> {
-        let packet_pool = match ObjPool::new(64, new_packet, unref_packet, packet_is_null) {
-            Ok(pool) => pool,
-            Err(e) => {
-                Self::cleanup(&self.status, &self.ffmpeg_context);
-                return Err(e);
-            }
-        };
+        let packet_pool =
+            match ObjPool::new(64, new_packet, unref_packet, packet_is_null) {
+                Ok(pool) => pool,
+                Err(e) => {
+                    Self::cleanup(&self.status, &self.ffmpeg_context);
+                    return Err(e);
+                }
+            };
         let frame_pool = match ObjPool::new(64, new_frame, unref_frame, frame_is_null) {
             Ok(pool) => pool,
             Err(e) => {
@@ -198,8 +200,18 @@ impl FfmpegScheduler<Initialization> {
         let thread_sync = self.thread_sync.clone();
         let scheduler_result = self.result.clone();
 
-        let demux_nodes = self.ffmpeg_context.demuxs.iter().map(|demux| demux.node.clone()).collect::<Vec<_>>();
-        let mux_stream_nodes = self.ffmpeg_context.muxs.iter().flat_map(|mux| mux.mux_stream_nodes.clone()).collect::<Vec<_>>();
+        let demux_nodes = self
+            .ffmpeg_context
+            .demuxs
+            .iter()
+            .map(|demux| demux.node.clone())
+            .collect::<Vec<_>>();
+        let mux_stream_nodes = self
+            .ffmpeg_context
+            .muxs
+            .iter()
+            .flat_map(|mux| mux.mux_stream_nodes.clone())
+            .collect::<Vec<_>>();
         let input_controller = InputController::new(demux_nodes, mux_stream_nodes);
         let input_controller = Arc::new(input_controller);
 
@@ -384,7 +396,6 @@ impl FfmpegScheduler<Initialization> {
 }
 
 impl FfmpegScheduler<Running> {
-
     /// Pauses a running FFmpeg job, transitioning from `Running` to `Paused`.
     ///
     /// Internally sets the FFmpeg pipeline threads to a paused state. Depending
@@ -574,7 +585,6 @@ impl std::future::Future for FfmpegScheduler<Running> {
 }
 
 impl FfmpegScheduler<Paused> {
-
     /// Resumes a paused FFmpeg job, transitioning from `Paused` back to `Running`.
     ///
     /// If the scheduler is in an ended state, this has no effect. Otherwise,
@@ -612,8 +622,6 @@ impl FfmpegScheduler<Paused> {
         self.status.store(STATUS_ABORT, Ordering::Release)
     }
 }
-
-
 
 fn new_frame() -> crate::error::Result<Frame> {
     let frame = unsafe { av_frame_alloc() };
@@ -689,15 +697,16 @@ mod tests {
     use crate::core::context::output::Output;
     use crate::core::filter::frame_filter::NoopFilter;
     use crate::core::scheduler::ffmpeg_scheduler::{
-        FfmpegScheduler, Initialization, Paused, Running, STATUS_INIT, STATUS_PAUSE, STATUS_RUN,
+        FfmpegScheduler, Initialization, Paused, Running, STATUS_INIT, STATUS_PAUSE,
+        STATUS_RUN,
     };
+    use crate::filter::frame_pipeline_builder::FramePipelineBuilder;
     use ffmpeg_sys_next::AVMediaType;
     use log::{info, warn};
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
     use std::thread::sleep;
     use std::time::Duration;
-    use crate::filter::frame_pipeline_builder::FramePipelineBuilder;
 
     #[test]
     fn test_img_to_video() {
@@ -707,14 +716,17 @@ mod tests {
             .try_init();
 
         let result = FfmpegContext::builder()
-            .input(Input::from("logo.jpg")
-                .set_input_opt("loop", "1")
-                .set_recording_time_us(10 * 1000_000)
+            .input(
+                Input::from("logo.jpg")
+                    .set_input_opt("loop", "1")
+                    .set_recording_time_us(10 * 1000_000),
             )
             .filter_desc("scale=1280:720")
             .output(Output::from("output.mp4"))
-            .build().unwrap()
-            .start().unwrap()
+            .build()
+            .unwrap()
+            .start()
+            .unwrap()
             .wait();
 
         assert!(result.is_ok());
@@ -728,9 +740,10 @@ mod tests {
 
         let result = FfmpegContext::builder()
             .input("test.mp4")
-            .output( Output::from("output.mp4")
-                .add_stream_map_with_copy("0:v")
-                .add_stream_map_with_copy("0:a")
+            .output(
+                Output::from("output.mp4")
+                    .add_stream_map_with_copy("0:v")
+                    .add_stream_map_with_copy("0:a"),
             )
             .build()
             .unwrap()
@@ -853,12 +866,15 @@ mod tests {
                     return ffmpeg_sys_next::AVERROR(ffmpeg_sys_next::EIO) as i64;
                 }
                 let seek_result = match whence {
-                    ffmpeg_sys_next::SEEK_SET => input.seek(SeekFrom::Start(offset as u64)),
+                    ffmpeg_sys_next::SEEK_SET => {
+                        input.seek(SeekFrom::Start(offset as u64))
+                    }
                     ffmpeg_sys_next::SEEK_CUR => input.seek(SeekFrom::Current(offset)),
                     ffmpeg_sys_next::SEEK_END => input.seek(SeekFrom::End(offset)),
                     _ => {
                         warn!("Unsupported seek mode: {whence}");
-                        return ffmpeg_sys_next::AVERROR(ffmpeg_sys_next::ESPIPE) as i64;
+                        return ffmpeg_sys_next::AVERROR(ffmpeg_sys_next::ESPIPE)
+                            as i64;
                     }
                 };
 
@@ -912,7 +928,9 @@ mod tests {
                 let normalized_whence = whence & !ffmpeg_sys_next::AVSEEK_FORCE;
 
                 match normalized_whence {
-                    ffmpeg_sys_next::SEEK_SET => file.seek(SeekFrom::Start(offset as u64)),
+                    ffmpeg_sys_next::SEEK_SET => {
+                        file.seek(SeekFrom::Start(offset as u64))
+                    }
                     ffmpeg_sys_next::SEEK_CUR => file.seek(SeekFrom::Current(offset)),
                     ffmpeg_sys_next::SEEK_END => file.seek(SeekFrom::End(offset)),
                     _ => Err(std::io::Error::new(
@@ -952,8 +970,12 @@ mod tests {
             .try_init();
 
         let output: Output = "output.mp4".into();
-        let frame_pipeline_builder: FramePipelineBuilder = AVMediaType::AVMEDIA_TYPE_VIDEO.into();
-        let frame_pipeline_builder = frame_pipeline_builder.filter("test", Box::new(NoopFilter::new(AVMediaType::AVMEDIA_TYPE_VIDEO)));
+        let frame_pipeline_builder: FramePipelineBuilder =
+            AVMediaType::AVMEDIA_TYPE_VIDEO.into();
+        let frame_pipeline_builder = frame_pipeline_builder.filter(
+            "test",
+            Box::new(NoopFilter::new(AVMediaType::AVMEDIA_TYPE_VIDEO)),
+        );
         let output = output.add_frame_pipeline(frame_pipeline_builder);
 
         let context = FfmpegContext::builder()
@@ -1094,10 +1116,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let result = FfmpegScheduler::new(context)
-            .start()
-            .unwrap()
-            .wait();
+        let result = FfmpegScheduler::new(context).start().unwrap().wait();
         assert!(result.is_ok());
     }
 
@@ -1158,6 +1177,9 @@ mod tests {
 
         // Verify output file exists and has content
         let metadata = std::fs::metadata("output.mp4").unwrap();
-        assert!(metadata.len() > 0, "Output file should have content after stop()");
+        assert!(
+            metadata.len() > 0,
+            "Output file should have content after stop()"
+        );
     }
 }

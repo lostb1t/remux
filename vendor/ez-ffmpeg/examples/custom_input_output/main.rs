@@ -20,8 +20,8 @@ fn main() {
         Box::new(move |buf: &mut [u8]| -> i32 {
             let mut input = input.lock().unwrap();
             match input.read(buf) {
-                Ok(0) => ffmpeg_sys_next::AVERROR_EOF,  // End of file
-                Ok(bytes_read) => bytes_read as i32,    // Return the number of bytes read
+                Ok(0) => ffmpeg_sys_next::AVERROR_EOF, // End of file
+                Ok(bytes_read) => bytes_read as i32, // Return the number of bytes read
                 Err(_) => ffmpeg_sys_next::AVERROR(ffmpeg_sys_next::EIO), // I/O error
             }
         })
@@ -37,7 +37,7 @@ fn main() {
             if whence == ffmpeg_sys_next::AVSEEK_SIZE {
                 if let Ok(size) = input.metadata().map(|m| m.len() as i64) {
                     println!("FFmpeg requested stream size: {}", size);
-                    return size;  // Return the total file size
+                    return size; // Return the total file size
                 }
                 return ffmpeg_sys_next::AVERROR(ffmpeg_sys_next::EIO) as i64;
             }
@@ -76,7 +76,7 @@ fn main() {
         Box::new(move |buf: &[u8]| -> i32 {
             let mut output_file = output_file.lock().unwrap();
             match output_file.write_all(buf) {
-                Ok(_) => buf.len() as i32,  // Return the number of bytes written
+                Ok(_) => buf.len() as i32, // Return the number of bytes written
                 Err(_) => ffmpeg_sys_next::AVERROR(ffmpeg_sys_next::EIO), // I/O error
             }
         })
@@ -126,14 +126,16 @@ fn main() {
 
     // Create an output stream with the custom write and seek callbacks
     let mut output: Output = write_callback.into();
-    output = output.set_seek_callback(seek_callback)
-        .set_format("mp4");
+    output = output.set_seek_callback(seek_callback).set_format("mp4");
 
     // Initialize and run the FFmpeg context with the custom input/output
     FfmpegContext::builder()
         .input(input)
         .output(output)
-        .build().unwrap()
-        .start().unwrap()
-        .wait().unwrap();
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
+        .wait()
+        .unwrap();
 }

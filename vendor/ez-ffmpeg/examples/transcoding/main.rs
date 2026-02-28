@@ -8,9 +8,12 @@ fn main() {
         // Set output file (e.g., "output.mov")
         .output("output.mov")
         // Build the context and return
-        .build().unwrap()
+        .build()
+        .unwrap()
         // Start the FFmpeg transcoding job
-        .start().unwrap()
+        .start()
+        .unwrap()
         // Wait for the transcoding job to complete
-        .wait().unwrap();
+        .wait()
+        .unwrap();
 }

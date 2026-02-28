@@ -1,7 +1,8 @@
 use ffmpeg_sys_next::{
-    av_buffer_unref, av_dict_parse_string, av_hwdevice_ctx_create, av_hwdevice_ctx_create_derived,
-    av_hwdevice_find_type_by_name, av_hwdevice_get_type_name, av_hwdevice_iterate_types,
-    avcodec_get_hw_config, AVBufferRef, AVCodec, AVHWDeviceType, AVERROR,
+    av_buffer_unref, av_dict_parse_string, av_hwdevice_ctx_create,
+    av_hwdevice_ctx_create_derived, av_hwdevice_find_type_by_name,
+    av_hwdevice_get_type_name, av_hwdevice_iterate_types, avcodec_get_hw_config,
+    AVBufferRef, AVCodec, AVHWDeviceType, AVERROR,
     AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, EINVAL, ENOMEM,
 };
 use log::{error, warn};
@@ -171,7 +172,9 @@ pub(crate) fn hw_device_match_by_codec(codec: *const AVCodec) -> Option<HWDevice
         }
 
         unsafe {
-            if (*config).methods as u32 & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as u32 == 0 {
+            if (*config).methods as u32 & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as u32
+                == 0
+            {
                 i += 1;
                 continue;
             }
@@ -204,9 +207,7 @@ pub(crate) fn hw_device_get_by_type(device_type: AVHWDeviceType) -> Option<HWDev
 pub(crate) fn hw_device_init_from_string(arg: &str) -> (i32, Option<HWDevice>) {
     let mut device_ref = null_mut();
 
-    let k = arg
-        .find([':', '=', '@'])
-        .unwrap_or(arg.len());
+    let k = arg.find([':', '=', '@']).unwrap_or(arg.len());
     let mut p = &arg[k..];
 
     let Ok(type_name) = CString::new(p) else {
@@ -220,13 +221,13 @@ pub(crate) fn hw_device_init_from_string(arg: &str) -> (i32, Option<HWDevice>) {
     }
 
     let name = if p.starts_with('=') {
-        let name_end = p[1..]
-            .find([':', '@', ','])
-            .unwrap_or(p.len() - 1);
+        let name_end = p[1..].find([':', '@', ',']).unwrap_or(p.len() - 1);
         let name = Some(p[1..=name_end].to_string());
 
         if hw_device_get_by_name(&name.clone().unwrap()).is_some() {
-            error!("Invalid device specification \"{arg}\": named device already exists");
+            error!(
+                "Invalid device specification \"{arg}\": named device already exists"
+            );
             return (AVERROR(EINVAL), None);
         }
 
@@ -239,8 +240,9 @@ pub(crate) fn hw_device_init_from_string(arg: &str) -> (i32, Option<HWDevice>) {
 
     if p.is_empty() {
         // New device with no parameters.
-        let err =
-            unsafe { av_hwdevice_ctx_create(&mut device_ref, device_type, null(), null_mut(), 0) };
+        let err = unsafe {
+            av_hwdevice_ctx_create(&mut device_ref, device_type, null(), null_mut(), 0)
+        };
         if err < 0 {
             error!("Device creation failed: {err}.");
             unsafe {
@@ -260,7 +262,9 @@ pub(crate) fn hw_device_init_from_string(arg: &str) -> (i32, Option<HWDevice>) {
             unsafe {
                 let v = &p[comma_pos + 1..];
                 let Ok(v_cstr) = CString::new(v) else {
-                    error!("Device creation failed: option:{v} can't convert to CString");
+                    error!(
+                        "Device creation failed: option:{v} can't convert to CString"
+                    );
                     av_buffer_unref(&mut device_ref);
                     return (AVERROR(EINVAL), None);
                 };
@@ -285,7 +289,13 @@ pub(crate) fn hw_device_init_from_string(arg: &str) -> (i32, Option<HWDevice>) {
 
         let err = unsafe {
             match device_name {
-                None => av_hwdevice_ctx_create(&mut device_ref, device_type, null(), options, 0),
+                None => av_hwdevice_ctx_create(
+                    &mut device_ref,
+                    device_type,
+                    null(),
+                    options,
+                    0,
+                ),
                 Some(device_name) => {
                     let Ok(device_name_cstr) = CString::new(device_name.clone()) else {
                         error!("Device creation failed: device_name:{device_name} can't convert to CString");
@@ -312,14 +322,21 @@ pub(crate) fn hw_device_init_from_string(arg: &str) -> (i32, Option<HWDevice>) {
     } else if let Some(src_name) = p.strip_prefix('@') {
         // Derive from existing device.
         let Some(src_device) = hw_device_get_by_name(src_name) else {
-            error!("Invalid device specification \"{arg}\": invalid source device name");
+            error!(
+                "Invalid device specification \"{arg}\": invalid source device name"
+            );
             unsafe {
                 av_buffer_unref(&mut device_ref);
             }
             return (AVERROR(EINVAL), None);
         };
         let err = unsafe {
-            av_hwdevice_ctx_create_derived(&mut device_ref, device_type, src_device.device_ref, 0)
+            av_hwdevice_ctx_create_derived(
+                &mut device_ref,
+                device_type,
+                src_device.device_ref,
+                0,
+            )
         };
         if err < 0 {
             error!("Device creation failed: {err}.");
@@ -346,11 +363,19 @@ pub(crate) fn hw_device_init_from_string(arg: &str) -> (i32, Option<HWDevice>) {
                 0,
             );
             if err < 0 {
-                error!("Invalid device specification \"{arg}\": failed to parse options");
+                error!(
+                    "Invalid device specification \"{arg}\": failed to parse options"
+                );
                 av_buffer_unref(&mut device_ref);
                 return (AVERROR(EINVAL), None);
             }
-            err = av_hwdevice_ctx_create(&mut device_ref, device_type, null(), options, 0);
+            err = av_hwdevice_ctx_create(
+                &mut device_ref,
+                device_type,
+                null(),
+                options,
+                0,
+            );
             if err < 0 {
                 error!("Device creation failed: {err}.");
                 av_buffer_unref(&mut device_ref);

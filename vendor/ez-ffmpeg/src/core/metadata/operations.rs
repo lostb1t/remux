@@ -22,8 +22,14 @@ pub unsafe fn of_add_metadata(
     oc: *mut AVFormatContext,
     global_metadata: &Option<std::collections::HashMap<String, String>>,
     stream_metadata: &[(String, String, String)], // (spec, key, value) tuples
-    chapter_metadata: &std::collections::HashMap<usize, std::collections::HashMap<String, String>>,
-    program_metadata: &std::collections::HashMap<usize, std::collections::HashMap<String, String>>,
+    chapter_metadata: &std::collections::HashMap<
+        usize,
+        std::collections::HashMap<String, String>,
+    >,
+    program_metadata: &std::collections::HashMap<
+        usize,
+        std::collections::HashMap<String, String>,
+    >,
 ) -> Result<(), String> {
     if oc.is_null() {
         return Err("AVFormatContext is null".to_string());
@@ -34,8 +40,8 @@ pub unsafe fn of_add_metadata(
     // 1. Add global metadata
     if let Some(metadata) = global_metadata {
         for (key, value) in metadata {
-            let c_key =
-                CString::new(key.as_str()).map_err(|e| format!("Invalid key '{}': {}", key, e))?;
+            let c_key = CString::new(key.as_str())
+                .map_err(|e| format!("Invalid key '{}': {}", key, e))?;
 
             let result = if value.is_empty() {
                 // Empty value means delete the key (FFmpeg behavior)
@@ -64,7 +70,8 @@ pub unsafe fn of_add_metadata(
             .map_err(|e| format!("Invalid stream specifier '{}': {}", spec_str, e))?;
 
         // Iterate through all streams and apply to matching ones
-        let streams = std::slice::from_raw_parts(oc_ref.streams, oc_ref.nb_streams as usize);
+        let streams =
+            std::slice::from_raw_parts(oc_ref.streams, oc_ref.nb_streams as usize);
 
         for stream_ptr in streams {
             if stream_ptr.is_null() {
@@ -87,8 +94,9 @@ pub unsafe fn of_add_metadata(
                         0,
                     )
                 } else {
-                    let c_value = CString::new(value.as_str())
-                        .map_err(|e| format!("Invalid value for key '{}': {}", key, e))?;
+                    let c_value = CString::new(value.as_str()).map_err(|e| {
+                        format!("Invalid value for key '{}': {}", key, e)
+                    })?;
                     av_dict_set(
                         &mut stream_ref.metadata,
                         c_key.as_ptr(),
@@ -121,7 +129,8 @@ pub unsafe fn of_add_metadata(
             continue;
         }
 
-        let chapters = std::slice::from_raw_parts(oc_ref.chapters, oc_ref.nb_chapters as usize);
+        let chapters =
+            std::slice::from_raw_parts(oc_ref.chapters, oc_ref.nb_chapters as usize);
         let chapter_ptr = chapters[chapter_idx];
 
         if chapter_ptr.is_null() {
@@ -132,8 +141,8 @@ pub unsafe fn of_add_metadata(
         let chapter_ref = &mut *chapter_ptr;
 
         for (key, value) in metadata {
-            let c_key =
-                CString::new(key.as_str()).map_err(|e| format!("Invalid key '{}': {}", key, e))?;
+            let c_key = CString::new(key.as_str())
+                .map_err(|e| format!("Invalid key '{}': {}", key, e))?;
 
             let result = if value.is_empty() {
                 av_dict_set(
@@ -177,7 +186,8 @@ pub unsafe fn of_add_metadata(
             continue;
         }
 
-        let programs = std::slice::from_raw_parts(oc_ref.programs, oc_ref.nb_programs as usize);
+        let programs =
+            std::slice::from_raw_parts(oc_ref.programs, oc_ref.nb_programs as usize);
         let program_ptr = programs[program_idx];
 
         if program_ptr.is_null() {
@@ -188,8 +198,8 @@ pub unsafe fn of_add_metadata(
         let program_ref = &mut *program_ptr;
 
         for (key, value) in metadata {
-            let c_key =
-                CString::new(key.as_str()).map_err(|e| format!("Invalid key '{}': {}", key, e))?;
+            let c_key = CString::new(key.as_str())
+                .map_err(|e| format!("Invalid key '{}': {}", key, e))?;
 
             let result = if value.is_empty() {
                 av_dict_set(
@@ -255,13 +265,16 @@ pub unsafe fn copy_metadata(
 
         MetadataType::Stream(specifier) => {
             // Find first matching input stream
-            let streams =
-                std::slice::from_raw_parts(input_ref.streams, input_ref.nb_streams as usize);
+            let streams = std::slice::from_raw_parts(
+                input_ref.streams,
+                input_ref.nb_streams as usize,
+            );
             let mut found_ptr: Option<*const *mut AVDictionary> = None;
 
             for stream_ptr in streams {
                 if !stream_ptr.is_null() && specifier.matches(input_ctx, *stream_ptr) {
-                    found_ptr = Some(&(**stream_ptr).metadata as *const *mut AVDictionary);
+                    found_ptr =
+                        Some(&(**stream_ptr).metadata as *const *mut AVDictionary);
                     break;
                 }
             }
@@ -283,8 +296,10 @@ pub unsafe fn copy_metadata(
                     idx, input_ref.nb_chapters
                 ));
             }
-            let chapters =
-                std::slice::from_raw_parts(input_ref.chapters, input_ref.nb_chapters as usize);
+            let chapters = std::slice::from_raw_parts(
+                input_ref.chapters,
+                input_ref.nb_chapters as usize,
+            );
             &(*chapters[idx]).metadata as *const *mut AVDictionary
         }
 
@@ -296,8 +311,10 @@ pub unsafe fn copy_metadata(
                     idx, input_ref.nb_programs
                 ));
             }
-            let programs =
-                std::slice::from_raw_parts(input_ref.programs, input_ref.nb_programs as usize);
+            let programs = std::slice::from_raw_parts(
+                input_ref.programs,
+                input_ref.nb_programs as usize,
+            );
             &(*programs[idx]).metadata as *const *mut AVDictionary
         }
     };
@@ -308,17 +325,15 @@ pub unsafe fn copy_metadata(
     // Copy to destination based on type
     match dst_type {
         MetadataType::Global => {
-            av_dict_copy(
-                &mut output_ref.metadata,
-                src_dict,
-                AV_DICT_DONT_OVERWRITE,
-            );
+            av_dict_copy(&mut output_ref.metadata, src_dict, AV_DICT_DONT_OVERWRITE);
         }
 
         MetadataType::Stream(specifier) => {
             // Apply to all matching output streams
-            let streams =
-                std::slice::from_raw_parts_mut(output_ref.streams, output_ref.nb_streams as usize);
+            let streams = std::slice::from_raw_parts_mut(
+                output_ref.streams,
+                output_ref.nb_streams as usize,
+            );
 
             for stream_ptr in streams {
                 if !stream_ptr.is_null() && specifier.matches(output_ctx, *stream_ptr) {
@@ -340,14 +355,12 @@ pub unsafe fn copy_metadata(
                     idx, output_ref.nb_chapters
                 ));
             }
-            let chapters =
-                std::slice::from_raw_parts(output_ref.chapters, output_ref.nb_chapters as usize);
-            let chapter_ref = &mut *chapters[idx];
-            av_dict_copy(
-                &mut chapter_ref.metadata,
-                src_dict,
-                AV_DICT_DONT_OVERWRITE,
+            let chapters = std::slice::from_raw_parts(
+                output_ref.chapters,
+                output_ref.nb_chapters as usize,
             );
+            let chapter_ref = &mut *chapters[idx];
+            av_dict_copy(&mut chapter_ref.metadata, src_dict, AV_DICT_DONT_OVERWRITE);
         }
 
         MetadataType::Program(idx) => {
@@ -358,14 +371,12 @@ pub unsafe fn copy_metadata(
                     idx, output_ref.nb_programs
                 ));
             }
-            let programs =
-                std::slice::from_raw_parts(output_ref.programs, output_ref.nb_programs as usize);
-            let program_ref = &mut *programs[idx];
-            av_dict_copy(
-                &mut program_ref.metadata,
-                src_dict,
-                AV_DICT_DONT_OVERWRITE,
+            let programs = std::slice::from_raw_parts(
+                output_ref.programs,
+                output_ref.nb_programs as usize,
             );
+            let program_ref = &mut *programs[idx];
+            av_dict_copy(&mut program_ref.metadata, src_dict, AV_DICT_DONT_OVERWRITE);
         }
     }
 

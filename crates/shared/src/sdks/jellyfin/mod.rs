@@ -59,6 +59,8 @@ pub fn authed_client(
     device_id: impl Into<String>,
     token: impl Into<String>,
 ) -> Result<RestClient<JellyfinAuth>, url::ParseError> {
-    Ok(RestClient::new(base)?.with_auth(JellyfinAuth::new(device_id).with_token(token)))
+    Ok(
+        RestClient::new(base)?
+            .with_auth(JellyfinAuth::new(device_id).with_token(token)),
+    )
 }
-

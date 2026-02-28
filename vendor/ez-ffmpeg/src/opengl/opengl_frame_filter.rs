@@ -1,16 +1,11 @@
 use crate::core::filter::frame_filter_context::FrameFilterContext;
 use crate::filter::frame_filter::FrameFilter;
+use crate::util::ffmpeg_utils::av_err2str;
 use ffmpeg_next::Frame;
-use ffmpeg_sys_next::{
-    av_frame_get_buffer, av_q2d, sws_scale, AVFrame,
-    AVMediaType,
-};
+use ffmpeg_sys_next::{av_frame_get_buffer, av_q2d, sws_scale, AVFrame, AVMediaType};
 use glow::{HasContext, NativeProgram, PixelPackData, PixelUnpackData};
 use log::{info, warn};
-use surfman::{
-    Connection, ContextAttributeFlags, ContextAttributes,
-};
-use crate::util::ffmpeg_utils::av_err2str;
+use surfman::{Connection, ContextAttributeFlags, ContextAttributes};
 
 /// OpenGLFrameFilter: A struct to manage OpenGL-based frame filtering.
 /// It allows custom shader setup, OpenGL initialization, and texture-based processing of video frames.
@@ -26,12 +21,24 @@ pub struct OpenGLFrameFilter {
     /// Optional function for setting up vertex data (VAO, VBO, EBO).
     /// If None, a default setup is used.
     /// Default: Configures a quad with positions and texture coordinates using VAO, VBO, and EBO.
-    setup_vertex_data_fn: Option<fn(&glow::Context) -> Result<(glow::NativeVertexArray, glow::NativeBuffer, glow::NativeBuffer), String>>,
+    setup_vertex_data_fn: Option<
+        fn(
+            &glow::Context,
+        ) -> Result<
+            (
+                glow::NativeVertexArray,
+                glow::NativeBuffer,
+                glow::NativeBuffer,
+            ),
+            String,
+        >,
+    >,
 
     /// Optional function for setting uniforms (playTime, width, height).
     /// If None, a default implementation is used.
     /// Default: Uses `glUniform*` calls to set `playTime`, `width`, and `height` in the shader.
-    set_uniforms_fn: Option<fn(&glow::Context, NativeProgram, &Frame) -> Result<(), String>>,
+    set_uniforms_fn:
+        Option<fn(&glow::Context, NativeProgram, &Frame) -> Result<(), String>>,
 
     /// Optional function for rendering the frame.
     /// If None, a default `glDrawElements`-based implementation is used.
@@ -69,7 +76,6 @@ pub struct OpenGLFrameFilter {
 unsafe impl Send for OpenGLFrameFilter {}
 
 impl OpenGLFrameFilter {
-
     /// Creates a new OpenGLFrameFilter with a default vertex shader and a custom fragment shader.
     ///
     /// Parameters:
@@ -136,12 +142,26 @@ impl OpenGLFrameFilter {
         opengl_version_minor: u8,
         vertex_shader_code: impl Into<String>,
         fragment_shader_code: impl Into<String>,
-        setup_vertex_data_fn: Option<fn(&glow::Context) -> Result<(glow::NativeVertexArray, glow::NativeBuffer, glow::NativeBuffer), String>>,
-        set_uniforms_fn: Option<fn(&glow::Context, NativeProgram, &Frame) -> Result<(), String>>,
+        setup_vertex_data_fn: Option<
+            fn(
+                &glow::Context,
+            ) -> Result<
+                (
+                    glow::NativeVertexArray,
+                    glow::NativeBuffer,
+                    glow::NativeBuffer,
+                ),
+                String,
+            >,
+        >,
+        set_uniforms_fn: Option<
+            fn(&glow::Context, NativeProgram, &Frame) -> Result<(), String>,
+        >,
         render_frame_fn: Option<fn(&glow::Context)>,
     ) -> Result<Self, String> {
         // Initialize Surfman device and context.
-        let (device, context) = Self::init_surfman(opengl_version_major, opengl_version_minor)?;
+        let (device, context) =
+            Self::init_surfman(opengl_version_major, opengl_version_minor)?;
 
         // Return a new OpenGLFrameFilter instance with the specified parameters.
         Ok(OpenGLFrameFilter {
@@ -182,7 +202,8 @@ impl OpenGLFrameFilter {
         opengl_version_minor: u8,
     ) -> Result<(surfman::Device, surfman::Context), String> {
         // Create a Surfman connection.
-        let connection = Connection::new().map_err(|e| format!("Failed to create Surfman connection: {:?}", e))?;
+        let connection = Connection::new()
+            .map_err(|e| format!("Failed to create Surfman connection: {:?}", e))?;
 
         // Create an adapter for the current system's GPU.
         let adapter = connection
@@ -196,7 +217,10 @@ impl OpenGLFrameFilter {
 
         // Set up OpenGL context attributes.
         let context_attributes = ContextAttributes {
-            version: surfman::GLVersion::new(opengl_version_major, opengl_version_minor),
+            version: surfman::GLVersion::new(
+                opengl_version_major,
+                opengl_version_minor,
+            ),
             flags: ContextAttributeFlags::empty(),
         };
 
@@ -223,8 +247,11 @@ impl OpenGLFrameFilter {
         let gl = self.gl.as_ref().unwrap();
         let vertex_shader =
             Self::compile_shader(gl, glow::VERTEX_SHADER, &self.vertex_shader_code)?;
-        let fragment_shader =
-            Self::compile_shader(gl, glow::FRAGMENT_SHADER, &self.fragment_shader_code)?;
+        let fragment_shader = Self::compile_shader(
+            gl,
+            glow::FRAGMENT_SHADER,
+            &self.fragment_shader_code,
+        )?;
 
         unsafe {
             let result = gl.create_program();
@@ -371,7 +398,9 @@ impl OpenGLFrameFilter {
                 0,
             );
 
-            if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+            if gl.check_framebuffer_status(glow::FRAMEBUFFER)
+                != glow::FRAMEBUFFER_COMPLETE
+            {
                 gl.delete_framebuffer(framebuffer);
                 gl.delete_texture(output_texture);
                 return Err("Framebuffer is not complete!".to_string());
@@ -448,11 +477,15 @@ impl OpenGLFrameFilter {
             }
             (*rgb_frame.as_mut_ptr()).width = width;
             (*rgb_frame.as_mut_ptr()).height = height;
-            (*rgb_frame.as_mut_ptr()).format = ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24 as i32;
+            (*rgb_frame.as_mut_ptr()).format =
+                ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_RGB24 as i32;
 
             let ret = av_frame_get_buffer(rgb_frame.as_mut_ptr(), 0);
             if ret < 0 {
-                return Err(format!("Failed to allocate buffer for RGB frame. {}", av_err2str(ret)));
+                return Err(format!(
+                    "Failed to allocate buffer for RGB frame. {}",
+                    av_err2str(ret)
+                ));
             }
         }
         self.rgb_frame = Some(rgb_frame);
@@ -493,7 +526,9 @@ impl OpenGLFrameFilter {
 
         match self.set_uniforms_fn {
             None => set_uniforms(gl, self.program.clone().unwrap(), frame),
-            Some(set_uniforms_fn) => set_uniforms_fn(gl, self.program.clone().unwrap(), frame),
+            Some(set_uniforms_fn) => {
+                set_uniforms_fn(gl, self.program.clone().unwrap(), frame)
+            }
         }?;
 
         match self.render_frame_fn {
@@ -531,7 +566,7 @@ impl OpenGLFrameFilter {
         let gl = self.gl.as_ref().unwrap();
 
         unsafe {
-            gl.bind_texture(glow::TEXTURE_2D,self.output_texture);
+            gl.bind_texture(glow::TEXTURE_2D, self.output_texture);
             gl.get_tex_image(
                 glow::TEXTURE_2D,
                 0,                   // Mipmap level
@@ -549,7 +584,8 @@ impl OpenGLFrameFilter {
             let version = gl.get_parameter_string(glow::VERSION);
             info!("OpenGL Version: {}", version);
 
-            let shading_language_version = gl.get_parameter_string(glow::SHADING_LANGUAGE_VERSION);
+            let shading_language_version =
+                gl.get_parameter_string(glow::SHADING_LANGUAGE_VERSION);
             info!("GLSL Version: {}", shading_language_version);
 
             let renderer = gl.get_parameter_string(glow::RENDERER);
@@ -562,7 +598,6 @@ impl OpenGLFrameFilter {
     fn convert_to_rgb(&mut self, frame: &Frame) -> Result<(), String> {
         let rgb_frame = self.rgb_frame.as_mut().unwrap();
         unsafe {
-
             (*rgb_frame.as_mut_ptr()).pts = (*frame.as_ptr()).pts;
             (*rgb_frame.as_mut_ptr()).time_base = (*frame.as_ptr()).time_base;
         }
@@ -578,17 +613,17 @@ impl OpenGLFrameFilter {
                 (*rgb_frame.as_mut_ptr()).linesize.as_ptr() as *mut _,
             );
             if ret <= 0 {
-                return Err(format!("Failed to scale frame to rgb: {}", av_err2str(ret)));
+                return Err(format!(
+                    "Failed to scale frame to rgb: {}",
+                    av_err2str(ret)
+                ));
             }
         }
 
         Ok(())
     }
 
-    fn convert_from_rgb(
-        &mut self,
-        original_frame: &mut Frame,
-    ) -> Result<(), String> {
+    fn convert_from_rgb(&mut self, original_frame: &mut Frame) -> Result<(), String> {
         let rgb_frame = self.rgb_frame.as_ref().unwrap();
         unsafe {
             let ret = sws_scale(
@@ -601,7 +636,10 @@ impl OpenGLFrameFilter {
                 (*original_frame.as_mut_ptr()).linesize.as_ptr() as *mut _,
             );
             if ret <= 0 {
-                return Err(format!("Failed to scale frame to rgb: {}", av_err2str(ret)));
+                return Err(format!(
+                    "Failed to scale frame to rgb: {}",
+                    av_err2str(ret)
+                ));
             }
         }
 
@@ -610,7 +648,11 @@ impl OpenGLFrameFilter {
 }
 
 /// Sets the `playTime`, `width`, and `height` uniform variables in the shader.
-fn set_uniforms(gl: &glow::Context, program: NativeProgram, frame: &Frame) -> Result<(), String> {
+fn set_uniforms(
+    gl: &glow::Context,
+    program: NativeProgram,
+    frame: &Frame,
+) -> Result<(), String> {
     unsafe {
         // Get uniform locations
         let play_time_location = gl.get_uniform_location(program, "playTime");
@@ -657,10 +699,10 @@ fn setup_vertex_data(
     // Vertex data and texture coordinates (quad)
     let vertices: [f32; 20] = [
         // Position       // Texture Coordinates
-        -1.0, 1.0, 0.0,     0.0, 1.0, // Top-left corner
-        -1.0, -1.0, 0.0,    0.0, 0.0, // Bottom-left corner
-        1.0, -1.0, 0.0,     1.0, 0.0, // Bottom-right corner
-        1.0, 1.0, 0.0,      1.0, 1.0, // Top-right corner
+        -1.0, 1.0, 0.0, 0.0, 1.0, // Top-left corner
+        -1.0, -1.0, 0.0, 0.0, 0.0, // Bottom-left corner
+        1.0, -1.0, 0.0, 1.0, 0.0, // Bottom-right corner
+        1.0, 1.0, 0.0, 1.0, 1.0, // Top-right corner
     ];
 
     // Index data (two triangles for the quad)
@@ -797,7 +839,8 @@ impl FrameFilter for OpenGLFrameFilter {
             unsafe { std::mem::transmute((*frame.as_ptr()).format) };
 
         if self.input_texture.is_none() {
-            let (width, height) = unsafe { ((*frame.as_ptr()).width, (*frame.as_ptr()).height) };
+            let (width, height) =
+                unsafe { ((*frame.as_ptr()).width, (*frame.as_ptr()).height) };
             if width <= 0 || height <= 0 {
                 return Ok(Some(frame));
             }
@@ -829,7 +872,6 @@ impl FrameFilter for OpenGLFrameFilter {
                 gl.delete_program(self.program.unwrap());
             }
         }
-
     }
 }
 
@@ -847,9 +889,9 @@ impl Drop for OpenGLFrameFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::context::ffmpeg_context::FfmpegContext;
     use crate::core::context::output::Output;
     use crate::core::scheduler::ffmpeg_scheduler::{FfmpegScheduler, Initialization};
-    use crate::core::context::ffmpeg_context::FfmpegContext;
     use crate::filter::frame_pipeline_builder::FramePipelineBuilder;
 
     #[test]
@@ -894,10 +936,12 @@ mod tests {
         "##;
 
         let mut output: Output = "output.mp4".into();
-        let frame_pipeline_builder: FramePipelineBuilder = AVMediaType::AVMEDIA_TYPE_VIDEO.into();
+        let frame_pipeline_builder: FramePipelineBuilder =
+            AVMediaType::AVMEDIA_TYPE_VIDEO.into();
         let filter =
             OpenGLFrameFilter::new_simple(fragment_shader.to_string()).unwrap();
-        let frame_pipeline_builder = frame_pipeline_builder.filter("test", Box::new(filter));
+        let frame_pipeline_builder =
+            frame_pipeline_builder.filter("test", Box::new(filter));
         let output = output.add_frame_pipeline(frame_pipeline_builder);
 
         let context = FfmpegContext::builder()
@@ -954,9 +998,12 @@ mod tests {
         "##;
 
         let mut output: Output = "output.mp4".into();
-        let frame_pipeline_builder: FramePipelineBuilder = AVMediaType::AVMEDIA_TYPE_VIDEO.into();
-        let filter = OpenGLFrameFilter::new_simple(fragment_shader.to_string()).unwrap();
-        let frame_pipeline_builder = frame_pipeline_builder.filter("opengl", Box::new(filter));
+        let frame_pipeline_builder: FramePipelineBuilder =
+            AVMediaType::AVMEDIA_TYPE_VIDEO.into();
+        let filter =
+            OpenGLFrameFilter::new_simple(fragment_shader.to_string()).unwrap();
+        let frame_pipeline_builder =
+            frame_pipeline_builder.filter("opengl", Box::new(filter));
         let output = output.add_frame_pipeline(frame_pipeline_builder);
 
         let context = FfmpegContext::builder()

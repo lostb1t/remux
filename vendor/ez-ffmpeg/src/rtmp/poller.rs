@@ -118,7 +118,12 @@ mod linux {
     extern "C" {
         fn epoll_create1(flags: i32) -> i32;
         fn epoll_ctl(epfd: i32, op: i32, fd: i32, event: *mut EpollEvent) -> i32;
-        fn epoll_wait(epfd: i32, events: *mut EpollEvent, maxevents: i32, timeout: i32) -> i32;
+        fn epoll_wait(
+            epfd: i32,
+            events: *mut EpollEvent,
+            maxevents: i32,
+            timeout: i32,
+        ) -> i32;
         fn close(fd: i32) -> i32;
     }
 
@@ -140,7 +145,12 @@ mod linux {
             Ok(Poller { epfd })
         }
 
-        pub fn register(&mut self, fd: RawHandle, token: usize, interest: Interest) -> io::Result<()> {
+        pub fn register(
+            &mut self,
+            fd: RawHandle,
+            token: usize,
+            interest: Interest,
+        ) -> io::Result<()> {
             let events = interest_to_epoll(interest) | EPOLLET;
             let mut event = EpollEvent {
                 events,
@@ -160,7 +170,12 @@ mod linux {
             Ok(())
         }
 
-        pub fn modify(&mut self, fd: RawHandle, token: usize, interest: Interest) -> io::Result<()> {
+        pub fn modify(
+            &mut self,
+            fd: RawHandle,
+            token: usize,
+            interest: Interest,
+        ) -> io::Result<()> {
             let events = interest_to_epoll(interest) | EPOLLET;
             let mut event = EpollEvent {
                 events,
@@ -187,7 +202,9 @@ mod linux {
             // - event pointer can be null for EPOLL_CTL_DEL (per Linux kernel 2.6.9+)
             // Error is checked immediately; operation is atomic w.r.t. this epoll instance
             // Thread safety: Poller requires &mut self, ensuring exclusive access
-            let ret = unsafe { epoll_ctl(self.epfd, EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
+            let ret = unsafe {
+                epoll_ctl(self.epfd, EPOLL_CTL_DEL, fd, std::ptr::null_mut())
+            };
             if ret < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -195,9 +212,7 @@ mod linux {
         }
 
         pub fn poll(&mut self, timeout: Option<Duration>) -> io::Result<Vec<Event>> {
-            let timeout_ms = timeout
-                .map(|d| d.as_millis() as i32)
-                .unwrap_or(-1);
+            let timeout_ms = timeout.map(|d| d.as_millis() as i32).unwrap_or(-1);
 
             // SAFETY: std::mem::zeroed() for EpollEvent array is safe because:
             // - EpollEvent is a POD type with no invalid bit patterns
@@ -214,7 +229,12 @@ mod linux {
                 // Error (including EINTR) is checked immediately
                 // Thread safety: Poller requires &mut self, ensuring exclusive access
                 let ret = unsafe {
-                    epoll_wait(self.epfd, events.as_mut_ptr(), events.len() as i32, timeout_ms)
+                    epoll_wait(
+                        self.epfd,
+                        events.as_mut_ptr(),
+                        events.len() as i32,
+                        timeout_ms,
+                    )
                 };
 
                 if ret < 0 {
@@ -267,7 +287,12 @@ mod linux {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+))]
 mod bsd {
     use super::*;
     use std::os::unix::io::RawFd;
@@ -343,7 +368,12 @@ mod bsd {
             Ok(Poller { kq })
         }
 
-        pub fn register(&mut self, fd: RawHandle, token: usize, interest: Interest) -> io::Result<()> {
+        pub fn register(
+            &mut self,
+            fd: RawHandle,
+            token: usize,
+            interest: Interest,
+        ) -> io::Result<()> {
             let mut changes = Vec::with_capacity(2);
 
             if interest.readable {
@@ -396,7 +426,12 @@ mod bsd {
             Ok(())
         }
 
-        pub fn modify(&mut self, fd: RawHandle, token: usize, interest: Interest) -> io::Result<()> {
+        pub fn modify(
+            &mut self,
+            fd: RawHandle,
+            token: usize,
+            interest: Interest,
+        ) -> io::Result<()> {
             // kqueue: For modify, we use EV_ADD which will update existing registration
             // Note: We need to explicitly disable filters we don't want anymore
             let mut changes = Vec::with_capacity(2);
@@ -691,7 +726,12 @@ mod windows {
             })
         }
 
-        pub fn register(&mut self, fd: RawHandle, token: usize, interest: Interest) -> io::Result<()> {
+        pub fn register(
+            &mut self,
+            fd: RawHandle,
+            token: usize,
+            interest: Interest,
+        ) -> io::Result<()> {
             // Check if already registered
             if self.entries.iter().any(|e| e.fd == fd) {
                 return Err(io::Error::new(
@@ -700,20 +740,26 @@ mod windows {
                 ));
             }
 
-            self.entries.push(FdEntry { fd, token, interest });
+            self.entries.push(FdEntry {
+                fd,
+                token,
+                interest,
+            });
             Ok(())
         }
 
-        pub fn modify(&mut self, fd: RawHandle, token: usize, interest: Interest) -> io::Result<()> {
+        pub fn modify(
+            &mut self,
+            fd: RawHandle,
+            token: usize,
+            interest: Interest,
+        ) -> io::Result<()> {
             if let Some(entry) = self.entries.iter_mut().find(|e| e.fd == fd) {
                 entry.token = token;
                 entry.interest = interest;
                 Ok(())
             } else {
-                Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "fd not registered",
-                ))
+                Err(io::Error::new(io::ErrorKind::NotFound, "fd not registered"))
             }
         }
 
@@ -722,10 +768,7 @@ mod windows {
                 self.entries.swap_remove(pos);
                 Ok(())
             } else {
-                Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "fd not registered",
-                ))
+                Err(io::Error::new(io::ErrorKind::NotFound, "fd not registered"))
             }
         }
 
@@ -738,9 +781,7 @@ mod windows {
                 return Ok(Vec::new());
             }
 
-            let timeout_ms = timeout
-                .map(|d| d.as_millis() as i32)
-                .unwrap_or(-1);
+            let timeout_ms = timeout.map(|d| d.as_millis() as i32).unwrap_or(-1);
 
             let mut pollfds: Vec<WSAPollFd> = self
                 .entries
@@ -760,7 +801,9 @@ mod windows {
                 // - All sockets in pollfds are valid (maintained by register/deregister)
                 // Error is checked immediately
                 // Thread safety: Poller requires &mut self, ensuring exclusive access
-                let ret = unsafe { WSAPoll(pollfds.as_mut_ptr(), pollfds.len() as u32, timeout_ms) };
+                let ret = unsafe {
+                    WSAPoll(pollfds.as_mut_ptr(), pollfds.len() as u32, timeout_ms)
+                };
 
                 if ret < 0 {
                     // SAFETY: WSAGetLastError() is safe to call after a failed Winsock call
@@ -823,7 +866,12 @@ mod windows {
 #[cfg(target_os = "linux")]
 pub use linux::{Poller, RawHandle};
 
-#[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+))]
 pub use bsd::{Poller, RawHandle};
 
 #[cfg(target_os = "windows")]
@@ -836,8 +884,8 @@ pub use windows::{Poller, RawHandle};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{TcpListener, TcpStream};
     use std::io::Write;
+    use std::net::{TcpListener, TcpStream};
 
     #[test]
     fn test_poller_basic() {
@@ -848,9 +896,13 @@ mod tests {
         let addr = listener.local_addr().expect("Failed to get address");
 
         let client = TcpStream::connect(addr).expect("Failed to connect");
-        client.set_nonblocking(true).expect("Failed to set nonblocking");
+        client
+            .set_nonblocking(true)
+            .expect("Failed to set nonblocking");
         let (mut server, _) = listener.accept().expect("Failed to accept");
-        server.set_nonblocking(true).expect("Failed to set nonblocking");
+        server
+            .set_nonblocking(true)
+            .expect("Failed to set nonblocking");
 
         #[cfg(unix)]
         {
@@ -859,19 +911,27 @@ mod tests {
             let server_fd = server.as_raw_fd();
 
             // Register client for readable
-            poller.register(client_fd, 1, Interest::READABLE).expect("Failed to register");
+            poller
+                .register(client_fd, 1, Interest::READABLE)
+                .expect("Failed to register");
             // Register server for writable
-            poller.register(server_fd, 2, Interest::WRITABLE).expect("Failed to register");
+            poller
+                .register(server_fd, 2, Interest::WRITABLE)
+                .expect("Failed to register");
 
             // Server should be immediately writable
-            let events = poller.poll(Some(Duration::from_millis(100))).expect("Failed to poll");
+            let events = poller
+                .poll(Some(Duration::from_millis(100)))
+                .expect("Failed to poll");
             assert!(events.iter().any(|e| e.token == 2 && e.is_writable()));
 
             // Write some data from server
             server.write_all(b"hello").expect("Failed to write");
 
             // Client should become readable
-            let events = poller.poll(Some(Duration::from_millis(100))).expect("Failed to poll");
+            let events = poller
+                .poll(Some(Duration::from_millis(100)))
+                .expect("Failed to poll");
             assert!(events.iter().any(|e| e.token == 1 && e.is_readable()));
 
             // Clean up
@@ -885,15 +945,23 @@ mod tests {
             let client_fd = client.as_raw_socket();
             let server_fd = server.as_raw_socket();
 
-            poller.register(client_fd, 1, Interest::READABLE).expect("Failed to register");
-            poller.register(server_fd, 2, Interest::WRITABLE).expect("Failed to register");
+            poller
+                .register(client_fd, 1, Interest::READABLE)
+                .expect("Failed to register");
+            poller
+                .register(server_fd, 2, Interest::WRITABLE)
+                .expect("Failed to register");
 
-            let events = poller.poll(Some(Duration::from_millis(100))).expect("Failed to poll");
+            let events = poller
+                .poll(Some(Duration::from_millis(100)))
+                .expect("Failed to poll");
             assert!(events.iter().any(|e| e.token == 2 && e.is_writable()));
 
             server.write_all(b"hello").expect("Failed to write");
 
-            let events = poller.poll(Some(Duration::from_millis(100))).expect("Failed to poll");
+            let events = poller
+                .poll(Some(Duration::from_millis(100)))
+                .expect("Failed to poll");
             assert!(events.iter().any(|e| e.token == 1 && e.is_readable()));
 
             poller.deregister(client_fd).expect("Failed to deregister");
@@ -909,18 +977,24 @@ mod tests {
         let addr = listener.local_addr().expect("Failed to get address");
 
         let client = TcpStream::connect(addr).expect("Failed to connect");
-        client.set_nonblocking(true).expect("Failed to set nonblocking");
+        client
+            .set_nonblocking(true)
+            .expect("Failed to set nonblocking");
 
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
             let fd = client.as_raw_fd();
 
-            poller.register(fd, 1, Interest::READABLE).expect("Failed to register");
+            poller
+                .register(fd, 1, Interest::READABLE)
+                .expect("Failed to register");
             poller.deregister(fd).expect("Failed to deregister");
 
             // After deregister, no events should be reported for this fd
-            let events = poller.poll(Some(Duration::from_millis(50))).expect("Failed to poll");
+            let events = poller
+                .poll(Some(Duration::from_millis(50)))
+                .expect("Failed to poll");
             assert!(!events.iter().any(|e| e.token == 1));
         }
 
@@ -929,10 +1003,14 @@ mod tests {
             use std::os::windows::io::AsRawSocket;
             let fd = client.as_raw_socket();
 
-            poller.register(fd, 1, Interest::READABLE).expect("Failed to register");
+            poller
+                .register(fd, 1, Interest::READABLE)
+                .expect("Failed to register");
             poller.deregister(fd).expect("Failed to deregister");
 
-            let events = poller.poll(Some(Duration::from_millis(50))).expect("Failed to poll");
+            let events = poller
+                .poll(Some(Duration::from_millis(50)))
+                .expect("Failed to poll");
             assert!(!events.iter().any(|e| e.token == 1));
         }
     }
@@ -945,9 +1023,13 @@ mod tests {
         let addr = listener.local_addr().expect("Failed to get address");
 
         let client = TcpStream::connect(addr).expect("Failed to connect");
-        client.set_nonblocking(true).expect("Failed to set nonblocking");
+        client
+            .set_nonblocking(true)
+            .expect("Failed to set nonblocking");
         let (server, _) = listener.accept().expect("Failed to accept");
-        server.set_nonblocking(true).expect("Failed to set nonblocking");
+        server
+            .set_nonblocking(true)
+            .expect("Failed to set nonblocking");
 
         #[cfg(unix)]
         {
@@ -955,13 +1037,19 @@ mod tests {
             let server_fd = server.as_raw_fd();
 
             // Register for readable only
-            poller.register(server_fd, 1, Interest::READABLE).expect("Failed to register");
+            poller
+                .register(server_fd, 1, Interest::READABLE)
+                .expect("Failed to register");
 
             // Modify to writable
-            poller.modify(server_fd, 1, Interest::WRITABLE).expect("Failed to modify");
+            poller
+                .modify(server_fd, 1, Interest::WRITABLE)
+                .expect("Failed to modify");
 
             // Should be writable now
-            let events = poller.poll(Some(Duration::from_millis(100))).expect("Failed to poll");
+            let events = poller
+                .poll(Some(Duration::from_millis(100)))
+                .expect("Failed to poll");
             assert!(events.iter().any(|e| e.token == 1 && e.is_writable()));
 
             poller.deregister(server_fd).expect("Failed to deregister");
@@ -972,10 +1060,16 @@ mod tests {
             use std::os::windows::io::AsRawSocket;
             let server_fd = server.as_raw_socket();
 
-            poller.register(server_fd, 1, Interest::READABLE).expect("Failed to register");
-            poller.modify(server_fd, 1, Interest::WRITABLE).expect("Failed to modify");
+            poller
+                .register(server_fd, 1, Interest::READABLE)
+                .expect("Failed to register");
+            poller
+                .modify(server_fd, 1, Interest::WRITABLE)
+                .expect("Failed to modify");
 
-            let events = poller.poll(Some(Duration::from_millis(100))).expect("Failed to poll");
+            let events = poller
+                .poll(Some(Duration::from_millis(100)))
+                .expect("Failed to poll");
             assert!(events.iter().any(|e| e.token == 1 && e.is_writable()));
 
             poller.deregister(server_fd).expect("Failed to deregister");

@@ -13,7 +13,10 @@ fn main() {
         // Define the output file
         .output("output.mp4")
         // Build and run the FFmpeg job
-        .build().unwrap()
-        .start().unwrap()
-        .wait().unwrap();
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
+        .wait()
+        .unwrap();
 }

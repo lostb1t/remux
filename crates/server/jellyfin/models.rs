@@ -9,7 +9,10 @@ pub trait MediaSourceInfoExt {
 
 impl MediaSourceInfoExt for MediaSourceInfo {
     fn probe_in_place(&mut self) -> anyhow::Result<()> {
-        let url = self.path.clone().ok_or_else(|| anyhow::anyhow!("missing url"))?;
+        let url = self
+            .path
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("missing url"))?;
         let probed = crate::transcode::probing::probe_media(&url)?;
 
         let id = self.id.clone();
@@ -56,7 +59,9 @@ pub fn media_source_from_db(source: db::Media) -> MediaSourceInfo {
     }
 }
 
-pub fn db_display_prefs_to_dto(prefs: db::JellyfinDisplayPrefs) -> DisplayPreferencesDto {
+pub fn db_display_prefs_to_dto(
+    prefs: db::JellyfinDisplayPrefs,
+) -> DisplayPreferencesDto {
     let data = prefs.data;
     DisplayPreferencesDto {
         id: Some(prefs.id),
@@ -236,9 +241,13 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .collect()
         }),
         remux: Some(RemuxInfo {
-            collection_kind: media.collection_kind.as_ref()
+            collection_kind: media
+                .collection_kind
+                .as_ref()
                 .and_then(|k| k.to_string().parse().ok()),
-            collection_media_kind: media.collection_media_kind.as_ref()
+            collection_media_kind: media
+                .collection_media_kind
+                .as_ref()
                 .and_then(|k| k.to_string().parse().ok()),
             collection_max_items: media.collection_max_items,
             collection_catalog_filter: Some(media.catalog_filter_ids()),
@@ -249,8 +258,12 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
 
     if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
         item.media_sources = match media.sources.clone() {
-            Some(sources) if sources.is_empty() => Some(vec![media_source_from_db(media.clone())]),
-            Some(sources) => Some(sources.into_iter().map(media_source_from_db).collect()),
+            Some(sources) if sources.is_empty() => {
+                Some(vec![media_source_from_db(media.clone())])
+            }
+            Some(sources) => {
+                Some(sources.into_iter().map(media_source_from_db).collect())
+            }
             None => None,
         };
     }
@@ -258,14 +271,19 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     if media.kind == db::MediaKind::Collection {
         item.collection_type = Some(
             media
-                .collection_media_kind.clone()
+                .collection_media_kind
+                .clone()
                 .map(db_media_kind_to_collection_type)
                 .unwrap_or(CollectionType::Unknown),
         );
         item.collection_kind = media.collection_kind.as_ref().map(|k| k.to_string());
         item.collection_catalog_filter = if media.collection_catalog_filter.is_some() {
             let ids = media.catalog_filter_ids();
-            if ids.is_empty() { None } else { Some(ids.iter().map(|u| u.to_string()).collect()) }
+            if ids.is_empty() {
+                None
+            } else {
+                Some(ids.iter().map(|u| u.to_string()).collect())
+            }
         } else {
             None
         };

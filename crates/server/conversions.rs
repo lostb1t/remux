@@ -6,8 +6,6 @@ use crate::utils::get_uuid;
 use anyhow::Result;
 use std::convert::{TryFrom, TryInto};
 
-
-
 impl From<jellyfin::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
     fn from(dto: jellyfin::DisplayPreferencesDto) -> Self {
         Self {
@@ -18,10 +16,16 @@ impl From<jellyfin::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
             primary_image_height: dto.primary_image_height,
             primary_image_width: dto.primary_image_width,
             custom_prefs: dto.custom_prefs,
-            scroll_direction: dto.scroll_direction.map(|d| d.to_string()).unwrap_or_else(|| "Horizontal".to_string()),
+            scroll_direction: dto
+                .scroll_direction
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "Horizontal".to_string()),
             show_backdrop: dto.show_backdrop,
             remember_sorting: dto.remember_sorting,
-            sort_order: dto.sort_order.map(|s| s.to_string()).unwrap_or_else(|| "Ascending".to_string()),
+            sort_order: dto
+                .sort_order
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Ascending".to_string()),
             show_sidebar: dto.show_sidebar,
             home_sections: None,
         }

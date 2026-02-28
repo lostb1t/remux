@@ -20,9 +20,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _result = FfmpegContext::builder()
         .input(input)
         .output(output)
-        .build().unwrap()
-        .start().unwrap()
-        .wait().unwrap();
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
+        .wait()
+        .unwrap();
 
     Ok(())
 }

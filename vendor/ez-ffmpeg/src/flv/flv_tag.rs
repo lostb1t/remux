@@ -4,14 +4,16 @@ use crate::flv::{FLV_TAG_HEADER_LENGTH, PREVIOUS_TAG_SIZE_LENGTH};
 #[derive(Debug, Clone)]
 pub struct FlvTag {
     pub header: FlvTagHeader,
-    pub data: bytes::Bytes,       // Tag data
+    pub data: bytes::Bytes,     // Tag data
     pub previous_tag_size: u32, // PreviousTagSize
 }
 
 impl FlvTag {
     // Convert the FLV Tag to a byte array [u8], including the header, data, and PreviousTagSize
     pub fn as_bytes_with_previous_tag_size(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(FLV_TAG_HEADER_LENGTH + self.data.len() + PREVIOUS_TAG_SIZE_LENGTH);
+        let mut bytes = Vec::with_capacity(
+            FLV_TAG_HEADER_LENGTH + self.data.len() + PREVIOUS_TAG_SIZE_LENGTH,
+        );
 
         // Convert header to bytes
         bytes.extend_from_slice(&self.header.as_bytes());

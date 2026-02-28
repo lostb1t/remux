@@ -34,7 +34,11 @@ fn session_key(play_session_id: &str) -> String {
 
 impl PlaybackSession {
     pub fn save(&self, store: &Store) {
-        store.save(session_key(&self.play_session_id), self.clone(), SESSION_TTL);
+        store.save(
+            session_key(&self.play_session_id),
+            self.clone(),
+            SESSION_TTL,
+        );
     }
 
     pub fn get(store: &Store, play_session_id: &str) -> Option<Self> {
@@ -57,7 +61,8 @@ impl PlaybackSession {
 
     /// Get all active playback sessions
     pub fn get_all(store: &Store) -> Vec<Self> {
-        store.scan_keys(SESSION_PREFIX)
+        store
+            .scan_keys(SESSION_PREFIX)
             .into_iter()
             .filter_map(|key| {
                 let session_id = key.trim_start_matches(SESSION_PREFIX);

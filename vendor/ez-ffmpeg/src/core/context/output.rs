@@ -511,7 +511,8 @@ impl Output {
     where
         F: FnMut(i64, i32) -> i64 + Send + 'static,
     {
-        self.seek_callback = Some(Box::new(seek_callback) as Box<dyn FnMut(i64, i32) -> i64 + Send>);
+        self.seek_callback =
+            Some(Box::new(seek_callback) as Box<dyn FnMut(i64, i32) -> i64 + Send>);
         self
     }
 
@@ -605,7 +606,10 @@ impl Output {
     ///         // Additional pipelines...
     ///     ]);
     /// ```
-    pub fn set_frame_pipelines(mut self, frame_pipelines: Vec<impl Into<FramePipeline>>) -> Self {
+    pub fn set_frame_pipelines(
+        mut self,
+        frame_pipelines: Vec<impl Into<FramePipeline>>,
+    ) -> Self {
         self.frame_pipelines = Some(
             frame_pipelines
                 .into_iter()
@@ -632,7 +636,10 @@ impl Output {
     ///     .add_frame_pipeline(FramePipelineBuilder::new(AVMediaType::AVMEDIA_TYPE_VIDEO).filter("opengl", Box::new(my_filter)).build())
     ///     .add_frame_pipeline(FramePipelineBuilder::new(AVMediaType::AVMEDIA_TYPE_AUDIO).filter("my_custom_filter1", Box::new(...)).filter("my_custom_filter2", Box::new(...)));
     /// ```
-    pub fn add_frame_pipeline(mut self, frame_pipeline: impl Into<FramePipeline>) -> Self {
+    pub fn add_frame_pipeline(
+        mut self,
+        frame_pipeline: impl Into<FramePipeline>,
+    ) -> Self {
         if self.frame_pipelines.is_none() {
             self.frame_pipelines = Some(vec![frame_pipeline.into()]);
         } else {
@@ -1059,7 +1066,10 @@ impl Output {
     /// let output = Output::from("some_url")
     ///     .set_max_subtitle_frames(200);
     /// ```
-    pub fn set_max_subtitle_frames(mut self, max_frames: impl Into<Option<i64>>) -> Self {
+    pub fn set_max_subtitle_frames(
+        mut self,
+        max_frames: impl Into<Option<i64>>,
+    ) -> Self {
         self.max_subtitle_frames = max_frames.into();
         self
     }
@@ -1083,7 +1093,11 @@ impl Output {
     ///     .set_video_codec_opt("crf", "18")
     ///     .set_video_codec_opt("preset", "fast");
     /// ```
-    pub fn set_video_codec_opt(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn set_video_codec_opt(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         if let Some(ref mut opts) = self.video_codec_opts {
             opts.insert(key.into(), value.into());
         } else {
@@ -1131,7 +1145,11 @@ impl Output {
     ///     .set_audio_codec_opt("b", "320k")
     ///     .set_audio_codec_opt("compression_level", "6");
     /// ```
-    pub fn set_audio_codec_opt(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn set_audio_codec_opt(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         if let Some(ref mut opts) = self.audio_codec_opts {
             opts.insert(key.into(), value.into());
         } else {
@@ -1239,7 +1257,11 @@ impl Output {
     /// - `value`: The value to set (e.g., `"faststart"`, `"no_duration_filesize"`).
     ///
     /// Returns the modified `Output` struct for chaining.
-    pub fn set_format_opt(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn set_format_opt(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         if let Some(ref mut opts) = self.format_opts {
             opts.insert(key.into(), value.into());
         } else {
@@ -1267,7 +1289,10 @@ impl Output {
     /// - `opts`: A vector of key-value pairs representing format options.
     ///
     /// Returns the modified `Output` struct for chaining.
-    pub fn set_format_opts(mut self, opts: Vec<(impl Into<String>, impl Into<String>)>) -> Self {
+    pub fn set_format_opts(
+        mut self,
+        opts: Vec<(impl Into<String>, impl Into<String>)>,
+    ) -> Self {
         if let Some(ref mut format_opts) = self.format_opts {
             for (key, value) in opts {
                 format_opts.insert(key.into(), value.into());
@@ -1301,7 +1326,11 @@ impl Output {
     ///     .add_metadata("title", "My Video")
     ///     .add_metadata("author", "John Doe");
     /// ```
-    pub fn add_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn add_metadata(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         let key = key.into();
         let value = value.into();
 
@@ -1378,7 +1407,6 @@ impl Output {
         self.metadata_map.clear();
         self
     }
-
 
     /// Disable automatic metadata copying from input files.
     ///

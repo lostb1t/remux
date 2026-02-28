@@ -15,7 +15,10 @@ impl Settings {
         })
     }
 
-    pub async fn set_config(db: &SqlitePool, config: &ServerConfiguration) -> Result<()> {
+    pub async fn set_config(
+        db: &SqlitePool,
+        config: &ServerConfiguration,
+    ) -> Result<()> {
         let json = serde_json::to_string(config)?;
         Self::set(db, SERVER_CONFIG_KEY, &json).await
     }

@@ -29,7 +29,9 @@ pub struct EmbedRtmpServer<S> {
     status: Arc<AtomicUsize>,
     stream_keys: dashmap::DashSet<String>,
     // stream_key bytes_receiver
-    publisher_sender: Option<crossbeam_channel::Sender<(String, crossbeam_channel::Receiver<Vec<u8>>)>>,
+    publisher_sender: Option<
+        crossbeam_channel::Sender<(String, crossbeam_channel::Receiver<Vec<u8>>)>,
+    >,
     gop_limit: usize,
     max_connections: Option<usize>,
     state: PhantomData<S>,
@@ -99,7 +101,10 @@ impl EmbedRtmpServer<Initialization> {
     ///
     /// An [`EmbedRtmpServer`] instance configured to listen on the given address and
     /// using the specified GOP limit.
-    pub fn new_with_gop_limit(address: impl Into<String>, gop_limit: usize) -> EmbedRtmpServer<Initialization> {
+    pub fn new_with_gop_limit(
+        address: impl Into<String>,
+        gop_limit: usize,
+    ) -> EmbedRtmpServer<Initialization> {
         Self {
             address: address.into(),
             bound_addr: None,
@@ -142,7 +147,8 @@ impl EmbedRtmpServer<Initialization> {
             .map_err(|e| <std::io::Error as Into<crate::error::Error>>::into(e))?;
 
         // Get actual bound address (important for port 0)
-        let actual_addr = listener.local_addr()
+        let actual_addr = listener
+            .local_addr()
             .map_err(|e| <std::io::Error as Into<crate::error::Error>>::into(e))?;
         self.bound_addr = Some(actual_addr);
 
@@ -156,7 +162,8 @@ impl EmbedRtmpServer<Initialization> {
         // This prevents unbounded queue growth when reactor is at capacity
         let effective_max = effective_max_connections(self.max_connections);
         let channel_capacity = effective_max.saturating_add(CHANNEL_HEADROOM);
-        let (stream_sender, stream_receiver) = crossbeam_channel::bounded(channel_capacity);
+        let (stream_sender, stream_receiver) =
+            crossbeam_channel::bounded(channel_capacity);
         let (publisher_sender, publisher_receiver) = crossbeam_channel::bounded(1024);
         self.publisher_sender = Some(publisher_sender);
         let stream_keys = self.stream_keys.clone();
@@ -164,7 +171,16 @@ impl EmbedRtmpServer<Initialization> {
         let max_connections = self.max_connections;
         let result = std::thread::Builder::new()
             .name("rtmp-server-worker".to_string())
-            .spawn(move || handle_connections(stream_receiver, publisher_receiver, stream_keys, self.gop_limit, max_connections, status));
+            .spawn(move || {
+                handle_connections(
+                    stream_receiver,
+                    publisher_receiver,
+                    stream_keys,
+                    self.gop_limit,
+                    max_connections,
+                    status,
+                )
+            });
         if let Err(e) = result {
             error!("Thread[rtmp-server-worker] exited with error: {e}");
             return Err(crate::error::Error::RtmpThreadExited);
@@ -299,25 +315,30 @@ impl EmbedRtmpServer<Running> {
 
         let mut flv_buffer = FlvBuffer::new();
         let mut serializer = ChunkSerializer::new();
-        let write_callback: Box<dyn FnMut(&[u8]) -> i32 + Send> = Box::new(move |buf: &[u8]| -> i32 {
-            flv_buffer.write_data(buf);
-            if let Some(mut flv_tag) = flv_buffer.get_flv_tag() {
-                flv_tag.header.stream_id = 1;
-                match serializer.serialize(&flv_tag_to_message_payload(flv_tag), false, true) {
-                    Ok(packet) => {
-                        if let Err(e) = message_sender.send(packet.bytes) {
-                            error!("Failed to send RTMP packet: {:?}", e);
+        let write_callback: Box<dyn FnMut(&[u8]) -> i32 + Send> =
+            Box::new(move |buf: &[u8]| -> i32 {
+                flv_buffer.write_data(buf);
+                if let Some(mut flv_tag) = flv_buffer.get_flv_tag() {
+                    flv_tag.header.stream_id = 1;
+                    match serializer.serialize(
+                        &flv_tag_to_message_payload(flv_tag),
+                        false,
+                        true,
+                    ) {
+                        Ok(packet) => {
+                            if let Err(e) = message_sender.send(packet.bytes) {
+                                error!("Failed to send RTMP packet: {:?}", e);
+                                return -1;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to serialize RTMP message: {:?}", e);
                             return -1;
                         }
                     }
-                    Err(e) => {
-                        error!("Failed to serialize RTMP message: {:?}", e);
-                        return -1;
-                    }
                 }
-            }
-            buf.len() as i32
-        });
+                buf.len() as i32
+            });
 
         let output: Output = write_callback.into();
 
@@ -429,13 +450,14 @@ impl EmbedRtmpServer<Running> {
             }
         };
 
-        let create_stream_packet = match serializer.serialize(&create_stream_cmd, false, true) {
-            Ok(packet) => packet,
-            Err(e) => {
-                error!("Failed to serialize createStream command: {:?}", e);
-                return Err(RtmpCreateStream.into());
-            }
-        };
+        let create_stream_packet =
+            match serializer.serialize(&create_stream_cmd, false, true) {
+                Ok(packet) => packet,
+                Err(e) => {
+                    error!("Failed to serialize createStream command: {:?}", e);
+                    return Err(RtmpCreateStream.into());
+                }
+            };
 
         if let Err(_) = sender.send(create_stream_packet.bytes) {
             error!("Can't send createStream command to rtmp server.");
@@ -502,21 +524,25 @@ impl EmbedRtmpServer<Running> {
 /// - Strict drain until WouldBlock semantics
 fn handle_connections(
     connection_receiver: crossbeam_channel::Receiver<TcpStream>,
-    publisher_receiver: crossbeam_channel::Receiver<(String, crossbeam_channel::Receiver<Vec<u8>>)>,
+    publisher_receiver: crossbeam_channel::Receiver<(
+        String,
+        crossbeam_channel::Receiver<Vec<u8>>,
+    )>,
     stream_keys: dashmap::DashSet<String>,
     gop_limit: usize,
     max_connections: Option<usize>,
     status: Arc<AtomicUsize>,
 ) {
     // Create Reactor
-    let mut reactor = match Reactor::new(gop_limit, max_connections, stream_keys, status.clone()) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("Failed to create Reactor: {:?}", e);
-            status.store(STATUS_END, Ordering::Release);
-            return;
-        }
-    };
+    let mut reactor =
+        match Reactor::new(gop_limit, max_connections, stream_keys, status.clone()) {
+            Ok(r) => r,
+            Err(e) => {
+                error!("Failed to create Reactor: {:?}", e);
+                status.store(STATUS_END, Ordering::Release);
+                return;
+            }
+        };
 
     // Run Reactor main loop
     reactor.run(connection_receiver, publisher_receiver);
@@ -527,7 +553,8 @@ fn handle_connections(
 }
 
 pub fn flv_tag_to_message_payload(flv_tag: FlvTag) -> MessagePayload {
-    let timestamp = flv_tag.header.timestamp | ((flv_tag.header.timestamp_ext as u32) << 24);
+    let timestamp =
+        flv_tag.header.timestamp | ((flv_tag.header.timestamp_ext as u32) << 24);
 
     let type_id = flv_tag.header.tag_type;
     let message_stream_id = flv_tag.header.stream_id;
@@ -562,14 +589,15 @@ fn wrap_metadata(data: Bytes) -> Bytes {
     bytes.freeze()
 }
 
-
 // ============================================================================
 // StreamBuilder API - Simplified RTMP streaming interface
 // ============================================================================
 
 use crate::core::context::ffmpeg_context::FfmpegContext;
 use crate::core::context::input::Input;
-use crate::core::scheduler::ffmpeg_scheduler::{FfmpegScheduler, Running as SchedulerRunning};
+use crate::core::scheduler::ffmpeg_scheduler::{
+    FfmpegScheduler, Running as SchedulerRunning,
+};
 use crate::error::StreamError;
 use std::path::{Path, PathBuf};
 
@@ -876,20 +904,9 @@ mod tests {
         let start = current();
 
         let result = FfmpegContext::builder()
-            .input(Input::from("test.mp4")
-                .set_readrate(1.0)
-                .set_stream_loop(3)
-            )
-            .input(
-                Input::from("test.mp4")
-                    .set_readrate(1.0)
-                    .set_stream_loop(3)
-            )
-            .input(
-                Input::from("test.mp4")
-                    .set_readrate(1.0)
-                    .set_stream_loop(3)
-            )
+            .input(Input::from("test.mp4").set_readrate(1.0).set_stream_loop(3))
+            .input(Input::from("test.mp4").set_readrate(1.0).set_stream_loop(3))
+            .input(Input::from("test.mp4").set_readrate(1.0).set_stream_loop(3))
             .filter_desc("[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1")
             .output(output)
             .build()
@@ -920,7 +937,11 @@ mod tests {
         let start = current();
 
         let result = FfmpegContext::builder()
-            .input(Input::from("test.mp4").set_readrate(1.0).set_stream_loop(-1))
+            .input(
+                Input::from("test.mp4")
+                    .set_readrate(1.0)
+                    .set_stream_loop(-1),
+            )
             // .filter_desc("hue=s=0")
             .output(output.set_video_codec("h264_videotoolbox"))
             .build()
@@ -954,14 +975,8 @@ mod tests {
         let result = FfmpegContext::builder()
             .independent_readrate()
             .input(Input::from("test.mp4").set_readrate(1.0))
-            .input(
-                Input::from("test.mp4")
-                    .set_readrate(1.0)
-            )
-            .input(
-                Input::from("test.mp4")
-                    .set_readrate(1.0)
-            )
+            .input(Input::from("test.mp4").set_readrate(1.0))
+            .input(Input::from("test.mp4").set_readrate(1.0))
             .filter_desc("[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1")
             .output(output)
             .build()

@@ -112,15 +112,26 @@ impl StreamSpecifier {
                     // FFmpeg uses cmdutils_isalnum() which checks ASCII-only (0-9, A-Z, a-z)
                     if next_char.is_none_or(|c| !c.is_ascii_alphanumeric()) {
                         if ss.media_type.is_some() {
-                            return Err("Stream type specified multiple times".to_string());
+                            return Err(
+                                "Stream type specified multiple times".to_string()
+                            );
                         }
 
                         chars.next(); // consume the character
                         match ch {
-                            'v' => ss.media_type = Some(AVMediaType::AVMEDIA_TYPE_VIDEO),
-                            'a' => ss.media_type = Some(AVMediaType::AVMEDIA_TYPE_AUDIO),
-                            's' => ss.media_type = Some(AVMediaType::AVMEDIA_TYPE_SUBTITLE),
-                            't' => ss.media_type = Some(AVMediaType::AVMEDIA_TYPE_ATTACHMENT),
+                            'v' => {
+                                ss.media_type = Some(AVMediaType::AVMEDIA_TYPE_VIDEO)
+                            }
+                            'a' => {
+                                ss.media_type = Some(AVMediaType::AVMEDIA_TYPE_AUDIO)
+                            }
+                            's' => {
+                                ss.media_type = Some(AVMediaType::AVMEDIA_TYPE_SUBTITLE)
+                            }
+                            't' => {
+                                ss.media_type =
+                                    Some(AVMediaType::AVMEDIA_TYPE_ATTACHMENT)
+                            }
                             'V' => {
                                 ss.media_type = Some(AVMediaType::AVMEDIA_TYPE_VIDEO);
                                 ss.no_apic = true;
@@ -150,7 +161,9 @@ impl StreamSpecifier {
                         // FFmpeg uses cmdutils_isalnum() which checks ASCII-only (0-9, A-Z, a-z)
                         let disp: String = chars
                             .by_ref()
-                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '+')
+                            .take_while(|c| {
+                                c.is_ascii_alphanumeric() || *c == '_' || *c == '+'
+                            })
                             .collect();
 
                         if disp.is_empty() {
@@ -163,7 +176,9 @@ impl StreamSpecifier {
                         let next_char = chars.clone().nth(1);
                         if next_char.is_none_or(|c| !c.is_ascii_alphanumeric()) {
                             if ss.media_type.is_some() {
-                                return Err("Stream type specified multiple times".to_string());
+                                return Err(
+                                    "Stream type specified multiple times".to_string()
+                                );
                             }
                             chars.next(); // consume 'd'
                             ss.media_type = Some(AVMediaType::AVMEDIA_TYPE_DATA);
@@ -179,7 +194,8 @@ impl StreamSpecifier {
                     if chars.clone().nth(1) == Some(':') {
                         if ss.list_type != StreamListType::All {
                             return Err(
-                                "Cannot combine multiple program/group designators".to_string()
+                                "Cannot combine multiple program/group designators"
+                                    .to_string(),
                             );
                         }
 
@@ -207,7 +223,8 @@ impl StreamSpecifier {
                                     || c.is_ascii_hexdigit()
                             })
                             .collect();
-                        ss.list_id = Self::parse_id_number(&num_str, "stream group idx/ID")?;
+                        ss.list_id =
+                            Self::parse_id_number(&num_str, "stream group idx/ID")?;
                     } else {
                         break;
                     }
@@ -219,7 +236,8 @@ impl StreamSpecifier {
                     if chars.clone().nth(1) == Some(':') {
                         if ss.list_type != StreamListType::All {
                             return Err(
-                                "Cannot combine multiple program/group designators".to_string()
+                                "Cannot combine multiple program/group designators"
+                                    .to_string(),
                             );
                         }
 
@@ -240,7 +258,10 @@ impl StreamSpecifier {
                 // FFmpeg reference: fftools/cmdutils.c line 1131-1151
                 '#' => {
                     if ss.list_type != StreamListType::All {
-                        return Err("Cannot combine multiple program/group designators".to_string());
+                        return Err(
+                            "Cannot combine multiple program/group designators"
+                                .to_string(),
+                        );
                     }
 
                     ss.list_type = StreamListType::StreamId;
@@ -249,7 +270,9 @@ impl StreamSpecifier {
                     let num_str: String = chars
                         .by_ref()
                         .take_while(|c| {
-                            c.is_ascii_digit() || matches!(*c, 'x' | 'X') || c.is_ascii_hexdigit()
+                            c.is_ascii_digit()
+                                || matches!(*c, 'x' | 'X')
+                                || c.is_ascii_hexdigit()
                         })
                         .collect();
                     ss.list_id = Self::parse_id_number(&num_str, "stream ID")?;
@@ -262,7 +285,8 @@ impl StreamSpecifier {
                     if chars.clone().nth(1) == Some(':') {
                         if ss.list_type != StreamListType::All {
                             return Err(
-                                "Cannot combine multiple program/group designators".to_string()
+                                "Cannot combine multiple program/group designators"
+                                    .to_string(),
                             );
                         }
 
@@ -296,7 +320,8 @@ impl StreamSpecifier {
                         chars.next(); // consume ':'
 
                         // Parse key (until ':' or end)
-                        let key: String = chars.by_ref().take_while(|c| *c != ':').collect();
+                        let key: String =
+                            chars.by_ref().take_while(|c| *c != ':').collect();
                         if key.is_empty() {
                             return Err("Expected metadata key".to_string());
                         }
@@ -304,7 +329,8 @@ impl StreamSpecifier {
 
                         // Parse optional value (if ':' present)
                         // Note: take_while consumes the ':' delimiter
-                        let val: String = chars.by_ref().take_while(|c| *c != ':').collect();
+                        let val: String =
+                            chars.by_ref().take_while(|c| *c != ':').collect();
                         if !val.is_empty() {
                             ss.meta_val = Some(val);
                         }
@@ -384,8 +410,8 @@ impl StreamSpecifier {
         st: *const ffmpeg_sys_next::AVStream,
     ) -> bool {
         use ffmpeg_sys_next::{
-            av_dict_get, AVPixelFormat::AV_PIX_FMT_NONE, AVSampleFormat::AV_SAMPLE_FMT_NONE,
-            AV_DISPOSITION_ATTACHED_PIC,
+            av_dict_get, AVPixelFormat::AV_PIX_FMT_NONE,
+            AVSampleFormat::AV_SAMPLE_FMT_NONE, AV_DISPOSITION_ATTACHED_PIC,
         };
 
         if fmt_ctx.is_null() || st.is_null() {
@@ -421,7 +447,9 @@ impl StreamSpecifier {
 
             StreamListType::Program => {
                 if fmt_ctx_ref.nb_programs <= 0 || fmt_ctx_ref.programs.is_null() {
-                    log::warn!("No program table present, stream specifier can never match");
+                    log::warn!(
+                        "No program table present, stream specifier can never match"
+                    );
                     return false;
                 }
                 // Find the program with matching ID
@@ -449,8 +477,12 @@ impl StreamSpecifier {
             }
 
             StreamListType::GroupId => {
-                if fmt_ctx_ref.nb_stream_groups <= 0 || fmt_ctx_ref.stream_groups.is_null() {
-                    log::warn!("No stream groups present, stream specifier can never match",);
+                if fmt_ctx_ref.nb_stream_groups <= 0
+                    || fmt_ctx_ref.stream_groups.is_null()
+                {
+                    log::warn!(
+                        "No stream groups present, stream specifier can never match",
+                    );
                     return false;
                 }
                 // Find the group with matching ID
@@ -478,8 +510,12 @@ impl StreamSpecifier {
             }
 
             StreamListType::GroupIdx => {
-                if fmt_ctx_ref.nb_stream_groups <= 0 || fmt_ctx_ref.stream_groups.is_null() {
-                    log::warn!("No stream groups present, stream specifier can never match",);
+                if fmt_ctx_ref.nb_stream_groups <= 0
+                    || fmt_ctx_ref.stream_groups.is_null()
+                {
+                    log::warn!(
+                        "No stream groups present, stream specifier can never match",
+                    );
                     return false;
                 }
                 // Access group by index
@@ -512,7 +548,10 @@ impl StreamSpecifier {
         for i in start_stream..nb_streams {
             // Get the candidate stream
             let candidate_ptr = if let Some(group) = group {
-                let streams = std::slice::from_raw_parts(group.streams, group.nb_streams as usize);
+                let streams = std::slice::from_raw_parts(
+                    group.streams,
+                    group.nb_streams as usize,
+                );
                 if i < streams.len() && !streams[i].is_null() {
                     let all_streams = std::slice::from_raw_parts(
                         fmt_ctx_ref.streams,
@@ -583,7 +622,12 @@ impl StreamSpecifier {
             // Check metadata filter
             if let Some(ref meta_key) = self.meta_key {
                 let c_key = std::ffi::CString::new(meta_key.as_str()).unwrap();
-                let entry = av_dict_get(candidate.metadata, c_key.as_ptr(), std::ptr::null(), 0);
+                let entry = av_dict_get(
+                    candidate.metadata,
+                    c_key.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                );
 
                 if entry.is_null() {
                     continue;
@@ -591,7 +635,8 @@ impl StreamSpecifier {
 
                 // Check metadata value if specified
                 if let Some(ref meta_val) = self.meta_val {
-                    let entry_val = std::ffi::CStr::from_ptr((*entry).value).to_str().ok();
+                    let entry_val =
+                        std::ffi::CStr::from_ptr((*entry).value).to_str().ok();
                     if entry_val != Some(meta_val.as_str()) {
                         continue;
                     }
@@ -609,7 +654,9 @@ impl StreamSpecifier {
                             && par.format != AV_SAMPLE_FMT_NONE as i32
                     }
                     AVMediaType::AVMEDIA_TYPE_VIDEO => {
-                        par.width > 0 && par.height > 0 && par.format != AV_PIX_FMT_NONE as i32
+                        par.width > 0
+                            && par.height > 0
+                            && par.format != AV_PIX_FMT_NONE as i32
                     }
                     AVMediaType::AVMEDIA_TYPE_UNKNOWN => false,
                     _ => true,

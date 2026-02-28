@@ -10,12 +10,12 @@ use std::fmt;
 use std::iter;
 use std::ops;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use std::time::Duration;
+use std::time::Instant;
 
 pub mod aio;
-pub mod tmdb;
 pub mod jellyfin;
+pub mod tmdb;
 
 struct CacheEntry {
     body: String,
@@ -192,13 +192,14 @@ impl<A: Auth + Clone> RestClient<A> {
             if let Ok(cache) = HTTP_CACHE.lock() {
                 if let Some(entry) = cache.get(&cache_key) {
                     if entry.expires_at > Instant::now() {
-                        return Ok(serde_json::from_str(&entry.body)
-                            .map_err(|e| ClientError::Json {
+                        return Ok(serde_json::from_str(&entry.body).map_err(|e| {
+                            ClientError::Json {
                                 status: 0,
                                 source: e,
                                 endpoint: Some(url.to_string()),
                                 body: None,
-                            })?);
+                            }
+                        })?);
                     }
                 }
             }
@@ -245,20 +246,24 @@ impl<A: Auth + Clone> RestClient<A> {
                 // endpoints with `type Output = ()` deserialize successfully.
                 let parse_body = if text.is_empty() { "null" } else { &text };
                 let result: Result<EP::Output, ClientError> =
-                    serde_json::from_str::<EP::Output>(parse_body)
-                        .map_err(|e| ClientError::Json {
+                    serde_json::from_str::<EP::Output>(parse_body).map_err(|e| {
+                        ClientError::Json {
                             status: s,
                             source: e,
                             endpoint: Some(url.to_string()),
                             body: Some(text.clone()),
-                        });
+                        }
+                    });
                 if result.is_ok() {
                     if let Some(ttl) = endpoint.cache_ttl() {
                         if let Ok(mut cache) = HTTP_CACHE.lock() {
-                            cache.insert(cache_key, CacheEntry {
-                                body: text.clone(),
-                                expires_at: Instant::now() + ttl,
-                            });
+                            cache.insert(
+                                cache_key,
+                                CacheEntry {
+                                    body: text.clone(),
+                                    expires_at: Instant::now() + ttl,
+                                },
+                            );
                         }
                     }
                 }
@@ -411,4 +416,3 @@ impl From<jellyfin::MediaType> for aio::MediaType {
         }
     }
 }
-

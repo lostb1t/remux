@@ -29,7 +29,10 @@ pub(crate) struct InputController {
 }
 
 impl InputController {
-    pub(crate) fn new(demuxs: Vec<Arc<SchNode>>, mux_streams: Vec<Arc<SchNode>>) -> Self {
+    pub(crate) fn new(
+        demuxs: Vec<Arc<SchNode>>,
+        mux_streams: Vec<Arc<SchNode>>,
+    ) -> Self {
         assert!(
             demuxs
                 .iter()

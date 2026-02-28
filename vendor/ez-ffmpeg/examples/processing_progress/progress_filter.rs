@@ -29,7 +29,8 @@ impl ProgressCallBacker {
             }
 
             // Get the timestamp of the frame (in seconds).
-            let time_in_stream = pts as f64 * self.time_base.num as f64 / self.time_base.den as f64;
+            let time_in_stream =
+                pts as f64 * self.time_base.num as f64 / self.time_base.den as f64;
 
             // Total duration (in seconds)
             let total_duration_sec = self.total_duration as f64 / 1_000_000.0;

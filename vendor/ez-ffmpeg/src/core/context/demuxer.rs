@@ -7,12 +7,19 @@ use crate::error::OpenInputError;
 use crate::filter::frame_pipeline::FramePipeline;
 use crossbeam_channel::Sender;
 use ffmpeg_sys_next::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE;
-use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_VIDEO};
+use ffmpeg_sys_next::AVMediaType::{
+    AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_VIDEO,
+};
 use ffmpeg_sys_next::AVPixelFormat::{
     AV_PIX_FMT_CUDA, AV_PIX_FMT_MEDIACODEC, AV_PIX_FMT_NONE, AV_PIX_FMT_QSV,
 };
 use ffmpeg_sys_next::{
-    av_channel_layout_default, av_codec_is_decoder, av_codec_iterate, av_get_pix_fmt, av_hwdevice_find_type_by_name, av_hwdevice_get_type_name, avcodec_descriptor_get, avcodec_descriptor_get_by_name, avcodec_find_decoder, avcodec_find_decoder_by_name, avcodec_get_hw_config, AVChannelOrder, AVCodecID, AVCodecParameters, AVFormatContext, AVHWDeviceType, AVMediaType, AVPixelFormat, AVRational, AVERROR, AVERROR_DECODER_NOT_FOUND, EINVAL
+    av_channel_layout_default, av_codec_is_decoder, av_codec_iterate, av_get_pix_fmt,
+    av_hwdevice_find_type_by_name, av_hwdevice_get_type_name, avcodec_descriptor_get,
+    avcodec_descriptor_get_by_name, avcodec_find_decoder, avcodec_find_decoder_by_name,
+    avcodec_get_hw_config, AVChannelOrder, AVCodecID, AVCodecParameters,
+    AVFormatContext, AVHWDeviceType, AVMediaType, AVPixelFormat, AVRational, AVERROR,
+    AVERROR_DECODER_NOT_FOUND, EINVAL,
 };
 use log::{debug, error, warn};
 use std::ffi::{CStr, CString};
@@ -121,7 +128,10 @@ impl Demuxer {
             framerate,
             #[cfg(windows)]
             hwaccel,
-            node: Arc::new(SchNode::Demux { waiter: Arc::new(Default::default()), task_exited: Arc::new(Default::default()) }),
+            node: Arc::new(SchNode::Demux {
+                waiter: Arc::new(Default::default()),
+                task_exited: Arc::new(Default::default()),
+            }),
             streams,
             dsts: vec![],
             start_time_effective: 0,
@@ -150,24 +160,37 @@ impl Demuxer {
                 let codec_parameters = (*st).codecpar;
                 let codec_type = (*codec_parameters).codec_type;
 
-                let (hwaccel_id, hwaccel_device_type, hwaccel_device, hwaccel_output_format) =
-                    find_hwaccel(
-                        codec_type,
-                        hwaccel.clone(),
-                        hwaccel_device.clone(),
-                        hwaccel_output_format.clone(),
-                    )?;
+                let (
+                    hwaccel_id,
+                    hwaccel_device_type,
+                    hwaccel_device,
+                    hwaccel_output_format,
+                ) = find_hwaccel(
+                    codec_type,
+                    hwaccel.clone(),
+                    hwaccel_device.clone(),
+                    hwaccel_output_format.clone(),
+                )?;
 
                 let codec_id = (*codec_parameters).codec_id;
 
                 if codec_type == AVMEDIA_TYPE_AUDIO
-                    && (*codec_parameters).ch_layout.order == AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
-                        && (*codec_parameters).ch_layout.nb_channels > 0 {
-                        av_channel_layout_default(&mut (*codec_parameters).ch_layout, (*codec_parameters).ch_layout.nb_channels);
+                    && (*codec_parameters).ch_layout.order
+                        == AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
+                    && (*codec_parameters).ch_layout.nb_channels > 0
+                {
+                    av_channel_layout_default(
+                        &mut (*codec_parameters).ch_layout,
+                        (*codec_parameters).ch_layout.nb_channels,
+                    );
                 }
 
-                let codec_name =
-                    get_codec_name(codec_type, &video_codec, &audio_codec, &subtitle_codec);
+                let codec_name = get_codec_name(
+                    codec_type,
+                    &video_codec,
+                    &audio_codec,
+                    &subtitle_codec,
+                );
                 let decoder = choose_decoder(
                     codec_name,
                     codec_type,
@@ -184,8 +207,8 @@ impl Demuxer {
                     codec_parameters,
                     codec_type,
                     match decoder {
-                        Some(decoder) => { decoder.as_ptr() },
-                        None => { null() },
+                        Some(decoder) => decoder.as_ptr(),
+                        None => null(),
                     },
                     codec_desc,
                     duration,
@@ -238,7 +261,9 @@ impl Demuxer {
         self.streams[index].set_src(receiver);
     }
 
-    pub(crate) fn take_dsts(&mut self) -> Vec<(Sender<PacketBox>, usize, Option<usize>)> {
+    pub(crate) fn take_dsts(
+        &mut self,
+    ) -> Vec<(Sender<PacketBox>, usize, Option<usize>)> {
         std::mem::take(&mut self.dsts)
     }
 
@@ -287,7 +312,9 @@ fn choose_decoder(
                     let desc_name = (*desc).name;
                     let desc_name = CStr::from_ptr(desc_name).to_str();
                     if let (Ok(codec_name), Ok(desc_name)) = (codec_name, desc_name) {
-                        debug!("Matched decoder '{codec_name}' for codec '{desc_name}'.");
+                        debug!(
+                            "Matched decoder '{codec_name}' for codec '{desc_name}'."
+                        );
                     }
                 }
             }
@@ -337,7 +364,8 @@ fn choose_decoder(
                             if (*config).device_type == hwaccel_device_type {
                                 let name = (*c).name;
                                 let name = CStr::from_ptr(name).to_str();
-                                let type_name = av_hwdevice_get_type_name(hwaccel_device_type);
+                                let type_name =
+                                    av_hwdevice_get_type_name(hwaccel_device_type);
                                 let type_name = CStr::from_ptr(type_name).to_str();
                                 if let (Ok(name), Ok(type_name)) = (name, type_name) {
                                     debug!("Selecting decoder '{name}' because of requested hwaccel method {type_name}");
@@ -394,7 +422,8 @@ fn find_hwaccel(
         (_, Some(hwaccel_output_format)) => {
             let hwaccel_output_format_cstr = CString::new(hwaccel_output_format)?;
 
-            let hwaccel_format = unsafe { av_get_pix_fmt(hwaccel_output_format_cstr.as_ptr()) };
+            let hwaccel_format =
+                unsafe { av_get_pix_fmt(hwaccel_output_format_cstr.as_ptr()) };
             if hwaccel_format == AV_PIX_FMT_NONE {
                 error!("Unrecognised hwaccel output format: {:?}", hwaccel_format);
             } else {
@@ -416,7 +445,8 @@ fn find_hwaccel(
             out_hwaccel_id = HWAccelID::HwaccelAuto;
         } else {
             let hwaccel_cstr = CString::new(hwaccel.clone())?;
-            let device_type = unsafe { av_hwdevice_find_type_by_name(hwaccel_cstr.as_ptr()) };
+            let device_type =
+                unsafe { av_hwdevice_find_type_by_name(hwaccel_cstr.as_ptr()) };
             if device_type != AV_HWDEVICE_TYPE_NONE {
                 out_hwaccel_id = HWAccelID::HwaccelGeneric;
                 out_hwaccel_device_type = device_type;

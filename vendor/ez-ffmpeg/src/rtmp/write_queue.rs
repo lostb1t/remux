@@ -60,7 +60,6 @@ pub enum BackpressureLevel {
     Critical, // >= 4MB: should disconnect
 }
 
-
 /// Flush result
 #[derive(Debug)]
 pub enum FlushResult {
@@ -197,7 +196,8 @@ impl WriteQueue {
             }
             if entry.age_secs() > max_age {
                 if let Some(removed) = self.queue.pop_front() {
-                    self.total_bytes = self.total_bytes.saturating_sub(removed.remaining_bytes());
+                    self.total_bytes =
+                        self.total_bytes.saturating_sub(removed.remaining_bytes());
                     self.dropped_frames += 1;
                 }
             } else {
@@ -228,7 +228,8 @@ impl WriteQueue {
                     bytes_written += n;
                     entry.advance(n);
                     if entry.is_complete() {
-                        let entry_size = self.queue.front().map(|e| e.data.len()).unwrap_or(0);
+                        let entry_size =
+                            self.queue.front().map(|e| e.data.len()).unwrap_or(0);
                         self.total_bytes = self.total_bytes.saturating_sub(entry_size);
                         self.queue.pop_front();
                     }
@@ -271,7 +272,6 @@ impl WriteQueue {
     fn has_video(&self) -> bool {
         self.has_video
     }
-
 }
 
 impl Default for WriteQueue {
@@ -333,7 +333,10 @@ mod tests {
             // Try to add 600KB which would push total to 4.1MB >= 4MB (critical)
             // This should be rejected
             let result = queue.enqueue(make_data(600 * 1024), true, false, true);
-            assert!(!result, "Enqueue should be rejected when it would reach Critical");
+            assert!(
+                !result,
+                "Enqueue should be rejected when it would reach Critical"
+            );
             // Queue should still be at High level (data was rejected)
             assert_eq!(queue.backpressure_level(), BackpressureLevel::High);
         }
@@ -404,12 +407,18 @@ mod tests {
         // Try to add data that would exceed critical threshold
         // Even keyframes should be rejected
         let result = queue.enqueue(make_data(200 * 1024), true, false, true);
-        assert!(!result, "Keyframe should be rejected when it would exceed Critical");
+        assert!(
+            !result,
+            "Keyframe should be rejected when it would exceed Critical"
+        );
 
         // Even sequence headers should be rejected when threshold would be exceeded
         // (Note: sequence headers bypass drop policy but not critical threshold)
         let result = queue.enqueue(make_data(200 * 1024), false, true, true);
-        assert!(!result, "Sequence header should be rejected when it would exceed Critical");
+        assert!(
+            !result,
+            "Sequence header should be rejected when it would exceed Critical"
+        );
         assert!(!result);
     }
 
@@ -484,7 +493,10 @@ mod tests {
 
         // Should write 3 bytes then WouldBlock
         let result = queue.try_flush(&mut writer).unwrap();
-        assert!(matches!(result, FlushResult::WouldBlock { bytes_written: 3 }));
+        assert!(matches!(
+            result,
+            FlushResult::WouldBlock { bytes_written: 3 }
+        ));
         assert!(!queue.is_empty());
     }
 

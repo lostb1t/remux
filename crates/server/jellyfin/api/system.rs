@@ -2,16 +2,16 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
-use remux_macros::{get, post, route};
 use http::StatusCode;
+use remux_macros::{get, post, route};
 use serde_json::json;
 
 use crate::AppState;
 use crate::db::auth;
 use crate::jellyfin;
 use crate::utils::server_id;
-use axum_anyhow::{ApiResult as Result, IntoApiError};
 use anyhow;
+use axum_anyhow::{ApiResult as Result, IntoApiError};
 
 use super::{mock_items, stub};
 
@@ -21,18 +21,15 @@ pub async fn system_info_public(
 ) -> Result<impl IntoResponse> {
     let config = crate::db::Settings::get_config(&state.ctx.db).await?;
     Ok(Json(jellyfin::PublicSystemInfo {
-        local_address: Some("".to_string()),
+        local_address: "0.0.0.0".to_string(),
         server_name: config.server_name,
-        product_name: Some("Jellyfin Server".to_string()),
+        product_name: "Jellyfin Server".to_string(),
         startup_wizard_completed: config.is_startup_wizard_completed,
-        version: Some("10.10.7".to_string()),
-        operating_system: Some("".to_string()),
-        id: Some(server_id()),
+        version: "10.11.6".to_string(),
+        id: server_id(),
         ..Default::default()
     }))
 }
-
-
 
 #[get("/system/ping")]
 pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoResponse> {
@@ -106,33 +103,29 @@ pub async fn system_info_storage(
             jellyfin::LibraryStorageInfo {
                 id: Some("movies-library-id".to_string()),
                 name: Some("Movies".to_string()),
-                folders: Some(vec![
-                    jellyfin::FolderStorageInfo {
-                        path: Some("/media/movies".to_string()),
-                        free_space: Some(2000000000),
-                        used_space: Some(1000000000),
-                        storage_type: Some("DefaultFileSystem".to_string()),
-                        device_id: Some("media-device".to_string()),
-                        ..Default::default()
-                    }
-                ]),
+                folders: Some(vec![jellyfin::FolderStorageInfo {
+                    path: Some("/media/movies".to_string()),
+                    free_space: Some(2000000000),
+                    used_space: Some(1000000000),
+                    storage_type: Some("DefaultFileSystem".to_string()),
+                    device_id: Some("media-device".to_string()),
+                    ..Default::default()
+                }]),
                 ..Default::default()
             },
             jellyfin::LibraryStorageInfo {
                 id: Some("series-library-id".to_string()),
                 name: Some("TV Shows".to_string()),
-                folders: Some(vec![
-                    jellyfin::FolderStorageInfo {
-                        path: Some("/media/tv".to_string()),
-                        free_space: Some(2000000000),
-                        used_space: Some(1500000000),
-                        storage_type: Some("DefaultFileSystem".to_string()),
-                        device_id: Some("media-device".to_string()),
-                        ..Default::default()
-                    }
-                ]),
+                folders: Some(vec![jellyfin::FolderStorageInfo {
+                    path: Some("/media/tv".to_string()),
+                    free_space: Some(2000000000),
+                    used_space: Some(1500000000),
+                    storage_type: Some("DefaultFileSystem".to_string()),
+                    device_id: Some("media-device".to_string()),
+                    ..Default::default()
+                }]),
                 ..Default::default()
-            }
+            },
         ]),
         ..Default::default()
     };
@@ -175,7 +168,9 @@ pub async fn syncplay_list(State(state): State<AppState>) -> Result<impl IntoRes
 }
 
 #[route("/quickconnect/enabled", method = "GET", method = "POST")]
-pub async fn quickconnect_enabled(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn quickconnect_enabled(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
     stub(State(state)).await
 }
 
@@ -193,11 +188,12 @@ fn default_branding_configuration() -> jellyfin::BrandingOptions {
 pub async fn get_branding_configuration(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
-    let config = match crate::db::Settings::get(&state.ctx.db, BRANDING_CONFIG_KEY).await? {
-        Some(json) => serde_json::from_str(&json)
-            .unwrap_or_else(|_| default_branding_configuration()),
-        None => default_branding_configuration(),
-    };
+    let config =
+        match crate::db::Settings::get(&state.ctx.db, BRANDING_CONFIG_KEY).await? {
+            Some(json) => serde_json::from_str(&json)
+                .unwrap_or_else(|_| default_branding_configuration()),
+            None => default_branding_configuration(),
+        };
     Ok(Json(config))
 }
 
@@ -223,10 +219,11 @@ pub async fn update_branding_configuration(
 }
 
 async fn branding_css_response(state: &AppState) -> Result<Response> {
-    let config = match crate::db::Settings::get(&state.ctx.db, BRANDING_CONFIG_KEY).await? {
-        Some(json) => serde_json::from_str::<jellyfin::BrandingOptions>(&json).ok(),
-        None => None,
-    };
+    let config =
+        match crate::db::Settings::get(&state.ctx.db, BRANDING_CONFIG_KEY).await? {
+            Some(json) => serde_json::from_str::<jellyfin::BrandingOptions>(&json).ok(),
+            None => None,
+        };
     match config.and_then(|c| c.custom_css).filter(|s| !s.is_empty()) {
         Some(css) => Ok(([(header::CONTENT_TYPE, "text/css")], css).into_response()),
         None => Ok(StatusCode::NO_CONTENT.into_response()),
@@ -234,12 +231,16 @@ async fn branding_css_response(state: &AppState) -> Result<Response> {
 }
 
 #[get("/branding/css")]
-pub async fn get_branding_css(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn get_branding_css(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
     branding_css_response(&state).await
 }
 
 #[get("/branding/css.css")]
-pub async fn get_branding_css_dotcss(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn get_branding_css_dotcss(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
     branding_css_response(&state).await
 }
 
@@ -255,19 +256,19 @@ pub async fn system_activity_log(
     })))
 }
 
-
-
 /// Restart the server (Admin only)
 #[post("/system/restart")]
-pub async fn system_restart(
-    session: auth::AuthSession,
-) -> Result<impl IntoResponse> {
+pub async fn system_restart(session: auth::AuthSession) -> Result<impl IntoResponse> {
     // Check if user is admin
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("Admin access required").context_unauthorized("forbidden", "forbidden"));
+        return Err(anyhow::anyhow!("Admin access required")
+            .context_unauthorized("forbidden", "forbidden"));
     }
 
-    tracing::info!("Server restart requested by user: {}", session.user.username);
+    tracing::info!(
+        "Server restart requested by user: {}",
+        session.user.username
+    );
 
     // Trigger actual server restart
     restart_server().await?;
@@ -281,45 +282,47 @@ pub async fn system_restart(
 /// Actually restart the server process
 async fn restart_server() -> Result<()> {
     tracing::info!("Initiating server restart...");
-    
+
     // Get the current executable path and arguments
     let current_exe = std::env::current_exe()?;
     let args: Vec<String> = std::env::args().collect();
-    
+
     tracing::info!("Restarting with: {:?} {:?}", current_exe, args);
-    
+
     // Spawn the new process
     let mut command = std::process::Command::new(current_exe);
     command.args(&args[1..]); // Skip the first argument (program name)
-    
+
     // Set environment variables from current process
     for (key, value) in std::env::vars() {
         command.env(key, value);
     }
-    
+
     // Start the new process
     let mut child = command.spawn()?;
-    
+
     tracing::info!("New server process started with PID: {}", child.id());
-    
+
     // Give the new process a moment to start
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    
+
     // Exit the current process
     std::process::exit(0);
 }
 
 /// Shutdown the server (Admin only)
 #[post("/system/shutdown")]
-pub async fn system_shutdown(
-    session: auth::AuthSession,
-) -> Result<impl IntoResponse> {
+pub async fn system_shutdown(session: auth::AuthSession) -> Result<impl IntoResponse> {
     // Check if user is admin
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("Admin access required").context_unauthorized("forbidden", "forbidden"));
+        return Err(anyhow::anyhow!("Admin access required")
+            .context_unauthorized("forbidden", "forbidden"));
     }
 
-    tracing::info!("Server shutdown requested by user: {}", session.user.username);
+    tracing::info!(
+        "Server shutdown requested by user: {}",
+        session.user.username
+    );
 
     // Trigger actual server shutdown
     shutdown_server().await?;
@@ -333,13 +336,13 @@ pub async fn system_shutdown(
 /// Actually shutdown the server process
 async fn shutdown_server() -> Result<()> {
     tracing::info!("Initiating server shutdown...");
-    
+
     // Perform graceful shutdown
     tracing::info!("Server is shutting down gracefully");
-    
+
     // Give a moment for cleanup
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    
+
     // Exit the process
     std::process::exit(0);
 }
@@ -360,7 +363,9 @@ pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoRespo
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::integration_test::{AUTH_HEADER, auth_header_with_token, authenticated_server, new_test_server};
+    use crate::integration_test::{
+        AUTH_HEADER, auth_header_with_token, authenticated_server, new_test_server,
+    };
     use http::header::HeaderValue;
     use serde_json::json;
 
@@ -368,116 +373,115 @@ mod test {
     async fn test_system_info_public() {
         let server = new_test_server().await.unwrap();
 
-        let resp = server
-            .get("/system/info/public")
-            .await;
+        let resp = server.get("/system/info/public").await;
 
         resp.assert_status_ok();
-        let body: serde_json::Value = resp.json();
-        assert_eq!(body["User"]["Name"], "test");
+        resp.assert_json(&json!({
+            "ServerName": "Remux",
+            "ProductName": "Jellyfin Server",
+            "Version": "10.10.7",
+            "StartupWizardCompleted": true,
+        }));
     }
 
+    #[tokio::test]
+    async fn system_ping_test() {
+        let server = crate::integration_test::new_test_server().await.unwrap();
 
-#[tokio::test]
-async fn system_ping_test() {
-    let server = crate::integration_test::new_test_server().await.unwrap();
+        let response = server.get("/system/ping").await;
 
-    let response = server.get("/system/ping").await;
+        response.assert_status_ok();
+        //response.assert_text("Remux Server");
+    }
 
-    response.assert_status_ok();
-    //response.assert_text("Remux Server");
-}
+    #[tokio::test]
+    async fn system_info_storage_test() {
+        let server = crate::integration_test::new_test_server().await.unwrap();
 
+        let response = server.get("/system/info/storage").await;
 
-#[tokio::test]
-async fn system_info_storage_test() {
-    let server = crate::integration_test::new_test_server().await.unwrap();
+        response.assert_status_ok();
+        let storage_info: crate::jellyfin::SystemStorageInfo = response.json();
 
-    let response = server.get("/system/info/storage").await;
+        // Check that we have the expected storage folders
+        assert!(storage_info.program_data_folder.is_some());
+        assert!(storage_info.cache_folder.is_some());
+        assert!(storage_info.web_folder.is_some());
 
-    response.assert_status_ok();
-    let storage_info: crate::jellyfin::SystemStorageInfo = response.json();
-    
-    // Check that we have the expected storage folders
-    assert!(storage_info.program_data_folder.is_some());
-    assert!(storage_info.cache_folder.is_some());
-    assert!(storage_info.web_folder.is_some());
-    
-    // Check that we have libraries
-    assert!(storage_info.libraries.is_some());
-    let libraries = storage_info.libraries.unwrap();
-    assert_eq!(libraries.len(), 2);
-    
-    // Check library names
-    let library_names: Vec<String> = libraries.iter().filter_map(|lib| lib.name.clone()).collect();
-    assert!(library_names.contains(&"Movies".to_string()));
-    assert!(library_names.contains(&"TV Shows".to_string()));
-}
+        // Check that we have libraries
+        assert!(storage_info.libraries.is_some());
+        let libraries = storage_info.libraries.unwrap();
+        assert_eq!(libraries.len(), 2);
 
+        // Check library names
+        let library_names: Vec<String> = libraries
+            .iter()
+            .filter_map(|lib| lib.name.clone())
+            .collect();
+        assert!(library_names.contains(&"Movies".to_string()));
+        assert!(library_names.contains(&"TV Shows".to_string()));
+    }
 
-#[tokio::test]
-async fn system_activity_log_test() {
-    let server = crate::integration_test::new_test_server().await.unwrap();
+    #[tokio::test]
+    async fn system_activity_log_test() {
+        let server = crate::integration_test::new_test_server().await.unwrap();
 
-    let response = server.get("/system/activitylog/entries").await;
+        let response = server.get("/system/activitylog/entries").await;
 
-    response.assert_status_ok();
-    let log_result: serde_json::Value = response.json();
-    
-    // Check that we have the expected structure
-    assert!(log_result["Items"].is_array());
-    assert_eq!(log_result["Items"].as_array().unwrap().len(), 0);
-    assert_eq!(log_result["TotalRecordCount"].as_i64().unwrap(), 0);
-}
+        response.assert_status_ok();
+        let log_result: serde_json::Value = response.json();
 
-#[tokio::test]
-async fn system_endpoints_exist_and_protected() {
-    use crate::integration_test::new_test_server;
-    let server = new_test_server().await.unwrap();
+        // Check that we have the expected structure
+        assert!(log_result["Items"].is_array());
+        assert_eq!(log_result["Items"].as_array().unwrap().len(), 0);
+        assert_eq!(log_result["TotalRecordCount"].as_i64().unwrap(), 0);
+    }
 
-    // Unauthenticated requests should return 401, not 404
-    let response = server.post("/system/restart").expect_failure().await;
-    assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
+    #[tokio::test]
+    async fn system_endpoints_exist_and_protected() {
+        use crate::integration_test::new_test_server;
+        let server = new_test_server().await.unwrap();
 
-    let response = server.post("/system/shutdown").expect_failure().await;
-    assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
-}
+        // Unauthenticated requests should return 401, not 404
+        let response = server.post("/system/restart").expect_failure().await;
+        assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
 
+        let response = server.post("/system/shutdown").expect_failure().await;
+        assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
+    }
 
-#[tokio::test]
-async fn system_restart_requires_auth() {
-    use crate::integration_test::new_test_server;
+    #[tokio::test]
+    async fn system_restart_requires_auth() {
+        use crate::integration_test::new_test_server;
 
-    let server = new_test_server().await.unwrap();
-    // Unauthenticated → 401
-    let response = server.post("/system/restart").expect_failure().await;
-    response.assert_status(StatusCode::UNAUTHORIZED);
-}
+        let server = new_test_server().await.unwrap();
+        // Unauthenticated → 401
+        let response = server.post("/system/restart").expect_failure().await;
+        response.assert_status(StatusCode::UNAUTHORIZED);
+    }
 
+    #[tokio::test]
+    async fn system_shutdown_requires_auth() {
+        use crate::integration_test::new_test_server;
 
-#[tokio::test]
-async fn system_shutdown_requires_auth() {
-    use crate::integration_test::new_test_server;
+        let server = new_test_server().await.unwrap();
+        // Unauthenticated → 401
+        let response = server.post("/system/shutdown").expect_failure().await;
+        response.assert_status(StatusCode::UNAUTHORIZED);
+    }
 
-    let server = new_test_server().await.unwrap();
-    // Unauthenticated → 401
-    let response = server.post("/system/shutdown").expect_failure().await;
-    response.assert_status(StatusCode::UNAUTHORIZED);
-}
+    #[tokio::test]
+    async fn system_info_shows_capabilities() {
+        let server = crate::integration_test::new_test_server().await.unwrap();
 
+        let response = server.get("/system/info").await;
 
-#[tokio::test]
-async fn system_info_shows_capabilities() {
-    let server = crate::integration_test::new_test_server().await.unwrap();
+        response.assert_status_ok();
+        let system_info: crate::jellyfin::SystemInfo = response.json();
 
-    let response = server.get("/system/info").await;
-
-    response.assert_status_ok();
-    let system_info: crate::jellyfin::SystemInfo = response.json();
-    
-    // Check that restart capabilities are properly indicated
-    assert_eq!(system_info.can_self_restart, Some(true));
-    assert_eq!(system_info.has_pending_restart, Some(false));
-    assert_eq!(system_info.is_shutting_down, Some(false));
-}
+        // Check that restart capabilities are properly indicated
+        assert_eq!(system_info.can_self_restart, Some(true));
+        assert_eq!(system_info.has_pending_restart, Some(false));
+        assert_eq!(system_info.is_shutting_down, Some(false));
+    }
 }

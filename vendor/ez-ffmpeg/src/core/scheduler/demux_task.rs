@@ -1,4 +1,3 @@
-use std::ffi::CStr;
 use crate::core::context::decoder_stream::DecoderStream;
 use crate::core::context::demuxer::Demuxer;
 use crate::core::context::obj_pool::ObjPool;
@@ -6,8 +5,10 @@ use crate::core::context::{AVFormatContextBox, PacketBox, PacketData};
 use crate::core::scheduler::ffmpeg_scheduler::{
     is_stopping, packet_is_null, set_scheduler_error, wait_until_not_paused,
 };
+use crate::core::scheduler::input_controller::SchNode;
 use crate::error::Error::Demuxing;
 use crate::error::{DemuxingError, DemuxingOperationError};
+use crate::util::ffmpeg_utils::av_err2str;
 use crate::util::ffmpeg_utils::av_rescale_q_rnd;
 use crossbeam_channel::Sender;
 use ffmpeg_next::packet::{Mut, Ref};
@@ -17,20 +18,19 @@ use ffmpeg_sys_next::AVRounding::AV_ROUND_NEAR_INF;
 #[cfg(not(feature = "docs-rs"))]
 use ffmpeg_sys_next::AV_CODEC_PROP_FIELDS;
 use ffmpeg_sys_next::{
-    av_compare_ts, av_gettime_relative, av_inv_q, av_mul_q, av_packet_ref, av_q2d, av_read_frame,
-    av_rescale, av_rescale_q, av_stream_get_parser, av_usleep,
-    avformat_seek_file, AVCodecDescriptor, AVCodecParameters, AVFormatContext, AVMediaType,
-    AVPacket, AVRational, AVStream, AVERROR, AVERROR_EOF, AVFMT_TS_DISCONT,
-    AV_NOPTS_VALUE, AV_PKT_FLAG_CORRUPT, AV_TIME_BASE, AV_TIME_BASE_Q,
-    EAGAIN,
+    av_compare_ts, av_gettime_relative, av_inv_q, av_mul_q, av_packet_ref, av_q2d,
+    av_read_frame, av_rescale, av_rescale_q, av_stream_get_parser, av_usleep,
+    avformat_seek_file, AVCodecDescriptor, AVCodecParameters, AVFormatContext,
+    AVMediaType, AVPacket, AVRational, AVStream, AVERROR, AVERROR_EOF,
+    AVFMT_TS_DISCONT, AV_NOPTS_VALUE, AV_PKT_FLAG_CORRUPT, AV_TIME_BASE,
+    AV_TIME_BASE_Q, EAGAIN,
 };
 use libc::{c_int, c_uint};
 use log::{debug, error, info, warn};
+use std::ffi::CStr;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use crate::core::scheduler::input_controller::SchNode;
-use crate::util::ffmpeg_utils::av_err2str;
 
 #[cfg(feature = "docs-rs")]
 pub(crate) fn demux_init(
@@ -68,12 +68,17 @@ pub(crate) fn demux_init(
 
     let in_fmt_ctx = demux.in_fmt_ctx;
     demux.in_fmt_ctx = null_mut();
-    let in_fmt_ctx_box = AVFormatContextBox::new(in_fmt_ctx, true, demux.is_set_read_callback);
+    let in_fmt_ctx_box =
+        AVFormatContextBox::new(in_fmt_ctx, true, demux.is_set_read_callback);
 
     #[cfg(windows)]
     let hwaccel = { demux.hwaccel.take() };
 
-    let format_name = unsafe { CStr::from_ptr((*(*in_fmt_ctx).iformat).name).to_str().unwrap_or("unknown") };
+    let format_name = unsafe {
+        CStr::from_ptr((*(*in_fmt_ctx).iformat).name)
+            .to_str()
+            .unwrap_or("unknown")
+    };
 
     let result = std::thread::Builder::new()
         .name(format!("demuxer{demux_idx}:{format_name}"))
@@ -274,7 +279,11 @@ pub(crate) fn demux_init(
     Ok(())
 }
 
-fn demux_done(demux_parameter: &mut DemuxerParameter, packet_pool: &ObjPool<Packet>, scheduler_status: &Arc<AtomicUsize>) {
+fn demux_done(
+    demux_parameter: &mut DemuxerParameter,
+    packet_pool: &ObjPool<Packet>,
+    scheduler_status: &Arc<AtomicUsize>,
+) {
     for ds in &demux_parameter.demux_streams {
         for (i, (packet_dst, input_stream_index, output_stream_index)) in
             demux_parameter.dsts.iter().enumerate()
@@ -315,14 +324,20 @@ fn demux_done(demux_parameter: &mut DemuxerParameter, packet_pool: &ObjPool<Pack
                 )
             };
             if ret < 0 {
-                warn!("demux_done: failed to send flush packet for stream {i}, ret={ret}");
+                warn!(
+                    "demux_done: failed to send flush packet for stream {i}, ret={ret}"
+                );
             }
         }
     }
 }
 
 const READRATE_INITIAL_BURST: f32 = 0.5;
-unsafe fn readrate_sleep(demux_parameter: &DemuxerParameter, nb_streams: c_uint, readrate: f32) {
+unsafe fn readrate_sleep(
+    demux_parameter: &DemuxerParameter,
+    nb_streams: c_uint,
+    readrate: f32,
+) {
     let file_start = 0;
     let burst_until = (AV_TIME_BASE as f32 * READRATE_INITIAL_BURST) as i64;
 
@@ -336,8 +351,8 @@ unsafe fn readrate_sleep(demux_parameter: &DemuxerParameter, nb_streams: c_uint,
             };
             stream_ts_offset = std::cmp::max(stream_ts_offset, file_start);
             let pts = av_rescale(ds.dts, 1000000, AV_TIME_BASE as i64);
-            let now = ((av_gettime_relative() - demux_parameter.wallclock_start) as f32 * readrate)
-                as i64
+            let now = ((av_gettime_relative() - demux_parameter.wallclock_start) as f32
+                * readrate) as i64
                 + stream_ts_offset;
             if pts - burst_until > now {
                 av_usleep((pts - burst_until - now) as u32);
@@ -385,7 +400,8 @@ unsafe fn ts_fixup(
     in_fmt_ctx: *mut AVFormatContext,
     pkt: *mut AVPacket,
     copy_ts: bool,
-) {}
+) {
+}
 
 #[cfg(not(feature = "docs-rs"))]
 unsafe fn ts_fixup(
@@ -431,10 +447,12 @@ unsafe fn ts_fixup(
     }
 
     if (*pkt).dts != AV_NOPTS_VALUE {
-        (*pkt).dts += av_rescale_q(demux_parameter.ts_offset, AV_TIME_BASE_Q, (*pkt).time_base);
+        (*pkt).dts +=
+            av_rescale_q(demux_parameter.ts_offset, AV_TIME_BASE_Q, (*pkt).time_base);
     }
     if (*pkt).pts != AV_NOPTS_VALUE {
-        (*pkt).pts += av_rescale_q(demux_parameter.ts_offset, AV_TIME_BASE_Q, (*pkt).time_base);
+        (*pkt).pts +=
+            av_rescale_q(demux_parameter.ts_offset, AV_TIME_BASE_Q, (*pkt).time_base);
     }
 
     // Apply timestamp scaling (after ts_offset, before duration)
@@ -512,7 +530,8 @@ unsafe fn ist_dts_update(
     demux_parameter: &mut DemuxerParameter,
     ist: *mut AVStream,
     pkt: *mut AVPacket,
-) {}
+) {
+}
 
 #[cfg(not(feature = "docs-rs"))]
 unsafe fn ist_dts_update(
@@ -534,7 +553,8 @@ unsafe fn ist_dts_update(
         // CLI: ist->st->avg_frame_rate (ffmpeg_demux.c:303), here ist IS the AVStream.
         let avg_frame_rate = (*ist).avg_frame_rate;
         ds.dts = if avg_frame_rate.num != 0 {
-            (((-(*par).video_delay) * AV_TIME_BASE) as f64 / av_q2d(avg_frame_rate)) as i64
+            (((-(*par).video_delay) * AV_TIME_BASE) as f64 / av_q2d(avg_frame_rate))
+                as i64
         } else {
             0
         };
@@ -560,10 +580,11 @@ unsafe fn ist_dts_update(
     match (*par).codec_type {
         AVMEDIA_TYPE_AUDIO => {
             if (*par).sample_rate != 0 {
-                ds.next_dts +=
-                    (AV_TIME_BASE as i64 * (*par).frame_size as i64) / (*par).sample_rate as i64;
+                ds.next_dts += (AV_TIME_BASE as i64 * (*par).frame_size as i64)
+                    / (*par).sample_rate as i64;
             } else {
-                ds.next_dts += av_rescale_q((*pkt).duration, (*pkt).time_base, AV_TIME_BASE_Q);
+                ds.next_dts +=
+                    av_rescale_q((*pkt).duration, (*pkt).time_base, AV_TIME_BASE_Q);
             }
         }
         AVMEDIA_TYPE_VIDEO => {
@@ -574,9 +595,11 @@ unsafe fn ist_dts_update(
                 ds.next_dts =
                     av_rescale_q(next_dts + 1, av_inv_q(framerate), time_base_q);
             } else if (*pkt).duration != 0 {
-                ds.next_dts += av_rescale_q((*pkt).duration, (*pkt).time_base, AV_TIME_BASE_Q);
+                ds.next_dts +=
+                    av_rescale_q((*pkt).duration, (*pkt).time_base, AV_TIME_BASE_Q);
             } else if (*par).framerate.num != 0 {
-                let field_rate = av_mul_q((*par).framerate, AVRational { num: 2, den: 1 });
+                let field_rate =
+                    av_mul_q((*par).framerate, AVRational { num: 2, den: 1 });
                 let mut fields = 2;
 
                 if !ds.codec_desc.is_null()
@@ -586,12 +609,12 @@ unsafe fn ist_dts_update(
                     fields = 1 + (*av_stream_get_parser(ist)).repeat_pict;
                 }
 
-                ds.next_dts += av_rescale_q(fields as i64, av_inv_q(field_rate), AV_TIME_BASE_Q);
+                ds.next_dts +=
+                    av_rescale_q(fields as i64, av_inv_q(field_rate), AV_TIME_BASE_Q);
             }
         }
         _ => {}
     }
-
 }
 
 #[cfg(feature = "docs-rs")]
@@ -600,7 +623,8 @@ unsafe fn ts_discontinuity_process(
     in_fmt_ctx: *mut AVFormatContext,
     ist: *mut AVStream,
     pkt: *mut AVPacket,
-) {}
+) {
+}
 
 #[cfg(not(feature = "docs-rs"))]
 unsafe fn ts_discontinuity_process(
@@ -640,7 +664,8 @@ unsafe fn ts_discontinuity_detect(
     in_fmt_ctx: *mut AVFormatContext,
     ist: *mut AVStream,
     pkt: *mut AVPacket,
-) {}
+) {
+}
 
 #[cfg(not(feature = "docs-rs"))]
 unsafe fn ts_discontinuity_detect(
@@ -665,7 +690,10 @@ unsafe fn ts_discontinuity_detect(
         AV_ROUND_NEAR_INF as u32,
     );
 
-    if copy_ts && ds.next_dts != AV_NOPTS_VALUE && fmt_is_discont != 0 && (*ist).pts_wrap_bits < 60
+    if copy_ts
+        && ds.next_dts != AV_NOPTS_VALUE
+        && fmt_is_discont != 0
+        && (*ist).pts_wrap_bits < 60
     {
         let wrap_dts = av_rescale_q_rnd(
             (*pkt).dts + (1i64 << (*ist).pts_wrap_bits),
@@ -709,7 +737,8 @@ unsafe fn ts_discontinuity_detect(
                 (*pkt).dts = AV_NOPTS_VALUE;
             }
             if (*pkt).pts != AV_NOPTS_VALUE {
-                let pkt_pts = av_rescale_q((*pkt).pts, (*pkt).time_base, AV_TIME_BASE_Q);
+                let pkt_pts =
+                    av_rescale_q((*pkt).pts, (*pkt).time_base, AV_TIME_BASE_Q);
                 delta = pkt_pts - ds.next_dts;
                 if delta.abs() > DTS_ERROR_THRESHOLD * AV_TIME_BASE as i64 {
                     warn!(
@@ -732,8 +761,7 @@ unsafe fn ts_discontinuity_detect(
             demux_parameter.ts_offset_discont -= delta;
             debug!(
                 "Inter stream timestamp discontinuity {}, new offset= {}",
-                delta,
-                demux_parameter.ts_offset_discont
+                delta, demux_parameter.ts_offset_discont
             );
             (*pkt).dts -= av_rescale_q(delta, AV_TIME_BASE_Q, (*pkt).time_base);
             if (*pkt).pts != AV_NOPTS_VALUE {
@@ -742,7 +770,8 @@ unsafe fn ts_discontinuity_detect(
         }
     }
 
-    demux_parameter.last_ts = av_rescale_q((*pkt).dts, (*pkt).time_base, AV_TIME_BASE_Q);
+    demux_parameter.last_ts =
+        av_rescale_q((*pkt).dts, (*pkt).time_base, AV_TIME_BASE_Q);
 }
 
 struct DemuxStreamParameter {
@@ -855,12 +884,12 @@ impl DemuxerParameter {
         }
 
         let nb_streams = unsafe { (*demux.in_fmt_ctx).nb_streams };
-        let mut demux_streams: Vec<DemuxStreamParameter> = Vec::with_capacity(nb_streams as usize);
+        let mut demux_streams: Vec<DemuxStreamParameter> =
+            Vec::with_capacity(nb_streams as usize);
         for i in 0..nb_streams {
             let stream = demux.get_stream(i as usize);
             demux_streams.push(DemuxStreamParameter::new(stream))
         }
-
 
         Self {
             dsts_finished,
@@ -917,7 +946,8 @@ unsafe fn seek_to_start(
         return ret;
     }
 
-    if demux_parameter.end_pts.ts != AV_NOPTS_VALUE && demux_parameter.max_pts.ts == AV_NOPTS_VALUE
+    if demux_parameter.end_pts.ts != AV_NOPTS_VALUE
+        && demux_parameter.max_pts.ts == AV_NOPTS_VALUE
         || av_compare_ts(
             demux_parameter.max_pts.ts,
             demux_parameter.max_pts.tb,
@@ -970,10 +1000,11 @@ unsafe fn demux_send(
     independent_readrate: bool,
 ) -> i32 {
     let node = demux_node.as_ref();
-    let SchNode::Demux {
-        waiter, ..
-    } = node else { unreachable!() };
-    let wait_time = waiter.wait_with_scheduler_status(scheduler_status, independent_readrate);
+    let SchNode::Demux { waiter, .. } = node else {
+        unreachable!()
+    };
+    let wait_time =
+        waiter.wait_with_scheduler_status(scheduler_status, independent_readrate);
     if is_stopping(wait_until_not_paused(scheduler_status)) {
         return ffmpeg_sys_next::AVERROR_EXIT;
     }
@@ -994,7 +1025,13 @@ unsafe fn demux_send(
         return demux_flush(packet_pool, &demux_parameter.dsts);
     }
 
-    demux_send_for_stream(demux_parameter, packet_box, packet_pool, flags, scheduler_status)
+    demux_send_for_stream(
+        demux_parameter,
+        packet_box,
+        packet_pool,
+        flags,
+        scheduler_status,
+    )
 }
 
 unsafe fn demux_send_for_stream(
@@ -1002,7 +1039,7 @@ unsafe fn demux_send_for_stream(
     packet_box: PacketBox,
     packet_pool: &ObjPool<Packet>,
     flags: usize,
-    scheduler_status: &Arc<AtomicUsize>
+    scheduler_status: &Arc<AtomicUsize>,
 ) -> i32 {
     let stream_index = (*packet_box.packet.as_ptr()).stream_index;
 
@@ -1019,7 +1056,9 @@ unsafe fn demux_send_for_stream(
 
     let mut nb_done = 0;
 
-    for (i, (dst_i, (packet_dst, _, output_stream_index))) in send_dsts.iter().enumerate() {
+    for (i, (dst_i, (packet_dst, _, output_stream_index))) in
+        send_dsts.iter().enumerate()
+    {
         let dst_finished = &mut demux_parameter.dsts_finished[*dst_i];
 
         if i < send_dsts.len() - 1 {
@@ -1029,7 +1068,8 @@ unsafe fn demux_send_for_stream(
 
             let packet_data = packet_box.packet_data.clone();
 
-            let mut ret = av_packet_ref(to_send.as_mut_ptr(), packet_box.packet.as_ptr());
+            let mut ret =
+                av_packet_ref(to_send.as_mut_ptr(), packet_box.packet.as_ptr());
             if ret < 0 {
                 return ret;
             }
@@ -1045,7 +1085,7 @@ unsafe fn demux_send_for_stream(
                 output_stream_index,
                 dst_finished,
                 flags,
-                scheduler_status
+                scheduler_status,
             );
             if ret == AVERROR_EOF {
                 nb_done += 1;
@@ -1059,7 +1099,7 @@ unsafe fn demux_send_for_stream(
                 output_stream_index,
                 dst_finished,
                 flags,
-                scheduler_status
+                scheduler_status,
             );
             if ret == AVERROR_EOF {
                 nb_done += 1;
@@ -1085,7 +1125,7 @@ unsafe fn demux_stream_send_to_dst(
     output_stream_index: &Option<usize>,
     dst_finished: &mut bool,
     flags: usize,
-    scheduler_status: &Arc<AtomicUsize>
+    scheduler_status: &Arc<AtomicUsize>,
 ) -> i32 {
     if *dst_finished {
         return AVERROR_EOF;
@@ -1103,7 +1143,8 @@ unsafe fn demux_stream_send_to_dst(
 
     if let Some(output_stream_index) = output_stream_index {
         if (flags & DEMUX_SEND_STREAMCOPY_EOF) == 0 {
-            (*packet_box.packet.as_mut_ptr()).stream_index = *output_stream_index as i32;
+            (*packet_box.packet.as_mut_ptr()).stream_index =
+                *output_stream_index as i32;
         }
         packet_box.packet_data.output_stream_index = *output_stream_index as i32;
         packet_box.packet_data.is_copy = true;
@@ -1174,7 +1215,10 @@ unsafe fn demux_flush(
 
 #[cfg(test)]
 mod tests {
-    use ffmpeg_sys_next::{av_inv_q, av_rescale_q, AVRational, AV_NOPTS_VALUE, AV_TIME_BASE, AV_TIME_BASE_Q};
+    use ffmpeg_sys_next::{
+        av_inv_q, av_rescale_q, AVRational, AV_NOPTS_VALUE, AV_TIME_BASE,
+        AV_TIME_BASE_Q,
+    };
 
     /// Apply ts_scale to a timestamp value.
     /// Returns the scaled timestamp, or AV_NOPTS_VALUE if input is AV_NOPTS_VALUE.
@@ -1373,18 +1417,26 @@ mod tests {
         let next = compute_next_dts_with_framerate(0, fr);
         // Expected: ~33333 us (1/30 of AV_TIME_BASE)
         let expected = AV_TIME_BASE as i64 / 30;
-        assert!((next - expected).abs() <= 1, "30fps: next={next}, expected={expected}");
+        assert!(
+            (next - expected).abs() <= 1,
+            "30fps: next={next}, expected={expected}"
+        );
     }
 
     #[test]
     fn framerate_dts_24000_1001() {
         // 23.976 fps (NTSC film): framerate = 24000/1001
-        let fr = AVRational { num: 24000, den: 1001 };
+        let fr = AVRational {
+            num: 24000,
+            den: 1001,
+        };
         let next = compute_next_dts_with_framerate(0, fr);
         // Expected: 1001/24000 * 1_000_000 = 41708.33.. us
         let expected_us = (1001.0 / 24000.0 * AV_TIME_BASE as f64) as i64;
-        assert!((next - expected_us).abs() <= 1,
-            "23.976fps: next={next}, expected~={expected_us}");
+        assert!(
+            (next - expected_us).abs() <= 1,
+            "23.976fps: next={next}, expected~={expected_us}"
+        );
     }
 
     #[test]
@@ -1410,8 +1462,11 @@ mod tests {
         assert!((dts2 - dts1 - frame_dur).abs() <= 1);
         assert!((dts3 - dts2 - frame_dur).abs() <= 1);
         // After 3 frames, should be close to 3 * frame_dur
-        assert!((dts3 - 3 * frame_dur).abs() <= 3,
-            "3 frames at 30fps: dts3={dts3}, expected~={}", 3 * frame_dur);
+        assert!(
+            (dts3 - 3 * frame_dur).abs() <= 3,
+            "3 frames at 30fps: dts3={dts3}, expected~={}",
+            3 * frame_dur
+        );
     }
 
     #[test]
@@ -1421,8 +1476,10 @@ mod tests {
         let start_dts = AV_TIME_BASE as i64; // 1 second
         let next = compute_next_dts_with_framerate(start_dts, fr);
         let expected = start_dts + AV_TIME_BASE as i64 / 24;
-        assert!((next - expected).abs() <= 1,
-            "24fps from 1s: next={next}, expected~={expected}");
+        assert!(
+            (next - expected).abs() <= 1,
+            "24fps from 1s: next={next}, expected~={expected}"
+        );
     }
 
     #[test]
@@ -1431,7 +1488,10 @@ mod tests {
         let fr = AVRational { num: 60, den: 1 };
         let next = compute_next_dts_with_framerate(0, fr);
         let expected = AV_TIME_BASE as i64 / 60;
-        assert!((next - expected).abs() <= 1, "60fps: next={next}, expected={expected}");
+        assert!(
+            (next - expected).abs() <= 1,
+            "60fps: next={next}, expected={expected}"
+        );
     }
 
     /// Mirrors the initial DTS calculation for first frame:
@@ -1458,8 +1518,10 @@ mod tests {
         let fr = AVRational { num: 30, den: 1 };
         let dts = compute_initial_dts(1, fr);
         let expected = -(AV_TIME_BASE as i64 / 30);
-        assert!((dts - expected).abs() <= 1,
-            "video_delay=1 at 30fps: dts={dts}, expected={expected}");
+        assert!(
+            (dts - expected).abs() <= 1,
+            "video_delay=1 at 30fps: dts={dts}, expected={expected}"
+        );
     }
 
     #[test]

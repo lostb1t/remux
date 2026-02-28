@@ -1,8 +1,8 @@
-use std::thread::sleep;
-use std::time::Duration;
 use ez_ffmpeg::FfmpegContext;
 use ez_ffmpeg::Input;
 use ez_ffmpeg::Output;
+use std::thread::sleep;
+use std::time::Duration;
 
 fn main() {
     // Set up common output configuration for all platforms
@@ -34,8 +34,10 @@ fn main() {
         let scheduler = FfmpegContext::builder()
             .input(input)
             .output(output)
-            .build().unwrap()
-            .start().unwrap();
+            .build()
+            .unwrap()
+            .start()
+            .unwrap();
 
         sleep(Duration::from_secs(10));
         scheduler.abort();
@@ -53,8 +55,10 @@ fn main() {
         let scheduler = FfmpegContext::builder()
             .input(input)
             .output(output)
-            .build().unwrap()
-            .start().unwrap();
+            .build()
+            .unwrap()
+            .start()
+            .unwrap();
 
         sleep(Duration::from_secs(10));
         scheduler.abort();
@@ -68,15 +72,16 @@ fn main() {
             .set_format("v4l2")
             .set_input_opt("framerate", "30")
             .set_input_opt("video_size", "1280x720");
-        let audio_input = Input::from("hw:0")
-            .set_format("alsa");
+        let audio_input = Input::from("hw:0").set_format("alsa");
 
         let scheduler = FfmpegContext::builder()
             .input(video_input)
             .input(audio_input)
             .output(output)
-            .build().unwrap()
-            .start().unwrap();
+            .build()
+            .unwrap()
+            .start()
+            .unwrap();
 
         sleep(Duration::from_secs(10));
         scheduler.abort();

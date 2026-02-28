@@ -1,5 +1,3 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use crate::core::codec::Codec;
 use crate::core::context::{FrameBox, PacketBox, Stream};
 use crate::core::hwaccel::HWAccelID;
@@ -8,6 +6,8 @@ use ffmpeg_sys_next::{
     AVCodec, AVCodecDescriptor, AVCodecParameters, AVHWDeviceType, AVMediaType,
     AVPixelFormat, AVRational, AVStream,
 };
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct DecoderStream {
@@ -79,19 +79,35 @@ impl DecoderStream {
         self.add_fg_dst(frame_dst, usize::MAX, Arc::new([]));
     }
 
-    pub(crate) fn add_fg_dst(&mut self, frame_dst: Sender<FrameBox>, fg_input_index: usize, finished_flag_list: Arc<[AtomicBool]>) {
-        self.dsts.push((frame_dst, fg_input_index, finished_flag_list));
+    pub(crate) fn add_fg_dst(
+        &mut self,
+        frame_dst: Sender<FrameBox>,
+        fg_input_index: usize,
+        finished_flag_list: Arc<[AtomicBool]>,
+    ) {
+        self.dsts
+            .push((frame_dst, fg_input_index, finished_flag_list));
     }
 
     pub(crate) fn take_src(&mut self) -> Option<Receiver<PacketBox>> {
         self.src.take()
     }
 
-    pub(crate) fn take_dsts(&mut self) -> Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)> {
+    pub(crate) fn take_dsts(
+        &mut self,
+    ) -> Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)> {
         std::mem::take(&mut self.dsts)
     }
 
-    pub fn replace_dsts(&mut self, new_dsts: Sender<FrameBox>, fg_input_index: usize, finished_flag_list: Arc<[AtomicBool]>) -> Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)> {
-        std::mem::replace(&mut self.dsts, vec![(new_dsts, fg_input_index, finished_flag_list)])
+    pub fn replace_dsts(
+        &mut self,
+        new_dsts: Sender<FrameBox>,
+        fg_input_index: usize,
+        finished_flag_list: Arc<[AtomicBool]>,
+    ) -> Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)> {
+        std::mem::replace(
+            &mut self.dsts,
+            vec![(new_dsts, fg_input_index, finished_flag_list)],
+        )
     }
 }

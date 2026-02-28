@@ -178,7 +178,9 @@ impl ConnectionState {
     pub fn can_read(&self) -> bool {
         matches!(
             self,
-            ConnectionState::Handshaking | ConnectionState::Active | ConnectionState::SlowClient
+            ConnectionState::Handshaking
+                | ConnectionState::Active
+                | ConnectionState::SlowClient
         )
     }
 
@@ -278,9 +280,9 @@ impl ReactorConnection {
         is_sequence_header: bool,
         is_video: bool,
     ) -> bool {
-        let result = self
-            .write_queue
-            .enqueue(data, is_keyframe, is_sequence_header, is_video);
+        let result =
+            self.write_queue
+                .enqueue(data, is_keyframe, is_sequence_header, is_video);
 
         // Update state based on backpressure level
         match self.write_queue.backpressure_level() {
@@ -339,10 +341,7 @@ impl ReactorConnection {
             }
             Ok(FlushResult::Closed) => Ok(true),
             Err(e) => {
-                debug!(
-                    "Connection {} write error: {:?}",
-                    self.token.id, e
-                );
+                debug!("Connection {} write error: {:?}", self.token.id, e);
                 Err(e)
             }
         }
@@ -386,7 +385,10 @@ impl ReactorConnection {
     /// Process handshake data
     ///
     /// Returns (remaining data, response data, handshake complete, error)
-    pub fn process_handshake(&mut self, data: &[u8]) -> (Option<Vec<u8>>, Option<Vec<u8>>, bool, bool) {
+    pub fn process_handshake(
+        &mut self,
+        data: &[u8],
+    ) -> (Option<Vec<u8>>, Option<Vec<u8>>, bool, bool) {
         let handshake = match self.handshake.as_mut() {
             Some(h) => h,
             None => return (Some(data.to_vec()), None, true, false), // Handshake already complete
@@ -464,11 +466,13 @@ impl ReactorConnection {
     /// Close connection
     pub fn shutdown(&mut self) {
         if let Err(e) = self.socket.shutdown(Shutdown::Both) {
-            debug!("Socket shutdown error (expected if already closed): {:?}", e);
+            debug!(
+                "Socket shutdown error (expected if already closed): {:?}",
+                e
+            );
         }
         self.mark_closed();
     }
-
 }
 
 // ============================================================================
@@ -610,7 +614,10 @@ impl Reactor {
         if let Some(conn) = self.connections.try_remove(id) {
             // Deregister from poller
             if let Err(e) = self.poller.deregister(conn.raw_handle()) {
-                debug!("Failed to deregister connection {} from poller: {:?}", id, e);
+                debug!(
+                    "Failed to deregister connection {} from poller: {:?}",
+                    id, e
+                );
             }
 
             // Notify scheduler
@@ -659,8 +666,11 @@ impl Reactor {
         if let Some(conn) = self.connections.get_mut(id) {
             let desired = conn.desired_interest();
             if desired != conn.current_interest {
-                self.poller
-                    .modify(conn.raw_handle(), conn.token.to_poller_token(), desired)?;
+                self.poller.modify(
+                    conn.raw_handle(),
+                    conn.token.to_poller_token(),
+                    desired,
+                )?;
                 conn.current_interest = desired;
             }
         }
@@ -721,10 +731,7 @@ impl Reactor {
     }
 
     /// Read data from connection
-    fn read_connection_data(
-        &mut self,
-        id: usize,
-    ) -> Option<(Vec<u8>, bool)> {
+    fn read_connection_data(&mut self, id: usize) -> Option<(Vec<u8>, bool)> {
         let conn = match self.connections.get_mut(id) {
             Some(c) if c.state.can_read() => c,
             _ => return None,
@@ -750,11 +757,7 @@ impl Reactor {
     }
 
     /// Process connection data through scheduler
-    fn process_connection_data(
-        &mut self,
-        id: usize,
-        data: &[u8],
-    ) {
+    fn process_connection_data(&mut self, id: usize, data: &[u8]) {
         let conn = match self.connections.get_mut(id) {
             Some(c) => c,
             None => return,
@@ -770,11 +773,7 @@ impl Reactor {
     }
 
     /// Process handshake data
-    fn process_handshake_data(
-        &mut self,
-        id: usize,
-        data: &[u8],
-    ) {
+    fn process_handshake_data(&mut self, id: usize, data: &[u8]) {
         let conn = match self.connections.get_mut(id) {
             Some(c) => c,
             None => return,
@@ -811,20 +810,12 @@ impl Reactor {
     }
 
     /// Process normal (non-handshake) data
-    fn process_normal_data(
-        &mut self,
-        id: usize,
-        data: &[u8],
-    ) {
+    fn process_normal_data(&mut self, id: usize, data: &[u8]) {
         self.process_scheduler_results(id, data);
     }
 
     /// Process scheduler results
-    fn process_scheduler_results(
-        &mut self,
-        id: usize,
-        data: &[u8],
-    ) {
+    fn process_scheduler_results(&mut self, id: usize, data: &[u8]) {
         match self.scheduler.bytes_received(id, data) {
             Ok(server_results) => {
                 for result in server_results {
@@ -864,10 +855,16 @@ impl Reactor {
         // Collect IDs that successfully enqueued data for dirty marking
         let mut enqueued_ids = Vec::new();
 
-        for (target_id, data, is_keyframe, is_sequence_header, is_video) in self.packets_buffer.drain(..) {
+        for (target_id, data, is_keyframe, is_sequence_header, is_video) in
+            self.packets_buffer.drain(..)
+        {
             if let Some(target_conn) = self.connections.get_mut(target_id) {
-                let enqueued =
-                    target_conn.enqueue_data(Bytes::from(data), is_keyframe, is_sequence_header, is_video);
+                let enqueued = target_conn.enqueue_data(
+                    Bytes::from(data),
+                    is_keyframe,
+                    is_sequence_header,
+                    is_video,
+                );
                 if enqueued {
                     enqueued_ids.push(target_id);
                 } else {
@@ -911,7 +908,8 @@ impl Reactor {
         let mut packets_to_write = Vec::new();
         let mut ids_to_close = Vec::new();
 
-        let publisher_ids: Vec<usize> = self.publishers.iter().map(|(id, _)| id).collect();
+        let publisher_ids: Vec<usize> =
+            self.publishers.iter().map(|(id, _)| id).collect();
 
         for pub_id in publisher_ids {
             let receiver = {
@@ -963,7 +961,11 @@ impl Reactor {
                     Err(crossbeam_channel::TryRecvError::Disconnected) => {
                         debug!("Publisher {} disconnected", pub_id);
                         // Send deleteStream command
-                        self.send_delete_stream(pub_id, &mut packets_to_write, &mut ids_to_close);
+                        self.send_delete_stream(
+                            pub_id,
+                            &mut packets_to_write,
+                            &mut ids_to_close,
+                        );
                         publisher_ids_to_remove.push(pub_id);
                         break;
                     }
@@ -973,10 +975,16 @@ impl Reactor {
 
         // Write pending packets and collect IDs that successfully enqueued
         let mut enqueued_ids = Vec::new();
-        for (target_id, data, is_keyframe, is_sequence_header, is_video) in packets_to_write {
+        for (target_id, data, is_keyframe, is_sequence_header, is_video) in
+            packets_to_write
+        {
             if let Some(target_conn) = self.connections.get_mut(target_id) {
-                let enqueued =
-                    target_conn.enqueue_data(Bytes::from(data), is_keyframe, is_sequence_header, is_video);
+                let enqueued = target_conn.enqueue_data(
+                    Bytes::from(data),
+                    is_keyframe,
+                    is_sequence_header,
+                    is_video,
+                );
                 if enqueued {
                     enqueued_ids.push(target_id);
                 } else {
@@ -1196,7 +1204,9 @@ impl Reactor {
 
                 // Handle writable
                 if event.is_writable() {
-                    if let Some(HandleResult::Disconnect(close_id)) = self.handle_writable(id) {
+                    if let Some(HandleResult::Disconnect(close_id)) =
+                        self.handle_writable(id)
+                    {
                         ids_to_close.push(close_id);
                     }
                 }
@@ -1237,7 +1247,8 @@ impl Reactor {
     fn graceful_shutdown(&mut self) {
         info!("Starting graceful shutdown...");
 
-        let deadline = Instant::now() + Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
+        let deadline =
+            Instant::now() + Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
 
         // Mark all connections as closing
         for (_, conn) in self.connections.iter_mut() {
@@ -1322,7 +1333,8 @@ mod tests {
         let client = TcpStream::connect(addr).expect("Failed to connect");
         let token = ConnectionToken::new(0, 1);
 
-        let conn = ReactorConnection::new(token, client).expect("Failed to create connection");
+        let conn =
+            ReactorConnection::new(token, client).expect("Failed to create connection");
 
         // Initially should want to read
         assert_eq!(conn.desired_interest(), Interest::READABLE);
@@ -1342,7 +1354,8 @@ mod tests {
 
         // Create a connection and enqueue some data
         let token = ConnectionToken::new(0, 1);
-        let mut conn = ReactorConnection::new(token, server_socket).expect("Failed to create connection");
+        let mut conn = ReactorConnection::new(token, server_socket)
+            .expect("Failed to create connection");
 
         // Transition to Active state
         conn.state = ConnectionState::Active;
@@ -1357,12 +1370,16 @@ mod tests {
         let _ = conn.try_flush();
 
         // Read from client side
-        client.set_nonblocking(false).expect("Failed to set blocking");
+        client
+            .set_nonblocking(false)
+            .expect("Failed to set blocking");
         let mut buf = vec![0u8; 100];
 
         // Use a timeout to prevent hanging
         use std::time::Duration;
-        client.set_read_timeout(Some(Duration::from_millis(100))).expect("Failed to set timeout");
+        client
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("Failed to set timeout");
 
         match client.peek(&mut buf) {
             Ok(n) if n > 0 => {
@@ -1386,7 +1403,8 @@ mod tests {
         let client = TcpStream::connect(addr).expect("Failed to connect");
         let token = ConnectionToken::new(0, 1);
 
-        let conn = ReactorConnection::new(token, client).expect("Failed to create connection");
+        let conn =
+            ReactorConnection::new(token, client).expect("Failed to create connection");
 
         // Should not be timed out immediately
         assert!(!conn.is_timed_out(Duration::from_secs(60)));
@@ -1409,16 +1427,20 @@ mod tests {
         let stream_keys = dashmap::DashSet::new();
         let status = Arc::new(AtomicUsize::new(STATUS_RUN));
 
-        let mut reactor = Reactor::new(3, None, stream_keys, status).expect("Failed to create reactor");
+        let mut reactor = Reactor::new(3, None, stream_keys, status)
+            .expect("Failed to create reactor");
 
         // Create a listener and accept multiple connections
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
         let addr = listener.local_addr().expect("Failed to get address");
 
         // Add first connection
         let client1 = TcpStream::connect(addr).expect("Failed to connect");
         let (server1, _) = listener.accept().expect("Failed to accept");
-        let token1 = reactor.add_connection(server1).expect("Failed to add connection");
+        let token1 = reactor
+            .add_connection(server1)
+            .expect("Failed to add connection");
 
         // Remove it
         reactor.remove_connection(token1.id);
@@ -1426,7 +1448,9 @@ mod tests {
         // Add another connection - should reuse the ID but with incremented generation
         let client2 = TcpStream::connect(addr).expect("Failed to connect");
         let (server2, _) = listener.accept().expect("Failed to accept");
-        let token2 = reactor.add_connection(server2).expect("Failed to add connection");
+        let token2 = reactor
+            .add_connection(server2)
+            .expect("Failed to add connection");
 
         // Same ID but different generation
         assert_eq!(token1.id, token2.id);
@@ -1442,23 +1466,31 @@ mod tests {
         let stream_keys = dashmap::DashSet::new();
         let status = Arc::new(AtomicUsize::new(STATUS_RUN));
 
-        let mut reactor = Reactor::new(3, None, stream_keys, status).expect("Failed to create reactor");
+        let mut reactor = Reactor::new(3, None, stream_keys, status)
+            .expect("Failed to create reactor");
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
         let addr = listener.local_addr().expect("Failed to get address");
 
         let client = TcpStream::connect(addr).expect("Failed to connect");
         let (server, _) = listener.accept().expect("Failed to accept");
-        let token = reactor.add_connection(server).expect("Failed to add connection");
+        let token = reactor
+            .add_connection(server)
+            .expect("Failed to add connection");
 
         // Connection should be valid with correct generation
-        assert!(reactor.validate_connection(token.to_poller_token()).is_some());
+        assert!(reactor
+            .validate_connection(token.to_poller_token())
+            .is_some());
 
         // Remove connection
         reactor.remove_connection(token.id);
 
         // Old token should now be invalid (connection removed)
-        assert!(reactor.validate_connection(token.to_poller_token()).is_none());
+        assert!(reactor
+            .validate_connection(token.to_poller_token())
+            .is_none());
 
         drop(client);
     }
@@ -1472,15 +1504,19 @@ mod tests {
         let stream_keys = dashmap::DashSet::new();
         let status = Arc::new(AtomicUsize::new(STATUS_RUN));
 
-        let mut reactor = Reactor::new(3, None, stream_keys, status).expect("Failed to create reactor");
+        let mut reactor = Reactor::new(3, None, stream_keys, status)
+            .expect("Failed to create reactor");
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
         let addr = listener.local_addr().expect("Failed to get address");
 
         // Create first connection (connection A)
         let client_a = TcpStream::connect(addr).expect("Failed to connect A");
         let (server_a, _) = listener.accept().expect("Failed to accept A");
-        let token_a = reactor.add_connection(server_a).expect("Failed to add connection A");
+        let token_a = reactor
+            .add_connection(server_a)
+            .expect("Failed to add connection A");
         let stale_poller_token = token_a.to_poller_token();
 
         // Remove connection A
@@ -1490,18 +1526,22 @@ mod tests {
         // Create new connection (connection B) - should reuse slot 0
         let client_b = TcpStream::connect(addr).expect("Failed to connect B");
         let (server_b, _) = listener.accept().expect("Failed to accept B");
-        let token_b = reactor.add_connection(server_b).expect("Failed to add connection B");
+        let token_b = reactor
+            .add_connection(server_b)
+            .expect("Failed to add connection B");
 
         // Token B should be valid
-        assert!(reactor.validate_connection(token_b.to_poller_token()).is_some());
+        assert!(reactor
+            .validate_connection(token_b.to_poller_token())
+            .is_some());
 
         // Stale token A should be INVALID even though same id slot is occupied
         // (generation differs)
         assert!(reactor.validate_connection(stale_poller_token).is_none());
 
         // Different generations for same id
-        assert_eq!(token_a.id, token_b.id);  // Same slot reused
-        assert_ne!(token_a.generation, token_b.generation);  // Different generation
+        assert_eq!(token_a.id, token_b.id); // Same slot reused
+        assert_ne!(token_a.generation, token_b.generation); // Different generation
 
         reactor.remove_connection(token_b.id);
         drop(client_b);
@@ -1514,9 +1554,11 @@ mod tests {
         let stream_keys = dashmap::DashSet::new();
         let status = Arc::new(AtomicUsize::new(STATUS_RUN));
 
-        let mut reactor = Reactor::new(3, None, stream_keys, status).expect("Failed to create reactor");
+        let mut reactor = Reactor::new(3, None, stream_keys, status)
+            .expect("Failed to create reactor");
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
         let addr = listener.local_addr().expect("Failed to get address");
 
         // Create 100 connections (not 1000+ for unit test performance)
@@ -1525,10 +1567,14 @@ mod tests {
         let mut tokens = Vec::new();
 
         for i in 0..num_connections {
-            let client = TcpStream::connect(addr).expect(&format!("Failed to connect {}", i));
-            let (server, _) = listener.accept().expect(&format!("Failed to accept {}", i));
+            let client =
+                TcpStream::connect(addr).expect(&format!("Failed to connect {}", i));
+            let (server, _) =
+                listener.accept().expect(&format!("Failed to accept {}", i));
 
-            let token = reactor.add_connection(server).expect(&format!("Failed to add connection {}", i));
+            let token = reactor
+                .add_connection(server)
+                .expect(&format!("Failed to add connection {}", i));
             clients.push(client);
             tokens.push(token);
         }
@@ -1558,9 +1604,11 @@ mod tests {
         let stream_keys = dashmap::DashSet::new();
         let status = Arc::new(AtomicUsize::new(STATUS_RUN));
 
-        let mut reactor = Reactor::new(3, None, stream_keys, status).expect("Failed to create reactor");
+        let mut reactor = Reactor::new(3, None, stream_keys, status)
+            .expect("Failed to create reactor");
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
         let addr = listener.local_addr().expect("Failed to get address");
 
         // Adaptive connection count based on system FD limit
@@ -1575,9 +1623,14 @@ mod tests {
         let start = Instant::now();
 
         for i in 0..num_connections {
-            let client = TcpStream::connect(addr).unwrap_or_else(|_| panic!("Failed to connect {}", i));
-            let (server, _) = listener.accept().unwrap_or_else(|_| panic!("Failed to accept {}", i));
-            let token = reactor.add_connection(server).unwrap_or_else(|_| panic!("Failed to add {}", i));
+            let client = TcpStream::connect(addr)
+                .unwrap_or_else(|_| panic!("Failed to connect {}", i));
+            let (server, _) = listener
+                .accept()
+                .unwrap_or_else(|_| panic!("Failed to accept {}", i));
+            let token = reactor
+                .add_connection(server)
+                .unwrap_or_else(|_| panic!("Failed to add {}", i));
             clients.push(client);
             tokens.push(token);
         }
@@ -1604,9 +1657,15 @@ mod tests {
         println!("║ Connections:     {:>40} ║", num_connections);
         println!("╠══════════════════════════════════════════════════════════╣");
         println!("║ Connect time:    {:>37?} ║", connect_time);
-        println!("║ Per connection:  {:>37?} ║", connect_time / num_connections as u32);
+        println!(
+            "║ Per connection:  {:>37?} ║",
+            connect_time / num_connections as u32
+        );
         println!("║ Cleanup time:    {:>37?} ║", cleanup_time);
-        println!("║ Per cleanup:     {:>37?} ║", cleanup_time / num_connections as u32);
+        println!(
+            "║ Per cleanup:     {:>37?} ║",
+            cleanup_time / num_connections as u32
+        );
         println!("╚══════════════════════════════════════════════════════════╝");
         println!();
     }
@@ -1616,22 +1675,26 @@ mod tests {
     #[test]
     #[ignore] // Only run when explicitly requested
     fn perf_read_throughput() {
-        use std::time::Instant;
         use std::io::Write;
+        use std::time::Instant;
 
         let stream_keys = dashmap::DashSet::new();
         let status = Arc::new(AtomicUsize::new(STATUS_RUN));
 
-        let mut reactor = Reactor::new(3, None, stream_keys, status).expect("Failed to create reactor");
+        let mut reactor = Reactor::new(3, None, stream_keys, status)
+            .expect("Failed to create reactor");
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
         let addr = listener.local_addr().expect("Failed to get address");
 
         let mut client = TcpStream::connect(addr).expect("Failed to connect");
         let (server, _) = listener.accept().expect("Failed to accept");
         client.set_nodelay(true).ok();
 
-        let token = reactor.add_connection(server).expect("Failed to add connection");
+        let token = reactor
+            .add_connection(server)
+            .expect("Failed to add connection");
 
         // Test data: simulate RTMP-like traffic (various chunk sizes)
         let test_sizes = [128, 1024, 4096, 8192, 16384, 65536];
@@ -1668,10 +1731,13 @@ mod tests {
             }
 
             let elapsed = start.elapsed();
-            let throughput_mbps = (total_bytes as f64 / 1_000_000.0) / elapsed.as_secs_f64();
+            let throughput_mbps =
+                (total_bytes as f64 / 1_000_000.0) / elapsed.as_secs_f64();
 
-            println!("║ Chunk {:>6} B:  {:>8.2} MB/s ({:>6} B x {:>3})      ║",
-                     size, throughput_mbps, size, iterations);
+            println!(
+                "║ Chunk {:>6} B:  {:>8.2} MB/s ({:>6} B x {:>3})      ║",
+                size, throughput_mbps, size, iterations
+            );
         }
 
         println!("╚══════════════════════════════════════════════════════════╝");
@@ -1689,17 +1755,21 @@ mod tests {
         let stream_keys = dashmap::DashSet::new();
         let status = Arc::new(AtomicUsize::new(STATUS_RUN));
 
-        let mut reactor = Reactor::new(3, None, stream_keys, status).expect("Failed to create reactor");
+        let mut reactor = Reactor::new(3, None, stream_keys, status)
+            .expect("Failed to create reactor");
 
         // Create a listener and connection pair
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
         let addr = listener.local_addr().expect("Failed to get address");
 
         let mut client = TcpStream::connect(addr).expect("Failed to connect");
         let (server, _) = listener.accept().expect("Failed to accept");
         client.set_nonblocking(true).ok();
 
-        let token = reactor.add_connection(server).expect("Failed to add connection");
+        let token = reactor
+            .add_connection(server)
+            .expect("Failed to add connection");
 
         // Set connection to Active state so it can write
         if let Some(conn) = reactor.connections.get_mut(token.id) {
@@ -1726,13 +1796,17 @@ mod tests {
         }
 
         // Verify interest_dirty was marked
-        assert!(reactor.is_interest_dirty(token.id),
-            "interest_dirty should contain connection ID after queue drain");
+        assert!(
+            reactor.is_interest_dirty(token.id),
+            "interest_dirty should contain connection ID after queue drain"
+        );
 
         // Read from client to verify data was sent
         let mut buf = vec![0u8; 100];
         client.set_nonblocking(false).ok();
-        client.set_read_timeout(Some(std::time::Duration::from_millis(100))).ok();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+            .ok();
         let _ = client.read(&mut buf);
 
         // Cleanup
@@ -1747,17 +1821,21 @@ mod tests {
         let stream_keys = dashmap::DashSet::new();
         let status = Arc::new(AtomicUsize::new(STATUS_RUN));
 
-        let mut reactor = Reactor::new(3, None, stream_keys, status).expect("Failed to create reactor");
+        let mut reactor = Reactor::new(3, None, stream_keys, status)
+            .expect("Failed to create reactor");
 
         // Create a listener and connection pair
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
         let addr = listener.local_addr().expect("Failed to get address");
 
         let mut client = TcpStream::connect(addr).expect("Failed to connect");
         let (server, _) = listener.accept().expect("Failed to accept");
         client.set_nonblocking(true).ok();
 
-        let token = reactor.add_connection(server).expect("Failed to add connection");
+        let token = reactor
+            .add_connection(server)
+            .expect("Failed to add connection");
 
         // Set connection to Active state
         if let Some(conn) = reactor.connections.get_mut(token.id) {
@@ -1776,7 +1854,10 @@ mod tests {
 
         // Call flush_pending
         let ids_to_close = reactor.flush_pending();
-        assert!(ids_to_close.is_empty(), "No connections should need closing");
+        assert!(
+            ids_to_close.is_empty(),
+            "No connections should need closing"
+        );
 
         // Verify interest_dirty was marked after flush drained the queue
         assert!(reactor.is_interest_dirty(token.id),
@@ -1785,7 +1866,9 @@ mod tests {
         // Read from client to consume data
         let mut buf = vec![0u8; 100];
         client.set_nonblocking(false).ok();
-        client.set_read_timeout(Some(std::time::Duration::from_millis(100))).ok();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+            .ok();
         let _ = client.read(&mut buf);
 
         // Cleanup
@@ -1798,16 +1881,20 @@ mod tests {
         let stream_keys = dashmap::DashSet::new();
         let status = Arc::new(AtomicUsize::new(STATUS_RUN));
 
-        let mut reactor = Reactor::new(3, None, stream_keys, status).expect("Failed to create reactor");
+        let mut reactor = Reactor::new(3, None, stream_keys, status)
+            .expect("Failed to create reactor");
 
         // Create a listener and connection pair
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind");
         let addr = listener.local_addr().expect("Failed to get address");
 
         let _client = TcpStream::connect(addr).expect("Failed to connect");
         let (server, _) = listener.accept().expect("Failed to accept");
 
-        let token = reactor.add_connection(server).expect("Failed to add connection");
+        let token = reactor
+            .add_connection(server)
+            .expect("Failed to add connection");
 
         // Set connection to Active state but don't enqueue any data
         if let Some(conn) = reactor.connections.get_mut(token.id) {
@@ -1824,7 +1911,10 @@ mod tests {
 
         // Call flush_pending
         let ids_to_close = reactor.flush_pending();
-        assert!(ids_to_close.is_empty(), "No connections should need closing");
+        assert!(
+            ids_to_close.is_empty(),
+            "No connections should need closing"
+        );
 
         // Verify interest_dirty was marked to clear writable interest
         assert!(reactor.is_interest_dirty(token.id),
@@ -1833,5 +1923,4 @@ mod tests {
         // Cleanup
         reactor.remove_connection(token.id);
     }
-
 }

@@ -1,7 +1,7 @@
-use crate::core::context::input::Input;
-use crate::core::context::output::Output;
 use crate::core::context::ffmpeg_context::FfmpegContext;
 use crate::core::context::filter_complex::FilterComplex;
+use crate::core::context::input::Input;
+use crate::core::context::output::Output;
 
 /// A builder for constructing [`FfmpegContext`] objects with customized inputs,
 /// outputs, and filter configurations. Typically, you will start by calling
@@ -41,7 +41,6 @@ impl Default for FfmpegContextBuilder {
 }
 
 impl FfmpegContextBuilder {
-
     /// Creates a new, empty `FfmpegContextBuilder`. Generally, you won't call this
     /// directly; instead, use [`FfmpegContext::builder()`] as your entry point.
     ///
@@ -273,16 +272,19 @@ impl FfmpegContextBuilder {
     ///     .unwrap();
     /// ```
     pub fn filter_descs(mut self, filter_descs: Vec<impl Into<FilterComplex>>) -> Self {
-        self.filter_descs = filter_descs.into_iter().map(|filter| filter.into()).collect();
+        self.filter_descs = filter_descs
+            .into_iter()
+            .map(|filter| filter.into())
+            .collect();
         self
     }
 
     /// Enables timestamp copying from input to output
-    /// 
+    ///
     /// This method sets the `copy_ts` flag to true, which is equivalent to FFmpeg's `-copyts` option.
     /// When enabled, timestamps from the input stream are preserved in the output stream without modification.
     /// This is useful when you want to maintain the original timing information from the source media.
-    /// 
+    ///
     /// # Example
     /// ```rust,ignore
     /// let builder = FfmpegContextBuilder::new()
@@ -321,7 +323,7 @@ impl FfmpegContextBuilder {
             self.inputs,
             self.filter_descs,
             self.outputs,
-            self.copy_ts
+            self.copy_ts,
         )
     }
 }

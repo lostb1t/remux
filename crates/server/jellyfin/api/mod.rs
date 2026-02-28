@@ -1,16 +1,16 @@
-pub mod logs;
-pub mod system;
-pub mod startup;
-pub mod users;
-pub mod items;
-pub mod shows;
-pub mod images;
-pub mod playback;
-pub mod devices;
-pub mod localization;
-pub mod tasks;
-pub mod networking;
 pub mod api_keys;
+pub mod devices;
+pub mod images;
+pub mod items;
+pub mod localization;
+pub mod logs;
+pub mod networking;
+pub mod playback;
+pub mod shows;
+pub mod startup;
+pub mod system;
+pub mod tasks;
+pub mod users;
 
 use axum::Json;
 use axum::extract::State;

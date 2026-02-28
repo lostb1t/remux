@@ -1,8 +1,10 @@
 use ez_ffmpeg::filter::frame_filter::FrameFilter;
 use ez_ffmpeg::filter::frame_filter_context::FrameFilterContext;
-use ffmpeg_next::Frame;
-use ffmpeg_sys_next::{av_frame_copy_props, av_frame_get_buffer, AVMediaType, AVPixelFormat};
 use ez_ffmpeg::util::ffmpeg_utils::av_err2str;
+use ffmpeg_next::Frame;
+use ffmpeg_sys_next::{
+    av_frame_copy_props, av_frame_get_buffer, AVMediaType, AVPixelFormat,
+};
 
 /// Tile2x2Filter: A custom video filter that creates a 2x2 tiled output.
 ///
@@ -107,11 +109,15 @@ impl Tile2x2Filter {
                 for row in 0..plane_height {
                     let src_row_ptr = src_data.add(row * src_linesize as usize);
                     let dst_row_ptr = dst_data.add(
-                        (dst_offset_y + row) * dst_linesize as usize + dst_offset_x
+                        (dst_offset_y + row) * dst_linesize as usize + dst_offset_x,
                     );
 
                     // Use copy_nonoverlapping for efficient memory copy
-                    std::ptr::copy_nonoverlapping(src_row_ptr, dst_row_ptr, plane_width);
+                    std::ptr::copy_nonoverlapping(
+                        src_row_ptr,
+                        dst_row_ptr,
+                        plane_width,
+                    );
                 }
             }
         }
@@ -198,8 +204,8 @@ impl FrameFilter for Tile2x2Filter {
                 (*frame.as_ptr()).linesize[0],
                 (*output_frame.as_mut_ptr()).data[0],
                 (*output_frame.as_mut_ptr()).linesize[0],
-                input_width as usize,        // Y plane width in bytes
-                input_height as usize,       // Y plane height
+                input_width as usize,  // Y plane width in bytes
+                input_height as usize, // Y plane height
             );
 
             // Copy U plane (half resolution)
@@ -208,7 +214,7 @@ impl FrameFilter for Tile2x2Filter {
                 (*frame.as_ptr()).linesize[1],
                 (*output_frame.as_mut_ptr()).data[1],
                 (*output_frame.as_mut_ptr()).linesize[1],
-                (input_width / 2) as usize,  // U plane width in bytes
+                (input_width / 2) as usize, // U plane width in bytes
                 (input_height / 2) as usize, // U plane height
             );
 
@@ -218,7 +224,7 @@ impl FrameFilter for Tile2x2Filter {
                 (*frame.as_ptr()).linesize[2],
                 (*output_frame.as_mut_ptr()).data[2],
                 (*output_frame.as_mut_ptr()).linesize[2],
-                (input_width / 2) as usize,  // V plane width in bytes
+                (input_width / 2) as usize, // V plane width in bytes
                 (input_height / 2) as usize, // V plane height
             );
 

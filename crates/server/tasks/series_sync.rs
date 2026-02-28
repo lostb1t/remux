@@ -2,19 +2,25 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 
+use super::{ProgressReporter, Task, TaskService};
 use crate::{
     AppContext, db,
     meta_provider::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService},
 };
-use super::{ProgressReporter, Task, TaskService};
 
 pub struct SeriesSyncTask;
 
 #[async_trait]
 impl Task for SeriesSyncTask {
-    fn key(&self) -> &str { "SeriesSync" }
-    fn name(&self) -> &str { "Series Sync" }
-    fn category(&self) -> &str { "Library" }
+    fn key(&self) -> &str {
+        "SeriesSync"
+    }
+    fn name(&self) -> &str {
+        "Series Sync"
+    }
+    fn category(&self) -> &str {
+        "Library"
+    }
 
     async fn run(
         &self,

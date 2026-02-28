@@ -17,8 +17,16 @@ pub trait MetaProvider: Send + Sync {
 /// Discovers the tree structure (seasons/episodes) for a series.
 #[async_trait]
 pub trait TreeSyncProvider: Send + Sync {
-    async fn get_seasons(&self, series: &db::Media, ctx: &AppContext) -> Result<Vec<db::Media>>;
-    async fn get_episodes(&self, season: &db::Media, ctx: &AppContext) -> Result<Vec<db::Media>>;
+    async fn get_seasons(
+        &self,
+        series: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<db::Media>>;
+    async fn get_episodes(
+        &self,
+        season: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<db::Media>>;
 }
 
 /// Orchestrates metadata enrichment and tree syncing across multiple providers.
@@ -39,7 +47,11 @@ impl MetaProviderService {
     }
 
     /// Enrich metadata on a single item using providers in order.
-    pub async fn apply_meta(&self, media: &mut db::Media, ctx: &AppContext) -> Result<()> {
+    pub async fn apply_meta(
+        &self,
+        media: &mut db::Media,
+        ctx: &AppContext,
+    ) -> Result<()> {
         for provider in &self.meta_providers {
             match provider.apply(media, ctx).await {
                 Ok(true) => break,
@@ -58,14 +70,19 @@ impl MetaProviderService {
     /// Returns all child media (seasons + episodes) that should be upserted.
     /// Tree providers return children with metadata already populated from the
     /// same API response, so we skip redundant apply_meta calls here.
-    pub async fn sync_tree(&self, series: &mut db::Media, ctx: &AppContext) -> Result<Vec<db::Media>> {
+    pub async fn sync_tree(
+        &self,
+        series: &mut db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<db::Media>> {
         if series.kind != db::MediaKind::Series {
             return Ok(vec![]);
         }
 
         let mut children = vec![];
         let existing_seasons = series.seasons(&ctx.db).await.unwrap_or_default();
-        let existing_season_idxs: Vec<i64> = existing_seasons.iter().filter_map(|s| s.idx).collect();
+        let existing_season_idxs: Vec<i64> =
+            existing_seasons.iter().filter_map(|s| s.idx).collect();
 
         for tree_provider in &self.tree_providers {
             let new_seasons = match tree_provider.get_seasons(series, ctx).await {
@@ -77,7 +94,11 @@ impl MetaProviderService {
             };
             let filtered_seasons: Vec<db::Media> = new_seasons
                 .into_iter()
-                .filter(|s| s.idx.map(|idx| !existing_season_idxs.contains(&idx)).unwrap_or(false))
+                .filter(|s| {
+                    s.idx
+                        .map(|idx| !existing_season_idxs.contains(&idx))
+                        .unwrap_or(false)
+                })
                 .collect();
 
             let all_seasons: Vec<db::Media> = existing_seasons
@@ -110,7 +131,11 @@ impl MetaProviderService {
 
     /// Process a batch of media: enrich metadata and sync trees for series.
     /// Runs up to 10 items concurrently. Errors on individual items are logged and skipped.
-    pub async fn process(&self, media: Vec<db::Media>, ctx: &AppContext) -> Result<Vec<db::Media>> {
+    pub async fn process(
+        &self,
+        media: Vec<db::Media>,
+        ctx: &AppContext,
+    ) -> Result<Vec<db::Media>> {
         let total = media.len();
         let counter = AtomicUsize::new(0);
 
@@ -160,17 +185,15 @@ pub struct AioMetaProvider;
 #[async_trait]
 impl MetaProvider for AioMetaProvider {
     async fn apply(&self, media: &mut db::Media, ctx: &AppContext) -> Result<bool> {
-        let imdb_id = media
-            .series_imdb_id
-            .clone()
-            .or(media.imdb_id.clone());
+        let imdb_id = media.series_imdb_id.clone().or(media.imdb_id.clone());
 
         let imdb_id = match imdb_id {
             Some(id) => id,
             None => return Ok(false),
         };
 
-        let meta = crate::aio::AioService::from_settings(&ctx.db).await?
+        let meta = crate::aio::AioService::from_settings(&ctx.db)
+            .await?
             .get_meta(db::media_kind_to_aio(&media.kind), imdb_id)
             .await?;
 
@@ -217,8 +240,10 @@ impl MetaProvider for AioMetaProvider {
             if media.kind == db::MediaKind::Episode {
                 if let Some(episode_num) = media.idx {
                     if let Some(season_num) = media.parent_idx {
-                        media.title =
-                            format!("S{}E{} - {}", season_num, episode_num, media.title);
+                        media.title = format!(
+                            "S{}E{} - {}",
+                            season_num, episode_num, media.title
+                        );
                     } else {
                         media.title = format!("E{} - {}", episode_num, media.title);
                     }
@@ -243,13 +268,18 @@ pub struct AioTreeSyncProvider;
 
 #[async_trait]
 impl TreeSyncProvider for AioTreeSyncProvider {
-    async fn get_seasons(&self, series: &db::Media, ctx: &AppContext) -> Result<Vec<db::Media>> {
+    async fn get_seasons(
+        &self,
+        series: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<db::Media>> {
         let imdb_id = match series.imdb_id.clone() {
             Some(id) => id,
             None => return Ok(vec![]),
         };
 
-        let meta = crate::aio::AioService::from_settings(&ctx.db).await?
+        let meta = crate::aio::AioService::from_settings(&ctx.db)
+            .await?
             .get_meta(db::media_kind_to_aio(&series.kind), imdb_id)
             .await?;
 
@@ -272,13 +302,18 @@ impl TreeSyncProvider for AioTreeSyncProvider {
         Ok(seasons)
     }
 
-    async fn get_episodes(&self, season: &db::Media, ctx: &AppContext) -> Result<Vec<db::Media>> {
+    async fn get_episodes(
+        &self,
+        season: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<db::Media>> {
         let imdb_id = match season.series_imdb_id.clone() {
             Some(id) => id,
             None => return Ok(vec![]),
         };
 
-        let meta = crate::aio::AioService::from_settings(&ctx.db).await?
+        let meta = crate::aio::AioService::from_settings(&ctx.db)
+            .await?
             .get_meta(db::media_kind_to_aio(&season.kind), imdb_id)
             .await?;
 
@@ -290,7 +325,10 @@ impl TreeSyncProvider for AioTreeSyncProvider {
                     x.parent_id = Some(season.id);
                     if let Some(episode_num) = x.idx {
                         if let Some(season_num) = x.parent_idx {
-                            x.title = format!("S{}E{} - {}", season_num, episode_num, x.title);
+                            x.title = format!(
+                                "S{}E{} - {}",
+                                season_num, episode_num, x.title
+                            );
                         } else {
                             x.title = format!("E{} - {}", episode_num, x.title);
                         }
@@ -318,7 +356,8 @@ async fn sync_relations(
     // Genres
     if let Some(genres) = meta.genre.as_ref().or(meta.genres.as_ref()) {
         for genre_name in genres {
-            let genre_id = utils::get_stable_uuid(format!("genre:{}", genre_name.to_lowercase()));
+            let genre_id =
+                utils::get_stable_uuid(format!("genre:{}", genre_name.to_lowercase()));
             related_media.push(db::Media {
                 id: genre_id,
                 title: genre_name.clone(),
@@ -340,7 +379,10 @@ async fn sync_relations(
         if let Some(cast) = &extras.cast {
             for (i, member) in cast.iter().enumerate() {
                 if let Some(name) = &member.name {
-                    let person_id = utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+                    let person_id = utils::get_stable_uuid(format!(
+                        "person:{}",
+                        name.to_lowercase()
+                    ));
                     related_media.push(db::Media {
                         id: person_id,
                         title: name.clone(),
@@ -363,7 +405,8 @@ async fn sync_relations(
         // Directors
         if let Some(directors) = &extras.directors {
             for (i, name) in directors.iter().enumerate() {
-                let person_id = utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+                let person_id =
+                    utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
                 related_media.push(db::Media {
                     id: person_id,
                     title: name.clone(),
@@ -384,7 +427,8 @@ async fn sync_relations(
         // Writers
         if let Some(writers) = &extras.writers {
             for (i, name) in writers.iter().enumerate() {
-                let person_id = utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+                let person_id =
+                    utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
                 related_media.push(db::Media {
                     id: person_id,
                     title: name.clone(),

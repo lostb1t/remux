@@ -222,11 +222,28 @@ fn main() {
         );
         // Print type-specific details via Debug
         match stream {
-            StreamInfo::Video { codec_name, width, height, fps, .. } => {
-                println!("    codec={}, {}x{}, {:.2} fps", codec_name, width, height, fps);
+            StreamInfo::Video {
+                codec_name,
+                width,
+                height,
+                fps,
+                ..
+            } => {
+                println!(
+                    "    codec={}, {}x{}, {:.2} fps",
+                    codec_name, width, height, fps
+                );
             }
-            StreamInfo::Audio { codec_name, sample_rate, nb_channels, .. } => {
-                println!("    codec={}, {} Hz, {} ch", codec_name, sample_rate, nb_channels);
+            StreamInfo::Audio {
+                codec_name,
+                sample_rate,
+                nb_channels,
+                ..
+            } => {
+                println!(
+                    "    codec={}, {} Hz, {} ch",
+                    codec_name, sample_rate, nb_channels
+                );
             }
             _ => {}
         }
@@ -242,7 +259,15 @@ fn main() {
     // video_stream() and audio_stream() return the first match
     if let Some(video) = scanner.video_stream() {
         println!("  Video stream index: {}", video.index());
-        if let StreamInfo::Video { codec_name, width, height, fps, bit_rate, .. } = video {
+        if let StreamInfo::Video {
+            codec_name,
+            width,
+            height,
+            fps,
+            bit_rate,
+            ..
+        } = video
+        {
             println!(
                 "    {} {}x{} {:.2}fps bitrate={}",
                 codec_name, width, height, fps, bit_rate,
@@ -254,7 +279,14 @@ fn main() {
 
     if let Some(audio) = scanner.audio_stream() {
         println!("  Audio stream index: {}", audio.index());
-        if let StreamInfo::Audio { codec_name, sample_rate, nb_channels, bit_rate, .. } = audio {
+        if let StreamInfo::Audio {
+            codec_name,
+            sample_rate,
+            nb_channels,
+            bit_rate,
+            ..
+        } = audio
+        {
             println!(
                 "    {} {}Hz {}ch bitrate={}",
                 codec_name, sample_rate, nb_channels, bit_rate,

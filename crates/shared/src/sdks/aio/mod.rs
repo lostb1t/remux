@@ -364,7 +364,11 @@ pub struct Meta {
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
     // pub behavior_hints: Option<BehaviorHints>,
-    #[serde(default, rename = "app_extras", deserialize_with = "deserialize_app_extras")]
+    #[serde(
+        default,
+        rename = "app_extras",
+        deserialize_with = "deserialize_app_extras"
+    )]
     pub app_extras: Option<AppExtras>,
 }
 

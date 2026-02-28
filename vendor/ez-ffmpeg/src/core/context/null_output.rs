@@ -1,6 +1,6 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use crate::Output;
 use ffmpeg_sys_next;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Represents the state for the null output, tracking current and maximum positions.
 ///
@@ -23,7 +23,8 @@ pub fn create_null_output() -> Output {
         let state = std::sync::Arc::clone(&null_state);
         Box::new(move |buf: &[u8]| -> i32 {
             let len = buf.len() as u64;
-            let new_pos = state.current_position.fetch_add(len, Ordering::Relaxed) + len;
+            let new_pos =
+                state.current_position.fetch_add(len, Ordering::Relaxed) + len;
             state.max_position.fetch_max(new_pos, Ordering::Relaxed);
             len as i32
         })
@@ -34,10 +35,13 @@ pub fn create_null_output() -> Output {
         let state = std::sync::Arc::clone(&null_state);
         Box::new(move |offset: i64, whence: i32| -> i64 {
             match whence {
-                ffmpeg_sys_next::AVSEEK_SIZE => state.max_position.load(Ordering::Relaxed) as i64,
+                ffmpeg_sys_next::AVSEEK_SIZE => {
+                    state.max_position.load(Ordering::Relaxed) as i64
+                }
                 ffmpeg_sys_next::SEEK_SET => {
                     if offset < 0 {
-                        return ffmpeg_sys_next::AVERROR(ffmpeg_sys_next::EINVAL) as i64;
+                        return ffmpeg_sys_next::AVERROR(ffmpeg_sys_next::EINVAL)
+                            as i64;
                     }
                     let new_pos = offset as u64;
                     state.current_position.store(new_pos, Ordering::Relaxed);
@@ -73,7 +77,6 @@ pub fn create_null_output() -> Output {
 
     // Create and configure the output
     let mut output: Output = write_callback.into();
-    output = output.set_seek_callback(seek_callback)
-        .set_format("mp4"); // Default format, adjustable as needed
+    output = output.set_seek_callback(seek_callback).set_format("mp4"); // Default format, adjustable as needed
     output
 }

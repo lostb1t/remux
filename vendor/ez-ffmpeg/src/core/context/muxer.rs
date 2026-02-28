@@ -6,8 +6,8 @@ use crate::core::scheduler::input_controller::SchNode;
 use crate::error::OpenOutputError;
 use crossbeam_channel::{Receiver, Sender};
 use ffmpeg_sys_next::{
-    avformat_new_stream, AVCodec, AVFormatContext, AVMediaType, AVRational, AVSampleFormat,
-    AVStream, AVFMT_NOTIMESTAMPS, AVFMT_VARIABLE_FPS,
+    avformat_new_stream, AVCodec, AVFormatContext, AVMediaType, AVRational,
+    AVSampleFormat, AVStream, AVFMT_NOTIMESTAMPS, AVFMT_VARIABLE_FPS,
 };
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -55,9 +55,9 @@ impl StreamSourceRegistry {
             .iter()
             .enumerate()
             .filter_map(|(idx, entry)| {
-                entry
-                    .as_ref()
-                    .map(|source| (idx, (source.input_file_index, source.input_stream_index)))
+                entry.as_ref().map(|source| {
+                    (idx, (source.input_file_index, source.input_stream_index))
+                })
             })
             .collect()
     }
@@ -290,7 +290,8 @@ impl Muxer {
             None
         };
 
-        let (pre_packet_sender, pre_packet_receiver) = crossbeam_channel::bounded(65536);
+        let (pre_packet_sender, pre_packet_receiver) =
+            crossbeam_channel::bounded(65536);
         self.src_pre_receivers.push(pre_packet_receiver);
 
         let stream = EncoderStream::new(
@@ -358,7 +359,9 @@ impl Muxer {
         self.queue.is_some()
     }
 
-    pub(crate) fn take_queue(&mut self) -> Option<(Sender<PacketBox>, Receiver<PacketBox>)> {
+    pub(crate) fn take_queue(
+        &mut self,
+    ) -> Option<(Sender<PacketBox>, Receiver<PacketBox>)> {
         self.queue.take()
     }
 

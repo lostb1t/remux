@@ -1,6 +1,6 @@
 use crate::core::filter::frame_filter_context::FrameFilterContext;
-use ffmpeg_sys_next::AVMediaType;
 use ffmpeg_next::Frame;
+use ffmpeg_sys_next::AVMediaType;
 
 pub trait FrameFilter: Send {
     /// Returns the media type this filter operates on.
@@ -65,7 +65,10 @@ pub trait FrameFilter: Send {
     /// - `Ok(Some(frame))` if the filter produces a frame.
     /// - `Ok(None)` if no frame is produced.
     /// - `Err(String)` if there is an error during processing.
-    fn request_frame(&mut self, _ctx: &FrameFilterContext) -> Result<Option<Frame>, String> {
+    fn request_frame(
+        &mut self,
+        _ctx: &FrameFilterContext,
+    ) -> Result<Option<Frame>, String> {
         Ok(None)
     }
 
@@ -83,10 +86,8 @@ pub trait FrameFilter: Send {
     }
 }
 
-
-
 pub struct NoopFilter {
-    media_type: AVMediaType
+    media_type: AVMediaType,
 }
 
 impl NoopFilter {
@@ -100,7 +101,11 @@ impl FrameFilter for NoopFilter {
         self.media_type
     }
 
-    fn filter_frame(&mut self, frame: Frame, _ctx: &FrameFilterContext) -> Result<Option<Frame>, String> {
+    fn filter_frame(
+        &mut self,
+        frame: Frame,
+        _ctx: &FrameFilterContext,
+    ) -> Result<Option<Frame>, String> {
         Ok(Some(frame))
     }
 }

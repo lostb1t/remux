@@ -1,16 +1,17 @@
+use crate::rtmp::gop::{FrameData, Gops};
 use bytes::Bytes;
 use log::{debug, warn};
 use rml_rtmp::chunk_io::Packet;
 use rml_rtmp::sessions::StreamMetadata;
 use rml_rtmp::sessions::{
-    ServerSession, ServerSessionConfig, ServerSessionError, ServerSessionEvent, ServerSessionResult,
+    ServerSession, ServerSessionConfig, ServerSessionError, ServerSessionEvent,
+    ServerSessionResult,
 };
 use rml_rtmp::time::RtmpTimestamp;
 use slab::Slab;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use thiserror::Error;
-use crate::rtmp::gop::{FrameData, Gops};
 
 /// Error type for RTMP scheduler operations
 #[derive(Error, Debug)]
@@ -187,10 +188,11 @@ impl RtmpScheduler {
                 .get(&publisher_connection_id)
                 .unwrap();
             let client = self.clients.get_mut(*client_id).unwrap();
-            let publisher_results: Vec<ServerSessionResult> = match client.session.handle_input(&bytes) {
-                Ok(results) => results,
-                Err(error) => return Err(error.into()),
-            };
+            let publisher_results: Vec<ServerSessionResult> =
+                match client.session.handle_input(&bytes) {
+                    Ok(results) => results,
+                    Err(error) => return Err(error.into()),
+                };
             publisher_results
         };
 
@@ -207,19 +209,34 @@ impl RtmpScheduler {
                     | ServerSessionEvent::AcknowledgementReceived { .. }
                     | ServerSessionEvent::PingResponseReceived { .. }
                     | ServerSessionEvent::PublishStreamFinished { .. } => {
-                        self.handle_raised_event(usize::MAX, event, &mut server_results);
+                        self.handle_raised_event(
+                            usize::MAX,
+                            event,
+                            &mut server_results,
+                        );
                     }
-                    ServerSessionEvent::ConnectionRequested {request_id, app_name: _} => {
+                    ServerSessionEvent::ConnectionRequested {
+                        request_id,
+                        app_name: _,
+                    } => {
                         let client_id = self
                             .publisher_to_client_map
                             .get(&publisher_connection_id)
                             .unwrap();
                         let client = self.clients.get_mut(*client_id).unwrap();
                         if let Err(e) = client.session.accept_request(request_id) {
-                            warn!("Failed to accept connection request {}: {:?}", request_id, e);
+                            warn!(
+                                "Failed to accept connection request {}: {:?}",
+                                request_id, e
+                            );
                         }
                     }
-                    ServerSessionEvent::PublishStreamRequested {request_id, app_name: _, stream_key, mode: _} => {
+                    ServerSessionEvent::PublishStreamRequested {
+                        request_id,
+                        app_name: _,
+                        stream_key,
+                        mode: _,
+                    } => {
                         let client_id = self
                             .publisher_to_client_map
                             .get(&publisher_connection_id)
@@ -232,7 +249,7 @@ impl RtmpScheduler {
                     _ => {
                         debug!("Publisher received unexpected event: {:?}", event);
                     }
-                }
+                },
 
                 x => warn!("Server result received: {:?}", x),
             }
@@ -312,7 +329,9 @@ impl RtmpScheduler {
             Some(client_id) => {
                 let client = self.clients.remove(client_id);
                 match client.current_action {
-                    ClientAction::Publishing(stream_key) => self.publishing_ended(stream_key),
+                    ClientAction::Publishing(stream_key) => {
+                        self.publishing_ended(stream_key)
+                    }
                     _ => {}
                 }
             }
@@ -338,9 +357,11 @@ impl RtmpScheduler {
                     })
                 }
 
-                ServerSessionResult::RaisedEvent(event) => {
-                    self.handle_raised_event(executed_connection_id, event, server_results)
-                }
+                ServerSessionResult::RaisedEvent(event) => self.handle_raised_event(
+                    executed_connection_id,
+                    event,
+                    server_results,
+                ),
 
                 x => debug!("Server result received: {:?}", x),
             }
@@ -385,11 +406,7 @@ impl RtmpScheduler {
                 app_name,
                 stream_key,
             } => {
-                self.handle_publish_finished(
-                    app_name,
-                    stream_key,
-                    server_results,
-                );
+                self.handle_publish_finished(app_name, stream_key, server_results);
             }
 
             ServerSessionEvent::PlayStreamRequested {
@@ -416,7 +433,12 @@ impl RtmpScheduler {
                 stream_key,
                 metadata,
             } => {
-                self.handle_metadata_received(app_name, stream_key, metadata, server_results);
+                self.handle_metadata_received(
+                    app_name,
+                    stream_key,
+                    metadata,
+                    server_results,
+                );
             }
 
             ServerSessionEvent::VideoDataReceived {
@@ -489,7 +511,11 @@ impl RtmpScheduler {
             }
 
             Ok(results) => {
-                self.handle_session_results(requested_connection_id, results, server_results);
+                self.handle_session_results(
+                    requested_connection_id,
+                    results,
+                    server_results,
+                );
             }
         }
     }
@@ -514,7 +540,9 @@ impl RtmpScheduler {
         stream_key: String,
         server_results: &mut Vec<ServerResult>,
     ) {
-        debug!("Rtmp publish finished on app '{app_name}' and stream key '{stream_key}'");
+        debug!(
+            "Rtmp publish finished on app '{app_name}' and stream key '{stream_key}'"
+        );
 
         let channel = match self.channels.get(&stream_key) {
             Some(channel) => channel,
@@ -592,13 +620,18 @@ impl RtmpScheduler {
                     match channel.metadata {
                         None => (),
                         Some(ref metadata) => {
-                            let packet = match client.session.send_metadata(stream_id, &metadata) {
+                            let packet = match client
+                                .session
+                                .send_metadata(stream_id, &metadata)
+                            {
                                 Ok(packet) => packet,
                                 Err(error) => {
                                     debug!("Rtmp client error occurred sending existing metadata to new client: {:?}", error);
-                                    server_results.push(ServerResult::DisconnectConnection {
-                                        connection_id: requested_connection_id,
-                                    });
+                                    server_results.push(
+                                        ServerResult::DisconnectConnection {
+                                            connection_id: requested_connection_id,
+                                        },
+                                    );
 
                                     return;
                                 }
@@ -621,9 +654,11 @@ impl RtmpScheduler {
                                 Ok(packet) => packet,
                                 Err(error) => {
                                     debug!("Rtmp client error occurred sending video header to new client: {:?}", error);
-                                    server_results.push(ServerResult::DisconnectConnection {
-                                        connection_id: requested_connection_id,
-                                    });
+                                    server_results.push(
+                                        ServerResult::DisconnectConnection {
+                                            connection_id: requested_connection_id,
+                                        },
+                                    );
 
                                     return;
                                 }
@@ -645,9 +680,11 @@ impl RtmpScheduler {
                                 Ok(packet) => packet,
                                 Err(error) => {
                                     debug!("Rtmp client error occurred sending audio header to new client: {:?}", error);
-                                    server_results.push(ServerResult::DisconnectConnection {
-                                        connection_id: requested_connection_id,
-                                    });
+                                    server_results.push(
+                                        ServerResult::DisconnectConnection {
+                                            connection_id: requested_connection_id,
+                                        },
+                                    );
 
                                     return;
                                 }
@@ -676,14 +713,19 @@ impl RtmpScheduler {
                                         Ok(packet) => packet,
                                         Err(error) => {
                                             debug!("Rtmp client error occurred sending video data to new client: {:?}", error);
-                                            server_results.push(ServerResult::DisconnectConnection {
-                                                connection_id: requested_connection_id,
-                                            });
+                                            server_results.push(
+                                                ServerResult::DisconnectConnection {
+                                                    connection_id:
+                                                        requested_connection_id,
+                                                },
+                                            );
 
                                             return;
                                         }
                                     };
-                                    results.push(ServerSessionResult::OutboundResponse(packet));
+                                    results.push(
+                                        ServerSessionResult::OutboundResponse(packet),
+                                    );
                                 }
                                 FrameData::Audio { timestamp, data } => {
                                     let packet = match client.session.send_audio_data(
@@ -695,14 +737,19 @@ impl RtmpScheduler {
                                         Ok(packet) => packet,
                                         Err(error) => {
                                             debug!("Rtmp client error occurred sending audio data to new client: {:?}", error);
-                                            server_results.push(ServerResult::DisconnectConnection {
-                                                connection_id: requested_connection_id,
-                                            });
+                                            server_results.push(
+                                                ServerResult::DisconnectConnection {
+                                                    connection_id:
+                                                        requested_connection_id,
+                                                },
+                                            );
 
                                             return;
                                         }
                                     };
-                                    results.push(ServerSessionResult::OutboundResponse(packet));
+                                    results.push(
+                                        ServerSessionResult::OutboundResponse(packet),
+                                    );
                                 }
                             }
                         }
@@ -726,7 +773,11 @@ impl RtmpScheduler {
             }
 
             Ok(results) => {
-                self.handle_session_results(requested_connection_id, results, server_results);
+                self.handle_session_results(
+                    requested_connection_id,
+                    results,
+                    server_results,
+                );
             }
         }
     }
@@ -813,7 +864,13 @@ impl RtmpScheduler {
                     channel.video_sequence_header = Some(data.clone());
                     channel.video_timestamp = timestamp;
                 }
-                channel.gops.save_frame_data(crate::rtmp::gop::FrameData::Video { timestamp, data: data.clone() }, is_keyframe);
+                channel.gops.save_frame_data(
+                    crate::rtmp::gop::FrameData::Video {
+                        timestamp,
+                        data: data.clone(),
+                    },
+                    is_keyframe,
+                );
             }
 
             ReceivedDataType::Audio => {
@@ -821,7 +878,13 @@ impl RtmpScheduler {
                     channel.audio_sequence_header = Some(data.clone());
                     channel.audio_timestamp = timestamp;
                 }
-                channel.gops.save_frame_data(crate::rtmp::gop::FrameData::Audio { timestamp, data: data.clone() }, false);
+                channel.gops.save_frame_data(
+                    crate::rtmp::gop::FrameData::Audio {
+                        timestamp,
+                        data: data.clone(),
+                    },
+                    false,
+                );
             }
         }
 
@@ -957,7 +1020,9 @@ mod tests {
         assert!(scheduler.channels.contains_key(&stream_key));
 
         // Verify publisher mapping exists
-        assert!(scheduler.publisher_to_client_map.contains_key(&publisher_connection_id));
+        assert!(scheduler
+            .publisher_to_client_map
+            .contains_key(&publisher_connection_id));
     }
 
     #[test]
@@ -968,7 +1033,8 @@ mod tests {
         let publisher_connection_id_2 = 2;
 
         // First channel creation should succeed
-        let result1 = scheduler.new_channel(stream_key.clone(), publisher_connection_id_1);
+        let result1 =
+            scheduler.new_channel(stream_key.clone(), publisher_connection_id_1);
         assert!(result1, "First channel creation should succeed");
 
         // Set the publishing_client_id to simulate active publisher
@@ -977,12 +1043,17 @@ mod tests {
         }
 
         // Second channel creation with same stream_key should fail
-        let result2 = scheduler.new_channel(stream_key.clone(), publisher_connection_id_2);
+        let result2 =
+            scheduler.new_channel(stream_key.clone(), publisher_connection_id_2);
         assert!(!result2, "Duplicate channel creation should be rejected");
 
         // Verify only first publisher is mapped
-        assert!(scheduler.publisher_to_client_map.contains_key(&publisher_connection_id_1));
-        assert!(!scheduler.publisher_to_client_map.contains_key(&publisher_connection_id_2));
+        assert!(scheduler
+            .publisher_to_client_map
+            .contains_key(&publisher_connection_id_1));
+        assert!(!scheduler
+            .publisher_to_client_map
+            .contains_key(&publisher_connection_id_2));
     }
 
     #[test]
@@ -994,15 +1065,22 @@ mod tests {
         let _ = scheduler.bytes_received(connection_id, &[]);
 
         // Verify connection exists
-        assert!(scheduler.connection_to_client_map.contains_key(&connection_id));
-        let client_id = *scheduler.connection_to_client_map.get(&connection_id).unwrap();
+        assert!(scheduler
+            .connection_to_client_map
+            .contains_key(&connection_id));
+        let client_id = *scheduler
+            .connection_to_client_map
+            .get(&connection_id)
+            .unwrap();
         assert!(scheduler.clients.contains(client_id));
 
         // Close the connection
         scheduler.notify_connection_closed(connection_id);
 
         // Verify connection is removed
-        assert!(!scheduler.connection_to_client_map.contains_key(&connection_id));
+        assert!(!scheduler
+            .connection_to_client_map
+            .contains_key(&connection_id));
         assert!(!scheduler.clients.contains(client_id));
     }
 
@@ -1017,15 +1095,22 @@ mod tests {
         assert!(result, "Channel creation should succeed");
 
         // Verify publisher exists
-        assert!(scheduler.publisher_to_client_map.contains_key(&publisher_connection_id));
-        let client_id = *scheduler.publisher_to_client_map.get(&publisher_connection_id).unwrap();
+        assert!(scheduler
+            .publisher_to_client_map
+            .contains_key(&publisher_connection_id));
+        let client_id = *scheduler
+            .publisher_to_client_map
+            .get(&publisher_connection_id)
+            .unwrap();
         assert!(scheduler.clients.contains(client_id));
 
         // Close the publisher
         scheduler.notify_publisher_closed(publisher_connection_id);
 
         // Verify publisher is removed
-        assert!(!scheduler.publisher_to_client_map.contains_key(&publisher_connection_id));
+        assert!(!scheduler
+            .publisher_to_client_map
+            .contains_key(&publisher_connection_id));
         assert!(!scheduler.clients.contains(client_id));
 
         // With no watchers, channel should be removed (memory cleanup)
@@ -1054,7 +1139,9 @@ mod tests {
         scheduler.notify_publisher_closed(publisher_connection_id);
 
         // Verify publisher is removed
-        assert!(!scheduler.publisher_to_client_map.contains_key(&publisher_connection_id));
+        assert!(!scheduler
+            .publisher_to_client_map
+            .contains_key(&publisher_connection_id));
 
         // With watchers still present, channel should remain
         assert!(
@@ -1073,7 +1160,8 @@ mod tests {
         let nonexistent_connection_id = 999;
 
         // Attempt to publish bytes to a connection that doesn't exist
-        let result = scheduler.publish_bytes_received(nonexistent_connection_id, vec![0x03]);
+        let result =
+            scheduler.publish_bytes_received(nonexistent_connection_id, vec![0x03]);
 
         // Should succeed but return empty results (with warning logged)
         assert!(result.is_ok());
@@ -1086,7 +1174,9 @@ mod tests {
         let connection_id = 1;
 
         // Verify connection doesn't exist initially
-        assert!(!scheduler.connection_to_client_map.contains_key(&connection_id));
+        assert!(!scheduler
+            .connection_to_client_map
+            .contains_key(&connection_id));
 
         // Receive bytes from new connection
         let result = scheduler.bytes_received(connection_id, &[0x03]);
@@ -1095,8 +1185,13 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify session was created
-        assert!(scheduler.connection_to_client_map.contains_key(&connection_id));
-        let client_id = *scheduler.connection_to_client_map.get(&connection_id).unwrap();
+        assert!(scheduler
+            .connection_to_client_map
+            .contains_key(&connection_id));
+        let client_id = *scheduler
+            .connection_to_client_map
+            .get(&connection_id)
+            .unwrap();
         assert!(scheduler.clients.contains(client_id));
 
         // Verify client is in Waiting state
@@ -1114,8 +1209,13 @@ mod tests {
         let _ = scheduler.bytes_received(connection_id, &[]);
 
         // Verify connection exists and is in Waiting state
-        assert!(scheduler.connection_to_client_map.contains_key(&connection_id));
-        let client_id = *scheduler.connection_to_client_map.get(&connection_id).unwrap();
+        assert!(scheduler
+            .connection_to_client_map
+            .contains_key(&connection_id));
+        let client_id = *scheduler
+            .connection_to_client_map
+            .get(&connection_id)
+            .unwrap();
         let client = scheduler.clients.get(client_id).unwrap();
         assert!(matches!(client.current_action, ClientAction::Waiting));
 
@@ -1132,7 +1232,10 @@ mod tests {
 
         // Verify client is now in Watching state
         let client = scheduler.clients.get(client_id).unwrap();
-        assert!(matches!(client.current_action, ClientAction::Watching { .. }));
+        assert!(matches!(
+            client.current_action,
+            ClientAction::Watching { .. }
+        ));
 
         // Verify channel was created and client is registered as watcher
         assert!(scheduler.channels.contains_key(&stream_key));
@@ -1260,7 +1363,11 @@ mod tests {
         );
 
         // Watcher should receive non-keyframe (after having received keyframe)
-        assert_eq!(server_results.len(), 1, "Watcher should receive non-keyframe");
+        assert_eq!(
+            server_results.len(),
+            1,
+            "Watcher should receive non-keyframe"
+        );
         match &server_results[0] {
             ServerResult::OutboundPacket {
                 is_keyframe,
@@ -1392,7 +1499,8 @@ mod tests {
 
         // Send video sequence header (0x17 = AVC keyframe, 0x00 = sequence header)
         let mut server_results = Vec::new();
-        let sequence_header = Bytes::from(vec![0x17, 0x00, 0x00, 0x00, 0x00, 0x01, 0x64]);
+        let sequence_header =
+            Bytes::from(vec![0x17, 0x00, 0x00, 0x00, 0x00, 0x01, 0x64]);
         scheduler.handle_audio_video_data_received(
             stream_key.clone(),
             RtmpTimestamp { value: 0 },
@@ -1415,7 +1523,10 @@ mod tests {
         // Verify sequence header is cached in channel
         let channel = scheduler.channels.get(&stream_key).unwrap();
         assert!(channel.video_sequence_header.is_some());
-        assert_eq!(channel.video_sequence_header.as_ref().unwrap(), &sequence_header);
+        assert_eq!(
+            channel.video_sequence_header.as_ref().unwrap(),
+            &sequence_header
+        );
     }
 
     #[test]
@@ -1614,7 +1725,15 @@ mod tests {
         }
 
         // Verify both watchers in channel
-        assert_eq!(scheduler.channels.get(&stream_key).unwrap().watching_client_ids.len(), 2);
+        assert_eq!(
+            scheduler
+                .channels
+                .get(&stream_key)
+                .unwrap()
+                .watching_client_ids
+                .len(),
+            2
+        );
 
         // Send initial keyframe to both
         let mut server_results = Vec::new();
@@ -1626,7 +1745,11 @@ mod tests {
             ReceivedDataType::Video,
             &mut server_results,
         );
-        assert_eq!(server_results.len(), 2, "Both watchers should receive keyframe");
+        assert_eq!(
+            server_results.len(),
+            2,
+            "Both watchers should receive keyframe"
+        );
 
         // Watcher 1 disconnects
         scheduler.notify_connection_closed(watcher1_id);
@@ -1646,7 +1769,11 @@ mod tests {
             &mut server_results,
         );
 
-        assert_eq!(server_results.len(), 1, "Only remaining watcher should receive frame");
+        assert_eq!(
+            server_results.len(),
+            1,
+            "Only remaining watcher should receive frame"
+        );
         match &server_results[0] {
             ServerResult::OutboundPacket {
                 target_connection_id,
@@ -1658,4 +1785,3 @@ mod tests {
         }
     }
 }
-

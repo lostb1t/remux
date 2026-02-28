@@ -102,8 +102,13 @@ impl TranscodeSessionManager {
         session
     }
 
-    pub fn get(&self, play_session_id: &str) -> Option<Arc<tokio::sync::RwLock<TranscodeSession>>> {
-        self.sessions.get(play_session_id).map(|s| s.value().clone())
+    pub fn get(
+        &self,
+        play_session_id: &str,
+    ) -> Option<Arc<tokio::sync::RwLock<TranscodeSession>>> {
+        self.sessions
+            .get(play_session_id)
+            .map(|s| s.value().clone())
     }
 
     pub async fn stop(&self, play_session_id: &str) {
@@ -134,7 +139,11 @@ impl TranscodeSessionManager {
     }
 
     /// Spawn a background task that cleans up stale sessions periodically
-    pub fn spawn_cleanup_task(self, interval: Duration, max_age: Duration) -> JoinHandle<()> {
+    pub fn spawn_cleanup_task(
+        self,
+        interval: Duration,
+        max_age: Duration,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {

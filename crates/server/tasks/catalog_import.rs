@@ -5,16 +5,22 @@ use itertools::Itertools;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use crate::{AppContext, db};
 use super::{ProgressReporter, Task, TaskService};
+use crate::{AppContext, db};
 
 pub struct CatalogImportTask;
 
 #[async_trait]
 impl Task for CatalogImportTask {
-    fn key(&self) -> &str { "CatalogImport" }
-    fn name(&self) -> &str { "Catalog Import" }
-    fn category(&self) -> &str { "Library" }
+    fn key(&self) -> &str {
+        "CatalogImport"
+    }
+    fn name(&self) -> &str {
+        "Catalog Import"
+    }
+    fn category(&self) -> &str {
+        "Library"
+    }
 
     async fn run(
         &self,
@@ -40,7 +46,9 @@ impl Task for CatalogImportTask {
 
         let manifest = aio.get_manifest().await?;
 
-        let global_max = crate::db::Settings::get_config(&ctx.db).await.ok()
+        let global_max = crate::db::Settings::get_config(&ctx.db)
+            .await
+            .ok()
             .and_then(|c| c.catalog_max_items)
             .unwrap_or(250) as usize;
 
@@ -49,7 +57,9 @@ impl Task for CatalogImportTask {
             .into_iter()
             .filter_map(|cat| {
                 let aio_id = cat.aio_id.as_deref()?.to_string();
-                let manifest_cat = manifest.catalogs.iter()
+                let manifest_cat = manifest
+                    .catalogs
+                    .iter()
                     .find(|c| format!("{}:{}", c.kind, c.id) == aio_id)?
                     .clone();
                 Some((cat, manifest_cat))
@@ -60,14 +70,16 @@ impl Task for CatalogImportTask {
 
         for (catalog, manifest_cat) in pairs {
             let aio_id = catalog.aio_id.as_deref().unwrap_or("?");
-            let max = catalog.collection_max_items
+            let max = catalog
+                .collection_max_items
                 .map(|n| n as usize)
                 .unwrap_or(global_max);
 
             info!("importing catalog {} (max={})", aio_id, max);
 
             let catalog_id = catalog.id;
-            let mut meta_stream = aio.get_catalog_stream(&manifest_cat).await.chunks(500);
+            let mut meta_stream =
+                aio.get_catalog_stream(&manifest_cat).await.chunks(500);
             let mut count = 0usize;
 
             while let Some(mut metas) = meta_stream.next().await {
@@ -119,7 +131,8 @@ impl Task for CatalogImportTask {
                     .collect();
 
                 if !relations.is_empty() {
-                    if let Err(e) = db::MediaRelation::upsert(&ctx.db, &relations).await {
+                    if let Err(e) = db::MediaRelation::upsert(&ctx.db, &relations).await
+                    {
                         error!("failed to upsert catalog relations: {}", e);
                     }
                 }

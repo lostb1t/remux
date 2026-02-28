@@ -119,7 +119,9 @@ impl From<sdks::aio::MediaType> for MediaKind {
 pub fn media_kind_to_aio(kind: &MediaKind) -> sdks::aio::MediaType {
     match kind {
         MediaKind::Movie => sdks::aio::MediaType::Movie,
-        MediaKind::Series | MediaKind::Season | MediaKind::Episode => sdks::aio::MediaType::Series,
+        MediaKind::Series | MediaKind::Season | MediaKind::Episode => {
+            sdks::aio::MediaType::Series
+        }
         _ => sdks::aio::MediaType::Movie,
     }
 }
@@ -681,8 +683,9 @@ impl Media {
                 ) SELECT * FROM media WHERE id IN (SELECT id FROM subtree) AND 1=1",
             );
         } else {
-            count_qb =
-                sqlx::QueryBuilder::new("SELECT COUNT(*) as count FROM media WHERE 1=1");
+            count_qb = sqlx::QueryBuilder::new(
+                "SELECT COUNT(*) as count FROM media WHERE 1=1",
+            );
             records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
         }
 
@@ -1091,19 +1094,22 @@ impl Media {
         }
 
         let media_ids: Vec<Uuid> = rels.iter().map(|r| r.right_media_id).collect();
-        let related = Self::get_by_filter(db, &MediaFilter {
-            id: Some(media_ids),
-            ..Default::default()
-        }).await?.records;
+        let related = Self::get_by_filter(
+            db,
+            &MediaFilter {
+                id: Some(media_ids),
+                ..Default::default()
+            },
+        )
+        .await?
+        .records;
 
         let map: std::collections::HashMap<Uuid, Media> =
             related.into_iter().map(|m| (m.id, m)).collect();
 
         let pairs = rels
             .into_iter()
-            .filter_map(|rel| {
-                map.get(&rel.right_media_id).map(|m| (rel, m.clone()))
-            })
+            .filter_map(|rel| map.get(&rel.right_media_id).map(|m| (rel, m.clone())))
             .collect();
 
         self.relations = Some(pairs);
@@ -1217,56 +1223,56 @@ impl TryFrom<sdks::aio::Meta> for Media {
 pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
     let imdb_id = meta.imdb_id.clone().context("imdb_id is missing")?;
 
-        let media: Media = meta.clone().try_into()?;
+    let media: Media = meta.clone().try_into()?;
 
-        let mut media_instances = Vec::new();
-        media_instances.push(media.clone());
+    let mut media_instances = Vec::new();
+    media_instances.push(media.clone());
 
-        if let MediaKind::Series = media.kind {
-            if let Some(ref episodes) = meta.videos {
-                //info!("Found {} episodes", episodes.len());
-                let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Episode>> =
-                    episodes
-                        .iter()
-                        .filter_map(|ep| ep.season.map(|s| (s, ep.clone())))
-                        .fold(
-                            std::collections::BTreeMap::new(),
-                            |mut acc, (season, ep)| {
-                                acc.entry(season).or_default().push(ep);
-                                acc
-                            },
-                        );
-                //info!("Seasons map: {:?}", seasons);
-                for (season_idx, episodes) in seasons {
-                    let season = Media {
-                        title: format!("Season {}", season_idx),
-                        kind: MediaKind::Season,
-                        idx: Some(season_idx),
-                        series_imdb_id: media.imdb_id.clone(),
-                        aio_id: Some(format!(
-                            "{}:{}",
-                            media.imdb_id.clone().unwrap(),
-                            season_idx
-                        )),
-                        poster: meta.get_season_poster(season_idx),
-                        parent_id: Some(media.id),
-                        ..Default::default()
-                    };
-                    media_instances.push(season.clone());
+    if let MediaKind::Series = media.kind {
+        if let Some(ref episodes) = meta.videos {
+            //info!("Found {} episodes", episodes.len());
+            let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Episode>> =
+                episodes
+                    .iter()
+                    .filter_map(|ep| ep.season.map(|s| (s, ep.clone())))
+                    .fold(
+                        std::collections::BTreeMap::new(),
+                        |mut acc, (season, ep)| {
+                            acc.entry(season).or_default().push(ep);
+                            acc
+                        },
+                    );
+            //info!("Seasons map: {:?}", seasons);
+            for (season_idx, episodes) in seasons {
+                let season = Media {
+                    title: format!("Season {}", season_idx),
+                    kind: MediaKind::Season,
+                    idx: Some(season_idx),
+                    series_imdb_id: media.imdb_id.clone(),
+                    aio_id: Some(format!(
+                        "{}:{}",
+                        media.imdb_id.clone().unwrap(),
+                        season_idx
+                    )),
+                    poster: meta.get_season_poster(season_idx),
+                    parent_id: Some(media.id),
+                    ..Default::default()
+                };
+                media_instances.push(season.clone());
 
-                    for ep in episodes {
-                        let mut episode: Media = ep.clone().try_into()?;
+                for ep in episodes {
+                    let mut episode: Media = ep.clone().try_into()?;
 
-                        episode.idx = ep.episode;
-                        episode.aio_id = Some(ep.id.clone());
-                        episode.series_imdb_id = media.imdb_id.clone();
-                        episode.parent_id = Some(season.id);
-                        episode.parent_idx = Some(season_idx);
-                        media_instances.push(episode);
-                    }
+                    episode.idx = ep.episode;
+                    episode.aio_id = Some(ep.id.clone());
+                    episode.series_imdb_id = media.imdb_id.clone();
+                    episode.parent_id = Some(season.id);
+                    episode.parent_idx = Some(season_idx);
+                    media_instances.push(episode);
                 }
             }
         }
+    }
 
     Ok(media_instances)
 }

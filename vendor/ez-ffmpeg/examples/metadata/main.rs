@@ -56,9 +56,12 @@ fn basic_metadata() {
     FfmpegContext::builder()
         .input("input.mp4")
         .output(output)
-        .build().unwrap()
-        .start().unwrap()
-        .wait().unwrap();
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
+        .wait()
+        .unwrap();
 
     println!("Video processed with metadata successfully!");
     println!("Use 'ffprobe -show_format output.mp4' to verify metadata\n");
@@ -79,20 +82,28 @@ fn stream_metadata() {
     // The specifier is matched against each output stream in init_muxer() -> of_add_metadata()
     let output = Output::from("output.mp4")
         // Add metadata to first video stream
-        .add_stream_metadata("v:0", "language", "eng").unwrap()
-        .add_stream_metadata("v:0", "title", "Main Video").unwrap()
+        .add_stream_metadata("v:0", "language", "eng")
+        .unwrap()
+        .add_stream_metadata("v:0", "title", "Main Video")
+        .unwrap()
         // Add metadata to first audio stream
-        .add_stream_metadata("a:0", "language", "eng").unwrap()
-        .add_stream_metadata("a:0", "title", "English Audio").unwrap()
+        .add_stream_metadata("a:0", "language", "eng")
+        .unwrap()
+        .add_stream_metadata("a:0", "title", "English Audio")
+        .unwrap()
         // Add metadata to all subtitle streams
-        .add_stream_metadata("s", "language", "eng").unwrap();
+        .add_stream_metadata("s", "language", "eng")
+        .unwrap();
 
     FfmpegContext::builder()
         .input("input.mp4")
         .output(output)
-        .build().unwrap()
-        .start().unwrap()
-        .wait().unwrap();
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
+        .wait()
+        .unwrap();
 
     println!("Video processed with stream metadata successfully!");
     println!("Use 'ffprobe -show_streams output.mp4' to verify stream metadata\n");
@@ -116,21 +127,28 @@ fn copy_metadata() {
     // where type can be 'g' (global), 's:spec' (stream), 'c:N' (chapter), 'p:N' (program)
     let output = Output::from("output.mp4")
         // Copy global metadata from input file 0 to output global metadata
-        .map_metadata_from_input(0, "g", "g").unwrap()
+        .map_metadata_from_input(0, "g", "g")
+        .unwrap()
         // Copy metadata from first video stream of input 0 to first video stream of output
-        .map_metadata_from_input(0, "s:v:0", "s:v:0").unwrap()
+        .map_metadata_from_input(0, "s:v:0", "s:v:0")
+        .unwrap()
         // Add additional custom metadata
         .add_metadata("encoder", "ez-ffmpeg");
 
     FfmpegContext::builder()
         .input("input.mp4")
         .output(output)
-        .build().unwrap()
-        .start().unwrap()
-        .wait().unwrap();
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
+        .wait()
+        .unwrap();
 
     println!("Video processed with copied metadata successfully!");
-    println!("Use 'ffprobe -show_format -show_streams output.mp4' to verify metadata\n");
+    println!(
+        "Use 'ffprobe -show_format -show_streams output.mp4' to verify metadata\n"
+    );
 }
 
 /// Example 4: Removing or disabling metadata
@@ -151,19 +169,24 @@ fn remove_metadata() {
         // Add only the metadata we want
         .add_metadata("title", "New Title")
         .add_metadata("author", "New Author");
-        // Note: To remove a specific key while keeping others, use empty value:
-        // .add_metadata("unwanted_key", "")  // This removes the key
-        // FFmpeg reference: libavutil/dict.c:av_dict_set() removes entry when value is NULL/empty
+    // Note: To remove a specific key while keeping others, use empty value:
+    // .add_metadata("unwanted_key", "")  // This removes the key
+    // FFmpeg reference: libavutil/dict.c:av_dict_set() removes entry when value is NULL/empty
 
     FfmpegContext::builder()
         .input("input.mp4")
         .output(output)
-        .build().unwrap()
-        .start().unwrap()
-        .wait().unwrap();
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
+        .wait()
+        .unwrap();
 
     println!("Video processed without auto-copied metadata!");
-    println!("Use 'ffprobe -show_format output.mp4' to verify only new metadata exists\n");
+    println!(
+        "Use 'ffprobe -show_format output.mp4' to verify only new metadata exists\n"
+    );
 }
 
 /// Example 5: Complete metadata workflow
@@ -201,27 +224,32 @@ fn complete_workflow() {
         .add_metadata_map(global_metadata)
         // Add individual metadata
         .add_metadata("encoder", "ez-ffmpeg metadata example")
-        .add_metadata("comment", "This video demonstrates complete metadata workflow")
-
+        .add_metadata(
+            "comment",
+            "This video demonstrates complete metadata workflow",
+        )
         // Add stream-specific metadata
         // FFmpeg reference: Stream metadata is matched and applied per-stream in init_muxer()
-        .add_stream_metadata("v:0", "language", "eng").unwrap()
-        .add_stream_metadata("v:0", "title", "HD Video Track").unwrap()
-        .add_stream_metadata("v:0", "handler_name", "VideoHandler").unwrap()
-
-        .add_stream_metadata("a:0", "language", "eng").unwrap()
-        .add_stream_metadata("a:0", "title", "Stereo Audio Track").unwrap()
-        .add_stream_metadata("a:0", "handler_name", "AudioHandler").unwrap()
-
+        .add_stream_metadata("v:0", "language", "eng")
+        .unwrap()
+        .add_stream_metadata("v:0", "title", "HD Video Track")
+        .unwrap()
+        .add_stream_metadata("v:0", "handler_name", "VideoHandler")
+        .unwrap()
+        .add_stream_metadata("a:0", "language", "eng")
+        .unwrap()
+        .add_stream_metadata("a:0", "title", "Stereo Audio Track")
+        .unwrap()
+        .add_stream_metadata("a:0", "handler_name", "AudioHandler")
+        .unwrap()
         // Map metadata from input (this will be processed first before user metadata)
         // FFmpeg reference: copy_meta() processes -map_metadata before of_add_metadata()
-        .map_metadata_from_input(0, "s:v:0", "s:v:0").unwrap()
-
+        .map_metadata_from_input(0, "s:v:0", "s:v:0")
+        .unwrap()
         // Configure video codec with metadata-preserving settings
         .set_video_codec("libx264")
         .set_video_codec_opt("preset", "medium")
         .set_video_codec_opt("crf", "23")
-
         // Configure audio codec
         .set_audio_codec("aac")
         .set_audio_codec_opt("b", "192k");
@@ -229,9 +257,12 @@ fn complete_workflow() {
     FfmpegContext::builder()
         .input("input.mp4")
         .output(output)
-        .build().unwrap()
-        .start().unwrap()
-        .wait().unwrap();
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
+        .wait()
+        .unwrap();
 
     println!("Video processed with complete metadata workflow!");
     println!("\nVerify the metadata:");

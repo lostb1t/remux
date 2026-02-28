@@ -5,14 +5,15 @@ use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
 use shared::sdks::jellyfin::{
     AdminSetPassword, AioCatalogInfo, AuthenticateUserByName, BaseItemDto,
-    BrandingOptions, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload, DeleteUser,
-    DeleteVirtualFolder, GetAioCatalogs, GetBrandingConfiguration, GetItems, GetScheduledTasks,
-    GetSessions, GetSystemConfiguration, GetStartupConfiguration, GetUsers, JellyfinAuth,
-    PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
-    PostStartupUser, PublicSystemInfo, ServerConfiguration, SessionInfoDto,
-    StartTask, StartupConfiguration, StartupUser, StopTask, TaskInfo,
-    SetLogLevel, UpdateBrandingConfiguration, UpdateCatalogSettings, UpdateCatalogSettingsPayload,
-    UpdateSystemConfiguration, UpdateUser, UpdateUserPolicy, UserDto,
+    BrandingOptions, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload,
+    DeleteUser, DeleteVirtualFolder, GetAioCatalogs, GetBrandingConfiguration,
+    GetItems, GetScheduledTasks, GetSessions, GetStartupConfiguration,
+    GetSystemConfiguration, GetUsers, JellyfinAuth, PatchItem, PatchItemPayload,
+    PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
+    ServerConfiguration, SessionInfoDto, SetLogLevel, StartTask, StartupConfiguration,
+    StartupUser, StopTask, TaskInfo, UpdateBrandingConfiguration,
+    UpdateCatalogSettings, UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
+    UpdateUser, UpdateUserPolicy, UserDto,
 };
 use shared::sdks::{ClientError, RestClient};
 use uuid::Uuid;
@@ -64,7 +65,8 @@ impl PartialEq for AppState {
 impl AppState {
     fn new(server: StoredServer) -> Self {
         let device_id = get_or_create_device_id();
-        let auth = JellyfinAuth::new(&device_id).with_token(server.access_token.clone());
+        let auth =
+            JellyfinAuth::new(&device_id).with_token(server.access_token.clone());
         let client = shared::sdks::jellyfin::client(&server.manual_address)
             .unwrap_or_else(|_| panic!("invalid server url: {}", server.manual_address))
             .with_auth(auth);
@@ -98,7 +100,12 @@ fn get_stored_server() -> Option<StoredServer> {
 }
 
 fn store_credentials(server: StoredServer) {
-    let _ = LocalStorage::set(CREDENTIALS_KEY, &StoredCredentials { servers: vec![server] });
+    let _ = LocalStorage::set(
+        CREDENTIALS_KEY,
+        &StoredCredentials {
+            servers: vec![server],
+        },
+    );
 }
 
 fn main() {
@@ -117,10 +124,12 @@ fn App() -> Element {
         spawn(async move {
             let origin = get_origin();
             let needed = match shared::sdks::jellyfin::client(&origin) {
-                Ok(c) => c.execute(PublicSystemInfo::default()).await
+                Ok(c) => c
+                    .execute(PublicSystemInfo::default())
+                    .await
                     .ok()
                     .and_then(|info| info.startup_wizard_completed)
-                    .map(|done| !done)  // wizard needed = wizard NOT yet completed
+                    .map(|done| !done) // wizard needed = wizard NOT yet completed
                     .unwrap_or(false),
                 Err(_) => false,
             };
@@ -215,9 +224,14 @@ fn Login(on_login: EventHandler) -> Element {
                 }
             };
 
-            match client.execute(AuthenticateUserByName { username: u, pw: p }).await {
+            match client
+                .execute(AuthenticateUserByName { username: u, pw: p })
+                .await
+            {
                 Ok(result) => {
-                    if let (Some(token), Some(user)) = (result.access_token, result.user) {
+                    if let (Some(token), Some(user)) =
+                        (result.access_token, result.user)
+                    {
                         store_credentials(StoredServer {
                             id: result.server_id,
                             name: "Remux".to_string(),
@@ -327,7 +341,10 @@ fn ServerInfoCard(app_state: AppState) -> Element {
         let client = app_state.client.clone();
         spawn(async move {
             match client.execute(PublicSystemInfo::default()).await {
-                Ok(info) => { server_info.set(Some(info)); error.set(None); }
+                Ok(info) => {
+                    server_info.set(Some(info));
+                    error.set(None);
+                }
                 Err(e) => error.set(Some(format!("Failed to fetch server info: {e}"))),
             }
             loading.set(false);
@@ -372,8 +389,16 @@ fn SessionsCard(app_state: AppState) -> Element {
     use_effect(move || {
         let client = app_state.client.clone();
         spawn(async move {
-            match client.execute(GetSessions { active_within_seconds: Some(960) }).await {
-                Ok(s) => { sessions.set(s); error.set(None); }
+            match client
+                .execute(GetSessions {
+                    active_within_seconds: Some(960),
+                })
+                .await
+            {
+                Ok(s) => {
+                    sessions.set(s);
+                    error.set(None);
+                }
                 Err(e) => error.set(Some(format!("Failed to fetch sessions: {e}"))),
             }
             loading.set(false);
@@ -436,7 +461,10 @@ fn SessionsCard(app_state: AppState) -> Element {
 }
 
 #[component]
-fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) -> Element {
+fn TasksCard(
+    app_state: AppState,
+    #[props(default = false)] running_only: bool,
+) -> Element {
     let mut tasks: Signal<Vec<TaskInfo>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
@@ -448,8 +476,16 @@ fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) 
         loading.set(true);
         let client = app_state_effect.client.clone();
         spawn(async move {
-            match client.execute(GetScheduledTasks { is_hidden: Some(false) }).await {
-                Ok(t) => { tasks.set(t); error.set(None); }
+            match client
+                .execute(GetScheduledTasks {
+                    is_hidden: Some(false),
+                })
+                .await
+            {
+                Ok(t) => {
+                    tasks.set(t);
+                    error.set(None);
+                }
                 Err(e) => error.set(Some(format!("Failed to fetch tasks: {e}"))),
             }
             loading.set(false);
@@ -534,9 +570,9 @@ fn TaskPageRow(
     #[props(default = true)] show_category: bool,
 ) -> Element {
     let start_id = task.id.clone();
-    let stop_id  = task.id.clone();
-    let c_start  = app_state.client.clone();
-    let c_stop   = app_state.client.clone();
+    let stop_id = task.id.clone();
+    let c_start = app_state.client.clone();
+    let c_stop = app_state.client.clone();
 
     rsx! {
         TaskRow {
@@ -573,7 +609,8 @@ fn TaskRow(
     let is_running = state == "Running";
 
     // Last result status shown when idle
-    let last_status = task.last_execution_result
+    let last_status = task
+        .last_execution_result
         .as_ref()
         .and_then(|r| r.status.as_deref())
         .unwrap_or("");
@@ -584,8 +621,8 @@ fn TaskRow(
     } else {
         match last_status {
             "Completed" => "task-badge task-badge-completed",
-            "Failed"    => "task-badge task-badge-failed",
-            _           => "task-badge task-badge-idle",
+            "Failed" => "task-badge task-badge-failed",
+            _ => "task-badge task-badge-idle",
         }
     };
 
@@ -645,24 +682,24 @@ fn TaskRow(
 #[derive(Clone, Routable, PartialEq, Debug)]
 enum Route {
     #[layout(DashboardLayout)]
-        #[route("/admin")]
-        OverviewRoute,
-        #[route("/admin/imports")]
-        ImportsRoute,
-        #[route("/admin/library")]
-        CollectionsRoute,
-        #[route("/admin/devices")]
-        DevicesRoute,
-        #[route("/admin/tasks")]
-        TasksRoute,
-        #[route("/admin/users")]
-        UsersRoute,
-        #[route("/admin/settings")]
-        SettingsRoute,
-        #[route("/admin/branding")]
-        BrandingRoute,
-        #[route("/admin/logs")]
-        LogsRoute,
+    #[route("/admin")]
+    OverviewRoute,
+    #[route("/admin/imports")]
+    ImportsRoute,
+    #[route("/admin/library")]
+    CollectionsRoute,
+    #[route("/admin/devices")]
+    DevicesRoute,
+    #[route("/admin/tasks")]
+    TasksRoute,
+    #[route("/admin/users")]
+    UsersRoute,
+    #[route("/admin/settings")]
+    SettingsRoute,
+    #[route("/admin/branding")]
+    BrandingRoute,
+    #[route("/admin/logs")]
+    LogsRoute,
     #[end_layout]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -694,16 +731,16 @@ fn DashboardLayout() -> Element {
     let route = use_route::<Route>();
 
     let page_title = match route {
-        Route::OverviewRoute    => "Overview",
-        Route::ImportsRoute     => "Imports",
+        Route::OverviewRoute => "Overview",
+        Route::ImportsRoute => "Imports",
         Route::CollectionsRoute => "Library",
-        Route::DevicesRoute     => "Devices",
-        Route::TasksRoute       => "Scheduled Tasks",
-        Route::UsersRoute       => "Users",
-        Route::SettingsRoute    => "Settings",
-        Route::BrandingRoute    => "Branding",
-        Route::LogsRoute        => "Logs",
-        Route::NotFound { .. }  => "",
+        Route::DevicesRoute => "Devices",
+        Route::TasksRoute => "Scheduled Tasks",
+        Route::UsersRoute => "Users",
+        Route::SettingsRoute => "Settings",
+        Route::BrandingRoute => "Branding",
+        Route::LogsRoute => "Logs",
+        Route::NotFound { .. } => "",
     };
 
     rsx! {
@@ -904,9 +941,9 @@ impl PartialEq for FormMode {
 #[component]
 fn CollectionsPage(app_state: AppState) -> Element {
     let mut collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
-    let mut loading   = use_signal(|| true);
-    let mut error     = use_signal(|| Option::<String>::None);
-    let mut refresh   = use_signal(|| 0_u32);
+    let mut loading = use_signal(|| true);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut refresh = use_signal(|| 0_u32);
     let mut form_mode: Signal<Option<FormMode>> = use_signal(|| None);
 
     let app_state_effect = app_state.clone();
@@ -915,11 +952,20 @@ fn CollectionsPage(app_state: AppState) -> Element {
         loading.set(true);
         let client = app_state_effect.client.clone();
         spawn(async move {
-            match client.execute(GetItems {
-                include_item_types: vec!["BoxSet".to_string(), "CollectionFolder".to_string()],
-                recursive: false,
-            }).await {
-                Ok(result) => { collections.set(result.items); error.set(None); }
+            match client
+                .execute(GetItems {
+                    include_item_types: vec![
+                        "BoxSet".to_string(),
+                        "CollectionFolder".to_string(),
+                    ],
+                    recursive: false,
+                })
+                .await
+            {
+                Ok(result) => {
+                    collections.set(result.items);
+                    error.set(None);
+                }
                 Err(e) => error.set(Some(format!("Failed to load collections: {e}"))),
             }
             loading.set(false);
@@ -1042,28 +1088,38 @@ fn CollectionForm(
     let is_edit = matches!(mode, FormMode::Edit(_));
     let existing: Option<BaseItemDto> = match &mode {
         FormMode::Edit(f) => Some(f.clone()),
-        FormMode::Create  => None,
+        FormMode::Create => None,
     };
 
-    let mut title       = use_signal(|| existing.as_ref().and_then(|f| f.name.clone()).unwrap_or_default());
-    let mut promoted    = use_signal(|| {
-        existing.as_ref()
+    let mut title = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|f| f.name.clone())
+            .unwrap_or_default()
+    });
+    let mut promoted = use_signal(|| {
+        existing
+            .as_ref()
             .and_then(|f| f.remux.as_ref())
             .and_then(|r| r.promoted)
             .unwrap_or(false)
     });
-    let mut col_type    = use_signal(|| {
-        existing.as_ref()
+    let mut col_type = use_signal(|| {
+        existing
+            .as_ref()
             .and_then(|f| f.collection_type.as_ref())
             .map(|ct| match ct {
-                shared::sdks::jellyfin::CollectionType::Movies  => "movies".to_string(),
-                shared::sdks::jellyfin::CollectionType::Tvshows => "tvshows".to_string(),
+                shared::sdks::jellyfin::CollectionType::Movies => "movies".to_string(),
+                shared::sdks::jellyfin::CollectionType::Tvshows => {
+                    "tvshows".to_string()
+                }
                 _ => "movies".to_string(),
             })
             .unwrap_or_else(|| "movies".to_string())
     });
-    let mut col_kind    = use_signal(|| {
-        existing.as_ref()
+    let mut col_kind = use_signal(|| {
+        existing
+            .as_ref()
             .and_then(|f| f.remux.as_ref())
             .and_then(|r| r.collection_kind.as_ref())
             .map(|k| k.to_string())
@@ -1071,15 +1127,16 @@ fn CollectionForm(
     });
     // Selected catalog UUIDs for smart collection filter
     let mut catalog_filter: Signal<Vec<String>> = use_signal(|| {
-        existing.as_ref()
+        existing
+            .as_ref()
             .and_then(|f| f.remux.as_ref())
             .and_then(|r| r.collection_catalog_filter.as_ref())
             .map(|ids| ids.iter().map(|id| id.to_string()).collect())
             .unwrap_or_default()
     });
     let mut aio_catalogs: Signal<Vec<AioCatalogInfo>> = use_signal(Vec::new);
-    let mut saving      = use_signal(|| false);
-    let mut err         = use_signal(|| Option::<String>::None);
+    let mut saving = use_signal(|| false);
+    let mut err = use_signal(|| Option::<String>::None);
 
     // Fetch AIO catalogs when kind=smart (for catalog filter checkboxes)
     {
@@ -1101,38 +1158,46 @@ fn CollectionForm(
         let client = app_state.client.clone();
         let item_id = existing.as_ref().map(|f| f.id.to_string());
         let name = title.peek().clone();
-        let ct   = col_type.peek().clone();
-        let ck   = col_kind.peek().clone();
-        let prm  = *promoted.peek();
+        let ct = col_type.peek().clone();
+        let ck = col_kind.peek().clone();
+        let prm = *promoted.peek();
         let filter = catalog_filter.peek().clone();
         let catalog_filter_payload = if ck == "smart" { Some(filter) } else { None };
         saving.set(true);
         err.set(None);
         spawn(async move {
             let result = if let Some(id) = item_id {
-                client.execute(PatchItem {
-                    item_id: id,
-                    payload: PatchItemPayload {
-                        name: Some(name),
-                        collection_type: Some(ct),
-                        collection_kind: Some(ck),
-                        collection_catalog_filter: catalog_filter_payload,
-                        promoted: Some(prm),
-                    },
-                }).await
+                client
+                    .execute(PatchItem {
+                        item_id: id,
+                        payload: PatchItemPayload {
+                            name: Some(name),
+                            collection_type: Some(ct),
+                            collection_kind: Some(ck),
+                            collection_catalog_filter: catalog_filter_payload,
+                            promoted: Some(prm),
+                        },
+                    })
+                    .await
             } else {
-                client.execute(CreateVirtualFolder {
-                    payload: CreateVirtualFolderPayload {
-                        name,
-                        collection_type: Some(ct),
-                        collection_kind: Some(ck),
-                        promoted: Some(prm),
-                    },
-                }).await.map(|_| ())
+                client
+                    .execute(CreateVirtualFolder {
+                        payload: CreateVirtualFolderPayload {
+                            name,
+                            collection_type: Some(ct),
+                            collection_kind: Some(ck),
+                            promoted: Some(prm),
+                        },
+                    })
+                    .await
+                    .map(|_| ())
             };
             match result {
-                Ok(_)  => on_done.call(()),
-                Err(e) => { err.set(Some(format!("{e}"))); saving.set(false); }
+                Ok(_) => on_done.call(()),
+                Err(e) => {
+                    err.set(Some(format!("{e}")));
+                    saving.set(false);
+                }
             }
         });
     };
@@ -1285,7 +1350,7 @@ impl PartialEq for UserFormMode {
 fn ImportsPage(app_state: AppState) -> Element {
     let mut catalogs: Signal<Vec<AioCatalogInfo>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
-    let mut error   = use_signal(|| Option::<String>::None);
+    let mut error = use_signal(|| Option::<String>::None);
     let mut tasks_list: Signal<Vec<TaskInfo>> = use_signal(Vec::new);
 
     let app_state_load = app_state.clone();
@@ -1294,19 +1359,28 @@ fn ImportsPage(app_state: AppState) -> Element {
         spawn(async move {
             let (cats_result, tasks_result) = futures::join!(
                 client.execute(GetAioCatalogs),
-                client.execute(GetScheduledTasks { is_hidden: Some(false) }),
+                client.execute(GetScheduledTasks {
+                    is_hidden: Some(false)
+                }),
             );
             match cats_result {
-                Ok(cats) => { catalogs.set(cats); error.set(None); }
-                Err(e)   => error.set(Some(format!("Failed to load catalogs: {e}"))),
+                Ok(cats) => {
+                    catalogs.set(cats);
+                    error.set(None);
+                }
+                Err(e) => error.set(Some(format!("Failed to load catalogs: {e}"))),
             }
-            if let Ok(t) = tasks_result { tasks_list.set(t); }
+            if let Ok(t) = tasks_result {
+                tasks_list.set(t);
+            }
             loading.set(false);
         });
     });
 
     let import_task = move || {
-        tasks_list.read().iter()
+        tasks_list
+            .read()
+            .iter()
             .find(|t| t.key.as_deref() == Some("catalogimport"))
             .cloned()
     };
@@ -1466,9 +1540,9 @@ fn ImportsPage(app_state: AppState) -> Element {
 #[component]
 fn UsersPage(app_state: AppState) -> Element {
     let mut users: Signal<Vec<UserDto>> = use_signal(Vec::new);
-    let mut loading  = use_signal(|| true);
-    let mut error    = use_signal(|| Option::<String>::None);
-    let mut refresh  = use_signal(|| 0_u32);
+    let mut loading = use_signal(|| true);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut refresh = use_signal(|| 0_u32);
     let mut form_mode: Signal<Option<UserFormMode>> = use_signal(|| None);
 
     // ID of the currently logged-in user (to disable self-delete)
@@ -1481,8 +1555,11 @@ fn UsersPage(app_state: AppState) -> Element {
         let client = app_state_effect.client.clone();
         spawn(async move {
             match client.execute(GetUsers).await {
-                Ok(list) => { users.set(list); error.set(None); }
-                Err(e)   => error.set(Some(format!("Failed to load users: {e}"))),
+                Ok(list) => {
+                    users.set(list);
+                    error.set(None);
+                }
+                Err(e) => error.set(Some(format!("Failed to load users: {e}"))),
             }
             loading.set(false);
         });
@@ -1590,19 +1667,29 @@ fn UserForm(
     let is_edit = matches!(mode, UserFormMode::Edit(_));
     let existing: Option<UserDto> = match &mode {
         UserFormMode::Edit(u) => Some(u.clone()),
-        UserFormMode::Create  => None,
+        UserFormMode::Create => None,
     };
 
-    let mut username = use_signal(|| existing.as_ref().map(|u| u.name.clone()).unwrap_or_default());
-    let mut is_admin = use_signal(|| existing.as_ref().map(|u| u.policy.is_administrator).unwrap_or(false));
-    let mut password  = use_signal(String::new);
+    let mut username = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| u.name.clone())
+            .unwrap_or_default()
+    });
+    let mut is_admin = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| u.policy.is_administrator)
+            .unwrap_or(false)
+    });
+    let mut password = use_signal(String::new);
     let mut password2 = use_signal(String::new);
-    let mut saving   = use_signal(|| false);
-    let mut err      = use_signal(|| Option::<String>::None);
+    let mut saving = use_signal(|| false);
+    let mut err = use_signal(|| Option::<String>::None);
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let pw  = password.peek().clone();
+        let pw = password.peek().clone();
         let pw2 = password2.peek().clone();
         if !pw.is_empty() && pw != pw2 {
             err.set(Some("Passwords do not match".into()));
@@ -1613,10 +1700,10 @@ fn UserForm(
             return;
         }
 
-        let client    = app_state.client.clone();
-        let name      = username.peek().clone();
-        let admin     = *is_admin.peek();
-        let user_dto  = existing.clone();
+        let client = app_state.client.clone();
+        let name = username.peek().clone();
+        let admin = *is_admin.peek();
+        let user_dto = existing.clone();
 
         saving.set(true);
         err.set(None);
@@ -1627,31 +1714,56 @@ fn UserForm(
                     // Update username
                     let mut updated = user.clone();
                     updated.name = name;
-                    client.execute(UpdateUser { user_id: user.id, dto: updated }).await?;
+                    client
+                        .execute(UpdateUser {
+                            user_id: user.id,
+                            dto: updated,
+                        })
+                        .await?;
                     // Update admin flag
                     let mut policy = user.policy.clone();
                     policy.is_administrator = admin;
-                    client.execute(UpdateUserPolicy { user_id: user.id, policy }).await?;
+                    client
+                        .execute(UpdateUserPolicy {
+                            user_id: user.id,
+                            policy,
+                        })
+                        .await?;
                     // Change password only if provided
                     if !pw.is_empty() {
-                        client.execute(AdminSetPassword { user_id: user.id, new_pw: pw }).await?;
+                        client
+                            .execute(AdminSetPassword {
+                                user_id: user.id,
+                                new_pw: pw,
+                            })
+                            .await?;
                     }
                 } else {
                     // Create user
-                    let new_user = client.execute(CreateUser { name, password: pw }).await?;
+                    let new_user =
+                        client.execute(CreateUser { name, password: pw }).await?;
                     // Set admin flag if needed
                     if admin {
                         let mut policy = new_user.policy.clone();
                         policy.is_administrator = true;
-                        client.execute(UpdateUserPolicy { user_id: new_user.id, policy }).await?;
+                        client
+                            .execute(UpdateUserPolicy {
+                                user_id: new_user.id,
+                                policy,
+                            })
+                            .await?;
                     }
                 }
                 Ok(())
-            }.await;
+            }
+            .await;
 
             match result {
-                Ok(_)  => on_done.call(()),
-                Err(e) => { err.set(Some(format!("{e}"))); saving.set(false); }
+                Ok(_) => on_done.call(()),
+                Err(e) => {
+                    err.set(Some(format!("{e}")));
+                    saving.set(false);
+                }
             }
         });
     };
@@ -1745,13 +1857,13 @@ fn UserForm(
 #[component]
 fn SettingsPage(app_state: AppState) -> Element {
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
-    let mut server_name       = use_signal(String::new);
-    let mut aio_url           = use_signal(String::new);
+    let mut server_name = use_signal(String::new);
+    let mut aio_url = use_signal(String::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
     let mut loading = use_signal(|| true);
-    let mut saving  = use_signal(|| false);
-    let mut error   = use_signal(|| Option::<String>::None);
-    let mut saved   = use_signal(|| false);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut saved = use_signal(|| false);
 
     let app_state_load = app_state.clone();
     use_effect(move || {
@@ -1774,20 +1886,23 @@ fn SettingsPage(app_state: AppState) -> Element {
         e.prevent_default();
         let client = app_state.client.clone();
         let name = server_name.peek().clone();
-        let url  = aio_url.peek().clone();
-        let max  = *catalog_max_items.peek();
+        let url = aio_url.peek().clone();
+        let max = *catalog_max_items.peek();
 
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
-        cfg.server_name       = Some(name);
-        cfg.aio_url           = Some(url);
+        cfg.server_name = Some(name);
+        cfg.aio_url = Some(url);
         cfg.catalog_max_items = Some(max);
 
         saving.set(true);
         error.set(None);
         saved.set(false);
         spawn(async move {
-            match client.execute(UpdateSystemConfiguration { config: cfg }).await {
-                Ok(_)  => saved.set(true),
+            match client
+                .execute(UpdateSystemConfiguration { config: cfg })
+                .await
+            {
+                Ok(_) => saved.set(true),
                 Err(e) => error.set(Some(format!("Failed to save: {e}"))),
             }
             saving.set(false);
@@ -1879,12 +1994,12 @@ fn SettingsPage(app_state: AppState) -> Element {
 #[component]
 fn BrandingPage(app_state: AppState) -> Element {
     let mut base_cfg: Signal<Option<BrandingOptions>> = use_signal(|| None);
-    let mut custom_css        = use_signal(String::new);
-    let mut login_disclaimer  = use_signal(String::new);
+    let mut custom_css = use_signal(String::new);
+    let mut login_disclaimer = use_signal(String::new);
     let mut loading = use_signal(|| true);
-    let mut saving  = use_signal(|| false);
-    let mut error   = use_signal(|| Option::<String>::None);
-    let mut saved   = use_signal(|| false);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut saved = use_signal(|| false);
 
     let app_state_load = app_state.clone();
     use_effect(move || {
@@ -1893,7 +2008,8 @@ fn BrandingPage(app_state: AppState) -> Element {
             match client.execute(GetBrandingConfiguration).await {
                 Ok(cfg) => {
                     custom_css.set(cfg.custom_css.clone().unwrap_or_default());
-                    login_disclaimer.set(cfg.login_disclaimer.clone().unwrap_or_default());
+                    login_disclaimer
+                        .set(cfg.login_disclaimer.clone().unwrap_or_default());
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load branding: {e}"))),
@@ -1905,19 +2021,22 @@ fn BrandingPage(app_state: AppState) -> Element {
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state.client.clone();
-        let css  = custom_css.peek().clone();
+        let css = custom_css.peek().clone();
         let disc = login_disclaimer.peek().clone();
 
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
-        cfg.custom_css       = if css.is_empty()  { None } else { Some(css) };
+        cfg.custom_css = if css.is_empty() { None } else { Some(css) };
         cfg.login_disclaimer = if disc.is_empty() { None } else { Some(disc) };
 
         saving.set(true);
         error.set(None);
         saved.set(false);
         spawn(async move {
-            match client.execute(UpdateBrandingConfiguration { config: cfg }).await {
-                Ok(_)  => saved.set(true),
+            match client
+                .execute(UpdateBrandingConfiguration { config: cfg })
+                .await
+            {
+                Ok(_) => saved.set(true),
                 Err(e) => error.set(Some(format!("Failed to save: {e}"))),
             }
             saving.set(false);
@@ -2006,14 +2125,14 @@ fn WizardStep(n: u8, label: &'static str, active: bool, done: bool) -> Element {
 
 #[component]
 fn Wizard(on_complete: EventHandler) -> Element {
-    let mut step      = use_signal(|| 0_u8);
+    let mut step = use_signal(|| 0_u8);
     let mut server_name = use_signal(String::new);
-    let mut aio_url   = use_signal(String::new);
-    let mut username  = use_signal(String::new);
-    let mut password  = use_signal(String::new);
+    let mut aio_url = use_signal(String::new);
+    let mut username = use_signal(String::new);
+    let mut password = use_signal(String::new);
     let mut password2 = use_signal(String::new);
-    let mut saving    = use_signal(|| false);
-    let mut error     = use_signal(|| Option::<String>::None);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
 
     // Pre-fill from current startup config (in case the wizard was partially run)
     use_effect(move || {
@@ -2277,7 +2396,8 @@ struct LogLine {
 
 #[component]
 fn LogsPage(app_state: AppState) -> Element {
-    let mut logs: Signal<std::collections::VecDeque<LogLine>> = use_signal(std::collections::VecDeque::new);
+    let mut logs: Signal<std::collections::VecDeque<LogLine>> =
+        use_signal(std::collections::VecDeque::new);
     let mut paused = use_signal(|| false);
     let mut log_level = use_signal(|| "info".to_string());
     let mut level_error: Signal<Option<String>> = use_signal(|| None);
@@ -2413,9 +2533,9 @@ fn level_color(level: &str) -> &'static str {
     match level.to_uppercase().as_str() {
         "TRACE" => "color:#9ca3af",
         "DEBUG" => "color:#60a5fa",
-        "INFO"  => "color:#34d399",
-        "WARN"  => "color:#fbbf24",
+        "INFO" => "color:#34d399",
+        "WARN" => "color:#fbbf24",
         "ERROR" => "color:#f87171",
-        _       => "color:#e5e7eb",
+        _ => "color:#e5e7eb",
     }
 }

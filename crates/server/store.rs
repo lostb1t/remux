@@ -86,13 +86,16 @@ impl Store {
 
     /// Scan all keys with a given prefix
     pub fn scan_keys(&self, prefix: &str) -> Vec<String> {
-        self.inner.iter().filter_map(|(key, _)| {
-            if key.starts_with(prefix) {
-                Some((*key).clone())
-            } else {
-                None
-            }
-        }).collect()
+        self.inner
+            .iter()
+            .filter_map(|(key, _)| {
+                if key.starts_with(prefix) {
+                    Some((*key).clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 

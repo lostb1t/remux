@@ -21,7 +21,6 @@ pub async fn get_startup_configuration(
     }))
 }
 
-
 #[post("/startup/configuration")]
 pub async fn post_startup_configuration(
     State(state): State<AppState>,
@@ -29,8 +28,11 @@ pub async fn post_startup_configuration(
 ) -> Result<impl IntoResponse> {
     let mut config = crate::db::Settings::get_config(&state.ctx.db).await?;
     config.server_name = body.server_name.or(config.server_name);
-    config.preferred_metadata_language = body.preferred_metadata_language.or(config.preferred_metadata_language);
-    config.metadata_country_code = body.metadata_country_code.or(config.metadata_country_code);
+    config.preferred_metadata_language = body
+        .preferred_metadata_language
+        .or(config.preferred_metadata_language);
+    config.metadata_country_code =
+        body.metadata_country_code.or(config.metadata_country_code);
     if let Some(url) = body.aio_url {
         config.aio_url = Some(url);
     }
@@ -51,7 +53,8 @@ pub async fn post_startup_user(
     Json(body): Json<jellyfin::StartupUser>,
 ) -> Result<impl IntoResponse> {
     if let (Some(name), Some(password)) = (body.name, body.password) {
-        let mut user = crate::db::User::new_with_password(String::new(), name, &password, None)?;
+        let mut user =
+            crate::db::User::new_with_password(String::new(), name, &password, None)?;
         user.is_admin = true;
         user.save_by_username(&state.ctx.db).await?;
     }

@@ -6,8 +6,8 @@ use remux_macros::{delete, get, post};
 use serde::Deserialize;
 
 use crate::AppState;
-use crate::db::auth;
 use crate::db::ApiKey;
+use crate::db::auth;
 use crate::jellyfin;
 use axum_anyhow::{ApiResult as Result, IntoApiError};
 
@@ -23,7 +23,9 @@ pub async fn get_api_keys(
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required"));
+        return Err(
+            anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required")
+        );
     }
     let keys = ApiKey::get_all(&state.ctx.db).await?;
     let items: Vec<jellyfin::AuthenticationInfo> = keys
@@ -52,7 +54,9 @@ pub async fn create_api_key(
     Query(params): Query<CreateKeyQuery>,
 ) -> Result<impl IntoResponse> {
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required"));
+        return Err(
+            anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required")
+        );
     }
     ApiKey::create(&state.ctx.db, &params.app).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -66,7 +70,9 @@ pub async fn delete_api_key(
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse> {
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required"));
+        return Err(
+            anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required")
+        );
     }
     ApiKey::delete(&state.ctx.db, &key).await?;
     Ok(StatusCode::NO_CONTENT)

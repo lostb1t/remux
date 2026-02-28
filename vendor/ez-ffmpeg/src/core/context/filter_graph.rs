@@ -15,18 +15,19 @@ pub(crate) struct FilterGraph {
 
     pub(crate) src: Option<(Sender<FrameBox>, Receiver<FrameBox>, Arc<[AtomicBool]>)>,
 
-    pub(crate) node: Arc<SchNode>
+    pub(crate) node: Arc<SchNode>,
 }
 
 impl FilterGraph {
-    pub(crate) fn new(graph_desc: String,
-                      hw_device: Option<String>,
-                      inputs: Vec<InputFilter>,
-                      outputs: Vec<OutputFilter>) -> Self {
+    pub(crate) fn new(
+        graph_desc: String,
+        hw_device: Option<String>,
+        inputs: Vec<InputFilter>,
+        outputs: Vec<OutputFilter>,
+    ) -> Self {
         let (sender, receiver) = crossbeam_channel::bounded(8);
-        let finished_flag_list: Vec<AtomicBool> = inputs.iter()
-            .map(|_| AtomicBool::new(false))
-            .collect();
+        let finished_flag_list: Vec<AtomicBool> =
+            inputs.iter().map(|_| AtomicBool::new(false)).collect();
 
         Self {
             graph_desc,
@@ -34,7 +35,10 @@ impl FilterGraph {
             inputs,
             outputs,
             src: Some((sender, receiver, Arc::from(finished_flag_list))),
-            node: Arc::new(SchNode::Filter { inputs: Vec::new(), best_input: Arc::new(AtomicUsize::from(0)) })
+            node: Arc::new(SchNode::Filter {
+                inputs: Vec::new(),
+                best_input: Arc::new(AtomicUsize::from(0)),
+            }),
         }
     }
 

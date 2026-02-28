@@ -1,8 +1,8 @@
 use axum::extract::{Path, State};
-use axum::response::Redirect;
 use axum::response::IntoResponse;
-use remux_macros::get;
+use axum::response::Redirect;
 use axum_extra::extract::Query;
+use remux_macros::get;
 use uuid::Uuid;
 
 use crate::AppState;

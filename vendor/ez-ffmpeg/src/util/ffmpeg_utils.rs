@@ -132,7 +132,12 @@ pub fn av_err2str(err: i32) -> String {
 ///
 /// # Reference
 /// FFmpeg `libavutil/mathematics.c:134-140`
-pub(crate) fn av_rescale_q_rnd(a: i64, bq: AVRational, cq: AVRational, rnd: u32) -> i64 {
+pub(crate) fn av_rescale_q_rnd(
+    a: i64,
+    bq: AVRational,
+    cq: AVRational,
+    rnd: u32,
+) -> i64 {
     let b = bq.num as i64 * cq.den as i64;
     let c = cq.num as i64 * bq.den as i64;
     av_rescale_rnd(a, b, c, rnd)
@@ -163,7 +168,8 @@ pub(crate) fn av_rescale_q_rnd(a: i64, bq: AVRational, cq: AVRational, rnd: u32)
 /// # Reference
 /// FFmpeg `libavutil/mathematics.c:58-127`
 fn av_rescale_rnd(a: i64, b: i64, c: i64, mut rnd: u32) -> i64 {
-    const AV_ROUND_PASS_MINMAX: u32 = ffmpeg_sys_next::AVRounding::AV_ROUND_PASS_MINMAX as u32;
+    const AV_ROUND_PASS_MINMAX: u32 =
+        ffmpeg_sys_next::AVRounding::AV_ROUND_PASS_MINMAX as u32;
     const INT_MAX: i64 = i32::MAX as i64;
 
     // av_assert2(c > 0);

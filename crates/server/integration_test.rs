@@ -5,8 +5,7 @@ use serde_json::json;
 
 use crate::{Config, init_app_with_config};
 
-pub const AUTH_HEADER: &str =
-    "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\"";
+pub const AUTH_HEADER: &str = "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\"";
 
 pub fn auth_header_with_token(token: &str) -> String {
     format!(

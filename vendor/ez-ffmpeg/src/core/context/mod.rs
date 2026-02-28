@@ -1,18 +1,17 @@
 use crate::error::AllocFrameError;
 use ffmpeg_sys_next::AVMediaType::{
-    AVMEDIA_TYPE_ATTACHMENT, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_DATA, AVMEDIA_TYPE_SUBTITLE,
-    AVMEDIA_TYPE_VIDEO,
+    AVMEDIA_TYPE_ATTACHMENT, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_DATA,
+    AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_VIDEO,
 };
 use ffmpeg_sys_next::{
-    av_freep, avcodec_free_context, avformat_close_input, avformat_free_context, avio_closep,
-    avio_context_free, AVCodecContext, AVCodecParameters, AVFormatContext, AVIOContext,
-    AVMediaType, AVRational, AVStream, AVFMT_NOFILE,
+    av_freep, avcodec_free_context, avformat_close_input, avformat_free_context,
+    avio_closep, avio_context_free, AVCodecContext, AVCodecParameters, AVFormatContext,
+    AVIOContext, AVMediaType, AVRational, AVStream, AVFMT_NOFILE,
 };
 use std::ffi::c_void;
 use std::ptr::null_mut;
 
 use ffmpeg_context::{InputOpaque, OutputOpaque};
-
 
 /// The **ffmpeg_context** module is responsible for assembling FFmpeg’s configuration:
 /// inputs, outputs, codecs, filters, and other parameters needed to construct a
@@ -136,7 +135,6 @@ pub mod output;
 /// ```
 pub mod filter_complex;
 
-
 pub(super) mod decoder_stream;
 pub(super) mod demuxer;
 pub(super) mod encoder_stream;
@@ -196,7 +194,10 @@ impl CodecContext {
         }
     }
 
-    pub(crate) fn replace(&mut self, avcodec_context: *mut AVCodecContext) -> *mut AVCodecContext {
+    pub(crate) fn replace(
+        &mut self,
+        avcodec_context: *mut AVCodecContext,
+    ) -> *mut AVCodecContext {
         let mut tmp = self.inner;
         if !tmp.is_null() {
             unsafe {
@@ -358,7 +359,10 @@ impl Drop for AVFormatContextBox {
     }
 }
 
-pub(crate) fn out_fmt_ctx_free(out_fmt_ctx: *mut AVFormatContext, is_set_write_callback: bool) {
+pub(crate) fn out_fmt_ctx_free(
+    out_fmt_ctx: *mut AVFormatContext,
+    is_set_write_callback: bool,
+) {
     if out_fmt_ctx.is_null() {
         return;
     }
@@ -389,7 +393,10 @@ unsafe fn free_output_opaque(mut avio_ctx: *mut AVIOContext) {
     avio_context_free(&mut avio_ctx);
 }
 
-pub(crate) fn in_fmt_ctx_free(mut in_fmt_ctx: *mut AVFormatContext, is_set_read_callback: bool) {
+pub(crate) fn in_fmt_ctx_free(
+    mut in_fmt_ctx: *mut AVFormatContext,
+    is_set_read_callback: bool,
+) {
     if in_fmt_ctx.is_null() {
         return;
     }
@@ -415,7 +422,10 @@ unsafe fn free_input_opaque(mut avio_ctx: *mut AVIOContext) {
 }
 
 #[allow(dead_code)]
-pub(crate) fn type_to_linklabel(media_type: AVMediaType, index: usize) -> Option<String> {
+pub(crate) fn type_to_linklabel(
+    media_type: AVMediaType,
+    index: usize,
+) -> Option<String> {
     match media_type {
         AVMediaType::AVMEDIA_TYPE_UNKNOWN => None,
         AVMEDIA_TYPE_VIDEO => Some(format!("{index}:v")),

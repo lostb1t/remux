@@ -3,10 +3,13 @@ use crate::core::context::FrameBox;
 use crossbeam_channel::Sender;
 #[cfg(not(feature = "docs-rs"))]
 use ffmpeg_sys_next::{AVChannelLayout, AVChannelLayout__bindgen_ty_1, AVChannelOrder};
-use ffmpeg_sys_next::{AVCodec, AVColorRange, AVColorSpace, AVMediaType, AVPixelFormat, AVRational, AVSampleFormat};
+use ffmpeg_sys_next::{
+    AVCodec, AVColorRange, AVColorSpace, AVMediaType, AVPixelFormat, AVRational,
+    AVSampleFormat,
+};
 use std::ptr::{null, null_mut};
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct OutputFilter {
@@ -20,7 +23,11 @@ pub(crate) struct OutputFilter {
 }
 
 impl OutputFilter {
-    pub(crate) fn new(linklabel: String, media_type: AVMediaType, name: String) -> Self {
+    pub(crate) fn new(
+        linklabel: String,
+        media_type: AVMediaType,
+        name: String,
+    ) -> Self {
         Self {
             linklabel,
             media_type,

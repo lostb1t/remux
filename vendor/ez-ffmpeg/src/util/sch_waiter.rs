@@ -1,6 +1,6 @@
+use ffmpeg_sys_next::av_gettime_relative;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use ffmpeg_sys_next::av_gettime_relative;
 
 /// A synchronization primitive that allows a thread to wait until a condition becomes false.
 ///
@@ -57,7 +57,11 @@ impl SchWaiter {
         self.choked.load(Ordering::Acquire)
     }
 
-    pub(crate) fn wait_with_scheduler_status(&self, scheduler_status: &Arc<AtomicUsize>, cal_wait_time: bool) -> i64 {
+    pub(crate) fn wait_with_scheduler_status(
+        &self,
+        scheduler_status: &Arc<AtomicUsize>,
+        cal_wait_time: bool,
+    ) -> i64 {
         // early return
         if !self.choked.load(Ordering::Acquire) {
             return 0;

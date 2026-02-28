@@ -101,7 +101,9 @@ pub enum Error {
     #[error("No {0} stream of the type:{1} were found while build frame pipeline")]
     FrameFilterTypeNoMatched(String, String),
 
-    #[error("{0} stream:{1} of the type:{2} were mismatched while build frame pipeline")]
+    #[error(
+        "{0} stream:{1} of the type:{2} were mismatched while build frame pipeline"
+    )]
     FrameFilterStreamTypeNoMatched(String, usize, String),
 
     #[error("Frame filter pipeline destination already finished")]
@@ -593,7 +595,9 @@ impl From<i32> for AllocOutputContextError {
             AVERROR_PIPE_ERROR => AllocOutputContextError::PipeError,
             AVERROR_BAD_FILE_DESCRIPTOR => AllocOutputContextError::BadFileDescriptor,
             AVERROR_NOT_IMPLEMENTED => AllocOutputContextError::NotImplemented,
-            AVERROR_OPERATION_NOT_PERMITTED => AllocOutputContextError::OperationNotPermitted,
+            AVERROR_OPERATION_NOT_PERMITTED => {
+                AllocOutputContextError::OperationNotPermitted
+            }
             AVERROR_PERMISSION_DENIED => AllocOutputContextError::PermissionDenied,
             AVERROR_TIMEOUT => AllocOutputContextError::Timeout,
             _ => AllocOutputContextError::UnknownError(err_code),
@@ -872,7 +876,9 @@ impl From<i32> for EncodeSubtitleError {
         match err_code {
             AVERROR_OUT_OF_MEMORY => EncodeSubtitleError::OutOfMemory,
             AVERROR_INVALID_ARGUMENT => EncodeSubtitleError::InvalidArgument,
-            AVERROR_OPERATION_NOT_PERMITTED => EncodeSubtitleError::OperationNotPermitted,
+            AVERROR_OPERATION_NOT_PERMITTED => {
+                EncodeSubtitleError::OperationNotPermitted
+            }
             AVERROR_NOT_IMPLEMENTED => EncodeSubtitleError::NotImplemented,
             AVERROR_AGAIN => EncodeSubtitleError::TryAgain,
             _ => EncodeSubtitleError::UnknownError(err_code),
@@ -1051,7 +1057,9 @@ pub enum FilterGraphError {
     #[error("Bad file descriptor encountered during filter graph processing")]
     BadFileDescriptor,
 
-    #[error("Functionality not implemented or unsupported during filter graph processing")]
+    #[error(
+        "Functionality not implemented or unsupported during filter graph processing"
+    )]
     NotImplemented,
 
     #[error("Operation not permitted during filter graph processing")]
@@ -1092,7 +1100,9 @@ pub enum OpenDecoderError {
     #[error("Invalid argument provided during decoder initialization")]
     InvalidArgument,
 
-    #[error("Functionality not implemented or unsupported during decoder initialization")]
+    #[error(
+        "Functionality not implemented or unsupported during decoder initialization"
+    )]
     NotImplemented,
 
     #[error("Resource temporarily unavailable during decoder initialization")]

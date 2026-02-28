@@ -1,7 +1,7 @@
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::Json;
 use futures_util::StreamExt;
 use futures_util::stream;
 use http::StatusCode;
@@ -54,7 +54,9 @@ pub async fn log_stream(
     let live_stream = BroadcastStream::new(rx).filter_map(|item| async move {
         let line = item.ok()?;
         let data = serde_json::to_string(&line).ok()?;
-        Some(Ok::<Event, std::convert::Infallible>(Event::default().data(data)))
+        Some(Ok::<Event, std::convert::Infallible>(
+            Event::default().data(data),
+        ))
     });
 
     Ok(Sse::new(history_stream.chain(live_stream))
@@ -80,7 +82,10 @@ pub async fn set_log_level(
         "trace" | "debug" | "info" | "warn" | "error" => {}
         _ => {
             return Err(anyhow::anyhow!("Invalid log level: {level}")
-                .context_bad_request("invalid", "level must be trace/debug/info/warn/error"));
+                .context_bad_request(
+                    "invalid",
+                    "level must be trace/debug/info/warn/error",
+                ));
         }
     }
 

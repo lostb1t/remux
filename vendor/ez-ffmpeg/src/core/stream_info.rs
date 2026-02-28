@@ -2,19 +2,21 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::ptr::{null, null_mut};
 
+use crate::core::context::AVFormatContextBox;
+use crate::error::{FindStreamError, OpenInputError, Result};
 #[cfg(not(feature = "docs-rs"))]
 use ffmpeg_sys_next::AVChannelOrder;
 use ffmpeg_sys_next::AVMediaType::{
-    AVMEDIA_TYPE_ATTACHMENT, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_DATA, AVMEDIA_TYPE_SUBTITLE,
-    AVMEDIA_TYPE_UNKNOWN, AVMEDIA_TYPE_VIDEO,
+    AVMEDIA_TYPE_ATTACHMENT, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_DATA,
+    AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_UNKNOWN, AVMEDIA_TYPE_VIDEO,
 };
 use ffmpeg_sys_next::{
     av_dict_free, av_dict_get, av_dict_iterate, av_find_best_stream, avcodec_get_name,
     avformat_find_stream_info, AVCodecID, AVDictionary, AVDictionaryEntry, AVRational,
 };
-use ffmpeg_sys_next::{avformat_alloc_context, avformat_close_input, avformat_open_input};
-use crate::core::context::AVFormatContextBox;
-use crate::error::{FindStreamError, OpenInputError, Result};
+use ffmpeg_sys_next::{
+    avformat_alloc_context, avformat_close_input, avformat_open_input,
+};
 
 #[derive(Debug, Clone)]
 pub enum StreamInfo {
@@ -244,7 +246,9 @@ impl StreamInfo {
 ///
 /// # Safety
 /// The caller must ensure `raw_stream` is a valid, non-null pointer to an `AVStream`.
-unsafe fn extract_stream_info_from_stream(raw_stream: *mut ffmpeg_sys_next::AVStream) -> StreamInfo {
+unsafe fn extract_stream_info_from_stream(
+    raw_stream: *mut ffmpeg_sys_next::AVStream,
+) -> StreamInfo {
     let stream = &*raw_stream;
     let metadata = dict_to_hashmap(stream.metadata);
 
@@ -372,7 +376,9 @@ unsafe fn extract_stream_info_from_stream(raw_stream: *mut ffmpeg_sys_next::AVSt
 /// The caller must ensure `fmt_ctx_box` holds a valid, fully-initialized
 /// `AVFormatContext` (i.e. `avformat_open_input` + `avformat_find_stream_info`
 /// have succeeded).
-pub(crate) unsafe fn extract_stream_infos(fmt_ctx_box: &AVFormatContextBox) -> Result<Vec<StreamInfo>> {
+pub(crate) unsafe fn extract_stream_infos(
+    fmt_ctx_box: &AVFormatContextBox,
+) -> Result<Vec<StreamInfo>> {
     let fmt_ctx = fmt_ctx_box.fmt_ctx;
     if fmt_ctx.is_null() {
         return Err(OpenInputError::OutOfMemory.into());
@@ -398,7 +404,11 @@ pub(crate) unsafe fn extract_stream_infos(fmt_ctx_box: &AVFormatContextBox) -> R
         infos.push(extract_stream_info_from_stream(raw_stream));
     }
 
-    if !infos.is_empty() && infos.iter().all(|i| matches!(i, StreamInfo::Unknown { .. })) {
+    if !infos.is_empty()
+        && infos
+            .iter()
+            .all(|i| matches!(i, StreamInfo::Unknown { .. }))
+    {
         return Err(FindStreamError::NoStreamFound.into());
     }
 
@@ -451,7 +461,9 @@ fn find_best_stream_info(
         let info = extract_stream_info_from_stream(raw_stream);
         // If codecpar was null, extract returns Unknown instead of the requested type.
         // Only filter Unknown when the caller asked for a specific (non-Unknown) type.
-        if media_type != AVMEDIA_TYPE_UNKNOWN && matches!(info, StreamInfo::Unknown { .. }) {
+        if media_type != AVMEDIA_TYPE_UNKNOWN
+            && matches!(info, StreamInfo::Unknown { .. })
+        {
             return Ok(None);
         }
         Ok(Some(info))
@@ -544,7 +556,9 @@ pub fn find_data_stream_info(url: impl Into<String>) -> Result<Option<StreamInfo
 /// - `Ok(Some(StreamInfo::Attachment))`: Contains the attachment stream information if found.
 /// - `Ok(None)`: Returned if no attachment stream is found.
 /// - `Err`: If an error occurs during the operation.
-pub fn find_attachment_stream_info(url: impl Into<String>) -> Result<Option<StreamInfo>> {
+pub fn find_attachment_stream_info(
+    url: impl Into<String>,
+) -> Result<Option<StreamInfo>> {
     find_best_stream_info(url, AVMEDIA_TYPE_ATTACHMENT)
 }
 
@@ -598,7 +612,9 @@ fn codec_name(id: AVCodecID) -> String {
     }
 }
 
-pub(crate) fn init_format_context(url: impl Into<String>) -> Result<AVFormatContextBox> {
+pub(crate) fn init_format_context(
+    url: impl Into<String>,
+) -> Result<AVFormatContextBox> {
     crate::core::initialize_ffmpeg();
 
     // Convert URL before allocating FFmpeg resources so a NUL-byte error
@@ -634,8 +650,14 @@ pub(crate) fn init_format_context(url: impl Into<String>) -> Result<AVFormatCont
         };
 
         #[cfg(not(feature = "docs-rs"))]
-        let mut ret =
-            { avformat_open_input(&mut in_fmt_ctx, url_cstr.as_ptr(), null(), &mut format_opts) };
+        let mut ret = {
+            avformat_open_input(
+                &mut in_fmt_ctx,
+                url_cstr.as_ptr(),
+                null(),
+                &mut format_opts,
+            )
+        };
         #[cfg(feature = "docs-rs")]
         let mut ret = 0;
 
@@ -747,17 +769,29 @@ mod tests {
     #[test]
     fn test_is_video() {
         let video = StreamInfo::Video {
-            index: 0, time_base: AVRational { num: 1, den: 30 },
-            start_time: 0, duration: 100, nb_frames: 100,
+            index: 0,
+            time_base: AVRational { num: 1, den: 30 },
+            start_time: 0,
+            duration: 100,
+            nb_frames: 100,
             r_frame_rate: AVRational { num: 30, den: 1 },
             sample_aspect_ratio: AVRational { num: 1, den: 1 },
             avg_frame_rate: AVRational { num: 30, den: 1 },
-            width: 1920, height: 1080, bit_rate: 0, pixel_format: 0,
-            video_delay: 0, fps: 30.0, rotate: 0,
+            width: 1920,
+            height: 1080,
+            bit_rate: 0,
+            pixel_format: 0,
+            video_delay: 0,
+            fps: 30.0,
+            rotate: 0,
             codec_id: AVCodecID::AV_CODEC_ID_H264,
-            codec_name: "h264".to_string(), metadata: HashMap::new(),
+            codec_name: "h264".to_string(),
+            metadata: HashMap::new(),
         };
-        let unknown = StreamInfo::Unknown { index: 1, metadata: HashMap::new() };
+        let unknown = StreamInfo::Unknown {
+            index: 1,
+            metadata: HashMap::new(),
+        };
         assert!(video.is_video());
         assert!(!video.is_audio());
         assert!(!unknown.is_video());
@@ -766,15 +800,22 @@ mod tests {
     #[test]
     fn test_is_audio() {
         let audio = StreamInfo::Audio {
-            index: 1, time_base: AVRational { num: 1, den: 44100 },
-            start_time: 0, duration: 100, nb_frames: 0,
+            index: 1,
+            time_base: AVRational { num: 1, den: 44100 },
+            start_time: 0,
+            duration: 100,
+            nb_frames: 0,
             avg_frame_rate: AVRational { num: 0, den: 1 },
             sample_rate: 44100,
             #[cfg(not(feature = "docs-rs"))]
             order: AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC,
-            nb_channels: 2, bit_rate: 128000, sample_format: 0, frame_size: 1024,
+            nb_channels: 2,
+            bit_rate: 128000,
+            sample_format: 0,
+            frame_size: 1024,
             codec_id: AVCodecID::AV_CODEC_ID_AAC,
-            codec_name: "aac".to_string(), metadata: HashMap::new(),
+            codec_name: "aac".to_string(),
+            metadata: HashMap::new(),
         };
         assert!(audio.is_audio());
         assert!(!audio.is_video());
@@ -783,17 +824,29 @@ mod tests {
     #[test]
     fn test_index() {
         let video = StreamInfo::Video {
-            index: 5, time_base: AVRational { num: 1, den: 30 },
-            start_time: 0, duration: 100, nb_frames: 100,
+            index: 5,
+            time_base: AVRational { num: 1, den: 30 },
+            start_time: 0,
+            duration: 100,
+            nb_frames: 100,
             r_frame_rate: AVRational { num: 30, den: 1 },
             sample_aspect_ratio: AVRational { num: 1, den: 1 },
             avg_frame_rate: AVRational { num: 30, den: 1 },
-            width: 1920, height: 1080, bit_rate: 0, pixel_format: 0,
-            video_delay: 0, fps: 30.0, rotate: 0,
+            width: 1920,
+            height: 1080,
+            bit_rate: 0,
+            pixel_format: 0,
+            video_delay: 0,
+            fps: 30.0,
+            rotate: 0,
             codec_id: AVCodecID::AV_CODEC_ID_H264,
-            codec_name: "h264".to_string(), metadata: HashMap::new(),
+            codec_name: "h264".to_string(),
+            metadata: HashMap::new(),
         };
-        let unknown = StreamInfo::Unknown { index: 42, metadata: HashMap::new() };
+        let unknown = StreamInfo::Unknown {
+            index: 42,
+            metadata: HashMap::new(),
+        };
         assert_eq!(video.index(), 5);
         assert_eq!(unknown.index(), 42);
     }

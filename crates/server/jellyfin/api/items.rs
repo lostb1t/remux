@@ -2,10 +2,10 @@ use anyhow::Context;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use remux_macros::{delete, get, patch, post};
-use serde::Deserialize;
 use axum_extra::extract::Query;
 use http::StatusCode;
+use remux_macros::{delete, get, patch, post};
+use serde::Deserialize;
 use std::time::Duration;
 use tracing::trace;
 use tracing::warn;
@@ -18,8 +18,8 @@ use crate::jellyfin;
 use crate::sdks;
 use crate::utils::IntoVec;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
-use chrono::Utc;
 use chrono::Datelike;
+use chrono::Utc;
 
 use super::{mock_items, stub_json};
 
@@ -35,7 +35,8 @@ pub async fn get_items(
     _count: bool,
 ) -> Result<ItemsQueryResult> {
     //trace!(?q, "get_items");
-    let aio = crate::aio::AioService::from_settings(&state.ctx.db).await
+    let aio = crate::aio::AioService::from_settings(&state.ctx.db)
+        .await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
 
     let parent = if let Some(parent_id) = q.parent_id.clone() {
@@ -58,8 +59,12 @@ pub async fn get_items(
         let types = q.get_requested_item_types();
         // if types.len() != 0 {
         if types.len() == 0
-            || ![jellyfin::MediaType::Movie, jellyfin::MediaType::Series, jellyfin::MediaType::Episode]
-                .contains(&types[0])
+            || ![
+                jellyfin::MediaType::Movie,
+                jellyfin::MediaType::Series,
+                jellyfin::MediaType::Episode,
+            ]
+            .contains(&types[0])
         {
             return Ok(ItemsQueryResult {
                 items: vec![],
@@ -107,7 +112,12 @@ pub async fn get_items(
     // }
 
     let requested = q.get_requested_item_types();
-    if requested.iter().any(|t| matches!(t, jellyfin::MediaType::BoxSet | jellyfin::MediaType::CollectionFolder)) {
+    if requested.iter().any(|t| {
+        matches!(
+            t,
+            jellyfin::MediaType::BoxSet | jellyfin::MediaType::CollectionFolder
+        )
+    }) {
         let records = db::Media::get_by_filter(
             &state.ctx.db,
             &db::MediaFilter {
@@ -119,7 +129,10 @@ pub async fn get_items(
         .records;
         return Ok(ItemsQueryResult {
             total_count: records.len() as i64,
-            items: records.into_iter().map(jellyfin::db_media_to_item).collect(),
+            items: records
+                .into_iter()
+                .map(jellyfin::db_media_to_item)
+                .collect(),
         });
     }
 
@@ -139,7 +152,11 @@ pub async fn get_items(
 
             return Ok(ItemsQueryResult {
                 total_count: result.total_count as i64,
-                items: result.records.into_iter().map(jellyfin::db_media_to_item).collect(),
+                items: result
+                    .records
+                    .into_iter()
+                    .map(jellyfin::db_media_to_item)
+                    .collect(),
             });
         }
 
@@ -148,14 +165,18 @@ pub async fn get_items(
             // All collection types: items float freely (no parent_id constraint).
             q.parent_id = None;
 
-            let media_kind_filter = if let Some(kind) = parent.collection_media_kind.clone() {
-                vec![kind]
-            } else {
-                vec![db::MediaKind::Movie, db::MediaKind::Series]
-            };
+            let media_kind_filter =
+                if let Some(kind) = parent.collection_media_kind.clone() {
+                    vec![kind]
+                } else {
+                    vec![db::MediaKind::Movie, db::MediaKind::Series]
+                };
 
             q.include_item_types = Some(
-                media_kind_filter.iter().map(|k| jellyfin::db_media_kind_to_type(k.clone())).collect()
+                media_kind_filter
+                    .iter()
+                    .map(|k| jellyfin::db_media_kind_to_type(k.clone()))
+                    .collect(),
             );
 
             if q.limit.is_none() {
@@ -165,7 +186,9 @@ pub async fn get_items(
 
             // For smart collections with a catalog filter: query via media_relations
             let catalog_ids = parent.catalog_filter_ids();
-            if parent.collection_kind == Some(db::CollectionKind::Smart) && !catalog_ids.is_empty() {
+            if parent.collection_kind == Some(db::CollectionKind::Smart)
+                && !catalog_ids.is_empty()
+            {
                 let result = db::Media::get_by_filter(
                     &state.ctx.db,
                     &db::MediaFilter {
@@ -178,15 +201,24 @@ pub async fn get_items(
                 .await?;
                 return Ok(ItemsQueryResult {
                     total_count: result.total_count as i64,
-                    items: result.records.into_iter().map(jellyfin::db_media_to_item).collect(),
+                    items: result
+                        .records
+                        .into_iter()
+                        .map(jellyfin::db_media_to_item)
+                        .collect(),
                 });
             }
 
-            let result = db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true).await?;
+            let result =
+                db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true).await?;
 
             return Ok(ItemsQueryResult {
                 total_count: result.total_count as i64,
-                items: result.records.into_iter().map(jellyfin::db_media_to_item).collect(),
+                items: result
+                    .records
+                    .into_iter()
+                    .map(jellyfin::db_media_to_item)
+                    .collect(),
             });
         }
 
@@ -240,7 +272,9 @@ pub async fn get_items(
                             f.contains(&jellyfin::ItemFields::MediaSources)
                         }))
                 {
-                    if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
+                    if let Ok(aio) =
+                        crate::aio::AioService::from_settings(&state.ctx.db).await
+                    {
                         media.refresh_sources(&state.ctx.db, &aio).await?;
                     }
                     media.sources(&state.ctx.db).await?;
@@ -263,7 +297,11 @@ pub async fn get_items(
     }
 
     Ok(ItemsQueryResult {
-        items: result.records.into_iter().map(jellyfin::db_media_to_item).collect(),
+        items: result
+            .records
+            .into_iter()
+            .map(jellyfin::db_media_to_item)
+            .collect(),
         total_count: 999_999,
     })
 }
@@ -302,24 +340,27 @@ pub async fn items_counts(
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     // Get counts for different media types from the database
-    let movie_count = db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Movie).await? as i32;
-    let series_count = db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Series).await? as i32;
-    let episode_count = db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Episode).await? as i32;
-    
+    let movie_count =
+        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Movie).await? as i32;
+    let series_count =
+        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Series).await? as i32;
+    let episode_count =
+        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Episode).await? as i32;
+
     // For now, return hardcoded values for other types since we don't have them in the database yet
     // In a real implementation, you would query the actual counts
     let item_counts = jellyfin::ItemCounts {
         movie_count,
         series_count,
         episode_count,
-        artist_count: 0, // TODO: Implement artist counting
-        program_count: 0, // TODO: Implement program counting
-        trailer_count: 0, // TODO: Implement trailer counting
-        song_count: 0, // TODO: Implement song counting
-        album_count: 0, // TODO: Implement album counting
+        artist_count: 0,      // TODO: Implement artist counting
+        program_count: 0,     // TODO: Implement program counting
+        trailer_count: 0,     // TODO: Implement trailer counting
+        song_count: 0,        // TODO: Implement song counting
+        album_count: 0,       // TODO: Implement album counting
         music_video_count: 0, // TODO: Implement music video counting
-        box_set_count: 0, // TODO: Implement box set counting
-        book_count: 0, // TODO: Implement book counting
+        box_set_count: 0,     // TODO: Implement box set counting
+        book_count: 0,        // TODO: Implement book counting
         item_count: movie_count + series_count + episode_count, // Total of counted items
     };
 
@@ -331,9 +372,11 @@ pub async fn item(
     session: auth::AuthSession,
     id: Uuid,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
-    let manifest = crate::aio::AioService::from_settings(&state.ctx.db).await
+    let manifest = crate::aio::AioService::from_settings(&state.ctx.db)
+        .await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?
-        .get_manifest().await?;
+        .get_manifest()
+        .await?;
     // let libraries = super::get_virtual_folders(&state).await?;
 
     // if let Some(library) = libraries.into_iter().find(|x| x.id == id) {
@@ -486,7 +529,8 @@ pub async fn create_virtual_folder(
     Json(payload): Json<VirtualFolderRequest>,
 ) -> Result<Json<jellyfin::VirtualFolderInfo>> {
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
+        return Err(anyhow::anyhow!("forbidden"))
+            .context_unauthorized("Forbidden", "Forbidden");
     }
 
     let collection_media_kind = payload
@@ -500,7 +544,11 @@ pub async fn create_virtual_folder(
         .and_then(|s| db::CollectionKind::try_from(s).ok())
         .unwrap_or(db::CollectionKind::Smart);
 
-    let promoted: i64 = if payload.promoted.unwrap_or(false) { 1 } else { 0 };
+    let promoted: i64 = if payload.promoted.unwrap_or(false) {
+        1
+    } else {
+        0
+    };
 
     let mut media = db::Media {
         title: payload.name,
@@ -534,7 +582,8 @@ pub async fn update_virtual_folder(
     Json(payload): Json<UpdateVirtualFolderRequest>,
 ) -> Result<StatusCode> {
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
+        return Err(anyhow::anyhow!("forbidden"))
+            .context_unauthorized("Forbidden", "Forbidden");
     }
 
     let media = db::Media::get_by_id(&state.ctx.db, &payload.id)
@@ -556,7 +605,11 @@ pub async fn update_virtual_folder(
         .as_deref()
         .and_then(|s| db::CollectionKind::try_from(s).ok());
 
-    let promoted: i64 = if payload.promoted.unwrap_or(false) { 1 } else { 0 };
+    let promoted: i64 = if payload.promoted.unwrap_or(false) {
+        1
+    } else {
+        0
+    };
     let updated_at = Utc::now().naive_utc();
 
     sqlx::query(
@@ -587,7 +640,8 @@ pub async fn delete_virtual_folder(
     Query(q): Query<DeleteVirtualFolderQuery>,
 ) -> Result<StatusCode> {
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
+        return Err(anyhow::anyhow!("forbidden"))
+            .context_unauthorized("Forbidden", "Forbidden");
     }
 
     let result = db::Media::get_by_filter(
@@ -614,7 +668,8 @@ pub async fn aio_catalogs(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let aio = crate::aio::AioService::from_settings(&state.ctx.db).await
+    let aio = crate::aio::AioService::from_settings(&state.ctx.db)
+        .await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
     let manifest = aio.get_manifest().await?;
 
@@ -629,11 +684,15 @@ pub async fn aio_catalogs(
     .await?
     .records;
 
-    let catalogs: Vec<jellyfin::AioCatalogInfo> = manifest.catalogs.into_iter()
+    let catalogs: Vec<jellyfin::AioCatalogInfo> = manifest
+        .catalogs
+        .into_iter()
         .filter(|c| !c.id.contains("search"))
         .map(|c| {
             let aio_id = format!("{}:{}", c.kind, c.id);
-            let db_cat = db_catalogs.iter().find(|d| d.aio_id.as_deref() == Some(&aio_id));
+            let db_cat = db_catalogs
+                .iter()
+                .find(|d| d.aio_id.as_deref() == Some(&aio_id));
             jellyfin::AioCatalogInfo {
                 aio_id,
                 name: c.name,
@@ -692,7 +751,9 @@ pub async fn items_similar(State(state): State<AppState>) -> Result<impl IntoRes
 }
 
 #[get("/items/{id}/thememedia")]
-pub async fn items_thememedia(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn items_thememedia(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
     stub_json(State(state)).await
 }
 
@@ -721,7 +782,8 @@ pub async fn patch_item(
     Json(payload): Json<PatchItemRequest>,
 ) -> Result<StatusCode> {
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
+        return Err(anyhow::anyhow!("forbidden"))
+            .context_unauthorized("Forbidden", "Forbidden");
     }
 
     let updated_at = Utc::now().naive_utc();
@@ -733,7 +795,8 @@ pub async fn patch_item(
     }
     if let Some(ct) = &payload.collection_type {
         let media_kind = parse_collection_type(ct);
-        qb.push(", collection_media_kind = ").push_bind(media_kind.as_ref().map(|k| k.to_string()));
+        qb.push(", collection_media_kind = ")
+            .push_bind(media_kind.as_ref().map(|k| k.to_string()));
     }
     if let Some(ck) = &payload.collection_kind {
         qb.push(", collection_kind = ").push_bind(ck);
@@ -743,7 +806,8 @@ pub async fn patch_item(
         qb.push(", collection_catalog_filter = ").push_bind(json);
     }
     if let Some(prm) = payload.promoted {
-        qb.push(", promoted = ").push_bind(if prm { 1i64 } else { 0i64 });
+        qb.push(", promoted = ")
+            .push_bind(if prm { 1i64 } else { 0i64 });
     }
 
     qb.push(" WHERE id = ").push_bind(id);
@@ -771,7 +835,8 @@ pub async fn update_catalog_settings(
     Json(payload): Json<UpdateCatalogSettingsRequest>,
 ) -> Result<StatusCode> {
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
+        return Err(anyhow::anyhow!("forbidden"))
+            .context_unauthorized("Forbidden", "Forbidden");
     }
 
     let promoted: i64 = if payload.enabled { 1 } else { 0 };
@@ -821,9 +886,12 @@ pub async fn update_catalog_settings(
     let task_key = CatalogItemImportTask::task_key(catalog_id);
     if payload.enabled {
         let name = payload.name.unwrap_or_else(|| task_key.clone());
-        state.tasks.register_task(std::sync::Arc::new(
-            CatalogItemImportTask::new(catalog_id, &name)
-        )).await?;
+        state
+            .tasks
+            .register_task(std::sync::Arc::new(CatalogItemImportTask::new(
+                catalog_id, &name,
+            )))
+            .await?;
     } else {
         state.tasks.deregister_task(&task_key).await?;
     }

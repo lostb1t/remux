@@ -180,7 +180,8 @@ impl FlvBuffer {
 
         // Copy existing data directly to new buffer
         if self.tail > self.head {
-            new_buffer[..current_len].copy_from_slice(&self.buffer[self.head..self.tail]);
+            new_buffer[..current_len]
+                .copy_from_slice(&self.buffer[self.head..self.tail]);
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     self.buffer.as_ptr().add(self.head),
@@ -188,7 +189,6 @@ impl FlvBuffer {
                     current_len,
                 );
             }
-
         } else if current_len > 0 {
             let first_part = self.buffer.len() - self.head;
             // new_buffer[..first_part].copy_from_slice(&self.buffer[self.head..]);
@@ -322,7 +322,8 @@ impl FlvBuffer {
         }
 
         // Create a reader that can handle buffer wrap-around
-        let mut header_reader = CursorRing::new(&self.buffer, self.head, self.buffer.len());
+        let mut header_reader =
+            CursorRing::new(&self.buffer, self.head, self.buffer.len());
 
         // Parse the FLV Tag Header
         let tag_type = header_reader.read_u8().ok()?;
@@ -332,7 +333,8 @@ impl FlvBuffer {
         let _stream_id = header_reader.read_u24::<BigEndian>().ok()?;
 
         // Calculate the total size of the tag, including the header and PreviousTagSize
-        let total_tag_size = FLV_TAG_HEADER_LENGTH + data_size as usize + PREVIOUS_TAG_SIZE_LENGTH;
+        let total_tag_size =
+            FLV_TAG_HEADER_LENGTH + data_size as usize + PREVIOUS_TAG_SIZE_LENGTH;
 
         // Check if there's enough data to read the full tag data
         if self.len() < total_tag_size {
@@ -410,13 +412,12 @@ impl FlvBuffer {
                 std::ptr::copy_nonoverlapping(
                     self.buffer.as_ptr(),
                     buffer.as_mut_ptr().add(first_len),
-                    second_len
+                    second_len,
                 );
             }
         }
     }
 }
-
 
 /// A cursor implementation that handles ring buffer wrap-around.
 /// Used for reading FLV tag headers efficiently.

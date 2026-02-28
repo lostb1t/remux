@@ -2,11 +2,11 @@ use crate::flv::FLV_TAG_HEADER_LENGTH;
 
 #[derive(Debug, Clone)]
 pub struct FlvTagHeader {
-    pub tag_type: u8,        // Tag Type (0x08: Audio, 0x09: Video, 0x12: Script Data)
-    pub data_size: u32,      // Size of the Tag Data
-    pub timestamp: u32,      // Timestamp
-    pub timestamp_ext: u8,   // Extended Timestamp
-    pub stream_id: u32,      // Always 0
+    pub tag_type: u8, // Tag Type (0x08: Audio, 0x09: Video, 0x12: Script Data)
+    pub data_size: u32, // Size of the Tag Data
+    pub timestamp: u32, // Timestamp
+    pub timestamp_ext: u8, // Extended Timestamp
+    pub stream_id: u32, // Always 0
 }
 
 impl FlvTagHeader {

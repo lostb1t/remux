@@ -145,13 +145,11 @@ impl User {
         config: &crate::jellyfin::UserConfiguration,
     ) -> Result<()> {
         let json = sqlx::types::Json(config.clone());
-        sqlx::query(
-            r#"UPDATE users SET configuration = ?1 WHERE id = ?2"#,
-        )
-        .bind(&json)
-        .bind(id)
-        .execute(db)
-        .await?;
+        sqlx::query(r#"UPDATE users SET configuration = ?1 WHERE id = ?2"#)
+            .bind(&json)
+            .bind(id)
+            .execute(db)
+            .await?;
         Ok(())
     }
 

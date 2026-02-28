@@ -76,7 +76,8 @@ where
 {
     type Response = Response<Body>;
     type Error = Infallible;
-    type Future = Pin<Box<dyn Future<Output = Result<Response<Body>, Infallible>> + Send>>;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Response<Body>, Infallible>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
         self.inner.poll_ready(cx)
@@ -101,14 +102,19 @@ where
             let (parts, body) = response.into_parts();
 
             if !is_html {
-                let bytes = body.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
+                let bytes = body
+                    .collect()
+                    .await
+                    .map(|c| c.to_bytes())
+                    .unwrap_or_default();
                 return Ok(Response::from_parts(parts, Body::from(bytes)));
             }
 
             // Cache hit — reuse previously transformed bytes, rebuild response with
             // fresh headers (ETag, Date, etc. come from `parts`).
             if let Some(cached) = cache.get(&path) {
-                let mut response = Response::from_parts(parts, Body::from(cached.clone()));
+                let mut response =
+                    Response::from_parts(parts, Body::from(cached.clone()));
                 response.headers_mut().insert(
                     http::header::CONTENT_LENGTH,
                     http::HeaderValue::from(cached.len()),
@@ -117,7 +123,11 @@ where
             }
 
             // Buffer → inject → cache
-            let bytes = body.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
+            let bytes = body
+                .collect()
+                .await
+                .map(|c| c.to_bytes())
+                .unwrap_or_default();
             let mut html = String::from_utf8_lossy(&bytes).into_owned();
 
             if !CSS.is_empty() {

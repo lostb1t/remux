@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, error, debug};
+use tracing::{debug, error, info};
 
 use super::session::{TranscodeSession, TranscodeState};
 
@@ -11,9 +11,9 @@ use super::session::{TranscodeSession, TranscodeState};
 pub struct TranscodeParams {
     pub input_url: String,
     pub output_dir: PathBuf,
-    pub video_codec: String,         // "copy", "libx264", "libx265"
-    pub audio_codec: String,         // "aac", "copy"
-    pub segment_length: u32,         // seconds (default 6)
+    pub video_codec: String, // "copy", "libx264", "libx265"
+    pub audio_codec: String, // "aac", "copy"
+    pub segment_length: u32, // seconds (default 6)
     pub start_time_ticks: Option<i64>,
     pub max_width: Option<u32>,
     pub max_height: Option<u32>,
@@ -91,7 +91,7 @@ pub async fn start_transcode(
             .set_format_opt("hls_time", &params_clone.segment_length.to_string())
             .set_format_opt("hls_segment_filename", &segment_pattern)
             .set_format_opt("hls_flags", "independent_segments+append_list")
-            .set_format_opt("hls_list_size", "0")   // keep all segments in playlist
+            .set_format_opt("hls_list_size", "0") // keep all segments in playlist
             .set_format_opt("hls_segment_type", "mpegts");
 
         // Video codec
@@ -129,25 +129,21 @@ pub async fn start_transcode(
         };
 
         // Build filter for scaling if needed
-        let mut builder = FfmpegContext::builder()
-            .input(input)
-            .output(output);
+        let mut builder = FfmpegContext::builder().input(input).output(output);
 
         // Add scale filter if max dimensions specified and video is not copy
         if params_clone.video_codec != "copy" {
-            if let (Some(w), Some(h)) = (params_clone.max_width, params_clone.max_height) {
+            if let (Some(w), Some(h)) =
+                (params_clone.max_width, params_clone.max_height)
+            {
                 builder = builder.filter_desc(
                     format!("scale='min({},iw)':'min({},ih)':force_original_aspect_ratio=decrease",
                              w, h)
                 );
             } else if let Some(w) = params_clone.max_width {
-                builder = builder.filter_desc(
-                    format!("scale='min({},iw)':-2", w)
-                );
+                builder = builder.filter_desc(format!("scale='min({},iw)':-2", w));
             } else if let Some(h) = params_clone.max_height {
-                builder = builder.filter_desc(
-                    format!("scale=-2:'min({},ih)'", h)
-                );
+                builder = builder.filter_desc(format!("scale=-2:'min({},ih)'", h));
             }
         }
 
@@ -158,9 +154,7 @@ pub async fn start_transcode(
 
         info!("Starting HLS transcode job");
 
-        FfmpegScheduler::new(context)
-            .start()?
-            .wait()?;
+        FfmpegScheduler::new(context).start()?.wait()?;
 
         info!("HLS transcode job completed");
 
@@ -195,9 +189,9 @@ pub async fn start_transcode(
 #[derive(Debug, Clone)]
 pub struct ProgressiveTranscodeParams {
     pub input_url: String,
-    pub container: String,           // "mp4", "ts", "mkv", "webm"
-    pub video_codec: String,         // "copy", "libx264", "libx265", "libvpx-vp9"
-    pub audio_codec: String,         // "copy", "aac", "libopus"
+    pub container: String,   // "mp4", "ts", "mkv", "webm"
+    pub video_codec: String, // "copy", "libx264", "libx265", "libvpx-vp9"
+    pub audio_codec: String, // "copy", "aac", "libopus"
     pub start_time_ticks: Option<i64>,
     pub max_width: Option<u32>,
     pub max_height: Option<u32>,
@@ -218,8 +212,7 @@ pub fn start_progressive_transcode(
     use tokio::process::Command;
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-hide_banner")
-        .arg("-loglevel").arg("warning");
+    cmd.arg("-hide_banner").arg("-loglevel").arg("warning");
 
     // Seek if start time specified
     if let Some(ticks) = params.start_time_ticks {
@@ -279,25 +272,29 @@ pub fn start_progressive_transcode(
         "ts" | "mpegts" => "mpegts",
         "webm" => "webm",
         "mkv" | "matroska" => "matroska",
-        _ => "mp4",  // default to mp4
+        _ => "mp4", // default to mp4
     };
     cmd.arg("-f").arg(format);
 
     // For mp4 streaming, need movflags for fragmented output
     if format == "mp4" {
-        cmd.arg("-movflags").arg("frag_keyframe+empty_moov+faststart");
+        cmd.arg("-movflags")
+            .arg("frag_keyframe+empty_moov+faststart");
     }
 
-    cmd.arg("-")  // output to stdout
+    cmd.arg("-") // output to stdout
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
 
     info!("Starting progressive transcode: {:?}", cmd);
 
-    let mut child = cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
 
-    let stdout = child.stdout.take()
+    let stdout = child
+        .stdout
+        .take()
         .ok_or_else(|| anyhow!("Failed to capture ffmpeg stdout"))?;
 
     // Spawn a task to wait for the child process so it doesn't become a zombie

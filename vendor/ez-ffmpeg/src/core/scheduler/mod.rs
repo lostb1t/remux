@@ -1,6 +1,12 @@
 use ffmpeg_sys_next::AVMediaType;
-use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_ATTACHMENT, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_DATA, AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_VIDEO};
+use ffmpeg_sys_next::AVMediaType::{
+    AVMEDIA_TYPE_ATTACHMENT, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_DATA,
+    AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_VIDEO,
+};
 
+mod dec_task;
+mod demux_task;
+mod enc_task;
 /// The **ffmpeg_scheduler** module provides the orchestrator that actually runs the
 /// configured FFmpeg job. It handles the lifecycle of the FFmpeg process, manages
 /// threading (or subprocess execution) as appropriate, and returns the final results.
@@ -52,13 +58,10 @@ use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_ATTACHMENT, AVMEDIA_TYPE_AUDIO, 
 /// }
 /// ```
 pub mod ffmpeg_scheduler;
-mod frame_filter_pipeline;
-mod mux_task;
-mod enc_task;
 pub(crate) mod filter_task;
-mod dec_task;
-mod demux_task;
+mod frame_filter_pipeline;
 pub(crate) mod input_controller;
+mod mux_task;
 
 pub(crate) fn type_to_symbol(media_type: AVMediaType) -> String {
     match media_type {

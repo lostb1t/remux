@@ -1,9 +1,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use remux_macros::get;
 use axum_extra::extract::Query;
 use http::StatusCode;
+use remux_macros::get;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -12,8 +12,8 @@ use crate::db::auth;
 use crate::jellyfin;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
-use super::mock_items;
 use super::items::get_items;
+use super::mock_items;
 
 #[get("/shows/{id}/seasons")]
 pub async fn shows_seasons(
@@ -58,9 +58,11 @@ pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = crate::aio::AioService::from_settings(&state.ctx.db).await
+    let manifest = crate::aio::AioService::from_settings(&state.ctx.db)
+        .await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?
-        .get_manifest().await?;
+        .get_manifest()
+        .await?;
 
     let mut items = db::Media::get_by_filter(
         &state.ctx.db,
@@ -92,7 +94,8 @@ pub async fn userviews_groupingoptions(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    crate::aio::AioService::from_settings(&state.ctx.db).await
+    crate::aio::AioService::from_settings(&state.ctx.db)
+        .await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
 
     // Ok(Json(json!(

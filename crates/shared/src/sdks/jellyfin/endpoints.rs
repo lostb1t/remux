@@ -1,6 +1,6 @@
+use super::models::*;
 use super::{Body, Endpoint};
 use http::Method;
-use super::models::*;
 use uuid::Uuid;
 
 impl Endpoint for PublicSystemInfo {
@@ -92,7 +92,9 @@ pub struct GetAioCatalogs;
 
 impl Endpoint for GetAioCatalogs {
     type Output = Vec<AioCatalogInfo>;
-    fn path(&self) -> String { "/aio/catalogs".into() }
+    fn path(&self) -> String {
+        "/aio/catalogs".into()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -103,8 +105,12 @@ pub struct UpdateCatalogSettings {
 
 impl Endpoint for UpdateCatalogSettings {
     type Output = ();
-    fn path(&self) -> String { format!("/aio/catalogs/{}", self.aio_id) }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        format!("/aio/catalogs/{}", self.aio_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
     }
@@ -144,7 +150,9 @@ pub struct GetVirtualFolders;
 
 impl Endpoint for GetVirtualFolders {
     type Output = Vec<VirtualFolderInfo>;
-    fn path(&self) -> String { "/library/virtualfolders".into() }
+    fn path(&self) -> String {
+        "/library/virtualfolders".into()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -154,8 +162,12 @@ pub struct CreateVirtualFolder {
 
 impl Endpoint for CreateVirtualFolder {
     type Output = VirtualFolderInfo;
-    fn path(&self) -> String { "/library/virtualfolders".into() }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        "/library/virtualfolders".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
     }
@@ -168,8 +180,12 @@ pub struct UpdateVirtualFolder {
 
 impl Endpoint for UpdateVirtualFolder {
     type Output = ();
-    fn path(&self) -> String { "/library/virtualfolders/LibraryOptions".into() }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        "/library/virtualfolders/LibraryOptions".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
     }
@@ -182,8 +198,12 @@ pub struct DeleteVirtualFolder {
 
 impl Endpoint for DeleteVirtualFolder {
     type Output = ();
-    fn path(&self) -> String { "/library/virtualfolders".into() }
-    fn method(&self) -> Method { Method::DELETE }
+    fn path(&self) -> String {
+        "/library/virtualfolders".into()
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
     fn query(&self) -> Vec<(String, String)> {
         vec![("name".into(), self.name.clone())]
     }
@@ -199,8 +219,12 @@ pub struct PatchItem {
 
 impl Endpoint for PatchItem {
     type Output = ();
-    fn path(&self) -> String { format!("/items/{}", self.item_id) }
-    fn method(&self) -> Method { Method::PATCH }
+    fn path(&self) -> String {
+        format!("/items/{}", self.item_id)
+    }
+    fn method(&self) -> Method {
+        Method::PATCH
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
     }
@@ -213,7 +237,9 @@ pub struct GetSystemConfiguration;
 
 impl Endpoint for GetSystemConfiguration {
     type Output = ServerConfiguration;
-    fn path(&self) -> String { "/system/configuration".into() }
+    fn path(&self) -> String {
+        "/system/configuration".into()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -223,8 +249,12 @@ pub struct UpdateSystemConfiguration {
 
 impl Endpoint for UpdateSystemConfiguration {
     type Output = ();
-    fn path(&self) -> String { "/system/configuration".into() }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        "/system/configuration".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
     }
@@ -237,7 +267,9 @@ pub struct GetBrandingConfiguration;
 
 impl Endpoint for GetBrandingConfiguration {
     type Output = BrandingOptions;
-    fn path(&self) -> String { "/branding/configuration".into() }
+    fn path(&self) -> String {
+        "/branding/configuration".into()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -247,8 +279,12 @@ pub struct UpdateBrandingConfiguration {
 
 impl Endpoint for UpdateBrandingConfiguration {
     type Output = ();
-    fn path(&self) -> String { "/system/configuration/branding".into() }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        "/system/configuration/branding".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
     }
@@ -261,7 +297,9 @@ pub struct GetStartupConfiguration;
 
 impl Endpoint for GetStartupConfiguration {
     type Output = StartupConfiguration;
-    fn path(&self) -> String { "/startup/configuration".into() }
+    fn path(&self) -> String {
+        "/startup/configuration".into()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -271,8 +309,12 @@ pub struct PostStartupConfiguration {
 
 impl Endpoint for PostStartupConfiguration {
     type Output = ();
-    fn path(&self) -> String { "/startup/configuration".into() }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        "/startup/configuration".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
     }
@@ -285,8 +327,12 @@ pub struct PostStartupUser {
 
 impl Endpoint for PostStartupUser {
     type Output = ();
-    fn path(&self) -> String { "/startup/user".into() }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        "/startup/user".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
     }
@@ -297,8 +343,12 @@ pub struct PostStartupRemoteAccess;
 
 impl Endpoint for PostStartupRemoteAccess {
     type Output = ();
-    fn path(&self) -> String { "/startup/remoteaccess".into() }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        "/startup/remoteaccess".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -306,8 +356,12 @@ pub struct PostStartupComplete;
 
 impl Endpoint for PostStartupComplete {
     type Output = ();
-    fn path(&self) -> String { "/startup/complete".into() }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        "/startup/complete".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
 }
 
 // ── Users ──────────────────────────────────────────────────────────
@@ -317,7 +371,9 @@ pub struct GetUsers;
 
 impl Endpoint for GetUsers {
     type Output = Vec<UserDto>;
-    fn path(&self) -> String { "/users".into() }
+    fn path(&self) -> String {
+        "/users".into()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -328,8 +384,12 @@ pub struct CreateUser {
 
 impl Endpoint for CreateUser {
     type Output = UserDto;
-    fn path(&self) -> String { "/users/new".into() }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        "/users/new".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::json!({ "Name": self.name, "Password": self.password }))
     }
@@ -342,8 +402,12 @@ pub struct DeleteUser {
 
 impl Endpoint for DeleteUser {
     type Output = ();
-    fn path(&self) -> String { format!("/users/{}", self.user_id) }
-    fn method(&self) -> Method { Method::DELETE }
+    fn path(&self) -> String {
+        format!("/users/{}", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -354,8 +418,12 @@ pub struct UpdateUser {
 
 impl Endpoint for UpdateUser {
     type Output = ();
-    fn path(&self) -> String { format!("/users/{}", self.user_id) }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        format!("/users/{}", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.dto).unwrap_or_default())
     }
@@ -369,8 +437,12 @@ pub struct UpdateUserPolicy {
 
 impl Endpoint for UpdateUserPolicy {
     type Output = ();
-    fn path(&self) -> String { format!("/users/{}/policy", self.user_id) }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        format!("/users/{}/policy", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.policy).unwrap_or_default())
     }
@@ -384,8 +456,12 @@ pub struct AdminSetPassword {
 
 impl Endpoint for AdminSetPassword {
     type Output = ();
-    fn path(&self) -> String { format!("/users/{}/password", self.user_id) }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        format!("/users/{}/password", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::json!({ "NewPw": self.new_pw }))
     }
@@ -419,10 +495,13 @@ pub struct SetLogLevel {
 
 impl Endpoint for SetLogLevel {
     type Output = ();
-    fn path(&self) -> String { "/system/log/level".into() }
-    fn method(&self) -> Method { Method::POST }
+    fn path(&self) -> String {
+        "/system/log/level".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
     fn body(&self) -> Body {
         Body::Json(serde_json::json!({ "level": self.level }))
     }
 }
-

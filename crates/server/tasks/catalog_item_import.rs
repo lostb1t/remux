@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::{AppContext, db};
 use super::{ProgressReporter, Task, TaskService};
+use crate::{AppContext, db};
 
 pub struct CatalogItemImportTask {
     catalog_id: Uuid,
@@ -31,9 +31,15 @@ impl CatalogItemImportTask {
 
 #[async_trait]
 impl Task for CatalogItemImportTask {
-    fn key(&self) -> &str { &self.key }
-    fn name(&self) -> &str { &self.display_name }
-    fn category(&self) -> &str { "Library" }
+    fn key(&self) -> &str {
+        &self.key
+    }
+    fn name(&self) -> &str {
+        &self.display_name
+    }
+    fn category(&self) -> &str {
+        "Library"
+    }
 
     async fn run(
         &self,
@@ -57,21 +63,30 @@ impl Task for CatalogItemImportTask {
         .next()
         .ok_or_else(|| anyhow::anyhow!("Catalog {} not found", self.catalog_id))?;
 
-        let aio_id = catalog.aio_id.as_deref()
+        let aio_id = catalog
+            .aio_id
+            .as_deref()
             .ok_or_else(|| anyhow::anyhow!("Catalog has no aio_id"))?
             .to_string();
 
         let manifest = aio.get_manifest().await?;
-        let manifest_cat = manifest.catalogs.iter()
+        let manifest_cat = manifest
+            .catalogs
+            .iter()
             .find(|c| format!("{}:{}", c.kind, c.id) == aio_id)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Catalog {} not found in AIO manifest", aio_id))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Catalog {} not found in AIO manifest", aio_id)
+            })?;
 
-        let global_max = crate::db::Settings::get_config(&ctx.db).await.ok()
+        let global_max = crate::db::Settings::get_config(&ctx.db)
+            .await
+            .ok()
             .and_then(|c| c.catalog_max_items)
             .unwrap_or(250) as usize;
 
-        let max = catalog.collection_max_items
+        let max = catalog
+            .collection_max_items
             .map(|n| n as usize)
             .unwrap_or(global_max);
 

@@ -34,11 +34,11 @@ impl FlvHeader {
 
     // Check if the FLV file contains audio
     pub fn has_audio(&self) -> bool {
-        (self.flags  & 0x04) != 0
+        (self.flags & 0x04) != 0
     }
 
     // Check if the FLV file contains video
     pub fn has_video(&self) -> bool {
-        (self.flags  & 0x01) != 0
+        (self.flags & 0x01) != 0
     }
 }

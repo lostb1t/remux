@@ -6,12 +6,12 @@ use std::time::Duration;
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use crate::AppState;
 use crate::db;
 use crate::db::auth::AuthSession;
 use crate::jellyfin;
 use crate::playback_session::PlaybackSession;
 use crate::utils::get_uuid;
-use crate::AppState;
 
 // ---------------------------------------------------------------------------
 // Message type constants
@@ -174,7 +174,11 @@ async fn send_msg<T: Serialize>(
     message_type: SessionMessageType,
     data: Option<T>,
 ) -> bool {
-    let msg = OutboundMessage { message_type, message_id: get_uuid(), data };
+    let msg = OutboundMessage {
+        message_type,
+        message_id: get_uuid(),
+        data,
+    };
     match serde_json::to_string(&msg) {
         Ok(json) => socket.send(Message::Text(json.into())).await.is_ok(),
         Err(_) => false,
@@ -186,8 +190,14 @@ async fn send_msg<T: Serialize>(
 fn parse_sessions_data(data: Option<&serde_json::Value>) -> (u64, u64) {
     let s = data.and_then(|v| v.as_str()).unwrap_or("");
     let mut parts = s.splitn(2, ',');
-    let initial = parts.next().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(0);
-    let interval = parts.next().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(10_000);
+    let initial = parts
+        .next()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let interval = parts
+        .next()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(10_000);
     (initial, interval)
 }
 

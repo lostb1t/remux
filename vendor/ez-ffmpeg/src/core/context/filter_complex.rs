@@ -1,11 +1,9 @@
 pub struct FilterComplex {
     pub(crate) filter_descs: String,
     pub(crate) hw_device: Option<String>,
-
 }
 
 impl FilterComplex {
-
     /// Assigns a hardware device for this filter complex, enabling GPU-accelerated
     /// or device-specific filtering.
     ///
@@ -32,12 +30,18 @@ impl FilterComplex {
 
 impl From<String> for FilterComplex {
     fn from(filter_descs: String) -> Self {
-        Self { filter_descs, hw_device: None }
+        Self {
+            filter_descs,
+            hw_device: None,
+        }
     }
 }
 
 impl From<&str> for FilterComplex {
     fn from(filter_descs: &str) -> Self {
-        Self { filter_descs: filter_descs.to_string(), hw_device: None }
+        Self {
+            filter_descs: filter_descs.to_string(),
+            hw_device: None,
+        }
     }
 }

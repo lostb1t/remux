@@ -34,8 +34,8 @@ impl TryFrom<String> for TaskTriggerKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TaskTrigger {
-    pub id: String,  // Keep as string for compatibility
-    pub task_id: String,  // Now uses task key instead of UUID
+    pub id: String,      // Keep as string for compatibility
+    pub task_id: String, // Now uses task key instead of UUID
     pub kind: TaskTriggerKind,
     pub time_limit_hours: Option<i64>,
     pub cron: Option<String>,
@@ -88,11 +88,9 @@ impl TaskTrigger {
     }
 
     pub async fn get_all(db: &SqlitePool) -> Result<Vec<Self>> {
-        Ok(sqlx::query_as::<_, Self>(
-            r#"SELECT * FROM task_triggers"#,
-        )
-        .fetch_all(db)
-        .await?)
+        Ok(sqlx::query_as::<_, Self>(r#"SELECT * FROM task_triggers"#)
+            .fetch_all(db)
+            .await?)
     }
 
     pub async fn get_by_task_id(db: &SqlitePool, task_id: &str) -> Result<Vec<Self>> {
@@ -126,7 +124,7 @@ pub enum TaskResultStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TaskResult {
-    pub task_id: String,  // Now uses task key instead of UUID
+    pub task_id: String, // Now uses task key instead of UUID
     pub start_at: NaiveDateTime,
     pub end_at: NaiveDateTime,
     pub status: TaskResultStatus,
@@ -167,7 +165,10 @@ impl TaskResult {
         Ok(())
     }
 
-    pub async fn get_by_task_id(db: &SqlitePool, task_id: &str) -> Result<Option<Self>> {
+    pub async fn get_by_task_id(
+        db: &SqlitePool,
+        task_id: &str,
+    ) -> Result<Option<Self>> {
         Ok(sqlx::query_as::<_, Self>(
             r#"
             SELECT *

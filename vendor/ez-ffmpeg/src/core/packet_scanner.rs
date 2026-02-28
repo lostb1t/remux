@@ -1,7 +1,7 @@
 use ffmpeg_sys_next::{
     av_packet_alloc, av_packet_free, av_packet_unref, av_read_frame,
-    avformat_seek_file, AVPacket, AVERROR, EAGAIN,
-    AV_PKT_FLAG_CORRUPT, AV_PKT_FLAG_KEY,
+    avformat_seek_file, AVPacket, AVERROR, AV_PKT_FLAG_CORRUPT, AV_PKT_FLAG_KEY,
+    EAGAIN,
 };
 
 use std::iter::FusedIterator;
@@ -134,7 +134,8 @@ impl PacketScanner {
     pub fn open(url: impl Into<String>) -> Result<Self> {
         let fmt_ctx_box = crate::core::stream_info::init_format_context(url)?;
         // SAFETY: fmt_ctx_box is fully initialized by init_format_context.
-        let streams = unsafe { crate::core::stream_info::extract_stream_infos(&fmt_ctx_box)? };
+        let streams =
+            unsafe { crate::core::stream_info::extract_stream_infos(&fmt_ctx_box)? };
 
         // SAFETY: av_packet_alloc returns a valid packet or null.
         // Null is checked immediately; the packet is freed in Drop.
@@ -144,7 +145,11 @@ impl PacketScanner {
                 return Err(OpenInputError::OutOfMemory.into());
             }
 
-            Ok(Self { fmt_ctx_box, pkt, streams })
+            Ok(Self {
+                fmt_ctx_box,
+                pkt,
+                streams,
+            })
         }
     }
 
@@ -196,9 +201,10 @@ impl PacketScanner {
                 if ret == AVERROR(EAGAIN) {
                     eagain_retries += 1;
                     if eagain_retries > MAX_EAGAIN_RETRIES {
-                        return Err(
-                            PacketScannerError::ReadError(DemuxingError::from(ret)).into()
-                        );
+                        return Err(PacketScannerError::ReadError(
+                            DemuxingError::from(ret),
+                        )
+                        .into());
                     }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
@@ -207,9 +213,10 @@ impl PacketScanner {
                     if ret == ffmpeg_sys_next::AVERROR_EOF {
                         return Ok(None);
                     }
-                    return Err(
-                        PacketScannerError::ReadError(DemuxingError::from(ret)).into()
-                    );
+                    return Err(PacketScannerError::ReadError(DemuxingError::from(
+                        ret,
+                    ))
+                    .into());
                 }
                 break;
             }
@@ -230,7 +237,9 @@ impl PacketScanner {
             // that stream_index is in [0, nb_streams). The .max(0) and .unwrap_or()
             // are purely defensive and not expected to trigger in practice.
             let stream_index = pkt.stream_index.max(0) as usize;
-            let (is_video, is_audio) = self.streams.get(stream_index)
+            let (is_video, is_audio) = self
+                .streams
+                .get(stream_index)
                 .map(|s| (s.is_video(), s.is_audio()))
                 .unwrap_or((false, false));
 
@@ -240,7 +249,10 @@ impl PacketScanner {
                 dts,
                 duration: pkt.duration,
                 // FFmpeg does not document negative size; clamp to 0 defensively.
-                size: { debug_assert!(pkt.size >= 0, "negative pkt.size: {}", pkt.size); pkt.size.max(0) as usize },
+                size: {
+                    debug_assert!(pkt.size >= 0, "negative pkt.size: {}", pkt.size);
+                    pkt.size.max(0) as usize
+                },
                 pos: pkt.pos,
                 is_keyframe: (pkt.flags & AV_PKT_FLAG_KEY) != 0,
                 is_corrupt: (pkt.flags & AV_PKT_FLAG_CORRUPT) != 0,
@@ -279,7 +291,10 @@ impl PacketScanner {
     /// The iterator is fused: once it yields `None` (EOF) or an `Err`, all
     /// subsequent calls to `next()` return `None`.
     pub fn packets(&mut self) -> PacketIter<'_> {
-        PacketIter { scanner: self, done: false }
+        PacketIter {
+            scanner: self,
+            done: false,
+        }
     }
 }
 
@@ -369,7 +384,11 @@ mod tests {
         let scanner = PacketScanner::open("test.mp4").unwrap();
         let streams = scanner.streams();
         assert!(!streams.is_empty(), "expected at least one stream");
-        assert_eq!(streams.len(), 2, "test.mp4 should have 2 streams (video + audio)");
+        assert_eq!(
+            streams.len(),
+            2,
+            "test.mp4 should have 2 streams (video + audio)"
+        );
     }
 
     #[test]
@@ -395,6 +414,9 @@ mod tests {
         assert!(packet.is_some(), "expected at least one packet");
         let info = packet.unwrap();
         let stream = scanner.stream_for_packet(&info);
-        assert!(stream.is_some(), "stream_for_packet should return Some for valid packet");
+        assert!(
+            stream.is_some(),
+            "stream_for_packet should return Some for valid packet"
+        );
     }
 }

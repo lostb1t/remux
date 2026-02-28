@@ -1,9 +1,9 @@
 use crate::core::filter::frame_filter::FrameFilter;
 use crate::core::filter::frame_filter_context::FrameFilterContext;
+use crate::filter::frame_pipeline_builder::FramePipelineBuilder;
 use ffmpeg_sys_next::AVMediaType;
 use std::any::Any;
 use std::collections::HashMap;
-use crate::filter::frame_pipeline_builder::FramePipelineBuilder;
 
 /// Internally, we store each filter along with its name in a holder.
 pub(crate) struct FilterHolder {
@@ -36,7 +36,11 @@ impl FramePipeline {
     }
 
     /// Adds a filter to the pipeline. No dynamic removal is provided in this simplified approach.
-    pub fn add_filter(&mut self, name: impl Into<String>, filter: Box<dyn FrameFilter>) {
+    pub fn add_filter(
+        &mut self,
+        name: impl Into<String>,
+        filter: Box<dyn FrameFilter>,
+    ) {
         assert_eq!(self.media_type, filter.media_type());
         self.filters.push(FilterHolder {
             name: name.into(),
@@ -45,7 +49,11 @@ impl FramePipeline {
     }
 
     /// Allows external code to directly set an attribute. (Optional convenience)
-    pub fn set_attribute<T: 'static + std::marker::Send>(&mut self, key: impl Into<String>, value: T) {
+    pub fn set_attribute<T: 'static + std::marker::Send>(
+        &mut self,
+        key: impl Into<String>,
+        value: T,
+    ) {
         self.attribute_map.insert(key.into(), Box::new(value));
     }
 
@@ -76,7 +84,10 @@ impl FramePipeline {
 
     /// Pushes a frame through each filter in order. If any filter returns `None`,
     /// the frame is dropped. Otherwise, the final `Some(frame)` is returned.
-    pub(crate) fn run_filters(&mut self, mut frame: ffmpeg_next::Frame) -> Result<Option<ffmpeg_next::Frame>, String> {
+    pub(crate) fn run_filters(
+        &mut self,
+        mut frame: ffmpeg_next::Frame,
+    ) -> Result<Option<ffmpeg_next::Frame>, String> {
         for holder in &mut self.filters {
             let ctx = FrameFilterContext::new(&holder.name, &mut self.attribute_map);
             match holder.filter.filter_frame(frame, &ctx)? {
@@ -95,7 +106,10 @@ impl FramePipeline {
         self.filters.len()
     }
 
-    pub(crate) fn request_frame(&mut self, index: usize) -> Result<Option<ffmpeg_next::Frame>, String> {
+    pub(crate) fn request_frame(
+        &mut self,
+        index: usize,
+    ) -> Result<Option<ffmpeg_next::Frame>, String> {
         assert!(index < self.filters.len());
         let holder = &mut self.filters[index];
         let ctx = FrameFilterContext::new(&holder.name, &mut self.attribute_map);

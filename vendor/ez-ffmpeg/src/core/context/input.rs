@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::filter::frame_pipeline::FramePipeline;
+use std::collections::HashMap;
 
 // Note: Input is Send if all callback fields are Send.
 // We require `+ Send` on callback types to ensure this.
@@ -479,7 +479,8 @@ impl Input {
     where
         F: FnMut(i64, i32) -> i64 + Send + 'static,
     {
-        self.seek_callback = Some(Box::new(seek_callback) as Box<dyn FnMut(i64, i32) -> i64 + Send>);
+        self.seek_callback =
+            Some(Box::new(seek_callback) as Box<dyn FnMut(i64, i32) -> i64 + Send>);
         self
     }
 
@@ -503,8 +504,16 @@ impl Input {
     ///         // Additional pipelines...
     ///     ]);
     /// ```
-    pub fn set_frame_pipelines(mut self, frame_pipelines: Vec<impl Into<FramePipeline>>) -> Self {
-        self.frame_pipelines = Some(frame_pipelines.into_iter().map(|frame_pipeline| frame_pipeline.into()).collect());
+    pub fn set_frame_pipelines(
+        mut self,
+        frame_pipelines: Vec<impl Into<FramePipeline>>,
+    ) -> Self {
+        self.frame_pipelines = Some(
+            frame_pipelines
+                .into_iter()
+                .map(|frame_pipeline| frame_pipeline.into())
+                .collect(),
+        );
         self
     }
 
@@ -525,7 +534,10 @@ impl Input {
     ///     .add_frame_pipeline(FramePipelineBuilder::new(AVMediaType::AVMEDIA_TYPE_VIDEO).filter("opengl", Box::new(my_filter)).build())
     ///     .add_frame_pipeline(FramePipelineBuilder::new(AVMediaType::AVMEDIA_TYPE_AUDIO).filter("my_custom_filter1", Box::new(...)).filter("my_custom_filter2", Box::new(...)).build());
     /// ```
-    pub fn add_frame_pipeline(mut self, frame_pipeline: impl Into<FramePipeline>) -> Self {
+    pub fn add_frame_pipeline(
+        mut self,
+        frame_pipeline: impl Into<FramePipeline>,
+    ) -> Self {
         if self.frame_pipelines.is_none() {
             self.frame_pipelines = Some(vec![frame_pipeline.into()]);
         } else {
@@ -862,7 +874,11 @@ impl Input {
     ///
     /// ### Return Value:
     /// - Returns the modified `Input` instance for method chaining.
-    pub fn set_input_opt(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn set_input_opt(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         if let Some(ref mut opts) = self.input_opts {
             opts.insert(key.into(), value.into());
         } else {
@@ -894,7 +910,10 @@ impl Input {
     ///
     /// ### Return Value:
     /// - Returns the modified `Input` instance for method chaining.
-    pub fn set_input_opts(mut self, opts: Vec<(impl Into<String>, impl Into<String>)>) -> Self {
+    pub fn set_input_opts(
+        mut self,
+        opts: Vec<(impl Into<String>, impl Into<String>)>,
+    ) -> Self {
         if let Some(ref mut input_opts) = self.input_opts {
             for (key, value) in opts {
                 input_opts.insert(key.into(), value.into());
@@ -1068,7 +1087,6 @@ impl From<&str> for Input {
         Self::from(String::from(url))
     }
 }
-
 
 #[cfg(test)]
 mod tests {

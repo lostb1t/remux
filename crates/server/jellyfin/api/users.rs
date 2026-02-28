@@ -1,11 +1,11 @@
 use anyhow::Context;
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Redirect;
 use axum::response::IntoResponse;
-use remux_macros::{delete, get, post};
+use axum::response::Redirect;
 use axum_extra::extract::Query;
 use http::StatusCode;
+use remux_macros::{delete, get, post};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -18,10 +18,10 @@ use crate::utils::server_id;
 use crate::ws::WsEvent;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 
+use super::items::{item, items, items_flat};
 use super::mock_items;
-use super::system::system_info_public;
-use super::items::{items, items_flat, item};
 use super::shows::userviews;
+use super::system::system_info_public;
 
 #[post("/users/{user_id}/configuration")]
 pub async fn user_configuration_update(
@@ -238,12 +238,8 @@ pub async fn create_user(
             .context_unauthorized("forbidden", "forbidden"));
     }
     let password = payload.password.as_deref().unwrap_or("");
-    let mut user = User::new_with_password(
-        String::new(),
-        payload.name,
-        password,
-        None,
-    )?;
+    let mut user =
+        User::new_with_password(String::new(), payload.name, password, None)?;
     user.save(&state.ctx.db).await?;
     let _ = state.ctx.ws_tx.send(WsEvent::UserUpdated(user.id));
     Ok((StatusCode::OK, Json(jellyfin::db_user_to_dto(user))).into_response())
@@ -279,8 +275,9 @@ pub async fn change_password(
     let is_admin = session.user.is_admin;
 
     if !is_self && !is_admin {
-        return Err(anyhow::anyhow!("Forbidden")
-            .context_unauthorized("forbidden", "forbidden"));
+        return Err(
+            anyhow::anyhow!("Forbidden").context_unauthorized("forbidden", "forbidden")
+        );
     }
 
     let mut user = db::User::get_by_id(&state.ctx.db, &user_id)
@@ -332,8 +329,9 @@ pub async fn update_user(
 ) -> Result<impl IntoResponse> {
     let is_self = user_id == session.user.id;
     if !is_self && !session.user.is_admin {
-        return Err(anyhow::anyhow!("Forbidden")
-            .context_unauthorized("forbidden", "forbidden"));
+        return Err(
+            anyhow::anyhow!("Forbidden").context_unauthorized("forbidden", "forbidden")
+        );
     }
     let mut user = db::User::get_by_id(&state.ctx.db, &user_id)
         .await?
@@ -364,12 +362,16 @@ pub async fn users_get_by_id(
         return Ok(Json(jellyfin::db_user_to_dto(session.user)).into_response());
     }
     if !session.user.is_admin {
-        return Err(anyhow::anyhow!("Forbidden")
-            .context_unauthorized("forbidden", "forbidden"));
+        return Err(
+            anyhow::anyhow!("Forbidden").context_unauthorized("forbidden", "forbidden")
+        );
     }
     let user = db::User::get_by_id(&state.ctx.db, &user_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("User not found").context_not_found("not found", "user not found"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("User not found")
+                .context_not_found("not found", "user not found")
+        })?;
     Ok(Json(jellyfin::db_user_to_dto(user)).into_response())
 }
 
@@ -411,12 +413,16 @@ pub async fn users_views(
 // ===== Named stubs (empty responses for unimplemented endpoints) =====
 
 #[get("/users/{user_id}/items/resume")]
-pub async fn users_items_resume(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn users_items_resume(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
 
 #[get("/users/{user_id}/items/similar")]
-pub async fn users_items_similar(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn users_items_similar(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
 
@@ -426,19 +432,25 @@ pub async fn users_intros(State(state): State<AppState>) -> Result<impl IntoResp
 }
 
 #[get("/users/{user_id}/items/{id}/intros")]
-pub async fn users_items_intros(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn users_items_intros(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
 
 #[get("/useritems/resume")]
-pub async fn useritems_resume(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn useritems_resume(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
 
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
-    use crate::integration_test::{AUTH_HEADER, auth_header_with_token, authenticated_server, new_test_server};
+    use crate::integration_test::{
+        AUTH_HEADER, auth_header_with_token, authenticated_server, new_test_server,
+    };
     use http::header::HeaderValue;
     use serde_json::json;
 
@@ -503,7 +515,10 @@ mod e2e_tests {
         // POST to save display preferences
         let resp = server
             .post("/displaypreferences/usersettings")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .add_query_params(&[("userId", ""), ("client", "emby")])
             .json(&json!({
                 "Id": "usersettings",
@@ -533,7 +548,10 @@ mod e2e_tests {
         // GET to verify the saved preferences are returned
         let resp = server
             .get("/displaypreferences/usersettings")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .add_query_params(&[("userId", ""), ("client", "emby")])
             .await;
 
@@ -554,7 +572,10 @@ mod e2e_tests {
         // Get user ID from /users/me
         let resp = server
             .get("/users/me")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .await;
 
         resp.assert_status_ok();
@@ -564,7 +585,10 @@ mod e2e_tests {
         // POST user configuration
         let resp = server
             .post(&format!("/users/{}/configuration", user_id))
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({
                 "PlayDefaultAudioTrack": true,
                 "SubtitleLanguagePreference": "eng",
@@ -583,7 +607,10 @@ mod e2e_tests {
         // GET user again to verify configuration was persisted
         let resp = server
             .get("/users/me")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .await;
 
         resp.assert_status_ok();

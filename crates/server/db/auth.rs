@@ -288,7 +288,10 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
             .or_else(|| parts.headers.get("X-MediaBrowser-Token"))
             .and_then(|v| v.to_str().ok())
         {
-            return Ok(JellyfinAuthHeader { token: Some(token.to_string()), ..Default::default() });
+            return Ok(JellyfinAuthHeader {
+                token: Some(token.to_string()),
+                ..Default::default()
+            });
         }
 
         // 3. api_key / ApiKey query parameter
@@ -296,13 +299,19 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
             for pair in query.split('&') {
                 let mut kv = pair.splitn(2, '=');
                 if let (Some(key), Some(val)) = (kv.next(), kv.next()) {
-                    if key.eq_ignore_ascii_case("api_key") || key.eq_ignore_ascii_case("apikey") {
-                        return Ok(JellyfinAuthHeader { token: Some(val.to_string()), ..Default::default() });
+                    if key.eq_ignore_ascii_case("api_key")
+                        || key.eq_ignore_ascii_case("apikey")
+                    {
+                        return Ok(JellyfinAuthHeader {
+                            token: Some(val.to_string()),
+                            ..Default::default()
+                        });
                     }
                 }
             }
         }
 
-        Err(anyhow::anyhow!("missing auth").context_unauthorized("forbidden", "forbidden"))
+        Err(anyhow::anyhow!("missing auth")
+            .context_unauthorized("forbidden", "forbidden"))
     }
 }

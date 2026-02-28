@@ -4,11 +4,10 @@
 //!
 //! **Feature Flag**: Only available when the `flv` feature is enabled.
 
-pub mod flv_tag;
-pub mod flv_tag_header;
 pub mod flv_buffer;
 mod flv_header;
-
+pub mod flv_tag;
+pub mod flv_tag_header;
 
 // Define constants for commonly used lengths
 pub const PREVIOUS_TAG_SIZE_LENGTH: usize = 4;

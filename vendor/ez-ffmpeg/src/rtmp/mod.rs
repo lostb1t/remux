@@ -79,8 +79,8 @@
 //! **Feature Flag**: Only available when the `rtmp` feature is enabled.
 
 pub mod embed_rtmp_server;
-mod rtmp_scheduler;
 mod gop;
 mod poller;
-mod write_queue;
 mod reactor;
+mod rtmp_scheduler;
+mod write_queue;

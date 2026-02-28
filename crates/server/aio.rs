@@ -29,7 +29,9 @@ impl AioService {
             .await?
             .aio_url
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow!("AIO URL not configured — complete the setup wizard first"))?;
+            .ok_or_else(|| {
+                anyhow!("AIO URL not configured — complete the setup wizard first")
+            })?;
         Self::from_url(&url)
     }
 

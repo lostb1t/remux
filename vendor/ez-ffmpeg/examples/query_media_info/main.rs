@@ -1,5 +1,7 @@
 use ez_ffmpeg::container_info::{get_duration_us, get_format, get_metadata};
-use ez_ffmpeg::stream_info::{find_all_stream_infos, find_audio_stream_info, find_video_stream_info};
+use ez_ffmpeg::stream_info::{
+    find_all_stream_infos, find_audio_stream_info, find_video_stream_info,
+};
 
 fn main() {
     // Retrieve the duration in microseconds for the media file "test.mp4"

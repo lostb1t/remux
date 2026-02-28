@@ -16,7 +16,10 @@ fn main() {
                 .set_audio_codec("pcm_s16le"),
         )
         // Build the context, start the process and wait for completion
-        .build().unwrap()
-        .start().unwrap()
-        .wait().unwrap();
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
+        .wait()
+        .unwrap();
 }

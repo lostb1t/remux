@@ -6,9 +6,9 @@ use anyhow::Result;
 use serde::Serialize;
 use tokio::sync::broadcast;
 use tracing::Subscriber;
-use tracing_subscriber::{EnvFilter, Layer, Registry, reload};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{EnvFilter, Layer, Registry, reload};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogLine {
@@ -19,7 +19,8 @@ pub struct LogLine {
 }
 
 static LOG_TX: OnceLock<broadcast::Sender<LogLine>> = OnceLock::new();
-static LOG_FILTER_HANDLE: OnceLock<reload::Handle<EnvFilter, Registry>> = OnceLock::new();
+static LOG_FILTER_HANDLE: OnceLock<reload::Handle<EnvFilter, Registry>> =
+    OnceLock::new();
 static LOG_FILE: OnceLock<Mutex<BufWriter<fs::File>>> = OnceLock::new();
 static LOG_FILE_PATH: OnceLock<String> = OnceLock::new();
 
@@ -45,7 +46,11 @@ impl tracing::field::Visit for MessageVisitor {
         }
     }
 
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+    fn record_debug(
+        &mut self,
+        field: &tracing::field::Field,
+        value: &dyn std::fmt::Debug,
+    ) {
         if field.name() == "message" {
             // Strip surrounding quotes that Debug adds to strings
             let s = format!("{value:?}");
@@ -99,7 +104,9 @@ pub fn init_file(path: &str) {
         let _ = fs::create_dir_all(parent);
     }
     match OpenOptions::new().create(true).append(true).open(path) {
-        Ok(f) => { LOG_FILE.set(Mutex::new(BufWriter::new(f))).ok(); }
+        Ok(f) => {
+            LOG_FILE.set(Mutex::new(BufWriter::new(f))).ok();
+        }
         Err(e) => tracing::warn!("could not open log file {path}: {e}"),
     }
 }
@@ -111,8 +118,8 @@ pub fn init() -> (
     LogCapture,
     broadcast::Sender<LogLine>,
 ) {
-    let filter = EnvFilter::try_new(base_filter())
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter =
+        EnvFilter::try_new(base_filter()).unwrap_or_else(|_| EnvFilter::new("info"));
     let (reload_layer, handle) = reload::Layer::new(filter);
     LOG_FILTER_HANDLE.set(handle).ok();
 
@@ -131,7 +138,8 @@ pub fn subscribe() -> Option<broadcast::Receiver<LogLine>> {
 /// Change the `remux_server` log level at runtime. Other crates keep their
 /// RUST_LOG baseline.
 pub fn set_log_level(level: &str) -> Result<()> {
-    let handle = LOG_FILTER_HANDLE.get()
+    let handle = LOG_FILTER_HANDLE
+        .get()
         .ok_or_else(|| anyhow::anyhow!("log filter handle not initialized"))?;
     let directive = format!("{},remux_server={level}", base_filter());
     handle.modify(|f| *f = EnvFilter::new(&directive))?;

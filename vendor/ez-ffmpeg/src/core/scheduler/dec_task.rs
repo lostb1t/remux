@@ -7,31 +7,48 @@ use crate::core::scheduler::ffmpeg_scheduler::{
 use crate::error::DecodingOperationError::DecodeSubtitleError;
 use crate::error::Error::{Bug, Decoding, OpenDecoder};
 use crate::error::{
-    DecodingError, DecodingOperationError, Error, OpenDecoderError, OpenDecoderOperationError,
+    DecodingError, DecodingOperationError, Error, OpenDecoderError,
+    OpenDecoderOperationError,
 };
 use crate::hwaccel::HWAccelID::{HwaccelAuto, HwaccelGeneric};
 use crate::hwaccel::{
     hw_device_get_by_name, hw_device_get_by_type, hw_device_init_from_type,
     hw_device_match_by_codec, HWAccelID,
 };
+use crate::util::ffmpeg_utils::av_err2str;
 use crate::util::ffmpeg_utils::av_rescale_q_rnd;
 use crossbeam_channel::{RecvTimeoutError, Sender};
 use ffmpeg_next::packet::{Mut, Ref};
 use ffmpeg_next::{Frame, Packet};
 use ffmpeg_sys_next::AVHWDeviceType::AV_HWDEVICE_TYPE_QSV;
-use ffmpeg_sys_next::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_VIDEO};
+use ffmpeg_sys_next::AVMediaType::{
+    AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_VIDEO,
+};
 use ffmpeg_sys_next::AVRounding::AV_ROUND_UP;
 use ffmpeg_sys_next::AVSubtitleType::SUBTITLE_BITMAP;
+use ffmpeg_sys_next::{
+    av_buffer_create, av_buffer_ref, av_calloc, av_dict_set, av_frame_apply_cropping,
+    av_frame_copy_props, av_frame_move_ref, av_frame_ref, av_frame_unref, av_free,
+    av_freep, av_gcd, av_hwdevice_get_type_name, av_hwframe_transfer_data, av_inv_q,
+    av_mallocz, av_memdup, av_mul_q, av_opt_set_dict2, av_pix_fmt_desc_get,
+    av_rescale_delta, av_rescale_q, av_strdup, avcodec_alloc_context3,
+    avcodec_decode_subtitle2, avcodec_default_get_buffer2, avcodec_flush_buffers,
+    avcodec_free_context, avcodec_get_hw_config, avcodec_open2,
+    avcodec_parameters_to_context, avcodec_receive_frame, avcodec_send_packet,
+    avsubtitle_free, AVCodec, AVCodecContext, AVDictionary, AVFrame, AVHWDeviceType,
+    AVMediaType, AVPixelFormat, AVRational, AVSubtitle, AVSubtitleRect, AVERROR,
+    AVERROR_EOF, AVPALETTE_SIZE, AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX,
+    AV_FRAME_CROP_UNALIGNED, AV_FRAME_FLAG_CORRUPT, AV_NOPTS_VALUE,
+    AV_PIX_FMT_FLAG_HWACCEL, AV_TIME_BASE_Q, EAGAIN, EINVAL, ENOMEM,
+};
 #[cfg(not(feature = "docs-rs"))]
 use ffmpeg_sys_next::{av_channel_layout_copy, AV_CODEC_FLAG_COPY_OPAQUE};
-use ffmpeg_sys_next::{av_buffer_create, av_buffer_ref, av_calloc, av_dict_set, av_frame_apply_cropping, av_frame_copy_props, av_frame_move_ref, av_frame_ref, av_frame_unref, av_free, av_freep, av_gcd, av_hwdevice_get_type_name, av_hwframe_transfer_data, av_inv_q, av_mallocz, av_memdup, av_mul_q, av_opt_set_dict2, av_pix_fmt_desc_get, av_rescale_delta, av_rescale_q, av_strdup, avcodec_alloc_context3, avcodec_decode_subtitle2, avcodec_default_get_buffer2, avcodec_flush_buffers, avcodec_free_context, avcodec_get_hw_config, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame, avcodec_send_packet, avsubtitle_free, AVCodec, AVCodecContext, AVDictionary, AVFrame, AVHWDeviceType, AVMediaType, AVPixelFormat, AVRational, AVSubtitle, AVSubtitleRect, AVERROR, AVERROR_EOF, AVPALETTE_SIZE, AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_FRAME_CROP_UNALIGNED, AV_FRAME_FLAG_CORRUPT, AV_NOPTS_VALUE, AV_PIX_FMT_FLAG_HWACCEL, AV_TIME_BASE_Q, EAGAIN, EINVAL, ENOMEM};
 use log::{debug, error, info, trace, warn};
 use std::ffi::{c_void, CStr, CString};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
-use crate::util::ffmpeg_utils::av_err2str;
 
 #[cfg(feature = "docs-rs")]
 pub(crate) fn dec_init(
@@ -57,22 +74,35 @@ pub(crate) fn dec_init(
     scheduler_result: Arc<Mutex<Option<crate::error::Result<()>>>>,
 ) -> crate::error::Result<()> {
     let receiver = dec_stream.take_src();
-    
+
     let codec_ptr = dec_stream.codec.as_ptr();
     if codec_ptr.is_null() {
-        error!("Decoder codec pointer is null for stream {}", dec_stream.stream_index);
-        return Err(OpenDecoder(OpenDecoderOperationError::ContextAllocationError(OpenDecoderError::OutOfMemory)));
+        error!(
+            "Decoder codec pointer is null for stream {}",
+            dec_stream.stream_index
+        );
+        return Err(OpenDecoder(
+            OpenDecoderOperationError::ContextAllocationError(
+                OpenDecoderError::OutOfMemory,
+            ),
+        ));
     }
-    
+
     let codec_name_ptr = unsafe { (*codec_ptr).name };
     if codec_name_ptr.is_null() {
-        error!("Decoder codec name pointer is null for stream {}", dec_stream.stream_index);
-        return Err(OpenDecoder(OpenDecoderOperationError::ContextAllocationError(OpenDecoderError::OutOfMemory)));
+        error!(
+            "Decoder codec name pointer is null for stream {}",
+            dec_stream.stream_index
+        );
+        return Err(OpenDecoder(
+            OpenDecoderOperationError::ContextAllocationError(
+                OpenDecoderError::OutOfMemory,
+            ),
+        ));
     }
-    
-    let decoder_name = unsafe {
-        CStr::from_ptr(codec_name_ptr).to_str().unwrap_or("unknown")
-    };
+
+    let decoder_name =
+        unsafe { CStr::from_ptr(codec_name_ptr).to_str().unwrap_or("unknown") };
 
     if receiver.is_none() {
         debug!(
@@ -89,7 +119,6 @@ pub(crate) fn dec_init(
 
     let senders = dec_stream.take_dsts();
     let exit_on_error = exit_on_error.unwrap_or(false);
-
 
     let dp_arc = dp_arc.clone();
     let result = std::thread::Builder::new()
@@ -273,7 +302,8 @@ unsafe fn transcode_subtitles(
         };
         (*frame.as_mut_ptr()).pts = (*packet_box.packet.as_ptr()).pts;
         (*frame.as_mut_ptr()).time_base = (*packet_box.packet.as_ptr()).time_base;
-        (*frame.as_mut_ptr()).opaque = PacketOpaque::PktOpaqueSubHeartbeat as i32 as *mut c_void;
+        (*frame.as_mut_ptr()).opaque =
+            PacketOpaque::PktOpaqueSubHeartbeat as i32 as *mut c_void;
 
         let frame_box = dec_frame_to_box(dp_arc, frame);
 
@@ -309,7 +339,9 @@ unsafe fn transcode_subtitles(
     }
 
     let mut packet_is_eof = false;
-    if packet_is_null(&packet_box.packet) || (*packet_box.packet.as_ptr()).stream_index >= 0 {
+    if packet_is_null(&packet_box.packet)
+        || (*packet_box.packet.as_ptr()).stream_index >= 0
+    {
         let Ok(packet) = packet_pool.get() else {
             return Err(Decoding(DecodingOperationError::PacketAllocationError(
                 DecodingError::OutOfMemory,
@@ -437,8 +469,9 @@ fn subtitle_wrap_frame(
                 )));
             }
         } else {
-            sub = av_memdup(subtitle as *const c_void, std::mem::size_of::<AVSubtitle>())
-                as *mut AVSubtitle;
+            sub =
+                av_memdup(subtitle as *const c_void, std::mem::size_of::<AVSubtitle>())
+                    as *mut AVSubtitle;
             if sub.is_null() {
                 return Err(Decoding(DecodingOperationError::SubtitleAllocationError(
                     DecodingError::OutOfMemory,
@@ -562,7 +595,10 @@ unsafe fn copy_av_subtitle(dst: *mut AVSubtitle, src: *const AVSubtitle) -> i32 
     0 // Success
 }
 
-fn fix_sub_duration_heartbeat(_dp_arc: Arc<Mutex<DecoderParameter>>, _signal_pts: i64) -> i32 {
+fn fix_sub_duration_heartbeat(
+    _dp_arc: Arc<Mutex<DecoderParameter>>,
+    _signal_pts: i64,
+) -> i32 {
     0
 }
 
@@ -572,12 +608,15 @@ unsafe fn dec_send(
     senders: &Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>,
 ) -> crate::error::Result<()> {
     let mut nb_done = 0;
-    for (i, (sender, fg_input_index, finished_flag_list)) in senders.iter().enumerate() {
-        if !finished_flag_list.is_empty() && *fg_input_index < finished_flag_list.len()
-            && finished_flag_list[*fg_input_index].load(Ordering::Acquire) {
-                nb_done += 1;
-                continue;
-            }
+    for (i, (sender, fg_input_index, finished_flag_list)) in senders.iter().enumerate()
+    {
+        if !finished_flag_list.is_empty()
+            && *fg_input_index < finished_flag_list.len()
+            && finished_flag_list[*fg_input_index].load(Ordering::Acquire)
+        {
+            nb_done += 1;
+            continue;
+        }
         if i < senders.len() - 1 {
             let Ok(mut to_send) = frame_pool.get() else {
                 return Err(Decoding(DecodingOperationError::FrameAllocationError(
@@ -598,7 +637,8 @@ unsafe fn dec_send(
                     )));
                 }
             } else {
-                let ret = av_frame_copy_props(to_send.as_mut_ptr(), frame_box.frame.as_ptr());
+                let ret =
+                    av_frame_copy_props(to_send.as_mut_ptr(), frame_box.frame.as_ptr());
                 if ret < 0 {
                     return Err(Decoding(DecodingOperationError::FrameCopyPropsError(
                         DecodingError::OutOfMemory,
@@ -633,10 +673,13 @@ unsafe fn dec_send(
     }
 }
 
-unsafe fn dec_frame_to_box(dp_arc: Arc<Mutex<DecoderParameter>>, frame: Frame) -> FrameBox {
+unsafe fn dec_frame_to_box(
+    dp_arc: Arc<Mutex<DecoderParameter>>,
+    frame: Frame,
+) -> FrameBox {
     let dp = dp_arc.lock().unwrap();
     let dec_ctx = dp.dec_ctx.as_ptr();
-    
+
     FrameBox {
         frame,
         frame_data: FrameData {
@@ -676,19 +719,21 @@ fn dec_open(
         let mut dec_ctx = avcodec_alloc_context3(dec_stream.codec.as_ptr());
         if dec_ctx.is_null() {
             return Err(OpenDecoder(
-                OpenDecoderOperationError::ContextAllocationError(OpenDecoderError::OutOfMemory),
+                OpenDecoderOperationError::ContextAllocationError(
+                    OpenDecoderError::OutOfMemory,
+                ),
             ));
         }
 
-        let mut ret = avcodec_parameters_to_context(
-            dec_ctx,
-            (*dec_stream.stream.inner).codecpar,
-        );
+        let mut ret =
+            avcodec_parameters_to_context(dec_ctx, (*dec_stream.stream.inner).codecpar);
         if ret < 0 {
             avcodec_free_context(&mut dec_ctx);
             error!("Error initializing the decoder context.");
             return Err(OpenDecoder(
-                OpenDecoderOperationError::ParameterApplicationError(OpenDecoderError::from(ret)),
+                OpenDecoderOperationError::ParameterApplicationError(
+                    OpenDecoderError::from(ret),
+                ),
             ));
         }
 
@@ -715,22 +760,32 @@ fn dec_open(
         {
             let dp_arc_clone = dp_arc.clone();
             let mut dp = dp_arc_clone.lock().unwrap();
-            ret = hw_device_setup_for_decode(&mut dp, dec_stream.codec.as_ptr(), dec_ctx);
+            ret =
+                hw_device_setup_for_decode(&mut dp, dec_stream.codec.as_ptr(), dec_ctx);
             if ret < 0 {
                 avcodec_free_context(&mut dec_ctx);
-                error!("Hardware device setup failed for decoder: {}", av_err2str(ret));
+                error!(
+                    "Hardware device setup failed for decoder: {}",
+                    av_err2str(ret)
+                );
                 return Err(OpenDecoder(OpenDecoderOperationError::HwSetupError(
                     OpenDecoderError::from(ret),
                 )));
             }
         }
 
-        ret = av_opt_set_dict2(dec_ctx as *mut c_void, &mut dec_opts, ffmpeg_sys_next::AV_OPT_SEARCH_CHILDREN);
+        ret = av_opt_set_dict2(
+            dec_ctx as *mut c_void,
+            &mut dec_opts,
+            ffmpeg_sys_next::AV_OPT_SEARCH_CHILDREN,
+        );
         if ret < 0 {
             avcodec_free_context(&mut dec_ctx);
             error!("Error applying decoder options: {}", av_err2str(ret));
             return Err(OpenDecoder(
-                OpenDecoderOperationError::ParameterApplicationError(OpenDecoderError::from(ret)),
+                OpenDecoderOperationError::ParameterApplicationError(
+                    OpenDecoderError::from(ret),
+                ),
             ));
         }
 
@@ -780,13 +835,15 @@ fn dec_open(
                 (*param_out).format = (*dec_ctx).sample_fmt as i32;
                 (*param_out).sample_rate = (*dec_ctx).sample_rate;
 
-                ret =
-                    av_channel_layout_copy(&mut (*param_out).ch_layout, &(*dec_ctx).ch_layout);
+                ret = av_channel_layout_copy(
+                    &mut (*param_out).ch_layout,
+                    &(*dec_ctx).ch_layout,
+                );
                 if ret < 0 {
                     return Err(OpenDecoder(
-                        OpenDecoderOperationError::ChannelLayoutCopyError(OpenDecoderError::from(
-                            ret,
-                        )),
+                        OpenDecoderOperationError::ChannelLayoutCopyError(
+                            OpenDecoderError::from(ret),
+                        ),
                     ));
                 }
             } else if (*dec_ctx).codec_type == AVMEDIA_TYPE_VIDEO {
@@ -827,8 +884,10 @@ fn hw_device_setup_for_decode(
                     auto_device = true;
                 } else if dp.hwaccel_id == HWAccelID::HwaccelGeneric {
                     device_type = dp.hwaccel_device_type;
-                    (err, dev) =
-                        hw_device_init_from_type(device_type, Some(hwaccel_device.clone()));
+                    (err, dev) = hw_device_init_from_type(
+                        device_type,
+                        Some(hwaccel_device.clone()),
+                    );
                 } else {
                     // This will be dealt with by API-specific initialisation
                     // (using hwaccel_device), so nothing further needed here.
@@ -840,9 +899,11 @@ fn hw_device_setup_for_decode(
                     dp.hwaccel_device_type = dev.device_type;
                 } else if dp.hwaccel_device_type != dev.device_type {
                     unsafe {
-                        let dev_device_name = av_hwdevice_get_type_name(dev.device_type);
+                        let dev_device_name =
+                            av_hwdevice_get_type_name(dev.device_type);
                         let dev_device_name = CStr::from_ptr(dev_device_name).to_str();
-                        let dp_device_name = av_hwdevice_get_type_name(dp.hwaccel_device_type);
+                        let dp_device_name =
+                            av_hwdevice_get_type_name(dp.hwaccel_device_type);
                         let dp_device_name = CStr::from_ptr(dp_device_name).to_str();
                         if let (Ok(dev_device_name), Ok(dp_device_name)) =
                             (dev_device_name, dp_device_name)
@@ -904,7 +965,9 @@ fn hw_device_setup_for_decode(
             if let Some(dev) = &dev {
                 unsafe {
                     let dev_device_type = av_hwdevice_get_type_name(device_type);
-                    if let Ok(dev_device_type) = CStr::from_ptr(dev_device_type).to_str() {
+                    if let Ok(dev_device_type) =
+                        CStr::from_ptr(dev_device_type).to_str()
+                    {
                         info!(
                             "Using auto hwaccel type {dev_device_type} with existing device {}.",
                             dev.name
@@ -926,7 +989,8 @@ fn hw_device_setup_for_decode(
 
             device_type = unsafe { (*config).device_type };
             // Try to make a new device of this type.
-            (err, dev) = hw_device_init_from_type(device_type, dp.hwaccel_device.clone());
+            (err, dev) =
+                hw_device_init_from_type(device_type, dp.hwaccel_device.clone());
             if err < 0 {
                 // Can't make a device of this type.
                 i += 1;
@@ -964,7 +1028,9 @@ fn hw_device_setup_for_decode(
                 let dev_device_type = CStr::from_ptr(dev_device_type).to_str();
                 let codec_name = (*codec).name;
                 let codec_name = CStr::from_ptr(codec_name).to_str();
-                if let (Ok(dev_device_type), Ok(codec_name)) = (dev_device_type, codec_name) {
+                if let (Ok(dev_device_type), Ok(codec_name)) =
+                    (dev_device_type, codec_name)
+                {
                     info!("No device available for decoder: device type {dev_device_type} needed for codec {codec_name}.");
                 }
             }
@@ -1019,7 +1085,10 @@ unsafe extern "C" fn get_format_callback(
                 if config.is_null() {
                     break;
                 }
-                if (*config).methods as u32 & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as u32 == 0 {
+                if (*config).methods as u32
+                    & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as u32
+                    == 0
+                {
                     j += 1;
                     continue;
                 }
@@ -1105,7 +1174,6 @@ struct DecoderParameter {
     last_filter_in_rescale_delta: i64,
     last_frame_sample_rate: i32,
     // view_map: Vec<ViewMap>,
-
 }
 
 // SAFETY: DecoderParameter contains raw pointers (dec_ctx, subtitle_header) but is safe to
@@ -1149,7 +1217,9 @@ impl DecoderParameter {
             },
             dec_ctx: CodecContext::null(),
 
-            sar_override: unsafe { (*(*dec_stream.stream.inner).codecpar).sample_aspect_ratio },
+            sar_override: unsafe {
+                (*(*dec_stream.stream.inner).codecpar).sample_aspect_ratio
+            },
             framerate_in: dec_stream.avg_framerate,
             apply_cropping: 0,
             hwaccel_id: dec_stream.hwaccel_id,
@@ -1162,7 +1232,6 @@ impl DecoderParameter {
             last_frame_tb: AVRational { num: 1, den: 1 },
             last_filter_in_rescale_delta: 0,
             last_frame_sample_rate: 0,
-
             // view_map: vec![],
         }
     }
@@ -1181,12 +1250,17 @@ struct Decoder {
     decode_errors: u64,
 }
 
-fn dec_done(dp_arc: &Arc<Mutex<DecoderParameter>>, senders: &Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>) {
+fn dec_done(
+    dp_arc: &Arc<Mutex<DecoderParameter>>,
+    senders: &Vec<(Sender<FrameBox>, usize, Arc<[AtomicBool]>)>,
+) {
     for (sender, fg_input_index, finished_flag_list) in senders {
-        if !finished_flag_list.is_empty() && *fg_input_index < finished_flag_list.len()
-            && finished_flag_list[*fg_input_index].load(Ordering::Acquire) {
-                continue;
-            }
+        if !finished_flag_list.is_empty()
+            && *fg_input_index < finished_flag_list.len()
+            && finished_flag_list[*fg_input_index].load(Ordering::Acquire)
+        {
+            continue;
+        }
 
         let mut frame_box = unsafe { dec_frame_to_box(dp_arc.clone(), null_frame()) };
         frame_box.frame_data.fg_input_index = *fg_input_index;
@@ -1257,7 +1331,9 @@ unsafe fn packet_decode(
     } else {
         avcodec_send_packet(dec_ctx, packet_box.packet.as_ptr())
     };
-    if ret < 0 && !(ret == AVERROR_EOF && (*packet_box.packet.as_ptr()).stream_index < 0) {
+    if ret < 0
+        && !(ret == AVERROR_EOF && (*packet_box.packet.as_ptr()).stream_index < 0)
+    {
         // In particular, we don't expect AVERROR(EAGAIN), because we read all
         // decoded frames with avcodec_receive_frame() until done.
         if ret == AVERROR(EAGAIN) {
@@ -1429,14 +1505,18 @@ unsafe fn video_frame_process(
 }
 
 #[cfg(not(feature = "docs-rs"))]
-unsafe fn video_duration_estimate(dp: &MutexGuard<DecoderParameter>, frame: *mut AVFrame) -> i64 {
+unsafe fn video_duration_estimate(
+    dp: &MutexGuard<DecoderParameter>,
+    frame: *mut AVFrame,
+) -> i64 {
     let mut codec_duration = 0;
     // difference between this and last frame's timestamps
-    let ts_diff: i64 = if (*frame).pts != AV_NOPTS_VALUE && dp.last_frame_pts != AV_NOPTS_VALUE {
-        (*frame).pts - dp.last_frame_pts
-    } else {
-        -1
-    };
+    let ts_diff: i64 =
+        if (*frame).pts != AV_NOPTS_VALUE && dp.last_frame_pts != AV_NOPTS_VALUE {
+            (*frame).pts - dp.last_frame_pts
+        } else {
+            -1
+        };
 
     // XXX lavf currently makes up frame durations when they are not provided by
     // the container. As there is no way to reliably distinguish real container
@@ -1453,13 +1533,16 @@ unsafe fn video_duration_estimate(dp: &MutexGuard<DecoderParameter>, frame: *mut
         return (*frame).duration;
     }
 
-    if (*dp.dec_ctx.as_ptr()).framerate.den != 0 && (*dp.dec_ctx.as_ptr()).framerate.num != 0 {
+    if (*dp.dec_ctx.as_ptr()).framerate.den != 0
+        && (*dp.dec_ctx.as_ptr()).framerate.num != 0
+    {
         let fields = (*frame).repeat_pict + 2;
         let field_rate = av_mul_q(
             (*dp.dec_ctx.as_ptr()).framerate,
             AVRational { num: 2, den: 1 },
         );
-        codec_duration = av_rescale_q(fields as i64, av_inv_q(field_rate), (*frame).time_base);
+        codec_duration =
+            av_rescale_q(fields as i64, av_inv_q(field_rate), (*frame).time_base);
     }
 
     // when timestamps are available, repeat last frame's actual duration
@@ -1547,7 +1630,8 @@ unsafe fn audio_ts_process(mut dp: MutexGuard<DecoderParameter>, frame: *mut AVF
         (*frame).pts = pts_pred;
         (*frame).time_base = tb;
     } else if dp.last_frame_pts != AV_NOPTS_VALUE
-        && (*frame).pts > av_rescale_q_rnd(pts_pred, tb, (*frame).time_base, AV_ROUND_UP as u32)
+        && (*frame).pts
+            > av_rescale_q_rnd(pts_pred, tb, (*frame).time_base, AV_ROUND_UP as u32)
     {
         // there was a gap in timestamps, reset conversion state
         dp.last_filter_in_rescale_delta = AV_NOPTS_VALUE;
@@ -1563,7 +1647,8 @@ unsafe fn audio_ts_process(mut dp: MutexGuard<DecoderParameter>, frame: *mut AVF
     );
 
     dp.last_frame_pts = (*frame).pts;
-    dp.last_frame_duration_est = av_rescale_q((*frame).nb_samples as i64, tb_filter, tb);
+    dp.last_frame_duration_est =
+        av_rescale_q((*frame).nb_samples as i64, tb_filter, tb);
 
     // finally convert to filtering timebase
     (*frame).pts = av_rescale_q((*frame).pts, tb, tb_filter);
@@ -1612,7 +1697,8 @@ unsafe fn audio_samplerate_update(
     if dp.last_frame_pts != AV_NOPTS_VALUE {
         dp.last_frame_pts = av_rescale_q(dp.last_frame_pts, dp.last_frame_tb, tb_new);
     }
-    dp.last_frame_duration_est = av_rescale_q(dp.last_frame_duration_est, dp.last_frame_tb, tb_new);
+    dp.last_frame_duration_est =
+        av_rescale_q(dp.last_frame_duration_est, dp.last_frame_tb, tb_new);
 
     dp.last_frame_tb = tb_new;
     dp.last_frame_sample_rate = (*frame).sample_rate;

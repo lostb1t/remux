@@ -22,19 +22,21 @@ impl ApiKey {
     }
 
     pub async fn get_by_token(db: &SqlitePool, token: &str) -> Result<Option<Self>> {
-        Ok(sqlx::query_as::<_, Self>(
-            "SELECT * FROM api_keys WHERE access_token = ?1",
+        Ok(
+            sqlx::query_as::<_, Self>("SELECT * FROM api_keys WHERE access_token = ?1")
+                .bind(token)
+                .fetch_optional(db)
+                .await?,
         )
-        .bind(token)
-        .fetch_optional(db)
-        .await?)
     }
 
     pub async fn get_all(db: &SqlitePool) -> Result<Vec<Self>> {
         Ok(
-            sqlx::query_as::<_, Self>("SELECT * FROM api_keys ORDER BY created_at DESC")
-                .fetch_all(db)
-                .await?,
+            sqlx::query_as::<_, Self>(
+                "SELECT * FROM api_keys ORDER BY created_at DESC",
+            )
+            .fetch_all(db)
+            .await?,
         )
     }
 
