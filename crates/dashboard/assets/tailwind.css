@@ -224,23 +224,23 @@
   .filter {
     filter: var(--tw-blur,) var(--tw-brightness,) var(--tw-contrast,) var(--tw-grayscale,) var(--tw-hue-rotate,) var(--tw-invert,) var(--tw-saturate,) var(--tw-sepia,) var(--tw-drop-shadow,);
   }
-  .even\:bg-\[rgba\(255\,255\,255\,0\.03\)\] {
+  .even\:bg-\[rgba\(0\,0\,0\,0\.02\)\] {
     &:nth-child(even) {
-      background-color: rgba(255,255,255,0.03);
+      background-color: rgba(0,0,0,0.02);
     }
   }
-  .hover\:bg-\[rgba\(255\,102\,0\,0\.05\)\] {
+  .hover\:bg-\[rgba\(0\,0\,0\,0\.03\)\] {
     &:hover {
       @media (hover: hover) {
-        background-color: rgba(255,102,0,0.05);
+        background-color: rgba(0,0,0,0.03);
       }
     }
   }
-  .even\:hover\:bg-\[rgba\(255\,102\,0\,0\.05\)\] {
+  .even\:hover\:bg-\[rgba\(0\,0\,0\,0\.03\)\] {
     &:nth-child(even) {
       &:hover {
         @media (hover: hover) {
-          background-color: rgba(255,102,0,0.05);
+          background-color: rgba(0,0,0,0.03);
         }
       }
     }

@@ -394,7 +394,7 @@ fn SessionsCard(app_state: AppState) -> Element {
                     div { class: "data-table-container",
                         div { class: "row-list",
                             for session in sessions.read().iter() {
-                                div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(255,102,0,0.05)] even:bg-[rgba(255,255,255,0.03)] even:hover:bg-[rgba(255,102,0,0.05)]",
+                                div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
                                     div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                         div { class: "session-name",
                                             "{session.device_name.as_deref().unwrap_or(\"Unknown device\")}"
@@ -590,7 +590,7 @@ fn TaskRow(
     let has_controls = on_start.is_some() || on_stop.is_some();
 
     rsx! {
-        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(255,102,0,0.05)] even:bg-[rgba(255,255,255,0.03)] even:hover:bg-[rgba(255,102,0,0.05)]",
+        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                 div { class: "task-name", "{task.name}" }
                 if show_category {
@@ -938,7 +938,7 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                         _ => "",
                                     };
                                     rsx! {
-                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(255,102,0,0.05)] even:bg-[rgba(255,255,255,0.03)] even:hover:bg-[rgba(255,102,0,0.05)]", key: "{col_id_str}",
+                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]", key: "{col_id_str}",
                                             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                                 div { class: "catalog-name", "{name}" }
                                                 div { class: "catalog-meta",
@@ -1324,7 +1324,7 @@ fn ImportsPage(app_state: AppState) -> Element {
                                     let is_importing = cat_task.as_ref()
                                         .and_then(|t| t.state.as_deref()) == Some("Running");
                                     rsx! {
-                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(255,102,0,0.05)] even:bg-[rgba(255,255,255,0.03)] even:hover:bg-[rgba(255,102,0,0.05)]", key: "{cat_aio_id}",
+                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]", key: "{cat_aio_id}",
                                             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                                 div { class: "catalog-name", "{cat_name}" }
                                                 div { class: "catalog-meta",
@@ -1475,7 +1475,7 @@ fn UsersPage(app_state: AppState) -> Element {
                                     let user_id   = user.id;
                                     let client_del = app_state.client.clone();
                                     rsx! {
-                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(255,102,0,0.05)] even:bg-[rgba(255,255,255,0.03)] even:hover:bg-[rgba(255,102,0,0.05)]", key: "{user.id}",
+                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]", key: "{user.id}",
                                             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                                                 div { class: "user-info",
                                                     span { class: "user-name", "{user.name}" }
