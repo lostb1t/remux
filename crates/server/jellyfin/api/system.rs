@@ -255,58 +255,7 @@ pub async fn system_activity_log(
     })))
 }
 
-#[cfg(test)]
-#[tokio::test]
-async fn system_ping_test() {
-    let server = crate::integration_test::new_test_server().await.unwrap();
 
-    let response = server.get("/system/ping").await;
-
-    response.assert_status_ok();
-    //response.assert_text("Remux Server");
-}
-
-#[cfg(test)]
-#[tokio::test]
-async fn system_info_storage_test() {
-    let server = crate::integration_test::new_test_server().await.unwrap();
-
-    let response = server.get("/system/info/storage").await;
-
-    response.assert_status_ok();
-    let storage_info: crate::jellyfin::SystemStorageInfo = response.json();
-    
-    // Check that we have the expected storage folders
-    assert!(storage_info.program_data_folder.is_some());
-    assert!(storage_info.cache_folder.is_some());
-    assert!(storage_info.web_folder.is_some());
-    
-    // Check that we have libraries
-    assert!(storage_info.libraries.is_some());
-    let libraries = storage_info.libraries.unwrap();
-    assert_eq!(libraries.len(), 2);
-    
-    // Check library names
-    let library_names: Vec<String> = libraries.iter().filter_map(|lib| lib.name.clone()).collect();
-    assert!(library_names.contains(&"Movies".to_string()));
-    assert!(library_names.contains(&"TV Shows".to_string()));
-}
-
-#[cfg(test)]
-#[tokio::test]
-async fn system_activity_log_test() {
-    let server = crate::integration_test::new_test_server().await.unwrap();
-
-    let response = server.get("/system/activitylog/entries").await;
-
-    response.assert_status_ok();
-    let log_result: serde_json::Value = response.json();
-    
-    // Check that we have the expected structure
-    assert!(log_result["Items"].is_array());
-    assert_eq!(log_result["Items"].as_array().unwrap().len(), 0);
-    assert_eq!(log_result["TotalRecordCount"].as_i64().unwrap(), 0);
-}
 
 /// Restart the server (Admin only)
 #[post("/system/restart")]
@@ -409,6 +358,78 @@ pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoRespo
 }
 
 #[cfg(test)]
+mod test {
+    use super::*;
+    use crate::integration_test::{AUTH_HEADER, auth_header_with_token, authenticated_server, new_test_server};
+    use http::header::HeaderValue;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_system_info_public() {
+        let server = new_test_server().await.unwrap();
+
+        let resp = server
+            .get("/system/info/public")
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(body["User"]["Name"], "test");
+    }
+
+
+#[tokio::test]
+async fn system_ping_test() {
+    let server = crate::integration_test::new_test_server().await.unwrap();
+
+    let response = server.get("/system/ping").await;
+
+    response.assert_status_ok();
+    //response.assert_text("Remux Server");
+}
+
+
+#[tokio::test]
+async fn system_info_storage_test() {
+    let server = crate::integration_test::new_test_server().await.unwrap();
+
+    let response = server.get("/system/info/storage").await;
+
+    response.assert_status_ok();
+    let storage_info: crate::jellyfin::SystemStorageInfo = response.json();
+    
+    // Check that we have the expected storage folders
+    assert!(storage_info.program_data_folder.is_some());
+    assert!(storage_info.cache_folder.is_some());
+    assert!(storage_info.web_folder.is_some());
+    
+    // Check that we have libraries
+    assert!(storage_info.libraries.is_some());
+    let libraries = storage_info.libraries.unwrap();
+    assert_eq!(libraries.len(), 2);
+    
+    // Check library names
+    let library_names: Vec<String> = libraries.iter().filter_map(|lib| lib.name.clone()).collect();
+    assert!(library_names.contains(&"Movies".to_string()));
+    assert!(library_names.contains(&"TV Shows".to_string()));
+}
+
+
+#[tokio::test]
+async fn system_activity_log_test() {
+    let server = crate::integration_test::new_test_server().await.unwrap();
+
+    let response = server.get("/system/activitylog/entries").await;
+
+    response.assert_status_ok();
+    let log_result: serde_json::Value = response.json();
+    
+    // Check that we have the expected structure
+    assert!(log_result["Items"].is_array());
+    assert_eq!(log_result["Items"].as_array().unwrap().len(), 0);
+    assert_eq!(log_result["TotalRecordCount"].as_i64().unwrap(), 0);
+}
+
 #[tokio::test]
 async fn system_endpoints_exist_and_protected() {
     use crate::integration_test::new_test_server;
@@ -422,7 +443,7 @@ async fn system_endpoints_exist_and_protected() {
     assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
 }
 
-#[cfg(test)]
+
 #[tokio::test]
 async fn system_restart_requires_auth() {
     use crate::integration_test::new_test_server;
@@ -433,7 +454,7 @@ async fn system_restart_requires_auth() {
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
-#[cfg(test)]
+
 #[tokio::test]
 async fn system_shutdown_requires_auth() {
     use crate::integration_test::new_test_server;
@@ -444,7 +465,7 @@ async fn system_shutdown_requires_auth() {
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
-#[cfg(test)]
+
 #[tokio::test]
 async fn system_info_shows_capabilities() {
     let server = crate::integration_test::new_test_server().await.unwrap();
@@ -458,4 +479,5 @@ async fn system_info_shows_capabilities() {
     assert_eq!(system_info.can_self_restart, Some(true));
     assert_eq!(system_info.has_pending_restart, Some(false));
     assert_eq!(system_info.is_shutting_down, Some(false));
+}
 }

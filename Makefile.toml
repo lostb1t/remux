@@ -38,6 +38,7 @@ args = ["-f", "${DB}"]
 dependencies = ["db-remove", "db-create", "db-migrate"]
 
 [tasks.test]
+cwd = "crates/server"
 dependencies = ["db-reset"]
 command = "cargo"
 args = ["test"]
