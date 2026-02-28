@@ -2392,14 +2392,14 @@ fn LogsPage(app_state: AppState) -> Element {
                 style: "height:600px;overflow-y:auto;padding:12px;font-family:monospace;font-size:0.8rem;background:var(--color-bg, #0d0d0d)",
                 for line in logs.read().iter() {
                     div {
-                        style: "display:flex;gap:8px;margin-bottom:2px;white-space:pre-wrap;word-break:break-all",
+                        style: "display:flex;gap:8px;margin-bottom:2px;overflow:hidden",
                         span { style: "color:#666;flex-shrink:0", "{line.timestamp}" }
                         span {
                             style: "flex-shrink:0;font-weight:600;{level_color(&line.level)}",
                             "[{line.level}]"
                         }
                         span { style: "color:#888;flex-shrink:0", "{line.target}" }
-                        span { "{line.message}" }
+                        span { style: "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0", "{line.message}" }
                     }
                 }
                 // Anchor element used for auto-scroll

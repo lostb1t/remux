@@ -1,4 +1,6 @@
-use std::sync::OnceLock;
+use std::fs::{self, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -18,6 +20,8 @@ pub struct LogLine {
 
 static LOG_TX: OnceLock<broadcast::Sender<LogLine>> = OnceLock::new();
 static LOG_FILTER_HANDLE: OnceLock<reload::Handle<EnvFilter, Registry>> = OnceLock::new();
+static LOG_FILE: OnceLock<Mutex<BufWriter<fs::File>>> = OnceLock::new();
+static LOG_FILE_PATH: OnceLock<String> = OnceLock::new();
 
 pub struct LogCapture {
     tx: broadcast::Sender<LogLine>,
@@ -64,17 +68,40 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for LogCapture {
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
 
-        let _ = self.tx.send(LogLine {
+        let line = LogLine {
             level,
             message: visitor.message,
             target,
             timestamp,
-        });
+        };
+        let json = serde_json::to_string(&line).unwrap_or_default();
+        let _ = self.tx.send(line);
+        if let Some(mutex) = LOG_FILE.get() {
+            if let Ok(mut w) = mutex.lock() {
+                let _ = writeln!(w, "{json}");
+                let _ = w.flush();
+            }
+        }
     }
 }
 
 fn base_filter() -> String {
     std::env::var("RUST_LOG").unwrap_or_else(|_| "info,hyper=warn,sqlx=warn".into())
+}
+
+pub fn log_file_path() -> Option<&'static str> {
+    LOG_FILE_PATH.get().map(String::as_str)
+}
+
+pub fn init_file(path: &str) {
+    LOG_FILE_PATH.set(path.to_string()).ok();
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match OpenOptions::new().create(true).append(true).open(path) {
+        Ok(f) => { LOG_FILE.set(Mutex::new(BufWriter::new(f))).ok(); }
+        Err(e) => tracing::warn!("could not open log file {path}: {e}"),
+    }
 }
 
 /// Called once from `setup_logging()`. Initialises globals and returns the
@@ -104,9 +131,10 @@ pub fn subscribe() -> Option<broadcast::Receiver<LogLine>> {
 /// Change the `remux_server` log level at runtime. Other crates keep their
 /// RUST_LOG baseline.
 pub fn set_log_level(level: &str) -> Result<()> {
-    if let Some(handle) = LOG_FILTER_HANDLE.get() {
-        let directive = format!("{},remux_server={level}", base_filter());
-        handle.modify(|f| *f = EnvFilter::new(&directive))?;
-    }
+    let handle = LOG_FILTER_HANDLE.get()
+        .ok_or_else(|| anyhow::anyhow!("log filter handle not initialized"))?;
+    let directive = format!("{},remux_server={level}", base_filter());
+    handle.modify(|f| *f = EnvFilter::new(&directive))?;
+    tracing::info!("log level changed to {level}");
     Ok(())
 }

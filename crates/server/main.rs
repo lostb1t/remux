@@ -127,6 +127,7 @@ async fn init_app() -> Result<Router> {
 }
 
 pub async fn init_app_with_config(config: Config) -> Result<Router> {
+    log_capture::init_file(&config.log_file);
     debug!(
         "config: {}",
         serde_json::to_string_pretty(&config).unwrap()
@@ -233,6 +234,10 @@ fn default_db_url() -> String {
     "sqlite:///data/db.sqlite?mode=rwc".to_string()
 }
 
+fn default_log_file() -> String {
+    "/data/logs/remux.jsonl".to_string()
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Config {
     #[serde(default = "default_web_path")]
@@ -241,6 +246,8 @@ pub struct Config {
     pub dashboard_path: String,
     #[serde(default = "default_db_url")]
     pub db_url: String,
+    #[serde(default = "default_log_file")]
+    pub log_file: String,
 }
 
 impl Default for Config {
@@ -249,6 +256,7 @@ impl Default for Config {
             web_path: default_web_path(),
             dashboard_path: default_dashboard_path(),
             db_url: default_db_url(),
+            log_file: default_log_file(),
         }
     }
 }
