@@ -247,7 +247,7 @@ pub struct VirtualFolderInfo {
     pub primary_image_item_id: Option<String>,
     pub refresh_progress: Option<f64>,
     pub refresh_status: Option<String>,
-    /// Remux extension: "manual", "smart", or "catalog"
+    /// Remux extension: "manual" or "smart"
     pub collection_kind: Option<String>,
     /// Remux extension: whether this collection is shown in library home
     pub promoted: Option<bool>,
@@ -260,21 +260,25 @@ pub struct CreateVirtualFolderPayload {
     pub name: String,
     /// Jellyfin collection type: "movies" or "tvshows"
     pub collection_type: Option<String>,
-    /// Remux extension: "manual", "smart", or "catalog"
+    /// Remux extension: "manual" or "smart"
     pub collection_kind: Option<String>,
     pub promoted: Option<bool>,
-    pub collection_max_items: Option<i64>,
-    /// AIO catalog aio_id, required when collection_kind = "catalog"
-    pub aio_id: Option<String>,
 }
 
-/// Remux extension: an AIO catalog available for mapping to a collection.
+/// Remux extension: an AIO catalog available for import.
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct AioCatalogInfo {
     /// Composite AIO identifier: "{kind}:{id}"
     pub aio_id: String,
     pub name: String,
+    /// Whether this catalog is enabled for import (promoted=1 on catalog media item)
+    pub enabled: Option<bool>,
+    /// Per-catalog import item limit
+    pub max_items: Option<i64>,
+    /// UUID of the catalog media item in the DB (present once the catalog has been enabled)
+    pub media_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -286,6 +290,30 @@ pub struct UpdateVirtualFolderPayload {
     pub collection_kind: Option<String>,
     pub promoted: Option<bool>,
     pub collection_max_items: Option<i64>,
+}
+
+/// Payload for PATCH /items/{id} — partial update, only present fields are written.
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct PatchItemPayload {
+    pub name: Option<String>,
+    pub collection_type: Option<String>,
+    pub collection_kind: Option<String>,
+    /// UUIDs of catalog media items to filter this smart collection by
+    pub collection_catalog_filter: Option<Vec<String>>,
+    pub promoted: Option<bool>,
+}
+
+/// Payload for POST /aio/catalogs/{aio_id} — enable/disable a catalog and set its limit.
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UpdateCatalogSettingsPayload {
+    pub enabled: bool,
+    pub max_items: Option<i64>,
+    /// Catalog display name — used when creating the catalog media item for the first time
+    pub name: Option<String>,
 }
 
 #[skip_serializing_none]
@@ -1497,6 +1525,7 @@ pub struct BaseItemDto {
     //pub album: Option<String>,
     pub collection_type: Option<CollectionType>,
     pub collection_kind: Option<String>,
+    pub collection_catalog_filter: Option<Vec<String>>,
     pub display_order: Option<String>,
     pub album_id: Option<String>,
     pub album_primary_image_tag: Option<String>,

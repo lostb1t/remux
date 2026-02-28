@@ -89,6 +89,8 @@ pub enum MediaKind {
     Studio,
     Genre,
     Collection,
+    // AIO import source catalog item
+    Catalog,
     // purely here for jf
     Folder,
     Source,
@@ -153,8 +155,6 @@ pub enum CollectionKind {
     #[default]
     Manual,
     Smart,
-    // aio catalog
-    Catalog
 }
 
 impl TryFrom<String> for CollectionKind {
@@ -184,6 +184,7 @@ pub enum RelationRole {
     Actor,
     Director,
     Writer,
+    Catalog,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -257,6 +258,7 @@ pub struct MediaFilter {
     pub include_user_state: bool,
     pub user_state: Option<super::UserMediaStateFilter>,
     pub genre_ids: Option<Vec<Uuid>>,
+    pub catalog_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -316,6 +318,21 @@ pub struct Media {
     // MediaKind
     pub collection_media_kind: Option<MediaKind>,
     pub collection_max_items: Option<i64>,
+    // JSON array of catalog media item UUIDs (for smart collections with catalog filter)
+    pub collection_catalog_filter: Option<String>,
+}
+
+impl Media {
+    /// Parse the JSON catalog filter into a list of UUIDs.
+    pub fn catalog_filter_ids(&self) -> Vec<Uuid> {
+        self.collection_catalog_filter
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|s| Uuid::parse_str(&s).ok())
+            .collect()
+    }
 }
 
 // #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -384,10 +401,10 @@ impl Media {
         r#"
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
-            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
+            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items, collection_catalog_filter,
             remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at, certification, parent_idx
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -411,6 +428,7 @@ impl Media {
             collection_kind = excluded.collection_kind,
             collection_media_kind = excluded.collection_media_kind,
             collection_max_items = excluded.collection_max_items,
+            collection_catalog_filter = excluded.collection_catalog_filter,
             updated_at = excluded.updated_at,
             certification = excluded.certification,
             parent_idx = excluded.parent_idx
@@ -436,6 +454,7 @@ impl Media {
         .bind(&self.collection_kind)
         .bind(&self.collection_media_kind)
         .bind(self.collection_max_items)
+        .bind(&self.collection_catalog_filter)
         .bind(&self.remote_data)
         .bind(&self.series_imdb_id)
         .bind(&self.aio_id)
@@ -694,6 +713,17 @@ impl Media {
                     qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in genre_ids {
+                        sep.push_bind(id);
+                    }
+                    qb.push("))");
+                }
+            }
+
+            if let Some(catalog_ids) = &filter.catalog_ids {
+                if !catalog_ids.is_empty() {
+                    qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND mr.right_media_id IN (");
+                    let mut sep = qb.separated(", ");
+                    for id in catalog_ids {
                         sep.push_bind(id);
                     }
                     qb.push("))");

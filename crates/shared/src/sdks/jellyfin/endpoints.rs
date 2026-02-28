@@ -95,6 +95,21 @@ impl Endpoint for GetAioCatalogs {
     fn path(&self) -> String { "/aio/catalogs".into() }
 }
 
+#[derive(Debug, Clone)]
+pub struct UpdateCatalogSettings {
+    pub aio_id: String,
+    pub payload: UpdateCatalogSettingsPayload,
+}
+
+impl Endpoint for UpdateCatalogSettings {
+    type Output = ();
+    fn path(&self) -> String { format!("/aio/catalogs/{}", self.aio_id) }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
 // ── Items ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
@@ -171,6 +186,23 @@ impl Endpoint for DeleteVirtualFolder {
     fn method(&self) -> Method { Method::DELETE }
     fn query(&self) -> Vec<(String, String)> {
         vec![("name".into(), self.name.clone())]
+    }
+}
+
+// ── Item patch ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct PatchItem {
+    pub item_id: String,
+    pub payload: PatchItemPayload,
+}
+
+impl Endpoint for PatchItem {
+    type Output = ();
+    fn path(&self) -> String { format!("/items/{}", self.item_id) }
+    fn method(&self) -> Method { Method::PATCH }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
     }
 }
 

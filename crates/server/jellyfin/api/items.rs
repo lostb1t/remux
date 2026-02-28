@@ -2,7 +2,7 @@ use anyhow::Context;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use remux_macros::{delete, get, post};
+use remux_macros::{delete, get, patch, post};
 use serde::Deserialize;
 use axum_extra::extract::Query;
 use http::StatusCode;
@@ -143,32 +143,46 @@ pub async fn get_items(
             });
         }
 
-        // catalog get
+        // collection browse
         if parent.kind == db::MediaKind::Collection {
-            // Catalog collections store items with parent_id = collection.id.
-            // Smart/Manual collections use a global query (no parent_id filter).
-            if parent.collection_kind != Some(db::CollectionKind::Catalog) {
-                q.parent_id = None;
-            }
+            // All collection types: items float freely (no parent_id constraint).
+            q.parent_id = None;
 
-            if let Some(kind) = parent.collection_media_kind.clone() {
-                q.include_item_types = Some(vec![jellyfin::db_media_kind_to_type(kind)]);
+            let media_kind_filter = if let Some(kind) = parent.collection_media_kind.clone() {
+                vec![kind]
             } else {
-                q.include_item_types = Some(vec![
-                    jellyfin::MediaType::Movie,
-                    jellyfin::MediaType::Series,
-                ]);
-            }
-            //             q.include_item_types = Some(vec![jellyfin::MediaType::Movie]);
-            // trace!(?q, "CATALOG");
+                vec![db::MediaKind::Movie, db::MediaKind::Series]
+            };
+
+            q.include_item_types = Some(
+                media_kind_filter.iter().map(|k| jellyfin::db_media_kind_to_type(k.clone())).collect()
+            );
+
             if q.limit.is_none() {
                 q.limit = Some(250);
             }
-
             q.user_id = Some(session.user.id.clone());
 
-            let mut result =
-                db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true).await?;
+            // For smart collections with a catalog filter: query via media_relations
+            let catalog_ids = parent.catalog_filter_ids();
+            if parent.collection_kind == Some(db::CollectionKind::Smart) && !catalog_ids.is_empty() {
+                let result = db::Media::get_by_filter(
+                    &state.ctx.db,
+                    &db::MediaFilter {
+                        kind: Some(media_kind_filter),
+                        catalog_ids: Some(catalog_ids),
+                        limit: q.limit,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+                return Ok(ItemsQueryResult {
+                    total_count: result.total_count as i64,
+                    items: result.records.into_iter().map(jellyfin::db_media_to_item).collect(),
+                });
+            }
+
+            let result = db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true).await?;
 
             return Ok(ItemsQueryResult {
                 total_count: result.total_count as i64,
@@ -463,8 +477,6 @@ struct VirtualFolderRequest {
     collection_type: Option<String>,
     collection_kind: Option<String>,
     promoted: Option<bool>,
-    collection_max_items: Option<i64>,
-    aio_id: Option<String>,
 }
 
 #[post("/library/virtualfolders")]
@@ -495,19 +507,11 @@ pub async fn create_virtual_folder(
         kind: db::MediaKind::Collection,
         collection_kind: Some(collection_kind.clone()),
         collection_media_kind,
-        collection_max_items: payload.collection_max_items,
-        aio_id: payload.aio_id,
         promoted,
         ..Default::default()
     };
 
     media.save(&state.ctx.db).await?;
-
-    if collection_kind == db::CollectionKind::Catalog {
-        let _ = state.tasks.register_task(std::sync::Arc::new(
-            crate::tasks::CollectionImportTask::new(media.id, &media.title)
-        )).await;
-    }
 
     Ok(Json(media_to_virtual_folder(media)))
 }
@@ -600,11 +604,6 @@ pub async fn delete_virtual_folder(
 
     let media = result.context_not_found("Not Found", "Collection not found")?;
 
-    if matches!(media.collection_kind, Some(db::CollectionKind::Catalog)) {
-        let key = crate::tasks::CollectionImportTask::key_for(media.id);
-        let _ = state.tasks.deregister_task(&key).await;
-    }
-
     db::Media::delete(&state.ctx.db, &media.id).await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -618,11 +617,30 @@ pub async fn aio_catalogs(
     let aio = session.aio
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
     let manifest = aio.get_manifest().await?;
+
+    // Look up existing catalog media items to merge enabled/max_items
+    let db_catalogs = db::Media::get_by_filter(
+        &state.ctx.db,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::Catalog]),
+            ..Default::default()
+        },
+    )
+    .await?
+    .records;
+
     let catalogs: Vec<jellyfin::AioCatalogInfo> = manifest.catalogs.into_iter()
         .filter(|c| !c.id.contains("search"))
-        .map(|c| jellyfin::AioCatalogInfo {
-            aio_id: format!("{}:{}", c.kind, c.id),
-            name: c.name,
+        .map(|c| {
+            let aio_id = format!("{}:{}", c.kind, c.id);
+            let db_cat = db_catalogs.iter().find(|d| d.aio_id.as_deref() == Some(&aio_id));
+            jellyfin::AioCatalogInfo {
+                aio_id,
+                name: c.name,
+                enabled: Some(db_cat.map(|d| d.is_promoted()).unwrap_or(false)),
+                max_items: db_cat.and_then(|d| d.collection_max_items),
+                media_id: db_cat.map(|d| d.id.to_string()),
+            }
         })
         .collect();
     Ok(Json(catalogs))
@@ -681,4 +699,134 @@ pub async fn items_thememedia(State(state): State<AppState>) -> Result<impl Into
 #[get("/channels")]
 pub async fn channels(State(state): State<AppState>) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
+}
+
+// ── PATCH /items/{id} — partial update ────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct PatchItemRequest {
+    name: Option<String>,
+    collection_type: Option<String>,
+    collection_kind: Option<String>,
+    collection_catalog_filter: Option<Vec<String>>,
+    promoted: Option<bool>,
+}
+
+#[patch("/items/{id}")]
+pub async fn patch_item(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<PatchItemRequest>,
+) -> Result<StatusCode> {
+    if !session.user.is_admin {
+        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
+    }
+
+    let updated_at = Utc::now().naive_utc();
+    let mut qb = sqlx::QueryBuilder::new("UPDATE media SET updated_at = ");
+    qb.push_bind(updated_at);
+
+    if let Some(name) = &payload.name {
+        qb.push(", title = ").push_bind(name);
+    }
+    if let Some(ct) = &payload.collection_type {
+        let media_kind = parse_collection_type(ct);
+        qb.push(", collection_media_kind = ").push_bind(media_kind.as_ref().map(|k| k.to_string()));
+    }
+    if let Some(ck) = &payload.collection_kind {
+        qb.push(", collection_kind = ").push_bind(ck);
+    }
+    if let Some(filter) = &payload.collection_catalog_filter {
+        let json = serde_json::to_string(filter).unwrap_or_else(|_| "[]".into());
+        qb.push(", collection_catalog_filter = ").push_bind(json);
+    }
+    if let Some(prm) = payload.promoted {
+        qb.push(", promoted = ").push_bind(if prm { 1i64 } else { 0i64 });
+    }
+
+    qb.push(" WHERE id = ").push_bind(id);
+    qb.build().execute(&state.ctx.db).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ── POST /aio/catalogs/{aio_id} — upsert catalog settings ─────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct UpdateCatalogSettingsRequest {
+    enabled: bool,
+    max_items: Option<i64>,
+    /// Used to set the title when creating a new catalog media item
+    name: Option<String>,
+}
+
+#[post("/aio/catalogs/{aio_id}")]
+pub async fn update_catalog_settings(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(aio_id): Path<String>,
+    Json(payload): Json<UpdateCatalogSettingsRequest>,
+) -> Result<StatusCode> {
+    if !session.user.is_admin {
+        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
+    }
+
+    let promoted: i64 = if payload.enabled { 1 } else { 0 };
+    let now = Utc::now().naive_utc();
+
+    let existing = db::Media::get_by_filter(
+        &state.ctx.db,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::Catalog]),
+            aio_id: Some(aio_id.clone()),
+            ..Default::default()
+        },
+    )
+    .await?
+    .records
+    .into_iter()
+    .next();
+
+    let catalog_id;
+    if let Some(cat) = existing {
+        catalog_id = cat.id;
+        sqlx::query(
+            "UPDATE media SET promoted = $1, collection_max_items = $2, updated_at = $3 WHERE id = $4",
+        )
+        .bind(promoted)
+        .bind(payload.max_items)
+        .bind(now)
+        .bind(catalog_id)
+        .execute(&state.ctx.db)
+        .await?;
+    } else {
+        let title = payload.name.clone().unwrap_or_else(|| aio_id.clone());
+        let mut media = db::Media {
+            kind: db::MediaKind::Catalog,
+            title,
+            aio_id: Some(aio_id),
+            promoted,
+            collection_max_items: payload.max_items,
+            ..Default::default()
+        };
+        media.save(&state.ctx.db).await?;
+        catalog_id = media.id;
+    }
+
+    // Register or deregister the per-catalog import task.
+    use crate::tasks::CatalogItemImportTask;
+    let task_key = CatalogItemImportTask::task_key(catalog_id);
+    if payload.enabled {
+        let name = payload.name.unwrap_or_else(|| task_key.clone());
+        state.tasks.register_task(std::sync::Arc::new(
+            CatalogItemImportTask::new(catalog_id, &name)
+        )).await?;
+    } else {
+        state.tasks.deregister_task(&task_key).await?;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }

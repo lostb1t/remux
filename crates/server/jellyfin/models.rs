@@ -210,15 +210,17 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .map(|(rel, m)| BaseItemPerson {
                     id: m.id,
                     name: m.title.clone(),
-                    role: rel.role.as_ref().map(|r| match r {
-                        db::RelationRole::Actor => "Actor".to_string(),
-                        db::RelationRole::Director => "Director".to_string(),
-                        db::RelationRole::Writer => "Writer".to_string(),
+                    role: rel.role.as_ref().and_then(|r| match r {
+                        db::RelationRole::Actor => Some("Actor".to_string()),
+                        db::RelationRole::Director => Some("Director".to_string()),
+                        db::RelationRole::Writer => Some("Writer".to_string()),
+                        db::RelationRole::Catalog => None,
                     }),
-                    type_: rel.role.as_ref().map(|r| match r {
-                        db::RelationRole::Actor => "Actor".to_string(),
-                        db::RelationRole::Director => "Director".to_string(),
-                        db::RelationRole::Writer => "Writer".to_string(),
+                    type_: rel.role.as_ref().and_then(|r| match r {
+                        db::RelationRole::Actor => Some("Actor".to_string()),
+                        db::RelationRole::Director => Some("Director".to_string()),
+                        db::RelationRole::Writer => Some("Writer".to_string()),
+                        db::RelationRole::Catalog => None,
                     }),
                     primary_image_tag: m.poster.clone(),
                 })
@@ -247,11 +249,17 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     if media.kind == db::MediaKind::Collection {
         item.collection_type = Some(
             media
-                .collection_media_kind
+                .collection_media_kind.clone()
                 .map(db_media_kind_to_collection_type)
                 .unwrap_or(CollectionType::Unknown),
         );
         item.collection_kind = media.collection_kind.as_ref().map(|k| k.to_string());
+        item.collection_catalog_filter = if media.collection_catalog_filter.is_some() {
+            let ids = media.catalog_filter_ids();
+            if ids.is_empty() { None } else { Some(ids.iter().map(|u| u.to_string()).collect()) }
+        } else {
+            None
+        };
         if media.promoted == 1 {
             item.type_ = MediaType::CollectionFolder;
         } else {

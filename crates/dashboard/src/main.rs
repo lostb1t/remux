@@ -1,16 +1,16 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
-use gloo_timers::future::TimeoutFuture;
 use serde::{Deserialize, Serialize};
 use shared::sdks::jellyfin::{
     AdminSetPassword, AioCatalogInfo, AuthenticateUserByName, BaseItemDto,
     CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload, DeleteUser,
     DeleteVirtualFolder, GetAioCatalogs, GetItems, GetScheduledTasks, GetSessions,
     GetSystemConfiguration, GetStartupConfiguration, GetUsers, JellyfinAuth,
-    PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
-    ServerConfiguration, SessionInfoDto, StartTask, StartupConfiguration, StartupUser,
-    StopTask, TaskInfo, UpdateSystemConfiguration, UpdateUser, UpdateUserPolicy,
-    UpdateVirtualFolder, UpdateVirtualFolderPayload, UserDto,
+    PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
+    PostStartupUser, PublicSystemInfo, ServerConfiguration, SessionInfoDto,
+    StartTask, StartupConfiguration, StartupUser, StopTask, TaskInfo,
+    UpdateCatalogSettings, UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
+    UpdateUser, UpdateUserPolicy, UserDto,
 };
 use shared::sdks::{ClientError, RestClient};
 use uuid::Uuid;
@@ -627,9 +627,10 @@ fn TaskRow(
 #[derive(Clone, PartialEq, Debug)]
 enum Page {
     Overview,
+    Imports,
+    Collections,
     Devices,
     Tasks,
-    Collections,
     Users,
     Settings,
 }
@@ -658,9 +659,10 @@ fn Dashboard(on_logout: EventHandler) -> Element {
 
     let page_title = match *current_page.read() {
         Page::Overview    => "Overview",
+        Page::Imports     => "Imports",
+        Page::Collections => "Library",
         Page::Devices     => "Devices",
         Page::Tasks       => "Scheduled Tasks",
-        Page::Collections => "Library",
         Page::Users       => "Users",
         Page::Settings    => "Settings",
     };
@@ -694,6 +696,11 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                         label: "Library",
                         active: *current_page.read() == Page::Collections,
                         on_click: move |_| { current_page.set(Page::Collections); sidebar_open.set(false); },
+                    }
+                    NavItem {
+                        label: "Imports",
+                        active: *current_page.read() == Page::Imports,
+                        on_click: move |_| { current_page.set(Page::Imports); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Devices",
@@ -752,14 +759,17 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                             SessionsCard { app_state: app_state.clone() }
                             TasksCard { app_state: app_state.clone(), running_only: true }
                         },
+                        Page::Imports => rsx! {
+                            ImportsPage { app_state: app_state.clone() }
+                        },
+                        Page::Collections => rsx! {
+                            CollectionsPage { app_state: app_state.clone() }
+                        },
                         Page::Devices => rsx! {
                             SessionsCard { app_state: app_state.clone() }
                         },
                         Page::Tasks => rsx! {
                             TasksCard { app_state: app_state.clone() }
-                        },
-                        Page::Collections => rsx! {
-                            CollectionsPage { app_state: app_state.clone() }
                         },
                         Page::Users => rsx! {
                             UsersPage { app_state: app_state.clone() }
@@ -796,7 +806,6 @@ impl PartialEq for FormMode {
 #[component]
 fn CollectionsPage(app_state: AppState) -> Element {
     let mut collections: Signal<Vec<BaseItemDto>> = use_signal(Vec::new);
-    let mut tasks_list:  Signal<Vec<TaskInfo>>    = use_signal(Vec::new);
     let mut loading   = use_signal(|| true);
     let mut error     = use_signal(|| Option::<String>::None);
     let mut refresh   = use_signal(|| 0_u32);
@@ -808,43 +817,16 @@ fn CollectionsPage(app_state: AppState) -> Element {
         loading.set(true);
         let client = app_state_effect.client.clone();
         spawn(async move {
-            let (cols_result, tasks_result) = futures::join!(
-                client.execute(GetItems {
-                    include_item_types: vec!["BoxSet".to_string(), "CollectionFolder".to_string()],
-                    recursive: false,
-                }),
-                client.execute(GetScheduledTasks { is_hidden: Some(false) }),
-            );
-            match cols_result {
+            match client.execute(GetItems {
+                include_item_types: vec!["BoxSet".to_string(), "CollectionFolder".to_string()],
+                recursive: false,
+            }).await {
                 Ok(result) => { collections.set(result.items); error.set(None); }
                 Err(e) => error.set(Some(format!("Failed to load collections: {e}"))),
-            }
-            if let Ok(t) = tasks_result {
-                tasks_list.set(t);
             }
             loading.set(false);
         });
     });
-
-    // Poll tasks every 2s while any catalog import is running.
-    {
-        let poll_client = app_state.client.clone();
-        use_effect(move || {
-            let any_running = tasks_list.read().iter().any(|t| {
-                t.key.as_ref().map_or(false, |k| k.starts_with("catalog_import:"))
-                    && t.state.as_deref() == Some("Running")
-            });
-            if any_running {
-                let client = poll_client.clone();
-                spawn(async move {
-                    TimeoutFuture::new(2_000).await;
-                    if let Ok(t) = client.execute(GetScheduledTasks { is_hidden: Some(false) }).await {
-                        tasks_list.set(t);
-                    }
-                });
-            }
-        });
-    }
 
     rsx! {
         div { class: "card",
@@ -870,13 +852,7 @@ fn CollectionsPage(app_state: AppState) -> Element {
                             let col_edit = col.clone();
                             let col_del  = col.clone();
                             let client_del = app_state.client.clone();
-                            let client_import = app_state.client.clone();
                             let col_id_str = col.id.to_string();
-                            let task_key = format!("catalog_import:{}", col_id_str);
-                            let import_task = tasks_list.read().iter()
-                                .find(|t| t.key.as_deref() == Some(&task_key))
-                                .cloned();
-                            let is_catalog = col.collection_kind.as_deref() == Some("catalog");
                             let name = col.name.clone().unwrap_or_default();
                             let col_type_label = match col.collection_type.as_ref() {
                                 Some(ct) => match ct {
@@ -887,82 +863,42 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                 None => "Unknown",
                             };
                             let col_kind_label = match col.collection_kind.as_deref() {
-                                Some("smart")   => "Smart",
-                                Some("manual")  => "Manual",
-                                Some("catalog") => "Catalog",
+                                Some("smart")  => "Smart",
+                                Some("manual") => "Manual",
                                 _ => "",
                             };
-                            {
-                                let task_id   = import_task.as_ref().map(|t| t.id.clone());
-                                let is_running = import_task.as_ref()
-                                    .and_then(|t| t.state.as_deref()) == Some("Running");
-                                let progress_pct = import_task.as_ref()
-                                    .and_then(|t| t.current_progress_percentage)
-                                    .unwrap_or(0.0);
-                                rsx! {
-                                    div { class: "catalog-row-wrap", key: "{col_id_str}",
-                                        div { class: "catalog-row",
-                                            div {
-                                                div { class: "catalog-name", "{name}" }
-                                                div { class: "catalog-meta",
-                                                    span { class: "session-client-badge", "{col_type_label}" }
-                                                    if !col_kind_label.is_empty() {
-                                                        span { class: "session-client-badge", "{col_kind_label}" }
-                                                    }
-                                                }
-                                            }
-                                            div { class: "catalog-actions",
-                                                if is_catalog {
-                                                    if let Some(tid) = task_id {
-                                                        button {
-                                                            class: "btn btn-ghost",
-                                                            style: "height:30px;font-size:.68rem;padding:0 10px",
-                                                            disabled: is_running,
-                                                            onclick: move |_| {
-                                                                let id = tid.clone();
-                                                                let c  = client_import.clone();
-                                                                spawn(async move {
-                                                                    let _ = c.execute(StartTask { task_id: id }).await;
-                                                                    // Kick-start the polling loop: fetch tasks after
-                                                                    // a short delay so we pick up the Running state.
-                                                                    TimeoutFuture::new(400).await;
-                                                                    if let Ok(t) = c.execute(GetScheduledTasks { is_hidden: Some(false) }).await {
-                                                                        tasks_list.set(t);
-                                                                    }
-                                                                });
-                                                            },
-                                                            if is_running { "Importing…" } else { "Import" }
-                                                        }
-                                                    }
-                                                }
-                                                button {
-                                                    class: "btn btn-ghost",
-                                                    style: "height:30px;font-size:.68rem;padding:0 10px",
-                                                    onclick: move |_| form_mode.set(Some(FormMode::Edit(col_edit.clone()))),
-                                                    "Edit"
-                                                }
-                                                button {
-                                                    class: "btn btn-ghost",
-                                                    style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
-                                                    onclick: move |_| {
-                                                        let name = col_del.name.clone().unwrap_or_default();
-                                                        let c    = client_del.clone();
-                                                        spawn(async move {
-                                                            let _ = c.execute(DeleteVirtualFolder { name }).await;
-                                                            let v = *refresh.peek() + 1;
-                                                            refresh.set(v);
-                                                        });
-                                                    },
-                                                    "Delete"
+                            rsx! {
+                                div { class: "catalog-row-wrap", key: "{col_id_str}",
+                                    div { class: "catalog-row",
+                                        div {
+                                            div { class: "catalog-name", "{name}" }
+                                            div { class: "catalog-meta",
+                                                span { class: "session-client-badge", "{col_type_label}" }
+                                                if !col_kind_label.is_empty() {
+                                                    span { class: "session-client-badge", "{col_kind_label}" }
                                                 }
                                             }
                                         }
-                                        if is_running {
-                                            div { class: "import-progress",
-                                                div {
-                                                    class: "import-progress-bar",
-                                                    style: "width:{progress_pct:.1}%",
-                                                }
+                                        div { class: "catalog-actions",
+                                            button {
+                                                class: "btn btn-ghost",
+                                                style: "height:30px;font-size:.68rem;padding:0 10px",
+                                                onclick: move |_| form_mode.set(Some(FormMode::Edit(col_edit.clone()))),
+                                                "Edit"
+                                            }
+                                            button {
+                                                class: "btn btn-ghost",
+                                                style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                                onclick: move |_| {
+                                                    let name = col_del.name.clone().unwrap_or_default();
+                                                    let c    = client_del.clone();
+                                                    spawn(async move {
+                                                        let _ = c.execute(DeleteVirtualFolder { name }).await;
+                                                        let v = *refresh.peek() + 1;
+                                                        refresh.set(v);
+                                                    });
+                                                },
+                                                "Delete"
                                             }
                                         }
                                     }
@@ -1023,19 +959,21 @@ fn CollectionForm(
             .and_then(|f| f.collection_kind.clone())
             .unwrap_or_else(|| "smart".to_string())
     });
-    let mut max_items   = use_signal(|| {
-        "250".to_string()
+    // Selected catalog UUIDs for smart collection filter
+    let mut catalog_filter: Signal<Vec<String>> = use_signal(|| {
+        existing.as_ref()
+            .and_then(|f| f.collection_catalog_filter.clone())
+            .unwrap_or_default()
     });
-    let mut aio_id      = use_signal(String::new);
     let mut aio_catalogs: Signal<Vec<AioCatalogInfo>> = use_signal(Vec::new);
     let mut saving      = use_signal(|| false);
     let mut err         = use_signal(|| Option::<String>::None);
 
-    // Fetch AIO catalogs when kind=catalog (create mode only)
+    // Fetch AIO catalogs when kind=smart (for catalog filter checkboxes)
     {
         let client = app_state.client.clone();
         use_effect(move || {
-            if !is_edit && col_kind.read().as_str() == "catalog" {
+            if col_kind.read().as_str() == "smart" {
                 let client = client.clone();
                 spawn(async move {
                     if let Ok(catalogs) = client.execute(GetAioCatalogs).await {
@@ -1054,29 +992,20 @@ fn CollectionForm(
         let ct   = col_type.peek().clone();
         let ck   = col_kind.peek().clone();
         let prm  = *promoted.peek();
-        let max  = if ck == "catalog" {
-            max_items.peek().parse::<i64>().ok()
-        } else {
-            None
-        };
-        let aid  = if ck == "catalog" && item_id.is_none() {
-            let v = aio_id.peek().clone();
-            if v.is_empty() { None } else { Some(v) }
-        } else {
-            None
-        };
+        let filter = catalog_filter.peek().clone();
+        let catalog_filter_payload = if ck == "smart" { Some(filter) } else { None };
         saving.set(true);
         err.set(None);
         spawn(async move {
             let result = if let Some(id) = item_id {
-                client.execute(UpdateVirtualFolder {
-                    payload: UpdateVirtualFolderPayload {
-                        id,
-                        name,
+                client.execute(PatchItem {
+                    item_id: id,
+                    payload: PatchItemPayload {
+                        name: Some(name),
                         collection_type: Some(ct),
                         collection_kind: Some(ck),
+                        collection_catalog_filter: catalog_filter_payload,
                         promoted: Some(prm),
-                        collection_max_items: max,
                     },
                 }).await
             } else {
@@ -1086,8 +1015,6 @@ fn CollectionForm(
                         collection_type: Some(ct),
                         collection_kind: Some(ck),
                         promoted: Some(prm),
-                        collection_max_items: max,
-                        aio_id: aid,
                     },
                 }).await.map(|_| ())
             };
@@ -1143,54 +1070,51 @@ fn CollectionForm(
                     value: "{col_kind}",
                     disabled: is_edit,
                     onchange: move |e| col_kind.set(e.value()),
-                    option { value: "smart",   "Smart"   }
-                    option { value: "manual",  "Manual"  }
-                    option { value: "catalog", "Catalog" }
+                    option { value: "smart",  "Smart"  }
+                    option { value: "manual", "Manual" }
                 }
             }
 
-            if col_kind.read().as_str() == "catalog" {
-                if !is_edit {
-                    div { class: "field",
-                        label { class: "field-label", r#for: "col-aio", "AIO Catalog" }
-                        {
-                            let cats = aio_catalogs.read();
-                            if cats.is_empty() {
-                                rsx! {
-                                    select {
-                                        id: "col-aio",
-                                        class: "select-input",
-                                        disabled: true,
-                                        option { "Loading catalogs…" }
-                                    }
-                                }
-                            } else {
-                                rsx! {
-                                    select {
-                                        id: "col-aio",
-                                        class: "select-input",
-                                        value: "{aio_id}",
-                                        onchange: move |e| aio_id.set(e.value()),
-                                        for cat in cats.iter() {
-                                            option { value: "{cat.aio_id}", "{cat.name}" }
+            if col_kind.read().as_str() == "smart" {
+                div { class: "field",
+                    label { class: "field-label", "Catalog Filter" }
+                    p { class: "field-hint", "Only show items imported from these catalogs. Leave all unchecked for no filter." }
+                    {
+                        let cats = aio_catalogs.read();
+                        let selected = catalog_filter.read();
+                        if cats.is_empty() {
+                            rsx! { span { class: "field-hint", "Loading catalogs…" } }
+                        } else {
+                            rsx! {
+                                div { style: "display:flex;flex-direction:column;gap:6px",
+                                    for cat in cats.iter() {
+                                        // Only show catalogs that have a media_id (i.e. have been enabled)
+                                        if let Some(mid) = cat.media_id.clone() {
+                                            label { style: "display:flex;align-items:center;gap:8px",
+                                                input {
+                                                    r#type: "checkbox",
+                                                    checked: selected.contains(&mid),
+                                                    onchange: {
+                                                        let cat_id = mid.clone();
+                                                        move |e: Event<FormData>| {
+                                                            let mut f = catalog_filter.write();
+                                                            if e.checked() {
+                                                                if !f.contains(&cat_id) {
+                                                                    f.push(cat_id.clone());
+                                                                }
+                                                            } else {
+                                                                f.retain(|x| x != &cat_id);
+                                                            }
+                                                        }
+                                                    },
+                                                }
+                                                span { "{cat.name}" }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                }
-
-                div { class: "field",
-                    label { class: "field-label", r#for: "col-max", "Max Items" }
-                    input {
-                        id: "col-max",
-                        r#type: "number",
-                        class: "field-input",
-                        min: "1",
-                        placeholder: "250",
-                        value: "{max_items}",
-                        oninput: move |e| max_items.set(e.value()),
                     }
                 }
             }
@@ -1239,6 +1163,188 @@ impl PartialEq for UserFormMode {
             (Self::Create, Self::Create) => true,
             (Self::Edit(a), Self::Edit(b)) => a.id == b.id,
             _ => false,
+        }
+    }
+}
+
+// ── Imports page ───────────────────────────────────────────────────
+
+#[component]
+fn ImportsPage(app_state: AppState) -> Element {
+    let mut catalogs: Signal<Vec<AioCatalogInfo>> = use_signal(Vec::new);
+    let mut loading = use_signal(|| true);
+    let mut error   = use_signal(|| Option::<String>::None);
+    let mut tasks_list: Signal<Vec<TaskInfo>> = use_signal(Vec::new);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load.client.clone();
+        spawn(async move {
+            let (cats_result, tasks_result) = futures::join!(
+                client.execute(GetAioCatalogs),
+                client.execute(GetScheduledTasks { is_hidden: Some(false) }),
+            );
+            match cats_result {
+                Ok(cats) => { catalogs.set(cats); error.set(None); }
+                Err(e)   => error.set(Some(format!("Failed to load catalogs: {e}"))),
+            }
+            if let Ok(t) = tasks_result { tasks_list.set(t); }
+            loading.set(false);
+        });
+    });
+
+    let import_task = move || {
+        tasks_list.read().iter()
+            .find(|t| t.key.as_deref() == Some("catalogimport"))
+            .cloned()
+    };
+
+    let run_import_client = app_state.client.clone();
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "AIO Catalogs" }
+                {
+                    let task = import_task();
+                    let is_running = task.as_ref().and_then(|t| t.state.as_deref()) == Some("Running");
+                    let task_id = task.map(|t| t.id);
+                    rsx! {
+                        button {
+                            class: "btn btn-primary",
+                            style: "height:32px;font-size:.68rem",
+                            disabled: is_running,
+                            onclick: move |_| {
+                                if let Some(id) = task_id.clone() {
+                                    let c = run_import_client.clone();
+                                    spawn(async move {
+                                        let _ = c.execute(StartTask { task_id: id }).await;
+                                    });
+                                }
+                            },
+                            if is_running { "Importing…" } else { "Run Import" }
+                        }
+                    }
+                }
+            }
+            div { class: "card-body",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else if let Some(e) = error.read().as_ref() {
+                    span { class: "loading-text", style: "color:var(--error)", "{e}" }
+                } else if catalogs.read().is_empty() {
+                    div { class: "empty-state", "No AIO catalogs found. Check your AIO URL in Settings." }
+                } else {
+                    for cat in catalogs.read().clone() {
+                        {
+                            let client = app_state.client.clone();
+                            let cat_aio_id = cat.aio_id.clone();
+                            let cat_name = cat.name.clone();
+                            let enabled = cat.enabled.unwrap_or(false);
+                            let max_items_str = cat.max_items.map(|n| n.to_string()).unwrap_or_default();
+                            let mut local_max = use_signal(|| max_items_str.clone());
+                            // Per-catalog task state
+                            let task_id_opt = cat.media_id.clone()
+                                .map(|id| format!("catalogimport:{}", id));
+                            let cat_task = task_id_opt.as_ref().and_then(|tid|
+                                tasks_list.read().iter().find(|t| &t.id == tid).cloned()
+                            );
+                            let is_importing = cat_task.as_ref()
+                                .and_then(|t| t.state.as_deref()) == Some("Running");
+                            rsx! {
+                                div { class: "catalog-row-wrap", key: "{cat_aio_id}",
+                                    div { class: "catalog-row",
+                                        div {
+                                            div { class: "catalog-name", "{cat_name}" }
+                                            div { class: "catalog-meta",
+                                                span { class: "session-client-badge", "{cat_aio_id}" }
+                                            }
+                                        }
+                                        div { class: "catalog-actions", style: "align-items:center;gap:10px",
+                                            input {
+                                                r#type: "number",
+                                                class: "field-input",
+                                                style: "width:90px;height:30px;font-size:.75rem",
+                                                placeholder: "Max items",
+                                                value: "{local_max}",
+                                                oninput: move |e| local_max.set(e.value()),
+                                            }
+                                            if let Some(tid) = task_id_opt.clone() {
+                                                if enabled {
+                                                    if is_importing {
+                                                        button {
+                                                            class: "btn btn-danger",
+                                                            style: "height:30px;font-size:.68rem",
+                                                            onclick: {
+                                                                let c = client.clone();
+                                                                let tid = tid.clone();
+                                                                move |_| {
+                                                                    let c = c.clone();
+                                                                    let tid = tid.clone();
+                                                                    spawn(async move {
+                                                                        let _ = c.execute(StopTask { task_id: tid }).await;
+                                                                    });
+                                                                }
+                                                            },
+                                                            "Stop"
+                                                        }
+                                                    } else {
+                                                        button {
+                                                            class: "btn btn-secondary",
+                                                            style: "height:30px;font-size:.68rem",
+                                                            onclick: {
+                                                                let c = client.clone();
+                                                                let tid = tid.clone();
+                                                                move |_| {
+                                                                    let c = c.clone();
+                                                                    let tid = tid.clone();
+                                                                    spawn(async move {
+                                                                        let _ = c.execute(StartTask { task_id: tid }).await;
+                                                                    });
+                                                                }
+                                                            },
+                                                            "Import"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            label { class: "toggle", style: "margin:0",
+                                                input {
+                                                    r#type: "checkbox",
+                                                    checked: enabled,
+                                                    onchange: {
+                                                        let c = client.clone();
+                                                        let aio_id = cat_aio_id.clone();
+                                                        let name = cat_name.clone();
+                                                        move |e: Event<FormData>| {
+                                                            let enabled = e.checked();
+                                                            let max = local_max.peek().parse::<i64>().ok();
+                                                            let c = c.clone();
+                                                            let aio_id = aio_id.clone();
+                                                            let name = name.clone();
+                                                            spawn(async move {
+                                                                let _ = c.execute(UpdateCatalogSettings {
+                                                                    aio_id,
+                                                                    payload: UpdateCatalogSettingsPayload {
+                                                                        enabled,
+                                                                        max_items: max,
+                                                                        name: Some(name),
+                                                                    },
+                                                                }).await;
+                                                            });
+                                                        }
+                                                    },
+                                                }
+                                                span { class: "toggle-track" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -14,15 +14,14 @@ use tracing::{error, info};
 use crate::{AppContext, db, ws};
 
 mod catalog_import;
-mod collection_import;
+mod catalog_item_import;
 mod refresh_library;
 mod series_sync;
 
 use catalog_import::CatalogImportTask;
+pub use catalog_item_import::CatalogItemImportTask;
 use refresh_library::RefreshLibraryTask;
 use series_sync::SeriesSyncTask;
-
-pub use collection_import::CollectionImportTask;
 
 // --- Progress reporting ---
 
