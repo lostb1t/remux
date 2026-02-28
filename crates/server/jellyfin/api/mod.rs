@@ -1,3 +1,4 @@
+pub mod logs;
 pub mod system;
 pub mod startup;
 pub mod users;

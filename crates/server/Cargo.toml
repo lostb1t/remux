@@ -52,7 +52,7 @@ axum-extra = { version = "0.12.5", features = [
 strum_macros = "^0.27"
 strum = "^0.27"
 #base64 = "^0.22"
-tokio-stream = { version = "0.1", features = ["io-util"] }
+tokio-stream = { version = "0.1", features = ["io-util", "sync"] }
 #flate2 = "1.1.1"
 futures = "0.3.31"
 async-compression = "0.4.23"

@@ -1,4 +1,6 @@
 use dioxus::prelude::*;
+use futures::StreamExt;
+use gloo_net::eventsource::futures::EventSource;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
 use shared::sdks::jellyfin::{
@@ -9,7 +11,7 @@ use shared::sdks::jellyfin::{
     PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
     PostStartupUser, PublicSystemInfo, ServerConfiguration, SessionInfoDto,
     StartTask, StartupConfiguration, StartupUser, StopTask, TaskInfo,
-    UpdateBrandingConfiguration, UpdateCatalogSettings, UpdateCatalogSettingsPayload,
+    SetLogLevel, UpdateBrandingConfiguration, UpdateCatalogSettings, UpdateCatalogSettingsPayload,
     UpdateSystemConfiguration, UpdateUser, UpdateUserPolicy, UserDto,
 };
 use shared::sdks::{ClientError, RestClient};
@@ -659,6 +661,8 @@ enum Route {
         SettingsRoute,
         #[route("/admin/branding")]
         BrandingRoute,
+        #[route("/admin/logs")]
+        LogsRoute,
     #[end_layout]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -698,6 +702,7 @@ fn DashboardLayout() -> Element {
         Route::UsersRoute       => "Users",
         Route::SettingsRoute    => "Settings",
         Route::BrandingRoute    => "Branding",
+        Route::LogsRoute        => "Logs",
         Route::NotFound { .. }  => "",
     };
 
@@ -745,6 +750,11 @@ fn DashboardLayout() -> Element {
                         label: "Tasks",
                         active: route == Route::TasksRoute,
                         on_click: move |_| { navigator().push(Route::TasksRoute); sidebar_open.set(false); },
+                    }
+                    NavItem {
+                        label: "Logs",
+                        active: route == Route::LogsRoute,
+                        on_click: move |_| { navigator().push(Route::LogsRoute); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Users",
@@ -858,6 +868,12 @@ fn SettingsRoute() -> Element {
 fn BrandingRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { BrandingPage { app_state } }
+}
+
+#[component]
+fn LogsRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { LogsPage { app_state } }
 }
 
 #[component]
@@ -2246,5 +2262,160 @@ fn Wizard(on_complete: EventHandler) -> Element {
                 }
             }
         }
+    }
+}
+
+// ── Logs page ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+struct LogLine {
+    level: String,
+    message: String,
+    target: String,
+    timestamp: String,
+}
+
+#[component]
+fn LogsPage(app_state: AppState) -> Element {
+    let mut logs: Signal<std::collections::VecDeque<LogLine>> = use_signal(std::collections::VecDeque::new);
+    let mut paused = use_signal(|| false);
+    let mut log_level = use_signal(|| "info".to_string());
+    let mut level_error: Signal<Option<String>> = use_signal(|| None);
+
+    let token = app_state.server.access_token.clone();
+    let client = app_state.client.clone();
+
+    // Stream log lines via SSE. The coroutine is cancelled on unmount.
+    let token_for_coroutine = token.clone();
+    use_coroutine(move |_rx: UnboundedReceiver<()>| {
+        let token = token_for_coroutine.clone();
+        async move {
+            let url = format!("/logs/stream?token={token}");
+            let mut es = match EventSource::new(&url) {
+                Ok(es) => es,
+                Err(_) => return,
+            };
+            let mut stream = match es.subscribe("message") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            while let Some(Ok((_, event))) = stream.next().await {
+                if *paused.peek() {
+                    continue;
+                }
+                if let Some(data) = event.data().as_string() {
+                    if let Ok(line) = serde_json::from_str::<LogLine>(&data) {
+                        let mut w = logs.write();
+                        if w.len() >= 500 {
+                            w.pop_front();
+                        }
+                        w.push_back(line);
+                    }
+                }
+            }
+            es.close();
+        }
+    });
+
+    // Auto-scroll to bottom whenever a new log line arrives
+    use_effect(move || {
+        let len = logs.read().len();
+        if len > 0 {
+            if let Some(win) = web_sys::window() {
+                if let Some(doc) = win.document() {
+                    if let Some(el) = doc.get_element_by_id("log-scroll") {
+                        let _ = el.scroll_into_view_with_bool(false);
+                    }
+                }
+            }
+        }
+    });
+
+    let on_level_change = move |evt: Event<FormData>| {
+        let new_level = evt.value().to_lowercase();
+        log_level.set(new_level.clone());
+        let client = client.clone();
+        level_error.set(None);
+        spawn(async move {
+            if let Err(_) = client.execute(SetLogLevel { level: new_level }).await {
+                level_error.set(Some("Failed to update log level".into()));
+            }
+        });
+    };
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Server Logs" }
+                div { style: "display:flex;gap:8px;align-items:center;margin-left:auto",
+
+                    // Level selector
+                    select {
+                        class: "form-select",
+                        style: "width:auto",
+                        value: "{log_level}",
+                        onchange: on_level_change,
+                        option { value: "trace", "Trace" }
+                        option { value: "debug", "Debug" }
+                        option { value: "info", selected: true, "Info" }
+                        option { value: "warn", "Warn" }
+                        option { value: "error", "Error" }
+                    }
+
+                    // Pause / Resume
+                    button {
+                        class: "btn btn-secondary",
+                        onclick: move |_| {
+                            let p = *paused.read();
+                            paused.set(!p);
+                        },
+                        if *paused.read() { "▶ Resume" } else { "⏸ Pause" }
+                    }
+
+                    // Clear
+                    button {
+                        class: "btn btn-ghost",
+                        onclick: move |_| logs.write().clear(),
+                        "Clear"
+                    }
+                }
+            }
+
+            if let Some(err) = level_error.read().as_ref() {
+                div { class: "alert alert-error", style: "margin:8px 16px 0",
+                    "{err}"
+                }
+            }
+
+            div {
+                id: "log-scroll",
+                style: "height:600px;overflow-y:auto;padding:12px;font-family:monospace;font-size:0.8rem;background:var(--color-bg, #0d0d0d)",
+                for line in logs.read().iter() {
+                    div {
+                        style: "display:flex;gap:8px;margin-bottom:2px;white-space:pre-wrap;word-break:break-all",
+                        span { style: "color:#666;flex-shrink:0", "{line.timestamp}" }
+                        span {
+                            style: "flex-shrink:0;font-weight:600;{level_color(&line.level)}",
+                            "[{line.level}]"
+                        }
+                        span { style: "color:#888;flex-shrink:0", "{line.target}" }
+                        span { "{line.message}" }
+                    }
+                }
+                // Anchor element used for auto-scroll
+                div { id: "log-scroll" }
+            }
+        }
+    }
+}
+
+fn level_color(level: &str) -> &'static str {
+    match level.to_uppercase().as_str() {
+        "TRACE" => "color:#9ca3af",
+        "DEBUG" => "color:#60a5fa",
+        "INFO"  => "color:#34d399",
+        "WARN"  => "color:#fbbf24",
+        "ERROR" => "color:#f87171",
+        _       => "color:#e5e7eb",
     }
 }

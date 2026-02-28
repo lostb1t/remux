@@ -438,13 +438,13 @@ pub async fn useritems_resume(State(state): State<AppState>) -> Result<impl Into
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
+    use crate::integration_test::{AUTH_HEADER, auth_header_with_token, authenticated_server, new_test_server};
     use http::header::HeaderValue;
     use serde_json::json;
 
-    const AUTH_HEADER: &str = "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\"";
-
-    async fn authenticated_server() -> (axum_test::TestServer, String) {
-        let server = crate::integration_test::new_test_server().await.unwrap();
+    #[tokio::test]
+    async fn test_authenticate_valid_credentials() {
+        let server = new_test_server().await.unwrap();
 
         let resp = server
             .post("/users/authenticatebyname")
@@ -452,22 +452,47 @@ mod e2e_tests {
                 http::header::AUTHORIZATION,
                 HeaderValue::from_static(AUTH_HEADER),
             )
-            .json(&json!({
-                "Username": "test",
-                "Pw": "test"
-            }))
+            .json(&json!({ "Username": "test", "Pw": "test" }))
             .await;
 
+        resp.assert_status_ok();
         let body: serde_json::Value = resp.json();
-        let token = body["AccessToken"].as_str().unwrap().to_string();
-        (server, token)
+        assert!(body["AccessToken"].as_str().is_some_and(|t| !t.is_empty()));
+        assert_eq!(body["User"]["Name"], "test");
     }
 
-    fn auth_header_with_token(token: &str) -> String {
-        format!(
-            "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\", Token=\"{}\"",
-            token
-        )
+    #[tokio::test]
+    async fn test_authenticate_wrong_password() {
+        let server = new_test_server().await.unwrap();
+
+        let resp = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": "test", "Pw": "wrongpassword" }))
+            .expect_failure()
+            .await;
+
+        resp.assert_status_unauthorized();
+    }
+
+    #[tokio::test]
+    async fn test_authenticate_unknown_user() {
+        let server = new_test_server().await.unwrap();
+
+        let resp = server
+            .post("/users/authenticatebyname")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static(AUTH_HEADER),
+            )
+            .json(&json!({ "Username": "nobody", "Pw": "test" }))
+            .expect_failure()
+            .await;
+
+        resp.assert_status_unauthorized();
     }
 
     #[tokio::test]

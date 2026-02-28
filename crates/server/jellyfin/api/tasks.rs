@@ -203,17 +203,17 @@ pub async fn update_task_triggers(
 async fn scheduled_tasks_test() {
     let server = crate::integration_test::new_test_server().await.unwrap();
 
-    let response = server.get("/ScheduledTasks").await;
+    let response = server.get("/scheduledtasks").await;
 
     response.assert_status_ok();
-    let task_result: crate::jellyfin::TaskQueryResult = response.json();
+    let tasks: Vec<crate::jellyfin::TaskInfo> = response.json();
 
-    assert!(task_result.items.len() >= 2);
+    assert!(tasks.len() >= 2);
 
-    let task_names: Vec<String> = task_result.items.iter().map(|task| task.name.clone()).collect();
+    let task_names: Vec<String> = tasks.iter().map(|task| task.name.clone()).collect();
     assert!(task_names.contains(&"Media Scan".to_string()) || task_names.contains(&"Catalog Import".to_string()));
 
-    for task in &task_result.items {
+    for task in &tasks {
         assert!(task.id.len() > 0);
         assert!(task.name.len() > 0);
         assert!(task.state.is_some());

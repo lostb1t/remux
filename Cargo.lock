@@ -1211,9 +1211,11 @@ version = "0.1.0"
 dependencies = [
  "dioxus",
  "futures",
+ "gloo-net",
  "gloo-storage",
  "gloo-timers",
  "serde",
+ "serde_json",
  "shared",
  "uuid",
  "web-sys",
@@ -5854,6 +5856,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

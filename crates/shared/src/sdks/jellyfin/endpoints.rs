@@ -409,3 +409,20 @@ impl Endpoint for AuthenticateUserByName {
         }))
     }
 }
+
+// ── Log level endpoint ─────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SetLogLevel {
+    pub level: String,
+}
+
+impl Endpoint for SetLogLevel {
+    type Output = ();
+    fn path(&self) -> String { "/system/log/level".into() }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::json!({ "level": self.level }))
+    }
+}
+

@@ -86,6 +86,7 @@ mod meta_provider;
 mod playback_session;
 mod tasks;
 mod transcode;
+mod log_capture;
 mod web_patches;
 mod web_transform;
 mod ws;
@@ -105,8 +106,7 @@ pub fn collect_routes() -> axum::Router<AppState> {
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_logging();
-    let app =
-        tower::util::MapRequestLayer::new(rewrite_request_uri).layer(init_app().await?);
+    let app = tower::util::MapRequestLayer::new(rewrite_request_uri).layer(init_app().await?);
     tracing::info!("starting webserver at 0.0.0.0:3000");
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     axum::serve(listener, app.into_make_service()).await?;
@@ -123,15 +123,16 @@ async fn init_app() -> Result<Router> {
         .build()?
         .try_deserialize()?;
 
+    init_app_with_config(config).await
+}
+
+pub async fn init_app_with_config(config: Config) -> Result<Router> {
     debug!(
         "config: {}",
         serde_json::to_string_pretty(&config).unwrap()
     );
 
-    let conn = db::connect(
-    &config.db_url,
-    )
-    .await?;
+    let conn = db::connect(&config.db_url).await?;
 
     db::migrate(&conn).await?;
     db::ensure_collection_folder(&conn).await?;
@@ -242,6 +243,16 @@ pub struct Config {
     pub db_url: String,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            web_path: default_web_path(),
+            dashboard_path: default_dashboard_path(),
+            db_url: default_db_url(),
+        }
+    }
+}
+
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     let uri = req.uri();
     let path = uri.path().replace("/emby", "");
@@ -265,8 +276,7 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
 }
 
 pub fn setup_logging() {
-    let filter_layer = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,hyper=warn,sqlx=warn"));
+    let (reload_layer, log_capture, _tx) = log_capture::init();
 
     let fmt_layer = fmt::layer()
         .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
@@ -276,9 +286,11 @@ pub fn setup_logging() {
         .compact();
 
     Registry::default()
-        .with(filter_layer)
+        .with(reload_layer)
         .with(fmt_layer)
-        .init();
+        .with(log_capture)
+        .try_init()
+        .ok(); // try_init + ok() so tests don't panic on repeated calls
 }
 
 async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {
@@ -296,26 +308,4 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
 }
 
 #[cfg(test)]
-mod integration_test {
-
-    use super::*;
-    use axum_test::TestServer;
-
-    pub async fn new_test_server() -> Result<TestServer> {
-        let app = init_app().await?;
-
-        Ok(
-            TestServer::builder()
-                .save_cookies()
-                //.authorization()
-                .expect_success_by_default()
-                .mock_transport()
-                .build(app)?, // .authorization("password12345")
-        )
-    }
-
-    pub async fn apply_auth(mut server: TestServer) -> TestServer {
-        server.add_header("x-custom-for-all", "common-value");
-        server
-    }
-}
+pub mod integration_test;

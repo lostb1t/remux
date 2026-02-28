@@ -408,56 +408,40 @@ pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoRespo
     }))
 }
 
-// Test to verify endpoints exist and are properly protected
-#[cfg(test)]
-async fn test_server_no_success_expectation() -> Result<axum_test::TestServer> {
-    let app = crate::init_app().await?;
-
-    Ok(
-        axum_test::TestServer::builder()
-            .save_cookies()
-            // Don't expect success by default for this test
-            .mock_transport()
-            .build(app)?
-    )
-}
-
 #[cfg(test)]
 #[tokio::test]
 async fn system_endpoints_exist_and_protected() {
-    let server = test_server_no_success_expectation().await.unwrap();
-    
-    // Test that restart endpoint exists and requires authentication
-    let response = server.post("/system/restart").await;
-    // Should fail with authentication error (401), not 404
+    use crate::integration_test::new_test_server;
+    let server = new_test_server().await.unwrap();
+
+    // Unauthenticated requests should return 401, not 404
+    let response = server.post("/system/restart").expect_failure().await;
     assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
-    
-    // Test that shutdown endpoint exists and requires authentication
-    let response = server.post("/system/shutdown").await;
-    // Should fail with authentication error (401), not 404
+
+    let response = server.post("/system/shutdown").expect_failure().await;
     assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
 }
 
 #[cfg(test)]
 #[tokio::test]
-async fn system_restart_forbidden_for_non_admin() {
+async fn system_restart_requires_auth() {
     use crate::integration_test::new_test_server;
-    
+
     let server = new_test_server().await.unwrap();
-    let response = server.post("/system/restart").await;
-    
-    response.assert_status(StatusCode::FORBIDDEN);
+    // Unauthenticated → 401
+    let response = server.post("/system/restart").expect_failure().await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
 #[cfg(test)]
 #[tokio::test]
-async fn system_shutdown_forbidden_for_non_admin() {
+async fn system_shutdown_requires_auth() {
     use crate::integration_test::new_test_server;
-    
+
     let server = new_test_server().await.unwrap();
-    let response = server.post("/system/shutdown").await;
-    
-    response.assert_status(StatusCode::FORBIDDEN);
+    // Unauthenticated → 401
+    let response = server.post("/system/shutdown").expect_failure().await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
 #[cfg(test)]

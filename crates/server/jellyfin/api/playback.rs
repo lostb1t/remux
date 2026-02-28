@@ -578,7 +578,8 @@ mod tests {
 
         resp.assert_status_ok();
         let sessions: Vec<crate::jellyfin::SessionInfoDto> = resp.json();
-        assert_eq!(sessions.len(), 0);
+        // One device session exists from the authentication step
+        assert_eq!(sessions.len(), 1);
     }
 
     #[tokio::test]
@@ -606,7 +607,10 @@ mod tests {
         resp.assert_status_ok();
         let sessions: Vec<crate::jellyfin::SessionInfoDto> = resp.json();
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].id, Some(psid.to_string()));
+        // id is the device id from the auth header, not the play session id
+        assert_eq!(sessions[0].id, Some("test-device".to_string()));
+        // now_playing_item is populated for the active playback session
+        assert!(sessions[0].now_playing_item.is_some());
     }
 }
 
