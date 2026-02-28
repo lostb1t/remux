@@ -381,7 +381,7 @@ fn SessionsCard(app_state: AppState) -> Element {
             div { class: "card-header",
                 span { class: "card-title", "Active Devices" }
             }
-            div { class: "card-body",
+            div { class: "card-body tight",
                 if *loading.read() {
                     span { class: "loading-text", "Loading…" }
                 } else if let Some(err) = error.read().as_ref() {
@@ -389,33 +389,39 @@ fn SessionsCard(app_state: AppState) -> Element {
                 } else if sessions.read().is_empty() {
                     div { class: "empty-state", "No active devices in the last 16 minutes" }
                 } else {
-                    for session in sessions.read().iter() {
-                        div { class: "session-row",
-                            div {
-                                div { class: "session-name",
-                                    "{session.device_name.as_deref().unwrap_or(\"Unknown device\")}"
-                                }
-                                div { class: "session-meta",
-                                    span { class: "session-user",
-                                        "{session.user_name.as_deref().unwrap_or(\"Unknown\")}"
-                                    }
-                                    if let Some(client_name) = &session.client {
-                                        span { class: "session-client-badge",
-                                            "{client_name}"
-                                            if let Some(v) = &session.application_version {
-                                                " {v}"
+                    div { class: "data-table-container",
+                        div { class: "row-list",
+                            for session in sessions.read().iter() {
+                                div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(255,102,0,0.05)] even:bg-[rgba(255,255,255,0.03)] even:hover:bg-[rgba(255,102,0,0.05)]",
+                                    div { class: "flex-1 min-w-0 px-3 py-[10px]",
+                                        div { class: "session-name",
+                                            "{session.device_name.as_deref().unwrap_or(\"Unknown device\")}"
+                                        }
+                                        if let Some(item) = &session.now_playing_item {
+                                            div { class: "session-playing",
+                                                "▶ {item.name.as_deref().unwrap_or(\"Unknown\")}"
                                             }
                                         }
                                     }
-                                }
-                                if let Some(item) = &session.now_playing_item {
-                                    div { class: "session-playing",
-                                        "▶ {item.name.as_deref().unwrap_or(\"Unknown\")}"
+                                    div { class: "shrink-0 px-3 py-[10px]",
+                                        div { class: "session-user",
+                                            "{session.user_name.as_deref().unwrap_or(\"Unknown\")}"
+                                        }
+                                    }
+                                    div { class: "shrink-0 px-3 py-[10px]",
+                                        if let Some(client_name) = &session.client {
+                                            div { class: "session-client-badge",
+                                                "{client_name}"
+                                                if let Some(v) = &session.application_version {
+                                                    " {v}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    div { class: "shrink-0 px-3 py-[10px] text-right font-mono text-[var(--text-dim)] text-xs",
+                                        "{fmt_time(session.last_activity_date)}"
                                     }
                                 }
-                            }
-                            span { class: "session-time",
-                                "{fmt_time(session.last_activity_date)}"
                             }
                         }
                     }
@@ -451,7 +457,7 @@ fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) 
             div { class: "card-header",
                 span { class: "card-title", if running_only { "Running Tasks" } else { "Scheduled Tasks" } }
             }
-            div { class: "card-body",
+            div { class: "card-body tight",
                 if *loading.read() {
                     span { class: "loading-text", "Loading…" }
                 } else if let Some(err) = error.read().as_ref() {
@@ -470,8 +476,12 @@ fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) 
                             }
                         } else if running_only {
                             rsx! {
-                                for task in visible {
-                                    TaskRow { key: "{task.id}", task }
+                                div { class: "data-table-container",
+                                    div { class: "row-list",
+                                        for task in visible {
+                                            TaskRow { key: "{task.id}", task }
+                                        }
+                                    }
                                 }
                             }
                         } else {
@@ -486,16 +496,18 @@ fn TasksCard(app_state: AppState, #[props(default = false)] running_only: bool) 
                                 for (cat, group_tasks) in groups {
                                     div { class: "task-group", key: "{cat}",
                                         div { class: "task-group-header", "{cat}" }
-                                        for task in group_tasks {
-                                            TaskPageRow {
-                                                key: "{task.id}",
-                                                task,
-                                                show_category: false,
-                                                app_state: app_state.clone(),
-                                                on_refresh: move |_| {
-                                                    let v = *refresh.peek() + 1;
-                                                    refresh.set(v);
-                                                },
+                                        div { class: "row-list",
+                                            for task in group_tasks {
+                                                TaskPageRow {
+                                                    key: "{task.id}",
+                                                    task,
+                                                    show_category: false,
+                                                    app_state: app_state.clone(),
+                                                    on_refresh: move |_| {
+                                                        let v = *refresh.peek() + 1;
+                                                        refresh.set(v);
+                                                    },
+                                                }
                                             }
                                         }
                                     }
@@ -576,8 +588,8 @@ fn TaskRow(
     let has_controls = on_start.is_some() || on_stop.is_some();
 
     rsx! {
-        div { class: "task-row",
-            div { style: "min-width:0; flex:1",
+        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(255,102,0,0.05)] even:bg-[rgba(255,255,255,0.03)] even:hover:bg-[rgba(255,102,0,0.05)]",
+            div { class: "flex-1 min-w-0 px-3 py-[10px]",
                 div { class: "task-name", "{task.name}" }
                 if show_category {
                     if let Some(cat) = &task.category {
@@ -595,10 +607,12 @@ fn TaskRow(
                     }
                 }
             }
-            div { class: "task-right",
+            div { class: "shrink-0 px-3 py-[10px]",
                 if !display_state.is_empty() {
                     span { class: "{display_badge}", "{display_state}" }
                 }
+            }
+            div { class: "shrink-0 px-3 py-[10px] flex items-center gap-2",
                 if has_controls {
                     div { class: "task-actions",
                         if !is_running {
@@ -839,7 +853,7 @@ fn CollectionsPage(app_state: AppState) -> Element {
                     "+ New Collection"
                 }
             }
-            div { class: "card-body",
+            div { class: "card-body tight",
                 if *loading.read() {
                     span { class: "loading-text", "Loading…" }
                 } else if let Some(err) = error.read().as_ref() {
@@ -847,58 +861,60 @@ fn CollectionsPage(app_state: AppState) -> Element {
                 } else if collections.read().is_empty() {
                     div { class: "empty-state", "No collections yet" }
                 } else {
-                    for col in collections.read().clone() {
-                        {
-                            let col_edit = col.clone();
-                            let col_del  = col.clone();
-                            let client_del = app_state.client.clone();
-                            let col_id_str = col.id.to_string();
-                            let name = col.name.clone().unwrap_or_default();
-                            let col_type_label = match col.collection_type.as_ref() {
-                                Some(ct) => match ct {
-                                    shared::sdks::jellyfin::CollectionType::Movies  => "Movies",
-                                    shared::sdks::jellyfin::CollectionType::Tvshows => "Shows",
-                                    _ => "Unknown",
-                                },
-                                None => "Unknown",
-                            };
-                            let col_kind_label = match col.collection_kind.as_deref() {
-                                Some("smart")  => "Smart",
-                                Some("manual") => "Manual",
-                                _ => "",
-                            };
-                            rsx! {
-                                div { class: "catalog-row-wrap", key: "{col_id_str}",
-                                    div { class: "catalog-row",
-                                        div {
-                                            div { class: "catalog-name", "{name}" }
-                                            div { class: "catalog-meta",
-                                                span { class: "session-client-badge", "{col_type_label}" }
-                                                if !col_kind_label.is_empty() {
-                                                    span { class: "session-client-badge", "{col_kind_label}" }
+                    div { class: "data-table-container",
+                        div { class: "row-list",
+                            for col in collections.read().clone() {
+                                {
+                                    let col_edit = col.clone();
+                                    let col_del  = col.clone();
+                                    let client_del = app_state.client.clone();
+                                    let col_id_str = col.id.to_string();
+                                    let name = col.name.clone().unwrap_or_default();
+                                    let col_type_label = match col.collection_type.as_ref() {
+                                        Some(ct) => match ct {
+                                            shared::sdks::jellyfin::CollectionType::Movies  => "Movies",
+                                            shared::sdks::jellyfin::CollectionType::Tvshows => "Shows",
+                                            _ => "Unknown",
+                                        },
+                                        None => "Unknown",
+                                    };
+                                    let col_kind_label = match col.collection_kind.as_deref() {
+                                        Some("smart")  => "Smart",
+                                        Some("manual") => "Manual",
+                                        _ => "",
+                                    };
+                                    rsx! {
+                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(255,102,0,0.05)] even:bg-[rgba(255,255,255,0.03)] even:hover:bg-[rgba(255,102,0,0.05)]", key: "{col_id_str}",
+                                            div { class: "flex-1 min-w-0 px-3 py-[10px]",
+                                                div { class: "catalog-name", "{name}" }
+                                                div { class: "catalog-meta",
+                                                    span { class: "session-client-badge", "{col_type_label}" }
+                                                    if !col_kind_label.is_empty() {
+                                                        span { class: "session-client-badge", "{col_kind_label}" }
+                                                    }
                                                 }
                                             }
-                                        }
-                                        div { class: "catalog-actions",
-                                            button {
-                                                class: "btn btn-ghost",
-                                                style: "height:30px;font-size:.68rem;padding:0 10px",
-                                                onclick: move |_| form_mode.set(Some(FormMode::Edit(col_edit.clone()))),
-                                                "Edit"
-                                            }
-                                            button {
-                                                class: "btn btn-ghost",
-                                                style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
-                                                onclick: move |_| {
-                                                    let name = col_del.name.clone().unwrap_or_default();
-                                                    let c    = client_del.clone();
-                                                    spawn(async move {
-                                                        let _ = c.execute(DeleteVirtualFolder { name }).await;
-                                                        let v = *refresh.peek() + 1;
-                                                        refresh.set(v);
-                                                    });
-                                                },
-                                                "Delete"
+                                            div { class: "shrink-0 px-3 py-[10px] flex items-center gap-2",
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:30px;font-size:.68rem;padding:0 10px",
+                                                    onclick: move |_| form_mode.set(Some(FormMode::Edit(col_edit.clone()))),
+                                                    "Edit"
+                                                }
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                                    onclick: move |_| {
+                                                        let name = col_del.name.clone().unwrap_or_default();
+                                                        let c    = client_del.clone();
+                                                        spawn(async move {
+                                                            let _ = c.execute(DeleteVirtualFolder { name }).await;
+                                                            let v = *refresh.peek() + 1;
+                                                            refresh.set(v);
+                                                        });
+                                                    },
+                                                    "Delete"
+                                                }
                                             }
                                         }
                                     }
@@ -1227,7 +1243,7 @@ fn ImportsPage(app_state: AppState) -> Element {
                     }
                 }
             }
-            div { class: "card-body",
+            div { class: "card-body tight",
                 if *loading.read() {
                     span { class: "loading-text", "Loading…" }
                 } else if let Some(e) = error.read().as_ref() {
@@ -1235,107 +1251,109 @@ fn ImportsPage(app_state: AppState) -> Element {
                 } else if catalogs.read().is_empty() {
                     div { class: "empty-state", "No AIO catalogs found. Check your AIO URL in Settings." }
                 } else {
-                    for cat in catalogs.read().clone() {
-                        {
-                            let client = app_state.client.clone();
-                            let cat_aio_id = cat.aio_id.clone();
-                            let cat_name = cat.name.clone();
-                            let enabled = cat.enabled.unwrap_or(false);
-                            let max_items_str = cat.max_items.map(|n| n.to_string()).unwrap_or_default();
-                            let mut local_max = use_signal(|| max_items_str.clone());
-                            // Per-catalog task state
-                            let task_id_opt = cat.media_id.clone()
-                                .map(|id| format!("catalogimport:{}", id));
-                            let cat_task = task_id_opt.as_ref().and_then(|tid|
-                                tasks_list.read().iter().find(|t| &t.id == tid).cloned()
-                            );
-                            let is_importing = cat_task.as_ref()
-                                .and_then(|t| t.state.as_deref()) == Some("Running");
-                            rsx! {
-                                div { class: "catalog-row-wrap", key: "{cat_aio_id}",
-                                    div { class: "catalog-row",
-                                        div {
-                                            div { class: "catalog-name", "{cat_name}" }
-                                            div { class: "catalog-meta",
-                                                span { class: "session-client-badge", "{cat_aio_id}" }
+                    div { class: "data-table-container",
+                        div { class: "row-list",
+                            for cat in catalogs.read().clone() {
+                                {
+                                    let client = app_state.client.clone();
+                                    let cat_aio_id = cat.aio_id.clone();
+                                    let cat_name = cat.name.clone();
+                                    let enabled = cat.enabled.unwrap_or(false);
+                                    let max_items_str = cat.max_items.map(|n| n.to_string()).unwrap_or_default();
+                                    let mut local_max = use_signal(|| max_items_str.clone());
+                                    // Per-catalog task state
+                                    let task_id_opt = cat.media_id.clone()
+                                        .map(|id| format!("catalogimport:{}", id));
+                                    let cat_task = task_id_opt.as_ref().and_then(|tid|
+                                        tasks_list.read().iter().find(|t| &t.id == tid).cloned()
+                                    );
+                                    let is_importing = cat_task.as_ref()
+                                        .and_then(|t| t.state.as_deref()) == Some("Running");
+                                    rsx! {
+                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(255,102,0,0.05)] even:bg-[rgba(255,255,255,0.03)] even:hover:bg-[rgba(255,102,0,0.05)]", key: "{cat_aio_id}",
+                                            div { class: "flex-1 min-w-0 px-3 py-[10px]",
+                                                div { class: "catalog-name", "{cat_name}" }
+                                                div { class: "catalog-meta",
+                                                    span { class: "session-client-badge", "{cat_aio_id}" }
+                                                }
                                             }
-                                        }
-                                        div { class: "catalog-actions", style: "align-items:center;gap:10px",
-                                            input {
-                                                r#type: "number",
-                                                class: "field-input",
-                                                style: "width:90px;height:30px;font-size:.75rem",
-                                                placeholder: "Max items",
-                                                value: "{local_max}",
-                                                oninput: move |e| local_max.set(e.value()),
-                                            }
-                                            if let Some(tid) = task_id_opt.clone() {
-                                                if enabled {
-                                                    if is_importing {
-                                                        button {
-                                                            class: "btn btn-danger",
-                                                            style: "height:30px;font-size:.68rem",
-                                                            onclick: {
-                                                                let c = client.clone();
-                                                                let tid = tid.clone();
-                                                                move |_| {
-                                                                    let c = c.clone();
+                                            div { class: "shrink-0 px-3 py-[10px] flex items-center gap-3",
+                                                input {
+                                                    r#type: "number",
+                                                    class: "field-input",
+                                                    style: "width:90px;height:30px;font-size:.75rem",
+                                                    placeholder: "Max items",
+                                                    value: "{local_max}",
+                                                    oninput: move |e| local_max.set(e.value()),
+                                                }
+                                                if let Some(tid) = task_id_opt.clone() {
+                                                    if enabled {
+                                                        if is_importing {
+                                                            button {
+                                                                class: "btn btn-danger",
+                                                                style: "height:30px;font-size:.68rem",
+                                                                onclick: {
+                                                                    let c = client.clone();
                                                                     let tid = tid.clone();
-                                                                    spawn(async move {
-                                                                        let _ = c.execute(StopTask { task_id: tid }).await;
-                                                                    });
-                                                                }
-                                                            },
-                                                            "Stop"
-                                                        }
-                                                    } else {
-                                                        button {
-                                                            class: "btn btn-secondary",
-                                                            style: "height:30px;font-size:.68rem",
-                                                            onclick: {
-                                                                let c = client.clone();
-                                                                let tid = tid.clone();
-                                                                move |_| {
-                                                                    let c = c.clone();
+                                                                    move |_| {
+                                                                        let c = c.clone();
+                                                                        let tid = tid.clone();
+                                                                        spawn(async move {
+                                                                            let _ = c.execute(StopTask { task_id: tid }).await;
+                                                                        });
+                                                                    }
+                                                                },
+                                                                "Stop"
+                                                            }
+                                                        } else {
+                                                            button {
+                                                                class: "btn btn-secondary",
+                                                                style: "height:30px;font-size:.68rem",
+                                                                onclick: {
+                                                                    let c = client.clone();
                                                                     let tid = tid.clone();
-                                                                    spawn(async move {
-                                                                        let _ = c.execute(StartTask { task_id: tid }).await;
-                                                                    });
-                                                                }
-                                                            },
-                                                            "Import"
+                                                                    move |_| {
+                                                                        let c = c.clone();
+                                                                        let tid = tid.clone();
+                                                                        spawn(async move {
+                                                                            let _ = c.execute(StartTask { task_id: tid }).await;
+                                                                        });
+                                                                    }
+                                                                },
+                                                                "Import"
+                                                            }
                                                         }
                                                     }
                                                 }
-                                            }
-                                            label { class: "toggle", style: "margin:0",
-                                                input {
-                                                    r#type: "checkbox",
-                                                    checked: enabled,
-                                                    onchange: {
-                                                        let c = client.clone();
-                                                        let aio_id = cat_aio_id.clone();
-                                                        let name = cat_name.clone();
-                                                        move |e: Event<FormData>| {
-                                                            let enabled = e.checked();
-                                                            let max = local_max.peek().parse::<i64>().ok();
-                                                            let c = c.clone();
-                                                            let aio_id = aio_id.clone();
-                                                            let name = name.clone();
-                                                            spawn(async move {
-                                                                let _ = c.execute(UpdateCatalogSettings {
-                                                                    aio_id,
-                                                                    payload: UpdateCatalogSettingsPayload {
-                                                                        enabled,
-                                                                        max_items: max,
-                                                                        name: Some(name),
-                                                                    },
-                                                                }).await;
-                                                            });
-                                                        }
-                                                    },
+                                                label { class: "toggle m-0",
+                                                    input {
+                                                        r#type: "checkbox",
+                                                        checked: enabled,
+                                                        onchange: {
+                                                            let c = client.clone();
+                                                            let aio_id = cat_aio_id.clone();
+                                                            let name = cat_name.clone();
+                                                            move |e: Event<FormData>| {
+                                                                let enabled = e.checked();
+                                                                let max = local_max.peek().parse::<i64>().ok();
+                                                                let c = c.clone();
+                                                                let aio_id = aio_id.clone();
+                                                                let name = name.clone();
+                                                                spawn(async move {
+                                                                    let _ = c.execute(UpdateCatalogSettings {
+                                                                        aio_id,
+                                                                        payload: UpdateCatalogSettingsPayload {
+                                                                            enabled,
+                                                                            max_items: max,
+                                                                            name: Some(name),
+                                                                        },
+                                                                    }).await;
+                                                                });
+                                                            }
+                                                        },
+                                                    }
+                                                    span { class: "toggle-track" }
                                                 }
-                                                span { class: "toggle-track" }
                                             }
                                         }
                                     }
@@ -1385,7 +1403,7 @@ fn UsersPage(app_state: AppState) -> Element {
                     "+ New User"
                 }
             }
-            div { class: "card-body",
+            div { class: "card-body tight",
                 if *loading.read() {
                     span { class: "loading-text", "Loading…" }
                 } else if let Some(err) = error.read().as_ref() {
@@ -1393,44 +1411,50 @@ fn UsersPage(app_state: AppState) -> Element {
                 } else if users.read().is_empty() {
                     div { class: "empty-state", "No users found" }
                 } else {
-                    for user in users.read().clone() {
-                        {
-                            let is_self   = user.id.to_string() == self_id;
-                            let is_admin  = user.policy.is_administrator;
-                            let user_edit = user.clone();
-                            let user_id   = user.id;
-                            let client_del = app_state.client.clone();
-                            rsx! {
-                                div { class: "user-row", key: "{user.id}",
-                                    div { class: "user-info",
-                                        span { class: "user-name", "{user.name}" }
-                                        if is_self {
-                                            span { class: "user-badge user-badge-self", "You" }
-                                        }
-                                        if is_admin {
-                                            span { class: "user-badge user-badge-admin", "Admin" }
-                                        }
-                                    }
-                                    div { class: "catalog-actions",
-                                        button {
-                                            class: "btn btn-ghost",
-                                            style: "height:30px;font-size:.68rem;padding:0 10px",
-                                            onclick: move |_| form_mode.set(Some(UserFormMode::Edit(user_edit.clone()))),
-                                            "Edit"
-                                        }
-                                        button {
-                                            class: "btn btn-ghost",
-                                            style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
-                                            disabled: is_self,
-                                            onclick: move |_| {
-                                                let c = client_del.clone();
-                                                spawn(async move {
-                                                    let _ = c.execute(DeleteUser { user_id }).await;
-                                                    let v = *refresh.peek() + 1;
-                                                    refresh.set(v);
-                                                });
-                                            },
-                                            "Delete"
+                    div { class: "data-table-container",
+                        div { class: "row-list",
+                            for user in users.read().clone() {
+                                {
+                                    let is_self   = user.id.to_string() == self_id;
+                                    let is_admin  = user.policy.is_administrator;
+                                    let user_edit = user.clone();
+                                    let user_id   = user.id;
+                                    let client_del = app_state.client.clone();
+                                    rsx! {
+                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(255,102,0,0.05)] even:bg-[rgba(255,255,255,0.03)] even:hover:bg-[rgba(255,102,0,0.05)]", key: "{user.id}",
+                                            div { class: "flex-1 min-w-0 px-3 py-[10px]",
+                                                div { class: "user-info",
+                                                    span { class: "user-name", "{user.name}" }
+                                                    if is_self {
+                                                        span { class: "user-badge user-badge-self", "You" }
+                                                    }
+                                                    if is_admin {
+                                                        span { class: "user-badge user-badge-admin", "Admin" }
+                                                    }
+                                                }
+                                            }
+                                            div { class: "shrink-0 px-3 py-[10px] flex items-center gap-2",
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:30px;font-size:.68rem;padding:0 10px",
+                                                    onclick: move |_| form_mode.set(Some(UserFormMode::Edit(user_edit.clone()))),
+                                                    "Edit"
+                                                }
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                                    disabled: is_self,
+                                                    onclick: move |_| {
+                                                        let c = client_del.clone();
+                                                        spawn(async move {
+                                                            let _ = c.execute(DeleteUser { user_id }).await;
+                                                            let v = *refresh.peek() + 1;
+                                                            refresh.set(v);
+                                                        });
+                                                    },
+                                                    "Delete"
+                                                }
+                                            }
                                         }
                                     }
                                 }
