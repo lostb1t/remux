@@ -34,7 +34,7 @@ pub struct QueryResult<T> {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct BrandingOptions {
     /// Gets or sets the login disclaimer.

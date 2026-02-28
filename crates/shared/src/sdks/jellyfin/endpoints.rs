@@ -230,6 +230,30 @@ impl Endpoint for UpdateSystemConfiguration {
     }
 }
 
+// ── Branding endpoints ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetBrandingConfiguration;
+
+impl Endpoint for GetBrandingConfiguration {
+    type Output = BrandingOptions;
+    fn path(&self) -> String { "/branding/configuration".into() }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateBrandingConfiguration {
+    pub config: BrandingOptions,
+}
+
+impl Endpoint for UpdateBrandingConfiguration {
+    type Output = ();
+    fn path(&self) -> String { "/system/configuration/branding".into() }
+    fn method(&self) -> Method { Method::POST }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
+    }
+}
+
 // ── Startup wizard endpoints ───────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
