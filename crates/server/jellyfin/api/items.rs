@@ -525,14 +525,9 @@ struct VirtualFolderRequest {
 #[post("/library/virtualfolders")]
 pub async fn create_virtual_folder(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Json(payload): Json<VirtualFolderRequest>,
 ) -> Result<Json<jellyfin::VirtualFolderInfo>> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden"))
-            .context_unauthorized("Forbidden", "Forbidden");
-    }
-
     let collection_media_kind = payload
         .collection_type
         .as_deref()
@@ -578,14 +573,9 @@ struct UpdateVirtualFolderRequest {
 #[post("/library/virtualfolders/LibraryOptions")]
 pub async fn update_virtual_folder(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Json(payload): Json<UpdateVirtualFolderRequest>,
 ) -> Result<StatusCode> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden"))
-            .context_unauthorized("Forbidden", "Forbidden");
-    }
-
     let media = db::Media::get_by_id(&state.ctx.db, &payload.id)
         .await?
         .context_not_found("Not Found", "Collection not found")?;
@@ -636,14 +626,9 @@ struct DeleteVirtualFolderQuery {
 #[delete("/library/virtualfolders")]
 pub async fn delete_virtual_folder(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Query(q): Query<DeleteVirtualFolderQuery>,
 ) -> Result<StatusCode> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden"))
-            .context_unauthorized("Forbidden", "Forbidden");
-    }
-
     let result = db::Media::get_by_filter(
         &state.ctx.db,
         &db::MediaFilter {
@@ -777,15 +762,10 @@ struct PatchItemRequest {
 #[patch("/items/{id}")]
 pub async fn patch_item(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Path(id): Path<Uuid>,
     Json(payload): Json<PatchItemRequest>,
 ) -> Result<StatusCode> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden"))
-            .context_unauthorized("Forbidden", "Forbidden");
-    }
-
     let updated_at = Utc::now().naive_utc();
     let mut qb = sqlx::QueryBuilder::new("UPDATE media SET updated_at = ");
     qb.push_bind(updated_at);
@@ -830,15 +810,10 @@ struct UpdateCatalogSettingsRequest {
 #[post("/aio/catalogs/{aio_id}")]
 pub async fn update_catalog_settings(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Path(aio_id): Path<String>,
     Json(payload): Json<UpdateCatalogSettingsRequest>,
 ) -> Result<StatusCode> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden"))
-            .context_unauthorized("Forbidden", "Forbidden");
-    }
-
     let promoted: i64 = if payload.enabled { 1 } else { 0 };
     let now = Utc::now().naive_utc();
 

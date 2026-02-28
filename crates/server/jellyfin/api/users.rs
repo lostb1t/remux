@@ -230,13 +230,9 @@ pub async fn users_groupingoptions(
 #[post("/users/new")]
 pub async fn create_user(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Json(payload): Json<jellyfin::CreateUserByName>,
 ) -> Result<impl IntoResponse> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("Admin access required")
-            .context_unauthorized("forbidden", "forbidden"));
-    }
     let password = payload.password.as_deref().unwrap_or("");
     let mut user =
         User::new_with_password(String::new(), payload.name, password, None)?;
@@ -248,13 +244,9 @@ pub async fn create_user(
 #[delete("/users/{user_id}")]
 pub async fn delete_user(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("Admin access required")
-            .context_unauthorized("forbidden", "forbidden"));
-    }
     if user_id == session.user.id {
         return Err(anyhow::anyhow!("Cannot delete yourself")
             .context_bad_request("invalid", "cannot delete own account"));
@@ -302,14 +294,10 @@ pub async fn change_password(
 #[post("/users/{user_id}/policy")]
 pub async fn update_user_policy(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Path(user_id): Path<Uuid>,
     Json(policy): Json<jellyfin::UserPolicy>,
 ) -> Result<impl IntoResponse> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("Admin access required")
-            .context_unauthorized("forbidden", "forbidden"));
-    }
     let mut user = db::User::get_by_id(&state.ctx.db, &user_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("User not found"))?;

@@ -212,6 +212,32 @@ impl FromRequestParts<AppState> for AuthSession {
     }
 }
 
+/// Extractor that only succeeds for admin users. Derefs to AuthSession.
+pub struct AdminSession(pub AuthSession);
+
+impl FromRequestParts<AppState> for AdminSession {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let session = AuthSession::from_request_parts(parts, state).await?;
+        if !session.user.is_admin {
+            return Err(anyhow::anyhow!("forbidden")
+                .context_unauthorized("forbidden", "forbidden"));
+        }
+        Ok(AdminSession(session))
+    }
+}
+
+impl std::ops::Deref for AdminSession {
+    type Target = AuthSession;
+    fn deref(&self) -> &AuthSession {
+        &self.0
+    }
+}
+
 // todo theres also an old emby airh header. Should we support this?
 #[derive(Debug, Clone, Default)]
 pub struct JellyfinAuthHeader {

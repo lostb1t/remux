@@ -69,14 +69,9 @@ pub async fn log_stream(
 #[post("/system/log/level")]
 pub async fn set_log_level(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Json(body): Json<SetLogLevelRequest>,
 ) -> Result<impl IntoResponse> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("Admin access required")
-            .context_forbidden("forbidden", "admin required"));
-    }
-
     let level = body.level.to_lowercase();
     match level.as_str() {
         "trace" | "debug" | "info" | "warn" | "error" => {}

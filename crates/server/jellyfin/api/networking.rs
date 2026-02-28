@@ -40,13 +40,8 @@ fn default_network_configuration() -> jellyfin::NetworkConfiguration {
 #[get("/system/configuration/network")]
 pub async fn get_network_configuration(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
-    if !session.user.is_admin {
-        return Err(
-            anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required")
-        );
-    }
     let config =
         match crate::db::Settings::get(&state.ctx.db, NETWORK_CONFIG_KEY).await? {
             Some(json) => serde_json::from_str(&json)
@@ -59,14 +54,9 @@ pub async fn get_network_configuration(
 #[post("/system/configuration/network")]
 pub async fn update_network_configuration(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Json(config): Json<jellyfin::NetworkConfiguration>,
 ) -> Result<impl IntoResponse> {
-    if !session.user.is_admin {
-        return Err(
-            anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required")
-        );
-    }
     let json = serde_json::to_string(&config)?;
     crate::db::Settings::set(&state.ctx.db, NETWORK_CONFIG_KEY, &json).await?;
     Ok(StatusCode::NO_CONTENT)

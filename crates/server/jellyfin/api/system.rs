@@ -258,13 +258,7 @@ pub async fn system_activity_log(
 
 /// Restart the server (Admin only)
 #[post("/system/restart")]
-pub async fn system_restart(session: auth::AuthSession) -> Result<impl IntoResponse> {
-    // Check if user is admin
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("Admin access required")
-            .context_unauthorized("forbidden", "forbidden"));
-    }
-
+pub async fn system_restart(session: auth::AdminSession) -> Result<impl IntoResponse> {
     tracing::info!(
         "Server restart requested by user: {}",
         session.user.username
@@ -312,13 +306,7 @@ async fn restart_server() -> Result<()> {
 
 /// Shutdown the server (Admin only)
 #[post("/system/shutdown")]
-pub async fn system_shutdown(session: auth::AuthSession) -> Result<impl IntoResponse> {
-    // Check if user is admin
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("Admin access required")
-            .context_unauthorized("forbidden", "forbidden"));
-    }
-
+pub async fn system_shutdown(session: auth::AdminSession) -> Result<impl IntoResponse> {
     tracing::info!(
         "Server shutdown requested by user: {}",
         session.user.username

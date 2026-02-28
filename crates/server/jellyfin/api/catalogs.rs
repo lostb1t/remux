@@ -55,12 +55,8 @@ fn parse_media_kind(s: &str) -> Result<db::MediaKind> {
 #[get("/admin/catalogs")]
 pub async fn list_catalogs(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
 ) -> Result<Json<Vec<CatalogDto>>> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
-    }
-
     let result = db::Media::get_by_filter(
         &state.ctx.db,
         &db::MediaFilter {
@@ -77,13 +73,9 @@ pub async fn list_catalogs(
 #[post("/admin/catalogs")]
 pub async fn create_catalog(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Json(payload): Json<CatalogRequest>,
 ) -> Result<Json<CatalogDto>> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
-    }
-
     let catalog_media_kind = parse_media_kind(&payload.catalog_media_kind)?;
 
     let mut media = db::Media {
@@ -104,14 +96,10 @@ pub async fn create_catalog(
 #[post("/admin/catalogs/{id}")]
 pub async fn update_catalog(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Path(id): Path<Uuid>,
     Json(payload): Json<CatalogRequest>,
 ) -> Result<Json<CatalogDto>> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
-    }
-
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .context_not_found("Not Found", "Catalog not found")?;
@@ -146,13 +134,9 @@ pub async fn update_catalog(
 #[delete("/admin/catalogs/{id}")]
 pub async fn delete_catalog(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
-    if !session.user.is_admin {
-        return Err(anyhow::anyhow!("forbidden")).context_unauthorized("Forbidden", "Forbidden");
-    }
-
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .context_not_found("Not Found", "Catalog not found")?;

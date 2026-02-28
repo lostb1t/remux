@@ -20,13 +20,8 @@ pub struct CreateKeyQuery {
 #[get("/auth/keys")]
 pub async fn get_api_keys(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
-    if !session.user.is_admin {
-        return Err(
-            anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required")
-        );
-    }
     let keys = ApiKey::get_all(&state.ctx.db).await?;
     let items: Vec<jellyfin::AuthenticationInfo> = keys
         .into_iter()
@@ -50,14 +45,9 @@ pub async fn get_api_keys(
 #[post("/auth/keys")]
 pub async fn create_api_key(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Query(params): Query<CreateKeyQuery>,
 ) -> Result<impl IntoResponse> {
-    if !session.user.is_admin {
-        return Err(
-            anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required")
-        );
-    }
     ApiKey::create(&state.ctx.db, &params.app).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -66,14 +56,9 @@ pub async fn create_api_key(
 #[delete("/auth/keys/{key}")]
 pub async fn delete_api_key(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    session: auth::AdminSession,
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse> {
-    if !session.user.is_admin {
-        return Err(
-            anyhow::anyhow!("").context_forbidden("Forbidden", "Admin access required")
-        );
-    }
     ApiKey::delete(&state.ctx.db, &key).await?;
     Ok(StatusCode::NO_CONTENT)
 }
