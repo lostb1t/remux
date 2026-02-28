@@ -108,6 +108,8 @@ fn App() -> Element {
     // None = still checking, Some(true) = wizard needed, Some(false) = normal flow
     let mut wizard_needed: Signal<Option<bool>> = use_signal(|| None);
     let mut logged_in = use_signal(|| get_stored_server().is_some());
+    // Provide as context so DashboardLayout can call logout without prop-drilling.
+    use_context_provider(|| logged_in);
 
     use_effect(move || {
         spawn(async move {
@@ -147,7 +149,7 @@ fn App() -> Element {
             },
             Some(false) => rsx! {
                 if *logged_in.read() {
-                    Dashboard { on_logout: move |_| logged_in.set(false) }
+                    Router::<Route> {}
                 } else {
                     Login { on_login: move |_| logged_in.set(true) }
                 }
@@ -638,15 +640,26 @@ fn TaskRow(
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
-enum Page {
-    Overview,
-    Imports,
-    Collections,
-    Devices,
-    Tasks,
-    Users,
-    Settings,
+#[derive(Clone, Routable, PartialEq, Debug)]
+enum Route {
+    #[layout(DashboardLayout)]
+        #[route("/admin")]
+        OverviewRoute,
+        #[route("/admin/imports")]
+        ImportsRoute,
+        #[route("/admin/library")]
+        CollectionsRoute,
+        #[route("/admin/devices")]
+        DevicesRoute,
+        #[route("/admin/tasks")]
+        TasksRoute,
+        #[route("/admin/users")]
+        UsersRoute,
+        #[route("/admin/settings")]
+        SettingsRoute,
+    #[end_layout]
+    #[route("/:..segments")]
+    NotFound { segments: Vec<String> },
 }
 
 #[component]
@@ -661,24 +674,28 @@ fn NavItem(label: &'static str, active: bool, on_click: EventHandler) -> Element
 }
 
 #[component]
-fn Dashboard(on_logout: EventHandler) -> Element {
+fn DashboardLayout() -> Element {
     let server = match get_stored_server() {
         Some(s) => s,
         None => return rsx! { div { "Not logged in" } },
     };
 
     let app_state = AppState::new(server);
-    let mut sidebar_open = use_signal(|| false);
-    let mut current_page = use_signal(|| Page::Overview);
+    use_context_provider(|| app_state.clone());
 
-    let page_title = match *current_page.read() {
-        Page::Overview    => "Overview",
-        Page::Imports     => "Imports",
-        Page::Collections => "Library",
-        Page::Devices     => "Devices",
-        Page::Tasks       => "Scheduled Tasks",
-        Page::Users       => "Users",
-        Page::Settings    => "Settings",
+    let mut logged_in = use_context::<Signal<bool>>();
+    let mut sidebar_open = use_signal(|| false);
+    let route = use_route::<Route>();
+
+    let page_title = match route {
+        Route::OverviewRoute    => "Overview",
+        Route::ImportsRoute     => "Imports",
+        Route::CollectionsRoute => "Library",
+        Route::DevicesRoute     => "Devices",
+        Route::TasksRoute       => "Scheduled Tasks",
+        Route::UsersRoute       => "Users",
+        Route::SettingsRoute    => "Settings",
+        Route::NotFound { .. }  => "",
     };
 
     rsx! {
@@ -703,49 +720,54 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                 div { class: "sidebar-nav",
                     NavItem {
                         label: "Overview",
-                        active: *current_page.read() == Page::Overview,
-                        on_click: move |_| { current_page.set(Page::Overview); sidebar_open.set(false); },
+                        active: route == Route::OverviewRoute,
+                        on_click: move |_| { navigator().push(Route::OverviewRoute); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Library",
-                        active: *current_page.read() == Page::Collections,
-                        on_click: move |_| { current_page.set(Page::Collections); sidebar_open.set(false); },
+                        active: route == Route::CollectionsRoute,
+                        on_click: move |_| { navigator().push(Route::CollectionsRoute); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Imports",
-                        active: *current_page.read() == Page::Imports,
-                        on_click: move |_| { current_page.set(Page::Imports); sidebar_open.set(false); },
+                        active: route == Route::ImportsRoute,
+                        on_click: move |_| { navigator().push(Route::ImportsRoute); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Devices",
-                        active: *current_page.read() == Page::Devices,
-                        on_click: move |_| { current_page.set(Page::Devices); sidebar_open.set(false); },
+                        active: route == Route::DevicesRoute,
+                        on_click: move |_| { navigator().push(Route::DevicesRoute); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Tasks",
-                        active: *current_page.read() == Page::Tasks,
-                        on_click: move |_| { current_page.set(Page::Tasks); sidebar_open.set(false); },
+                        active: route == Route::TasksRoute,
+                        on_click: move |_| { navigator().push(Route::TasksRoute); sidebar_open.set(false); },
                     }
-
                     NavItem {
                         label: "Users",
-                        active: *current_page.read() == Page::Users,
-                        on_click: move |_| { current_page.set(Page::Users); sidebar_open.set(false); },
+                        active: route == Route::UsersRoute,
+                        on_click: move |_| { navigator().push(Route::UsersRoute); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Settings",
-                        active: *current_page.read() == Page::Settings,
-                        on_click: move |_| { current_page.set(Page::Settings); sidebar_open.set(false); },
+                        active: route == Route::SettingsRoute,
+                        on_click: move |_| { navigator().push(Route::SettingsRoute); sidebar_open.set(false); },
                     }
                 }
 
                 div { class: "sidebar-footer",
+                    a {
+                        class: "btn btn-ghost",
+                        style: "width:100%;margin-bottom:8px",
+                        href: "/",
+                        "Home"
+                    }
                     button {
                         class: "btn btn-ghost",
                         style: "width:100%",
                         onclick: move |_| {
                             LocalStorage::delete(CREDENTIALS_KEY);
-                            on_logout.call(());
+                            logged_in.set(false);
                         },
                         "Sign Out"
                     }
@@ -767,35 +789,67 @@ fn Dashboard(on_logout: EventHandler) -> Element {
                 }
 
                 div { class: "shell",
-                    {match *current_page.read() {
-                        Page::Overview => rsx! {
-                            ServerInfoCard { app_state: app_state.clone() }
-                            SessionsCard { app_state: app_state.clone() }
-                            TasksCard { app_state: app_state.clone(), running_only: true }
-                        },
-                        Page::Imports => rsx! {
-                            ImportsPage { app_state: app_state.clone() }
-                        },
-                        Page::Collections => rsx! {
-                            CollectionsPage { app_state: app_state.clone() }
-                        },
-                        Page::Devices => rsx! {
-                            SessionsCard { app_state: app_state.clone() }
-                        },
-                        Page::Tasks => rsx! {
-                            TasksCard { app_state: app_state.clone() }
-                        },
-                        Page::Users => rsx! {
-                            UsersPage { app_state: app_state.clone() }
-                        },
-                        Page::Settings => rsx! {
-                            SettingsPage { app_state: app_state.clone() }
-                        },
-                    }}
+                    Outlet::<Route> {}
                 }
             }
         }
     }
+}
+
+// ── Route components ────────────────────────────────────────────────
+// Thin wrappers: pull AppState from context (provided by DashboardLayout)
+// then pass as props to the real page components.
+
+#[component]
+fn OverviewRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! {
+        ServerInfoCard { app_state: app_state.clone() }
+        SessionsCard { app_state: app_state.clone() }
+        TasksCard { app_state: app_state.clone(), running_only: true }
+    }
+}
+
+#[component]
+fn ImportsRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { ImportsPage { app_state } }
+}
+
+#[component]
+fn CollectionsRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { CollectionsPage { app_state } }
+}
+
+#[component]
+fn DevicesRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { SessionsCard { app_state } }
+}
+
+#[component]
+fn TasksRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { TasksCard { app_state } }
+}
+
+#[component]
+fn UsersRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { UsersPage { app_state } }
+}
+
+#[component]
+fn SettingsRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { SettingsPage { app_state } }
+}
+
+#[component]
+fn NotFound(segments: Vec<String>) -> Element {
+    navigator().replace(Route::OverviewRoute);
+    rsx! {}
 }
 
 // ── Collections page ───────────────────────────────────────────────
