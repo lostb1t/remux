@@ -389,7 +389,7 @@ mod test {
 
     #[tokio::test]
     async fn system_ping_test() {
-        let server = crate::integration_test::new_test_server().await.unwrap();
+        let server = new_test_server().await.unwrap();
 
         let response = server.get("/system/ping").await;
 
@@ -399,7 +399,7 @@ mod test {
 
     #[tokio::test]
     async fn system_info_storage_test() {
-        let server = crate::integration_test::new_test_server().await.unwrap();
+        let server = new_test_server().await.unwrap();
 
         let response = server.get("/system/info/storage").await;
 

@@ -410,7 +410,6 @@ pub async fn users_views(
     userviews(State(state), session).await
 }
 
-// ===== Named stubs (empty responses for unimplemented endpoints) =====
 
 #[get("/users/{user_id}/items/resume")]
 pub async fn users_items_resume(
