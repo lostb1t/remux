@@ -2389,17 +2389,17 @@ fn LogsPage(app_state: AppState) -> Element {
 
             div {
                 id: "log-scroll",
-                style: "height:600px;overflow-y:auto;padding:12px;font-family:monospace;font-size:0.8rem;background:var(--color-bg, #0d0d0d)",
+                style: "height:600px;overflow:auto;padding:12px;font-family:monospace;font-size:0.8rem;background:var(--color-bg, #0d0d0d)",
                 for line in logs.read().iter() {
                     div {
-                        style: "display:flex;gap:8px;margin-bottom:2px;overflow:hidden",
+                        style: "display:flex;gap:8px;margin-bottom:2px;white-space:nowrap",
                         span { style: "color:#666;flex-shrink:0", "{line.timestamp}" }
                         span {
                             style: "flex-shrink:0;font-weight:600;{level_color(&line.level)}",
                             "[{line.level}]"
                         }
                         span { style: "color:#888;flex-shrink:0", "{line.target}" }
-                        span { style: "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0", "{line.message}" }
+                        span { style: "color:#ddd", "{line.message}" }
                     }
                 }
                 // Anchor element used for auto-scroll
