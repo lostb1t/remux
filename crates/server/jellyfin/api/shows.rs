@@ -107,6 +107,9 @@ pub async fn userviews_groupingoptions(
 }
 
 #[get("/shows/nextup")]
-pub async fn shows_nextup(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn shows_nextup(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }

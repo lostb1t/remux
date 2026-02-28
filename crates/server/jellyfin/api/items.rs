@@ -406,6 +406,7 @@ pub async fn items_get(
 #[get("/items/suggestions")]
 pub async fn items_suggestions(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     //let b = state.tmdb.movie_popular_list().send().await.unwrap()
     //.into_inner()
@@ -425,7 +426,10 @@ pub async fn items_suggestions(
 }
 
 #[get("/persons")]
-pub async fn persons(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn persons(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: vec![],
         ..Default::default()
@@ -433,7 +437,10 @@ pub async fn persons(State(state): State<AppState>) -> Result<impl IntoResponse>
 }
 
 #[get("/items/filters")]
-pub async fn items_filters(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn items_filters(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
     /// genres is actually tags?
     use strum::IntoEnumIterator;
     // let genres = db::Genre::iter().map(|g| g.to_string()).collect();
@@ -479,6 +486,7 @@ pub async fn library_mediafolders(
 #[get("/library/virtualfolders")]
 pub async fn library_virtualfolders(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let folders = db::Media::get_by_filter(
         &state.ctx.db,
@@ -701,6 +709,7 @@ fn parse_collection_type(s: &str) -> Option<db::MediaKind> {
 #[get("/genres")]
 pub async fn genres(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     let related_kinds: Vec<db::MediaKind> = q
@@ -725,25 +734,33 @@ pub async fn genres(
 #[get("/items/{id}/metadataeditor")]
 pub async fn items_metadata_editor(
     State(_state): State<AppState>,
+    _session: auth::AdminSession,
     Path(_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     Ok(Json(jellyfin::MetadataEditorInfo::default()))
 }
 
 #[get("/items/{id}/similar")]
-pub async fn items_similar(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn items_similar(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
 
 #[get("/items/{id}/thememedia")]
 pub async fn items_thememedia(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     stub_json(State(state)).await
 }
 
 #[get("/channels")]
-pub async fn channels(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn channels(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
 

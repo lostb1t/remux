@@ -40,6 +40,7 @@ pub async fn system_ping(State(state): State<AppState>) -> Result<impl IntoRespo
 #[get("/system/info/storage")]
 pub async fn system_info_storage(
     State(state): State<AppState>,
+    _session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
     // Create storage information following the Jellyfin SystemStorageInfo structure
     let system_storage_info = jellyfin::SystemStorageInfo {
@@ -137,6 +138,7 @@ pub async fn system_info_storage(
 #[get("/system/configuration")]
 pub async fn system_configuration(
     State(state): State<AppState>,
+    _session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json(crate::db::Settings::get_config(&state.ctx.db).await?))
 }
@@ -145,6 +147,7 @@ pub async fn system_configuration(
 #[post("/system/configuration")]
 pub async fn update_system_configuration(
     State(state): State<AppState>,
+    _session: auth::AdminSession,
     Json(config): Json<jellyfin::ServerConfiguration>,
 ) -> Result<impl IntoResponse> {
     crate::db::Settings::set_config(&state.ctx.db, &config).await?;
@@ -163,7 +166,10 @@ pub async fn system_endpoint(
 }
 
 #[get("/syncplay/list")]
-pub async fn syncplay_list(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn syncplay_list(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
 
@@ -200,6 +206,7 @@ pub async fn get_branding_configuration(
 #[post("/branding/configuration")]
 pub async fn update_branding_configuration_legacy(
     State(state): State<AppState>,
+    _session: auth::AdminSession,
     Json(config): Json<jellyfin::BrandingOptions>,
 ) -> Result<impl IntoResponse> {
     let json = serde_json::to_string(&config)?;
@@ -211,6 +218,7 @@ pub async fn update_branding_configuration_legacy(
 #[post("/system/configuration/branding")]
 pub async fn update_branding_configuration(
     State(state): State<AppState>,
+    _session: auth::AdminSession,
     Json(config): Json<jellyfin::BrandingOptions>,
 ) -> Result<impl IntoResponse> {
     let json = serde_json::to_string(&config)?;
@@ -248,6 +256,7 @@ pub async fn get_branding_css_dotcss(
 #[get("/system/activitylog/entries")]
 pub async fn system_activity_log(
     State(state): State<AppState>,
+    _session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
     // Return an empty activity log
     Ok(Json(json!({
@@ -336,7 +345,10 @@ async fn shutdown_server() -> Result<()> {
 }
 
 #[get("/system/info")]
-pub async fn system_info(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn system_info(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
     let config = crate::db::Settings::get_config(&state.ctx.db).await?;
     Ok(Json(jellyfin::SystemInfo {
         id: Some(server_id()),
@@ -387,9 +399,16 @@ mod test {
 
     #[tokio::test]
     async fn system_info_storage_test() {
-        let server = new_test_server().await.unwrap();
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
 
-        let response = server.get("/system/info/storage").await;
+        let response = server
+            .get("/system/info/storage")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
 
         response.assert_status_ok();
         let storage_info: crate::jellyfin::SystemStorageInfo = response.json();
@@ -415,9 +434,16 @@ mod test {
 
     #[tokio::test]
     async fn system_activity_log_test() {
-        let server = crate::integration_test::new_test_server().await.unwrap();
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
 
-        let response = server.get("/system/activitylog/entries").await;
+        let response = server
+            .get("/system/activitylog/entries")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
 
         response.assert_status_ok();
         let log_result: serde_json::Value = response.json();
@@ -463,9 +489,16 @@ mod test {
 
     #[tokio::test]
     async fn system_info_shows_capabilities() {
-        let server = crate::integration_test::new_test_server().await.unwrap();
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
 
-        let response = server.get("/system/info").await;
+        let response = server
+            .get("/system/info")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
 
         response.assert_status_ok();
         let system_info: crate::jellyfin::SystemInfo = response.json();

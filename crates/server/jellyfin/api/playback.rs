@@ -47,6 +47,7 @@ pub async fn items_playbackinfo(
 #[get("/items/{id}/playbackinfo")]
 pub async fn items_playbackinfo_get(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
@@ -615,9 +616,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_sessions_empty() {
-        let (server, _token) = authenticated_server().await;
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
 
-        let resp = server.get("/sessions").await;
+        let resp = server
+            .get("/sessions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
 
         resp.assert_status_ok();
         let sessions: Vec<crate::jellyfin::SessionInfoDto> = resp.json();
@@ -646,7 +654,13 @@ mod tests {
             .await;
 
         // Get all sessions
-        let resp = server.get("/sessions").await;
+        let resp = server
+            .get("/sessions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
 
         resp.assert_status_ok();
         let sessions: Vec<crate::jellyfin::SessionInfoDto> = resp.json();
@@ -751,6 +765,7 @@ pub struct PingQuery {
 #[post("/sessions/playing/ping")]
 pub async fn ping_playback_session(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
     Query(q): Query<PingQuery>,
 ) -> Result<impl IntoResponse> {
     PlaybackSession::ping(&state.ctx.store, &q.play_session_id);
@@ -760,6 +775,7 @@ pub async fn ping_playback_session(
 #[post("/sessions/capabilities/full")]
 pub async fn sessions_capabilities_full(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     stub(State(state)).await
 }
@@ -774,6 +790,7 @@ struct SessionsQuery {
 #[get("/sessions")]
 pub async fn get_sessions(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
     Query(q): Query<SessionsQuery>,
 ) -> Result<impl IntoResponse> {
     let cutoff = q
@@ -1108,6 +1125,7 @@ async fn hls_segment_inner(
 #[delete("/videos/activetranscodings")]
 pub async fn delete_transcoding(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
     Query(q): Query<jellyfin::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
     if let Some(play_session_id) = q.play_session_id {
@@ -1121,6 +1139,7 @@ pub async fn delete_transcoding(
 #[get("/videos/{id}/additionalparts")]
 pub async fn video_additional_parts(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     Ok(Json(jellyfin::BaseItemDtoQueryResult::default()))

@@ -5,6 +5,7 @@ use remux_macros::{delete, get, post};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::db::auth;
 use crate::jellyfin;
 use crate::tasks::{TaskStatus, TaskView};
 use axum_anyhow::ApiResult as Result;
@@ -105,6 +106,7 @@ fn task_info(
 #[get("/scheduledtasks")]
 pub async fn scheduled_tasks(
     State(state): State<AppState>,
+    _session: auth::AdminSession,
 ) -> Result<impl axum::response::IntoResponse> {
     let task_handlers = state.tasks.get_task_handlers().await;
 
@@ -140,6 +142,7 @@ pub async fn scheduled_tasks(
 pub async fn get_task_by_id(
     Path(task_id): Path<String>,
     State(state): State<AppState>,
+    _session: auth::AdminSession,
 ) -> Result<impl axum::response::IntoResponse> {
     let task_handlers = state.tasks.get_task_handlers().await;
     let handler = task_handlers
@@ -161,6 +164,7 @@ pub async fn get_task_by_id(
 pub async fn start_task(
     Path(task_id): Path<String>,
     State(state): State<AppState>,
+    _session: auth::AdminSession,
 ) -> Result<impl axum::response::IntoResponse> {
     state.tasks.run_task(&task_id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -171,6 +175,7 @@ pub async fn start_task(
 pub async fn stop_task(
     Path(task_id): Path<String>,
     State(state): State<AppState>,
+    _session: auth::AdminSession,
 ) -> Result<impl axum::response::IntoResponse> {
     state.tasks.stop_task(&task_id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -181,6 +186,7 @@ pub async fn stop_task(
 pub async fn update_task_triggers(
     Path(task_id): Path<String>,
     State(state): State<AppState>,
+    _session: auth::AdminSession,
     Json(trigger_infos): Json<Vec<jellyfin::TaskTriggerInfo>>,
 ) -> Result<impl axum::response::IntoResponse> {
     let triggers: Vec<jellyfin::db::TaskTrigger> = trigger_infos
@@ -209,9 +215,18 @@ pub async fn update_task_triggers(
 #[cfg(test)]
 #[tokio::test]
 async fn scheduled_tasks_test() {
-    let server = crate::integration_test::new_test_server().await.unwrap();
+    use crate::integration_test::{auth_header_with_token, authenticated_server};
+    use http::header::HeaderValue;
+    let (server, token) = authenticated_server().await;
+    let auth = auth_header_with_token(&token);
 
-    let response = server.get("/scheduledtasks").await;
+    let response = server
+        .get("/scheduledtasks")
+        .add_header(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_str(&auth).unwrap(),
+        )
+        .await;
 
     response.assert_status_ok();
     let tasks: Vec<crate::jellyfin::TaskInfo> = response.json();

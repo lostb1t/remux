@@ -223,6 +223,7 @@ pub async fn unmark_played(
 #[get("/users/{user_id}/groupingoptions")]
 pub async fn users_groupingoptions(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json::<Vec<jellyfin::SpecialViewOptionDto>>(vec![]))
 }
@@ -402,6 +403,7 @@ pub async fn users_views(
 #[get("/users/{user_id}/items/resume")]
 pub async fn users_items_resume(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
@@ -409,18 +411,23 @@ pub async fn users_items_resume(
 #[get("/users/{user_id}/items/similar")]
 pub async fn users_items_similar(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
 
 #[get("/users/{user_id}/intros")]
-pub async fn users_intros(State(state): State<AppState>) -> Result<impl IntoResponse> {
+pub async fn users_intros(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
 
 #[get("/users/{user_id}/items/{id}/intros")]
 pub async fn users_items_intros(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
@@ -428,6 +435,7 @@ pub async fn users_items_intros(
 #[get("/useritems/resume")]
 pub async fn useritems_resume(
     State(state): State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     mock_items(State(state)).await
 }
