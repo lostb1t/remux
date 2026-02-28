@@ -37,7 +37,7 @@ tower = { version = "^0.5", features = ["tokio", "util"] }
 tower-http = { version = "^0.6", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde_with = { version = "3", features = ["chrono", "macros"] }
-uuid = { version = "1.8", features = ["v5", "serde"] }
+uuid = { version = "1.8", features = ["v4", "v5", "serde"] }
 http = "1.4.0"
 http-body = "1.0"
 http-body-util = "0.1"

@@ -22,9 +22,9 @@ pub async fn system_info_public(
     let config = crate::db::Settings::get_config(&state.ctx.db).await?;
     Ok(Json(jellyfin::PublicSystemInfo {
         local_address: "0.0.0.0".to_string(),
-        server_name: config.server_name,
+        server_name: config.server_name.unwrap_or_default(),
         product_name: "Jellyfin Server".to_string(),
-        startup_wizard_completed: config.is_startup_wizard_completed,
+        startup_wizard_completed: config.is_startup_wizard_completed.unwrap_or(false),
         version: "10.11.6".to_string(),
         id: server_id(),
         ..Default::default()
@@ -171,7 +171,7 @@ pub async fn syncplay_list(State(state): State<AppState>) -> Result<impl IntoRes
 pub async fn quickconnect_enabled(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
-    stub(State(state)).await
+    Ok("false".to_string())
 }
 
 const BRANDING_CONFIG_KEY: &str = "branding_configuration";
@@ -376,12 +376,15 @@ mod test {
         let resp = server.get("/system/info/public").await;
 
         resp.assert_status_ok();
-        resp.assert_json(&json!({
+        resp.assert_json_contains(&json!({
             "ServerName": "Remux",
             "ProductName": "Jellyfin Server",
-            "Version": "10.10.7",
+            "Version": "10.11.6",
             "StartupWizardCompleted": true,
         }));
+        let body: serde_json::Value = resp.json();
+        let id = body["Id"].as_str().expect("Id field should be present");
+        uuid::Uuid::parse_str(id).expect("Id should be a valid UUID");
     }
 
     #[tokio::test]

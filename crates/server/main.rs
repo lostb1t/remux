@@ -134,6 +134,7 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
     let conn = db::connect(&config.db_url).await?;
 
     db::migrate(&conn).await?;
+    crate::utils::init_server_id(&conn).await?;
     db::ensure_collection_folder(&conn).await?;
 
     // FOR TWSTING ONLY

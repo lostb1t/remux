@@ -128,8 +128,7 @@ fn App() -> Element {
                     .execute(PublicSystemInfo::default())
                     .await
                     .ok()
-                    .and_then(|info| info.startup_wizard_completed)
-                    .map(|done| !done) // wizard needed = wizard NOT yet completed
+                    .map(|info| !info.startup_wizard_completed)
                     .unwrap_or(false),
                 Err(_) => false,
             };
@@ -362,8 +361,8 @@ fn ServerInfoCard(app_state: AppState) -> Element {
                 } else if let Some(err) = error.read().as_ref() {
                     span { class: "loading-text", style: "color:var(--error)", "{err}" }
                 } else if let Some(info) = server_info.read().as_ref() {
-                    KvRow { label: "Name", value: info.server_name.clone().unwrap_or_default() }
-                    KvRow { label: "Version", value: info.version.clone().unwrap_or_default() }
+                    KvRow { label: "Name", value: info.server_name.clone() }
+                    KvRow { label: "Version", value: info.version.clone() }
                 }
             }
         }
