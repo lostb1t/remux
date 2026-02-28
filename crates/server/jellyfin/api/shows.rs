@@ -10,7 +10,7 @@ use crate::AppState;
 use crate::db;
 use crate::db::auth;
 use crate::jellyfin;
-use axum_anyhow::{ApiResult as Result, OptionExt};
+use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
 use super::mock_items;
 use super::items::get_items;
@@ -58,7 +58,7 @@ pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = session.aio.as_ref()
+    let manifest = crate::aio::AioService::from_settings(&state.ctx.db).await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?
         .get_manifest().await?;
 
@@ -92,9 +92,8 @@ pub async fn userviews_groupingoptions(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let _manifest = session.aio.as_ref()
-        .context_bad_request("AIO not configured", "Complete the setup wizard first")?
-        .get_manifest().await?;
+    crate::aio::AioService::from_settings(&state.ctx.db).await
+        .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
 
     // Ok(Json(json!(
     // )))

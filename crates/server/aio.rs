@@ -21,6 +21,18 @@ pub struct AioService {
 }
 
 impl AioService {
+    /// Build an AioService from the URL stored in the DB settings.
+    /// Cheap to call — the HTTP response cache is process-global, so no cache
+    /// misses occur even when the instance is recreated per-request.
+    pub async fn from_settings(db: &sqlx::SqlitePool) -> Result<Self> {
+        let url = crate::db::Settings::get_config(db)
+            .await?
+            .aio_url
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("AIO URL not configured — complete the setup wizard first"))?;
+        Self::from_url(&url)
+    }
+
     pub fn from_url(url: &str) -> Result<Self> {
         let client = Self::get_aio(url)?;
         let search_client = Self::get_aio_search(url)?;

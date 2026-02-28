@@ -182,7 +182,6 @@ impl Device {
 pub struct AuthSession {
     pub device: Device,
     pub user: db::User,
-    pub aio: Option<crate::aio::AioService>,
 }
 
 //#[async_trait]
@@ -209,19 +208,7 @@ impl FromRequestParts<AppState> for AuthSession {
         let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
-        // AioService is cheap to create — the HTTP response cache is global,
-        // so recreating the client per-request does not cause cache misses.
-        let aio = if let Some(ref existing) = state.ctx.aio {
-            Some(existing.clone())
-        } else {
-            crate::db::Settings::get_config(&state.ctx.db)
-                .await
-                .ok()
-                .and_then(|cfg| cfg.aio_url)
-                .filter(|s| !s.is_empty())
-                .and_then(|url| crate::aio::AioService::from_url(&url).ok())
-        };
-        Ok(AuthSession { device, user, aio })
+        Ok(AuthSession { device, user })
     }
 }
 

@@ -170,10 +170,7 @@ impl MetaProvider for AioMetaProvider {
             None => return Ok(false),
         };
 
-        let meta = ctx
-            .aio
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("AIO not configured"))?
+        let meta = crate::aio::AioService::from_settings(&ctx.db).await?
             .get_meta(db::media_kind_to_aio(&media.kind), imdb_id)
             .await?;
 
@@ -252,10 +249,7 @@ impl TreeSyncProvider for AioTreeSyncProvider {
             None => return Ok(vec![]),
         };
 
-        let meta = ctx
-            .aio
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("AIO not configured"))?
+        let meta = crate::aio::AioService::from_settings(&ctx.db).await?
             .get_meta(db::media_kind_to_aio(&series.kind), imdb_id)
             .await?;
 
@@ -284,10 +278,7 @@ impl TreeSyncProvider for AioTreeSyncProvider {
             None => return Ok(vec![]),
         };
 
-        let meta = ctx
-            .aio
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("AIO not configured"))?
+        let meta = crate::aio::AioService::from_settings(&ctx.db).await?
             .get_meta(db::media_kind_to_aio(&season.kind), imdb_id)
             .await?;
 

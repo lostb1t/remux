@@ -35,7 +35,7 @@ pub async fn get_items(
     _count: bool,
 ) -> Result<ItemsQueryResult> {
     //trace!(?q, "get_items");
-    let aio = session.aio
+    let aio = crate::aio::AioService::from_settings(&state.ctx.db).await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
 
     let parent = if let Some(parent_id) = q.parent_id.clone() {
@@ -240,8 +240,8 @@ pub async fn get_items(
                             f.contains(&jellyfin::ItemFields::MediaSources)
                         }))
                 {
-                    if let Some(aio) = state.ctx.aio.as_ref() {
-                        media.refresh_sources(&state.ctx.db, aio).await?;
+                    if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
+                        media.refresh_sources(&state.ctx.db, &aio).await?;
                     }
                     media.sources(&state.ctx.db).await?;
                     // always load state for single
@@ -331,7 +331,7 @@ pub async fn item(
     session: auth::AuthSession,
     id: Uuid,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
-    let manifest = session.aio.as_ref()
+    let manifest = crate::aio::AioService::from_settings(&state.ctx.db).await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?
         .get_manifest().await?;
     // let libraries = super::get_virtual_folders(&state).await?;
@@ -614,7 +614,7 @@ pub async fn aio_catalogs(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let aio = session.aio
+    let aio = crate::aio::AioService::from_settings(&state.ctx.db).await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
     let manifest = aio.get_manifest().await?;
 

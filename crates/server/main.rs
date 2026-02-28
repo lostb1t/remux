@@ -141,16 +141,9 @@ async fn init_app() -> Result<Router> {
 
     let (ws_tx, _) = tokio::sync::broadcast::channel(128);
 
-    let mut settings = crate::db::Settings::get_config(&conn).await?;
-    let aio = match settings.aio_url.as_deref() {
-        Some(url) if !url.is_empty() => Some(aio::AioService::from_url(url)?),
-        _ => None,
-    };
-
     let ctx = AppContext {
         config,
         db: conn.clone(),
-        aio,
         store: store::Store::new(100000),
         transcode: transcode::session::TranscodeSessionManager::new("transcode_sessions"),
         ws_tx,
@@ -216,7 +209,6 @@ async fn init_app() -> Result<Router> {
 pub struct AppContext {
     pub config: Config,
     pub db: sqlx::SqlitePool,
-    pub aio: Option<aio::AioService>,
     pub store: store::Store,
     pub transcode: transcode::session::TranscodeSessionManager,
     pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,

@@ -22,18 +22,7 @@ impl Task for CatalogImportTask {
         tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        let aio = if let Some(ref existing) = ctx.aio {
-            existing.clone()
-        } else {
-            let url = crate::db::Settings::get_config(&ctx.db).await.ok()
-                .and_then(|c| c.aio_url)
-                .filter(|s| !s.is_empty())
-                .unwrap_or_default();
-            if url.is_empty() {
-                anyhow::bail!("AIO URL not configured — complete the setup wizard first");
-            }
-            crate::aio::AioService::from_url(&url)?
-        };
+        let aio = crate::aio::AioService::from_settings(&ctx.db).await?;
 
         // Fetch all enabled catalog media items (kind=catalog, promoted=1)
         let catalogs = db::Media::get_by_filter(
