@@ -1,7 +1,9 @@
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
-use remux_macros::get;
+use http::StatusCode;
+use remux_macros::{delete, get};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -9,8 +11,23 @@ use crate::db::auth;
 use crate::jellyfin;
 use axum_anyhow::ApiResult as Result;
 
+#[derive(Deserialize)]
+struct DeleteDeviceQuery {
+    id: String,
+}
+
+#[delete("/devices")]
+pub async fn delete_device(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Query(q): Query<DeleteDeviceQuery>,
+) -> Result<StatusCode> {
+    auth::Device::delete_by_id(&state.ctx.db, &q.id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Query parameters for devices endpoint
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 pub struct GetDevicesQuery {
     #[serde(alias = "userId")]
     pub user_id: Option<uuid::Uuid>,

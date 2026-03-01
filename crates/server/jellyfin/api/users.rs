@@ -194,6 +194,32 @@ pub async fn unmark_favorite(
     Ok(Json(jellyfin::db_state_to_dto(state)).into_response())
 }
 
+#[post("/userfavoriteitems/{id}")]
+pub async fn mark_favorite_modern(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context_not_found("Not Found", "Item not found")?;
+    let s = media.mark_favorite(&state.ctx.db, &session.user).await?;
+    Ok(Json(jellyfin::db_state_to_dto(s)).into_response())
+}
+
+#[delete("/userfavoriteitems/{id}")]
+pub async fn unmark_favorite_modern(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context_not_found("Not Found", "Item not found")?;
+    let s = media.unmark_favorite(&state.ctx.db, &session.user).await?;
+    Ok(Json(jellyfin::db_state_to_dto(s)).into_response())
+}
+
 #[post("/users/{user_id}/playeditems/{id}")]
 pub async fn mark_played(
     State(state): State<AppState>,

@@ -282,6 +282,22 @@ async fn videos_stream_inner(
         .unwrap())
 }
 
+#[post("/sessions/logout")]
+pub async fn sessions_logout(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<StatusCode> {
+    auth::Device::delete_by_access_token(&state.ctx.db, &session.device.access_token).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[post("/sessions/capabilities")]
+pub async fn sessions_capabilities(
+    _session: auth::AuthSession,
+) -> Result<StatusCode> {
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[post("/sessions/playing")]
 pub async fn report_playback_start(
     State(state): State<AppState>,

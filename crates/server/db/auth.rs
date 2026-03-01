@@ -147,6 +147,22 @@ impl Device {
         Ok(devices)
     }
 
+    pub async fn delete_by_access_token(db: &SqlitePool, token: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM devices WHERE access_token = ?")
+            .bind(token)
+            .execute(db)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn delete_by_id(db: &SqlitePool, device_id: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM devices WHERE id = ?")
+            .bind(device_id)
+            .execute(db)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Update last_activity_at to now.
     pub async fn touch(&self, db: &SqlitePool) -> Result<()> {
         sqlx::query(

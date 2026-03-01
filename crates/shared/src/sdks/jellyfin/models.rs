@@ -2360,3 +2360,93 @@ pub struct AuthenticationInfo {
     pub date_created: Option<chrono::DateTime<chrono::Utc>>,
     pub is_active: Option<bool>,
 }
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct SearchHint {
+    pub item_id: Uuid,
+    pub name: Option<String>,
+    pub matched_term: Option<String>,
+    pub index_number: Option<i64>,
+    pub production_year: Option<i64>,
+    pub parent_index_number: Option<i64>,
+    pub primary_image_tag: Option<String>,
+    pub thumb_image_item_id: Option<Uuid>,
+    pub thumb_image_tag: Option<String>,
+    pub backdrop_image_item_id: Option<Uuid>,
+    pub backdrop_image_tag: Option<String>,
+    #[serde(rename = "Type")]
+    pub type_: MediaType,
+    pub is_folder: Option<bool>,
+    pub run_time_ticks: Option<i64>,
+    pub media_type: Option<String>,
+    pub series_id: Option<Uuid>,
+    pub series_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct SearchHintResult {
+    pub search_hints: Vec<SearchHint>,
+    pub total_record_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UtcTimeResponse {
+    pub request_reception_time: DateTime<Utc>,
+    pub response_transmission_time: DateTime<Utc>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct QueryFilters {
+    pub genres: Option<Vec<NameIdPair>>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ExternalIdInfo {
+    pub name: String,
+    pub key: String,
+    #[serde(rename = "Type")]
+    pub type_: Option<String>,
+    pub url_format_string: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RemoteImageInfo {
+    pub provider_name: Option<String>,
+    pub url: Option<String>,
+    pub thumbnail_url: Option<String>,
+    #[serde(rename = "Type")]
+    pub type_: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RemoteImageResult {
+    pub images: Option<Vec<RemoteImageInfo>>,
+    pub total_record_count: i64,
+    pub providers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct SearchHintsQuery {
+    pub search_term: Option<String>,
+    pub start_index: Option<u32>,
+    pub limit: Option<u32>,
+    pub user_id: Option<Uuid>,
+    #[serde(deserialize_with = "deserialize_media_types", default)]
+    pub include_item_types: Option<Vec<MediaType>>,
+}

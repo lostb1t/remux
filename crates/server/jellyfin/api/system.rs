@@ -265,6 +265,17 @@ pub async fn system_activity_log(
     })))
 }
 
+/// Return the current UTC time (no auth required — Jellyfin calls this before login)
+#[get("/getutctime")]
+pub async fn get_utc_time() -> impl IntoResponse {
+    use chrono::Utc;
+    let now = Utc::now();
+    Json(crate::jellyfin::UtcTimeResponse {
+        request_reception_time: now,
+        response_transmission_time: Utc::now(),
+    })
+}
+
 /// Restart the server (Admin only)
 #[post("/system/restart")]
 pub async fn system_restart(session: auth::AdminSession) -> Result<impl IntoResponse> {

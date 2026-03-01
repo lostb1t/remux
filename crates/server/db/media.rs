@@ -671,6 +671,43 @@ impl Media {
         Ok(row)
     }
 
+    pub async fn get_ancestors(db: &SqlitePool, id: &Uuid) -> Result<Vec<Self>> {
+        let rows = sqlx::query_as::<_, Self>(
+            "WITH RECURSIVE ancestors AS (
+                SELECT * FROM media WHERE id = (SELECT parent_id FROM media WHERE id = $1)
+                UNION ALL
+                SELECT m.* FROM media m JOIN ancestors a ON m.id = a.parent_id
+            ) SELECT * FROM ancestors",
+        )
+        .bind(id)
+        .fetch_all(db)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_distinct_years(db: &SqlitePool, kinds: &[MediaKind]) -> Result<Vec<i64>> {
+        let mut qb = sqlx::QueryBuilder::new(
+            "SELECT DISTINCT CAST(strftime('%Y', released_at) AS INTEGER) as y FROM media WHERE released_at IS NOT NULL",
+        );
+        if !kinds.is_empty() {
+            qb.push(" AND kind IN (");
+            let mut sep = qb.separated(", ");
+            for k in kinds {
+                sep.push_bind(k);
+            }
+            qb.push(")");
+        }
+        qb.push(" ORDER BY y DESC");
+        let rows = qb.build().fetch_all(db).await?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                use sqlx::Row;
+                r.get::<Option<i64>, _>(0)
+            })
+            .collect())
+    }
+
     pub async fn get_by_filter(
         db: &SqlitePool,
         filter: &MediaFilter,

@@ -347,6 +347,217 @@ pub async fn items(
     }))
 }
 
+/// Return the virtual root folder
+#[get("/items/root")]
+pub async fn items_root(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::BaseItemDto {
+        id: db::collection_uuid(),
+        name: Some("Media Library".to_string()),
+        type_: jellyfin::MediaType::CollectionFolder,
+        is_folder: true,
+        ..Default::default()
+    }))
+}
+
+/// Get ancestor items walking up the parent chain
+#[get("/items/{id}/ancestors")]
+pub async fn items_ancestors(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    let ancestors = db::Media::get_ancestors(&state.ctx.db, &id).await?;
+    Ok(Json(
+        ancestors
+            .into_iter()
+            .map(jellyfin::db_media_to_item)
+            .collect::<Vec<_>>(),
+    ))
+}
+
+/// Delete a media item
+#[delete("/items/{id}")]
+pub async fn delete_item(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    db::Media::delete(&state.ctx.db, &id).await?;
+    let _ = state.ctx.ws_tx.send(crate::ws::WsEvent::LibraryChanged);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Refresh a single item from AIO
+#[post("/items/{id}/refresh")]
+pub async fn refresh_item(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context_not_found("Not Found", "Item not found")?;
+    let aio_id = media
+        .aio_id
+        .as_deref()
+        .context_bad_request("Bad Request", "Item has no AIO source")?;
+    let (kind_str, item_id) = aio_id
+        .split_once(':')
+        .context_bad_request("Bad Request", "Invalid AIO id format")?;
+    let media_type = match kind_str.to_lowercase().as_str() {
+        "movie" => crate::sdks::aio::MediaType::Movie,
+        "series" | "tv" => crate::sdks::aio::MediaType::Series,
+        _ => {
+            return Err(anyhow::anyhow!("Unknown AIO media type: {}", kind_str)
+                .context_bad_request("Bad Request", "Unknown AIO media type"))
+        }
+    };
+    let aio = crate::aio::AioService::from_settings(&state.ctx.db)
+        .await
+        .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
+    let meta = aio.get_meta(media_type, item_id.to_string()).await?;
+    let mut refreshed: db::Media = meta.try_into()?;
+    refreshed.id = id;
+    refreshed.save(&state.ctx.db).await?;
+    let _ = state.ctx.ws_tx.send(crate::ws::WsEvent::LibraryChanged);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Get filter options (genres + tags) for the modern /Items/Filters2 endpoint
+#[get("/items/filters2")]
+pub async fn items_filters2(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Query(q): Query<jellyfin::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    let kinds: Vec<db::MediaKind> = q
+        .include_item_types
+        .unwrap_or_default()
+        .into_iter()
+        .map(db::MediaKind::from)
+        .filter(|k| !matches!(k, db::MediaKind::Unknown))
+        .collect();
+    let genres = db::Media::get_genres(&state.ctx.db, &kinds).await?;
+    let tag_rows = sqlx::query("SELECT DISTINCT tag FROM media_tags ORDER BY tag")
+        .fetch_all(&state.ctx.db)
+        .await?;
+    Ok(Json(jellyfin::QueryFilters {
+        genres: Some(
+            genres
+                .into_iter()
+                .map(|g| jellyfin::NameIdPair {
+                    id: g.id,
+                    name: g.title,
+                })
+                .collect(),
+        ),
+        tags: Some(
+            tag_rows
+                .iter()
+                .map(|r| {
+                    use sqlx::Row;
+                    r.get::<String, _>(0)
+                })
+                .collect(),
+        ),
+    }))
+}
+
+/// Trigger a full library refresh (re-imports all promoted catalogs)
+#[post("/library/refresh")]
+pub async fn library_refresh(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+) -> Result<StatusCode> {
+    let catalogs = db::Media::get_by_filter(
+        &state.ctx.db,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::Catalog]),
+            promoted: Some(true),
+            ..Default::default()
+        },
+    )
+    .await?
+    .records;
+    for cat in catalogs {
+        let key = crate::tasks::CatalogItemImportTask::task_key(cat.id);
+        let _ = state.tasks.run_task(&key).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Stubs — Jellyfin clients call these; we return empty lists so they don't 404
+
+#[get("/items/{id}/localtrailers")]
+pub async fn items_local_trailers(
+    _state: State<AppState>,
+    _session: auth::AuthSession,
+    _path: Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(Vec::<jellyfin::BaseItemDto>::new()))
+}
+
+#[get("/items/{id}/specialfeatures")]
+pub async fn items_special_features(
+    _state: State<AppState>,
+    _session: auth::AuthSession,
+    _path: Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(Vec::<jellyfin::BaseItemDto>::new()))
+}
+
+#[get("/items/{id}/externalidinfos")]
+pub async fn items_external_id_infos(
+    _state: State<AppState>,
+    _session: auth::AdminSession,
+    _path: Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(Vec::<jellyfin::ExternalIdInfo>::new()))
+}
+
+#[get("/items/{id}/themevideos")]
+pub async fn items_theme_videos(
+    _state: State<AppState>,
+    _session: auth::AuthSession,
+    _path: Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::BaseItemDtoQueryResult::default()))
+}
+
+#[get("/items/{id}/themesongs")]
+pub async fn items_theme_songs(
+    _state: State<AppState>,
+    _session: auth::AuthSession,
+    _path: Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::BaseItemDtoQueryResult::default()))
+}
+
+#[get("/items/{id}/remoteimages")]
+pub async fn items_remote_images(
+    _state: State<AppState>,
+    _session: auth::AuthSession,
+    _path: Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::RemoteImageResult {
+        images: Some(vec![]),
+        total_record_count: 0,
+        providers: Some(vec![]),
+    }))
+}
+
+#[get("/items/{id}/remoteimages/providers")]
+pub async fn items_remote_images_providers(
+    _state: State<AppState>,
+    _session: auth::AuthSession,
+    _path: Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(Vec::<String>::new()))
+}
+
 /// Get item counts
 #[get("/items/counts")]
 pub async fn items_counts(
