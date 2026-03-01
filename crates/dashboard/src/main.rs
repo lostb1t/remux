@@ -11,9 +11,9 @@ use shared::sdks::jellyfin::{
     GetSystemConfiguration, GetUsers, JellyfinAuth, PatchItem, PatchItemPayload,
     PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
     ServerConfiguration, SessionInfoDto, SetLogLevel, StartTask, StartupConfiguration,
-    StartupUser, StopTask, TaskInfo, UpdateBrandingConfiguration,
+    StartupUser, StopTask, TaskInfo, TaskTriggerInfo, UpdateBrandingConfiguration,
     UpdateCatalogSettings, UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
-    UpdateUser, UpdateUserPolicy, UserDto,
+    UpdateTaskTriggers, UpdateUser, UpdateUserPolicy, UserDto,
 };
 use shared::sdks::{ClientError, RestClient};
 use uuid::Uuid;
@@ -459,6 +459,155 @@ fn SessionsCard(app_state: AppState) -> Element {
     }
 }
 
+fn trigger_label(t: &TaskTriggerInfo) -> String {
+    match t.r#type.as_deref() {
+        Some("StartupTrigger") => "On server startup".into(),
+        Some("DailyTrigger") => {
+            let ticks = t.time_of_day_ticks.unwrap_or(0);
+            let total_secs = ticks / 10_000_000;
+            let hour = total_secs / 3600;
+            let min = (total_secs % 3600) / 60;
+            format!("Daily at {:02}:{:02}", hour, min)
+        }
+        _ => "Unknown".into(),
+    }
+}
+
+#[component]
+fn TaskTriggersModal(
+    task: TaskInfo,
+    app_state: AppState,
+    on_done: EventHandler,
+    on_cancel: EventHandler,
+) -> Element {
+    let mut triggers = use_signal(|| task.triggers.clone().unwrap_or_default());
+    let mut new_type = use_signal(|| "DailyTrigger".to_string());
+    let mut new_hour = use_signal(|| "0".to_string());
+    let mut new_min = use_signal(|| "0".to_string());
+    let mut saving = use_signal(|| false);
+    let mut error: Signal<Option<String>> = use_signal(|| None);
+
+    let task_id = task.id.clone();
+    let task_name = task.name.clone();
+
+    rsx! {
+        h2 { class: "modal-title", "Triggers — {task_name}" }
+
+        // Current triggers list
+        for (i, trigger) in triggers.read().clone().into_iter().enumerate() {
+            div {
+                class: "field",
+                style: "display: flex; align-items: center; justify-content: space-between;",
+                span { "{trigger_label(&trigger)}" }
+                button {
+                    class: "btn btn-danger",
+                    style: "padding: 2px 8px; font-size: 0.8rem;",
+                    onclick: move |_| { triggers.write().remove(i); },
+                    "×"
+                }
+            }
+        }
+        if triggers.read().is_empty() {
+            p { class: "text-muted", "No triggers" }
+        }
+
+        hr {}
+
+        h3 { "Add trigger" }
+        div { class: "field",
+            label { class: "field-label", "Type" }
+            select {
+                class: "select-input",
+                value: "{new_type.read()}",
+                onchange: move |evt| new_type.set(evt.value()),
+                option { value: "DailyTrigger", "Daily" }
+                option { value: "StartupTrigger", "On server startup" }
+            }
+        }
+        if *new_type.read() == "DailyTrigger" {
+            div { style: "display: flex; gap: 1rem;",
+                div { class: "field",
+                    label { class: "field-label", "Hour (0–23)" }
+                    input {
+                        class: "field-input",
+                        r#type: "number",
+                        min: "0",
+                        max: "23",
+                        value: "{new_hour.read()}",
+                        oninput: move |evt| new_hour.set(evt.value()),
+                    }
+                }
+                div { class: "field",
+                    label { class: "field-label", "Minute (0–59)" }
+                    input {
+                        class: "field-input",
+                        r#type: "number",
+                        min: "0",
+                        max: "59",
+                        value: "{new_min.read()}",
+                        oninput: move |evt| new_min.set(evt.value()),
+                    }
+                }
+            }
+        }
+        button {
+            class: "btn btn-secondary",
+            onclick: move |_| {
+                let trigger = match new_type.read().as_str() {
+                    "StartupTrigger" => TaskTriggerInfo {
+                        r#type: Some("StartupTrigger".into()),
+                        ..Default::default()
+                    },
+                    _ => {
+                        let h: i64 = new_hour.read().parse().unwrap_or(0).clamp(0, 23);
+                        let m: i64 = new_min.read().parse().unwrap_or(0).clamp(0, 59);
+                        TaskTriggerInfo {
+                            r#type: Some("DailyTrigger".into()),
+                            time_of_day_ticks: Some(h * 36_000_000_000 + m * 600_000_000),
+                            ..Default::default()
+                        }
+                    }
+                };
+                triggers.write().push(trigger);
+            },
+            "Add"
+        }
+
+        if let Some(e) = error.read().as_ref() {
+            div { class: "alert-error", "{e}" }
+        }
+
+        div { class: "form-actions",
+            button {
+                class: "btn btn-ghost",
+                onclick: move |_| on_cancel.call(()),
+                "Cancel"
+            }
+            button {
+                class: "btn btn-primary",
+                disabled: *saving.read(),
+                onclick: move |_| {
+                    let client = app_state.client.clone();
+                    let tid = task_id.clone();
+                    let t = triggers.read().clone();
+                    saving.set(true);
+                    error.set(None);
+                    spawn(async move {
+                        match client.execute(UpdateTaskTriggers { task_id: tid, triggers: t }).await {
+                            Ok(_) => on_done.call(()),
+                            Err(e) => {
+                                saving.set(false);
+                                error.set(Some(e.to_string()));
+                            }
+                        }
+                    });
+                },
+                if *saving.read() { "Saving…" } else { "Save" }
+            }
+        }
+    }
+}
+
 #[component]
 fn TasksCard(
     app_state: AppState,
@@ -468,6 +617,7 @@ fn TasksCard(
     let mut loading = use_signal(|| true);
     let mut error = use_signal(|| Option::<String>::None);
     let mut refresh: Signal<u32> = use_signal(|| 0);
+    let mut selected_task: Signal<Option<TaskInfo>> = use_signal(|| None);
 
     let app_state_effect = app_state.clone();
     use_effect(move || {
@@ -539,13 +689,14 @@ fn TasksCard(
                                             for task in group_tasks {
                                                 TaskPageRow {
                                                     key: "{task.id}",
-                                                    task,
+                                                    task: task.clone(),
                                                     show_category: false,
                                                     app_state: app_state.clone(),
                                                     on_refresh: move |_| {
                                                         let v = *refresh.peek() + 1;
                                                         refresh.set(v);
                                                     },
+                                                    on_edit: move |t: TaskInfo| selected_task.set(Some(t)),
                                                 }
                                             }
                                         }
@@ -553,6 +704,22 @@ fn TasksCard(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+        if let Some(task) = selected_task.read().clone() {
+            div { class: "modal-backdrop",
+                div { class: "modal",
+                    TaskTriggersModal {
+                        task,
+                        app_state: app_state.clone(),
+                        on_done: move |_| {
+                            selected_task.set(None);
+                            let v = *refresh.peek() + 1;
+                            refresh.set(v);
+                        },
+                        on_cancel: move |_| selected_task.set(None),
                     }
                 }
             }
@@ -566,17 +733,20 @@ fn TaskPageRow(
     task: TaskInfo,
     app_state: AppState,
     on_refresh: EventHandler,
+    on_edit: EventHandler<TaskInfo>,
     #[props(default = true)] show_category: bool,
 ) -> Element {
     let start_id = task.id.clone();
     let stop_id = task.id.clone();
     let c_start = app_state.client.clone();
     let c_stop = app_state.client.clone();
+    let task_for_edit = task.clone();
 
     rsx! {
         TaskRow {
             task,
             show_category,
+            on_click: move |_| on_edit.call(task_for_edit.clone()),
             on_start: move |_| {
                 let id = start_id.clone();
                 let c  = c_start.clone();
@@ -601,6 +771,7 @@ fn TaskPageRow(
 fn TaskRow(
     task: TaskInfo,
     #[props(default = true)] show_category: bool,
+    #[props(optional)] on_click: Option<EventHandler>,
     #[props(optional)] on_start: Option<EventHandler>,
     #[props(optional)] on_stop: Option<EventHandler>,
 ) -> Element {
@@ -626,9 +797,13 @@ fn TaskRow(
     };
 
     let has_controls = on_start.is_some() || on_stop.is_some();
+    let clickable = on_click.is_some();
 
     rsx! {
-        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
+        div {
+            class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]",
+            style: if clickable { "cursor: pointer;" } else { "" },
+            onclick: move |_| { if let Some(ref h) = on_click { h.call(()); } },
             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                 div { class: "task-name", "{task.name}" }
                 if show_category {
@@ -659,7 +834,10 @@ fn TaskRow(
                             button {
                                 class: "btn btn-ghost task-btn",
                                 title: "Run now",
-                                onclick: move |_| { if let Some(ref h) = on_start { h.call(()); } },
+                                onclick: move |evt: Event<MouseData>| {
+                                    evt.stop_propagation();
+                                    if let Some(ref h) = on_start { h.call(()); }
+                                },
                                 "▶"
                             }
                         }
@@ -667,7 +845,10 @@ fn TaskRow(
                             button {
                                 class: "btn btn-ghost task-btn",
                                 title: "Stop",
-                                onclick: move |_| { if let Some(ref h) = on_stop { h.call(()); } },
+                                onclick: move |evt: Event<MouseData>| {
+                                    evt.stop_propagation();
+                                    if let Some(ref h) = on_stop { h.call(()); }
+                                },
                                 "■"
                             }
                         }

@@ -101,6 +101,14 @@ impl TaskTrigger {
         .fetch_all(db)
         .await?)
     }
+
+    pub async fn delete_by_task_id(db: &SqlitePool, task_id: &str) -> Result<()> {
+        sqlx::query(r#"DELETE FROM task_triggers WHERE LOWER(task_id) = LOWER(?1)"#)
+            .bind(task_id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
 }
 
 #[derive(

@@ -270,7 +270,10 @@ impl TaskService {
 
         drop(tasks);
 
+        db::TaskTrigger::delete_by_task_id(&self.ctx.db, task_key).await?;
+
         for trigger in triggers {
+            trigger.save(&self.ctx.db).await?;
             self.add_trigger(trigger).await?;
         }
 

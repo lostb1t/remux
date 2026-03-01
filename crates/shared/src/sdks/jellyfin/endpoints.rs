@@ -85,6 +85,25 @@ impl Endpoint for StopTask {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct UpdateTaskTriggers {
+    pub task_id: String,
+    pub triggers: Vec<TaskTriggerInfo>,
+}
+
+impl Endpoint for UpdateTaskTriggers {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/scheduledtasks/{}/triggers", self.task_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.triggers).unwrap_or_default())
+    }
+}
+
 // ── AIO catalogs ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
