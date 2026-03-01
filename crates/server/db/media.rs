@@ -261,6 +261,16 @@ pub struct MediaFilter {
     pub user_state: Option<super::UserMediaStateFilter>,
     pub genre_ids: Option<Vec<Uuid>>,
     pub catalog_ids: Option<Vec<Uuid>>,
+    pub studio_ids: Option<Vec<Uuid>>,
+    pub person_ids: Option<Vec<Uuid>>,
+    pub years: Option<Vec<i64>>,
+    pub official_ratings: Option<Vec<String>>,
+    pub name_starts_with: Option<String>,
+    pub name_starts_with_or_greater: Option<String>,
+    pub name_less_than: Option<String>,
+    pub title_contains: Option<String>,
+    pub index_number: Option<i64>,
+    pub has_trailer: Option<bool>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -734,28 +744,116 @@ impl Media {
             }
 
             if let Some(user_state_filter) = &filter.user_state {
-                // Join with user_media_state table for filtering
-                qb.push(" AND EXISTS (")
-                    .push("SELECT 1 FROM user_media_state ums ")
-                    .push("WHERE ums.media_key = media.aio_id ");
-
-                if let Some(user_id) = &user_state_filter.user_id {
-                    qb.push("AND ums.user_id = ").push_bind(user_id);
-                }
-
-                if let Some(played) = &user_state_filter.played {
-                    if *played {
-                        qb.push(" AND ums.play_count > 0");
-                    } else {
-                        qb.push(" AND ums.play_count = 0");
-                    }
-                }
-
+                // favorite — always uses EXISTS
                 if let Some(favorite) = &user_state_filter.favorite {
-                    qb.push(" AND ums.favorite = ").push_bind(favorite);
+                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = media.aio_id");
+                    if let Some(user_id) = &user_state_filter.user_id {
+                        qb.push(" AND ums.user_id = ").push_bind(user_id);
+                    }
+                    qb.push(" AND ums.favorite = ").push_bind(favorite).push(")");
                 }
 
-                qb.push(")");
+                // played=true — EXISTS with play_count > 0
+                if user_state_filter.played == Some(true) {
+                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = media.aio_id");
+                    if let Some(user_id) = &user_state_filter.user_id {
+                        qb.push(" AND ums.user_id = ").push_bind(user_id);
+                    }
+                    qb.push(" AND ums.play_count > 0)");
+                }
+
+                // played=false (unplayed) — NOT EXISTS with play_count > 0
+                if user_state_filter.played == Some(false) {
+                    qb.push(" AND NOT EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = media.aio_id");
+                    if let Some(user_id) = &user_state_filter.user_id {
+                        qb.push(" AND ums.user_id = ").push_bind(user_id);
+                    }
+                    qb.push(" AND ums.play_count > 0)");
+                }
+
+                // resumable — EXISTS with playback_position > 0 AND play_count = 0
+                if user_state_filter.resumable == Some(true) {
+                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = media.aio_id");
+                    if let Some(user_id) = &user_state_filter.user_id {
+                        qb.push(" AND ums.user_id = ").push_bind(user_id);
+                    }
+                    qb.push(" AND ums.playback_position > 0 AND ums.play_count = 0)");
+                }
+            }
+
+            if let Some(years) = &filter.years {
+                if !years.is_empty() {
+                    qb.push(" AND CAST(strftime('%Y', released_at) AS INTEGER) IN (");
+                    let mut sep = qb.separated(", ");
+                    for y in years {
+                        sep.push_bind(y);
+                    }
+                    qb.push(")");
+                }
+            }
+
+            if let Some(ratings) = &filter.official_ratings {
+                if !ratings.is_empty() {
+                    qb.push(" AND certification IN (");
+                    let mut sep = qb.separated(", ");
+                    for r in ratings {
+                        sep.push_bind(r);
+                    }
+                    qb.push(")");
+                }
+            }
+
+            if let Some(s) = &filter.name_starts_with {
+                qb.push(" AND UPPER(title) LIKE ")
+                    .push_bind(format!("{}%", s.to_uppercase()));
+            }
+
+            if let Some(s) = &filter.name_starts_with_or_greater {
+                qb.push(" AND UPPER(title) >= ").push_bind(s.to_uppercase());
+            }
+
+            if let Some(s) = &filter.name_less_than {
+                qb.push(" AND UPPER(title) < ").push_bind(s.to_uppercase());
+            }
+
+            if let Some(s) = &filter.title_contains {
+                qb.push(" AND title LIKE ")
+                    .push_bind(format!("%{}%", s));
+            }
+
+            if let Some(idx) = &filter.index_number {
+                qb.push(" AND idx = ").push_bind(idx);
+            }
+
+            if let Some(true) = &filter.has_trailer {
+                qb.push(" AND json_array_length(trailers) > 0");
+            }
+            if let Some(false) = &filter.has_trailer {
+                qb.push(
+                    " AND (trailers IS NULL OR json_array_length(trailers) = 0)",
+                );
+            }
+
+            if let Some(studio_ids) = &filter.studio_ids {
+                if !studio_ids.is_empty() {
+                    qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
+                    let mut sep = qb.separated(", ");
+                    for id in studio_ids {
+                        sep.push_bind(id);
+                    }
+                    qb.push("))");
+                }
+            }
+
+            if let Some(person_ids) = &filter.person_ids {
+                if !person_ids.is_empty() {
+                    qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
+                    let mut sep = qb.separated(", ");
+                    for id in person_ids {
+                        sep.push_bind(id);
+                    }
+                    qb.push("))");
+                }
             }
         }
 
@@ -848,6 +946,124 @@ impl Media {
         } else {
             Vec::new()
         };
+
+        // Resolve genre names → IDs
+        let genre_ids_from_names: Option<Vec<Uuid>> =
+            if let Some(names) = &filter.genres {
+                if names.is_empty() {
+                    None
+                } else {
+                    let mut qb = sqlx::QueryBuilder::new(
+                        "SELECT id FROM media WHERE kind = 'genre' AND title IN (",
+                    );
+                    let mut sep = qb.separated(", ");
+                    for n in names {
+                        sep.push_bind(n);
+                    }
+                    qb.push(")");
+                    let rows = qb.build().fetch_all(db).await?;
+                    Some(rows.into_iter().filter_map(|r| r.get::<Option<Uuid>, _>(0)).collect())
+                }
+            } else {
+                None
+            };
+
+        // Resolve studio names → IDs
+        let studio_ids_from_names: Option<Vec<Uuid>> =
+            if let Some(names) = &filter.studios {
+                if names.is_empty() {
+                    None
+                } else {
+                    let mut qb = sqlx::QueryBuilder::new(
+                        "SELECT id FROM media WHERE kind = 'studio' AND title IN (",
+                    );
+                    let mut sep = qb.separated(", ");
+                    for n in names {
+                        sep.push_bind(n);
+                    }
+                    qb.push(")");
+                    let rows = qb.build().fetch_all(db).await?;
+                    Some(rows.into_iter().filter_map(|r| r.get::<Option<Uuid>, _>(0)).collect())
+                }
+            } else {
+                None
+            };
+
+        // Merge genre IDs from query param and from genre names
+        let genre_ids: Option<Vec<Uuid>> = {
+            let from_param: Option<Vec<Uuid>> = filter.genre_ids.as_ref().map(|ids| {
+                ids.iter()
+                    .flat_map(|s| s.split(','))
+                    .filter_map(|s| s.trim().parse::<Uuid>().ok())
+                    .collect()
+            });
+            match (from_param, genre_ids_from_names) {
+                (Some(mut a), Some(b)) => {
+                    a.extend(b);
+                    Some(a)
+                }
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            }
+        };
+
+        // Merge studio IDs from query param and from studio names
+        let studio_ids: Option<Vec<Uuid>> = {
+            let from_param: Option<Vec<Uuid>> =
+                filter.studio_ids.as_ref().map(|ids| {
+                    ids.iter()
+                        .flat_map(|s| s.split(','))
+                        .filter_map(|s| s.trim().parse::<Uuid>().ok())
+                        .collect()
+                });
+            match (from_param, studio_ids_from_names) {
+                (Some(mut a), Some(b)) => {
+                    a.extend(b);
+                    Some(a)
+                }
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            }
+        };
+
+        let person_ids: Option<Vec<Uuid>> = filter.person_ids.as_ref().map(|ids| {
+            ids.iter()
+                .flat_map(|s| s.split(','))
+                .filter_map(|s| s.trim().parse::<Uuid>().ok())
+                .collect()
+        });
+
+        // Build user-state filter from is_favorite + filters[] items
+        let item_filters = filter.filters.as_deref().unwrap_or(&[]);
+        let is_played = item_filters.contains(&jellyfin::ItemFilter::IsPlayed);
+        let is_unplayed = item_filters.contains(&jellyfin::ItemFilter::IsUnplayed);
+        let is_resumable = item_filters.contains(&jellyfin::ItemFilter::IsResumable);
+        let favorite = filter.is_favorite.or_else(|| {
+            item_filters
+                .contains(&jellyfin::ItemFilter::IsFavorite)
+                .then_some(true)
+        });
+
+        let user_state = if favorite.is_some() || is_played || is_unplayed || is_resumable {
+            Some(super::UserMediaStateFilter {
+                user_id: filter.user_id,
+                favorite,
+                played: if is_played {
+                    Some(true)
+                } else if is_unplayed {
+                    Some(false)
+                } else {
+                    None
+                },
+                resumable: if is_resumable { Some(true) } else { None },
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
         Ok(Self::get_by_filter(
             db,
             &MediaFilter {
@@ -859,30 +1075,20 @@ impl Media {
                 recursive: filter.recursive.unwrap_or(false),
                 include_user_state: filter.enable_user_data.is_none(),
                 total_count,
-                user_state: {
-                    let favorite = filter.is_favorite.or_else(|| {
-                        filter.filters.as_ref().and_then(|f| {
-                            f.contains(&jellyfin::ItemFilter::IsFavorite)
-                                .then_some(true)
-                        })
-                    });
-                    if favorite.is_some() {
-                        Some(super::UserMediaStateFilter {
-                            user_id: filter.user_id,
-                            favorite: favorite.clone(),
-                            ..Default::default()
-                        })
-                    } else {
-                        None
-                    }
-                },
-                genre_ids: filter.genre_ids.as_ref().map(|ids| {
-                    ids.iter()
-                        .flat_map(|s| s.split(','))
-                        .filter_map(|s| s.trim().parse::<Uuid>().ok())
-                        .collect()
-                }),
-                //   parent_id: Some(self.id),
+                user_state,
+                genre_ids,
+                studio_ids,
+                person_ids,
+                years: filter.years.clone(),
+                official_ratings: filter.official_ratings.clone(),
+                name_starts_with: filter.name_starts_with.clone(),
+                name_starts_with_or_greater: filter
+                    .name_starts_with_or_greater
+                    .clone(),
+                name_less_than: filter.name_less_than.clone(),
+                title_contains: filter.search_term.clone(),
+                index_number: filter.index_number,
+                has_trailer: filter.has_trailer,
                 ..Default::default()
             },
         )

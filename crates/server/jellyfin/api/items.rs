@@ -224,9 +224,20 @@ pub async fn get_items(
 
         //  }
     }
+    // Map season_id → parent_id if parent_id not already set
+    if q.season_id.is_some() && q.parent_id.is_none() {
+        q.parent_id = q.season_id.take();
+    }
+
+    // Always provide user_id so user-state filters work
+    if q.user_id.is_none() {
+        q.user_id = Some(session.user.id);
+    }
+
+    let want_total = q.enable_total_record_count.unwrap_or(true);
     //trace!(?q, "get_items");
     let mut result =
-        db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, false).await?;
+        db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, want_total).await?;
 
     // handle details request
     if let Some(ids) = &q.ids {
@@ -302,7 +313,7 @@ pub async fn get_items(
             .into_iter()
             .map(jellyfin::db_media_to_item)
             .collect(),
-        total_count: 999_999,
+        total_count: result.total_count as i64,
     })
 }
 

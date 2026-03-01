@@ -329,6 +329,7 @@ pub struct UserMediaStateFilter {
     pub media_key: Option<Vec<String>>,
     pub played: Option<bool>,
     pub favorite: Option<bool>,
+    pub resumable: Option<bool>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
 }
