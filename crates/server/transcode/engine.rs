@@ -122,7 +122,7 @@ pub async fn start_transcode(
                     o = o.set_audio_codec_opt("b", "128k");
                 }
                 if let Some(channels) = params_clone.audio_channels {
-                    o = o.set_audio_codec_opt("ac", &channels.to_string());
+                    o = o.set_audio_channels(channels as i32);
                 }
                 o
             }
