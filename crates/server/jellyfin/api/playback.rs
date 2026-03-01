@@ -1122,7 +1122,7 @@ async fn hls_segment_inner(
 }
 
 /// Stops and cleans up a transcoding session.
-#[delete("/videos/activetranscodings")]
+#[delete("/videos/activeencodings")]
 pub async fn delete_transcoding(
     State(state): State<AppState>,
     _session: auth::AuthSession,
