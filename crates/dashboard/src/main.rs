@@ -1427,7 +1427,7 @@ fn ImportsPage(app_state: AppState) -> Element {
                                     let client = app_state.client.clone();
                                     let cat_aio_id = cat.aio_id.clone();
                                     let cat_name = cat.name.clone();
-                                    let enabled = cat.enabled.unwrap_or(false);
+                                    let mut local_enabled = use_signal(|| cat.enabled.unwrap_or(false));
                                     let max_items_str = cat.max_items.unwrap_or(250).to_string();
                                     let mut local_max = use_signal(|| max_items_str.clone());
                                     // Per-catalog task state
@@ -1454,9 +1454,31 @@ fn ImportsPage(app_state: AppState) -> Element {
                                                     placeholder: "Max items",
                                                     value: "{local_max}",
                                                     oninput: move |e| local_max.set(e.value()),
+                                                    onchange: {
+                                                        let c = client.clone();
+                                                        let aio_id = cat_aio_id.clone();
+                                                        let name = cat_name.clone();
+                                                        move |_| {
+                                                            let enabled = *local_enabled.peek();
+                                                            let max = local_max.peek().parse::<i64>().ok();
+                                                            let c = c.clone();
+                                                            let aio_id = aio_id.clone();
+                                                            let name = name.clone();
+                                                            spawn(async move {
+                                                                let _ = c.execute(UpdateCatalogSettings {
+                                                                    aio_id,
+                                                                    payload: UpdateCatalogSettingsPayload {
+                                                                        enabled,
+                                                                        max_items: max,
+                                                                        name: Some(name),
+                                                                    },
+                                                                }).await;
+                                                            });
+                                                        }
+                                                    },
                                                 }
                                                 if let Some(tid) = task_id_opt.clone() {
-                                                    if enabled {
+                                                    if *local_enabled.read() {
                                                         if is_importing {
                                                             button {
                                                                 class: "btn btn-danger",
@@ -1497,13 +1519,14 @@ fn ImportsPage(app_state: AppState) -> Element {
                                                 label { class: "toggle m-0",
                                                     input {
                                                         r#type: "checkbox",
-                                                        checked: enabled,
+                                                        checked: *local_enabled.read(),
                                                         onchange: {
                                                             let c = client.clone();
                                                             let aio_id = cat_aio_id.clone();
                                                             let name = cat_name.clone();
                                                             move |e: Event<FormData>| {
-                                                                let enabled = e.checked();
+                                                                let new_enabled = e.checked();
+                                                                local_enabled.set(new_enabled);
                                                                 let max = local_max.peek().parse::<i64>().ok();
                                                                 let c = c.clone();
                                                                 let aio_id = aio_id.clone();
@@ -1512,7 +1535,7 @@ fn ImportsPage(app_state: AppState) -> Element {
                                                                     let _ = c.execute(UpdateCatalogSettings {
                                                                         aio_id,
                                                                         payload: UpdateCatalogSettingsPayload {
-                                                                            enabled,
+                                                                            enabled: new_enabled,
                                                                             max_items: max,
                                                                             name: Some(name),
                                                                         },

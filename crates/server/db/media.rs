@@ -804,16 +804,17 @@ impl Media {
             }
 
             if let Some(s) = &filter.name_starts_with {
-                qb.push(" AND UPPER(title) LIKE ")
-                    .push_bind(format!("{}%", s.to_uppercase()));
+                // LIKE is case-insensitive for ASCII in SQLite; no UPPER() needed.
+                // A COLLATE NOCASE index on title can satisfy this as a prefix scan.
+                qb.push(" AND title LIKE ").push_bind(format!("{}%", s));
             }
 
             if let Some(s) = &filter.name_starts_with_or_greater {
-                qb.push(" AND UPPER(title) >= ").push_bind(s.to_uppercase());
+                qb.push(" AND title >= ").push_bind(s.clone()).push(" COLLATE NOCASE");
             }
 
             if let Some(s) = &filter.name_less_than {
-                qb.push(" AND UPPER(title) < ").push_bind(s.to_uppercase());
+                qb.push(" AND title < ").push_bind(s.clone()).push(" COLLATE NOCASE");
             }
 
             if let Some(s) = &filter.title_contains {

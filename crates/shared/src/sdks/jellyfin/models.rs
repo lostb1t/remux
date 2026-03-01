@@ -1874,7 +1874,9 @@ pub struct QueueItem {
 pub enum ItemFilter {
     IsFolder,
     IsNotFolder,
+    #[serde(alias = "IsUnPlayed")]
     IsUnplayed,
+    #[serde(alias = "IsPlayed")]
     IsPlayed,
     IsFavorite,
     IsResumable,
