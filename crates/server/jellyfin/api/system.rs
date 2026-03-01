@@ -366,6 +366,7 @@ mod test {
     use crate::integration_test::{
         AUTH_HEADER, auth_header_with_token, authenticated_server, new_test_server,
     };
+    use axum_test::expect_json;
     use http::header::HeaderValue;
     use serde_json::json;
 
@@ -376,15 +377,14 @@ mod test {
         let resp = server.get("/system/info/public").await;
 
         resp.assert_status_ok();
-        resp.assert_json_contains(&json!({
+        resp.assert_json(&json!({
+            "Id": expect_json::uuid(),
+            "LocalAddress": "0.0.0.0",
             "ServerName": "Remux",
             "ProductName": "Jellyfin Server",
             "Version": "10.11.6",
             "StartupWizardCompleted": true,
         }));
-        let body: serde_json::Value = resp.json();
-        let id = body["Id"].as_str().expect("Id field should be present");
-        uuid::Uuid::parse_str(id).expect("Id should be a valid UUID");
     }
 
     #[tokio::test]
@@ -507,5 +507,237 @@ mod test {
         assert_eq!(system_info.can_self_restart, Some(true));
         assert_eq!(system_info.has_pending_restart, Some(false));
         assert_eq!(system_info.is_shutting_down, Some(false));
+    }
+
+    // --- GET /system/configuration ---
+
+    #[tokio::test]
+    async fn system_configuration_requires_auth() {
+        let server = new_test_server().await.unwrap();
+        server
+            .get("/system/configuration")
+            .expect_failure()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn system_configuration_get_test() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let resp = server
+            .get("/system/configuration")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .await;
+
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({
+            "ServerName": "Remux",
+            "IsPortAuthorized": true,
+        }));
+    }
+
+    #[tokio::test]
+    async fn system_configuration_update_test() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // Read current config
+        let resp = server
+            .get("/system/configuration")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .await;
+        resp.assert_status_ok();
+        let mut config: serde_json::Value = resp.json();
+
+        // Modify ServerName
+        config["ServerName"] = serde_json::Value::String("TestUpdated".to_string());
+
+        // POST modified config → 204
+        let post_resp = server
+            .post("/system/configuration")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&config)
+            .await;
+        post_resp.assert_status(StatusCode::NO_CONTENT);
+
+        // GET again and verify the change persisted
+        let resp2 = server
+            .get("/system/configuration")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .await;
+        resp2.assert_status_ok();
+        resp2.assert_json_contains(&json!({ "ServerName": "TestUpdated" }));
+    }
+
+    // --- GET /system/endpoint ---
+
+    #[tokio::test]
+    async fn system_endpoint_test() {
+        let server = new_test_server().await.unwrap();
+
+        let resp = server.get("/system/endpoint").await;
+
+        resp.assert_status_ok();
+        resp.assert_json(&json!({
+            "IsLocal": false,
+            "IsInNetwork": false,
+        }));
+    }
+
+    // --- GET /syncplay/list ---
+
+    #[tokio::test]
+    async fn syncplay_list_requires_auth() {
+        let server = new_test_server().await.unwrap();
+        server
+            .get("/syncplay/list")
+            .expect_failure()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn syncplay_list_test() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let resp = server
+            .get("/syncplay/list")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .await;
+
+        resp.assert_status_ok();
+    }
+
+    // --- GET+POST /quickconnect/enabled ---
+
+    #[tokio::test]
+    async fn quickconnect_enabled_get_test() {
+        let server = new_test_server().await.unwrap();
+
+        let resp = server.get("/quickconnect/enabled").await;
+
+        resp.assert_status_ok();
+        assert!(resp.text().contains("false"));
+    }
+
+    #[tokio::test]
+    async fn quickconnect_enabled_post_test() {
+        let server = new_test_server().await.unwrap();
+
+        let resp = server.post("/quickconnect/enabled").await;
+
+        resp.assert_status_ok();
+        assert!(resp.text().contains("false"));
+    }
+
+    // --- GET /branding/configuration ---
+
+    #[tokio::test]
+    async fn branding_configuration_default_test() {
+        let server = new_test_server().await.unwrap();
+
+        let resp = server.get("/branding/configuration").await;
+
+        resp.assert_status_ok();
+        resp.assert_json(&json!({ "SplashscreenEnabled": false }));
+        let body: serde_json::Value = resp.json();
+        assert!(body.get("CustomCss").is_none() || body["CustomCss"].is_null());
+    }
+
+    // --- POST /branding/configuration ---
+
+    #[tokio::test]
+    async fn branding_configuration_requires_auth() {
+        let server = new_test_server().await.unwrap();
+        server
+            .post("/branding/configuration")
+            .json(&json!({ "SplashscreenEnabled": false }))
+            .expect_failure()
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn branding_configuration_update_test() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // POST new branding config → 204
+        server
+            .post("/branding/configuration")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({ "CustomCss": "body{color:red}", "SplashscreenEnabled": false }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // GET and verify the CSS persisted
+        let resp = server.get("/branding/configuration").await;
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({ "CustomCss": "body{color:red}" }));
+    }
+
+    // --- POST /system/configuration/branding ---
+
+    #[tokio::test]
+    async fn system_configuration_branding_update_test() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // POST to /system/configuration/branding → 204
+        server
+            .post("/system/configuration/branding")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({ "CustomCss": "h1{font-size:2em}", "SplashscreenEnabled": false }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // GET /branding/configuration verifies the same store was updated
+        let resp = server.get("/branding/configuration").await;
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({ "CustomCss": "h1{font-size:2em}" }));
+    }
+
+    // --- GET /branding/css + GET /branding/css.css ---
+
+    #[tokio::test]
+    async fn branding_css_empty_test() {
+        let server = new_test_server().await.unwrap();
+
+        server.get("/branding/css").await.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn branding_css_dotcss_empty_test() {
+        let server = new_test_server().await.unwrap();
+
+        server.get("/branding/css.css").await.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn branding_css_with_css_test() {
+        let (server, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let css = "body{background:blue}";
+
+        // POST CSS via /branding/configuration
+        server
+            .post("/branding/configuration")
+            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .json(&json!({ "CustomCss": css, "SplashscreenEnabled": false }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // GET /branding/css → 200 + body equals CSS
+        let css_resp = server.get("/branding/css").await;
+        css_resp.assert_status_ok();
+        assert_eq!(css_resp.text(), css);
+
+        // GET /branding/css.css → 200 + same body
+        let dotcss_resp = server.get("/branding/css.css").await;
+        dotcss_resp.assert_status_ok();
+        assert_eq!(dotcss_resp.text(), css);
     }
 }
