@@ -302,6 +302,7 @@ pub struct PatchItemPayload {
     /// UUIDs of catalog media items to filter this smart collection by
     pub collection_catalog_filter: Option<Vec<String>>,
     pub promoted: Option<bool>,
+    pub tags: Option<Vec<String>>,
 }
 
 /// Payload for POST /aio/catalogs/{aio_id} — enable/disable a catalog and set its limit.

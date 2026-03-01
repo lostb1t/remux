@@ -271,6 +271,12 @@ pub struct MediaFilter {
     pub title_contains: Option<String>,
     pub index_number: Option<i64>,
     pub has_trailer: Option<bool>,
+    /// GetItemsQuery.tags — item must have ANY of these tags
+    pub tags: Option<Vec<String>>,
+    /// From user policy — item must have NONE of these tags
+    pub blocked_tags: Option<Vec<String>>,
+    /// From user policy — if non-empty, item must have AT LEAST ONE of these tags
+    pub allowed_tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -307,6 +313,8 @@ pub struct Media {
     //pub series_id: Option<Uuid>,
     //pub season_id: Option<Uuid>,
     //pub description: Option<String>,
+    #[sqlx(skip)]
+    pub tags: Vec<String>,
     #[sqlx(skip)]
     pub sources: Option<Vec<Media>>,
     #[sqlx(skip)]
@@ -856,6 +864,42 @@ impl Media {
                     qb.push("))");
                 }
             }
+
+            // GetItemsQuery.tags: item must have ANY of these tags
+            if let Some(tags) = &filter.tags {
+                if !tags.is_empty() {
+                    qb.push(" AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
+                    let mut sep = qb.separated(", ");
+                    for t in tags {
+                        sep.push_bind(t);
+                    }
+                    qb.push("))");
+                }
+            }
+
+            // User policy blocked_tags: hide if item has ANY blocked tag
+            if let Some(blocked) = &filter.blocked_tags {
+                if !blocked.is_empty() {
+                    qb.push(" AND NOT EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
+                    let mut sep = qb.separated(", ");
+                    for t in blocked {
+                        sep.push_bind(t);
+                    }
+                    qb.push("))");
+                }
+            }
+
+            // User policy allowed_tags: only show if item has AT LEAST ONE allowed tag
+            if let Some(allowed) = &filter.allowed_tags {
+                if !allowed.is_empty() {
+                    qb.push(" AND EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND mt.tag IN (");
+                    let mut sep = qb.separated(", ");
+                    for t in allowed {
+                        sep.push_bind(t);
+                    }
+                    qb.push("))");
+                }
+            }
         }
 
         if let Some(limit) = &filter.limit {
@@ -878,6 +922,31 @@ impl Media {
         );
 
         let mut records = records_result?;
+
+        // Batch-load tags for all fetched records
+        if !records.is_empty() {
+            let ids: Vec<Uuid> = records.iter().map(|m| m.id).collect();
+            let mut tags_qb = sqlx::QueryBuilder::new(
+                "SELECT media_id, tag FROM media_tags WHERE media_id IN (",
+            );
+            let mut sep = tags_qb.separated(", ");
+            for id in &ids {
+                sep.push_bind(id);
+            }
+            tags_qb.push(") ORDER BY tag");
+            let tag_rows = tags_qb.build().fetch_all(db).await?;
+            let mut tags_map: HashMap<Uuid, Vec<String>> = HashMap::new();
+            for row in tag_rows {
+                let media_id: Uuid = row.get(0);
+                let tag: String = row.get(1);
+                tags_map.entry(media_id).or_default().push(tag);
+            }
+            for media in &mut records {
+                if let Some(tags) = tags_map.remove(&media.id) {
+                    media.tags = tags;
+                }
+            }
+        }
 
         if filter.include_user_state {
             if let Some(user_state_filter) = &filter.user_state {
@@ -941,6 +1010,7 @@ impl Media {
         db: &sqlx::SqlitePool,
         filter: &jellyfin::GetItemsQuery,
         total_count: bool,
+        user_policy: Option<&jellyfin::UserPolicy>,
     ) -> Result<FilterResult<Media>> {
         let kinds = if let Some(include_item_types) = &filter.include_item_types {
             include_item_types.clone().into_vec::<MediaKind>()
@@ -1090,6 +1160,11 @@ impl Media {
                 title_contains: filter.search_term.clone(),
                 index_number: filter.index_number,
                 has_trailer: filter.has_trailer,
+                tags: filter.tags.clone(),
+                blocked_tags: user_policy.and_then(|p| p.blocked_tags.clone()),
+                allowed_tags: user_policy
+                    .and_then(|p| p.allowed_tags.clone())
+                    .filter(|v| !v.is_empty()),
                 ..Default::default()
             },
         )

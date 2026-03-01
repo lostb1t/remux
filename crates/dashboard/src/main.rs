@@ -1124,6 +1124,13 @@ fn CollectionForm(
             .map(|k| k.to_string())
             .unwrap_or_else(|| "smart".to_string())
     });
+    let mut tags_str = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|f| f.tags.as_ref())
+            .map(|t| t.join(", "))
+            .unwrap_or_default()
+    });
     // Selected catalog UUIDs for smart collection filter
     let mut catalog_filter: Signal<Vec<String>> = use_signal(|| {
         existing
@@ -1162,6 +1169,12 @@ fn CollectionForm(
         let prm = *promoted.peek();
         let filter = catalog_filter.peek().clone();
         let catalog_filter_payload = if ck == "smart" { Some(filter) } else { None };
+        let tags_parsed: Vec<String> = tags_str
+            .peek()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         saving.set(true);
         err.set(None);
         spawn(async move {
@@ -1175,6 +1188,7 @@ fn CollectionForm(
                             collection_kind: Some(ck),
                             collection_catalog_filter: catalog_filter_payload,
                             promoted: Some(prm),
+                            tags: Some(tags_parsed),
                         },
                     })
                     .await
@@ -1293,6 +1307,19 @@ fn CollectionForm(
                         }
                     }
                 }
+            }
+
+            div { class: "field",
+                label { class: "field-label", r#for: "col-tags", "Tags" }
+                input {
+                    id: "col-tags",
+                    r#type: "text",
+                    class: "field-input",
+                    placeholder: "action, family, kids",
+                    value: "{tags_str}",
+                    oninput: move |e| tags_str.set(e.value()),
+                }
+                p { class: "field-hint", "Comma-separated. Used for per-user content filtering." }
             }
 
             div { class: "toggle-row",

@@ -240,6 +240,11 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 })
                 .collect()
         }),
+        tags: if media.tags.is_empty() {
+            None
+        } else {
+            Some(media.tags.clone())
+        },
         remux: Some(RemuxInfo {
             collection_kind: media
                 .collection_kind

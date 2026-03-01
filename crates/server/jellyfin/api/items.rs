@@ -18,6 +18,7 @@ use crate::jellyfin;
 use crate::sdks;
 use crate::utils::IntoVec;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
+use sqlx::SqlitePool;
 use chrono::Datelike;
 use chrono::Utc;
 
@@ -209,8 +210,9 @@ pub async fn get_items(
                 });
             }
 
+            let policy = session.user.policy.as_ref().map(|p| &p.0);
             let result =
-                db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true).await?;
+                db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true, policy).await?;
 
             return Ok(ItemsQueryResult {
                 total_count: result.total_count as i64,
@@ -235,9 +237,10 @@ pub async fn get_items(
     }
 
     let want_total = q.enable_total_record_count.unwrap_or(true);
+    let policy = session.user.policy.as_ref().map(|p| &p.0);
     //trace!(?q, "get_items");
     let mut result =
-        db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, want_total).await?;
+        db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, want_total, policy).await?;
 
     // handle details request
     if let Some(ids) = &q.ids {
@@ -775,6 +778,48 @@ pub async fn channels(
     mock_items(State(state)).await
 }
 
+// ── set_tags helper ────────────────────────────────────────────────
+
+async fn set_tags(db: &SqlitePool, id: Uuid, tags: &[String]) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM media_tags WHERE media_id = ?")
+        .bind(id)
+        .execute(db)
+        .await?;
+    for tag in tags {
+        sqlx::query(
+            "INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)",
+        )
+        .bind(id)
+        .bind(tag)
+        .execute(db)
+        .await?;
+    }
+    Ok(())
+}
+
+// ── POST /items/{id} — Jellyfin web metadata editor ────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct UpdateItemRequest {
+    tags: Option<Vec<String>>,
+}
+
+#[post("/items/{id}")]
+pub async fn update_item(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdateItemRequest>,
+) -> Result<StatusCode> {
+    if let Some(tags) = &payload.tags {
+        set_tags(&state.ctx.db, id, tags)
+            .await
+            .context_bad_request("Bad Request", "Failed to update tags")?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ── PATCH /items/{id} — partial update ────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -785,6 +830,7 @@ struct PatchItemRequest {
     collection_kind: Option<String>,
     collection_catalog_filter: Option<Vec<String>>,
     promoted: Option<bool>,
+    tags: Option<Vec<String>>,
 }
 
 #[patch("/items/{id}")]
@@ -820,6 +866,12 @@ pub async fn patch_item(
 
     qb.push(" WHERE id = ").push_bind(id);
     qb.build().execute(&state.ctx.db).await?;
+
+    if let Some(tags) = &payload.tags {
+        set_tags(&state.ctx.db, id, tags)
+            .await
+            .context_bad_request("Bad Request", "Failed to update tags")?;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
