@@ -6,7 +6,7 @@ edition = "2024"
 
 [[bin]]
 name = "remux-server"
-path = "main.rs"
+path = "src/main.rs"
 
 [dependencies]
 # 12 needed for milldeware compatibility
