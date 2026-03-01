@@ -108,3 +108,7 @@ new_test_server().await.unwrap()
     .await
     .assert_status(StatusCode::UNAUTHORIZED);
 ```
+
+### Conversions
+
+When casting from and to different structs and enums. Try to use the from or tryfrom trait as much as possible.

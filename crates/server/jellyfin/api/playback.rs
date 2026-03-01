@@ -71,7 +71,7 @@ async fn items_playbackinfo_inner(
         .await?
         .context_not_found("not found", "not found")?;
 
-    let mut source = jellyfin::media_source_from_db(media);
+    let mut source: jellyfin::MediaSourceInfo = media.into();
     source.probe_in_place()?;
 
     // Determine if transcoding is needed based on device profile and query parameters

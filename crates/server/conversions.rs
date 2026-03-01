@@ -6,6 +6,25 @@ use crate::utils::get_uuid;
 use anyhow::Result;
 use std::convert::{TryFrom, TryInto};
 
+
+impl From<db::Media> for jellyfin::MediaSourceInfo {
+    fn from(source: db::Media) -> Self {
+
+    jellyfin::MediaSourceInfo {
+        id: source.id.clone(),
+        e_tag: Some(source.id.clone()),
+        path: source.url,
+        protocol: Some("File".to_string()),
+        supports_transcoding: Some(false),
+        supports_direct_stream: Some(true),
+        supports_direct_play: Some(true),
+        is_remote: Some(false),
+        name: Some(source.title.clone()),
+        ..Default::default()
+    }
+}
+
+}
 impl From<jellyfin::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
     fn from(dto: jellyfin::DisplayPreferencesDto) -> Self {
         Self {

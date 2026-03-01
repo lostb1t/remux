@@ -44,21 +44,6 @@ pub fn device_info_from(device: &db::auth::Device) -> DeviceInfo {
     }
 }
 
-pub fn media_source_from_db(source: db::Media) -> MediaSourceInfo {
-    MediaSourceInfo {
-        id: source.id.clone(),
-        e_tag: Some(source.id.clone()),
-        path: source.url,
-        protocol: Some("File".to_string()),
-        supports_transcoding: Some(false),
-        supports_direct_stream: Some(true),
-        supports_direct_play: Some(true),
-        is_remote: Some(false),
-        name: Some(source.title.clone()),
-        ..Default::default()
-    }
-}
-
 pub fn db_display_prefs_to_dto(
     prefs: db::JellyfinDisplayPrefs,
 ) -> DisplayPreferencesDto {
@@ -264,10 +249,10 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
         item.media_sources = match media.sources.clone() {
             Some(sources) if sources.is_empty() => {
-                Some(vec![media_source_from_db(media.clone())])
+                Some(vec![media.clone().into()])
             }
             Some(sources) => {
-                Some(sources.into_iter().map(media_source_from_db).collect())
+                Some(sources.into_iter().map(MediaSourceInfo::from).collect())
             }
             None => None,
         };

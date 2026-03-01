@@ -115,7 +115,7 @@ impl AioService {
                     season: None,
                     episode: None,
                 }
-                .with_cache(Duration::from_secs(3600)),
+                .with_cache(Duration::from_secs(360)),
             )
             .await?
             .meta)
