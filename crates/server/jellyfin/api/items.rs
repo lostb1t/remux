@@ -665,18 +665,22 @@ pub async fn persons(
 pub async fn items_filters(
     State(state): State<AppState>,
     _session: auth::AuthSession,
+    Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    /// genres is actually tags?
-    use strum::IntoEnumIterator;
-    // let genres = db::Genre::iter().map(|g| g.to_string()).collect();
-    let current_year = chrono::Utc::now().year() as i64;
-    //let years = (1900..=current_year).collect();
+    let kinds: Vec<db::MediaKind> = q
+        .include_item_types
+        .unwrap_or_default()
+        .into_iter()
+        .map(db::MediaKind::from)
+        .filter(|k| !matches!(k, db::MediaKind::Unknown))
+        .collect();
+
+    let genres = db::Media::get_genres(&state.ctx.db, &kinds).await?;
+    let years = db::Media::get_distinct_years(&state.ctx.db, &kinds).await?;
 
     Ok(Json(jellyfin::QueryFiltersLegacy {
-        //  genres: Some(genres),
-        //  years: Some(years),
-        genres: None,
-        years: None,
+        genres: Some(genres.into_iter().map(|g| g.title).collect()),
+        years: Some(years),
         ..Default::default()
     }))
 }
