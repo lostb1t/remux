@@ -323,7 +323,7 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
         "#EXTM3U\n\
          #EXT-X-VERSION:3\n\
          #EXT-X-STREAM-INF:BANDWIDTH=2000000\n\
-         main.m3u8?PlaySessionId={}\n",
+         main/stream.m3u8?PlaySessionId={}\n",
         play_session_id
     )
 }

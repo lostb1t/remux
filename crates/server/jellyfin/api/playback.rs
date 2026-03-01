@@ -957,7 +957,10 @@ pub async fn master_hls_video(
             max_height: q.max_height.map(|v| v as u32),
             video_bitrate: q.video_bit_rate.map(|v| v as u32),
             audio_bitrate: q.audio_bit_rate.map(|v| v as u32),
-            audio_channels: None,
+            // Force stereo downmix when transcoding audio — multi-channel AAC
+            // (e.g. 6.1 from DTS-HD) causes MEDIA_ERR_SRC_NOT_SUPPORTED on most
+            // browsers and iOS Safari.
+            audio_channels: if audio_codec == "copy" { None } else { Some(2) },
             audio_stream_index: q.audio_stream_index.map(|v| v as i32),
             subtitle_stream_index: q.subtitle_stream_index.map(|v| v as i32),
         };
@@ -1038,7 +1041,21 @@ async fn variant_hls_video_inner(
     // Update last accessed
     session.write().await.last_accessed = std::time::Instant::now();
 
-    let content = tokio::fs::read_to_string(&playlist_path).await?;
+    let raw = tokio::fs::read_to_string(&playlist_path).await?;
+
+    // FFmpeg writes bare filenames (e.g. `segment_00001.ts`). Inject
+    // PlaySessionId so the segment handler can look up the transcode session.
+    let content = raw
+        .lines()
+        .map(|line| {
+            if !line.starts_with('#') && line.ends_with(".ts") {
+                format!("{}?PlaySessionId={}", line, play_session_id)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
     Ok(Response::builder()
         .status(StatusCode::OK)
