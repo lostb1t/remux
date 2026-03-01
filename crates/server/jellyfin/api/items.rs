@@ -46,7 +46,8 @@ pub async fn get_items(
         None
     };
 
-    let search = q.search_term.clone().or(q.name_starts_with.clone());
+    //let search = q.search_term.clone().or(q.name_starts_with.clone());
+        let search = q.search_term.clone();
     let skip = q.start_index.unwrap_or(0) as u32;
 
     //  trace!(?q, "get_items");
