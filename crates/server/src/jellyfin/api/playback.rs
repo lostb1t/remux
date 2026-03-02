@@ -84,6 +84,7 @@ async fn items_playbackinfo_inner(
     };
     let bitrate_exceeded = max_bitrate.map_or(false, |max| source.bitrate > Some(max));
 
+  //  dbg!(&query);    
 //dbg!(&max_bitrate);
 //dbg!(&source);
     // Determine if transcoding is needed based on device profile and query parameters
@@ -785,7 +786,7 @@ mod tests {
         let (server, ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
         let media = insert_test_source(&ctx).await;
-        let max_bitrate: i64 = 4_000_000;
+        let max_bitrate: i64 = 1_000_000;
 
         let resp = server
             .post(&format!("/items/{}/playbackinfo", media.id))

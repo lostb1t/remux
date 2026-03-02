@@ -97,7 +97,8 @@ pub struct ServerConfiguration {
     /// Gets or sets the path to the transcode temp folder.
     #[default(Some("/transcodes".to_string()))]
     pub transcoding_temp_path: Option<String>,
-    /// Remux: AIO service base URL.
+    #[serde(default)]
+    #[serde(deserialize_with = "clean_aio_url")]
     pub aio_url: Option<String>,
     /// Remux: maximum number of items imported per catalog.
     pub catalog_max_items: Option<i64>,
