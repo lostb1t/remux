@@ -74,7 +74,7 @@ pub async fn get_items(
 
         if let Some(s) = search {
             // todo: need to to make parallel request for types
-    if let Some(aio) = crate::aio::AioService::from_settings(&state.ctx.db)
+    if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db)
         .await
 {
             let items = aio
@@ -104,7 +104,7 @@ pub async fn get_items(
             });
           }
         } else {
-          warn!("AIO not configured"):
+          warn!("AIO not configured");
         }
         //  }
     }
@@ -249,7 +249,7 @@ pub async fn get_items(
     // handle details request
     if let Some(ids) = &q.ids {
         if ids.len() == 1 {
-              if let Some(aio) = crate::aio::AioService::from_settings(&state.ctx.db)
+              if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db)
         .await
 {
             let mut media: Option<db::Media> =
