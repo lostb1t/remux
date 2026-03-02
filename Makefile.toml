@@ -2,7 +2,7 @@
 default_to_workspace = false
 
 [env]
-RUST_LOG = "info,axum=info,tower_http=info,remux_server=debug,hyper=warn,sqlx=error"
+RUST_LOG = "info,remux_server=info,axum=info,tower_http=info,hyper=warn,sqlx=error"
 RUST_BACKTRACE = 0
 CONFIG = "./config"
 AXUM_ANYHOW_EXPOSE_ERRORS=1
@@ -13,10 +13,6 @@ DASHBOARD_PATH="./target/dx/dashboard/debug/web/public"
 DB_URL = "sqlite://db.sqlite?mode=rwc"
 DATABASE_URL = "sqlite://db.sqlite?mode=rwc"
 DB="db.sqlite"
-
-[env.test]
-DB_URL = "sqlite://test.sqlite"
-DB="test.sqlite"
 
 [tasks.db-create]
 command = "cargo"
@@ -39,7 +35,6 @@ dependencies = ["db-remove", "db-create", "db-migrate"]
 
 [tasks.test]
 cwd = "crates/server"
-dependencies = ["db-reset"]
 command = "cargo"
 args = ["test"]
 

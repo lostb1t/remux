@@ -183,50 +183,10 @@ impl AioService {
             .results)
     }
 
-    pub async fn get_catalog_pages(
-        &self,
-        cat: &sdks::aio::Catalog,
-    ) -> Result<Vec<sdks::aio::Meta>> {
-        let results = stream::iter(0..25)
-            .map(|page| {
-                let client = &self.client;
-                let kind = cat.kind.clone();
-                let id = cat.id.clone();
-
-                async move {
-                    client
-                        .execute(sdks::aio::CatalogEndpoint {
-                            kind,
-                            id,
-                            search: None,
-                            genre: None,
-                            skip: Some(page),
-                        })
-                        .await
-                }
-            })
-            .buffer_unordered(8)
-            .collect::<Vec<_>>()
-            .await;
-
-        Ok(results
-            .into_iter()
-            .filter_map(|res| match res {
-                Ok(response) => Some(response.metas),
-                Err(e) => {
-                    tracing::error!("Failed to fetch page: {}", e);
-                    None
-                }
-            })
-            .flatten()
-            .unique_by(|x| x.id.clone())
-            .collect())
-    }
-
     pub async fn get_catalog_stream(
         &self,
         cat: &sdks::aio::Catalog,
-    ) -> Pin<Box<dyn Stream<Item = sdks::aio::Meta> + Send>> {
+    ) -> Result<Pin<Box<dyn Stream<Item = sdks::aio::Meta> + Send>>> {
         let client = self.client.clone();
         let kind = cat.kind.clone();
         let id = cat.id.clone();
@@ -240,8 +200,7 @@ impl AioService {
                 genre: None,
                 skip: None,
             })
-            .await
-            .unwrap()
+            .await?
             .metas
             .len() as u32;
 
@@ -282,6 +241,6 @@ impl AioService {
             })
             .flatten();
 
-        Box::pin(pages)
+        Ok(Box::pin(pages))
     }
 }

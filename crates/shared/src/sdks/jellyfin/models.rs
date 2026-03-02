@@ -809,21 +809,21 @@ impl DirectPlayProfile {
     pub fn supports_container(&self, container: &str) -> bool {
         self.container
             .as_ref()
-            .map(|c| c.split(',').any(|c| c.eq_ignore_ascii_case(container)))
+            .map(|c| c == "*" || c.split(',').any(|c| c.trim().eq_ignore_ascii_case(container)))
             .unwrap_or(true)
     }
 
     pub fn supports_video_codec(&self, codec: &str) -> bool {
         self.video_codec
             .as_ref()
-            .map(|v| v.split(',').any(|v| v.eq_ignore_ascii_case(codec)))
+            .map(|v| v == "*" || v.split(',').any(|v| v.trim().eq_ignore_ascii_case(codec)))
             .unwrap_or(true)
     }
 
     pub fn supports_audio_codec(&self, codec: &str) -> bool {
         self.audio_codec
             .as_ref()
-            .map(|a| a.split(',').any(|a| a.eq_ignore_ascii_case(codec)))
+            .map(|a| a == "*" || a.split(',').any(|a| a.trim().eq_ignore_ascii_case(codec)))
             .unwrap_or(true)
     }
 }

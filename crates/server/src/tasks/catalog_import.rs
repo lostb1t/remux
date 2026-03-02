@@ -79,7 +79,7 @@ impl Task for CatalogImportTask {
 
             let catalog_id = catalog.id;
             let mut meta_stream =
-                aio.get_catalog_stream(&manifest_cat).await.chunks(500);
+                aio.get_catalog_stream(&manifest_cat).await?.chunks(500);
             let mut count = 0usize;
 
             while let Some(mut metas) = meta_stream.next().await {

@@ -75,7 +75,13 @@ async fn items_playbackinfo_inner(
     
     // todo: add check if probing is really succesfull. If not fail
 
-    let max_bitrate: Option<i64> = query.max_streaming_bitrate.or(device_profile.as_ref().and_then(|p| p.max_streaming_bitrate));
+    let max_bitrate: Option<i64> = match (
+        query.max_streaming_bitrate,
+        device_profile.as_ref().and_then(|p| p.max_streaming_bitrate),
+    ) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     let bitrate_exceeded = max_bitrate.map_or(false, |max| source.bitrate > Some(max));
 
 //dbg!(&max_bitrate);
