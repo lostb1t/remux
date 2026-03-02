@@ -317,8 +317,10 @@ pub struct Meta {
     // #[serde(alias = "imdb_id", alias = "imdbId")]
     #[serde(rename = "imdb_id")]
     pub imdb_id: Option<String>,
-    pub country: Option<String>,
-    pub director: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_string_or_array")]
+    pub country: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_option_string_or_array")]
+    pub director: Option<Vec<String>>,
     pub description: Option<String>,
     pub genre: Option<Vec<String>>,
     #[serde(
@@ -403,6 +405,24 @@ where
         None => Ok(None),
         Some(v) => Ok(serde_json::from_value(v).ok()),
     }
+}
+
+/// Accepts either a JSON string or an array of strings.
+/// A bare string becomes a single-element Vec; null or missing becomes None.
+fn deserialize_option_string_or_array<'de, D>(de: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        S(String),
+        V(Vec<String>),
+    }
+    Ok(Option::<Repr>::deserialize(de)?.map(|r| match r {
+        Repr::S(s) => vec![s],
+        Repr::V(v) => v,
+    }))
 }
 
 fn deserialize_opt_duration_empty_ok<'de, D>(
