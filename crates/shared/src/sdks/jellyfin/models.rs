@@ -2324,6 +2324,7 @@ pub struct HlsVideoQuery {
     pub audio_bit_rate: Option<i32>,
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
+    pub max_streaming_bitrate: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -217,7 +217,7 @@ pub async fn update_task_triggers(
 async fn scheduled_tasks_test() {
     use crate::integration_test::{auth_header_with_token, authenticated_server};
     use http::header::HeaderValue;
-    let (server, token) = authenticated_server().await;
+    let (server, _ctx, token) = authenticated_server().await;
     let auth = auth_header_with_token(&token);
 
     let response = server

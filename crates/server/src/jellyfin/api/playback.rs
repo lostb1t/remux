@@ -63,7 +63,7 @@ async fn items_playbackinfo_inner(
     id: Uuid,
     media_source_id: Option<Uuid>,
     device_profile: Option<jellyfin::DeviceProfile>,
-    query_params: jellyfin::PlaybackInfoQuery,
+    query: jellyfin::PlaybackInfoQuery,
 ) -> Result<impl IntoResponse> {
     trace!(?id, ?media_source_id, "items_playbackinfo");
 
@@ -71,27 +71,34 @@ async fn items_playbackinfo_inner(
         .await?
         .context_not_found("not found", "not found")?;
 
-    let mut source: jellyfin::MediaSourceInfo = media.into();
-    source.probe_in_place()?;
+    let mut source: jellyfin::MediaSourceInfo = media.probe()?;
+    
+    // todo: add check if probing is really succesfull. If not fail
 
+    let max_bitrate: Option<i64> = query.max_streaming_bitrate.or(device_profile.as_ref().and_then(|p| p.max_streaming_bitrate));
+    let bitrate_exceeded = max_bitrate.map_or(false, |max| source.bitrate > Some(max));
+
+//dbg!(&max_bitrate);
+//dbg!(&source);
     // Determine if transcoding is needed based on device profile and query parameters
     let needs_transcoding = device_profile
         .as_ref()
         .map(|profile| {
             // Check if transcoding is explicitly enabled/disabled
-            let transcoding_enabled = query_params.enable_transcoding.unwrap_or(false);
+            let transcoding_enabled = query.enable_transcoding.unwrap_or(false);
 
             // Check if direct play is enabled/disabled
-            let direct_play_enabled = query_params.enable_direct_play.unwrap_or(true);
+            let direct_play_enabled = query.enable_direct_play.unwrap_or(true);
             let direct_play_supported = profile.supports_direct_play(&source);
 
-            transcoding_enabled || !direct_play_supported || !direct_play_enabled
+            transcoding_enabled || !direct_play_supported || !direct_play_enabled || bitrate_exceeded
         })
         .unwrap_or(true); // Default to transcoding if no device profile
 
     tracing::debug!(
-        "playback decision - needs transcoding: {}",
-        needs_transcoding
+        "playback decision - needs transcoding: {}, bitrate_exceeded: {}",
+        needs_transcoding,
+        bitrate_exceeded,
     );
 
     let play_session_id = utils::get_uuid().as_simple().to_string();
@@ -109,10 +116,14 @@ async fn items_playbackinfo_inner(
             })
             .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
+        let bitrate_param = max_bitrate
+            .map(|b| format!("&MaxStreamingBitrate={}", b))
+            .unwrap_or_default();
+
         source.supports_transcoding = Some(true);
         source.transcoding_url = Some(format!(
-            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=h264&AudioCodec=aac",
-            id, play_session_id, source.id
+            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=h264&AudioCodec=aac{}",
+            id, play_session_id, source.id, bitrate_param,
         ));
         source.transcoding_container = Some(trans_container);
         source.transcoding_sub_protocol = Some(trans_protocol);
@@ -341,38 +352,14 @@ mod tests {
     use http::header::HeaderValue;
     use serde_json::json;
 
-    const AUTH_HEADER: &str = "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\"";
-
-    async fn authenticated_server() -> (axum_test::TestServer, String) {
-        let server = crate::integration_test::new_test_server().await.unwrap();
-
-        let resp = server
-            .post("/users/authenticatebyname")
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_static(AUTH_HEADER),
-            )
-            .json(&json!({
-                "Username": "test",
-                "Pw": "test"
-            }))
-            .await;
-
-        let body: serde_json::Value = resp.json();
-        let token = body["AccessToken"].as_str().unwrap().to_string();
-        (server, token)
-    }
-
-    fn auth_header_with_token(token: &str) -> String {
-        format!(
-            "MediaBrowser Client=\"Test\", Device=\"Test\", DeviceId=\"test-device\", Version=\"1.0.0\", Token=\"{}\"",
-            token
-        )
-    }
+    use crate::integration_test::{
+        AUTH_HEADER, auth_header_with_token, authenticated_server, insert_test_source,
+        new_test_server,
+    };
 
     #[tokio::test]
     async fn test_playback_start() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         let resp = server
@@ -407,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_playback_start_minimal_payload() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         // Clients may send very minimal payloads
@@ -428,7 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_playback_progress() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         // Start playback first
@@ -469,7 +456,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_playback_stopped() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         // Start playback
@@ -505,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_playback_full_lifecycle() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
         let psid = "test-session-lifecycle";
 
@@ -573,7 +560,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping_session() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         let resp = server
@@ -589,7 +576,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_playback_progress_without_start_is_noop() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         // Progress with non-existent session should still return 204
@@ -611,7 +598,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_playback_stopped_without_start_is_noop() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         let resp = server
@@ -632,7 +619,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_sessions_empty() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         let resp = server
@@ -651,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_sessions_with_active_session() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         // Start a playback session
@@ -685,6 +672,228 @@ mod tests {
         assert_eq!(sessions[0].id, Some("test-device".to_string()));
         // now_playing_item is populated for the active playback session
         assert!(sessions[0].now_playing_item.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_playbackinfo_requires_auth() {
+        let (server, _ctx) = new_test_server().await.unwrap();
+        let fake_id = uuid::Uuid::new_v4();
+
+        server
+            .post(&format!("/items/{}/playbackinfo", fake_id))
+            .expect_failure()
+            .json(&json!({}))
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_playbackinfo_not_found() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let fake_id = uuid::Uuid::new_v4();
+
+        server
+            .post(&format!("/items/{}/playbackinfo", fake_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .expect_failure()
+            .json(&json!({}))
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+    }
+
+    /// Without a device profile the endpoint always returns a transcoding URL.
+    #[tokio::test]
+    async fn test_playbackinfo_no_profile_returns_transcoding() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&ctx).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({
+            "MediaSources": [{
+                "SupportsTranscoding": true,
+                "SupportsDirectPlay": false,
+            }]
+        }));
+
+        let body: serde_json::Value = resp.json();
+        let url = body["MediaSources"][0]["TranscodingUrl"]
+            .as_str()
+            .expect("TranscodingUrl should be set");
+        assert!(url.contains("master.m3u8"), "should be an HLS URL: {}", url);
+    }
+
+    /// A device profile that supports direct play for the media's container
+    /// causes the endpoint to return a direct-play response.
+    #[tokio::test]
+    async fn test_playbackinfo_direct_play_profile() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&ctx).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "DeviceProfile": {
+                    "DirectPlayProfiles": [
+                        { "Type": "Video", "Container": "*", "VideoCodec": "*", "AudioCodec": "*" }
+                    ],
+                    "TranscodingProfiles": [],
+                    "CodecProfiles": []
+                },
+                "EnableDirectPlay": true,
+                "EnableTranscoding": false
+            }))
+            .await;
+
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({
+            "MediaSources": [{
+                "SupportsDirectPlay": true,
+                "SupportsTranscoding": false,
+            }]
+        }));
+    }
+
+    /// When `MaxStreamingBitrate` is present the transcoding URL must include it
+    /// so the HLS handler can cap the video bitrate accordingly.
+    #[tokio::test]
+    async fn test_playbackinfo_max_streaming_bitrate_in_url() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&ctx).await;
+        let max_bitrate: i64 = 4_000_000;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": max_bitrate }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let url = body["MediaSources"][0]["TranscodingUrl"]
+            .as_str()
+            .expect("TranscodingUrl should be present");
+        assert!(
+            url.contains(&format!("MaxStreamingBitrate={}", max_bitrate)),
+            "TranscodingUrl should contain MaxStreamingBitrate: {}",
+            url
+        );
+    }
+
+    /// The effective bitrate is the minimum of the per-request value and the
+    /// device-profile value. Both should appear in the transcoding URL.
+    #[tokio::test]
+    async fn test_playbackinfo_effective_bitrate_is_minimum() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&ctx).await;
+
+        // Query says 8 Mbps, profile says 4 Mbps → effective should be 4 Mbps.
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "MaxStreamingBitrate": 8_000_000i64,
+                "DeviceProfile": {
+                    "MaxStreamingBitrate": 4_000_000i64,
+                    "DirectPlayProfiles": [],
+                    "TranscodingProfiles": [],
+                    "CodecProfiles": []
+                }
+            }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let url = body["MediaSources"][0]["TranscodingUrl"]
+            .as_str()
+            .expect("TranscodingUrl should be present");
+        assert!(
+            url.contains("MaxStreamingBitrate=4000000"),
+            "effective bitrate should be 4 Mbps (minimum): {}",
+            url
+        );
+    }
+
+    /// `enable_direct_play: false` must force transcoding even with a matching
+    /// direct-play profile.
+    #[tokio::test]
+    async fn test_playbackinfo_force_transcode_when_direct_play_disabled() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&ctx).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "EnableDirectPlay": false,
+                "DeviceProfile": {
+                    "DirectPlayProfiles": [
+                        { "Type": "Video", "Container": "*" }
+                    ],
+                    "TranscodingProfiles": [],
+                    "CodecProfiles": []
+                }
+            }))
+            .await;
+
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({
+            "MediaSources": [{ "SupportsTranscoding": true }]
+        }));
+    }
+
+    /// Response always contains a `PlaySessionId`.
+    #[tokio::test]
+    async fn test_playbackinfo_has_play_session_id() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&ctx).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert!(
+            body["PlaySessionId"].as_str().is_some_and(|s| !s.is_empty()),
+            "PlaySessionId must be present and non-empty"
+        );
     }
 }
 
@@ -971,7 +1180,14 @@ pub async fn master_hls_video(
             start_time_ticks: q.start_time_ticks,
             max_width: q.max_width.map(|v| v as u32),
             max_height: q.max_height.map(|v| v as u32),
-            video_bitrate: q.video_bit_rate.map(|v| v as u32),
+            // Derive video bitrate from MaxStreamingBitrate when not explicitly set,
+            // reserving 192 kbps for AAC stereo audio.
+            video_bitrate: q.video_bit_rate.map(|v| v as u32).or_else(|| {
+                q.max_streaming_bitrate.map(|b| {
+                    const AUDIO_RESERVE_BPS: u32 = 192_000;
+                    (b as u32).saturating_sub(AUDIO_RESERVE_BPS)
+                })
+            }),
             audio_bitrate: q.audio_bit_rate.map(|v| v as u32),
             // Force stereo downmix when transcoding audio — multi-channel AAC
             // (e.g. 6.1 from DTS-HD) causes MEDIA_ERR_SRC_NOT_SUPPORTED on most

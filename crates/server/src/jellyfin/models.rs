@@ -2,30 +2,31 @@ pub use shared::sdks::jellyfin::models::*;
 
 use crate::db;
 use crate::utils;
+use anyhow::Result;
 
 pub trait MediaSourceInfoExt {
-    fn probe_in_place(&mut self) -> anyhow::Result<()>;
-}
+    //fn probe_in_place(&mut self) -> anyhow::Result<()>;
+    fn probe(&self) -> Result<MediaSourceInfo>;
+  }
 
-impl MediaSourceInfoExt for MediaSourceInfo {
-    fn probe_in_place(&mut self) -> anyhow::Result<()> {
+impl MediaSourceInfoExt for db::Media {
+
+//impl MediaSourceInfoExt for MediaSourceInfo {
+    fn probe(&self) -> Result<MediaSourceInfo> {
         let url = self
-            .path
+            .url
             .clone()
             .ok_or_else(|| anyhow::anyhow!("missing url"))?;
-        let probed = crate::transcode::probing::probe_media(&url)?;
+        let mut probed = crate::transcode::probing::probe_media(&url)?;
 
-        let id = self.id.clone();
-        let name = self.name.clone();
-        let path = self.path.clone();
+        probed.id = self.id.clone();
+        probed.name = Some(self.title.clone());
+        probed.path = self.url.clone();
 
-        *self = probed;
+        
+        
+        Ok(probed)
 
-        self.id = id;
-        self.name = name;
-        self.path = path;
-
-        Ok(())
     }
 }
 

@@ -383,7 +383,7 @@ mod test {
 
     #[tokio::test]
     async fn test_system_info_public() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         let resp = server.get("/system/info/public").await;
 
@@ -400,7 +400,7 @@ mod test {
 
     #[tokio::test]
     async fn system_ping_test() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         let response = server.get("/system/ping").await;
 
@@ -410,7 +410,7 @@ mod test {
 
     #[tokio::test]
     async fn system_info_storage_test() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         let response = server
@@ -445,7 +445,7 @@ mod test {
 
     #[tokio::test]
     async fn system_activity_log_test() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         let response = server
@@ -468,7 +468,7 @@ mod test {
     #[tokio::test]
     async fn system_endpoints_exist_and_protected() {
         use crate::integration_test::new_test_server;
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         // Unauthenticated requests should return 401, not 404
         let response = server.post("/system/restart").expect_failure().await;
@@ -482,7 +482,7 @@ mod test {
     async fn system_restart_requires_auth() {
         use crate::integration_test::new_test_server;
 
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
         // Unauthenticated → 401
         let response = server.post("/system/restart").expect_failure().await;
         response.assert_status(StatusCode::UNAUTHORIZED);
@@ -492,7 +492,7 @@ mod test {
     async fn system_shutdown_requires_auth() {
         use crate::integration_test::new_test_server;
 
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
         // Unauthenticated → 401
         let response = server.post("/system/shutdown").expect_failure().await;
         response.assert_status(StatusCode::UNAUTHORIZED);
@@ -500,7 +500,7 @@ mod test {
 
     #[tokio::test]
     async fn system_info_shows_capabilities() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         let response = server
@@ -524,7 +524,7 @@ mod test {
 
     #[tokio::test]
     async fn system_configuration_requires_auth() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
         server
             .get("/system/configuration")
             .expect_failure()
@@ -534,7 +534,7 @@ mod test {
 
     #[tokio::test]
     async fn system_configuration_get_test() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         let resp = server
@@ -551,7 +551,7 @@ mod test {
 
     #[tokio::test]
     async fn system_configuration_update_test() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         // Read current config
@@ -586,7 +586,7 @@ mod test {
 
     #[tokio::test]
     async fn system_endpoint_test() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         let resp = server.get("/system/endpoint").await;
 
@@ -601,7 +601,7 @@ mod test {
 
     #[tokio::test]
     async fn syncplay_list_requires_auth() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
         server
             .get("/syncplay/list")
             .expect_failure()
@@ -611,7 +611,7 @@ mod test {
 
     #[tokio::test]
     async fn syncplay_list_test() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         let resp = server
@@ -626,7 +626,7 @@ mod test {
 
     #[tokio::test]
     async fn quickconnect_enabled_get_test() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         let resp = server.get("/quickconnect/enabled").await;
 
@@ -636,7 +636,7 @@ mod test {
 
     #[tokio::test]
     async fn quickconnect_enabled_post_test() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         let resp = server.post("/quickconnect/enabled").await;
 
@@ -648,7 +648,7 @@ mod test {
 
     #[tokio::test]
     async fn branding_configuration_default_test() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         let resp = server.get("/branding/configuration").await;
 
@@ -662,7 +662,7 @@ mod test {
 
     #[tokio::test]
     async fn branding_configuration_requires_auth() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
         server
             .post("/branding/configuration")
             .json(&json!({ "SplashscreenEnabled": false }))
@@ -673,7 +673,7 @@ mod test {
 
     #[tokio::test]
     async fn branding_configuration_update_test() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         // POST new branding config → 204
@@ -694,7 +694,7 @@ mod test {
 
     #[tokio::test]
     async fn system_configuration_branding_update_test() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         // POST to /system/configuration/branding → 204
@@ -715,21 +715,21 @@ mod test {
 
     #[tokio::test]
     async fn branding_css_empty_test() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         server.get("/branding/css").await.assert_status(StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
     async fn branding_css_dotcss_empty_test() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         server.get("/branding/css.css").await.assert_status(StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
     async fn branding_css_with_css_test() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
         let css = "body{background:blue}";
 

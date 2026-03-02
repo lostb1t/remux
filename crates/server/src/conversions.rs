@@ -9,7 +9,6 @@ use std::convert::{TryFrom, TryInto};
 
 impl From<db::Media> for jellyfin::MediaSourceInfo {
     fn from(source: db::Media) -> Self {
-
     jellyfin::MediaSourceInfo {
         id: source.id.clone(),
         e_tag: Some(source.id.clone()),

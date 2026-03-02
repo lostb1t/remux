@@ -128,6 +128,19 @@ async fn init_app() -> Result<Router> {
 }
 
 pub async fn init_app_with_config(config: Config) -> Result<Router> {
+    let (router, _ctx) = init_app_inner(config).await?;
+    Ok(router)
+}
+
+/// Test-only variant: returns the router AND the `AppContext` (which carries
+/// the `SqlitePool`) so tests can insert fixture data into the same DB the
+/// server uses.
+#[cfg(test)]
+pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
+    init_app_inner(config).await
+}
+
+async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
     log_capture::init_file(&config.log_file);
     debug!("config: {}", serde_json::to_string_pretty(&config).unwrap());
 
@@ -186,7 +199,7 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
         .expose_headers(Any);
 
     let dashboard_index = format!("{}/index.html", ctx.config.dashboard_path);
-    Ok(Router::new()
+    let router = Router::new()
         .route("/websocket", get(ws::ws_handler))
         .merge(collect_routes())
         .nest_service(
@@ -208,7 +221,8 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
         .fallback_service(
             web_transform::TransformLayer::new()
                 .layer(ServeDir::new(ctx.config.web_path.clone())),
-        ))
+        );
+    Ok((router, ctx))
 }
 
 #[derive(Clone)]

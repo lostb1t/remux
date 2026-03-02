@@ -477,7 +477,7 @@ mod e2e_tests {
 
     #[tokio::test]
     async fn test_authenticate_valid_credentials() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         let resp = server
             .post("/users/authenticatebyname")
@@ -496,7 +496,7 @@ mod e2e_tests {
 
     #[tokio::test]
     async fn test_authenticate_wrong_password() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         let resp = server
             .post("/users/authenticatebyname")
@@ -513,7 +513,7 @@ mod e2e_tests {
 
     #[tokio::test]
     async fn test_authenticate_unknown_user() {
-        let server = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server().await.unwrap();
 
         let resp = server
             .post("/users/authenticatebyname")
@@ -530,7 +530,7 @@ mod e2e_tests {
 
     #[tokio::test]
     async fn test_update_display_preferences() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         // POST to save display preferences
@@ -587,7 +587,7 @@ mod e2e_tests {
 
     #[tokio::test]
     async fn test_update_user_configuration() {
-        let (server, token) = authenticated_server().await;
+        let (server, _ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
 
         // Get user ID from /users/me
