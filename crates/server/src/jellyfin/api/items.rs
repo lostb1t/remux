@@ -36,9 +36,7 @@ pub async fn get_items(
     _count: bool,
 ) -> Result<ItemsQueryResult> {
     //trace!(?q, "get_items");
-    let aio = crate::aio::AioService::from_settings(&state.ctx.db)
-        .await
-        .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
+
 
     let parent = if let Some(parent_id) = q.parent_id.clone() {
         db::Media::get_by_id(&state.ctx.db, &parent_id).await?
@@ -47,7 +45,7 @@ pub async fn get_items(
     };
 
     //let search = q.search_term.clone().or(q.name_starts_with.clone());
-        let search = q.search_term.clone();
+    let search = q.search_term.clone();
     let skip = q.start_index.unwrap_or(0) as u32;
 
     //  trace!(?q, "get_items");
@@ -76,7 +74,9 @@ pub async fn get_items(
 
         if let Some(s) = search {
             // todo: need to to make parallel request for types
-
+    if let Some(aio) = crate::aio::AioService::from_settings(&state.ctx.db)
+        .await
+{
             let items = aio
                 .search(types[0].clone().into(), s)
                 .await?
@@ -102,6 +102,9 @@ pub async fn get_items(
                 items: items,
                 total_count: 9999,
             });
+          }
+        } else {
+          warn!("AIO not configured"):
         }
         //  }
     }
@@ -138,7 +141,7 @@ pub async fn get_items(
         });
     }
 
-    let manifest = aio.get_manifest().await?;
+    //let manifest = aio.get_manifest().await?;
 
     if let Some(parent) = &parent {
         if parent.id == db::collection_uuid() {
@@ -246,6 +249,9 @@ pub async fn get_items(
     // handle details request
     if let Some(ids) = &q.ids {
         if ids.len() == 1 {
+              if let Some(aio) = crate::aio::AioService::from_settings(&state.ctx.db)
+        .await
+{
             let mut media: Option<db::Media> =
                 if let Some(media) = result.records.get(0) {
                     Some(media.clone())
@@ -253,6 +259,7 @@ pub async fn get_items(
                     if let Some(meta) =
                         state.ctx.store.get::<sdks::aio::Meta>(*ids.get(0).unwrap())
                     {
+                      
                         let mut media: db::Media = aio
                             .get_meta(meta.media_type.clone(), meta.id.clone())
                             .await?
@@ -308,6 +315,7 @@ pub async fn get_items(
                     total_count: 1,
                 });
             }
+          }
         }
     }
 
@@ -894,6 +902,7 @@ pub async fn aio_catalogs(
     let aio = crate::aio::AioService::from_settings(&state.ctx.db)
         .await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
+    
     let manifest = aio.get_manifest().await?;
 
     // Look up existing catalog media items to merge enabled/max_items

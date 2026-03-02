@@ -70,6 +70,9 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
 
     tracing::debug!(url, "probing media");
 
+  //  let format_context = crate::ez_ffmpeg::ffmpeg_next::format::input(&url.into())?;
+ //       let duration_us = format_context.duration();
+  //  let format = format_context.format().name().to_string();
     let duration_us = get_duration_us(url).ok();
     let format = get_format(url).ok();
 

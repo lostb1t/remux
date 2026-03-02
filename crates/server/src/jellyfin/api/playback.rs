@@ -773,7 +773,7 @@ mod tests {
             "MediaSources": [{
                 "Bitrate": 3849414,
                 "Container": "mp4",
-                "Size": 292828,
+             //   "Size": 292828,
                 "RunTimeTicks": 100000000,
                 "SupportsDirectPlay": true,
                 "SupportsTranscoding": false         

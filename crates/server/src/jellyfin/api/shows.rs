@@ -58,11 +58,7 @@ pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let manifest = crate::aio::AioService::from_settings(&state.ctx.db)
-        .await
-        .context_bad_request("AIO not configured", "Complete the setup wizard first")?
-        .get_manifest()
-        .await?;
+  
 
     let mut items = db::Media::get_by_filter(
         &state.ctx.db,
@@ -94,9 +90,7 @@ pub async fn userviews_groupingoptions(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    crate::aio::AioService::from_settings(&state.ctx.db)
-        .await
-        .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
+  
 
     // Ok(Json(json!(
     // )))
