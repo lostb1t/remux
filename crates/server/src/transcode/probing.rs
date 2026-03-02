@@ -86,7 +86,6 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
     let mut streams: Vec<jellyfin::MediaStream> = Vec::new();
     let mut bitrate = None;
     for info in stream_infos.iter() {
-        dbg!(&info);
         let stream = match info {
             StreamInfo::Video {
                 index,
@@ -99,7 +98,7 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
                 ..
             } => {
                 let language = metadata.get("language").cloned();
-                bitrate = Some(nonzero(*bit_rate));
+                bitrate = nonzero(*bit_rate);
                 jellyfin::MediaStream {
                     type_: Some(jellyfin::MediaStreamType::Video),
                     index: Some(*index as i64),
@@ -189,6 +188,7 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
         media_streams: streams,
         container,
         run_time_ticks,
+        bitrate,
         //  supports_direct_play: Some(true),
         //  supports_direct_stream: Some(true),
         //supports_transcoding: Some(true),

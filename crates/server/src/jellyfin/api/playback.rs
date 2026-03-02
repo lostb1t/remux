@@ -742,6 +742,44 @@ mod tests {
             .expect("TranscodingUrl should be set");
         assert!(url.contains("master.m3u8"), "should be an HLS URL: {}", url);
     }
+    
+    #[tokio::test]
+    async fn test_playbackinfo_valid_response() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&ctx).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "DeviceProfile": {
+                    "DirectPlayProfiles": [
+                        { "Type": "Video", "Container": "*", "VideoCodec": "*", "AudioCodec": "*" }
+                    ],
+                    "TranscodingProfiles": [],
+                    "CodecProfiles": []
+                },
+                "EnableDirectPlay": true,
+                "EnableTranscoding": false
+            }))
+            .await;
+
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({
+            "MediaSources": [{
+                "Bitrate": 3849414,
+                "Container": "mp4",
+                "Size": 292828,
+                "RunTimeTicks": 100000000,
+                "SupportsDirectPlay": true,
+                "SupportsTranscoding": false         
+            }]
+        }));
+    }
 
     /// A device profile that supports direct play for the media's container
     /// causes the endpoint to return a direct-play response.

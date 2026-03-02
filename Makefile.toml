@@ -36,7 +36,7 @@ dependencies = ["db-remove", "db-create", "db-migrate"]
 [tasks.test]
 cwd = "crates/server"
 command = "cargo"
-args = ["test"]
+args = ["test", "--", "--nocapture"]
 
 [tasks.dev]
 #command = "cargo"
