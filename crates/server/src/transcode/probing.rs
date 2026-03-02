@@ -65,16 +65,17 @@ fn map_container(format: &str) -> String {
 
 /// Probe a media URL and return a Jellyfin MediaSourceInfo directly.
 pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
-    use crate::ez_ffmpeg::container_info::{get_duration_us, get_format};
     use crate::ez_ffmpeg::stream_info::{StreamInfo, find_all_stream_infos};
+    use ffmpeg_next::format;
 
     tracing::debug!(url, "probing media");
 
-  //  let format_context = crate::ez_ffmpeg::ffmpeg_next::format::input(&url.into())?;
- //       let duration_us = format_context.duration();
-  //  let format = format_context.format().name().to_string();
-    let duration_us = get_duration_us(url).ok();
-    let format = get_format(url).ok();
+    let format_context = format::input(&url.to_string())
+        .map_err(|e| anyhow!("Failed to open media for probing {}: {}", url, e))?;
+    let duration_us = Some(format_context.duration()).filter(|&d| d > 0);
+    let format = Some(format_context.format().name().to_string());
+    let container_bit_rate = format_context.bit_rate();
+    drop(format_context);
 
     tracing::debug!(?duration_us, ?format, "probe container info");
 
@@ -101,14 +102,15 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
                 ..
             } => {
                 let language = metadata.get("language").cloned();
-                bitrate = nonzero(*bit_rate);
+                let effective_bit_rate = nonzero(*bit_rate).or_else(|| nonzero(container_bit_rate));
+                bitrate = effective_bit_rate;
                 jellyfin::MediaStream {
                     type_: Some(jellyfin::MediaStreamType::Video),
                     index: Some(*index as i64),
                     codec: Some(codec_name.clone()),
                     width: nonzero(*width).map(|v| v as i64),
                     height: nonzero(*height).map(|v| v as i64),
-                    bit_rate: nonzero(*bit_rate),
+                    bit_rate: effective_bit_rate,
                     average_frame_rate: nonzero(*fps as f32),
                     real_frame_rate: nonzero(*fps as f32),
                     is_default: Some(check_disposition(metadata, "default")),
@@ -185,7 +187,7 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
     }
 
     let run_time_ticks = duration_us.and_then(|us| us.checked_mul(10));
-    let container = format.map(|f| map_container(&f));
+    let container = format.map(|f| map_container(f.as_str()));
 
     Ok(jellyfin::MediaSourceInfo {
         media_streams: streams,

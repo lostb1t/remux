@@ -4362,6 +4362,7 @@ dependencies = [
  "duration-str",
  "ez-ffmpeg 0.10.0",
  "ez-ffmpeg 0.10.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ffmpeg-next",
  "futures",
  "futures-util",
  "headers",

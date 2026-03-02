@@ -99,9 +99,11 @@ rust_iso3166 = "0.1.14"
 
 [target.'cfg(any(target_arch = "arm", target_arch = "aarch64"))'.dependencies]
 ez_ffmpeg_arm = { package = "ez-ffmpeg", path = "../../vendor/ez-ffmpeg" }
+ffmpeg-next = { version = "7.1.0", optional = false }
 
 [target.'cfg(not(any(target_arch = "arm", target_arch = "aarch64")))'.dependencies]
 ez_ffmpeg_upstream = { package = "ez-ffmpeg", version = "0.10" }
+ffmpeg-next = { version = "7.1.0", optional = false }
 
 [features]
 default = []
