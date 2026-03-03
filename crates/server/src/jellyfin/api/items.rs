@@ -97,16 +97,16 @@ pub async fn get_items(
                 })
                 .collect::<Vec<_>>();
 
-            //let items = vec![];
             return Ok(ItemsQueryResult {
                 items: items,
                 total_count: 9999,
             });
-          }
+          
         } else {
+          // fallthrough for jellyfin
           warn!("AIO not configured");
         }
-        //  }
+         }
     }
 
     // if q.filters.is_some() {

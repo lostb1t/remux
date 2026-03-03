@@ -773,17 +773,31 @@ pub struct DirectPlayProfile {
 
 impl DirectPlayProfile {
     pub fn supports_media_source(&self, media_source: &MediaSourceInfo) -> bool {
-        // Check container match
-        if let (Some(profile_container), Some(source_container)) =
-            (&self.container, &media_source.container)
-        {
-            if !self.supports_container(source_container) {
+        // A "Video" profile only applies to sources that have a video stream;
+        // an "Audio" profile only applies to audio-only sources.
+        if let Some(type_) = &self.type_ {
+            if type_.eq_ignore_ascii_case("Video") && media_source.video_stream().is_none() {
+                return false;
+            }
+            if type_.eq_ignore_ascii_case("Audio") && media_source.video_stream().is_some() {
                 return false;
             }
         }
 
+        // Check container match: if the profile specifies a container, the source must have
+        // a known container that matches. An unknown source container cannot be verified.
+        match (&self.container, &media_source.container) {
+            (Some(_), None) => return false,
+            (Some(_), Some(source_container)) => {
+                if !self.supports_container(source_container) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+
         // Check video codec match
-        if let (Some(profile_video_codec), Some(video_stream)) =
+        if let (Some(_), Some(video_stream)) =
             (&self.video_codec, media_source.video_stream())
         {
             if let Some(video_codec) = &video_stream.codec {
@@ -794,7 +808,7 @@ impl DirectPlayProfile {
         }
 
         // Check audio codec match
-        if let (Some(profile_audio_codec), Some(audio_stream)) =
+        if let (Some(_), Some(audio_stream)) =
             (&self.audio_codec, media_source.audio_stream())
         {
             if let Some(audio_codec) = &audio_stream.codec {

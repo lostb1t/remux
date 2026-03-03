@@ -112,9 +112,8 @@ async fn items_playbackinfo_inner(
 
     if needs_transcoding {
         // Pick container/protocol from the client's device profile, falling back to ts/hls
-        let (trans_container, trans_protocol) = device_profile
-            .as_ref()
-            .and_then(|p| p.video_transcoding_profile())
+        let trans_profile = device_profile.as_ref().and_then(|p| p.video_transcoding_profile());
+        let (trans_container, trans_protocol) = trans_profile
             .map(|p| {
                 (
                     p.container.clone().unwrap_or_else(|| "ts".to_string()),
@@ -123,14 +122,58 @@ async fn items_playbackinfo_inner(
             })
             .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
+        // Use "copy" for video if the stream's codec is already listed in the transcoding
+        // profile's video_codec — avoids unnecessary video re-encode.
+        let video_codec = {
+            let stream_codec = source
+                .video_stream()
+                .and_then(|s| s.codec.as_deref())
+                .unwrap_or("");
+            let profile_supports = trans_profile
+                .and_then(|p| p.video_codec.as_deref())
+                .map(|codecs| {
+                    codecs
+                        .split(',')
+                        .any(|c| c.trim().eq_ignore_ascii_case(stream_codec))
+                })
+                .unwrap_or(false);
+            if profile_supports && !stream_codec.is_empty() {
+                "copy".to_string()
+            } else {
+                "h264".to_string()
+            }
+        };
+
+        // Use "copy" for audio if the stream's codec is already listed in the transcoding
+        // profile's audio_codec.
+        let audio_codec = {
+            let stream_codec = source
+                .audio_stream()
+                .and_then(|s| s.codec.as_deref())
+                .unwrap_or("");
+            let profile_supports = trans_profile
+                .and_then(|p| p.audio_codec.as_deref())
+                .map(|codecs| {
+                    codecs
+                        .split(',')
+                        .any(|c| c.trim().eq_ignore_ascii_case(stream_codec))
+                })
+                .unwrap_or(false);
+            if profile_supports && !stream_codec.is_empty() {
+                "copy".to_string()
+            } else {
+                "aac".to_string()
+            }
+        };
+
         let bitrate_param = max_bitrate
             .map(|b| format!("&MaxStreamingBitrate={}", b))
             .unwrap_or_default();
 
         source.supports_transcoding = Some(true);
         source.transcoding_url = Some(format!(
-            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=h264&AudioCodec=aac{}",
-            id, play_session_id, source.id, bitrate_param,
+            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}",
+            id, play_session_id, source.id, video_codec, audio_codec, bitrate_param,
         ));
         source.transcoding_container = Some(trans_container);
         source.transcoding_sub_protocol = Some(trans_protocol);
