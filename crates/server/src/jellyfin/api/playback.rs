@@ -72,7 +72,8 @@ async fn items_playbackinfo_inner(
         .context_not_found("not found", "not found")?;
 
     let mut source: jellyfin::MediaSourceInfo = media.probe()?;
-    
+    source.id = media.id;
+    source.e_tag = media.id;
     // todo: add check if probing is really succesfull. If not fail
 
     let max_bitrate: Option<i64> = match (
@@ -84,28 +85,32 @@ async fn items_playbackinfo_inner(
     };
     let bitrate_exceeded = max_bitrate.map_or(false, |max| source.bitrate > Some(max));
 
-  //  dbg!(&query);    
-//dbg!(&max_bitrate);
-//dbg!(&source);
-    // Determine if transcoding is needed based on device profile and query parameters
-    let needs_transcoding = device_profile
+    // Determine transcode reasons based on device profile and query parameters.
+    let transcode_reasons: jellyfin::TranscodeReasons = device_profile
         .as_ref()
         .map(|profile| {
-            // Check if transcoding is explicitly enabled/disabled
-            let transcoding_enabled = query.enable_transcoding.unwrap_or(false);
-
-            // Check if direct play is enabled/disabled
-            let direct_play_enabled = query.enable_direct_play.unwrap_or(true);
-            let direct_play_supported = profile.supports_direct_play(&source);
-
-            transcoding_enabled || !direct_play_supported || !direct_play_enabled || bitrate_exceeded
+            let mut reasons = profile.check_direct_play(&source);
+            if bitrate_exceeded {
+                reasons.insert(jellyfin::TranscodeReason::ContainerBitrateExceedsLimit);
+            }
+            reasons
         })
-        .unwrap_or(true); // Default to transcoding if no device profile
+        .unwrap_or_else(|| {
+            // No device profile → treat as unsupported container so we transcode.
+            let mut r = jellyfin::TranscodeReasons::default();
+            r.insert(jellyfin::TranscodeReason::ContainerNotSupported);
+            r
+        });
+
+    let needs_transcoding = !transcode_reasons.is_empty()
+        || query.enable_transcoding.unwrap_or(false)
+        || !query.enable_direct_play.unwrap_or(true);
 
     tracing::debug!(
-        "playback decision - needs transcoding: {}, bitrate_exceeded: {}",
+        transcode_reasons = ?transcode_reasons,
         needs_transcoding,
         bitrate_exceeded,
+        "playback decision"
     );
 
     let play_session_id = utils::get_uuid().as_simple().to_string();
@@ -152,11 +157,15 @@ async fn items_playbackinfo_inner(
         let bitrate_param = max_bitrate
             .map(|b| format!("&MaxStreamingBitrate={}", b))
             .unwrap_or_default();
+        let reasons_param = transcode_reasons
+            .to_query_value()
+            .map(|v| format!("&TranscodeReasons={}", v))
+            .unwrap_or_default();
 
         source.supports_transcoding = Some(true);
         source.transcoding_url = Some(format!(
-            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}",
-            id, play_session_id, source.id, video_codec, audio_codec, bitrate_param,
+            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}",
+            id, play_session_id, source.id, video_codec, audio_codec, bitrate_param, reasons_param,
         ));
         source.transcoding_container = Some(trans_container);
         source.transcoding_sub_protocol = Some(trans_protocol);
@@ -770,7 +779,7 @@ mod tests {
     }
     
     #[tokio::test]
-    async fn test_playbackinfo_valid_response() {
+    async fn test_playbackinfo_minimal() {
         let (server, ctx, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
         let media = insert_test_source(&ctx).await;
@@ -797,6 +806,8 @@ mod tests {
         resp.assert_status_ok();
         resp.assert_json_contains(&json!({
             "MediaSources": [{
+                "Id": media.Id,
+                "Etag": media.Id,
                 "Bitrate": 3849414,
                 "Container": "mp4",
              //   "Size": 292828,
@@ -1117,6 +1128,25 @@ pub async fn get_sessions(
                     })
                 });
 
+            // Attach TranscodingInfo if there is an active transcode session for this device.
+            let transcoding_info = playback_sessions
+                .iter()
+                .find(|s| s.device_id == device.id)
+                .and_then(|ps| state.ctx.transcode.get(&ps.play_session_id))
+                .map(|ts| {
+                    let ts = ts.try_read().ok();
+                    ts.map(|ts| jellyfin::TranscodingInfo {
+                        audio_codec: Some(ts.audio_codec.clone()),
+                        video_codec: Some(ts.video_codec.clone()),
+                        container: Some("ts".to_string()),
+                        is_video_direct: ts.video_codec == "copy",
+                        is_audio_direct: ts.audio_codec == "copy",
+                        transcode_reasons: ts.transcode_reasons.0,
+                        ..Default::default()
+                    })
+                })
+                .flatten();
+
             jellyfin::SessionInfoDto {
                 id: Some(device.id.clone()),
                 user_id: device.user_id.to_string(),
@@ -1133,6 +1163,7 @@ pub async fn get_sessions(
                 now_viewing_item: None,
                 device_id: Some(device.id.clone()),
                 application_version: Some(device.app_version.clone()),
+                transcoding_info,
                 is_active: true,
                 supports_media_control: false,
                 supports_remote_control: false,
@@ -1238,6 +1269,11 @@ pub async fn master_hls_video(
             video_codec.clone(),
             audio_codec.clone(),
             segment_length,
+            // Parse reasons from query param (set by playbackinfo on the transcoding URL)
+            q.transcode_reasons
+                .as_deref()
+                .map(jellyfin::TranscodeReasons::from_query_value)
+                .unwrap_or_default(),
         );
 
         // Start transcoding in background

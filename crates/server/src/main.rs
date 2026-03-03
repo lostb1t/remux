@@ -307,8 +307,8 @@ pub fn setup_logging() {
     let fmt_layer = fmt::layer()
         .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
         .with_target(false)
-        .with_line_number(true)
-        .with_file(true)
+        .with_line_number(false)
+        .with_file(false)
         .compact();
 
     Registry::default()

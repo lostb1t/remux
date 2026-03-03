@@ -751,13 +751,42 @@ impl DeviceProfile {
 
     /// Returns true if the device supports direct play for the given media source.
     pub fn supports_direct_play(&self, media_source: &MediaSourceInfo) -> bool {
-        // Check if any direct play profile matches the media source
+        self.check_direct_play(media_source).is_empty()
+    }
+
+    /// Returns the reasons transcoding is needed for the given media source.
+    /// Empty means direct play is supported.
+    ///
+    /// Iterates all Video `DirectPlayProfiles` and picks the best-matching one
+    /// (fewest failure flags). Mirrors `GetTranscodeReasonsFromDirectPlayProfile`
+    /// in Jellyfin's `StreamBuilder`.
+    pub fn check_direct_play(&self, media_source: &MediaSourceInfo) -> TranscodeReasons {
+        let mut best: Option<TranscodeReasons> = None;
         for profile in &self.direct_play_profiles {
-            if profile.supports_media_source(media_source) {
-                return true;
+            // Only consider Video profiles for video sources
+            if let Some(type_) = &profile.type_ {
+                if !type_.eq_ignore_ascii_case("Video") {
+                    continue;
+                }
             }
+            let reasons = profile.check_reasons(media_source);
+            if reasons.is_empty() {
+                return reasons; // perfect match
+            }
+            best = Some(match best {
+                None => reasons,
+                Some(prev) => {
+                    // Prefer the profile with fewer failure bits set
+                    if reasons.0.count_ones() < prev.0.count_ones() { reasons } else { prev }
+                }
+            });
         }
-        false
+        // No Video profiles at all → container not supported
+        best.unwrap_or_else(|| {
+            let mut r = TranscodeReasons::default();
+            r.insert(TranscodeReason::ContainerNotSupported);
+            r
+        })
     }
 }
 
@@ -773,52 +802,59 @@ pub struct DirectPlayProfile {
 
 impl DirectPlayProfile {
     pub fn supports_media_source(&self, media_source: &MediaSourceInfo) -> bool {
+        self.check_reasons(media_source).is_empty()
+    }
+
+    /// Returns the `TranscodeReasons` that prevent this profile from supporting the source.
+    /// Empty means direct play is supported.
+    pub fn check_reasons(&self, media_source: &MediaSourceInfo) -> TranscodeReasons {
+        let mut reasons = TranscodeReasons::default();
+
         // A "Video" profile only applies to sources that have a video stream;
         // an "Audio" profile only applies to audio-only sources.
         if let Some(type_) = &self.type_ {
             if type_.eq_ignore_ascii_case("Video") && media_source.video_stream().is_none() {
-                return false;
+                reasons.insert(TranscodeReason::ContainerNotSupported);
+                return reasons;
             }
             if type_.eq_ignore_ascii_case("Audio") && media_source.video_stream().is_some() {
-                return false;
+                reasons.insert(TranscodeReason::ContainerNotSupported);
+                return reasons;
             }
         }
 
-        // Check container match: if the profile specifies a container, the source must have
-        // a known container that matches. An unknown source container cannot be verified.
+        // Check container match
         match (&self.container, &media_source.container) {
-            (Some(_), None) => return false,
+            (Some(_), None) => {
+                reasons.insert(TranscodeReason::ContainerNotSupported);
+            }
             (Some(_), Some(source_container)) => {
                 if !self.supports_container(source_container) {
-                    return false;
+                    reasons.insert(TranscodeReason::ContainerNotSupported);
                 }
             }
             _ => {}
         }
 
         // Check video codec match
-        if let (Some(_), Some(video_stream)) =
-            (&self.video_codec, media_source.video_stream())
-        {
+        if let (Some(_), Some(video_stream)) = (&self.video_codec, media_source.video_stream()) {
             if let Some(video_codec) = &video_stream.codec {
                 if !self.supports_video_codec(video_codec) {
-                    return false;
+                    reasons.insert(TranscodeReason::VideoCodecNotSupported);
                 }
             }
         }
 
         // Check audio codec match
-        if let (Some(_), Some(audio_stream)) =
-            (&self.audio_codec, media_source.audio_stream())
-        {
+        if let (Some(_), Some(audio_stream)) = (&self.audio_codec, media_source.audio_stream()) {
             if let Some(audio_codec) = &audio_stream.codec {
                 if !self.supports_audio_codec(audio_codec) {
-                    return false;
+                    reasons.insert(TranscodeReason::AudioCodecNotSupported);
                 }
             }
         }
 
-        true
+        reasons
     }
 
     pub fn supports_container(&self, container: &str) -> bool {
@@ -929,6 +965,98 @@ pub struct BaseItemDtoQueryResult {
     pub total_record_count: i64,
 }
 
+/// Individual transcode reason flags, matching Jellyfin's `TranscodeReason` [Flags] enum
+/// bit positions exactly so numeric values are wire-compatible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display, strum_macros::EnumIter)]
+#[strum(serialize_all = "PascalCase")]
+pub enum TranscodeReason {
+    ContainerNotSupported,
+    VideoCodecNotSupported,
+    AudioCodecNotSupported,
+    ContainerBitrateExceedsLimit,
+}
+
+impl TranscodeReason {
+    pub fn bit(self) -> u32 {
+        match self {
+            Self::ContainerNotSupported        => 1 << 0,
+            Self::VideoCodecNotSupported       => 1 << 1,
+            Self::AudioCodecNotSupported       => 1 << 2,
+            Self::ContainerBitrateExceedsLimit => 1 << 18,
+        }
+    }
+}
+
+/// Bitfield of zero or more [`TranscodeReason`] values.
+/// `0` means direct play is fine; non-zero means transcoding is required.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscodeReasons(pub u32);
+
+impl TranscodeReasons {
+    pub fn insert(&mut self, reason: TranscodeReason) {
+        self.0 |= reason.bit();
+    }
+
+    pub fn contains(self, reason: TranscodeReason) -> bool {
+        self.0 & reason.bit() != 0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Comma-separated PascalCase names for use in query strings,
+    /// e.g. `"ContainerNotSupported,AudioCodecNotSupported"`. `None` when empty.
+    pub fn to_query_value(self) -> Option<String> {
+        use strum::IntoEnumIterator;
+        if self.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = TranscodeReason::iter()
+            .filter(|r| self.contains(*r))
+            .map(|r| r.to_string())
+            .collect();
+        Some(names.join(","))
+    }
+
+    /// Parse a comma-separated query string value back into a `TranscodeReasons` bitfield.
+    pub fn from_query_value(s: &str) -> Self {
+        use strum::IntoEnumIterator;
+        let mut out = Self::default();
+        for part in s.split(',') {
+            let part = part.trim();
+            for r in TranscodeReason::iter() {
+                if r.to_string().eq_ignore_ascii_case(part) {
+                    out.insert(r);
+                    break;
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Information about an active transcode, returned inside `SessionInfoDto`.
+/// Matches Jellyfin's `MediaBrowser.Model.Session.TranscodingInfo`.
+#[skip_serializing_none]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct TranscodingInfo {
+    pub audio_codec: Option<String>,
+    pub video_codec: Option<String>,
+    pub container: Option<String>,
+    pub is_video_direct: bool,
+    pub is_audio_direct: bool,
+    pub bitrate: Option<i64>,
+    pub framerate: Option<f32>,
+    pub completion_percentage: Option<f64>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub audio_channels: Option<i32>,
+    /// Bitmask of [`TranscodeReason`] values — serialised as a `u32` integer in session JSON.
+    pub transcode_reasons: u32,
+}
+
 #[skip_serializing_none]
 #[derive(default2::Default, Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -939,7 +1067,7 @@ pub struct MediaSourceInfo {
     pub container: Option<String>,
     pub default_audio_stream_index: Option<i64>,
     pub default_subtitle_stream_index: Option<i64>,
-    pub e_tag: Option<Uuid>,
+    pub e_tag: Uuid,
     pub encoder_path: Option<String>,
     //  pub encoder_protocol: Option<MediaProtocol>,
     pub fallback_max_streaming_bitrate: Option<i64>,
@@ -1787,7 +1915,7 @@ pub struct SessionInfoDto {
     pub now_viewing_item: Option<BaseItemDto>,
     pub device_id: Option<String>,
     pub application_version: Option<String>,
-    //  pub transcoding_info: Option<TranscodingInfo>,
+    pub transcoding_info: Option<TranscodingInfo>,
     pub is_active: bool,
     pub supports_media_control: bool,
     pub supports_remote_control: bool,
@@ -2340,6 +2468,7 @@ pub struct HlsVideoQuery {
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub max_streaming_bitrate: Option<i64>,
+    pub transcode_reasons: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -1,5 +1,6 @@
 use dashmap::DashMap;
-use std::path::{Path, PathBuf};
+use shared::sdks::jellyfin::models::TranscodeReasons;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
@@ -25,6 +26,7 @@ pub struct TranscodeSession {
     pub video_codec: String,
     pub audio_codec: String,
     pub segment_length: u32,
+    pub transcode_reasons: TranscodeReasons,
 }
 
 impl TranscodeSession {
@@ -79,6 +81,7 @@ impl TranscodeSessionManager {
         video_codec: String,
         audio_codec: String,
         segment_length: u32,
+        transcode_reasons: TranscodeReasons,
     ) -> Arc<tokio::sync::RwLock<TranscodeSession>> {
         let output_dir = self.base_dir.join(&play_session_id);
         let _ = std::fs::create_dir_all(&output_dir);
@@ -95,6 +98,7 @@ impl TranscodeSessionManager {
             video_codec,
             audio_codec,
             segment_length,
+            transcode_reasons,
         };
 
         let session = Arc::new(tokio::sync::RwLock::new(session));

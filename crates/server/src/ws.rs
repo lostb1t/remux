@@ -204,31 +204,48 @@ fn parse_sessions_data(data: Option<&serde_json::Value>) -> (u64, u64) {
 fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
     PlaybackSession::get_all(&state.ctx.store)
         .into_iter()
-        .map(|session| jellyfin::SessionInfoDto {
-            id: Some(session.play_session_id.clone()),
-            user_id: session.user_id.to_string(),
-            user_name: None,
-            client: Some(session.client_name.clone()),
-            last_activity_date: session.last_activity,
-            last_playback_check_in: session.last_activity,
-            last_paused_date: None,
-            device_name: Some(session.device_id.clone()),
-            device_type: None,
-            now_playing_item: None,
-            now_viewing_item: None,
-            device_id: Some(session.device_id.clone()),
-            application_version: None,
-            is_active: true,
-            supports_media_control: true,
-            supports_remote_control: true,
-            has_custom_device_name: false,
-            playlist_item_id: None,
-            server_id: Some(crate::utils::server_id()),
-            user_primary_image_tag: None,
-            playable_media_types: vec![],
-            remote_end_point: None,
-            now_playing_queue: None,
-            now_playing_queue_full_items: None,
+        .map(|session| {
+            let transcoding_info = state
+                .ctx
+                .transcode
+                .get(&session.play_session_id)
+                .and_then(|ts| ts.try_read().ok().map(|ts| jellyfin::TranscodingInfo {
+                    audio_codec: Some(ts.audio_codec.clone()),
+                    video_codec: Some(ts.video_codec.clone()),
+                    container: Some("ts".to_string()),
+                    is_video_direct: ts.video_codec == "copy",
+                    is_audio_direct: ts.audio_codec == "copy",
+                    transcode_reasons: ts.transcode_reasons.0,
+                    ..Default::default()
+                }));
+
+            jellyfin::SessionInfoDto {
+                id: Some(session.play_session_id.clone()),
+                user_id: session.user_id.to_string(),
+                user_name: None,
+                client: Some(session.client_name.clone()),
+                last_activity_date: session.last_activity,
+                last_playback_check_in: session.last_activity,
+                last_paused_date: None,
+                device_name: Some(session.device_id.clone()),
+                device_type: None,
+                now_playing_item: None,
+                now_viewing_item: None,
+                device_id: Some(session.device_id.clone()),
+                application_version: None,
+                transcoding_info,
+                is_active: true,
+                supports_media_control: true,
+                supports_remote_control: true,
+                has_custom_device_name: false,
+                playlist_item_id: None,
+                server_id: Some(crate::utils::server_id()),
+                user_primary_image_tag: None,
+                playable_media_types: vec![],
+                remote_end_point: None,
+                now_playing_queue: None,
+                now_playing_queue_full_items: None,
+            }
         })
         .collect()
 }

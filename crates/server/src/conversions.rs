@@ -11,7 +11,7 @@ impl From<db::Media> for jellyfin::MediaSourceInfo {
     fn from(source: db::Media) -> Self {
     jellyfin::MediaSourceInfo {
         id: source.id.clone(),
-        e_tag: Some(source.id.clone()),
+        e_tag: source.id.clone(),
         path: source.url,
         protocol: Some("File".to_string()),
         supports_transcoding: Some(false),
@@ -101,7 +101,7 @@ pub fn stream_into_media_source_info(
     let id = get_uuid();
     jellyfin::MediaSourceInfo {
         id: id.clone(),
-        e_tag: Some(id.clone()),
+        e_tag: id.clone(),
         path: stream.url,
         protocol: Some("File".to_string()),
         supports_transcoding: Some(false),
