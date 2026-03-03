@@ -1,3 +1,3 @@
 pub mod meta;
 
-use meta::-*;
+pub use meta::*;

@@ -83,7 +83,7 @@ mod aio;
 mod db;
 mod jellyfin;
 mod log_capture;
-mod meta_provider;
+mod providers;
 mod playback_session;
 mod tasks;
 mod transcode;

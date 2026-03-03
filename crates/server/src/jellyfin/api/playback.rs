@@ -122,30 +122,13 @@ async fn items_playbackinfo_inner(
             })
             .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
-        // Use "copy" for video if the stream's codec is already listed in the transcoding
-        // profile's video_codec — avoids unnecessary video re-encode.
-        let video_codec = {
-            let stream_codec = source
-                .video_stream()
-                .and_then(|s| s.codec.as_deref())
-                .unwrap_or("");
-            let profile_supports = trans_profile
-                .and_then(|p| p.video_codec.as_deref())
-                .map(|codecs| {
-                    codecs
-                        .split(',')
-                        .any(|c| c.trim().eq_ignore_ascii_case(stream_codec))
-                })
-                .unwrap_or(false);
-            if profile_supports && !stream_codec.is_empty() {
-                "copy".to_string()
-            } else {
-                "h264".to_string()
-            }
-        };
+        // HLS output uses MPEG-TS segments. Copying H264/HEVC from MKV/MP4 to TS requires
+        // the h264_mp4toannexb / hevc_mp4toannexb bitstream filter which ez-ffmpeg does not
+        // apply automatically. Always re-encode video; only audio can be safely copied.
+        let video_codec = "h264".to_string();
 
         // Use "copy" for audio if the stream's codec is already listed in the transcoding
-        // profile's audio_codec.
+        // profile's audio_codec — avoids unnecessary audio re-encode.
         let audio_codec = {
             let stream_codec = source
                 .audio_stream()

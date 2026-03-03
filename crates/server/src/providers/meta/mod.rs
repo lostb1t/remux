@@ -178,7 +178,6 @@ impl MetaProviderService {
     }
 }
 
-// --- Aio implementations ---
 
 pub struct AioMetaProvider;
 

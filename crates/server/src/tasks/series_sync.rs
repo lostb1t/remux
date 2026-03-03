@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::{ProgressReporter, Task, TaskService};
 use crate::{
     AppContext, db,
-    meta_provider::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService},
+    providers::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService},
 };
 
 pub struct SeriesSyncTask;
