@@ -1,4 +1,6 @@
 use anyhow::{Result, anyhow};
+use gstreamer as gst;
+use gstreamer::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -44,16 +46,99 @@ impl Default for TranscodeParams {
     }
 }
 
-/// Start an HLS transcode job using ez-ffmpeg.
+/// Build a GStreamer pipeline description for HLS transcoding.
+fn build_hls_pipeline_desc(params: &TranscodeParams) -> String {
+    let playlist_path = params.output_dir.join("main.m3u8");
+    let segment_pattern = params
+        .output_dir
+        .join("segment_%05d.ts")
+        .to_string_lossy()
+        .to_string();
+
+    // Video encoding chain
+    let video_enc = if params.video_codec == "copy" {
+        // Passthrough: parse only, no decode/encode
+        "queue ! h264parse".to_string()
+    } else {
+        let mut chain = "queue ! videoconvert ! videoscale".to_string();
+
+        // Scale filter
+        match (params.max_width, params.max_height) {
+            (Some(w), Some(h)) => {
+                chain.push_str(&format!(
+                    " ! video/x-raw,width=[1,{}],height=[1,{}]",
+                    w, h
+                ));
+            }
+            (Some(w), None) => {
+                chain.push_str(&format!(" ! video/x-raw,width=[1,{}]", w));
+            }
+            (None, Some(h)) => {
+                chain.push_str(&format!(" ! video/x-raw,height=[1,{}]", h));
+            }
+            _ => {}
+        }
+
+        // Encoder
+        if let Some(bitrate) = params.video_bitrate {
+            let bitrate_kbps = bitrate / 1000;
+            chain.push_str(&format!(
+                " ! x264enc bitrate={} speed-preset=fast tune=zerolatency",
+                bitrate_kbps
+            ));
+        } else {
+            chain.push_str(" ! x264enc speed-preset=fast tune=zerolatency pass=qual quantizer=23");
+        }
+
+        chain.push_str(" ! video/x-h264,profile=high ! h264parse");
+        chain
+    };
+
+    // Audio encoding chain
+    let audio_enc = if params.audio_codec == "copy" {
+        "queue ! aacparse".to_string()
+    } else {
+        let mut chain = "queue ! audioconvert ! audioresample".to_string();
+        if let Some(channels) = params.audio_channels {
+            chain.push_str(&format!(
+                " ! audio/x-raw,channels={}",
+                channels
+            ));
+        }
+        let bitrate = params.audio_bitrate.unwrap_or(128_000);
+        chain.push_str(&format!(
+            " ! avenc_aac bitrate={} ! aacparse",
+            bitrate
+        ));
+        chain
+    };
+
+    format!(
+        "hlssink2 name=hlssink \
+           location=\"{}\" \
+           playlist-location=\"{}\" \
+           target-duration={} \
+           max-files=0 \
+         uridecodebin3 uri=\"{}\" name=demux \
+         demux. ! {} ! hlssink.video \
+         demux. ! {} ! hlssink.audio",
+        segment_pattern,
+        playlist_path.to_string_lossy(),
+        params.segment_length,
+        params.input_url,
+        video_enc,
+        audio_enc,
+    )
+}
+
+/// Start an HLS transcode job using a GStreamer pipeline.
 ///
-/// This spawns the actual FFmpeg work on a blocking thread (CPU-bound)
+/// This spawns the pipeline on a blocking thread (CPU-bound)
 /// and updates the session state accordingly.
 pub async fn start_transcode(
     session: Arc<RwLock<TranscodeSession>>,
     params: TranscodeParams,
 ) -> Result<()> {
-    use crate::ez_ffmpeg::{FfmpegContext, FfmpegScheduler, Input, Output};
-
     // Update state to Running
     {
         let mut s = session.write().await;
@@ -63,99 +148,93 @@ pub async fn start_transcode(
     let session_clone = session.clone();
     let params_clone = params.clone();
 
-    // Spawn blocking because FFmpeg transcoding is CPU-intensive
     let handle = tokio::task::spawn_blocking(move || -> Result<()> {
-        let output_dir = &params_clone.output_dir;
-        std::fs::create_dir_all(output_dir)?;
+        std::fs::create_dir_all(&params_clone.output_dir)?;
 
-        let playlist_path = output_dir.join("main.m3u8");
-        let segment_pattern = output_dir
-            .join("segment_%05d.ts")
-            .to_string_lossy()
-            .to_string();
+        let pipeline_desc = build_hls_pipeline_desc(&params_clone);
+        debug!("GStreamer HLS pipeline: {}", pipeline_desc);
 
-        // Build the input
-        let mut input = Input::from(params_clone.input_url.as_str());
+        let pipeline = gst::parse::launch(&pipeline_desc)
+            .map_err(|e| anyhow!("Failed to create GStreamer pipeline: {}", e))?;
 
-        // If start time specified, seek to it
-        // Jellyfin ticks: 1 tick = 100 nanoseconds = 10_000_000 ticks/second
+        let pipeline = pipeline
+            .dynamic_cast::<gst::Pipeline>()
+            .map_err(|_| anyhow!("Element is not a Pipeline"))?;
+
+        pipeline
+            .set_state(gst::State::Paused)
+            .map_err(|e| anyhow!("Failed to set pipeline to Paused: {:?}", e))?;
+
+        // Wait for the pipeline to reach Paused so we can seek
+        let _ = pipeline.state(gst::ClockTime::from_seconds(30));
+
+        // Seek if start time specified
         if let Some(ticks) = params_clone.start_time_ticks {
-            let seconds = ticks as f64 / 10_000_000.0;
-            input = Input::from(params_clone.input_url.as_str())
-                .set_input_opt("ss", format!("{:.3}", seconds));
+            let nanos = ticks as u64 * 100; // ticks are 100ns units
+            let seek_pos = gst::ClockTime::from_nseconds(nanos);
+            pipeline
+                .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, seek_pos)
+                .map_err(|e| anyhow!("Failed to seek: {:?}", e))?;
         }
 
-        // Build the output with HLS options
-        let mut output = Output::from(playlist_path.to_str().unwrap())
-            .set_format("hls")
-            .set_format_opt("hls_time", &params_clone.segment_length.to_string())
-            .set_format_opt("hls_segment_filename", &segment_pattern)
-            .set_format_opt("hls_flags", "independent_segments+append_list")
-            .set_format_opt("hls_list_size", "0") // keep all segments in playlist
-            .set_format_opt("hls_segment_type", "mpegts");
-
-        // Video codec
-        output = match params_clone.video_codec.as_str() {
-            "copy" => output.set_video_codec("copy"),
-            codec => {
-                let mut o = output.set_video_codec(codec);
-                // Set quality/bitrate
-                if let Some(bitrate) = params_clone.video_bitrate {
-                    o = o.set_video_codec_opt("b", &format!("{}k", bitrate / 1000));
-                } else {
-                    // Default CRF for quality
-                    o = o.set_video_codec_opt("crf", "23");
-                }
-                // Max dimensions via scale filter handled below
-                o
-            }
-        };
-
-        // Audio codec
-        output = match params_clone.audio_codec.as_str() {
-            "copy" => output.set_audio_codec("copy"),
-            codec => {
-                let mut o = output.set_audio_codec(codec);
-                if let Some(bitrate) = params_clone.audio_bitrate {
-                    o = o.set_audio_codec_opt("b", &format!("{}k", bitrate / 1000));
-                } else {
-                    o = o.set_audio_codec_opt("b", "128k");
-                }
-                if let Some(channels) = params_clone.audio_channels {
-                    o = o.set_audio_channels(channels as i32);
-                }
-                o
-            }
-        };
-
-        // Build filter for scaling if needed
-        let mut builder = FfmpegContext::builder().input(input).output(output);
-
-        // Add scale filter if max dimensions specified and video is not copy
-        if params_clone.video_codec != "copy" {
-            if let (Some(w), Some(h)) =
-                (params_clone.max_width, params_clone.max_height)
-            {
-                builder = builder.filter_desc(
-                    format!("scale='min({},iw)':'min({},ih)':force_original_aspect_ratio=decrease",
-                             w, h)
-                );
-            } else if let Some(w) = params_clone.max_width {
-                builder = builder.filter_desc(format!("scale='min({},iw)':-2", w));
-            } else if let Some(h) = params_clone.max_height {
-                builder = builder.filter_desc(format!("scale=-2:'min({},ih)'", h));
-            }
-        }
-
-        // Audio/subtitle stream selection via map options
-        // For now we let FFmpeg auto-select; stream selection can be added later
-
-        let context = builder.build()?;
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|e| anyhow!("Failed to set pipeline to Playing: {:?}", e))?;
 
         info!("Starting HLS transcode job");
 
-        FfmpegScheduler::new(context).start()?.wait()?;
+        // Monitor the bus for EOS or errors
+        let bus = pipeline
+            .bus()
+            .ok_or_else(|| anyhow!("Failed to get pipeline bus"))?;
 
+        loop {
+            let msg = bus.timed_pop(gst::ClockTime::from_seconds(60));
+            match msg {
+                Some(msg) => {
+                    use gst::MessageView;
+                    match msg.view() {
+                        MessageView::Eos(..) => {
+                            info!("HLS transcode reached end of stream");
+                            break;
+                        }
+                        MessageView::Error(err) => {
+                            let src = err
+                                .src()
+                                .map(|s| s.path_string())
+                                .unwrap_or_else(|| gst::glib::GString::from("unknown"));
+                            let error = err.error();
+                            let dbg_info = err.debug().map(|d| d.to_string()).unwrap_or_default();
+                            pipeline.set_state(gst::State::Null).ok();
+                            return Err(anyhow!(
+                                "GStreamer error from {}: {} (debug: {})",
+                                src,
+                                error,
+                                dbg_info
+                            ));
+                        }
+                        MessageView::Warning(warn) => {
+                            let dbg_info = warn.debug().map(|d| d.to_string()).unwrap_or_default();
+                            tracing::warn!(
+                                "GStreamer warning: {} (debug: {})",
+                                warn.error(),
+                                dbg_info
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                None => {
+                    // Timeout — check pipeline state
+                    let (_, state, _) = pipeline.state(gst::ClockTime::ZERO);
+                    if state == gst::State::Null {
+                        break;
+                    }
+                }
+            }
+        }
+
+        pipeline.set_state(gst::State::Null).ok();
         info!("HLS transcode job completed");
 
         Ok(())
@@ -204,98 +283,115 @@ pub struct ProgressiveTranscodeParams {
 
 /// Start a progressive transcode that returns a readable stream.
 ///
-/// Unlike HLS transcode, this pipes ffmpeg output directly to a reader
-/// that can be streamed as an HTTP response body.
+/// Uses gst-launch-1.0 subprocess for process isolation.
 pub fn start_progressive_transcode(
     params: ProgressiveTranscodeParams,
 ) -> Result<tokio::process::ChildStdout> {
     use tokio::process::Command;
 
-    let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-hide_banner").arg("-loglevel").arg("warning");
+    let mut cmd = Command::new("gst-launch-1.0");
+    cmd.arg("-q"); // quiet — don't print status to stdout
 
-    // Seek if start time specified
-    if let Some(ticks) = params.start_time_ticks {
-        let seconds = ticks as f64 / 10_000_000.0;
-        cmd.arg("-ss").arg(format!("{:.3}", seconds));
-    }
+    // Build pipeline description
+    let mut pipeline_parts: Vec<String> = Vec::new();
 
-    cmd.arg("-i").arg(&params.input_url);
+    // Source: uridecodebin3
+    pipeline_parts.push(format!("uridecodebin3 uri=\"{}\" name=demux", params.input_url));
 
-    // Video codec
-    cmd.arg("-c:v").arg(&params.video_codec);
-    if params.video_codec != "copy" {
-        if let Some(bitrate) = params.video_bitrate {
-            cmd.arg("-b:v").arg(format!("{}k", bitrate / 1000));
-        } else {
-            cmd.arg("-crf").arg("23");
-        }
+    // Video chain
+    let video_enc = if params.video_codec == "copy" {
+        "demux. ! queue ! h264parse".to_string()
+    } else {
+        let mut chain = "demux. ! queue ! videoconvert ! videoscale".to_string();
+
         // Scale filter
         match (params.max_width, params.max_height) {
             (Some(w), Some(h)) => {
-                cmd.arg("-vf").arg(format!(
-                    "scale='min({},iw)':'min({},ih)':force_original_aspect_ratio=decrease",
+                chain.push_str(&format!(
+                    " ! video/x-raw,width=[1,{}],height=[1,{}]",
                     w, h
                 ));
             }
             (Some(w), None) => {
-                cmd.arg("-vf").arg(format!("scale='min({},iw)':-2", w));
+                chain.push_str(&format!(" ! video/x-raw,width=[1,{}]", w));
             }
             (None, Some(h)) => {
-                cmd.arg("-vf").arg(format!("scale=-2:'min({},ih)'", h));
+                chain.push_str(&format!(" ! video/x-raw,height=[1,{}]", h));
             }
             _ => {}
         }
-    }
 
-    // Audio codec
-    cmd.arg("-c:a").arg(&params.audio_codec);
-    if params.audio_codec != "copy" {
-        if let Some(bitrate) = params.audio_bitrate {
-            cmd.arg("-b:a").arg(format!("{}k", bitrate / 1000));
+        // Encoder
+        let gst_video_codec = match params.video_codec.as_str() {
+            "libx264" | "h264" => "x264enc",
+            "libx265" | "hevc" => "x265enc",
+            other => other,
+        };
+
+        if let Some(bitrate) = params.video_bitrate {
+            chain.push_str(&format!(" ! {} bitrate={}", gst_video_codec, bitrate / 1000));
         } else {
-            cmd.arg("-b:a").arg("128k");
+            chain.push_str(&format!(" ! {} speed-preset=fast", gst_video_codec));
         }
-        if let Some(channels) = params.audio_channels {
-            cmd.arg("-ac").arg(channels.to_string());
+
+        if gst_video_codec == "x264enc" {
+            chain.push_str(" ! h264parse");
+        } else if gst_video_codec == "x265enc" {
+            chain.push_str(" ! h265parse");
         }
-    }
 
-    // Audio stream selection
-    if let Some(idx) = params.audio_stream_index {
-        cmd.arg("-map").arg("0:v:0");
-        cmd.arg("-map").arg(format!("0:a:{}", idx));
-    }
-
-    // Container-specific options for streaming
-    let format = match params.container.as_str() {
-        "ts" | "mpegts" => "mpegts",
-        "webm" => "webm",
-        "mkv" | "matroska" => "matroska",
-        _ => "mp4", // default to mp4
+        chain
     };
-    cmd.arg("-f").arg(format);
+    pipeline_parts.push(format!("{} ! mux.", video_enc));
 
-    // For mp4 streaming, need movflags for fragmented output
-    if format == "mp4" {
-        cmd.arg("-movflags")
-            .arg("frag_keyframe+empty_moov+faststart");
-    }
+    // Audio chain
+    let audio_enc = if params.audio_codec == "copy" {
+        "demux. ! queue ! aacparse".to_string()
+    } else {
+        let mut chain = "demux. ! queue ! audioconvert ! audioresample".to_string();
+        if let Some(channels) = params.audio_channels {
+            chain.push_str(&format!(" ! audio/x-raw,channels={}", channels));
+        }
+        let gst_audio_codec = match params.audio_codec.as_str() {
+            "aac" => "avenc_aac",
+            "libopus" | "opus" => "opusenc",
+            "mp3" => "lamemp3enc",
+            other => other,
+        };
+        let bitrate = params.audio_bitrate.unwrap_or(128_000);
+        chain.push_str(&format!(" ! {} bitrate={}", gst_audio_codec, bitrate));
+        chain
+    };
+    pipeline_parts.push(format!("{} ! mux.", audio_enc));
 
-    cmd.arg("-") // output to stdout
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+    // Muxer + output
+    let (muxer, extra_props) = match params.container.as_str() {
+        "ts" | "mpegts" => ("mpegtsmux", ""),
+        "webm" => ("webmmux", " streamable=true"),
+        "mkv" | "matroska" => ("matroskamux", " streamable=true"),
+        _ => ("mp4mux", " fragment-duration=1000 streamable=true"),
+    };
+    pipeline_parts.push(format!(
+        "{} name=mux{} ! fdsink fd=1",
+        muxer, extra_props
+    ));
 
-    info!("Starting progressive transcode: {:?}", cmd);
+    let pipeline_desc = pipeline_parts.join(" ");
+    info!("Starting progressive transcode: gst-launch-1.0 -q {}", pipeline_desc);
+
+    cmd.arg(pipeline_desc);
+
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
+        .map_err(|e| anyhow!("Failed to spawn gst-launch-1.0: {}", e))?;
 
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| anyhow!("Failed to capture ffmpeg stdout"))?;
+        .ok_or_else(|| anyhow!("Failed to capture gst-launch-1.0 stdout"))?;
 
     // Spawn a task to wait for the child process so it doesn't become a zombie
     tokio::spawn(async move {
@@ -304,7 +400,7 @@ pub fn start_progressive_transcode(
                 error!("Progressive transcode exited with status: {}", status);
             }
             Err(e) => {
-                error!("Failed to wait on ffmpeg process: {}", e);
+                error!("Failed to wait on gst-launch-1.0 process: {}", e);
             }
             _ => {
                 debug!("Progressive transcode completed successfully");
@@ -322,7 +418,6 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
 
     // Build the CODECS string for the STREAM-INF line.
     // hls.js requires this to initialize the correct MSE SourceBuffer type.
-    // Without it, the browser may choose the wrong codec and throw MEDIA_ERR_SRC_NOT_SUPPORTED.
     let video_codec_str = match session.video_codec.as_str() {
         "copy" => "avc1.640028", // assume h264 copy; best effort
         "h264" | "libx264" => "avc1.640028", // h264 high profile level 4.0

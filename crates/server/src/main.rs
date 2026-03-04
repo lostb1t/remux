@@ -66,11 +66,7 @@ use url::Url;
 
 use uuid::Uuid;
 
-#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
-pub use ez_ffmpeg_arm as ez_ffmpeg;
 
-#[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
-pub use ez_ffmpeg_upstream as ez_ffmpeg;
 
 //mod auth;
 mod conversions;
@@ -141,6 +137,7 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
 }
 
 async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
+    gstreamer::init().context("Failed to initialize GStreamer")?;
     log_capture::init_file(&config.log_file);
     debug!("config: {}", serde_json::to_string_pretty(&config).unwrap());
 

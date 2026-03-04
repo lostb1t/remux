@@ -127,9 +127,8 @@ async fn items_playbackinfo_inner(
             })
             .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
-        // HLS output uses MPEG-TS segments. Copying H264/HEVC from MKV/MP4 to TS requires
-        // the h264_mp4toannexb / hevc_mp4toannexb bitstream filter which ez-ffmpeg does not
-        // apply automatically. Always re-encode video; only audio can be safely copied.
+        // HLS output uses MPEG-TS segments. Always re-encode video to h264
+        // for maximum compatibility; only audio can be safely copied.
         let video_codec = "h264".to_string();
 
         // Only copy audio if it's already AAC — the only codec with universal
@@ -1281,14 +1280,9 @@ pub async fn master_hls_video(
             start_time_ticks: q.start_time_ticks,
             max_width: q.max_width.map(|v| v as u32),
             max_height: q.max_height.map(|v| v as u32),
-            // Derive video bitrate from MaxStreamingBitrate when not explicitly set,
-            // reserving 192 kbps for AAC stereo audio.
-            video_bitrate: q.video_bit_rate.map(|v| v as u32).or_else(|| {
-                q.max_streaming_bitrate.map(|b| {
-                    const AUDIO_RESERVE_BPS: u32 = 192_000;
-                    (b as u32).saturating_sub(AUDIO_RESERVE_BPS)
-                })
-            }),
+            // Only use explicit VideoBitrate — MaxStreamingBitrate is a cap,
+            // not a target. When no explicit bitrate is set, x264enc uses CRF mode.
+            video_bitrate: q.video_bit_rate.map(|v| v as u32),
             audio_bitrate: q.audio_bit_rate.map(|v| v as u32),
             // Force stereo downmix when transcoding audio — multi-channel AAC
             // (e.g. 6.1 from DTS-HD) causes MEDIA_ERR_SRC_NOT_SUPPORTED on most
@@ -1402,6 +1396,18 @@ async fn variant_hls_video_inner(
 /// Captures the full segment filename (e.g. "segment_00001.ts") and strips the extension.
 #[get("/videos/{id}/main/{segment_file}")]
 pub async fn hls_segment(
+    State(state): State<AppState>,
+    Path((id, segment_file)): Path<(Uuid, String)>,
+    Query(q): Query<jellyfin::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    let segment_id = strip_segment_extension(&segment_file);
+    hls_segment_inner(state, segment_id, q).await
+}
+
+/// Segment route at the same level as main.m3u8 — browsers resolve bare
+/// segment filenames relative to the variant playlist URL.
+#[get("/videos/{id}/{segment_file}")]
+pub async fn hls_segment_flat(
     State(state): State<AppState>,
     Path((id, segment_file)): Path<(Uuid, String)>,
     Query(q): Query<jellyfin::HlsVideoQuery>,
