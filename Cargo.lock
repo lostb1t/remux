@@ -2275,6 +2275,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "gstreamer-app"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e9a883eb21aebcf1289158225c05f7aea5da6ecf71fa7f0ff1ce4d25baf004e"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "glib",
+ "gstreamer",
+ "gstreamer-app-sys",
+ "gstreamer-base",
+ "libc",
+]
+
+[[package]]
+name = "gstreamer-app-sys"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94f7ef838306fe51852d503a14dc79ac42de005a59008a05098de3ecdaf05455"
+dependencies = [
+ "glib-sys",
+ "gstreamer-base-sys",
+ "gstreamer-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "gstreamer-audio"
 version = "0.23.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4108,6 +4136,7 @@ dependencies = [
  "futures",
  "futures-util",
  "gstreamer",
+ "gstreamer-app",
  "gstreamer-pbutils",
  "headers",
  "http",

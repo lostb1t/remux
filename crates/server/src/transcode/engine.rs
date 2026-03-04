@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use gstreamer as gst;
 use gstreamer::prelude::*;
+use gstreamer_app as gst_app;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -56,10 +57,8 @@ fn build_hls_pipeline_desc(params: &TranscodeParams) -> String {
         .to_string();
 
     // Video encoding chain
-    let video_enc = if params.video_codec == "copy" {
-        // Passthrough: parse only, no decode/encode
-        "queue ! h264parse".to_string()
-    } else {
+    // uridecodebin3 always decodes to raw, so we always encode.
+    let video_enc = {
         let mut chain = "queue ! videoconvert ! videoscale".to_string();
 
         // Scale filter
@@ -95,9 +94,8 @@ fn build_hls_pipeline_desc(params: &TranscodeParams) -> String {
     };
 
     // Audio encoding chain
-    let audio_enc = if params.audio_codec == "copy" {
-        "queue ! aacparse".to_string()
-    } else {
+    // uridecodebin3 always decodes to raw, so we always encode to AAC.
+    let audio_enc = {
         let mut chain = "queue ! audioconvert ! audioresample".to_string();
         if let Some(channels) = params.audio_channels {
             chain.push_str(&format!(
@@ -166,7 +164,31 @@ pub async fn start_transcode(
             .map_err(|e| anyhow!("Failed to set pipeline to Paused: {:?}", e))?;
 
         // Wait for the pipeline to reach Paused so we can seek
-        let _ = pipeline.state(gst::ClockTime::from_seconds(30));
+        let state_result = pipeline.state(gst::ClockTime::from_seconds(30));
+        debug!("Pipeline state after Paused wait: {:?}", state_result);
+
+        // Get bus early to check for preroll errors
+        let bus = pipeline
+            .bus()
+            .ok_or_else(|| anyhow!("Failed to get pipeline bus"))?;
+
+        // Drain any errors from preroll
+        while let Some(msg) = bus.pop() {
+            use gst::MessageView;
+            match msg.view() {
+                MessageView::Error(err) => {
+                    let src = err.src().map(|s| s.path_string())
+                        .unwrap_or_else(|| gst::glib::GString::from("unknown"));
+                    let dbg_info = err.debug().map(|d| d.to_string()).unwrap_or_default();
+                    pipeline.set_state(gst::State::Null).ok();
+                    return Err(anyhow!(
+                        "GStreamer preroll error from {}: {} (debug: {})",
+                        src, err.error(), dbg_info
+                    ));
+                }
+                _ => {}
+            }
+        }
 
         // Seek if start time specified
         if let Some(ticks) = params_clone.start_time_ticks {
@@ -182,11 +204,6 @@ pub async fn start_transcode(
             .map_err(|e| anyhow!("Failed to set pipeline to Playing: {:?}", e))?;
 
         info!("Starting HLS transcode job");
-
-        // Monitor the bus for EOS or errors
-        let bus = pipeline
-            .bus()
-            .ok_or_else(|| anyhow!("Failed to get pipeline bus"))?;
 
         loop {
             let msg = bus.timed_pop(gst::ClockTime::from_seconds(60));
@@ -220,6 +237,11 @@ pub async fn start_transcode(
                                 warn.error(),
                                 dbg_info
                             );
+                        }
+                        MessageView::StateChanged(sc) => {
+                            if sc.src().map(|s| s == pipeline.upcast_ref::<gst::Object>()).unwrap_or(false) {
+                                debug!("Pipeline state: {:?} -> {:?}", sc.old(), sc.current());
+                            }
                         }
                         _ => {}
                     }
@@ -281,30 +303,17 @@ pub struct ProgressiveTranscodeParams {
     pub subtitle_stream_index: Option<i32>,
 }
 
-/// Start a progressive transcode that returns a readable stream.
+/// Start a progressive transcode that returns a readable byte stream.
 ///
-/// Uses gst-launch-1.0 subprocess for process isolation.
+/// Uses in-process GStreamer pipeline with `appsink` to pull buffers.
 pub fn start_progressive_transcode(
     params: ProgressiveTranscodeParams,
-) -> Result<tokio::process::ChildStdout> {
-    use tokio::process::Command;
+) -> Result<impl futures::Stream<Item = std::result::Result<bytes::Bytes, std::io::Error>>> {
+    // Video encoding chain
+    // uridecodebin3 always decodes to raw, so we always encode.
+    let video_enc = {
+        let mut chain = "queue ! videoconvert ! videoscale".to_string();
 
-    let mut cmd = Command::new("gst-launch-1.0");
-    cmd.arg("-q"); // quiet — don't print status to stdout
-
-    // Build pipeline description
-    let mut pipeline_parts: Vec<String> = Vec::new();
-
-    // Source: uridecodebin3
-    pipeline_parts.push(format!("uridecodebin3 uri=\"{}\" name=demux", params.input_url));
-
-    // Video chain
-    let video_enc = if params.video_codec == "copy" {
-        "demux. ! queue ! h264parse".to_string()
-    } else {
-        let mut chain = "demux. ! queue ! videoconvert ! videoscale".to_string();
-
-        // Scale filter
         match (params.max_width, params.max_height) {
             (Some(w), Some(h)) => {
                 chain.push_str(&format!(
@@ -321,9 +330,8 @@ pub fn start_progressive_transcode(
             _ => {}
         }
 
-        // Encoder
         let gst_video_codec = match params.video_codec.as_str() {
-            "libx264" | "h264" => "x264enc",
+            "libx264" | "h264" | "copy" => "x264enc",
             "libx265" | "hevc" => "x265enc",
             other => other,
         };
@@ -342,18 +350,16 @@ pub fn start_progressive_transcode(
 
         chain
     };
-    pipeline_parts.push(format!("{} ! mux.", video_enc));
 
-    // Audio chain
-    let audio_enc = if params.audio_codec == "copy" {
-        "demux. ! queue ! aacparse".to_string()
-    } else {
-        let mut chain = "demux. ! queue ! audioconvert ! audioresample".to_string();
+    // Audio encoding chain
+    // uridecodebin3 always decodes to raw, so we always encode to AAC.
+    let audio_enc = {
+        let mut chain = "queue ! audioconvert ! audioresample".to_string();
         if let Some(channels) = params.audio_channels {
             chain.push_str(&format!(" ! audio/x-raw,channels={}", channels));
         }
         let gst_audio_codec = match params.audio_codec.as_str() {
-            "aac" => "avenc_aac",
+            "aac" | "copy" => "avenc_aac",
             "libopus" | "opus" => "opusenc",
             "mp3" => "lamemp3enc",
             other => other,
@@ -362,53 +368,101 @@ pub fn start_progressive_transcode(
         chain.push_str(&format!(" ! {} bitrate={}", gst_audio_codec, bitrate));
         chain
     };
-    pipeline_parts.push(format!("{} ! mux.", audio_enc));
 
-    // Muxer + output
+    // Muxer
     let (muxer, extra_props) = match params.container.as_str() {
         "ts" | "mpegts" => ("mpegtsmux", ""),
         "webm" => ("webmmux", " streamable=true"),
         "mkv" | "matroska" => ("matroskamux", " streamable=true"),
         _ => ("mp4mux", " fragment-duration=1000 streamable=true"),
     };
-    pipeline_parts.push(format!(
-        "{} name=mux{} ! fdsink fd=1",
-        muxer, extra_props
-    ));
 
-    let pipeline_desc = pipeline_parts.join(" ");
-    info!("Starting progressive transcode: gst-launch-1.0 -q {}", pipeline_desc);
+    let pipeline_desc = format!(
+        "uridecodebin3 uri=\"{}\" name=demux \
+         demux. ! {} ! mux. \
+         demux. ! {} ! mux. \
+         {} name=mux{} ! appsink name=sink emit-signals=true sync=false",
+        params.input_url,
+        video_enc,
+        audio_enc,
+        muxer,
+        extra_props,
+    );
 
-    cmd.arg(pipeline_desc);
+    info!("Starting progressive transcode pipeline: {}", pipeline_desc);
 
-    cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    let pipeline = gst::parse::launch(&pipeline_desc)
+        .map_err(|e| anyhow!("Failed to create progressive pipeline: {}", e))?;
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| anyhow!("Failed to spawn gst-launch-1.0: {}", e))?;
+    let pipeline = pipeline
+        .dynamic_cast::<gst::Pipeline>()
+        .map_err(|_| anyhow!("Element is not a Pipeline"))?;
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("Failed to capture gst-launch-1.0 stdout"))?;
+    let appsink = pipeline
+        .by_name("sink")
+        .ok_or_else(|| anyhow!("appsink not found in pipeline"))?
+        .dynamic_cast::<gst_app::AppSink>()
+        .map_err(|_| anyhow!("sink element is not an AppSink"))?;
 
-    // Spawn a task to wait for the child process so it doesn't become a zombie
-    tokio::spawn(async move {
-        match child.wait().await {
-            Ok(status) if !status.success() => {
-                error!("Progressive transcode exited with status: {}", status);
-            }
-            Err(e) => {
-                error!("Failed to wait on gst-launch-1.0 process: {}", e);
-            }
-            _ => {
-                debug!("Progressive transcode completed successfully");
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<bytes::Bytes, std::io::Error>>(32);
+
+    appsink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                let data = bytes::Bytes::copy_from_slice(map.as_slice());
+                if tx.blocking_send(Ok(data)).is_err() {
+                    return Err(gst::FlowError::Error);
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|e| anyhow!("Failed to start progressive pipeline: {:?}", e))?;
+
+    // Monitor the pipeline bus and clean up on EOS/error
+    let pipeline_weak = pipeline.downgrade();
+    tokio::task::spawn_blocking(move || {
+        let Some(pipeline) = pipeline_weak.upgrade() else {
+            return;
+        };
+        let Some(bus) = pipeline.bus() else {
+            return;
+        };
+        loop {
+            let msg = bus.timed_pop(gst::ClockTime::from_seconds(60));
+            match msg {
+                Some(msg) => {
+                    use gst::MessageView;
+                    match msg.view() {
+                        MessageView::Eos(..) => {
+                            debug!("Progressive transcode completed");
+                            break;
+                        }
+                        MessageView::Error(err) => {
+                            error!("Progressive transcode error: {}", err.error());
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                None => {
+                    let (_, state, _) = pipeline.state(gst::ClockTime::ZERO);
+                    if state == gst::State::Null {
+                        break;
+                    }
+                }
             }
         }
+        pipeline.set_state(gst::State::Null).ok();
     });
 
-    Ok(stdout)
+    Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
 }
 
 /// Generate a master HLS playlist that references the variant playlist.

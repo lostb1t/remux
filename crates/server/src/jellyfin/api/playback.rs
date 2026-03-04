@@ -309,8 +309,7 @@ async fn videos_stream_inner(
         subtitle_stream_index: q.subtitle_stream_index.map(|v| v as i32),
     };
 
-    let stdout = crate::transcode::engine::start_progressive_transcode(params)?;
-    let stream = ReaderStream::new(stdout);
+    let stream = crate::transcode::engine::start_progressive_transcode(params)?;
     let body = Body::from_stream(stream);
 
     let content_type = match container.as_str() {
