@@ -319,11 +319,27 @@ pub fn start_progressive_transcode(
 /// This mimics Jellyfin's master.m3u8 format.
 pub fn generate_master_playlist(session: &TranscodeSession) -> String {
     let play_session_id = &session.id;
+
+    // Build the CODECS string for the STREAM-INF line.
+    // hls.js requires this to initialize the correct MSE SourceBuffer type.
+    // Without it, the browser may choose the wrong codec and throw MEDIA_ERR_SRC_NOT_SUPPORTED.
+    let video_codec_str = match session.video_codec.as_str() {
+        "copy" => "avc1.640028", // assume h264 copy; best effort
+        "h264" | "libx264" => "avc1.640028", // h264 high profile level 4.0
+        "hevc" | "libx265" => "hvc1.1.6.L150.B0",
+        _ => "avc1.640028",
+    };
+    let audio_codec_str = match session.audio_codec.as_str() {
+        "copy" | "aac" => "mp4a.40.2", // AAC-LC
+        _ => "mp4a.40.2",
+    };
+    let codecs = format!("{},{}", video_codec_str, audio_codec_str);
+
     format!(
         "#EXTM3U\n\
          #EXT-X-VERSION:3\n\
-         #EXT-X-STREAM-INF:BANDWIDTH=2000000\n\
-         main/stream.m3u8?PlaySessionId={}\n",
-        play_session_id
+         #EXT-X-STREAM-INF:BANDWIDTH=2000000,AVERAGE-BANDWIDTH=2000000,CODECS=\"{}\"\n\
+         main.m3u8?PlaySessionId={}\n",
+        codecs, play_session_id
     )
 }

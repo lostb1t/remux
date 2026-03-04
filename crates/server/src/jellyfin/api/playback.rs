@@ -132,22 +132,16 @@ async fn items_playbackinfo_inner(
         // apply automatically. Always re-encode video; only audio can be safely copied.
         let video_codec = "h264".to_string();
 
-        // Use "copy" for audio if the stream's codec is already listed in the transcoding
-        // profile's audio_codec — avoids unnecessary audio re-encode.
+        // Only copy audio if it's already AAC — the only codec with universal
+        // browser MSE support in MPEG-TS HLS. AC3/EAC3/DTS etc. copy fine into
+        // MPEG-TS but MSE (used by hls.js and Chrome native HLS) rejects them,
+        // causing MEDIA_ERR_SRC_NOT_SUPPORTED in the browser.
         let audio_codec = {
             let stream_codec = source
                 .audio_stream()
                 .and_then(|s| s.codec.as_deref())
                 .unwrap_or("");
-            let profile_supports = trans_profile
-                .and_then(|p| p.audio_codec.as_deref())
-                .map(|codecs| {
-                    codecs
-                        .split(',')
-                        .any(|c| c.trim().eq_ignore_ascii_case(stream_codec))
-                })
-                .unwrap_or(false);
-            if profile_supports && !stream_codec.is_empty() {
+            if stream_codec.eq_ignore_ascii_case("aac") {
                 "copy".to_string()
             } else {
                 "aac".to_string()
