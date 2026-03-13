@@ -21,7 +21,6 @@ use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 use super::items::{item, items, items_flat};
 use super::mock_items;
 use super::shows::userviews;
-use super::system::system_info_public;
 
 #[post("/users/{user_id}/configuration")]
 pub async fn user_configuration_update(
@@ -111,9 +110,13 @@ pub async fn users_authenticatebyname(
     auth_header: auth::JellyfinAuthHeader,
     Json(data): Json<jellyfin::AuthenticateUserByName>,
 ) -> Result<impl IntoResponse> {
-    let user = User::authenticate(&state.ctx.db, &data.username, &data.pw)
-        .await?
-        .context_unauthorized("not found", "not foubd")?;
+    let user = User::authenticate(
+        &state.ctx.db,
+        data.username.as_deref().unwrap_or(""),
+        data.pw.as_deref().unwrap_or(""),
+    )
+    .await?
+    .context_unauthorized("not found", "not foubd")?;
     let device = auth::Device::new_from_header(auth_header, &user)?;
     device.save(&state.ctx.db).await?;
 
@@ -363,8 +366,8 @@ pub async fn update_user(
 // ===== Route aliases (same handler, different path) =====
 
 #[get("/users/public")]
-pub async fn users_public(State(state): State<AppState>) -> Result<impl IntoResponse> {
-    system_info_public(State(state)).await
+pub async fn users_public() -> Result<impl IntoResponse> {
+    Ok(Json::<Vec<jellyfin::UserDto>>(vec![]).into_response())
 }
 
 #[get("/users/{user_id}")]

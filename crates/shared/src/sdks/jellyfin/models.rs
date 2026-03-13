@@ -177,9 +177,9 @@ pub struct CultureDto {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct AuthenticateUserByName {
-    //#[serde(alias = "Password")]
-    pub pw: String,
-    pub username: String,
+    #[serde(alias = "Password", default)]
+    pub pw: Option<String>,
+    pub username: Option<String>,
 }
 
 #[skip_serializing_none]

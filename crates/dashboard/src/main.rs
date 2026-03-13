@@ -224,7 +224,7 @@ fn Login(on_login: EventHandler) -> Element {
             };
 
             match client
-                .execute(AuthenticateUserByName { username: u, pw: p })
+                .execute(AuthenticateUserByName { username: Some(u), pw: Some(p) })
                 .await
             {
                 Ok(result) => {
