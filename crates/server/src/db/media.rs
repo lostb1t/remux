@@ -94,6 +94,8 @@ pub enum MediaKind {
     // purely here for jf
     Folder,
     Source,
+    TvChannel,
+    TvProgram,
     #[default]
     Unknown,
 }
@@ -134,6 +136,11 @@ impl From<jellyfin::MediaType> for MediaKind {
             jellyfin::MediaType::Season => MediaKind::Season,
             jellyfin::MediaType::Episode => MediaKind::Episode,
             jellyfin::MediaType::BoxSet => MediaKind::Collection,
+            jellyfin::MediaType::TvChannel
+            | jellyfin::MediaType::LiveTvChannel => MediaKind::TvChannel,
+            jellyfin::MediaType::TvProgram
+            | jellyfin::MediaType::LiveTvProgram
+            | jellyfin::MediaType::Program => MediaKind::TvProgram,
             _ => MediaKind::Unknown,
         }
     }
@@ -277,6 +284,8 @@ pub struct MediaFilter {
     pub blocked_tags: Option<Vec<String>>,
     /// From user policy — if non-empty, item must have AT LEAST ONE of these tags
     pub allowed_tags: Option<Vec<String>>,
+    /// Filter by enabled flag (for TvChannel). None = no filter.
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -340,6 +349,19 @@ pub struct Media {
     pub collection_max_items: Option<i64>,
     // JSON array of catalog media item UUIDs (for smart collections with catalog filter)
     pub collection_catalog_filter: Option<String>,
+
+    // IPTV / Live TV
+    pub live_start: Option<NaiveDateTime>,
+    pub live_end: Option<NaiveDateTime>,
+    pub tvg_id: Option<String>,
+    pub channel_number: Option<i64>,
+    /// Whether this channel is shown to clients (1 = enabled, 0 = hidden).
+    #[default(1)]
+    pub enabled: i64,
+    /// User-defined display order for channels. Lower = earlier.
+    pub sort_order: Option<i64>,
+    /// User-defined name override; takes precedence over `title` for display.
+    pub custom_name: Option<String>,
 }
 
 impl Media {
@@ -422,9 +444,10 @@ impl Media {
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items, collection_catalog_filter,
-            remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at, certification, parent_idx
+            remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at, certification, parent_idx,
+            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -451,7 +474,14 @@ impl Media {
             collection_catalog_filter = excluded.collection_catalog_filter,
             updated_at = excluded.updated_at,
             certification = excluded.certification,
-            parent_idx = excluded.parent_idx
+            parent_idx = excluded.parent_idx,
+            live_start = excluded.live_start,
+            live_end = excluded.live_end,
+            tvg_id = excluded.tvg_id,
+            channel_number = excluded.channel_number,
+            enabled = excluded.enabled,
+            sort_order = excluded.sort_order,
+            custom_name = excluded.custom_name
         "#,
         )
         .bind(self.id)
@@ -483,6 +513,13 @@ impl Media {
         .bind(updated_at)
         .bind(&self.certification)
         .bind(self.parent_idx)
+        .bind(self.live_start)
+        .bind(self.live_end)
+        .bind(&self.tvg_id)
+        .bind(self.channel_number)
+        .bind(self.enabled)
+        .bind(self.sort_order)
+        .bind(&self.custom_name)
         .execute(db)
         .await?;
 
@@ -502,7 +539,8 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
-                remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx
+                remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx,
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name
             )",
         );
             for item in chunk {
@@ -535,7 +573,14 @@ impl Media {
                     .push_bind(&item.created_at)
                     .push_bind(Utc::now())
                     .push_bind(&item.certification)
-                    .push_bind(&item.parent_idx);
+                    .push_bind(&item.parent_idx)
+                    .push_bind(&item.live_start)
+                    .push_bind(&item.live_end)
+                    .push_bind(&item.tvg_id)
+                    .push_bind(&item.channel_number)
+                    .push_bind(&item.enabled)
+                    .push_bind(&item.sort_order)
+                    .push_bind(&item.custom_name);
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -560,7 +605,8 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
-                remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx
+                remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx,
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name
             )",
         );
 
@@ -591,7 +637,14 @@ impl Media {
                     .push_bind(&item.created_at)
                     .push_bind(Utc::now())
                     .push_bind(&item.certification)
-                    .push_bind(&item.parent_idx);
+                    .push_bind(&item.parent_idx)
+                    .push_bind(&item.live_start)
+                    .push_bind(&item.live_end)
+                    .push_bind(&item.tvg_id)
+                    .push_bind(&item.channel_number)
+                    .push_bind(&item.enabled)
+                    .push_bind(&item.sort_order)
+                    .push_bind(&item.custom_name);
             });
 
             query_builder.push(
@@ -617,7 +670,16 @@ impl Media {
                 promoted = excluded.promoted,
                 certification = excluded.certification,
                 parent_id = excluded.parent_id,
-                parent_idx = excluded.parent_idx",
+                parent_idx = excluded.parent_idx,
+                live_start = excluded.live_start,
+                live_end = excluded.live_end,
+                tvg_id = excluded.tvg_id,
+                channel_number = excluded.channel_number,
+                -- preserve user overrides: only update name/enabled/sort_order if not set by user
+                title = CASE WHEN custom_name IS NOT NULL THEN media.title ELSE excluded.title END,
+                enabled = CASE WHEN media.id IS NOT NULL THEN media.enabled ELSE excluded.enabled END,
+                sort_order = CASE WHEN media.id IS NOT NULL THEN media.sort_order ELSE excluded.sort_order END,
+                custom_name = media.custom_name",
             );
 
             query_builder.build().execute(&mut *tx).await?;
@@ -937,6 +999,22 @@ impl Media {
                     qb.push("))");
                 }
             }
+
+            if let Some(enabled) = &filter.enabled {
+                qb.push(" AND enabled = ").push_bind(if *enabled { 1i64 } else { 0i64 });
+            }
+        }
+
+        // For TvChannel queries, sort by user sort_order, then channel_number, then title.
+        let is_channel_query = filter
+            .kind
+            .as_ref()
+            .map(|k| k.iter().all(|k| matches!(k, MediaKind::TvChannel)))
+            .unwrap_or(false);
+        if is_channel_query {
+            records_qb.push(
+                " ORDER BY COALESCE(sort_order, channel_number, 999999), title COLLATE NOCASE",
+            );
         }
 
         if let Some(limit) = &filter.limit {

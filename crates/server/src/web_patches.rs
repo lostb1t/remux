@@ -3,7 +3,6 @@
 /// minified JS internals, so it survives jellyfin-web bundle updates.
 pub static CSS: &str = r##"
   /* ── Sidebar: whole sections ─────────────────────────────── */
-  [aria-labelledby="livetv-subheader"]    { display: none !important; }
   [aria-labelledby="plugins-subheader"]   { display: none !important; }
 "##;
 

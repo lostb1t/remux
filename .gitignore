@@ -14,3 +14,4 @@ config.toml
 .env
 config.toml
 transcode_sessions
+jellyfin-web/

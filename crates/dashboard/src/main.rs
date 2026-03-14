@@ -4,14 +4,16 @@ use gloo_net::eventsource::futures::EventSource;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
 use shared::sdks::jellyfin::{
-    AdminSetPassword, AioCatalogInfo, AuthenticateUserByName, BaseItemDto,
-    BrandingOptions, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteUser, DeleteVirtualFolder, GetAioCatalogs, GetBrandingConfiguration,
+    AddTunerHost, AdminSetPassword, AioCatalogInfo, AuthenticateUserByName, BaseItemDto,
+    BrandingOptions, ChannelEditorItem, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload,
+    DeleteEpgSource, DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EpgSourceInfo,
+    GetAioCatalogs, GetBrandingConfiguration, GetEpgSources, GetIptvChannels,
     GetItems, GetScheduledTasks, GetSessions, GetStartupConfiguration,
-    GetSystemConfiguration, GetUsers, JellyfinAuth, PatchItem, PatchItemPayload,
+    GetSystemConfiguration, GetTunerHosts, GetUsers, IptvChannelsResult, JellyfinAuth,
+    BulkChannelRequest, BulkChannels, PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
     PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
-    ServerConfiguration, SessionInfoDto, SetLogLevel, StartTask, StartupConfiguration,
-    StartupUser, StopTask, TaskInfo, TaskTriggerInfo, UpdateBrandingConfiguration,
+    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetLogLevel, StartTask, StartupConfiguration,
+    StartupUser, StopTask, TaskInfo, TaskTriggerInfo, TunerHostInfo, UpdateBrandingConfiguration,
     UpdateCatalogSettings, UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
     UpdateTaskTriggers, UpdateUser, UpdateUserPolicy, UserDto,
 };
@@ -868,6 +870,8 @@ enum Route {
     ImportsRoute,
     #[route("/admin/library")]
     CollectionsRoute,
+    #[route("/admin/iptv")]
+    IptvRoute,
     #[route("/admin/devices")]
     DevicesRoute,
     #[route("/admin/tasks")]
@@ -914,6 +918,7 @@ fn DashboardLayout() -> Element {
         Route::OverviewRoute => "Overview",
         Route::ImportsRoute => "Imports",
         Route::CollectionsRoute => "Library",
+        Route::IptvRoute => "IPTV",
         Route::DevicesRoute => "Devices",
         Route::TasksRoute => "Scheduled Tasks",
         Route::UsersRoute => "Users",
@@ -952,6 +957,11 @@ fn DashboardLayout() -> Element {
                         label: "Library",
                         active: route == Route::CollectionsRoute,
                         on_click: move |_| { navigator().push(Route::CollectionsRoute); sidebar_open.set(false); },
+                    }
+                    NavItem {
+                        label: "IPTV",
+                        active: route == Route::IptvRoute,
+                        on_click: move |_| { navigator().push(Route::IptvRoute); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Imports",
@@ -1055,6 +1065,12 @@ fn ImportsRoute() -> Element {
 fn CollectionsRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { CollectionsPage { app_state } }
+}
+
+#[component]
+fn IptvRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { IptvPage { app_state } }
 }
 
 #[component]
@@ -1547,6 +1563,803 @@ impl PartialEq for UserFormMode {
             (Self::Create, Self::Create) => true,
             (Self::Edit(a), Self::Edit(b)) => a.id == b.id,
             _ => false,
+        }
+    }
+}
+
+// ── IPTV page ─────────────────────────────────────────────────────
+
+#[component]
+fn IptvPage(app_state: AppState) -> Element {
+    // "sources" or "channels"
+    let mut active_tab = use_signal(|| "sources".to_string());
+
+    rsx! {
+        IptvSourcesTab { app_state: app_state.clone(), active: active_tab.read().as_str() == "sources" }
+        IptvChannelsTab { app_state: app_state.clone(), active: active_tab.read().as_str() == "channels" }
+        // Tab selector rendered above both panels
+        div { class: "card", style: "order:-1",
+            div { class: "card-header",
+                span { class: "card-title", "IPTV" }
+                div { class: "tab-group",
+                    button {
+                        class: if active_tab.read().as_str() == "sources" { "tab-btn active" } else { "tab-btn" },
+                        onclick: move |_| active_tab.set("sources".to_string()),
+                        "Sources"
+                    }
+                    button {
+                        class: if active_tab.read().as_str() == "channels" { "tab-btn active" } else { "tab-btn" },
+                        onclick: move |_| active_tab.set("channels".to_string()),
+                        "Channels"
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── IPTV Sources tab ──────────────────────────────────────────────
+
+#[component]
+fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
+    let mut ch_sources: Signal<Vec<TunerHostInfo>> = use_signal(Vec::new);
+    let mut epg_sources: Signal<Vec<EpgSourceInfo>> = use_signal(Vec::new);
+    let mut loading = use_signal(|| true);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut refresh = use_signal(|| 0_u32);
+
+    // Channel source form
+    let mut show_ch_form = use_signal(|| false);
+    let mut ch_edit_id: Signal<Option<String>> = use_signal(|| None);
+    let mut ch_form_type = use_signal(|| "m3u".to_string());
+    let mut ch_form_name = use_signal(String::new);
+    let mut ch_form_url = use_signal(String::new);
+    let mut ch_form_username = use_signal(String::new);
+    let mut ch_form_password = use_signal(String::new);
+    let mut ch_saving = use_signal(|| false);
+    let mut ch_save_error: Signal<Option<String>> = use_signal(|| None);
+
+    // EPG source form
+    let mut show_epg_form = use_signal(|| false);
+    let mut epg_edit_id: Signal<Option<String>> = use_signal(|| None);
+    let mut epg_form_name = use_signal(String::new);
+    let mut epg_form_url = use_signal(String::new);
+    let mut epg_saving = use_signal(|| false);
+    let mut epg_save_error: Signal<Option<String>> = use_signal(|| None);
+
+    let mut refreshing = use_signal(|| false);
+
+    let app_state_effect = app_state.clone();
+    use_effect(move || {
+        let _r = *refresh.read();
+        loading.set(true);
+        let client = app_state_effect.client.clone();
+        spawn(async move {
+            let r1 = client.execute(GetTunerHosts).await;
+            let r2 = client.execute(GetEpgSources).await;
+            match (r1, r2) {
+                (Ok(s), Ok(e)) => {
+                    ch_sources.set(s);
+                    epg_sources.set(e);
+                    error.set(None);
+                }
+                (Err(e), _) | (_, Err(e)) => error.set(Some(format!("Failed to load: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    if !active {
+        return rsx! { div { style: "display:none" } };
+    }
+
+    let mut reset_ch_form = move || {
+        ch_edit_id.set(None);
+        ch_form_type.set("m3u".to_string());
+        ch_form_name.set(String::new());
+        ch_form_url.set(String::new());
+        ch_form_username.set(String::new());
+        ch_form_password.set(String::new());
+        ch_save_error.set(None);
+    };
+
+    let mut reset_epg_form = move || {
+        epg_edit_id.set(None);
+        epg_form_name.set(String::new());
+        epg_form_url.set(String::new());
+        epg_save_error.set(None);
+    };
+
+    let loading_v = *loading.read();
+    let error_v = error.read().clone();
+
+    rsx! {
+        // ── Channel sources card ───────────────────────────────────
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Channel Sources" }
+                div { style: "display:flex;gap:8px",
+                    button {
+                        class: "btn btn-ghost",
+                        style: "height:32px;font-size:.68rem",
+                        disabled: *refreshing.read(),
+                        onclick: {
+                            let client = app_state.client.clone();
+                            move |_| {
+                                refreshing.set(true);
+                                let c = client.clone();
+                                spawn(async move {
+                                    let _ = c.execute(StartTask { task_id: "refreshiptv".to_string() }).await;
+                                    refreshing.set(false);
+                                });
+                            }
+                        },
+                        if *refreshing.read() { "Refreshing…" } else { "Refresh Now" }
+                    }
+                    button {
+                        class: "btn btn-primary",
+                        style: "height:32px;font-size:.68rem",
+                        onclick: move |_| { reset_ch_form(); show_ch_form.set(true); },
+                        "+ Add"
+                    }
+                }
+            }
+
+            div { class: "card-body tight",
+                if loading_v {
+                    span { class: "loading-text", "Loading…" }
+                } else if let Some(err) = &error_v {
+                    span { class: "loading-text", style: "color:var(--error)", "{err}" }
+                } else if ch_sources.read().is_empty() {
+                    div { class: "empty-state", "No channel sources. Add an M3U or Xtream Codes source." }
+                } else {
+                    div { class: "data-table-container",
+                        div { class: "row-list",
+                            for source in ch_sources.read().clone() {
+                                {
+                                    let source_id = source.id.clone().unwrap_or_default();
+                                    let name = source.friendly_name.clone().unwrap_or_else(|| "Unnamed".to_string());
+                                    let url = source.url.clone().unwrap_or_default();
+                                    let source_type = source.type_.clone().unwrap_or_else(|| "m3u".to_string());
+                                    let type_label = if source_type == "xtream" { "Xtream" } else { "M3U" };
+                                    let username = source.username.clone().unwrap_or_default();
+                                    let client_del = app_state.client.clone();
+                                    let sid = source_id.clone();
+                                    let src_clone = source.clone();
+                                    rsx! {
+                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]", key: "{source_id}",
+                                            div { class: "flex-1 min-w-0 px-3 py-[10px]",
+                                                div { class: "catalog-name", "{name}" }
+                                                div { class: "catalog-meta",
+                                                    span { class: "session-client-badge", "{type_label}" }
+                                                    if source_type == "xtream" {
+                                                        span { class: "session-client-badge", style: "background:var(--accent-muted)", "EPG" }
+                                                    }
+                                                    if source_type == "xtream" && !username.is_empty() {
+                                                        span { style: "font-size:.72rem;opacity:.6", "user: {username}" }
+                                                    } else {
+                                                        span { style: "font-size:.72rem;opacity:.6", "{url}" }
+                                                    }
+                                                }
+                                            }
+                                            div { style: "display:flex;gap:4px;padding-right:8px",
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:28px;font-size:.68rem",
+                                                    onclick: move |_| {
+                                                        ch_edit_id.set(src_clone.id.clone());
+                                                        ch_form_type.set(src_clone.type_.clone().unwrap_or_else(|| "m3u".to_string()));
+                                                        ch_form_name.set(src_clone.friendly_name.clone().unwrap_or_default());
+                                                        ch_form_url.set(src_clone.url.clone().unwrap_or_default());
+                                                        ch_form_username.set(src_clone.username.clone().unwrap_or_default());
+                                                        ch_form_password.set(String::new());
+                                                        ch_save_error.set(None);
+                                                        show_ch_form.set(true);
+                                                    },
+                                                    "Edit"
+                                                }
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:28px;font-size:.68rem;color:var(--error)",
+                                                    onclick: move |_| {
+                                                        let c = client_del.clone();
+                                                        let id = sid.clone();
+                                                        spawn(async move {
+                                                            let _ = c.execute(DeleteTunerHost { id }).await;
+                                                            let v = *refresh.peek() + 1;
+                                                            refresh.set(v);
+                                                        });
+                                                    },
+                                                    "Delete"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Channel source form
+                if *show_ch_form.read() {
+                    div { class: "form-section", style: "padding:16px;border-top:1px solid var(--border)",
+                        div { class: "form-title", if ch_edit_id.read().is_some() { "Edit Channel Source" } else { "Add Channel Source" } }
+
+                        // Type selector
+                        div { class: "form-group",
+                            label { class: "form-label", "Type" }
+                            div { class: "tab-group",
+                                button {
+                                    class: if ch_form_type.read().as_str() == "m3u" { "tab-btn active" } else { "tab-btn" },
+                                    onclick: move |_| ch_form_type.set("m3u".to_string()),
+                                    "M3U"
+                                }
+                                button {
+                                    class: if ch_form_type.read().as_str() == "xtream" { "tab-btn active" } else { "tab-btn" },
+                                    onclick: move |_| ch_form_type.set("xtream".to_string()),
+                                    "Xtream Codes"
+                                }
+                            }
+                        }
+
+                        div { class: "form-group",
+                            label { class: "form-label", "Name" }
+                            input {
+                                class: "form-input",
+                                value: "{ch_form_name.read()}",
+                                placeholder: "IPTV",
+                                oninput: move |e| ch_form_name.set(e.value()),
+                            }
+                        }
+
+                        if ch_form_type.read().as_str() == "m3u" {
+                            div { class: "form-group",
+                                label { class: "form-label", "M3U URL" }
+                                input {
+                                    class: "form-input",
+                                    value: "{ch_form_url.read()}",
+                                    placeholder: "http://…/playlist.m3u",
+                                    oninput: move |e| ch_form_url.set(e.value()),
+                                }
+                            }
+                        } else {
+                            div { class: "form-group",
+                                label { class: "form-label", "Server URL" }
+                                input {
+                                    class: "form-input",
+                                    value: "{ch_form_url.read()}",
+                                    placeholder: "http://provider:8080",
+                                    oninput: move |e| ch_form_url.set(e.value()),
+                                }
+                            }
+                            div { class: "form-group",
+                                label { class: "form-label", "Username" }
+                                input {
+                                    class: "form-input",
+                                    value: "{ch_form_username.read()}",
+                                    oninput: move |e| ch_form_username.set(e.value()),
+                                }
+                            }
+                            div { class: "form-group",
+                                label { class: "form-label", "Password" }
+                                input {
+                                    r#type: "password",
+                                    class: "form-input",
+                                    value: "{ch_form_password.read()}",
+                                    placeholder: if ch_edit_id.read().is_some() { "leave blank to keep existing" } else { "" },
+                                    oninput: move |e| ch_form_password.set(e.value()),
+                                }
+                            }
+                        }
+
+                        if let Some(err) = ch_save_error.read().as_ref() {
+                            div { class: "alert-error", "{err}" }
+                        }
+
+                        div { class: "form-actions",
+                            button {
+                                class: "btn btn-ghost",
+                                onclick: move |_| { show_ch_form.set(false); },
+                                "Cancel"
+                            }
+                            button {
+                                class: "btn btn-primary",
+                                disabled: *ch_saving.read(),
+                                onclick: {
+                                    let client = app_state.client.clone();
+                                    move |_| {
+                                        let name = ch_form_name.peek().clone();
+                                        let url = ch_form_url.peek().clone();
+                                        let ty = ch_form_type.peek().clone();
+                                        let username = ch_form_username.peek().clone();
+                                        let password = ch_form_password.peek().clone();
+                                        let edit_id = ch_edit_id.peek().clone();
+
+                                        if url.is_empty() {
+                                            ch_save_error.set(Some("URL is required".into()));
+                                            return;
+                                        }
+                                        if ty == "xtream" && username.is_empty() {
+                                            ch_save_error.set(Some("Username is required for Xtream".into()));
+                                            return;
+                                        }
+
+                                        ch_saving.set(true);
+                                        ch_save_error.set(None);
+                                        let c = client.clone();
+                                        spawn(async move {
+                                            let info = TunerHostInfo {
+                                                id: edit_id,
+                                                friendly_name: Some(if name.is_empty() { "IPTV".to_string() } else { name }),
+                                                url: Some(url),
+                                                type_: Some(ty.clone()),
+                                                username: if ty == "xtream" { Some(username) } else { None },
+                                                password: if ty == "xtream" && !password.is_empty() { Some(password) } else { None },
+                                                ..Default::default()
+                                            };
+                                            match c.execute(AddTunerHost { info }).await {
+                                                Ok(_) => {
+                                                    show_ch_form.set(false);
+                                                    let v = *refresh.peek() + 1;
+                                                    refresh.set(v);
+                                                }
+                                                Err(e) => ch_save_error.set(Some(e.to_string())),
+                                            }
+                                            ch_saving.set(false);
+                                        });
+                                    }
+                                },
+                                if *ch_saving.read() { "Saving…" } else { "Save" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── EPG sources card ───────────────────────────────────────
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "EPG Sources" }
+                button {
+                    class: "btn btn-primary",
+                    style: "height:32px;font-size:.68rem",
+                    onclick: move |_| { reset_epg_form(); show_epg_form.set(true); },
+                    "+ Add"
+                }
+            }
+
+            div { class: "card-body tight",
+                if loading_v {
+                    span { class: "loading-text", "Loading…" }
+                } else if epg_sources.read().is_empty() {
+                    div { class: "empty-state", "No EPG sources. Add an XMLTV URL to get program guide data." }
+                } else {
+                    div { class: "data-table-container",
+                        div { class: "row-list",
+                            for epg in epg_sources.read().clone() {
+                                {
+                                    let eid = epg.id.clone().unwrap_or_default();
+                                    let ename = epg.name.clone();
+                                    let eurl = epg.url.clone();
+                                    let client_del = app_state.client.clone();
+                                    let epg_clone = epg.clone();
+                                    rsx! {
+                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]", key: "{eid}",
+                                            div { class: "flex-1 min-w-0 px-3 py-[10px]",
+                                                div { class: "catalog-name", "{ename}" }
+                                                div { class: "catalog-meta",
+                                                    span { style: "font-size:.72rem;opacity:.6", "{eurl}" }
+                                                }
+                                            }
+                                            div { style: "display:flex;gap:4px;padding-right:8px",
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:28px;font-size:.68rem",
+                                                    onclick: move |_| {
+                                                        epg_edit_id.set(epg_clone.id.clone());
+                                                        epg_form_name.set(epg_clone.name.clone());
+                                                        epg_form_url.set(epg_clone.url.clone());
+                                                        epg_save_error.set(None);
+                                                        show_epg_form.set(true);
+                                                    },
+                                                    "Edit"
+                                                }
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    style: "height:28px;font-size:.68rem;color:var(--error)",
+                                                    onclick: move |_| {
+                                                        let c = client_del.clone();
+                                                        let id = eid.clone();
+                                                        spawn(async move {
+                                                            let _ = c.execute(DeleteEpgSource { id }).await;
+                                                            let v = *refresh.peek() + 1;
+                                                            refresh.set(v);
+                                                        });
+                                                    },
+                                                    "Delete"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // EPG source form
+                if *show_epg_form.read() {
+                    div { class: "form-section", style: "padding:16px;border-top:1px solid var(--border)",
+                        div { class: "form-title", if epg_edit_id.read().is_some() { "Edit EPG Source" } else { "Add EPG Source" } }
+
+                        div { class: "form-group",
+                            label { class: "form-label", "Name" }
+                            input {
+                                class: "form-input",
+                                value: "{epg_form_name.read()}",
+                                oninput: move |e| epg_form_name.set(e.value()),
+                            }
+                        }
+                        div { class: "form-group",
+                            label { class: "form-label", "XMLTV URL" }
+                            input {
+                                class: "form-input",
+                                value: "{epg_form_url.read()}",
+                                placeholder: "http://…/xmltv.php",
+                                oninput: move |e| epg_form_url.set(e.value()),
+                            }
+                        }
+
+                        if let Some(err) = epg_save_error.read().as_ref() {
+                            div { class: "alert-error", "{err}" }
+                        }
+
+                        div { class: "form-actions",
+                            button {
+                                class: "btn btn-ghost",
+                                onclick: move |_| { show_epg_form.set(false); },
+                                "Cancel"
+                            }
+                            button {
+                                class: "btn btn-primary",
+                                disabled: *epg_saving.read(),
+                                onclick: {
+                                    let client = app_state.client.clone();
+                                    move |_| {
+                                        let name = epg_form_name.peek().clone();
+                                        let url = epg_form_url.peek().clone();
+                                        let edit_id = epg_edit_id.peek().clone();
+
+                                        if url.is_empty() {
+                                            epg_save_error.set(Some("URL is required".into()));
+                                            return;
+                                        }
+
+                                        epg_saving.set(true);
+                                        epg_save_error.set(None);
+                                        let c = client.clone();
+                                        spawn(async move {
+                                            let info = EpgSourceInfo { id: edit_id, name, url };
+                                            match c.execute(SaveEpgSource { info }).await {
+                                                Ok(_) => {
+                                                    show_epg_form.set(false);
+                                                    let v = *refresh.peek() + 1;
+                                                    refresh.set(v);
+                                                }
+                                                Err(e) => epg_save_error.set(Some(e.to_string())),
+                                            }
+                                            epg_saving.set(false);
+                                        });
+                                    }
+                                },
+                                if *epg_saving.read() { "Saving…" } else { "Save" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── IPTV Channels tab ─────────────────────────────────────────────
+
+const PAGE_SIZE: u32 = 50;
+
+#[component]
+fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
+    let mut channels: Signal<Vec<ChannelEditorItem>> = use_signal(Vec::new);
+    let mut total: Signal<usize> = use_signal(|| 0);
+    let mut loading = use_signal(|| true);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut page = use_signal(|| 0_u32);
+    // committed search (triggers fetch); typed search (live input)
+    let mut search_committed = use_signal(String::new);
+    let mut search_input = use_signal(String::new);
+    let mut pending: Signal<std::collections::HashMap<String, PatchChannelRequest>> =
+        use_signal(std::collections::HashMap::new);
+    let mut saving = use_signal(|| false);
+    let mut bulk_working = use_signal(|| false);
+
+    let app_state_effect = app_state.clone();
+    use_effect(move || {
+        let p = *page.read();
+        let s = search_committed.read().clone();
+        loading.set(true);
+        let client = app_state_effect.client.clone();
+        spawn(async move {
+            match client.execute(GetIptvChannels {
+                limit: PAGE_SIZE,
+                offset: p * PAGE_SIZE,
+                search: s,
+            }).await {
+                Ok(r) => {
+                    total.set(r.total_record_count);
+                    channels.set(r.items);
+                    error.set(None);
+                }
+                Err(e) => error.set(Some(format!("Failed to load channels: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    if !active {
+        return rsx! { div { style: "display:none" } };
+    }
+
+    let total_v = *total.read();
+    let page_v = *page.read();
+    let total_pages = total_v.div_ceil(PAGE_SIZE as usize) as u32;
+    let has_pending = !pending.read().is_empty();
+
+    let mut do_search = move || {
+        let s = search_input.peek().clone();
+        search_committed.set(s);
+        page.set(0);
+    };
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Channels" }
+                if total_v > 0 {
+                    span { style: "font-size:.75rem;opacity:.5;margin-left:8px", "{total_v} total" }
+                }
+                div { style: "display:flex;gap:8px;align-items:center;margin-left:auto",
+                    // Enable all / Disable all — server-side bulk op
+                    button {
+                        class: "btn btn-ghost",
+                        style: "height:32px;font-size:.68rem",
+                        disabled: *bulk_working.read() || total_v == 0,
+                        onclick: {
+                            let client = app_state.client.clone();
+                            move |_| {
+                                let search = search_committed.peek().clone();
+                                bulk_working.set(true);
+                                let c = client.clone();
+                                spawn(async move {
+                                    let _ = c.execute(BulkChannels {
+                                        request: BulkChannelRequest { enabled: true, search: if search.is_empty() { None } else { Some(search) } },
+                                    }).await;
+                                    bulk_working.set(false);
+                                    // re-fetch to reflect new state
+                                    let s = search_committed.peek().clone();
+                                    let p = *page.peek();
+                                    loading.set(true);
+                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s }).await {
+                                        total.set(r.total_record_count);
+                                        channels.set(r.items);
+                                    }
+                                    loading.set(false);
+                                });
+                            }
+                        },
+                        if *bulk_working.read() { "Working…" } else { "Enable All" }
+                    }
+                    button {
+                        class: "btn btn-ghost",
+                        style: "height:32px;font-size:.68rem",
+                        disabled: *bulk_working.read() || total_v == 0,
+                        onclick: {
+                            let client = app_state.client.clone();
+                            move |_| {
+                                let search = search_committed.peek().clone();
+                                bulk_working.set(true);
+                                let c = client.clone();
+                                spawn(async move {
+                                    let _ = c.execute(BulkChannels {
+                                        request: BulkChannelRequest { enabled: false, search: if search.is_empty() { None } else { Some(search) } },
+                                    }).await;
+                                    bulk_working.set(false);
+                                    let s = search_committed.peek().clone();
+                                    let p = *page.peek();
+                                    loading.set(true);
+                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s }).await {
+                                        total.set(r.total_record_count);
+                                        channels.set(r.items);
+                                    }
+                                    loading.set(false);
+                                });
+                            }
+                        },
+                        if *bulk_working.read() { "Working…" } else { "Disable All" }
+                    }
+                    // Search
+                    input {
+                        class: "form-input",
+                        style: "height:32px;font-size:.8rem;width:220px",
+                        placeholder: "Search channels…",
+                        value: "{search_input.read()}",
+                        oninput: move |e| search_input.set(e.value()),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Enter { do_search(); }
+                        },
+                    }
+                    button {
+                        class: "btn btn-ghost",
+                        style: "height:32px;font-size:.68rem",
+                        onclick: move |_| do_search(),
+                        "Search"
+                    }
+                    button {
+                        class: "btn btn-primary",
+                        style: "height:32px;font-size:.68rem",
+                        disabled: !has_pending || *saving.read(),
+                        onclick: {
+                            let client = app_state.client.clone();
+                            move |_| {
+                                let patches = pending.peek().clone();
+                                saving.set(true);
+                                let c = client.clone();
+                                spawn(async move {
+                                    for (id, patch) in patches {
+                                        let _ = c.execute(PatchChannel { id, patch }).await;
+                                    }
+                                    pending.set(std::collections::HashMap::new());
+                                    saving.set(false);
+                                    // re-fetch current page
+                                    let s = search_committed.peek().clone();
+                                    let p = *page.peek();
+                                    loading.set(true);
+                                    match c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s }).await {
+                                        Ok(r) => { total.set(r.total_record_count); channels.set(r.items); }
+                                        Err(_) => {}
+                                    }
+                                    loading.set(false);
+                                });
+                            }
+                        },
+                        if *saving.read() { "Saving…" } else { "Save Changes" }
+                    }
+                }
+            }
+
+            div { class: "card-body tight",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else if let Some(err) = error.read().as_ref() {
+                    span { class: "loading-text", style: "color:var(--error)", "{err}" }
+                } else if channels.read().is_empty() {
+                    div { class: "empty-state",
+                        if total_v == 0 && search_committed.read().is_empty() {
+                            "No channels yet. Run a refresh after adding channel sources."
+                        } else {
+                            "No channels match your search."
+                        }
+                    }
+                } else {
+                    div { class: "data-table-container",
+                        // Column header
+                        div { class: "flex items-center px-3 py-1 border-b border-[var(--border)]",
+                            style: "font-size:.72rem;opacity:.5;font-weight:600;gap:8px",
+                            div { style: "width:32px", "On" }
+                            div { style: "width:64px", "Order" }
+                            div { class: "flex-1", "Name / Display Name" }
+                            div { style: "width:48px;text-align:right", "Ch#" }
+                        }
+                        div { class: "row-list",
+                            for ch in channels.read().clone() {
+                                {
+                                    let id = ch.id.clone();
+                                    let id2 = id.clone();
+                                    let id3 = id.clone();
+                                    let id4 = id.clone();
+
+                                    let p = pending.read();
+                                    let p_entry = p.get(&id);
+                                    let is_enabled = p_entry.and_then(|e| e.enabled).unwrap_or(ch.enabled);
+                                    let sort_val = p_entry
+                                        .and_then(|e| e.sort_order)
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| ch.sort_order.map(|n| n.to_string()).unwrap_or_default());
+                                    let name_val = p_entry
+                                        .and_then(|e| e.custom_name.as_deref().map(|s| s.to_string()))
+                                        .or_else(|| ch.custom_name.clone())
+                                        .unwrap_or_default();
+                                    drop(p);
+
+                                    rsx! {
+                                        div {
+                                            key: "{id}",
+                                            class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]",
+                                            style: if !is_enabled { "gap:8px;padding:6px 12px;opacity:.4" } else { "gap:8px;padding:6px 12px" },
+
+                                            input {
+                                                r#type: "checkbox",
+                                                checked: is_enabled,
+                                                style: "width:16px;height:16px;cursor:pointer;flex-shrink:0",
+                                                onchange: move |e| {
+                                                    let enabled = e.value() == "true";
+                                                    let mut p = pending.write();
+                                                    p.entry(id2.clone()).or_default().enabled = Some(enabled);
+                                                },
+                                            }
+                                            input {
+                                                class: "form-input",
+                                                r#type: "number",
+                                                style: "width:64px;height:28px;font-size:.8rem;padding:2px 6px;flex-shrink:0",
+                                                value: "{sort_val}",
+                                                placeholder: "–",
+                                                oninput: move |e| {
+                                                    let v = e.value().parse::<i64>().ok();
+                                                    let mut p = pending.write();
+                                                    p.entry(id3.clone()).or_default().sort_order = v;
+                                                },
+                                            }
+                                            div { class: "flex-1 min-w-0",
+                                                div { style: "font-size:.82rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis",
+                                                    "{ch.name}"
+                                                }
+                                                input {
+                                                    class: "form-input",
+                                                    style: "height:24px;font-size:.75rem;padding:2px 6px;margin-top:2px;width:100%",
+                                                    value: "{name_val}",
+                                                    placeholder: "Custom display name…",
+                                                    oninput: move |e| {
+                                                        let v = e.value();
+                                                        let custom = if v.is_empty() { None } else { Some(v) };
+                                                        let mut p = pending.write();
+                                                        p.entry(id4.clone()).or_default().custom_name = custom;
+                                                    },
+                                                }
+                                            }
+                                            div { style: "width:48px;font-size:.8rem;opacity:.5;text-align:right;flex-shrink:0",
+                                                if let Some(n) = ch.channel_number { "{n}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Pagination bar
+                    if total_pages > 1 {
+                        div { class: "pagination-bar",
+                            button {
+                                class: "btn btn-ghost",
+                                style: "height:28px;font-size:.75rem",
+                                disabled: page_v == 0,
+                                onclick: move |_| page.set(page_v.saturating_sub(1)),
+                                "‹ Prev"
+                            }
+                            span { style: "font-size:.8rem;opacity:.7",
+                                "Page {page_v + 1} of {total_pages}"
+                            }
+                            button {
+                                class: "btn btn-ghost",
+                                style: "height:28px;font-size:.75rem",
+                                disabled: page_v + 1 >= total_pages,
+                                onclick: move |_| page.set(page_v + 1),
+                                "Next ›"
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

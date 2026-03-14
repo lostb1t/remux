@@ -524,3 +524,162 @@ impl Endpoint for SetLogLevel {
         Body::Json(serde_json::json!({ "level": self.level }))
     }
 }
+
+// ── IPTV / Live TV endpoints ───────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetTunerHosts;
+
+impl Endpoint for GetTunerHosts {
+    type Output = Vec<TunerHostInfo>;
+    fn path(&self) -> String {
+        "/livetv/tunerhosts".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AddTunerHost {
+    pub info: TunerHostInfo,
+}
+
+impl Endpoint for AddTunerHost {
+    type Output = TunerHostInfo;
+    fn path(&self) -> String {
+        "/livetv/tunerhosts".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.info).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteTunerHost {
+    pub id: String,
+}
+
+impl Endpoint for DeleteTunerHost {
+    type Output = ();
+    fn path(&self) -> String {
+        "/livetv/tunerhosts".into()
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+    fn query(&self) -> Vec<(String, String)> {
+        vec![("id".into(), self.id.clone())]
+    }
+}
+
+// ── EPG sources ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetEpgSources;
+
+impl Endpoint for GetEpgSources {
+    type Output = Vec<EpgSourceInfo>;
+    fn path(&self) -> String {
+        "/remux/iptv/epgsources".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SaveEpgSource {
+    pub info: EpgSourceInfo,
+}
+
+impl Endpoint for SaveEpgSource {
+    type Output = EpgSourceInfo;
+    fn path(&self) -> String {
+        "/remux/iptv/epgsources".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.info).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteEpgSource {
+    pub id: String,
+}
+
+impl Endpoint for DeleteEpgSource {
+    type Output = ();
+    fn path(&self) -> String {
+        "/remux/iptv/epgsources".into()
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+    fn query(&self) -> Vec<(String, String)> {
+        vec![("id".into(), self.id.clone())]
+    }
+}
+
+// ── Channel editor ─────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetIptvChannels {
+    pub limit: u32,
+    pub offset: u32,
+    pub search: String,
+}
+
+impl Endpoint for GetIptvChannels {
+    type Output = IptvChannelsResult;
+    fn path(&self) -> String {
+        "/remux/iptv/channels".into()
+    }
+    fn query(&self) -> Vec<(String, String)> {
+        let mut q = vec![
+            ("limit".into(), self.limit.to_string()),
+            ("offset".into(), self.offset.to_string()),
+        ];
+        if !self.search.is_empty() {
+            q.push(("search".into(), self.search.clone()));
+        }
+        q
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PatchChannel {
+    pub id: String,
+    pub patch: PatchChannelRequest,
+}
+
+impl Endpoint for PatchChannel {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/remux/iptv/channels/{}", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::PATCH
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.patch).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BulkChannels {
+    pub request: BulkChannelRequest,
+}
+
+impl Endpoint for BulkChannels {
+    type Output = ();
+    fn path(&self) -> String {
+        "/remux/iptv/channels/bulk".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.request).unwrap_or_default())
+    }
+}

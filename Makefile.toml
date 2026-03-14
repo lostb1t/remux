@@ -8,7 +8,7 @@ CONFIG = "./config"
 AXUM_ANYHOW_EXPOSE_ERRORS=1
 # HTTP_PROXY="http://10.0.10.11:9090"
 # HTTPS_PROXY="http://10.0.10.11:9090"
-WEB_PATH = "../jellyfin-web/dist"
+WEB_PATH = "./jellyfin-web/dist"
 DASHBOARD_PATH="./target/dx/dashboard/debug/web/public"
 DB_URL = "sqlite://db.sqlite?mode=rwc"
 DATABASE_URL = "sqlite://db.sqlite?mode=rwc"
@@ -68,6 +68,28 @@ args = ["buildx", "build", "--network", "host", "-f", "docker/Dockerfile", "-t",
 [tasks.build]
 command = "docker"
 args = ["build", "-f", "Dockerfile.dev", "-t", "remux-dev", "."]
+
+[tasks.jellyfin-web-checkout]
+description = "Clone jellyfin-web if not already present"
+script = '''
+if [ ! -d "jellyfin-web" ]; then
+  git clone --depth 1 https://github.com/jellyfin/jellyfin-web.git jellyfin-web
+else
+  echo "jellyfin-web already checked out, skipping clone"
+fi
+'''
+
+[tasks.jellyfin-web-build]
+description = "Install deps and build jellyfin-web"
+cwd = "jellyfin-web"
+script = '''
+npm install
+npm run build
+'''
+
+[tasks.jellyfin-web]
+description = "Checkout and build jellyfin-web"
+dependencies = ["jellyfin-web-checkout", "jellyfin-web-build"]
 
 [tasks.dev-container]
 command = "docker"

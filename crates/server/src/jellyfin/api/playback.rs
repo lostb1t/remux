@@ -71,6 +71,32 @@ async fn items_playbackinfo_inner(
         .await?
         .context_not_found("not found", "not found")?;
 
+    // IPTV channels: skip GStreamer probe, return direct-play source.
+    if media.kind == db::MediaKind::TvChannel {
+        let url = media
+            .url
+            .clone()
+            .context_not_found("missing url", "channel has no stream url")?;
+        let source = jellyfin::MediaSourceInfo {
+            id: media.id,
+            name: Some(media.title.clone()),
+            path: Some(url),
+            protocol: Some("Http".to_string()),
+            is_remote: Some(true),
+            supports_direct_play: Some(true),
+            supports_direct_stream: Some(true),
+            supports_transcoding: Some(false),
+            ..Default::default()
+        };
+        let play_session_id = utils::get_uuid().as_simple().to_string();
+        let info = jellyfin::PlaybackInfoResponse {
+            media_sources: vec![source],
+            play_session_id: Some(play_session_id),
+            ..Default::default()
+        };
+        return Ok(Json(info));
+    }
+
     let mut source: jellyfin::MediaSourceInfo = media.probe()?;
     source.id = media.id;
     source.e_tag = media.id;
@@ -224,6 +250,19 @@ async fn videos_stream_inner(
         db::Media::get_by_id(&state.ctx.db, &q.media_source_id.unwrap_or(id))
             .await?
             .context_not_found("not found", "not found")?;
+
+    // IPTV channels: redirect directly to the stream URL.
+    if media.kind == db::MediaKind::TvChannel {
+        let url = media
+            .url
+            .clone()
+            .context_not_found("missing url", "channel has no stream url")?;
+        return Ok(Response::builder()
+            .status(StatusCode::FOUND)
+            .header(http::header::LOCATION, url)
+            .body(Body::empty())
+            .unwrap());
+    }
 
     if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
         media = media

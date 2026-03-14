@@ -15,11 +15,13 @@ use crate::{AppContext, db, ws};
 
 mod catalog_import;
 mod catalog_item_import;
+mod iptv_refresh;
 mod refresh_library;
 mod series_sync;
 
 use catalog_import::CatalogImportTask;
 pub use catalog_item_import::CatalogItemImportTask;
+use iptv_refresh::IptvRefreshTask;
 use refresh_library::RefreshLibraryTask;
 use series_sync::SeriesSyncTask;
 
@@ -200,6 +202,7 @@ impl TaskService {
         service.register_task(Arc::new(RefreshLibraryTask)).await?;
         service.register_task(Arc::new(CatalogImportTask)).await?;
         service.register_task(Arc::new(SeriesSyncTask)).await?;
+        service.register_task(Arc::new(IptvRefreshTask)).await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {

@@ -2,6 +2,7 @@ pub mod api_keys;
 pub mod devices;
 pub mod images;
 pub mod items;
+pub mod livetv;
 pub mod localization;
 pub mod logs;
 pub mod metadata;

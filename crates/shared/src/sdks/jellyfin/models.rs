@@ -532,7 +532,14 @@ impl GetItemsQuery {
                 .filter(|t| {
                     matches!(
                         t,
-                        MediaType::Movie | MediaType::Series | MediaType::Episode
+                        MediaType::Movie
+                            | MediaType::Series
+                            | MediaType::Episode
+                            | MediaType::TvChannel
+                            | MediaType::LiveTvChannel
+                            | MediaType::TvProgram
+                            | MediaType::LiveTvProgram
+                            | MediaType::Program
                     )
                 })
                 .cloned()
@@ -2594,4 +2601,64 @@ pub struct SearchHintsQuery {
     pub user_id: Option<Uuid>,
     #[serde(deserialize_with = "deserialize_media_types", default)]
     pub include_item_types: Option<Vec<MediaType>>,
+}
+
+// ── IPTV / Live TV ───────────────────────────────────────────────────────────
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct TunerHostInfo {
+    pub id: Option<String>,
+    pub url: Option<String>,
+    #[serde(rename = "FriendlyName")]
+    pub friendly_name: Option<String>,
+    #[serde(rename = "Type")]
+    pub type_: Option<String>,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub status: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EpgSourceInfo {
+    pub id: Option<String>,
+    pub name: String,
+    pub url: String,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ChannelEditorItem {
+    pub id: String,
+    pub name: String,
+    pub custom_name: Option<String>,
+    pub channel_number: Option<i64>,
+    pub sort_order: Option<i64>,
+    pub enabled: bool,
+    pub logo: Option<String>,
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PatchChannelRequest {
+    pub enabled: Option<bool>,
+    pub sort_order: Option<i64>,
+    pub custom_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkChannelRequest {
+    pub enabled: bool,
+    pub search: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct IptvChannelsResult {
+    pub items: Vec<ChannelEditorItem>,
+    pub total_record_count: usize,
 }

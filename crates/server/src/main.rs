@@ -77,6 +77,7 @@ mod utils;
 //mod user;
 mod aio;
 mod db;
+mod iptv;
 mod jellyfin;
 mod log_capture;
 mod providers;

@@ -75,6 +75,8 @@ pub fn db_media_kind_to_type(kind: db::MediaKind) -> MediaType {
         db::MediaKind::Episode => MediaType::Episode,
         db::MediaKind::Collection => MediaType::BoxSet,
         db::MediaKind::Genre => MediaType::Genre,
+        db::MediaKind::TvChannel => MediaType::TvChannel,
+        db::MediaKind::TvProgram => MediaType::Program,
         _ => MediaType::Unknown,
     }
 }
@@ -134,6 +136,8 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         db::MediaKind::Episode => MediaType::Episode,
         db::MediaKind::Collection => MediaType::BoxSet,
         db::MediaKind::Genre => MediaType::Genre,
+        db::MediaKind::TvChannel => MediaType::TvChannel,
+        db::MediaKind::TvProgram => MediaType::Program,
         _ => MediaType::Unknown,
     };
 
@@ -152,6 +156,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         user_data: media.user_state.clone().map(db_state_to_dto),
         media_type: match media.kind {
             db::MediaKind::Movie | db::MediaKind::Episode => "Video".to_string(),
+            db::MediaKind::TvChannel | db::MediaKind::TvProgram => "Video".to_string(),
             _ => "Unknown".to_string(),
         },
         is_place_holder: media.sources.as_ref().map(|sources| sources.is_empty()),
@@ -171,6 +176,15 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 | db::MediaKind::Season
                 | db::MediaKind::Folder
         ),
+        channel_type: if matches!(media.kind, db::MediaKind::TvChannel | db::MediaKind::TvProgram) {
+            Some("TV".to_string())
+        } else {
+            None
+        },
+        channel_number: media.channel_number.map(|n| n.to_string()),
+        start_date: media.live_start.map(|d| d.and_utc().to_rfc3339()),
+        end_date: media.live_end.map(|d| d.and_utc().to_rfc3339()),
+        is_live: if media.kind == db::MediaKind::TvChannel { Some(true) } else { None },
         backdrop_image_tags: media.backdrop.clone().map(|url| vec![url]),
         provider_ids: Some(ProviderIds {
             imdb: media.imdb_id.clone(),
@@ -257,6 +271,21 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             }
             None => None,
         };
+    }
+
+    if media.kind == db::MediaKind::TvChannel {
+        // Channels use direct-play passthrough — no GStreamer probe needed.
+        item.media_sources = Some(vec![MediaSourceInfo {
+            id: media.id,
+            name: Some(media.title.clone()),
+            path: media.url.clone(),
+            protocol: Some("Http".to_string()),
+            is_remote: Some(true),
+            supports_direct_play: Some(true),
+            supports_direct_stream: Some(true),
+            supports_transcoding: Some(false),
+            ..Default::default()
+        }]);
     }
 
     if media.kind == db::MediaKind::Collection {
