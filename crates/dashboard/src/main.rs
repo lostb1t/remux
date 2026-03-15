@@ -2078,9 +2078,6 @@ fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
     // committed search (triggers fetch); typed search (live input)
     let mut search_committed = use_signal(String::new);
     let mut search_input = use_signal(String::new);
-    let mut pending: Signal<std::collections::HashMap<String, PatchChannelRequest>> =
-        use_signal(std::collections::HashMap::new);
-    let mut saving = use_signal(|| false);
     let mut bulk_working = use_signal(|| false);
 
     let app_state_effect = app_state.clone();
@@ -2113,7 +2110,6 @@ fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
     let total_v = *total.read();
     let page_v = *page.read();
     let total_pages = total_v.div_ceil(PAGE_SIZE as usize) as u32;
-    let has_pending = !pending.read().is_empty();
 
     let mut do_search = move || {
         let s = search_input.peek().clone();
@@ -2204,36 +2200,6 @@ fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
                         onclick: move |_| do_search(),
                         "Search"
                     }
-                    button {
-                        class: "btn btn-primary",
-                        style: "height:32px;font-size:.68rem",
-                        disabled: !has_pending || *saving.read(),
-                        onclick: {
-                            let client = app_state.client.clone();
-                            move |_| {
-                                let patches = pending.peek().clone();
-                                saving.set(true);
-                                let c = client.clone();
-                                spawn(async move {
-                                    for (id, patch) in patches {
-                                        let _ = c.execute(PatchChannel { id, patch }).await;
-                                    }
-                                    pending.set(std::collections::HashMap::new());
-                                    saving.set(false);
-                                    // re-fetch current page
-                                    let s = search_committed.peek().clone();
-                                    let p = *page.peek();
-                                    loading.set(true);
-                                    match c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s }).await {
-                                        Ok(r) => { total.set(r.total_record_count); channels.set(r.items); }
-                                        Err(_) => {}
-                                    }
-                                    loading.set(false);
-                                });
-                            }
-                        },
-                        if *saving.read() { "Saving…" } else { "Save Changes" }
-                    }
                 }
             }
 
@@ -2264,37 +2230,39 @@ fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
                             for ch in channels.read().clone() {
                                 {
                                     let id = ch.id.clone();
-                                    let id2 = id.clone();
-                                    let id3 = id.clone();
-                                    let id4 = id.clone();
-
-                                    let p = pending.read();
-                                    let p_entry = p.get(&id);
-                                    let is_enabled = p_entry.and_then(|e| e.enabled).unwrap_or(ch.enabled);
-                                    let sort_val = p_entry
-                                        .and_then(|e| e.sort_order)
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| ch.sort_order.map(|n| n.to_string()).unwrap_or_default());
-                                    let name_val = p_entry
-                                        .and_then(|e| e.custom_name.as_deref().map(|s| s.to_string()))
-                                        .or_else(|| ch.custom_name.clone())
-                                        .unwrap_or_default();
-                                    drop(p);
+                                    let client1 = app_state.client.clone();
+                                    let client2 = app_state.client.clone();
+                                    let client3 = app_state.client.clone();
+                                    let sort_val = ch.sort_order.map(|n| n.to_string()).unwrap_or_default();
+                                    let name_val = ch.custom_name.clone().unwrap_or_default();
 
                                     rsx! {
                                         div {
                                             key: "{id}",
                                             class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]",
-                                            style: if !is_enabled { "gap:8px;padding:6px 12px;opacity:.4" } else { "gap:8px;padding:6px 12px" },
+                                            style: if !ch.enabled { "gap:8px;padding:6px 12px;opacity:.4" } else { "gap:8px;padding:6px 12px" },
 
                                             input {
                                                 r#type: "checkbox",
-                                                checked: is_enabled,
+                                                checked: ch.enabled,
                                                 style: "width:16px;height:16px;cursor:pointer;flex-shrink:0",
-                                                onchange: move |e| {
-                                                    let enabled = e.value() == "true";
-                                                    let mut p = pending.write();
-                                                    p.entry(id2.clone()).or_default().enabled = Some(enabled);
+                                                onchange: {
+                                                    let id = id.clone();
+                                                    move |e| {
+                                                        let enabled = e.value() == "true";
+                                                        // optimistic update
+                                                        if let Some(c) = channels.write().iter_mut().find(|c| c.id == id) {
+                                                            c.enabled = enabled;
+                                                        }
+                                                        let c = client1.clone();
+                                                        let id = id.clone();
+                                                        spawn(async move {
+                                                            let _ = c.execute(PatchChannel {
+                                                                id,
+                                                                patch: PatchChannelRequest { enabled: Some(enabled), ..Default::default() },
+                                                            }).await;
+                                                        });
+                                                    }
                                                 },
                                             }
                                             input {
@@ -2303,10 +2271,22 @@ fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
                                                 style: "width:64px;height:28px;font-size:.8rem;padding:2px 6px;flex-shrink:0",
                                                 value: "{sort_val}",
                                                 placeholder: "–",
-                                                oninput: move |e| {
-                                                    let v = e.value().parse::<i64>().ok();
-                                                    let mut p = pending.write();
-                                                    p.entry(id3.clone()).or_default().sort_order = v;
+                                                onchange: {
+                                                    let id = id.clone();
+                                                    move |e| {
+                                                        let v = e.value().parse::<i64>().ok();
+                                                        if let Some(c) = channels.write().iter_mut().find(|c| c.id == id) {
+                                                            c.sort_order = v;
+                                                        }
+                                                        let c = client2.clone();
+                                                        let id = id.clone();
+                                                        spawn(async move {
+                                                            let _ = c.execute(PatchChannel {
+                                                                id,
+                                                                patch: PatchChannelRequest { sort_order: v, ..Default::default() },
+                                                            }).await;
+                                                        });
+                                                    }
                                                 },
                                             }
                                             div { class: "flex-1 min-w-0",
@@ -2318,11 +2298,20 @@ fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
                                                     style: "height:24px;font-size:.75rem;padding:2px 6px;margin-top:2px;width:100%",
                                                     value: "{name_val}",
                                                     placeholder: "Custom display name…",
-                                                    oninput: move |e| {
+                                                    onchange: move |e| {
                                                         let v = e.value();
-                                                        let custom = if v.is_empty() { None } else { Some(v) };
-                                                        let mut p = pending.write();
-                                                        p.entry(id4.clone()).or_default().custom_name = custom;
+                                                        let custom = if v.is_empty() { None } else { Some(v.clone()) };
+                                                        if let Some(c) = channels.write().iter_mut().find(|c| c.id == id) {
+                                                            c.custom_name = custom.clone();
+                                                        }
+                                                        let c = client3.clone();
+                                                        let id = id.clone();
+                                                        spawn(async move {
+                                                            let _ = c.execute(PatchChannel {
+                                                                id,
+                                                                patch: PatchChannelRequest { custom_name: custom, ..Default::default() },
+                                                            }).await;
+                                                        });
                                                     },
                                                 }
                                             }

@@ -75,13 +75,6 @@ impl Task for IptvRefreshTask {
             };
 
             let source_uuid = source.id;
-            let source_aio_id = source_uuid.as_simple().to_string();
-
-            // Delete existing channels for this source
-            sqlx::query("DELETE FROM media WHERE aio_id = $1 AND kind = 'tv_channel'")
-                .bind(&source_aio_id)
-                .execute(&ctx.db)
-                .await?;
 
             let channels: Vec<db::Media> = channels_parsed
                 .iter()
@@ -94,7 +87,6 @@ impl Task for IptvRefreshTask {
                         kind: db::MediaKind::TvChannel,
                         url: Some(ch.url.clone()),
                         poster: ch.logo.clone(),
-                        aio_id: Some(source_aio_id.clone()),
                         tvg_id: ch.tvg_id.clone(),
                         channel_number: ch.channel_number,
                         ..Default::default()
@@ -102,6 +94,8 @@ impl Task for IptvRefreshTask {
                 })
                 .collect();
 
+            // Upsert first — conflict handler preserves user overrides (enabled,
+            // sort_order, custom_name) for channels that still exist.
             db::Media::upsert(&ctx.db, &channels).await?;
 
             // For Xtream sources, fetch EPG from auto-derived URL
@@ -116,6 +110,26 @@ impl Task for IptvRefreshTask {
             }
 
             all_channels.extend(channels);
+        }
+
+        // Delete any tv_channel rows whose IDs are no longer produced by any source.
+        // Doing this once after all sources are processed also handles deleted sources.
+        if !all_channels.is_empty() {
+            let kept: Vec<String> = all_channels.iter().map(|c| c.id.to_string()).collect();
+            let placeholders = kept
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("${}", i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "DELETE FROM media WHERE kind = 'tv_channel' AND id NOT IN ({placeholders})"
+            );
+            let mut q = sqlx::query(&sql);
+            for id in &kept {
+                q = q.bind(id);
+            }
+            q.execute(&ctx.db).await?;
         }
 
         // Fetch EPG from standalone epg_sources and match by tvg_id globally

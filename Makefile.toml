@@ -84,7 +84,7 @@ description = "Install deps and build jellyfin-web"
 cwd = "jellyfin-web"
 script = '''
 npm install
-npm run build
+npm run build:production
 '''
 
 [tasks.jellyfin-web]
