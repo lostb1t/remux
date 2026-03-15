@@ -72,10 +72,19 @@ args = ["build", "-f", "Dockerfile.dev", "-t", "remux-dev", "."]
 [tasks.jellyfin-web-checkout]
 description = "Clone jellyfin-web if not already present"
 script = '''
+JELLYFIN_WEB_TAG="v10.11.6"
 if [ ! -d "jellyfin-web" ]; then
-  git clone --depth 1 https://github.com/jellyfin/jellyfin-web.git jellyfin-web
+  git clone --depth 1 --branch "$JELLYFIN_WEB_TAG" https://github.com/jellyfin/jellyfin-web.git jellyfin-web
 else
-  echo "jellyfin-web already checked out, skipping clone"
+  cd jellyfin-web
+  CURRENT=$(git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD)
+  if [ "$CURRENT" != "$JELLYFIN_WEB_TAG" ]; then
+    echo "Wrong version ($CURRENT), switching to $JELLYFIN_WEB_TAG"
+    git fetch --depth 1 origin tag "$JELLYFIN_WEB_TAG"
+    git checkout "$JELLYFIN_WEB_TAG"
+  else
+    echo "jellyfin-web $JELLYFIN_WEB_TAG already checked out"
+  fi
 fi
 '''
 
@@ -83,6 +92,7 @@ fi
 description = "Install deps and build jellyfin-web"
 cwd = "jellyfin-web"
 script = '''
+echo "engine-strict=false" > .npmrc
 npm install
 npm run build:production
 '''

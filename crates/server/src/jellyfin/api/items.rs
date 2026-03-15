@@ -628,6 +628,15 @@ pub async fn item(
         .cloned());
 }
 
+/// Jellyfin web requests `/Items/livetv` (literal string) when navigating to
+/// the Live TV section — handle it before the `{id}` UUID route.
+#[get("/items/livetv")]
+pub async fn items_livetv(
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(super::shows::livetv_view_item()))
+}
+
 #[get("/items/{id}")]
 pub async fn items_get(
     State(state): State<AppState>,

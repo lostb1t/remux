@@ -15,6 +15,20 @@ use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 use super::items::get_items;
 use super::mock_items;
 
+pub fn livetv_view_id() -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_OID, b"remux-livetv-view")
+}
+
+pub fn livetv_view_item() -> jellyfin::BaseItemDto {
+    jellyfin::BaseItemDto {
+        id: livetv_view_id(),
+        name: Some("Live TV".to_string()),
+        type_: jellyfin::MediaType::CollectionFolder,
+        collection_type: Some(jellyfin::CollectionType::Livetv),
+        ..Default::default()
+    }
+}
+
 #[get("/shows/{id}/seasons")]
 pub async fn shows_seasons(
     State(state): State<AppState>,
@@ -81,16 +95,7 @@ pub async fn userviews(
 
     // Inject a synthetic Live TV view if any enabled channels exist
     if !channel_result?.records.is_empty() {
-        items.push(jellyfin::BaseItemDto {
-            id: uuid::Uuid::new_v5(
-                &uuid::Uuid::NAMESPACE_OID,
-                b"remux-livetv-view",
-            ),
-            name: Some("Live TV".to_string()),
-            type_: jellyfin::MediaType::CollectionFolder,
-            collection_type: Some(jellyfin::CollectionType::Livetv),
-            ..Default::default()
-        });
+        items.push(livetv_view_item());
     }
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
