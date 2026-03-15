@@ -2,6 +2,7 @@
 #![allow(warnings)]
 
 
+
 use axum::response::Html;
 use reqwest;
 
@@ -138,7 +139,7 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
 }
 
 async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
-    gstreamer::init().context("Failed to initialize GStreamer")?;
+    // ez-ffmpeg initializes FFmpeg automatically on first use
     log_capture::init_file(&config.log_file);
     debug!("config: {}", serde_json::to_string_pretty(&config).unwrap());
 

@@ -366,9 +366,9 @@ fn _mux_init(
                     continue;
                 }
 
-                if !packet_is_null(&packet_box.packet) && packet_data.is_copy {
+                if !packet_is_null(&packet_box.packet) {
                     let started = &mut stream_started[stream_index];
-                    ret = streamcopy_rescale(
+                    ret = mux_packet_rescale(
                         packet_box.packet.as_mut_ptr(),
                         packet_data,
                         &start_time_us,
@@ -492,16 +492,13 @@ unsafe fn update_last_dts(
     }
 }
 
-unsafe fn streamcopy_rescale(
+unsafe fn mux_packet_rescale(
     pkt: *mut AVPacket,
     packet_data: &PacketData,
     start_time_us: &Option<i64>,
     recording_time_us: &Option<i64>,
     started: &mut bool,
 ) -> i32 {
-    if !packet_data.is_copy {
-        return 0;
-    }
     let dts = packet_data.dts_est;
 
     let start_time = start_time_us.unwrap_or(0);

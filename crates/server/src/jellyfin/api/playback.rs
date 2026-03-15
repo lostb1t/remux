@@ -68,12 +68,12 @@ async fn items_playbackinfo_inner(
 ) -> Result<impl IntoResponse> {
     trace!(?id, ?media_source_id, "items_playbackinfo");
 
-    let media = db::Media::get_by_id(&state.ctx.db, &media_source_id.unwrap_or(id))
+    let mut media = db::Media::get_by_id(&state.ctx.db, &media_source_id.unwrap_or(id))
         .await?
         .context_not_found("not found", "not found")?;
 
     // Torrent streams: resolve magnet URI to a local HTTP URL first.
-    let media = resolve_torrent(media, &state).await?;
+    let mut media = resolve_torrent(media, &state).await?;
 
     // IPTV channels: skip GStreamer probe, return direct-play source.
     if media.kind == db::MediaKind::TvChannel {
@@ -101,10 +101,40 @@ async fn items_playbackinfo_inner(
         return Ok(Json(info));
     }
 
-    let mut source: jellyfin::MediaSourceInfo = media.probe()?;
-    source.id = media.id;
-    source.e_tag = media.id;
-    // todo: add check if probing is really succesfull. If not fail
+    // Collect all playable sources. A Movie/Episode may have multiple
+    // Source children (versions); return every one so the client can
+    // show version selection and per-source stream lists.
+    let all_source_medias: Vec<db::Media> = if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+        let sources = media.sources(&state.ctx.db).await?;
+        if sources.is_empty() {
+            // No children → treat the parent itself as the single source
+            vec![media]
+        } else {
+            sources
+        }
+    } else {
+        vec![media]
+    };
+
+    // When the client requests a specific source, only process that one.
+    // When no source is specified (e.g. details page open), return all versions
+    // for version selection but only probe the first one — probing every source
+    // causes a storm of parallel FFmpeg processes (one per version of the movie).
+    let (source_medias, probe_only_first) = if let Some(sid) = media_source_id {
+        // Check if the source exists first before consuming the vec
+        if all_source_medias.iter().any(|s| s.id == sid) {
+            let filtered: Vec<db::Media> = all_source_medias
+                .into_iter()
+                .filter(|s| s.id == sid)
+                .collect();
+            (filtered, false)
+        } else {
+            // Requested source not found, return all without limiting probing
+            (all_source_medias, false)
+        }
+    } else {
+        (all_source_medias, true) // probe only first when no source requested
+    };
 
     let max_bitrate: Option<i64> = match (
         query.max_streaming_bitrate,
@@ -113,95 +143,182 @@ async fn items_playbackinfo_inner(
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
-    let bitrate_exceeded = max_bitrate.map_or(false, |max| source.bitrate > Some(max));
-
-    // Determine transcode reasons based on device profile and query parameters.
-    let transcode_reasons: jellyfin::TranscodeReasons = device_profile
-        .as_ref()
-        .map(|profile| {
-            let mut reasons = profile.check_direct_play(&source);
-            if bitrate_exceeded {
-                reasons.insert(jellyfin::TranscodeReason::ContainerBitrateExceedsLimit);
-            }
-            reasons
-        })
-        .unwrap_or_else(|| {
-            // No device profile → treat as unsupported container so we transcode.
-            let mut r = jellyfin::TranscodeReasons::default();
-            r.insert(jellyfin::TranscodeReason::ContainerNotSupported);
-            r
-        });
-
-    let needs_transcoding = !transcode_reasons.is_empty()
-        || query.enable_transcoding.unwrap_or(false)
-        || !query.enable_direct_play.unwrap_or(true);
-
-    tracing::debug!(
-        transcode_reasons = ?transcode_reasons,
-        needs_transcoding,
-        bitrate_exceeded,
-        "playback decision"
-    );
 
     let play_session_id = utils::get_uuid().as_simple().to_string();
 
-    if needs_transcoding {
-        // Pick container/protocol from the client's device profile, falling back to ts/hls
-        let trans_profile = device_profile.as_ref().and_then(|p| p.video_transcoding_profile());
-        let (trans_container, trans_protocol) = trans_profile
-            .map(|p| {
-                (
-                    p.container.clone().unwrap_or_else(|| "ts".to_string()),
-                    p.protocol.clone().unwrap_or_else(|| "hls".to_string()),
-                )
-            })
-            .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
-        // HLS output uses MPEG-TS segments. Always re-encode video to h264
-        // for maximum compatibility; only audio can be safely copied.
-        let video_codec = "h264".to_string();
-
-        // Only copy audio if it's already AAC — the only codec with universal
-        // browser MSE support in MPEG-TS HLS. AC3/EAC3/DTS etc. copy fine into
-        // MPEG-TS but MSE (used by hls.js and Chrome native HLS) rejects them,
-        // causing MEDIA_ERR_SRC_NOT_SUPPORTED in the browser.
-        let audio_codec = {
-            let stream_codec = source
-                .audio_stream()
-                .and_then(|s| s.codec.as_deref())
-                .unwrap_or("");
-            if stream_codec.eq_ignore_ascii_case("aac") {
-                "copy".to_string()
-            } else {
-                "aac".to_string()
-            }
+    // --- Step 1: Resolve all source URLs concurrently -----------------------
+    // (resolve_url is cheap / DB-backed so async is fine here)
+    struct SourceWithUrl {
+        sm: db::Media,
+        resolved_url: Option<String>,
+    }
+    let mut sources_with_urls: Vec<SourceWithUrl> = Vec::with_capacity(source_medias.len());
+    for sm in source_medias {
+        let resolved_url = match &sm.url {
+            Some(u) => Some(crate::aio::resolve_url(&state.ctx.db, u).await),
+            None => None,
         };
+        sources_with_urls.push(SourceWithUrl { sm, resolved_url });
+    }
 
-        let bitrate_param = max_bitrate
-            .map(|b| format!("&MaxStreamingBitrate={}", b))
-            .unwrap_or_default();
-        let reasons_param = transcode_reasons
-            .to_query_value()
-            .map(|v| format!("&TranscodeReasons={}", v))
+    // --- Step 2: Probe all sources in parallel (spawn_blocking + timeout) ----
+    // Each FFmpeg probe is a blocking CPU/network call.  Running them sequentially
+    // inside the async fn blocks Tokio's runtime for 40-70 s when there are 10+
+    // sources.  We launch all probes concurrently on the blocking thread pool and
+    // wait for all of them together — total latency is now the slowest single probe
+    // (~6-7 s) instead of the sum.
+    let probe_futures: Vec<_> = sources_with_urls
+        .iter()
+        .enumerate()
+        .map(|(idx, swu)| {
+            let url_opt = swu.resolved_url.clone();
+            let sm_clone = swu.sm.clone();
+            // When no specific source was requested, only probe the first one.
+            // The rest get static metadata so we don't spawn 20+ parallel FFmpeg
+            // processes just to open a details page.
+            let skip_probe = probe_only_first && idx > 0;
+            tokio::spawn(async move {
+                if skip_probe {
+                    return jellyfin::MediaSourceInfo::from(sm_clone);
+                }
+                match url_opt {
+                    None => jellyfin::MediaSourceInfo::from(sm_clone),
+                    Some(url) => {
+                        let url2 = url.clone();
+                        let sm2 = sm_clone.clone();
+                        // Wrap the blocking probe in a dedicated thread + 8 s timeout.
+                        let probe_result = tokio::time::timeout(
+                            std::time::Duration::from_secs(8),
+                            tokio::task::spawn_blocking(move || {
+                                crate::transcode::probing::probe_media(&url2)
+                            }),
+                        )
+                        .await;
+
+                        match probe_result {
+                            // probe succeeded
+                            Ok(Ok(Ok(mut probed))) => {
+                                probed.id = sm2.id;
+                                probed.name = Some(sm2.title.clone());
+                                probed.path = sm2.url.clone();
+                                probed
+                            }
+                            // probe returned an error
+                            Ok(Ok(Err(e))) => {
+                                tracing::warn!(url = %url, error = %e, "probe failed, falling back to static metadata");
+                                jellyfin::MediaSourceInfo::from(sm2)
+                            }
+                            // spawn_blocking panicked
+                            Ok(Err(e)) => {
+                                tracing::warn!(url = %url, error = %e, "probe task panicked, falling back to static metadata");
+                                jellyfin::MediaSourceInfo::from(sm2)
+                            }
+                            // timeout elapsed
+                            Err(_) => {
+                                tracing::warn!(url = %url, "probe timed out after 8 s, falling back to static metadata");
+                                jellyfin::MediaSourceInfo::from(sm2)
+                            }
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+
+    // Await all probes concurrently.
+    let probed_results = futures_util::future::join_all(probe_futures).await;
+
+    // --- Step 3: Apply playback decision logic on the probed results ----------
+    let mut media_sources = Vec::with_capacity(probed_results.len());
+    for (swu, probe_join) in sources_with_urls.iter().zip(probed_results.into_iter()) {
+        let sm = &swu.sm;
+        let mut source: jellyfin::MediaSourceInfo = probe_join.unwrap_or_else(|_| {
+            jellyfin::MediaSourceInfo::from(sm.clone())
+        });
+        source.id = sm.id;
+        source.e_tag = sm.id;
+
+        let bitrate_exceeded = max_bitrate.map_or(false, |max| source.bitrate > Some(max));
+
+        let transcode_reasons: jellyfin::TranscodeReasons = device_profile
+            .as_ref()
+            .map(|profile| {
+                let mut reasons = profile.check_direct_play(&source);
+                if bitrate_exceeded {
+                    reasons.insert(jellyfin::TranscodeReason::ContainerBitrateExceedsLimit);
+                }
+                reasons
+            })
             .unwrap_or_default();
 
-        source.supports_transcoding = Some(true);
-        source.transcoding_url = Some(format!(
-            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}",
-            id, play_session_id, source.id, video_codec, audio_codec, bitrate_param, reasons_param,
-        ));
-        source.transcoding_container = Some(trans_container);
-        source.transcoding_sub_protocol = Some(trans_protocol);
-        source.supports_direct_play = Some(false);
-        source.supports_direct_stream = Some(false);
-    } else {
-        // Direct play - no transcoding needed
-        source.supports_transcoding = Some(false);
-        source.supports_direct_play = Some(true);
+        let needs_transcoding = !transcode_reasons.is_empty()
+            || query.enable_transcoding.unwrap_or(false)
+            || !query.enable_direct_play.unwrap_or(true);
+
+        tracing::debug!(
+            source_id = %sm.id,
+            transcode_reasons = ?transcode_reasons,
+            needs_transcoding,
+            bitrate_exceeded,
+            "playback decision"
+        );
+
+        if needs_transcoding {
+            let trans_profile = device_profile.as_ref().and_then(|p| p.video_transcoding_profile());
+            let (trans_container, trans_protocol) = trans_profile
+                .map(|p| {
+                    (
+                        p.container.clone().unwrap_or_else(|| "ts".to_string()),
+                        p.protocol.clone().unwrap_or_else(|| "hls".to_string()),
+                    )
+                })
+                .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
+
+            let video_codec = "h264".to_string();
+            let audio_codec = {
+                let stream_codec = source
+                    .audio_stream()
+                    .and_then(|s| s.codec.as_deref())
+                    .unwrap_or("");
+                if stream_codec.eq_ignore_ascii_case("aac") {
+                    "copy".to_string()
+                } else {
+                    "aac".to_string()
+                }
+            };
+
+            let bitrate_param = max_bitrate
+                .map(|b| format!("&MaxStreamingBitrate={}", b))
+                .unwrap_or_default();
+            let reasons_param = transcode_reasons
+                .to_query_value()
+                .map(|v| format!("&TranscodeReasons={}", v))
+                .unwrap_or_default();
+            let audio_stream_param = source
+                .default_audio_stream_index
+                .map(|idx| format!("&AudioStreamIndex={}", idx))
+                .unwrap_or_default();
+
+            source.supports_transcoding = Some(true);
+            source.transcoding_url = Some(format!(
+                "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}",
+                id, play_session_id, source.id, video_codec, audio_codec, bitrate_param, reasons_param, audio_stream_param,
+            ));
+            source.transcoding_container = Some(trans_container);
+            source.transcoding_sub_protocol = Some(trans_protocol);
+            source.supports_direct_play = Some(false);
+            source.supports_direct_stream = Some(false);
+        } else {
+            source.supports_transcoding = Some(false);
+            source.supports_direct_play = Some(true);
+        }
+
+        media_sources.push(source);
     }
 
     let info = jellyfin::PlaybackInfoResponse {
-        media_sources: vec![source],
+        media_sources,
         play_session_id: Some(play_session_id),
         ..Default::default()
     };
@@ -269,24 +386,34 @@ async fn videos_stream_inner(
     }
 
     if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
-        media = media
-            .sources(&state.ctx.db)
-            .await?
-            .get(0)
-            .context_not_found("not found", "not found")?
-            .clone();
+        let sources = media.sources(&state.ctx.db).await?;
+        media = if let Some(wanted) = q.media_source_id {
+            sources.iter().find(|s| s.id == wanted).cloned()
+        } else {
+            None
+        }
+        .or_else(|| sources.into_iter().next())
+        .context_not_found("not found", "no playable source found")?;
     }
 
     // Torrent streams: resolve magnet URI to a local HTTP URL.
     let media = resolve_torrent(media, &state).await?;
 
-    let url = media
+    let raw_url = media
         .url
         .clone()
         .context_not_found("no url", "media source has no URL")?;
 
-    // Direct play: proxy the original stream with range support
-    if q.static_.unwrap_or(false) || q.video_codec.is_none() {
+    // Resolve Docker-internal hostnames to user-configured origin.
+    let url = crate::aio::resolve_url(&state.ctx.db, &raw_url).await;
+
+    // Direct play: proxy the original stream with range support.
+    // Real Jellyfin always proxies the raw file bytes for Static=true, regardless
+    // of stream selection parameters — the player selects tracks natively from the
+    // embedded streams in the file (ExoPlayer handles HEVC/MKV natively).
+    // Previously this fell into progressive transcode when AudioStreamIndex was set,
+    // which broke seeking because live transcodes can't serve HTTP range requests.
+    if q.static_.unwrap_or(false) {
         info!("starting direct playback for: {:?}", &media.title);
         let mut req = reqwest::Client::new().get(&url);
         if let Some(v) = headers.get(http::header::RANGE) {
@@ -330,14 +457,17 @@ async fn videos_stream_inner(
         return Ok(resp_out);
     }
 
-    // Progressive transcode: pipe ffmpeg output directly to response
+    // Progressive transcode/remux: only reached when Static=false.
+    let wants_stream_selection = q.audio_stream_index.is_some() || q.subtitle_stream_index.is_some();
     let container = q.container.as_deref().unwrap_or("mp4").to_string();
     let video_codec = q.video_codec.unwrap_or_else(|| "copy".to_string());
     let audio_codec = q.audio_codec.unwrap_or_else(|| "aac".to_string());
+    // Keep a copy before the video_codec is moved into params (needed for Content-Type logic)
+    let is_copy_video = video_codec == "copy";
 
     info!(
-        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={})",
-        &media.title, container, video_codec, audio_codec
+        "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?})",
+        &media.title, container, video_codec, audio_codec, q.start_time_ticks, q.video_bit_rate
     );
 
     let params = crate::transcode::engine::ProgressiveTranscodeParams {
@@ -358,7 +488,14 @@ async fn videos_stream_inner(
     let stream = crate::transcode::engine::start_progressive_transcode(params)?;
     let body = Body::from_stream(stream);
 
-    let content_type = match container.as_str() {
+    // The engine transparently promotes copy+mp4 → matroska (no BSF needed for Matroska).
+    // Reflect that in the Content-Type so players don't get confused.
+    let effective_container = if is_copy_video && container == "mp4" {
+        "mkv"
+    } else {
+        container.as_str()
+    };
+    let content_type = match effective_container {
         "ts" | "mpegts" => "video/mp2t",
         "webm" => "video/webm",
         "mkv" | "matroska" => "video/x-matroska",
@@ -851,7 +988,7 @@ mod tests {
              //   "Size": 292828,
                 "RunTimeTicks": 100000000,
                 "SupportsDirectPlay": true,
-                "SupportsTranscoding": false         
+                "SupportsTranscoding": false
             }]
         }));
     }
@@ -1273,7 +1410,22 @@ pub async fn master_hls_video(
     let audio_codec = q.audio_codec.unwrap_or_else(|| "aac".to_string());
     let segment_length = q.segment_length.unwrap_or(6) as u32;
 
-    // Look up existing session or create a new one
+    // Look up existing session or create a new one.
+    // When the client seeks it sends the same PlaySessionId but with a new
+    // StartTimeTicks.  In that case we must stop the old transcode job and
+    // restart from the requested position — otherwise the player waits for
+    // segments that the old job will never produce at the new offset.
+    let is_seeking = q.start_time_ticks.is_some();
+    if is_seeking {
+        if let Some(_existing) = state.ctx.transcode.get(&play_session_id) {
+            tracing::debug!(
+                play_session_id = %play_session_id,
+                start_time_ticks = ?q.start_time_ticks,
+                "seek detected — stopping old transcode session and restarting"
+            );
+            state.ctx.transcode.stop(&play_session_id).await;
+        }
+    }
     let session = if let Some(existing) = state.ctx.transcode.get(&play_session_id) {
         existing
     } else {
@@ -1287,17 +1439,22 @@ pub async fn master_hls_video(
         if resolved_media.kind == db::MediaKind::Movie
             || resolved_media.kind == db::MediaKind::Episode
         {
-            resolved_media = resolved_media
-                .sources(&state.ctx.db)
-                .await?
-                .get(0)
-                .context_not_found("not found", "source not found")?
-                .clone();
+            let sources = resolved_media.sources(&state.ctx.db).await?;
+            resolved_media = if let Some(wanted) = q.media_source_id {
+                sources.iter().find(|s| s.id == wanted).cloned()
+            } else {
+                None
+            }
+            .or_else(|| sources.into_iter().next())
+            .context_not_found("not found", "no playable source found")?;
         }
 
-        let input_url = resolved_media
+        let raw_input_url = resolved_media
             .url
             .context_not_found("no url", "media source has no URL")?;
+
+        // Resolve Docker-internal hostnames to user-configured origin.
+        let input_url = crate::aio::resolve_url(&state.ctx.db, &raw_input_url).await;
 
         let session = state.ctx.transcode.create(
             play_session_id.clone(),
@@ -1589,4 +1746,76 @@ async fn resolve_torrent(mut media: db::Media, state: &AppState) -> Result<db::M
         .context_bad_request("torrent", "failed to resolve torrent stream")?;
     media.url = Some(resolved);
     Ok(media)
+}
+
+/// Subtitle extraction endpoint - extracts a subtitle stream from a media source
+/// and optionally converts it to the requested format (vtt, srt, ass).
+#[get("/videos/{item_id}/{media_source_id}/subtitles/{stream_index}/stream.{format}")]
+pub async fn subtitles_stream(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path((item_id, media_source_id, stream_index, format)): Path<(Uuid, Uuid, i64, String)>,
+) -> Result<impl IntoResponse> {
+    let _ = item_id; // Jellyfin API includes item_id in the path but we only need media_source_id
+
+    let mut media = db::Media::get_by_id(&state.ctx.db, &media_source_id)
+        .await?
+        .context_not_found("not found", "media source not found")?;
+
+    if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+        media = media
+            .sources(&state.ctx.db)
+            .await?
+            .get(0)
+            .context_not_found("not found", "no sources found")?
+            .clone();
+    }
+
+    let url = media
+        .url
+        .clone()
+        .context_not_found("no url", "media source has no URL")?;
+
+    let output_format = format.to_ascii_lowercase();
+    let (ffmpeg_format, content_type) = match output_format.as_str() {
+        "vtt" | "webvtt" => ("webvtt", "text/vtt; charset=utf-8"),
+        "srt" | "subrip" => ("srt", "text/plain; charset=utf-8"),
+        "ass" | "ssa" => ("ass", "text/plain; charset=utf-8"),
+        "pgssub" | "sup" => ("sup", "application/octet-stream"),
+        _ => ("srt", "text/plain; charset=utf-8"),
+    };
+
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.args([
+        "-i", &url,
+        "-map", &format!("0:{stream_index}"),
+        "-c:s", if ffmpeg_format == "sup" { "copy" } else { ffmpeg_format },
+        "-f", ffmpeg_format,
+        "-",
+    ]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let child = cmd.spawn().map_err(|e| anyhow!("failed to spawn ffmpeg: {e}"))?;
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| anyhow!("ffmpeg failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::error!("ffmpeg subtitle extraction failed: {stderr}");
+        return Ok(Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::from("subtitle extraction failed"))
+            .unwrap());
+    }
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Cache-Control", "public, max-age=3600")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(Body::from(output.stdout))
+        .unwrap())
 }

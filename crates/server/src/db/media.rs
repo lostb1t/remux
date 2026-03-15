@@ -1418,6 +1418,11 @@ impl Media {
                 let mut item: Self = stream.into();
                 item.parent_id = Some(self.id.clone());
                 item.idx = Some(idx as i64);
+                // Rewrite AIOStreams-internal URLs to use the configured origin
+                // so they're reachable from outside Docker.
+                if let Some(ref url) = item.url {
+                    item.url = Some(aio.rewrite_url(url));
+                }
                 item
             })
             .collect::<Vec<Self>>();
@@ -1605,8 +1610,17 @@ impl From<sdks::aio::Stream> for Media {
             (None, url) => url.clone(),
         };
 
+        // Merge name + description: AIOStreams puts the provider/addon name in `name`
+        // and the full codec/resolution details in `description`. Clients expect both.
+        let title = match (&source.name, &source.description) {
+            (Some(n), Some(d)) if !d.is_empty() => format!("{}\n{}", n, d),
+            (Some(n), _) => n.clone(),
+            (None, Some(d)) => d.clone(),
+            _ => String::new(),
+        };
+
         Media {
-            title: source.name.clone().unwrap_or_default(),
+            title,
             kind: MediaKind::Source,
             url,
             id: source.get_guid(),

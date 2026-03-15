@@ -1204,3 +1204,16 @@ pub async fn update_catalog_settings(
 
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// MediaSegments stub - returns empty result to prevent 404/CORS errors
+#[get("/mediasegments/{id}")]
+pub async fn media_segments(
+    _session: auth::AuthSession,
+    Path(_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(serde_json::json!({
+        "Items": [],
+        "TotalRecordCount": 0,
+        "StartIndex": 0,
+    })))
+}

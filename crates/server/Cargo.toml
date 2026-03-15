@@ -3,6 +3,7 @@ name = "remux-server"
 version = "0.1.0"
 authors = ["lostb1t <coding-mosses0z@icloud.com>"]
 edition = "2024"
+default-run = "remux-server"
 
 [[bin]]
 name = "remux-server"
@@ -103,6 +104,9 @@ gstreamer-pbutils = { version = "0.23", package = "gstreamer-pbutils" }
 gstreamer-app = { version = "0.23", package = "gstreamer-app" }
 librqbit = { version = "8", features = ["http-api", "tracing-subscriber-utils"] }
 regex = "1"
+ez-ffmpeg = { path = "../../vendor/ez-ffmpeg" }
+log = "0.4"
+env_logger = "0.11"
 
 [features]
 default = []

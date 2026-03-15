@@ -205,6 +205,18 @@ pub enum StreamInfo {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct MediaInfo {
+    /// The total duration of the media file in microseconds.
+    pub duration_us: i64,
+
+    /// The format name of the media file (e.g., "mp4", "matroska").
+    pub format_name: String,
+
+    /// Information for all streams found in the media file.
+    pub streams: Vec<StreamInfo>,
+}
+
 impl StreamInfo {
     /// Returns a human-readable label for this stream's type
     /// (e.g. `"Video"`, `"Audio"`, `"Unknown"`).
@@ -598,6 +610,34 @@ pub fn find_all_stream_infos(url: impl Into<String>) -> Result<Vec<StreamInfo>> 
     unsafe { extract_stream_infos(&in_fmt_ctx_box) }
 }
 
+/// Probes a media URL and returns consolidated information (duration, format, streams).
+///
+/// This function opens the media file once and extracts all relevant information
+/// in a single pass, which is significantly more efficient than calling
+/// `get_duration_us`, `get_format`, and `find_all_stream_infos` separately,
+/// especially for network-based media streams.
+pub fn probe_media_info(url: impl Into<String>) -> Result<MediaInfo> {
+    let in_fmt_ctx_box = init_format_context(url)?;
+    unsafe {
+        let fmt_ctx = in_fmt_ctx_box.fmt_ctx;
+        let duration_us = (*fmt_ctx).duration;
+        let format_name = if (*fmt_ctx).iformat.is_null() {
+            "unknown".to_string()
+        } else {
+            CStr::from_ptr((*(*fmt_ctx).iformat).name)
+                .to_string_lossy()
+                .into_owned()
+        };
+        let streams = extract_stream_infos(&in_fmt_ctx_box)?;
+
+        Ok(MediaInfo {
+            duration_us,
+            format_name,
+            streams,
+        })
+    }
+}
+
 #[inline]
 fn codec_name(id: AVCodecID) -> String {
     // SAFETY: avcodec_get_name is a pure lookup that returns a static string
@@ -632,6 +672,9 @@ pub(crate) fn init_format_context(
 
         let mut format_opts = null_mut();
         let scan_all_pmts_key = CString::new("scan_all_pmts")?;
+        let analyzeduration_key = CString::new("analyzeduration")?;
+        let probesize_key = CString::new("probesize")?;
+
         if av_dict_get(
             format_opts,
             scan_all_pmts_key.as_ptr(),
@@ -648,6 +691,40 @@ pub(crate) fn init_format_context(
                 ffmpeg_sys_next::AV_DICT_DONT_OVERWRITE,
             );
         };
+
+        if av_dict_get(
+            format_opts,
+            analyzeduration_key.as_ptr(),
+            null(),
+            ffmpeg_sys_next::AV_DICT_MATCH_CASE,
+        )
+        .is_null()
+        {
+            let analyzeduration_value = CString::new("1000000")?;
+            ffmpeg_sys_next::av_dict_set(
+                &mut format_opts,
+                analyzeduration_key.as_ptr(),
+                analyzeduration_value.as_ptr(),
+                ffmpeg_sys_next::AV_DICT_DONT_OVERWRITE,
+            );
+        }
+
+        if av_dict_get(
+            format_opts,
+            probesize_key.as_ptr(),
+            null(),
+            ffmpeg_sys_next::AV_DICT_MATCH_CASE,
+        )
+        .is_null()
+        {
+            let probesize_value = CString::new("1000000")?;
+            ffmpeg_sys_next::av_dict_set(
+                &mut format_opts,
+                probesize_key.as_ptr(),
+                probesize_value.as_ptr(),
+                ffmpeg_sys_next::AV_DICT_DONT_OVERWRITE,
+            );
+        }
 
         #[cfg(not(feature = "docs-rs"))]
         let mut ret = {
