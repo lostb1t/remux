@@ -148,6 +148,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         name: Some(media.title.clone()),
         original_title: Some(media.title.clone()),
         overview: media.description.clone(),
+
         type_,
         parent_id: media.parent_id.clone(),
         remote_trailers: media.trailers.clone().map(|j| j.0),

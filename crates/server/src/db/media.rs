@@ -1599,11 +1599,11 @@ impl From<sdks::aio::Catalog> for Media {
 
 impl From<sdks::aio::Stream> for Media {
     fn from(source: sdks::aio::Stream) -> Self {
-        // For torrent streams (info_hash present) build a magnet URI carrying an
-        // optional &file= param so the TorrentManager can pick the right file.
-        // HTTP-only streams (no info_hash) use the URL as-is.
+
+
+
         let url = match (&source.info_hash, &source.url) {
-            (Some(hash), _) => {
+            (Some(hash), None) => {
                 let mut q = url::form_urlencoded::Serializer::new(String::new());
                 q.append_pair("xt", &format!("urn:btih:{}", hash));
                 if let Some(name) = &source.name {
@@ -1614,7 +1614,7 @@ impl From<sdks::aio::Stream> for Media {
                 }
                 Some(format!("magnet:?{}", q.finish()))
             }
-            (None, url) => url.clone(),
+            (_, url) => url.clone(),
         };
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`

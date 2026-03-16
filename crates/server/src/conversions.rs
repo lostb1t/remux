@@ -18,7 +18,7 @@ impl From<db::Media> for jellyfin::MediaSourceInfo {
     jellyfin::MediaSourceInfo {
         id: source.id.clone(),
         e_tag: source.id.clone(),
-        path: Some(clean_path),
+        path: source.url.clone(),
         protocol: Some("File".to_string()),
         supports_transcoding: Some(false),
         supports_direct_stream: Some(true),

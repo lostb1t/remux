@@ -617,27 +617,34 @@ pub async fn item(
     session: auth::AuthSession,
     id: Uuid,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
-    let manifest = crate::aio::AioService::from_settings(&state.ctx.db)
-        .await
-        .context_bad_request("AIO not configured", "Complete the setup wizard first")?
-        .get_manifest()
-        .await?;
-    // let libraries = super::get_virtual_folders(&state).await?;
-
-    // if let Some(library) = libraries.into_iter().find(|x| x.id == id) {
-    //     return Ok(Some(library));
-    // }
-
-    let q = jellyfin::GetItemsQuery {
-        ids: vec![id].into(),
-        ..Default::default()
+    // Fetch directly without the digital_released_before filter so recently-released
+    // items are always returned when requested by ID.
+    let mut media = match db::Media::get_by_filter(
+        &state.ctx.db,
+        &db::MediaFilter {
+            id: Some(vec![id]),
+            ..Default::default()
+        },
+    )
+    .await?
+    .records
+    .into_iter()
+    .next()
+    {
+        Some(m) => m,
+        None => return Ok(None),
     };
-    return Ok(get_items(state, session.clone(), q, false)
-        .await?
-        .with_permissions(&session)
-        .items
-        .into_iter()
-        .next());
+
+    if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
+        if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
+            media.refresh_sources(&state.ctx.db, &aio).await?;
+        }
+        media.sources(&state.ctx.db).await?;
+        media.user_state(&state.ctx.db, &session.user).await?;
+    }
+    media.load_relations(&state.ctx.db).await?;
+
+    Ok(Some(jellyfin::db_media_to_item(media)))
 }
 
 /// Jellyfin web requests `/Items/livetv` (literal string) when navigating to
