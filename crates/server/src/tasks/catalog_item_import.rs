@@ -38,7 +38,7 @@ impl Task for CatalogItemImportTask {
         &self.display_name
     }
     fn category(&self) -> &str {
-        "Library"
+        "Import"
     }
 
     async fn run(

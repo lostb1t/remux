@@ -55,11 +55,7 @@ impl Default for TaskTrigger {
 
 impl TaskTrigger {
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
-        // Both id and task_id are already strings
-        let id = &self.id;
-        let task_id = &self.task_id;
-
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO task_triggers (
                 id,
@@ -68,19 +64,19 @@ impl TaskTrigger {
                 time_limit_hours,
                 cron
             )
-            VALUES (?1, ?2, ?3, ?4, ?5)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 task_id          = excluded.task_id,
                 kind             = excluded.kind,
                 time_limit_hours = excluded.time_limit_hours,
                 cron             = excluded.cron
             "#,
-            id,
-            task_id,
-            self.kind,
-            self.time_limit_hours,
-            self.cron,
         )
+        .bind(&self.id)
+        .bind(&self.task_id)
+        .bind(&self.kind)
+        .bind(self.time_limit_hours)
+        .bind(&self.cron)
         .execute(db)
         .await?;
 
@@ -150,23 +146,20 @@ impl TaskResult {
     }
 
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
-        // task_id is already a string
-        let task_id = &self.task_id;
-
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO task_results (task_id, start_at, end_at, status)
-            VALUES (?1, ?2, ?3, ?4)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 start_at = excluded.start_at,
                 end_at   = excluded.end_at,
                 status    = excluded.status
             "#,
-            task_id,
-            self.start_at,
-            self.end_at,
-            self.status,
         )
+        .bind(&self.task_id)
+        .bind(self.start_at)
+        .bind(self.end_at)
+        .bind(&self.status)
         .execute(db)
         .await?;
 

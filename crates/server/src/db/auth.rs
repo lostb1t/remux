@@ -74,25 +74,25 @@ pub struct Device {
 
 impl Device {
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO devices
                 (user_id, access_token, id, name, app_name, app_version)
             VALUES
-                (?1, ?2, ?3, ?4, ?5, ?6)
+                (?, ?, ?, ?, ?, ?)
             ON CONFLICT(id, user_id) DO UPDATE SET
                 name = excluded.name,
                 access_token = excluded.access_token,
                 app_name    = excluded.app_name,
                 app_version = excluded.app_version
             "#,
-            self.user_id,
-            self.access_token,
-            self.id,
-            self.name,
-            self.app_name,
-            self.app_version
         )
+        .bind(self.user_id)
+        .bind(&self.access_token)
+        .bind(&self.id)
+        .bind(&self.name)
+        .bind(&self.app_name)
+        .bind(&self.app_version)
         .execute(db)
         .await?;
 

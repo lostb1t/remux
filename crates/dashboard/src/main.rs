@@ -684,7 +684,10 @@ fn TasksCard(
                                 groups.entry(cat).or_default().push(task);
                             }
                             rsx! {
-                                for (cat, group_tasks) in groups {
+                                for (cat, mut group_tasks) in groups {
+                                    {
+                                        group_tasks.sort_by(|a, b| a.name.cmp(&b.name));
+                                    }
                                     div { class: "task-group", key: "{cat}",
                                         div { class: "task-group-header", "{cat}" }
                                         div { class: "row-list",
@@ -2390,7 +2393,7 @@ fn ImportsPage(app_state: AppState) -> Element {
         tasks_list
             .read()
             .iter()
-            .find(|t| t.key.as_deref() == Some("catalogimport"))
+            .find(|t| t.key.as_deref() == Some("CatalogImport"))
             .cloned()
     };
 
