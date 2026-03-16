@@ -144,7 +144,7 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
     log_capture::init_file(&config.log_file);
     debug!("config: {}", serde_json::to_string_pretty(&config).unwrap());
 
-    let conn = db::connect(&config.db_url).await?;
+    let conn = db::connect(&config.database_url).await?;
 
     db::migrate(&conn).await?;
     crate::utils::init_server_id(&conn).await?;
@@ -269,7 +269,7 @@ fn default_dashboard_path() -> String {
     "/app/dashboard".to_string()
 }
 
-fn default_db_url() -> String {
+fn default_database_url() -> String {
     "sqlite:///data/db.sqlite?mode=rwc".to_string()
 }
 
@@ -291,8 +291,8 @@ pub struct Config {
     pub web_path: String,
     #[serde(default = "default_dashboard_path")]
     pub dashboard_path: String,
-    #[serde(default = "default_db_url")]
-    pub db_url: String,
+    #[serde(default = "default_database_url")]
+    pub database_url: String,
     #[serde(default = "default_log_file")]
     pub log_file: String,
     #[serde(default = "default_torrent_data_dir")]
@@ -306,7 +306,7 @@ impl Default for Config {
         Self {
             web_path: default_web_path(),
             dashboard_path: default_dashboard_path(),
-            db_url: default_db_url(),
+            database_url: default_database_url(),
             log_file: default_log_file(),
             torrent_data_dir: default_torrent_data_dir(),
             torrent_http_port: default_torrent_http_port(),
