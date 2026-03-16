@@ -1,0 +1,122 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use librqbit::api::Api;
+use librqbit::http_api::HttpApi;
+use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, Session};
+use tracing::debug;
+
+pub struct TorrentManager {
+    session: Arc<Session>,
+    http_port: u16,
+}
+
+impl TorrentManager {
+    pub async fn new(data_dir: PathBuf, http_port: u16) -> Result<Self> {
+        let session = Session::new(data_dir).await?;
+
+        let listener =
+            tokio::net::TcpListener::bind(format!("127.0.0.1:{}", http_port)).await?;
+
+        let api = Api::new(session.clone(), None, None);
+        let http_api = HttpApi::new(api, None);
+        tokio::spawn(http_api.make_http_api_and_run(listener, None));
+
+        tracing::info!(port = http_port, "torrent HTTP server listening");
+        Ok(Self { session, http_port })
+    }
+
+    /// Resolve a magnet URI (possibly with a `&file=<name>` param we encode) to a
+    /// local `http://127.0.0.1:<port>/torrents/<id>/stream/<file_idx>` URL that can
+    /// be fed directly into the existing GStreamer probe / transcode pipeline.
+    pub async fn resolve_url(&self, magnet: &str) -> Result<String> {
+        let wanted_file = parse_file_param(magnet);
+        debug!(magnet, ?wanted_file, "resolving torrent");
+
+        let opts = wanted_file.as_deref().map(|name| AddTorrentOptions {
+            // Ask librqbit to download only the matching file so we don't pull the
+            // whole torrent.  The regex is anchored at the end so "Movie.mkv" doesn't
+            // match "Movie.mkv.nfo".
+            only_files_regex: Some(format!(
+                "(?i){}$",
+                regex::escape(name)
+            )),
+            ..Default::default()
+        });
+
+        let response = self
+            .session
+            .add_torrent(AddTorrent::from_url(magnet), opts)
+            .await
+            .context("failed to add torrent")?;
+
+        let (torrent_id, handle) = match response {
+            AddTorrentResponse::Added(id, h) => (id, h),
+            AddTorrentResponse::AlreadyManaged(id, h) => (id, h),
+            AddTorrentResponse::ListOnly(_) => anyhow::bail!("unexpected ListOnly response"),
+        };
+
+        tokio::time::timeout(Duration::from_secs(30), handle.wait_until_initialized())
+            .await
+            .context("timed out waiting for torrent metadata")?
+            .context("torrent initialization failed")?;
+
+        // Find the file index to stream.
+        let file_idx = handle
+            .with_metadata(|meta| {
+                if let Some(name) = wanted_file.as_deref() {
+                    meta.file_infos
+                        .iter()
+                        .enumerate()
+                        .find(|(_, fi)| {
+                            fi.relative_filename
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| n.eq_ignore_ascii_case(name))
+                                .unwrap_or(false)
+                        })
+                        .map(|(idx, _)| idx)
+                        .unwrap_or(0)
+                } else {
+                    0
+                }
+            })
+            .unwrap_or(0);
+
+        Ok(format!(
+            "http://127.0.0.1:{}/torrents/{}/stream/{}",
+            self.http_port, torrent_id, file_idx
+        ))
+    }
+
+    /// Apply upload/download speed limits.  0 = no limit (for download) or
+    /// effectively-disabled (for upload — 1 bps is used since the API requires
+    /// `NonZeroU32`).
+    pub fn update_limits(&self, upload_kbps: i64, download_kbps: i64) {
+        use std::num::NonZeroU32;
+        // upload: 0 means "don't seed" — clamp to 1 bps (librqbit requires NonZero)
+        let upload = NonZeroU32::new(if upload_kbps <= 0 {
+            1
+        } else {
+            (upload_kbps as u32).saturating_mul(1024)
+        });
+        // download: 0 means unlimited → None
+        let download = if download_kbps <= 0 {
+            None
+        } else {
+            NonZeroU32::new((download_kbps as u32).saturating_mul(1024))
+        };
+        self.session.ratelimits.set_upload_bps(upload);
+        self.session.ratelimits.set_download_bps(download);
+    }
+}
+
+/// Extract the `file=` query parameter we encode into our magnet URIs.
+fn parse_file_param(magnet: &str) -> Option<String> {
+    let query = magnet.split_once('?')?.1;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == "file")
+        .map(|(_, v)| v.into_owned())
+}

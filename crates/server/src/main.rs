@@ -83,6 +83,7 @@ mod log_capture;
 mod providers;
 mod playback_session;
 mod tasks;
+mod torrent;
 mod transcode;
 mod web_patches;
 mod web_transform;
@@ -153,6 +154,14 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
 
     let (ws_tx, _) = tokio::sync::broadcast::channel(128);
 
+    let torrent_mgr = Arc::new(
+        torrent::TorrentManager::new(
+            std::path::PathBuf::from(&config.torrent_data_dir),
+            config.torrent_http_port,
+        )
+        .await?,
+    );
+
     let ctx = AppContext {
         config,
         db: conn.clone(),
@@ -160,8 +169,20 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
         transcode: transcode::session::TranscodeSessionManager::new(
             "transcode_sessions",
         ),
+        torrent: torrent_mgr.clone(),
         ws_tx,
     };
+
+    // Apply saved P2P speed limits on startup.
+    {
+        let cfg = db::Settings::get_config(&conn).await?;
+        if cfg.p2p_enabled.unwrap_or(true) {
+            torrent_mgr.update_limits(
+                cfg.p2p_upload_speed_kbps.unwrap_or(0),
+                cfg.p2p_download_speed_kbps.unwrap_or(0),
+            );
+        }
+    }
 
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
 
@@ -229,6 +250,7 @@ pub struct AppContext {
     pub db: sqlx::SqlitePool,
     pub store: store::Store,
     pub transcode: transcode::session::TranscodeSessionManager,
+    pub torrent: Arc<torrent::TorrentManager>,
     pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,
 }
 
@@ -254,6 +276,14 @@ fn default_log_file() -> String {
     "/data/logs/remux.jsonl".to_string()
 }
 
+fn default_torrent_data_dir() -> String {
+    "/data/torrents".to_string()
+}
+
+fn default_torrent_http_port() -> u16 {
+    9876
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Config {
     #[serde(default = "default_web_path")]
@@ -264,6 +294,10 @@ pub struct Config {
     pub db_url: String,
     #[serde(default = "default_log_file")]
     pub log_file: String,
+    #[serde(default = "default_torrent_data_dir")]
+    pub torrent_data_dir: String,
+    #[serde(default = "default_torrent_http_port")]
+    pub torrent_http_port: u16,
 }
 
 impl Default for Config {
@@ -273,6 +307,8 @@ impl Default for Config {
             dashboard_path: default_dashboard_path(),
             db_url: default_db_url(),
             log_file: default_log_file(),
+            torrent_data_dir: default_torrent_data_dir(),
+            torrent_http_port: default_torrent_http_port(),
         }
     }
 }

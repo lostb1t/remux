@@ -1564,10 +1564,28 @@ impl From<sdks::aio::Catalog> for Media {
 
 impl From<sdks::aio::Stream> for Media {
     fn from(source: sdks::aio::Stream) -> Self {
+        // For torrent streams (info_hash present) build a magnet URI carrying an
+        // optional &file= param so the TorrentManager can pick the right file.
+        // HTTP-only streams (no info_hash) use the URL as-is.
+        let url = match (&source.info_hash, &source.url) {
+            (Some(hash), _) => {
+                let mut q = url::form_urlencoded::Serializer::new(String::new());
+                q.append_pair("xt", &format!("urn:btih:{}", hash));
+                if let Some(name) = &source.name {
+                    q.append_pair("dn", name);
+                }
+                if let Some(filename) = &source.filename {
+                    q.append_pair("file", filename);
+                }
+                Some(format!("magnet:?{}", q.finish()))
+            }
+            (None, url) => url.clone(),
+        };
+
         Media {
-            title: source.name.clone().unwrap(),
+            title: source.name.clone().unwrap_or_default(),
             kind: MediaKind::Source,
-            url: source.url.clone(),
+            url,
             id: source.get_guid(),
             ..Default::default()
         }

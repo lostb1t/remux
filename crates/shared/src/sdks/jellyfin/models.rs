@@ -102,6 +102,15 @@ pub struct ServerConfiguration {
     pub aio_url: Option<String>,
     /// Remux: maximum number of items imported per catalog.
     pub catalog_max_items: Option<i64>,
+    /// Remux: allow P2P (torrent) streams from AIO.
+    #[default(Some(true))]
+    pub p2p_enabled: Option<bool>,
+    /// Remux: P2P upload speed cap in KB/s. 0 = no uploading (default).
+    #[default(Some(0_i64))]
+    pub p2p_upload_speed_kbps: Option<i64>,
+    /// Remux: P2P download speed cap in KB/s. 0 = unlimited (default).
+    #[default(Some(0_i64))]
+    pub p2p_download_speed_kbps: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

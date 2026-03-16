@@ -2892,6 +2892,9 @@ fn SettingsPage(app_state: AppState) -> Element {
     let mut server_name = use_signal(String::new);
     let mut aio_url = use_signal(String::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
+    let mut p2p_enabled = use_signal(|| true);
+    let mut p2p_upload_speed = use_signal(|| 0_i64);
+    let mut p2p_download_speed = use_signal(|| 0_i64);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -2906,6 +2909,9 @@ fn SettingsPage(app_state: AppState) -> Element {
                     server_name.set(cfg.server_name.clone().unwrap_or_default());
                     aio_url.set(cfg.aio_url.clone().unwrap_or_default());
                     catalog_max_items.set(cfg.catalog_max_items.unwrap_or(100));
+                    p2p_enabled.set(cfg.p2p_enabled.unwrap_or(true));
+                    p2p_upload_speed.set(cfg.p2p_upload_speed_kbps.unwrap_or(0));
+                    p2p_download_speed.set(cfg.p2p_download_speed_kbps.unwrap_or(0));
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
@@ -2920,11 +2926,17 @@ fn SettingsPage(app_state: AppState) -> Element {
         let name = server_name.peek().clone();
         let url = aio_url.peek().clone();
         let max = *catalog_max_items.peek();
+        let p2p_on = *p2p_enabled.peek();
+        let upload = *p2p_upload_speed.peek();
+        let download = *p2p_download_speed.peek();
 
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
         cfg.server_name = Some(name);
         cfg.aio_url = Some(url);
         cfg.catalog_max_items = Some(max);
+        cfg.p2p_enabled = Some(p2p_on);
+        cfg.p2p_upload_speed_kbps = Some(upload);
+        cfg.p2p_download_speed_kbps = Some(download);
 
         saving.set(true);
         error.set(None);
@@ -3003,6 +3015,60 @@ fn SettingsPage(app_state: AppState) -> Element {
                             }
                             p { class: "field-hint",
                                 "Maximum number of items imported per collection."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *p2p_enabled.read(),
+                                    oninput: move |e| p2p_enabled.set(e.checked()),
+                                }
+                                " Enable P2P Streams"
+                            }
+                            p { class: "field-hint",
+                                "Allow torrent/magnet streams from AIO sources."
+                            }
+                        }
+
+                        if *p2p_enabled.read() {
+                            div { class: "field",
+                                label { class: "field-label", r#for: "s-p2p-up", "Upload Speed Limit (KB/s)" }
+                                input {
+                                    id: "s-p2p-up",
+                                    r#type: "number",
+                                    class: "field-input",
+                                    min: "0",
+                                    value: "{p2p_upload_speed}",
+                                    oninput: move |e| {
+                                        if let Ok(n) = e.value().parse::<i64>() {
+                                            p2p_upload_speed.set(n);
+                                        }
+                                    },
+                                }
+                                p { class: "field-hint",
+                                    "0 = no uploading (seeding disabled). Set a positive value to allow uploading."
+                                }
+                            }
+
+                            div { class: "field",
+                                label { class: "field-label", r#for: "s-p2p-down", "Download Speed Limit (KB/s)" }
+                                input {
+                                    id: "s-p2p-down",
+                                    r#type: "number",
+                                    class: "field-input",
+                                    min: "0",
+                                    value: "{p2p_download_speed}",
+                                    oninput: move |e| {
+                                        if let Ok(n) = e.value().parse::<i64>() {
+                                            p2p_download_speed.set(n);
+                                        }
+                                    },
+                                }
+                                p { class: "field-hint",
+                                    "0 = unlimited."
+                                }
                             }
                         }
 

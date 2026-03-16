@@ -25,6 +25,7 @@ use crate::jellyfin;
 use crate::jellyfin::MediaSourceInfoExt;
 use crate::playback_session::PlaybackSession;
 use crate::sdks;
+use crate::torrent;
 use crate::utils;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
@@ -70,6 +71,9 @@ async fn items_playbackinfo_inner(
     let media = db::Media::get_by_id(&state.ctx.db, &media_source_id.unwrap_or(id))
         .await?
         .context_not_found("not found", "not found")?;
+
+    // Torrent streams: resolve magnet URI to a local HTTP URL first.
+    let media = resolve_torrent(media, &state).await?;
 
     // IPTV channels: skip GStreamer probe, return direct-play source.
     if media.kind == db::MediaKind::TvChannel {
@@ -272,6 +276,9 @@ async fn videos_stream_inner(
             .context_not_found("not found", "not found")?
             .clone();
     }
+
+    // Torrent streams: resolve magnet URI to a local HTTP URL.
+    let media = resolve_torrent(media, &state).await?;
 
     let url = media
         .url
@@ -1558,4 +1565,28 @@ pub async fn playback_bitratetest_sized(
 pub struct BitrateTestQuery {
     #[serde(alias = "Size", alias = "size")]
     pub size: Option<u64>,
+}
+
+/// If `media.url` is a magnet URI, resolve it via the torrent manager to a local
+/// HTTP URL and return a clone with the resolved URL.  For all other URLs this is
+/// a no-op that returns the original `media` unchanged.
+async fn resolve_torrent(mut media: db::Media, state: &AppState) -> Result<db::Media> {
+    let url = match media.url.as_deref() {
+        Some(u) if u.starts_with("magnet:") => u.to_owned(),
+        _ => return Ok(media),
+    };
+    // Check whether P2P is enabled in server config.
+    let cfg = crate::db::Settings::get_config(&state.ctx.db).await?;
+    if !cfg.p2p_enabled.unwrap_or(true) {
+        return Err(anyhow::anyhow!("P2P streams are disabled"))
+            .context_bad_request("torrent", "P2P streams are disabled by the server administrator");
+    }
+    let resolved = state
+        .ctx
+        .torrent
+        .resolve_url(&url)
+        .await
+        .context_bad_request("torrent", "failed to resolve torrent stream")?;
+    media.url = Some(resolved);
+    Ok(media)
 }

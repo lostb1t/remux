@@ -150,6 +150,13 @@ pub async fn update_system_configuration(
     _session: auth::AdminSession,
     Json(config): Json<jellyfin::ServerConfiguration>,
 ) -> Result<impl IntoResponse> {
+    // Apply P2P speed limits before saving so they take effect immediately.
+    if config.p2p_enabled.unwrap_or(true) {
+        state.ctx.torrent.update_limits(
+            config.p2p_upload_speed_kbps.unwrap_or(0),
+            config.p2p_download_speed_kbps.unwrap_or(0),
+        );
+    }
     crate::db::Settings::set_config(&state.ctx.db, &config).await?;
     Ok(StatusCode::NO_CONTENT)
 }
