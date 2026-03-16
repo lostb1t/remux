@@ -4793,6 +4793,7 @@ dependencies = [
  "csv-async",
  "dashmap 5.5.3",
  "default2",
+ "dotenvy",
  "duration-str",
  "futures",
  "futures-util",

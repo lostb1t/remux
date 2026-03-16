@@ -114,6 +114,7 @@ async fn main() -> Result<()> {
 }
 
 async fn init_app() -> Result<Router> {
+    dotenvy::dotenv().ok();
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
 
     let config: Config = config::Config::builder()

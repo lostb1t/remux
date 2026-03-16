@@ -3,35 +3,12 @@ default_to_workspace = false
 
 [env]
 RUST_LOG = "info,remux_server=debug,axum=info,tower_http=info,hyper=warn,sqlx=error"
-RUST_BACKTRACE = 0
-CONFIG = "./config"
-AXUM_ANYHOW_EXPOSE_ERRORS=1
-# HTTP_PROXY="http://10.0.10.11:9090"
-# HTTPS_PROXY="http://10.0.10.11:9090"
-WEB_PATH = "./jellyfin-web/dist"
-DASHBOARD_PATH="./target/dx/dashboard/debug/web/public"
-DB_URL = "sqlite://db.sqlite?mode=rwc"
-DATABASE_URL = "sqlite://db.sqlite?mode=rwc"
-DB="db.sqlite"
 
-[tasks.db-create]
-command = "cargo"
-args = ["sqlx", "database", "create"]
 
 [tasks.db-prepare]
 command = "cargo"
 args = ["sqlx", "prepare"]
 
-[tasks.db-migrate]
-command = "cargo"
-args = ["sqlx", "migrate", "run", "--source", "./crates/server/migrations"]
-
-[tasks.db-remove]
-command = "rm"
-args = ["-f", "${DB}"]
-
-[tasks.db-reset]
-dependencies = ["db-remove", "db-create", "db-migrate"]
 
 [tasks.test]
 cwd = "crates/server"
