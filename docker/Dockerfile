@@ -15,9 +15,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl ca-certificates \
         clang pkg-config build-essential libssl-dev \
-        libgstreamer1.0-dev \
-        libgstreamer-plugins-base1.0-dev \
-        libgstreamer-plugins-bad1.0-dev \
+        libavcodec-dev libavformat-dev libavfilter-dev \
+        libavutil-dev libavdevice-dev libswscale-dev libswresample-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
@@ -45,12 +44,7 @@ ENV DASHBOARD_PATH=/app/dashboard
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        libgstreamer1.0-0 \
-        gstreamer1.0-plugins-base \
-        gstreamer1.0-plugins-good \
-        gstreamer1.0-plugins-bad \
-        gstreamer1.0-plugins-ugly \
-        gstreamer1.0-libav \
+        ffmpeg \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
