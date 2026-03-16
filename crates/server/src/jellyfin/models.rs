@@ -5,28 +5,28 @@ use crate::utils;
 use anyhow::Result;
 
 pub trait MediaSourceInfoExt {
-    //fn probe_in_place(&mut self) -> anyhow::Result<()>;
     fn probe(&self) -> Result<MediaSourceInfo>;
+    fn probe_with_url(&self, url: &str) -> Result<MediaSourceInfo>;
   }
 
 impl MediaSourceInfoExt for db::Media {
 
-//impl MediaSourceInfoExt for MediaSourceInfo {
     fn probe(&self) -> Result<MediaSourceInfo> {
         let url = self
             .url
-            .clone()
+            .as_deref()
             .ok_or_else(|| anyhow::anyhow!("missing url"))?;
-        let mut probed = crate::transcode::probing::probe_media(&url)?;
+        self.probe_with_url(url)
+    }
+
+    fn probe_with_url(&self, url: &str) -> Result<MediaSourceInfo> {
+        let mut probed = crate::transcode::probing::probe_media(url)?;
 
         probed.id = self.id.clone();
         probed.name = Some(self.title.clone());
         probed.path = self.url.clone();
 
-        
-        
         Ok(probed)
-
     }
 }
 
@@ -163,6 +163,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         premiere_date: media.released_at.clone().map(|d| d.and_utc()),
         digital_release_date: media.digital_released_at.map(|d| d.and_utc()),
         community_rating: media.rating_audience.clone(),
+        critic_rating: media.rating_critic.clone(),
+        official_rating: media.certification.clone(),
+        parent_index_number: media.parent_idx,
         image_tags: Some(ImageTags {
             primary: media.poster.clone(),
             logo: media.logo.clone(),
@@ -261,6 +264,18 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         }),
         ..Default::default()
     };
+
+    // Build external URLs from provider IDs
+    let mut external_urls = Vec::new();
+    if let Some(ref imdb_id) = media.imdb_id {
+        external_urls.push(ExternalUrl {
+            name: Some("IMDb".to_string()),
+            url: Some(format!("https://www.imdb.com/title/{imdb_id}")),
+        });
+    }
+    if !external_urls.is_empty() {
+        item.external_urls = Some(external_urls);
+    }
 
     if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
         item.media_sources = match media.sources.clone() {

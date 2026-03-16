@@ -680,10 +680,10 @@ where
 }
 
 #[derive(Default, Debug, Deserialize)]
-#[serde_alias(CamelCase, PascalCase)]
+#[serde(rename_all = "PascalCase")]
 pub struct VideoStreamQuery {
     pub container: Option<String>,
-    #[serde(rename = "static")]
+    #[serde(alias = "static", alias = "Static")]
     pub static_: Option<bool>,
     pub params: Option<String>,
     pub tag: Option<String>,
@@ -692,6 +692,7 @@ pub struct VideoStreamQuery {
     pub segment_container: Option<String>,
     pub segment_length: Option<i64>,
     pub min_segments: Option<i64>,
+    #[serde(alias = "mediaSourceId")]
     pub media_source_id: Option<Uuid>,
     pub device_id: Option<String>,
     pub audio_codec: Option<String>,
@@ -1753,7 +1754,7 @@ pub struct BaseItemDto {
     pub premiere_date: Option<DateTime<Utc>>,
     // Remux: digital/home release date, distinct from theatrical premiere_date
     pub digital_release_date: Option<DateTime<Utc>>,
-    //pub external_urls: Option<Vec<ExternalUrl>>,
+    pub external_urls: Option<Vec<ExternalUrl>>,
     pub media_sources: Option<Vec<MediaSourceInfo>>,
     pub critic_rating: Option<f64>,
     pub production_locations: Option<Vec<String>>,
@@ -2479,7 +2480,9 @@ pub enum CollectionType {
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct HlsVideoQuery {
+    #[serde(alias = "playSessionId")]
     pub play_session_id: Option<String>,
+    #[serde(alias = "mediaSourceId")]
     pub media_source_id: Option<Uuid>,
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
@@ -2678,4 +2681,12 @@ pub struct BulkChannelRequest {
 pub struct IptvChannelsResult {
     pub items: Vec<ChannelEditorItem>,
     pub total_record_count: usize,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct ExternalUrl {
+    pub name: Option<String>,
+    pub url: Option<String>,
 }

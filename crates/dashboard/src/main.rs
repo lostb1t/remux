@@ -867,25 +867,25 @@ fn TaskRow(
 #[derive(Clone, Routable, PartialEq, Debug)]
 enum Route {
     #[layout(DashboardLayout)]
-    #[route("/admin")]
+    #[route("/")]
     OverviewRoute,
-    #[route("/admin/imports")]
+    #[route("/imports")]
     ImportsRoute,
-    #[route("/admin/library")]
+    #[route("/library")]
     CollectionsRoute,
-    #[route("/admin/iptv")]
+    #[route("/iptv")]
     IptvRoute,
-    #[route("/admin/devices")]
+    #[route("/devices")]
     DevicesRoute,
-    #[route("/admin/tasks")]
+    #[route("/tasks")]
     TasksRoute,
-    #[route("/admin/users")]
+    #[route("/users")]
     UsersRoute,
-    #[route("/admin/settings")]
+    #[route("/settings")]
     SettingsRoute,
-    #[route("/admin/branding")]
+    #[route("/branding")]
     BrandingRoute,
-    #[route("/admin/logs")]
+    #[route("/logs")]
     LogsRoute,
     #[end_layout]
     #[route("/:..segments")]

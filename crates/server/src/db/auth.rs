@@ -213,10 +213,9 @@ impl FromRequestParts<AppState> for AuthSession {
             .token
             .as_deref()
             .context_unauthorized("forbidden", "forbidden")?;
-        let device_id = jfauth
-            .device_id
-            .as_deref()
-            .context_unauthorized("forbidden", "forbidden")?;
+        // device_id is optional — query-param-only auth (e.g. ?token=...)
+        // doesn't carry a DeviceId. The device is looked up by token alone.
+        let _device_id = jfauth.device_id;
         let device = Device::get_by_access_token(&state.ctx.db, token)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
@@ -343,6 +342,7 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
                 if let (Some(key), Some(val)) = (kv.next(), kv.next()) {
                     if key.eq_ignore_ascii_case("api_key")
                         || key.eq_ignore_ascii_case("apikey")
+                        || key.eq_ignore_ascii_case("token")
                     {
                         return Ok(JellyfinAuthHeader {
                             token: Some(val.to_string()),
