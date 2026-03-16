@@ -1,8 +1,6 @@
 //#![feature(duration_constructors)]
 #![allow(warnings)]
 
-#[cfg(test)]
-mod test;
 
 use axum::response::Html;
 use reqwest;

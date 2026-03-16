@@ -1018,8 +1018,9 @@ impl Media {
             }
 
             if let Some(threshold) = &filter.digital_released_before {
-                qb.push(" AND COALESCE(digital_released_at, released_at) <= ")
-                    .push_bind(threshold);
+                qb.push(" AND (COALESCE(digital_released_at, released_at) IS NULL OR COALESCE(digital_released_at, released_at) <= ")
+                    .push_bind(threshold)
+                    .push(")");
             }
         }
 

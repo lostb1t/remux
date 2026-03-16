@@ -844,8 +844,8 @@ mod tests {
         resp.assert_status_ok();
         resp.assert_json_contains(&json!({
             "MediaSources": [{
-                "Id": media.Id,
-                "Etag": media.Id,
+                "Id": media.id.to_string(),
+                "Etag": media.id.to_string(),
                 "Bitrate": 3849414,
                 "Container": "mp4",
              //   "Size": 292828,

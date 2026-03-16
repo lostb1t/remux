@@ -20,7 +20,7 @@ pub fn auth_header_with_token(token: &str) -> String {
 /// carries the `SqlitePool`) so callers can insert fixture data directly.
 pub async fn new_test_server() -> Result<(TestServer, AppContext)> {
     let config = Config {
-        db_url: "sqlite::memory:".into(),
+        database_url: "sqlite::memory:".into(),
         ..Default::default()
     };
 
