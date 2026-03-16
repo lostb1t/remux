@@ -29,6 +29,15 @@ pub struct ItemsQueryResult {
     pub total_count: i64,
 }
 
+impl ItemsQueryResult {
+    pub fn with_permissions(mut self, session: &auth::AuthSession) -> Self {
+        for item in &mut self.items {
+            item.can_delete = Some(db::Media::can_delete(&session.user));
+        }
+        self
+    }
+}
+
 pub async fn get_items(
     state: AppState,
     session: auth::AuthSession,
@@ -335,7 +344,7 @@ pub async fn items_flat(
     session: auth::AuthSession,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let items = get_items(state, session, q, false).await?;
+    let items = get_items(state.clone(), session.clone(), q, false).await?.with_permissions(&session);
     Ok(Json::<Vec<jellyfin::BaseItemDto>>(items.items))
 }
 
@@ -346,7 +355,7 @@ pub async fn items(
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     //trace!(?q);
-    let items = get_items(state, session, q.clone(), true).await?;
+    let items = get_items(state.clone(), session.clone(), q.clone(), true).await?.with_permissions(&session);
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
@@ -621,11 +630,12 @@ pub async fn item(
         ids: vec![id].into(),
         ..Default::default()
     };
-    return Ok(get_items(state, session, q, false)
+    return Ok(get_items(state, session.clone(), q, false)
         .await?
+        .with_permissions(&session)
         .items
-        .first()
-        .cloned());
+        .into_iter()
+        .next());
 }
 
 /// Jellyfin web requests `/Items/livetv` (literal string) when navigating to

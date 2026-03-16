@@ -397,6 +397,11 @@ pub enum MediaError {
 }
 
 impl Media {
+    /// Whether the given user may delete media items.
+    pub fn can_delete(user: &super::User) -> bool {
+        user.is_admin
+    }
+
     pub fn is_promoted(&self) -> bool {
         match self.promoted {
             0 => false,
@@ -1311,7 +1316,7 @@ impl Media {
     }
 
     pub async fn delete(db: &SqlitePool, id: &Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM media WHERE id = $1")
+        sqlx::query("DELETE FROM media WHERE id = ?1")
             .bind(id)
             .execute(db)
             .await?;
