@@ -383,6 +383,25 @@ pub struct AppExtras {
     pub writers: Option<Vec<String>>,
     pub season_posters: Option<Vec<Option<String>>>,
     pub certification: Option<String>,
+    pub release_dates: Option<ReleaseDates>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseDates {
+    pub results: Vec<ReleaseDateCountry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseDateCountry {
+    pub iso_3166_1: String,
+    pub release_dates: Vec<ReleaseDateEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseDateEntry {
+    pub release_date: DateTime<Utc>,
+    #[serde(rename = "type")]
+    pub release_type: u8,
 }
 
 #[skip_serializing_none]

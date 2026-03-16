@@ -2891,6 +2891,11 @@ fn UserForm(
 
 #[component]
 fn SettingsPage(app_state: AppState) -> Element {
+    rsx! { ServerSettingsCard { app_state } }
+}
+
+#[component]
+fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
     let mut server_name = use_signal(String::new);
     let mut aio_url = use_signal(String::new);
@@ -2898,6 +2903,8 @@ fn SettingsPage(app_state: AppState) -> Element {
     let mut p2p_enabled = use_signal(|| true);
     let mut p2p_upload_speed = use_signal(|| 0_i64);
     let mut p2p_download_speed = use_signal(|| 0_i64);
+    let mut filter_digital_release = use_signal(|| true);
+    let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -2915,6 +2922,8 @@ fn SettingsPage(app_state: AppState) -> Element {
                     p2p_enabled.set(cfg.p2p_enabled.unwrap_or(true));
                     p2p_upload_speed.set(cfg.p2p_upload_speed_kbps.unwrap_or(0));
                     p2p_download_speed.set(cfg.p2p_download_speed_kbps.unwrap_or(0));
+                    filter_digital_release.set(cfg.filter_by_digital_release_date);
+                    digital_release_buffer.set(cfg.digital_release_buffer_days);
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
@@ -2932,6 +2941,8 @@ fn SettingsPage(app_state: AppState) -> Element {
         let p2p_on = *p2p_enabled.peek();
         let upload = *p2p_upload_speed.peek();
         let download = *p2p_download_speed.peek();
+        let filter_dr = *filter_digital_release.peek();
+        let dr_buffer = *digital_release_buffer.peek();
 
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
         cfg.server_name = Some(name);
@@ -2940,6 +2951,8 @@ fn SettingsPage(app_state: AppState) -> Element {
         cfg.p2p_enabled = Some(p2p_on);
         cfg.p2p_upload_speed_kbps = Some(upload);
         cfg.p2p_download_speed_kbps = Some(download);
+        cfg.filter_by_digital_release_date = filter_dr;
+        cfg.digital_release_buffer_days = dr_buffer;
 
         saving.set(true);
         error.set(None);
@@ -3071,6 +3084,42 @@ fn SettingsPage(app_state: AppState) -> Element {
                                 }
                                 p { class: "field-hint",
                                     "0 = unlimited."
+                                }
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *filter_digital_release.read(),
+                                    oninput: move |e| filter_digital_release.set(e.checked()),
+                                }
+                                " Filter by digital release date"
+                            }
+                            p { class: "field-hint",
+                                "Hide items that haven't been digitally released yet. Falls back to theatrical release date when no digital date is set."
+                            }
+                        }
+
+                        if *filter_digital_release.read() {
+                            div { class: "field",
+                                label { class: "field-label", r#for: "s-dr-buf", "Release buffer (days)" }
+                                input {
+                                    id: "s-dr-buf",
+                                    r#type: "number",
+                                    class: "field-input",
+                                    min: "0",
+                                    max: "365",
+                                    value: "{digital_release_buffer}",
+                                    oninput: move |e| {
+                                        if let Ok(n) = e.value().parse::<i64>() {
+                                            digital_release_buffer.set(n);
+                                        }
+                                    },
+                                }
+                                p { class: "field-hint",
+                                    "Show items releasing up to this many days in the future. 0 = today or earlier only."
                                 }
                             }
                         }

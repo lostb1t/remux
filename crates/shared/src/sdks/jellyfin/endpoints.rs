@@ -386,6 +386,35 @@ impl Endpoint for PostStartupComplete {
 // ── Users ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
+pub struct GetCurrentUser;
+
+impl Endpoint for GetCurrentUser {
+    type Output = UserDto;
+    fn path(&self) -> String {
+        "/users/me".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateUserConfiguration {
+    pub user_id: Uuid,
+    pub config: UserConfiguration,
+}
+
+impl Endpoint for UpdateUserConfiguration {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/users/{}/configuration", self.user_id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct GetUsers;
 
 impl Endpoint for GetUsers {

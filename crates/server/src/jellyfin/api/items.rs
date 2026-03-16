@@ -224,8 +224,9 @@ pub async fn get_items(
             }
 
             let policy = session.user.policy.as_ref().map(|p| &p.0);
+            let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
             let result =
-                db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true, policy).await?;
+                db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true, policy, server_config.as_ref()).await?;
 
             return Ok(ItemsQueryResult {
                 total_count: result.total_count as i64,
@@ -251,9 +252,10 @@ pub async fn get_items(
 
     let want_total = q.enable_total_record_count.unwrap_or(true);
     let policy = session.user.policy.as_ref().map(|p| &p.0);
+    let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
     //trace!(?q, "get_items");
     let mut result =
-        db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, want_total, policy).await?;
+        db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, want_total, policy, server_config.as_ref()).await?;
 
     // handle details request
     if let Some(ids) = &q.ids {
@@ -1075,6 +1077,7 @@ struct PatchItemRequest {
     collection_catalog_filter: Option<Vec<String>>,
     promoted: Option<bool>,
     tags: Option<Vec<String>>,
+    digital_released_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[patch("/items/{id}")]
@@ -1106,6 +1109,10 @@ pub async fn patch_item(
     if let Some(prm) = payload.promoted {
         qb.push(", promoted = ")
             .push_bind(if prm { 1i64 } else { 0i64 });
+    }
+    if let Some(dra) = payload.digital_released_at {
+        qb.push(", digital_released_at = ")
+            .push_bind(dra.naive_utc());
     }
 
     qb.push(" WHERE id = ").push_bind(id);

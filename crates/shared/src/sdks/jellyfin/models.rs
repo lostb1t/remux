@@ -111,6 +111,12 @@ pub struct ServerConfiguration {
     /// Remux: P2P download speed cap in KB/s. 0 = unlimited (default).
     #[default(Some(0_i64))]
     pub p2p_download_speed_kbps: Option<i64>,
+    /// Remux: hide items that haven't been digitally released yet.
+    #[default(true)]
+    pub filter_by_digital_release_date: bool,
+    /// Remux: days of lookahead when filtering by digital release date (0 = today only).
+    #[default(0_i64)]
+    pub digital_release_buffer_days: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1745,6 +1751,8 @@ pub struct BaseItemDto {
     pub video_3d_format: Option<String>,
     //#[serde_as(as = "Option<DisplayFromStr>")]
     pub premiere_date: Option<DateTime<Utc>>,
+    // Remux: digital/home release date, distinct from theatrical premiere_date
+    pub digital_release_date: Option<DateTime<Utc>>,
     //pub external_urls: Option<Vec<ExternalUrl>>,
     pub media_sources: Option<Vec<MediaSourceInfo>>,
     pub critic_rating: Option<f64>,

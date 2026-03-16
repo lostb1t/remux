@@ -16,10 +16,10 @@ impl Task for CatalogImportTask {
         "CatalogImport"
     }
     fn name(&self) -> &str {
-        "Catalog Import"
+        "Import All"
     }
     fn category(&self) -> &str {
-        "Library"
+        "Import"
     }
 
     async fn run(

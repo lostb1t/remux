@@ -286,6 +286,8 @@ pub struct MediaFilter {
     pub allowed_tags: Option<Vec<String>>,
     /// Filter by enabled flag (for TvChannel). None = no filter.
     pub enabled: Option<bool>,
+    /// If set, only return items where COALESCE(digital_released_at, released_at) <= threshold.
+    pub digital_released_before: Option<NaiveDateTime>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -303,6 +305,7 @@ pub struct Media {
     // meta
     pub description: Option<String>,
     pub released_at: Option<NaiveDateTime>,
+    pub digital_released_at: Option<NaiveDateTime>,
     pub trailers: Option<sqlx::types::Json<Vec<String>>>,
     // in seconds
     pub runtime: Option<i64>,
@@ -450,14 +453,15 @@ impl Media {
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items, collection_catalog_filter,
             remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at, certification, parent_idx,
-            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name
+            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
             idx = excluded.idx,
             released_at = excluded.released_at,
+            digital_released_at = excluded.digital_released_at,
             runtime = excluded.runtime,
             rating_critic = excluded.rating_critic,
             rating_audience = excluded.rating_audience,
@@ -525,6 +529,7 @@ impl Media {
         .bind(self.enabled)
         .bind(self.sort_order)
         .bind(&self.custom_name)
+        .bind(self.digital_released_at)
         .execute(db)
         .await?;
 
@@ -545,7 +550,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at
             )",
         );
             for item in chunk {
@@ -585,7 +590,8 @@ impl Media {
                     .push_bind(&item.channel_number)
                     .push_bind(&item.enabled)
                     .push_bind(&item.sort_order)
-                    .push_bind(&item.custom_name);
+                    .push_bind(&item.custom_name)
+                    .push_bind(&item.digital_released_at);
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -611,7 +617,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at
             )",
         );
 
@@ -649,7 +655,8 @@ impl Media {
                     .push_bind(&item.channel_number)
                     .push_bind(&item.enabled)
                     .push_bind(&item.sort_order)
-                    .push_bind(&item.custom_name);
+                    .push_bind(&item.custom_name)
+                    .push_bind(&item.digital_released_at);
             });
 
             query_builder.push(
@@ -657,6 +664,7 @@ impl Media {
                 title = excluded.title,
                 idx = excluded.idx,
                 released_at = excluded.released_at,
+                digital_released_at = excluded.digital_released_at,
                 runtime = excluded.runtime,
                 rating_critic = excluded.rating_critic,
                 rating_audience = excluded.rating_audience,
@@ -1008,6 +1016,11 @@ impl Media {
             if let Some(enabled) = &filter.enabled {
                 qb.push(" AND enabled = ").push_bind(if *enabled { 1i64 } else { 0i64 });
             }
+
+            if let Some(threshold) = &filter.digital_released_before {
+                qb.push(" AND COALESCE(digital_released_at, released_at) <= ")
+                    .push_bind(threshold);
+            }
         }
 
         // For TvChannel queries, sort by user sort_order, then channel_number, then title.
@@ -1131,6 +1144,7 @@ impl Media {
         filter: &jellyfin::GetItemsQuery,
         total_count: bool,
         user_policy: Option<&jellyfin::UserPolicy>,
+        server_config: Option<&jellyfin::ServerConfiguration>,
     ) -> Result<FilterResult<Media>> {
         let kinds = if let Some(include_item_types) = &filter.include_item_types {
             include_item_types.clone().into_vec::<MediaKind>()
@@ -1255,6 +1269,13 @@ impl Media {
             None
         };
 
+        let digital_released_before = if server_config.map(|c| c.filter_by_digital_release_date) != Some(false) {
+            let buffer = server_config.map(|c| c.digital_release_buffer_days).unwrap_or(0);
+            Some(Utc::now().naive_utc() + Duration::days(buffer))
+        } else {
+            None
+        };
+
         Ok(Self::get_by_filter(
             db,
             &MediaFilter {
@@ -1285,6 +1306,7 @@ impl Media {
                 allowed_tags: user_policy
                     .and_then(|p| p.allowed_tags.clone())
                     .filter(|v| !v.is_empty()),
+                digital_released_before,
                 ..Default::default()
             },
         )
@@ -1602,10 +1624,26 @@ impl TryFrom<sdks::aio::Meta> for Media {
         //let imdb_id = meta.imdb_id.clone();
         //debug!(?meta.id);
 
+        let digital_released_at = meta
+            .app_extras
+            .as_ref()
+            .and_then(|e| e.release_dates.as_ref())
+            .map(|rd| {
+                rd.results
+                    .iter()
+                    .flat_map(|country| country.release_dates.iter())
+                    .filter(|entry| entry.release_type == 4)
+                    .map(|entry| entry.release_date)
+                    .min()
+            })
+            .flatten()
+            .map(|dt| dt.naive_utc());
+
         let media = Media {
             title: meta.name.unwrap_or_default(),
             kind: media_kind.clone(),
             released_at: meta.released.map(|x| x.naive_utc()),
+            digital_released_at,
             runtime: meta.runtime.map(|d| d.num_seconds()),
             // rating_critic: meta.rating_critic,
             rating_audience: meta.imdb_rating,
