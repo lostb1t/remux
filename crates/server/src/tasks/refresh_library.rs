@@ -32,9 +32,21 @@ impl Task for RefreshLibraryTask {
             vec![Box::new(AioMetaProvider)],
             vec![Box::new(AioTreeSyncProvider)],
         );
-        let media_list = db::Media::get_refreshable(&ctx.db).await?;
-        let updated_media = service.process(media_list, &ctx).await?;
-        db::Media::upsert(&ctx.db, &updated_media).await?;
+        const CHUNK_SIZE: u32 = 500;
+        let mut offset = 0u32;
+        loop {
+            let batch = db::Media::get_refreshable(&ctx.db, CHUNK_SIZE, offset).await?;
+            if batch.is_empty() {
+                break;
+            }
+            let fetched = batch.len() as u32;
+            let updated = service.process(batch, &ctx).await?;
+            db::Media::upsert(&ctx.db, &updated).await?;
+            if fetched < CHUNK_SIZE {
+                break;
+            }
+            offset += CHUNK_SIZE;
+        }
         Ok(())
     }
 }

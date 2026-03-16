@@ -228,12 +228,22 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
         )
         .with_state(state)
         .layer(on_error(|err| {
-            tracing::error!(
-                status = %err.status(),
-                title = %err.title(),
-                detail = %err.detail(),
-                "api error"
-            );
+            if let Some(cause) = err.error() {
+                tracing::error!(
+                    status = %err.status(),
+                    title = %err.title(),
+                    detail = %err.detail(),
+                    cause = %format!("{:#}", cause),
+                    "api error"
+                );
+            } else {
+                tracing::error!(
+                    status = %err.status(),
+                    title = %err.title(),
+                    detail = %err.detail(),
+                    "api error"
+                );
+            }
         }))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)

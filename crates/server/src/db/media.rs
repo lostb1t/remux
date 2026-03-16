@@ -1018,9 +1018,10 @@ impl Media {
             }
 
             if let Some(threshold) = &filter.digital_released_before {
-                qb.push(" AND (COALESCE(digital_released_at, released_at) IS NULL OR COALESCE(digital_released_at, released_at) <= ")
-                    .push_bind(threshold)
-                    .push(")");
+qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at IS NOT NULL AND digital_released_at <= ")
+    .push_bind(threshold)
+    .push("))");
+
             }
         }
 
@@ -1122,18 +1123,24 @@ impl Media {
         })
     }
 
-    pub async fn get_refreshable(db: &SqlitePool) -> Result<Vec<Self>> {
-        //           AND refreshed_at IS NULL
+    pub async fn get_refreshable(
+        db: &SqlitePool,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Self>> {
         let rows = sqlx::query_as::<_, Self>(
             r#"
         SELECT *
         FROM media
         WHERE kind IN ($1, $2)
-
+        ORDER BY id
+        LIMIT $3 OFFSET $4
         "#,
         )
         .bind(MediaKind::Movie)
         .bind(MediaKind::Series)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(db)
         .await?;
 
@@ -1644,12 +1651,15 @@ impl TryFrom<sdks::aio::Meta> for Media {
             .as_ref()
             .and_then(|e| e.release_dates.as_ref())
             .map(|rd| {
+              {
+                // we shiuld get rhe most recent or closests reaee date
                 rd.results
                     .iter()
                     .flat_map(|country| country.release_dates.iter())
-                    .filter(|entry| entry.release_type == 4)
+                    .filter(|entry| entry.release_type >= 4)
                     .map(|entry| entry.release_date)
                     .min()
+                  }
             })
             .flatten()
             .map(|dt| dt.naive_utc());

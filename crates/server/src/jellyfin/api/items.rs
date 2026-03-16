@@ -126,7 +126,7 @@ pub async fn get_items(
     // }
 
     let requested = q.get_requested_item_types();
-    if requested.iter().any(|t| {
+    if q.include_item_types.as_deref().unwrap_or(&[]).iter().any(|t| {
         matches!(
             t,
             jellyfin::MediaType::BoxSet | jellyfin::MediaType::CollectionFolder
