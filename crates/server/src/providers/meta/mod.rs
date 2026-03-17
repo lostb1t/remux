@@ -231,6 +231,7 @@ impl MetaProvider for AioMetaProvider {
             media.logo = found_media.logo;
             media.backdrop = found_media.backdrop;
             media.trailers = found_media.trailers;
+            media.digital_released_at = found_media.digital_released_at;
 
             if media.kind == db::MediaKind::Season {
                 media.title = format!("Season {}", media.idx.unwrap_or(1));

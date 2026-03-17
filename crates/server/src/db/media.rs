@@ -1133,6 +1133,7 @@ qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at 
         SELECT *
         FROM media
         WHERE kind IN ($1, $2)
+        AND refreshed_at NULL
         ORDER BY id
         LIMIT $3 OFFSET $4
         "#,
@@ -1652,7 +1653,6 @@ impl TryFrom<sdks::aio::Meta> for Media {
             .and_then(|e| e.release_dates.as_ref())
             .map(|rd| {
               {
-                // we shiuld get rhe most recent or closests reaee date
                 rd.results
                     .iter()
                     .flat_map(|country| country.release_dates.iter())
