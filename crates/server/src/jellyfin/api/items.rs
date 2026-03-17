@@ -410,13 +410,15 @@ pub async fn delete_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Refresh a single item (and optionally its children) via the full provider pipeline.
+/// Refresh a single item — behaviour depends on `MetadataRefreshMode`:
+/// - `Default`      → re-fetch streams from AIO for the item (or its parent if a Source).
+/// - anything else  → run the full metadata provider pipeline.
 #[derive(Debug, Deserialize, Default)]
 pub struct RefreshItemQuery {
+    #[serde(rename = "MetadataRefreshMode", default)]
+    pub metadata_refresh_mode: String,
     #[serde(rename = "ReplaceAllMetadata", default)]
     pub replace_all_metadata: bool,
-    #[serde(rename = "Recursive", default)]
-    pub recursive: bool,
 }
 
 #[post("/items/{id}/refresh")]
@@ -430,7 +432,7 @@ pub async fn refresh_item(
         .await?
         .context_not_found("Not Found", "Item not found")?;
 
-    // If the requested item is a Source (stream), refresh its parent media instead.
+    // If the requested item is a Source (stream), navigate to its parent.
     if media.kind == db::MediaKind::Source {
         let parent_id = media
             .parent_id
@@ -440,20 +442,31 @@ pub async fn refresh_item(
             .context_not_found("Not Found", "Parent item not found")?;
     }
 
-    let service = crate::providers::MetaProviderService::new(
-        vec![
-            Box::new(crate::providers::AioMetaProvider),
-            Box::new(crate::providers::TmdbMetaProvider),
-        ],
-        vec![Box::new(crate::providers::AioTreeSyncProvider)],
-    );
+    if q.metadata_refresh_mode.eq_ignore_ascii_case("Default") {
+        // Refresh streams: re-fetch sources from AIO.
+        let aio = crate::aio::AioService::from_settings(&state.ctx.db)
+            .await
+            .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
+        media
+            .refresh_sources(&state.ctx.db, &aio)
+            .await
+            .context_bad_request("Refresh failed", "Could not refresh streams")?;
+    } else {
+        // Refresh metadata via the full provider pipeline.
+        let service = crate::providers::MetaProviderService::new(
+            vec![
+                Box::new(crate::providers::AioMetaProvider),
+                Box::new(crate::providers::TmdbMetaProvider),
+            ],
+            vec![Box::new(crate::providers::AioTreeSyncProvider)],
+        );
+        let force_refresh = q.replace_all_metadata;
+        let updated = service
+            .process(vec![media], &state.ctx, force_refresh)
+            .await?;
+        db::Media::upsert(&state.ctx.db, &updated).await?;
+    }
 
-    let force_refresh = q.replace_all_metadata;
-    let updated = service
-        .process(vec![media], &state.ctx, force_refresh)
-        .await?;
-
-    db::Media::upsert(&state.ctx.db, &updated).await?;
     let _ = state.ctx.ws_tx.send(crate::ws::WsEvent::LibraryChanged);
     Ok(StatusCode::NO_CONTENT)
 }
