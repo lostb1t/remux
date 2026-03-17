@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::{ProgressReporter, Task, TaskService};
 use crate::{
     AppContext, db,
-    providers::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService},
+    providers::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService, TmdbMetaProvider},
 };
 
 pub struct SeriesSyncTask;
@@ -29,7 +29,7 @@ impl Task for SeriesSyncTask {
         _progress: ProgressReporter,
     ) -> Result<()> {
         let service = MetaProviderService::new(
-            vec![Box::new(AioMetaProvider)],
+            vec![Box::new(AioMetaProvider), Box::new(TmdbMetaProvider)],
             vec![Box::new(AioTreeSyncProvider)],
         );
         let media_list = db::Media::get_by_filter(
@@ -42,7 +42,7 @@ impl Task for SeriesSyncTask {
         .await?
         .records;
 
-        let updated_media = service.process(media_list, &ctx).await?;
+        let updated_media = service.process(media_list, &ctx, false).await?;
         db::Media::upsert(&ctx.db, &updated_media).await?;
 
         Ok(())

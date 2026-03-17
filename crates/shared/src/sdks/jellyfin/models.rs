@@ -117,6 +117,8 @@ pub struct ServerConfiguration {
     /// Remux: days of lookahead when filtering by digital release date (0 = today only).
     #[default(0_i64)]
     pub digital_release_buffer_days: i64,
+    /// Remux: TMDB API key for gap-filling metadata.
+    pub tmdb_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

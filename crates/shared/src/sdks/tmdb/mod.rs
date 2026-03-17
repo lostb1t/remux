@@ -19,7 +19,7 @@ pub trait IdSetter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FindByIdEndpoint {
-    pub external_id: i64,
+    pub external_id: String,
     pub external_source: String,
 }
 
@@ -31,7 +31,7 @@ impl Endpoint for FindByIdEndpoint {
     }
 
     fn query(&self) -> Vec<(String, String)> {
-        Vec::new()
+        vec![("external_source".to_string(), self.external_source.clone())]
     }
 }
 
@@ -51,6 +51,7 @@ pub enum ExternalIdType {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct FindByIdResponse {
     pub movie_results: Vec<Movie>,
+    pub tv_results: Vec<Series>,
 }
 
 // pub fn get_endpoint_for_media_type(t: media::MediaType) -> tmdb::MediaEndpoint {

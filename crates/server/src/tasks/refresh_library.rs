@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::{ProgressReporter, Task, TaskService};
 use crate::{
     AppContext, db,
-    providers::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService},
+    providers::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService, TmdbMetaProvider},
 };
 
 pub struct RefreshLibraryTask;
@@ -29,7 +29,7 @@ impl Task for RefreshLibraryTask {
         _progress: ProgressReporter,
     ) -> Result<()> {
         let service = MetaProviderService::new(
-            vec![Box::new(AioMetaProvider)],
+            vec![Box::new(AioMetaProvider), Box::new(TmdbMetaProvider)],
             vec![Box::new(AioTreeSyncProvider)],
         );
         const CHUNK_SIZE: u32 = 500;
@@ -40,7 +40,7 @@ impl Task for RefreshLibraryTask {
                 break;
             }
             let fetched = batch.len() as u32;
-            let updated = service.process(batch, &ctx).await?;
+            let updated = service.process(batch, &ctx, false).await?;
             db::Media::upsert(&ctx.db, &updated).await?;
             if fetched < CHUNK_SIZE {
                 break;

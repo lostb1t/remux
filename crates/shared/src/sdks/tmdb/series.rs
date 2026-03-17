@@ -8,7 +8,7 @@ use serde_with::{DisplayFromStr, serde_as};
 
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", default)]
 pub struct Series {
     pub adult: bool,
     pub backdrop_path: Option<String>,

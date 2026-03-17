@@ -1,17 +1,33 @@
-use crate::{AppContext, aio, db, sdks, utils};
-use anyhow::{Context, Result};
+use crate::{AppContext, db, sdks, utils};
+use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{error, info, warn};
 
+mod tmdb;
+pub use tmdb::TmdbMetaProvider;
+
+/// Flat relation entry returned by a provider.
+pub struct MetaRelation {
+    pub media: db::Media,
+    pub relation: db::MediaRelation,
+}
+
+/// What a MetaProvider returns: enriched media + discovered relations.
+pub struct MetaResult {
+    pub media: db::Media,
+    pub relations: Vec<MetaRelation>,
+}
+
 /// Enriches metadata fields on a single Media item.
-/// Providers are chained in order — first provider that finds data wins.
+/// Providers are chained in order — primary fills first, subsequent providers fill None fields.
 #[async_trait]
 pub trait MetaProvider: Send + Sync {
-    /// Apply metadata to a media item. Returns `true` if metadata was found.
-    async fn apply(&self, media: &mut db::Media, ctx: &AppContext) -> Result<bool>;
+    /// Fetch metadata for the given media item.
+    /// Returns `Some(MetaResult)` if found, `None` if not applicable/not found.
+    async fn fetch(&self, media: &db::Media, ctx: &AppContext) -> Result<Option<MetaResult>>;
 }
 
 /// Discovers the tree structure (seasons/episodes) for a series.
@@ -47,15 +63,39 @@ impl MetaProviderService {
     }
 
     /// Enrich metadata on a single item using providers in order.
+    /// Primary provider (index 0) replaces when force_refresh=true; all others only fill None fields.
     pub async fn apply_meta(
         &self,
         media: &mut db::Media,
         ctx: &AppContext,
+        force_refresh: bool,
     ) -> Result<()> {
-        for provider in &self.meta_providers {
-            match provider.apply(media, ctx).await {
-                Ok(true) => break,
-                Ok(false) => continue,
+        for (i, provider) in self.meta_providers.iter().enumerate() {
+            // Primary provider respects force_refresh; subsequent providers are gap-fillers.
+            let replace = i == 0 && force_refresh;
+
+            match provider.fetch(media, ctx).await {
+                Ok(Some(result)) => {
+                    merge_media(media, &result.media, replace);
+                    apply_title_format(media);
+
+                    if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series)
+                        && !result.relations.is_empty()
+                    {
+                        let (rel_media, rels): (Vec<_>, Vec<_>) = result
+                            .relations
+                            .into_iter()
+                            .map(|r| (r.media, r.relation))
+                            .unzip();
+                        if let Err(e) = db::Media::insert(&ctx.db, &rel_media)
+                            .await
+                            .and(db::MediaRelation::upsert(&ctx.db, &rels).await)
+                        {
+                            warn!(id = %media.id, error = %e, "failed to persist relations");
+                        }
+                    }
+                }
+                Ok(None) => continue,
                 Err(e) => {
                     error!("meta provider error: {e}");
                     continue;
@@ -68,8 +108,6 @@ impl MetaProviderService {
 
     /// Sync the tree for a series: discover new seasons and episodes.
     /// Returns all child media (seasons + episodes) that should be upserted.
-    /// Tree providers return children with metadata already populated from the
-    /// same API response, so we skip redundant apply_meta calls here.
     pub async fn sync_tree(
         &self,
         series: &mut db::Media,
@@ -135,6 +173,7 @@ impl MetaProviderService {
         &self,
         media: Vec<db::Media>,
         ctx: &AppContext,
+        force_refresh: bool,
     ) -> Result<Vec<db::Media>> {
         let total = media.len();
         let counter = AtomicUsize::new(0);
@@ -145,7 +184,7 @@ impl MetaProviderService {
                 async move {
                     let mut batch = vec![];
 
-                    if let Err(e) = self.apply_meta(&mut m, ctx).await {
+                    if let Err(e) = self.apply_meta(&mut m, ctx, force_refresh).await {
                         warn!(id = %m.id, title = %m.title, error = %e, "failed to apply metadata, skipping");
                         batch.push(m);
                         return batch;
@@ -178,17 +217,61 @@ impl MetaProviderService {
     }
 }
 
+/// Merge fields from `source` into `target`.
+/// If `replace` is true, overwrites existing values; otherwise only fills `None`/empty fields.
+fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
+    macro_rules! fill {
+        ($field:ident) => {
+            if replace || target.$field.is_none() {
+                if source.$field.is_some() {
+                    target.$field = source.$field.clone();
+                }
+            }
+        };
+    }
+    if replace || target.title.is_empty() {
+        if !source.title.is_empty() {
+            target.title = source.title.clone();
+        }
+    }
+    fill!(poster);
+    fill!(description);
+    fill!(released_at);
+    fill!(runtime);
+    fill!(rating_audience);
+    fill!(certification);
+    fill!(logo);
+    fill!(backdrop);
+    fill!(trailers);
+    fill!(digital_released_at);
+}
+
+/// Reformat title for Season/Episode items based on index metadata.
+fn apply_title_format(media: &mut db::Media) {
+    if media.kind == db::MediaKind::Season {
+        media.title = format!("Season {}", media.idx.unwrap_or(1));
+    }
+    if media.kind == db::MediaKind::Episode {
+        if let Some(ep) = media.idx {
+            media.title = match media.parent_idx {
+                Some(s) => format!("S{}E{} - {}", s, ep, media.title),
+                None => format!("E{} - {}", ep, media.title),
+            };
+        }
+    }
+}
+
 
 pub struct AioMetaProvider;
 
 #[async_trait]
 impl MetaProvider for AioMetaProvider {
-    async fn apply(&self, media: &mut db::Media, ctx: &AppContext) -> Result<bool> {
+    async fn fetch(&self, media: &db::Media, ctx: &AppContext) -> Result<Option<MetaResult>> {
         let imdb_id = media.series_imdb_id.clone().or(media.imdb_id.clone());
 
         let imdb_id = match imdb_id {
             Some(id) => id,
-            None => return Ok(false),
+            None => return Ok(None),
         };
 
         let meta = crate::aio::AioService::from_settings(&ctx.db)
@@ -221,45 +304,19 @@ impl MetaProvider for AioMetaProvider {
         };
 
         if let Some(found_media) = found {
-            media.title = found_media.title;
-            media.poster = found_media.poster;
-            media.description = found_media.description;
-            media.released_at = found_media.released_at;
-            media.runtime = found_media.runtime;
-            media.rating_audience = found_media.rating_audience;
-            media.certification = found_media.certification;
-            media.logo = found_media.logo;
-            media.backdrop = found_media.backdrop;
-            media.trailers = found_media.trailers;
-            media.digital_released_at = found_media.digital_released_at;
+            // Build relations for movies/series
+            let relations = if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
+                build_relations(media, &meta_raw)
+            } else {
+                vec![]
+            };
 
-            if media.kind == db::MediaKind::Season {
-                media.title = format!("Season {}", media.idx.unwrap_or(1));
-            }
-
-            if media.kind == db::MediaKind::Episode {
-                if let Some(episode_num) = media.idx {
-                    if let Some(season_num) = media.parent_idx {
-                        media.title = format!(
-                            "S{}E{} - {}",
-                            season_num, episode_num, media.title
-                        );
-                    } else {
-                        media.title = format!("E{} - {}", episode_num, media.title);
-                    }
-                }
-            }
-
-            // Sync people/genre relations for movies and series
-            if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
-                if let Err(e) = sync_relations(media, &meta_raw, ctx).await {
-                    warn!(id = %media.id, error = %e, "failed to sync relations");
-                }
-            }
-
-            Ok(true)
+            Ok(Some(MetaResult {
+                media: found_media,
+                relations,
+            }))
         } else {
-            Ok(false)
+            Ok(None)
         }
     }
 }
@@ -344,32 +401,29 @@ impl TreeSyncProvider for AioTreeSyncProvider {
     }
 }
 
-/// Create Person/Genre media items and link them to a movie/series via media_relations.
-async fn sync_relations(
-    media: &db::Media,
-    meta: &sdks::aio::Meta,
-    ctx: &AppContext,
-) -> Result<()> {
-    let mut related_media: Vec<db::Media> = Vec::new();
-    let mut relations: Vec<db::MediaRelation> = Vec::new();
+/// Build Person/Genre MetaRelation entries from AIO metadata.
+fn build_relations(media: &db::Media, meta: &sdks::aio::Meta) -> Vec<MetaRelation> {
+    let mut relations: Vec<MetaRelation> = Vec::new();
 
     // Genres
     if let Some(genres) = meta.genre.as_ref().or(meta.genres.as_ref()) {
         for genre_name in genres {
             let genre_id =
                 utils::get_stable_uuid(format!("genre:{}", genre_name.to_lowercase()));
-            related_media.push(db::Media {
-                id: genre_id,
-                title: genre_name.clone(),
-                kind: db::MediaKind::Genre,
-                aio_id: Some(format!("genre:{}", genre_name.to_lowercase())),
-                ..Default::default()
-            });
-            relations.push(db::MediaRelation {
-                left_media_id: media.id,
-                right_media_id: genre_id,
-                role: None,
-                ..Default::default()
+            relations.push(MetaRelation {
+                media: db::Media {
+                    id: genre_id,
+                    title: genre_name.clone(),
+                    kind: db::MediaKind::Genre,
+                    aio_id: Some(format!("genre:{}", genre_name.to_lowercase())),
+                    ..Default::default()
+                },
+                relation: db::MediaRelation {
+                    left_media_id: media.id,
+                    right_media_id: genre_id,
+                    role: None,
+                    ..Default::default()
+                },
             });
         }
     }
@@ -383,20 +437,22 @@ async fn sync_relations(
                         "person:{}",
                         name.to_lowercase()
                     ));
-                    related_media.push(db::Media {
-                        id: person_id,
-                        title: name.clone(),
-                        kind: db::MediaKind::Person,
-                        poster: member.photo.clone(),
-                        aio_id: Some(format!("person:{}", name.to_lowercase())),
-                        ..Default::default()
-                    });
-                    relations.push(db::MediaRelation {
-                        left_media_id: media.id,
-                        right_media_id: person_id,
-                        weight: Some(i as i64),
-                        role: Some(db::RelationRole::Actor),
-                        ..Default::default()
+                    relations.push(MetaRelation {
+                        media: db::Media {
+                            id: person_id,
+                            title: name.clone(),
+                            kind: db::MediaKind::Person,
+                            poster: member.photo.clone(),
+                            aio_id: Some(format!("person:{}", name.to_lowercase())),
+                            ..Default::default()
+                        },
+                        relation: db::MediaRelation {
+                            left_media_id: media.id,
+                            right_media_id: person_id,
+                            weight: Some(i as i64),
+                            role: Some(db::RelationRole::Actor),
+                            ..Default::default()
+                        },
                     });
                 }
             }
@@ -407,19 +463,21 @@ async fn sync_relations(
             for (i, name) in directors.iter().enumerate() {
                 let person_id =
                     utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
-                related_media.push(db::Media {
-                    id: person_id,
-                    title: name.clone(),
-                    kind: db::MediaKind::Person,
-                    aio_id: Some(format!("person:{}", name.to_lowercase())),
-                    ..Default::default()
-                });
-                relations.push(db::MediaRelation {
-                    left_media_id: media.id,
-                    right_media_id: person_id,
-                    weight: Some(i as i64),
-                    role: Some(db::RelationRole::Director),
-                    ..Default::default()
+                relations.push(MetaRelation {
+                    media: db::Media {
+                        id: person_id,
+                        title: name.clone(),
+                        kind: db::MediaKind::Person,
+                        aio_id: Some(format!("person:{}", name.to_lowercase())),
+                        ..Default::default()
+                    },
+                    relation: db::MediaRelation {
+                        left_media_id: media.id,
+                        right_media_id: person_id,
+                        weight: Some(i as i64),
+                        role: Some(db::RelationRole::Director),
+                        ..Default::default()
+                    },
                 });
             }
         }
@@ -429,27 +487,25 @@ async fn sync_relations(
             for (i, name) in writers.iter().enumerate() {
                 let person_id =
                     utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
-                related_media.push(db::Media {
-                    id: person_id,
-                    title: name.clone(),
-                    kind: db::MediaKind::Person,
-                    aio_id: Some(format!("person:{}", name.to_lowercase())),
-                    ..Default::default()
-                });
-                relations.push(db::MediaRelation {
-                    left_media_id: media.id,
-                    right_media_id: person_id,
-                    weight: Some(i as i64),
-                    role: Some(db::RelationRole::Writer),
-                    ..Default::default()
+                relations.push(MetaRelation {
+                    media: db::Media {
+                        id: person_id,
+                        title: name.clone(),
+                        kind: db::MediaKind::Person,
+                        aio_id: Some(format!("person:{}", name.to_lowercase())),
+                        ..Default::default()
+                    },
+                    relation: db::MediaRelation {
+                        left_media_id: media.id,
+                        right_media_id: person_id,
+                        weight: Some(i as i64),
+                        role: Some(db::RelationRole::Writer),
+                        ..Default::default()
+                    },
                 });
             }
         }
     }
 
-    // Insert related media (people/genres) then relations
-    db::Media::insert(&ctx.db, &related_media).await?;
-    db::MediaRelation::upsert(&ctx.db, &relations).await?;
-
-    Ok(())
+    relations
 }
