@@ -91,7 +91,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for LogCapture {
 }
 
 fn base_filter() -> String {
-    std::env::var("RUST_LOG").unwrap_or_else(|_| "info,hyper=warn,sqlx=warn".into())
+    std::env::var("RUST_LOG").unwrap_or_else(|_| "info,librqbit_dht=warn,hyper=warn,sqlx=warn".into())
 }
 
 pub fn log_file_path() -> Option<&'static str> {

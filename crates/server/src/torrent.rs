@@ -24,7 +24,7 @@ impl TorrentManager {
         let http_api = HttpApi::new(api, None);
         tokio::spawn(http_api.make_http_api_and_run(listener, None));
 
-        tracing::info!(port = http_port, "torrent HTTP server listening");
+        debug!(port = http_port, "torrent HTTP server listening");
         Ok(Self { session, http_port })
     }
 

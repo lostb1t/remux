@@ -2,7 +2,7 @@
 default_to_workspace = false
 
 [env]
-RUST_LOG = "info,remux_server=trace,axum=info,tower_http=info,hyper=warn,sqlx=error"
+#RUST_LOG = "info,remux_server=trace,axum=info,tower_http=info,hyper=warn,sqlx=error"
 RUST_BACKTRACE = 0
 CONFIG = "./config"
 AXUM_ANYHOW_EXPOSE_ERRORS=1

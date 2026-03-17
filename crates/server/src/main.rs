@@ -139,18 +139,15 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
 }
 
 async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
-    // ez-ffmpeg initializes FFmpeg automatically on first use
     log_capture::init_file(&config.log_file);
-    debug!("config: {}", serde_json::to_string_pretty(&config).unwrap());
+    info!("starting remux {}", env!("CARGO_PKG_VERSION"));
+    info!("config: {}", serde_json::to_string_pretty(&config).unwrap());
 
     let conn = db::connect(&config.database_url).await?;
 
     db::migrate(&conn).await?;
     crate::utils::init_server_id(&conn).await?;
     db::ensure_collection_folder(&conn).await?;
-
-    // FOR TWSTING ONLY
-    // db::checkpoint_db(&conn).await;
 
     let (ws_tx, _) = tokio::sync::broadcast::channel(128);
 
