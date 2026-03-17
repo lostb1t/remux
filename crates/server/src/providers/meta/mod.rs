@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::{error, info, warn};
+use tracing::{error, debug, info, warn};
 
 mod tmdb;
 pub use tmdb::TmdbMetaProvider;
@@ -70,6 +70,17 @@ impl MetaProviderService {
         ctx: &AppContext,
         force_refresh: bool,
     ) -> Result<()> {
+        // Only run providers for kinds that have metadata sources.
+        if !matches!(
+            media.kind,
+            db::MediaKind::Movie
+                | db::MediaKind::Series
+                | db::MediaKind::Season
+                | db::MediaKind::Episode
+        ) {
+            return Ok(());
+        }
+
         for (i, provider) in self.meta_providers.iter().enumerate() {
             // Primary provider respects force_refresh; subsequent providers are gap-fillers.
             let replace = i == 0 && force_refresh;
@@ -183,7 +194,7 @@ impl MetaProviderService {
                 let counter = &counter;
                 async move {
                     let mut batch = vec![];
-
+                        debug!(id = %m.id, title = %m.title, "processing");
                     if let Err(e) = self.apply_meta(&mut m, ctx, force_refresh).await {
                         warn!(id = %m.id, title = %m.title, error = %e, "failed to apply metadata, skipping");
                         batch.push(m);

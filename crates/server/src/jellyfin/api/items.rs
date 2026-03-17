@@ -410,38 +410,50 @@ pub async fn delete_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Refresh a single item from AIO
+/// Refresh a single item (and optionally its children) via the full provider pipeline.
+#[derive(Debug, Deserialize, Default)]
+pub struct RefreshItemQuery {
+    #[serde(rename = "ReplaceAllMetadata", default)]
+    pub replace_all_metadata: bool,
+    #[serde(rename = "Recursive", default)]
+    pub recursive: bool,
+}
+
 #[post("/items/{id}/refresh")]
 pub async fn refresh_item(
     State(state): State<AppState>,
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
+    Query(q): Query<RefreshItemQuery>,
 ) -> Result<StatusCode> {
-    let media = db::Media::get_by_id(&state.ctx.db, &id)
+    let mut media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .context_not_found("Not Found", "Item not found")?;
-    let aio_id = media
-        .aio_id
-        .as_deref()
-        .context_bad_request("Bad Request", "Item has no AIO source")?;
-    let (kind_str, item_id) = aio_id
-        .split_once(':')
-        .context_bad_request("Bad Request", "Invalid AIO id format")?;
-    let media_type = match kind_str.to_lowercase().as_str() {
-        "movie" => crate::sdks::aio::MediaType::Movie,
-        "series" | "tv" => crate::sdks::aio::MediaType::Series,
-        _ => {
-            return Err(anyhow::anyhow!("Unknown AIO media type: {}", kind_str)
-                .context_bad_request("Bad Request", "Unknown AIO media type"))
-        }
-    };
-    let aio = crate::aio::AioService::from_settings(&state.ctx.db)
-        .await
-        .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
-    let meta = aio.get_meta(media_type, item_id.to_string()).await?;
-    let mut refreshed: db::Media = meta.try_into()?;
-    refreshed.id = id;
-    refreshed.save(&state.ctx.db).await?;
+
+    // If the requested item is a Source (stream), refresh its parent media instead.
+    if media.kind == db::MediaKind::Source {
+        let parent_id = media
+            .parent_id
+            .context_not_found("Not Found", "Source has no parent item")?;
+        media = db::Media::get_by_id(&state.ctx.db, &parent_id)
+            .await?
+            .context_not_found("Not Found", "Parent item not found")?;
+    }
+
+    let service = crate::providers::MetaProviderService::new(
+        vec![
+            Box::new(crate::providers::AioMetaProvider),
+            Box::new(crate::providers::TmdbMetaProvider),
+        ],
+        vec![Box::new(crate::providers::AioTreeSyncProvider)],
+    );
+
+    let force_refresh = q.replace_all_metadata;
+    let updated = service
+        .process(vec![media], &state.ctx, force_refresh)
+        .await?;
+
+    db::Media::upsert(&state.ctx.db, &updated).await?;
     let _ = state.ctx.ws_tx.send(crate::ws::WsEvent::LibraryChanged);
     Ok(StatusCode::NO_CONTENT)
 }
