@@ -9,7 +9,7 @@ use shared::sdks::jellyfin::{
     DeleteEpgSource, DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EpgSourceInfo,
     GetAioCatalogs, GetBrandingConfiguration, GetEpgSources, GetIptvChannels,
     GetItems, GetScheduledTasks, GetSessions, GetStartupConfiguration,
-    GetSystemConfiguration, GetTunerHosts, GetUsers, IptvChannelsResult, JellyfinAuth,
+    GetSystemConfiguration, GetTunerHosts, GetUsers, JellyfinAuth,
     BulkChannelRequest, BulkChannels, PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
     PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
     SaveEpgSource, ServerConfiguration, SessionInfoDto, SetLogLevel, StartTask, StartupConfiguration,
@@ -683,12 +683,16 @@ fn TasksCard(
                                 let cat = task.category.clone().unwrap_or_else(|| "Other".to_string());
                                 groups.entry(cat).or_default().push(task);
                             }
+                            let groups: Vec<(String, Vec<TaskInfo>)> = groups
+                                .into_iter()
+                                .map(|(cat, mut tasks)| {
+                                    tasks.sort_by(|a, b| a.name.cmp(&b.name));
+                                    (cat, tasks)
+                                })
+                                .collect();
                             rsx! {
-                                for (cat, mut group_tasks) in groups {
-                                    {
-                                        group_tasks.sort_by(|a, b| a.name.cmp(&b.name));
-                                    }
-                                    div { class: "task-group", key: "{cat}",
+                                for (cat, group_tasks) in groups {
+                                    div { key: "{cat}", class: "task-group",
                                         div { class: "task-group-header", "{cat}" }
                                         div { class: "row-list",
                                             for task in group_tasks {
@@ -2905,6 +2909,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut p2p_download_speed = use_signal(|| 0_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
+    let mut subtitle_languages = use_signal(String::new);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -2924,6 +2929,12 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                     p2p_download_speed.set(cfg.p2p_download_speed_kbps.unwrap_or(0));
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
+                    subtitle_languages.set(
+                        cfg.subtitle_languages
+                            .as_deref()
+                            .map(|v| v.join(", "))
+                            .unwrap_or_default(),
+                    );
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
@@ -2943,6 +2954,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         let download = *p2p_download_speed.peek();
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
+        let sub_langs_str = subtitle_languages.peek().clone();
 
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
         cfg.server_name = Some(name);
@@ -2953,6 +2965,13 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.p2p_download_speed_kbps = Some(download);
         cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
+        cfg.subtitle_languages = Some(
+            sub_langs_str
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect(),
+        );
 
         saving.set(true);
         error.set(None);
@@ -3121,6 +3140,23 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                                 p { class: "field-hint",
                                     "Show items releasing up to this many days in the future. 0 = today or earlier only."
                                 }
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-sub-langs", "Subtitle Languages" }
+                            input {
+                                id: "s-sub-langs",
+                                r#type: "text",
+                                class: "field-input",
+                                placeholder: "en, de, fr",
+                                value: "{subtitle_languages}",
+                                oninput: move |e| subtitle_languages.set(e.value()),
+                            }
+                            p { class: "field-hint",
+                                "Comma-separated ISO 639-1 codes (e.g. \"en, de\"). "
+                                "Only subtitles in these languages are shown and the first match is selected by default. "
+                                "Leave empty to show all subtitles without a default."
                             }
                         }
 

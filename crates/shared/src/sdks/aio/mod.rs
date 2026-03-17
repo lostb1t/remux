@@ -587,7 +587,8 @@ pub struct Stream {
     pub duration: i64,
     pub size: Option<i64>,
     pub video_hash: Option<String>,
-    pub subtitles: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub subtitles: Vec<Subtitle>,
     pub country_whitelist: Vec<String>,
     pub request_headers: HashMap<String, String>,
     pub response_headers: HashMap<String, String>,

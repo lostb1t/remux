@@ -1473,6 +1473,32 @@ qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at 
         Ok(items)
     }
 
+    /// Fetch AIO subtitles for this Movie or Episode (cached 24 h).
+    /// Returns an error for any other `MediaKind` or when the required
+    /// IMDB ID is absent.
+    pub async fn get_subtitles(
+        &self,
+        aio: &aio::AioService,
+    ) -> Result<Vec<sdks::aio::Subtitle>> {
+        trace!(itle = self.title.clone(), "fetching subtitles from aio");
+        let (imdb_id, media_type, season, episode) = match self.kind {
+            MediaKind::Movie => (
+                self.imdb_id.as_deref().ok_or_else(|| anyhow::anyhow!("no imdb_id"))?,
+                sdks::aio::MediaType::Movie,
+                None,
+                None,
+            ),
+            MediaKind::Episode => (
+                self.series_imdb_id.as_deref().ok_or_else(|| anyhow::anyhow!("no series_imdb_id"))?,
+                sdks::aio::MediaType::Series,
+                self.parent_idx,
+                self.idx,
+            ),
+            _ => anyhow::bail!("get_subtitles called on {:?}", self.kind),
+        };
+        aio.get_subtitles(media_type, imdb_id, season, episode).await
+    }
+
     pub async fn sources(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
         if self.sources.is_none() {
             let mut sources = Self::get_by_filter(

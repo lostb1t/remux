@@ -72,6 +72,11 @@ async fn items_playbackinfo_inner(
         .await?
         .context_not_found("not found", "not found")?;
 
+    // Load the top-level Movie/Episode for subtitle lookup.
+    // `id` is always the movie/episode UUID; `media_source_id` may point to a
+    // child Source, so we always resolve via `id` to get the IMDB fields.
+    let subtitle_media = db::Media::get_by_id(&state.ctx.db, &id).await.ok().flatten();
+
     // Torrent streams: resolve magnet URI to a local HTTP URL first.
     let mut media = resolve_torrent(media, &state).await?;
 
@@ -315,6 +320,73 @@ async fn items_playbackinfo_inner(
         }
 
         media_sources.push(source);
+    }
+
+    // --- Step 4: Inject external subtitles from AIO (cache-backed) ----------
+    if let Some(ref sm) = subtitle_media {
+        if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
+            let sub_langs: Vec<String> = crate::db::Settings::get_config(&state.ctx.db)
+                .await
+                .ok()
+                .and_then(|c| c.subtitle_languages)
+                .unwrap_or_default();
+
+            if let Ok(all_subs) = sm.get_subtitles(&aio).await {
+                let filtered: Vec<_> = if sub_langs.is_empty() {
+                    all_subs
+                } else {
+                    all_subs
+                        .into_iter()
+                        .filter(|s| {
+                            s.lang.as_deref().map_or(false, |l| {
+                                sub_langs.iter().any(|p| l.eq_ignore_ascii_case(p))
+                            })
+                        })
+                        .collect()
+                };
+
+                if !filtered.is_empty() {
+                    for source in &mut media_sources {
+                        let next_idx = source
+                            .media_streams
+                            .iter()
+                            .filter_map(|s| s.index)
+                            .max()
+                            .map_or(0, |m| m + 1);
+
+                        let mut scored: Vec<_> = filtered
+                            .iter()
+                            .map(|s| (score_subtitle(&s.url, &source.name, &source.path), s))
+                            .collect();
+                        // Primary sort: preferred language order; secondary: filename score desc
+                        scored.sort_by(|(sa, a), (sb, b)| {
+                            let rank = |s: &&crate::sdks::aio::Subtitle| {
+                                sub_langs
+                                    .iter()
+                                    .position(|l| {
+                                        s.lang.as_deref().map_or(false, |sl| sl.eq_ignore_ascii_case(l))
+                                    })
+                                    .unwrap_or(usize::MAX)
+                            };
+                            rank(a).cmp(&rank(b)).then(sb.cmp(sa))
+                        });
+
+                        let wants_default = !sub_langs.is_empty()
+                            && source.default_subtitle_stream_index.is_none();
+                        for (i, (_, sub)) in scored.iter().enumerate() {
+                            let mut stream =
+                                crate::conversions::subtitle_to_media_stream((*sub).clone());
+                            stream.index = Some(next_idx + i as i64);
+                            if wants_default && i == 0 {
+                                stream.is_default = Some(true);
+                                source.default_subtitle_stream_index = Some(next_idx);
+                            }
+                            source.media_streams.push(stream);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let info = jellyfin::PlaybackInfoResponse {
@@ -1819,3 +1891,24 @@ pub async fn subtitles_stream(
         .body(Body::from(output.stdout))
         .unwrap())
 }
+
+/// Score how well a subtitle URL matches a media source by counting shared
+/// alphanumeric tokens (year, resolution, release group, codec, etc.).
+fn score_subtitle(
+    sub_url: &str,
+    source_name: &Option<String>,
+    source_path: &Option<String>,
+) -> i32 {
+    fn tokens(s: &str) -> std::collections::HashSet<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|t| t.len() > 2)
+            .map(|t| t.to_lowercase())
+            .collect()
+    }
+    let sub_file = sub_url.rsplit('/').next().unwrap_or(sub_url);
+    let sub_tok = tokens(sub_file);
+    let mut src_tok = tokens(source_name.as_deref().unwrap_or(""));
+    src_tok.extend(tokens(source_path.as_deref().unwrap_or("")));
+    sub_tok.intersection(&src_tok).count() as i32
+}
+

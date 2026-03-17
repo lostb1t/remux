@@ -232,6 +232,28 @@ impl AioService {
             .results)
     }
 
+    pub async fn get_subtitles(
+        &self,
+        media_type: sdks::aio::MediaType,
+        imdb_id: &str,
+        season: Option<i64>,
+        episode: Option<i64>,
+    ) -> Result<Vec<sdks::aio::Subtitle>> {
+        Ok(self
+            .client
+            .execute(
+                sdks::aio::SubtitlesEndpoint {
+                    media_type,
+                    imdb_id: imdb_id.to_string(),
+                    season,
+                    episode,
+                }
+                .with_cache(Duration::from_secs(86_400)),
+            )
+            .await?
+            .subtitles)
+    }
+
     pub async fn get_catalog_stream(
         &self,
         cat: &sdks::aio::Catalog,

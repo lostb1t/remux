@@ -119,6 +119,9 @@ pub struct ServerConfiguration {
     pub digital_release_buffer_days: i64,
     /// Remux: TMDB API key for gap-filling metadata.
     pub tmdb_api_key: Option<String>,
+    /// Remux: preferred subtitle language codes (ISO 639-1), e.g. ["en", "de"].
+    /// Empty/None = all subtitles shown, none set as default.
+    pub subtitle_languages: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

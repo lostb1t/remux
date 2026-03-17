@@ -309,6 +309,7 @@ pub async fn get_items(
                         crate::aio::AioService::from_settings(&state.ctx.db).await
                     {
                         media.refresh_sources(&state.ctx.db, &aio).await?;
+                        warm_subtitle_cache(&state.ctx.db, &media);
                     }
                     media.sources(&state.ctx.db).await?;
                     // always load state for single
@@ -451,6 +452,7 @@ pub async fn refresh_item(
             .refresh_sources(&state.ctx.db, &aio)
             .await
             .context_bad_request("Refresh failed", "Could not refresh streams")?;
+        warm_subtitle_cache(&state.ctx.db, &media);
     } else {
         // Refresh metadata via the full provider pipeline.
         let service = crate::providers::MetaProviderService::new(
@@ -663,6 +665,7 @@ pub async fn item(
     if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
         if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
             media.refresh_sources(&state.ctx.db, &aio).await?;
+            warm_subtitle_cache(&state.ctx.db, &media);
         }
         media.sources(&state.ctx.db).await?;
         media.user_state(&state.ctx.db, &session.user).await?;
@@ -1238,6 +1241,18 @@ pub async fn update_catalog_settings(
 }
 
 /// MediaSegments stub - returns empty result to prevent 404/CORS errors
+/// Fire-and-forget: populate the 24-hour subtitle cache for a movie/episode so
+/// that the subsequent playback-info call can read from cache instead of AIO.
+fn warm_subtitle_cache(db: &SqlitePool, media: &db::Media) {
+    let media = media.clone();
+    let db = db.clone();
+    tokio::spawn(async move {
+        if let Ok(aio) = crate::aio::AioService::from_settings(&db).await {
+            let _ = media.get_subtitles(&aio).await;
+        }
+    });
+}
+
 #[get("/mediasegments/{id}")]
 pub async fn media_segments(
     _session: auth::AuthSession,
