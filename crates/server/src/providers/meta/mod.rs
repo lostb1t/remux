@@ -255,6 +255,7 @@ fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     fill!(backdrop);
     fill!(trailers);
     fill!(digital_released_at);
+    fill!(status);
 }
 
 /// Reformat title for Season/Episode items based on index metadata.

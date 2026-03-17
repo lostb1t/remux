@@ -201,7 +201,7 @@ impl TaskService {
 
         service.register_task(Arc::new(RefreshLibraryTask)).await?;
         service.register_task(Arc::new(CatalogImportTask)).await?;
-        service.register_task(Arc::new(SeriesSyncTask)).await?;
+       // service.register_task(Arc::new(SeriesSyncTask)).await?;
         service.register_task(Arc::new(IptvRefreshTask)).await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;

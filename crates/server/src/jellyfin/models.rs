@@ -250,6 +250,12 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         } else {
             Some(media.tags.clone())
         },
+        status: media.status.as_ref().map(|s| match s {
+            db::MediaStatus::Continuing => Status::Continuing,
+            db::MediaStatus::Ended => Status::Ended,
+            db::MediaStatus::Unreleased => Status::Unreleased,
+            db::MediaStatus::Released | db::MediaStatus::Unknown => Status::Released,
+        }),
         remux: Some(RemuxInfo {
             collection_kind: media
                 .collection_kind

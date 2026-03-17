@@ -78,6 +78,29 @@ use uuid::{Uuid, uuid};
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+pub enum MediaStatus {
+    Continuing,
+    Ended,
+    Unreleased,
+    Released,
+    #[default]
+    Unknown,
+}
+
+#[derive(
+    Default,
+    strum_macros::EnumString,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 //#[sqlx(rename_all = "lowercase")]
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
 pub enum MediaKind {
@@ -315,6 +338,7 @@ pub struct Media {
     pub poster: Option<String>,
     pub logo: Option<String>,
     pub backdrop: Option<String>,
+    pub status: Option<MediaStatus>,
     pub idx: Option<i64>,
     pub parent_idx: Option<i64>,
     pub parent_id: Option<Uuid>,
@@ -453,9 +477,9 @@ impl Media {
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items, collection_catalog_filter,
             remote_data, series_imdb_id, aio_id, imdb_id, created_at, updated_at, certification, parent_idx,
-            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at
+            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -490,7 +514,8 @@ impl Media {
             channel_number = excluded.channel_number,
             enabled = excluded.enabled,
             sort_order = excluded.sort_order,
-            custom_name = excluded.custom_name
+            custom_name = excluded.custom_name,
+            status = excluded.status
         "#,
         )
         .bind(self.id)
@@ -530,6 +555,7 @@ impl Media {
         .bind(self.sort_order)
         .bind(&self.custom_name)
         .bind(self.digital_released_at)
+        .bind(&self.status)
         .execute(db)
         .await?;
 
@@ -550,7 +576,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status
             )",
         );
             for item in chunk {
@@ -591,7 +617,8 @@ impl Media {
                     .push_bind(&item.enabled)
                     .push_bind(&item.sort_order)
                     .push_bind(&item.custom_name)
-                    .push_bind(&item.digital_released_at);
+                    .push_bind(&item.digital_released_at)
+                    .push_bind(&item.status);
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -617,7 +644,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_imdb_id, imdb_id, aio_id, created_at, updated_at, certification, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status
             )",
         );
 
@@ -656,7 +683,8 @@ impl Media {
                     .push_bind(&item.enabled)
                     .push_bind(&item.sort_order)
                     .push_bind(&item.custom_name)
-                    .push_bind(&item.digital_released_at);
+                    .push_bind(&item.digital_released_at)
+                    .push_bind(&item.status);
             });
 
             query_builder.push(
@@ -688,6 +716,7 @@ impl Media {
                 live_end = excluded.live_end,
                 tvg_id = excluded.tvg_id,
                 channel_number = excluded.channel_number,
+                status = excluded.status,
                 -- preserve user overrides: only update name/enabled/sort_order if not set by user
                 title = CASE WHEN custom_name IS NOT NULL THEN media.title ELSE excluded.title END,
                 enabled = CASE WHEN media.id IS NOT NULL THEN media.enabled ELSE excluded.enabled END,
@@ -1132,10 +1161,14 @@ qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at 
             r#"
         SELECT *
         FROM media
-        WHERE kind IN ($1, $2)
-        AND refreshed_at NULL
+        WHERE kind IN (?, ?)
+          AND (
+            refreshed_at IS NULL
+            OR (kind = 'series' AND (status IS NULL OR status != 'ended'))
+            OR digital_released_at IS NULL
+          )
         ORDER BY id
-        LIMIT $3 OFFSET $4
+        LIMIT ? OFFSET ?
         "#,
         )
         .bind(MediaKind::Movie)
@@ -1664,6 +1697,14 @@ impl TryFrom<sdks::aio::Meta> for Media {
             .flatten()
             .map(|dt| dt.naive_utc());
 
+        let status = meta.status.as_ref().map(|s| match s {
+            sdks::aio::Status::Continuing
+            | sdks::aio::Status::ReturningSeries
+            | sdks::aio::Status::InProduction => MediaStatus::Continuing,
+            sdks::aio::Status::Ended | sdks::aio::Status::Canceled => MediaStatus::Ended,
+            sdks::aio::Status::Upcoming | sdks::aio::Status::Planned => MediaStatus::Unreleased,
+        });
+
         let media = Media {
             title: meta.name.unwrap_or_default(),
             kind: media_kind.clone(),
@@ -1679,6 +1720,7 @@ impl TryFrom<sdks::aio::Meta> for Media {
             backdrop: meta.background,
             imdb_id: meta.imdb_id.clone(),
             aio_id: meta.imdb_id.clone(),
+            status,
             trailers: meta.trailers.map(|trailers| {
                 sqlx::types::Json(
                     trailers
