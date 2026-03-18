@@ -262,11 +262,10 @@ pub async fn get_items(
             
             
 
-            let media = item(state, session, ids.get(0)).await?;
-            if let Some(media) = media.as_mut() {
-
+            let media = item(state, session, ids[0]).await?;
+            if let Some(media) = media {
                 return Ok(ItemsQueryResult {
-                    items: vec![jellyfin::db_media_to_item(media.clone())],
+                    items: vec![media],
                     total_count: 1,
                 });
             }
@@ -603,40 +602,36 @@ pub async fn item(
     {
         Some(m) => m,
         None => {
-                        if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db)
-        .await
-{
-          if let Some(meta) =
-                        state.ctx.store.get::<sdks::aio::Meta>(id)
-                    {
-                      
-                        let mut media: db::Media = aio
-                            .get_meta(meta.media_type.clone(), meta.id.clone())
-                            .await?
-                            .try_into()?;
+            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
+                if let Some(meta) = state.ctx.store.get::<sdks::aio::Meta>(id) {
+                    let mut media: db::Media = aio
+                        .get_meta(meta.media_type.clone(), meta.id.clone())
+                        .await?
+                        .try_into()?;
 
-                        // web client makes 2 simultenious request. So we get race conditions.
-                        if let Err(err) = media.save(&state.ctx.db).await {
-                            media = db::Media::get_by_filter(
-                                &state.ctx.db,
-                                &db::MediaFilter {
-                                    aio_id: media.aio_id.clone(),
-
-                                    ..Default::default()
-                                },
-                            )
-                            .await?
-                            .records
-                            .get(0)
-                            .unwrap()
-                            .clone();
-                        }
-
-                        Some(media)
-                      } else {
-                        None
-                      }
+                    // web client makes 2 simultaneous requests so we get race conditions.
+                    if let Err(_err) = media.save(&state.ctx.db).await {
+                        media = db::Media::get_by_filter(
+                            &state.ctx.db,
+                            &db::MediaFilter {
+                                aio_id: media.aio_id.clone(),
+                                ..Default::default()
+                            },
+                        )
+                        .await?
+                        .records
+                        .into_iter()
+                        .next()
+                        .unwrap();
                     }
+
+                    media
+                } else {
+                    return Ok(None);
+                }
+            } else {
+                return Ok(None);
+            }
         },
     };
 
