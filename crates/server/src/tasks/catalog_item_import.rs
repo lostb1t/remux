@@ -105,22 +105,34 @@ impl Task for CatalogItemImportTask {
             }
             metas = metas.into_iter().take(remaining).collect();
 
-            let items: Vec<db::Media> = metas
-                .into_iter()
-                .unique_by(|meta| meta.id.clone())
-                .flat_map(|meta| match db::aio_meta_to_medias(meta) {
-                    Ok(mut items) => {
-                        if let Some(top) = items.first_mut() {
-                            top.parent_id = None;
+            let items: Vec<db::Media> = futures::stream::iter(
+                metas.into_iter().unique_by(|meta| meta.id.clone()),
+            )
+            .then(|mut meta| {
+                let aio = aio.clone();
+                async move {
+                    if meta.imdb_id.is_none() {
+                        if let Err(e) = meta.resolve(&aio.client).await {
+                            warn!(id = %meta.id, error = %e, "failed to resolve meta, using partial");
                         }
-                        items.into_iter()
                     }
-                    Err(e) => {
-                        warn!(error = %e, "failed to convert metadata, skipping");
-                        Vec::<db::Media>::new().into_iter()
+                    match db::aio_meta_to_medias(meta) {
+                        Ok(mut items) => {
+                            if let Some(top) = items.first_mut() {
+                                top.parent_id = None;
+                            }
+                            items
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "failed to convert metadata, skipping");
+                            vec![]
+                        }
                     }
-                })
-                .collect();
+                }
+            })
+            .flat_map(futures::stream::iter)
+            .collect()
+            .await;
 
             if items.is_empty() {
                 break;

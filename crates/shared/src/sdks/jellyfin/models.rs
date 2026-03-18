@@ -194,12 +194,31 @@ pub struct CultureDto {
     pub three_letter_iso_language_name: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct AuthenticateUserByName {
-    #[serde(alias = "Password", default)]
     pub pw: Option<String>,
     pub username: Option<String>,
+}
+
+impl<'de> serde::Deserialize<'de> for AuthenticateUserByName {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // Jellyfin clients send both `Pw` and `Password` in the same request.
+        // Using `alias` causes serde to error on duplicate keys, so we
+        // deserialize into a flat helper and merge the two fields.
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Raw {
+            pw: Option<String>,
+            password: Option<String>,
+            username: Option<String>,
+        }
+        let raw = Raw::deserialize(d)?;
+        Ok(Self {
+            pw: raw.pw.or(raw.password),
+            username: raw.username,
+        })
+    }
 }
 
 #[skip_serializing_none]

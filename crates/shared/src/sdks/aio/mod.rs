@@ -1,4 +1,4 @@
-use super::{BasicAuth, ClientError, Endpoint, RestClient};
+use super::{BasicAuth, CachedEndpoint, ClientError, Endpoint, RestClient};
 use http::Method;
 
 use anyhow::Result;
@@ -372,6 +372,27 @@ pub struct Meta {
         deserialize_with = "deserialize_app_extras"
     )]
     pub app_extras: Option<AppExtras>,
+}
+
+impl Meta {
+    /// Fetch the full meta from AIO and replace `self` with it.
+    /// Catalog responses are often partial (missing `imdb_id` etc.); calling
+    /// this upgrades the item to complete metadata before DB conversion.
+    pub async fn resolve(&mut self, client: &RestClient) -> Result<()> {
+        *self = client
+            .execute(
+                MetaEndpoint {
+                    media_type: self.media_type.clone(),
+                    id: self.id.clone(),
+                    season: None,
+                    episode: None,
+                }
+                .with_cache(std::time::Duration::from_secs(3600)),
+            )
+            .await?
+            .meta;
+        Ok(())
+    }
 }
 
 #[skip_serializing_none]
