@@ -209,7 +209,9 @@ impl TaskService {
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {
-            service.add_trigger(trigger).await?;
+            if let Err(e) = service.add_trigger(trigger).await {
+                error!("Failed to add trigger (skipping): {}", e);
+            }
         }
 
         Ok(service)
