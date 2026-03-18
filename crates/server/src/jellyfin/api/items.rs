@@ -53,11 +53,8 @@ pub async fn get_items(
         None
     };
 
-    //let search = q.search_term.clone().or(q.name_starts_with.clone());
     let search = q.search_term.clone();
     let skip = q.start_index.unwrap_or(0) as u32;
-
-    //  trace!(?q, "get_items");
 
     // only support Movie, Series, and Episode for search and catalogs
     if search.is_some()
@@ -253,74 +250,20 @@ pub async fn get_items(
     let want_total = q.enable_total_record_count.unwrap_or(true);
     let policy = session.user.policy.as_ref().map(|p| &p.0);
     let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
-    //trace!(?q, "get_items");
+
+
     let mut result =
         db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, want_total, policy, server_config.as_ref()).await?;
 
     // handle details request
     if let Some(ids) = &q.ids {
         if ids.len() == 1 {
-              if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db)
-        .await
-{
-            let mut media: Option<db::Media> =
-                if let Some(media) = result.records.get(0) {
-                    Some(media.clone())
-                } else {
-                    if let Some(meta) =
-                        state.ctx.store.get::<sdks::aio::Meta>(*ids.get(0).unwrap())
-                    {
-                      
-                        let mut media: db::Media = aio
-                            .get_meta(meta.media_type.clone(), meta.id.clone())
-                            .await?
-                            .try_into()?;
 
-                        // web client makes 2 simultenious request. So we get race conditions.
-                        if let Err(err) = media.save(&state.ctx.db).await {
-                            media = db::Media::get_by_filter(
-                                &state.ctx.db,
-                                &db::MediaFilter {
-                                    aio_id: media.aio_id.clone(),
+            
+            
 
-                                    ..Default::default()
-                                },
-                            )
-                            .await?
-                            .records
-                            .get(0)
-                            .unwrap()
-                            .clone();
-                        }
-
-                        Some(media)
-                    } else {
-                        None
-                    }
-                };
+            let media = item(state, session, ids.get(0)).await?;
             if let Some(media) = media.as_mut() {
-                if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
-                    && (q.fields.is_none()
-                        || q.fields.as_ref().map_or(false, |f| {
-                            f.contains(&jellyfin::ItemFields::MediaSources)
-                        }))
-                {
-                    if let Ok(aio) =
-                        crate::aio::AioService::from_settings(&state.ctx.db).await
-                    {
-                        media.refresh_sources(&state.ctx.db, &aio).await?;
-                        warm_subtitle_cache(&state.ctx.db, &media);
-                    }
-                    media.sources(&state.ctx.db).await?;
-                    // always load state for single
-                    media.user_state(&state.ctx.db, &session.user).await?;
-
-                    if let Some(sources) = &media.sources {
-                        trace!(streams_len = sources.len(), "sources");
-                    }
-                }
-
-                media.load_relations(&state.ctx.db).await?;
 
                 return Ok(ItemsQueryResult {
                     items: vec![jellyfin::db_media_to_item(media.clone())],
@@ -328,7 +271,7 @@ pub async fn get_items(
                 });
             }
           }
-        }
+        
     }
 
     Ok(ItemsQueryResult {
@@ -644,8 +587,8 @@ pub async fn item(
     session: auth::AuthSession,
     id: Uuid,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
-    // Fetch directly without the digital_released_before filter so recently-released
-    // items are always returned when requested by ID.
+  
+  
     let mut media = match db::Media::get_by_filter(
         &state.ctx.db,
         &db::MediaFilter {
@@ -659,7 +602,42 @@ pub async fn item(
     .next()
     {
         Some(m) => m,
-        None => return Ok(None),
+        None => {
+                        if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db)
+        .await
+{
+          if let Some(meta) =
+                        state.ctx.store.get::<sdks::aio::Meta>(id)
+                    {
+                      
+                        let mut media: db::Media = aio
+                            .get_meta(meta.media_type.clone(), meta.id.clone())
+                            .await?
+                            .try_into()?;
+
+                        // web client makes 2 simultenious request. So we get race conditions.
+                        if let Err(err) = media.save(&state.ctx.db).await {
+                            media = db::Media::get_by_filter(
+                                &state.ctx.db,
+                                &db::MediaFilter {
+                                    aio_id: media.aio_id.clone(),
+
+                                    ..Default::default()
+                                },
+                            )
+                            .await?
+                            .records
+                            .get(0)
+                            .unwrap()
+                            .clone();
+                        }
+
+                        Some(media)
+                      } else {
+                        None
+                      }
+                    }
+        },
     };
 
     if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
@@ -1059,7 +1037,6 @@ pub async fn channels(
     mock_items(State(state)).await
 }
 
-// ── set_tags helper ────────────────────────────────────────────────
 
 async fn set_tags(db: &SqlitePool, id: Uuid, tags: &[String]) -> anyhow::Result<()> {
     sqlx::query("DELETE FROM media_tags WHERE media_id = ?")
@@ -1078,7 +1055,6 @@ async fn set_tags(db: &SqlitePool, id: Uuid, tags: &[String]) -> anyhow::Result<
     Ok(())
 }
 
-// ── POST /items/{id} — Jellyfin web metadata editor ────────────────
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
