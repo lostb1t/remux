@@ -48,26 +48,30 @@ fn db_trigger_to_jellyfin(
     }
 }
 
-/// Parse `MIN HOUR * * [DAY]` cron into ticks-since-midnight.
+/// Parse `0 MIN HOUR * * [DAY]` cron into ticks-since-midnight.
+/// Field order: SEC MIN HOUR DOM MON DOW
 fn cron_to_time_of_day_ticks(cron: &str) -> Option<i64> {
     let mut parts = cron.split_whitespace();
+    parts.next(); // sec
     let min: i64 = parts.next()?.parse().ok()?;
     let hour: i64 = parts.next()?.parse().ok()?;
     Some(hour * TICKS_PER_HOUR + min * TICKS_PER_MINUTE)
 }
 
-/// Parse `0 */HOURS * * *` interval cron into hours.
+/// Parse `0 0 */HOURS * * *` interval cron into hours.
 fn cron_to_interval_hours(cron: &str) -> Option<i64> {
     let mut parts = cron.split_whitespace();
+    parts.next(); // sec
     parts.next(); // min
     let hour_part = parts.next()?;
     let hours: i64 = hour_part.strip_prefix("*/")?.parse().ok()?;
     Some(hours)
 }
 
-/// Parse `MIN HOUR * * DAY_NUM` cron into day name.
+/// Parse `0 MIN HOUR * * DAY_NUM` cron into day name.
+/// Croner uses POSIX weekdays: 1=Mon … 6=Sat, 7=Sun.
 fn cron_to_day_name(cron: &str) -> Option<&'static str> {
-    let day_num: u8 = cron.split_whitespace().nth(4)?.parse().ok()?;
+    let day_num: u8 = cron.split_whitespace().nth(5)?.parse().ok()?;
     Some(match day_num {
         1 => "Monday",
         2 => "Tuesday",
@@ -75,7 +79,7 @@ fn cron_to_day_name(cron: &str) -> Option<&'static str> {
         4 => "Thursday",
         5 => "Friday",
         6 => "Saturday",
-        _ => "Sunday",
+        _ => "Sunday", // 7 or 0
     })
 }
 
@@ -212,6 +216,7 @@ pub async fn stop_task(
 }
 
 fn day_name_to_cron(day: &str) -> u8 {
+    // Croner POSIX weekdays: 1=Mon … 6=Sat, 7=Sun
     match day {
         "Monday"    => 1,
         "Tuesday"   => 2,
@@ -219,7 +224,7 @@ fn day_name_to_cron(day: &str) -> u8 {
         "Thursday"  => 4,
         "Friday"    => 5,
         "Saturday"  => 6,
-        _           => 0, // Sunday
+        _           => 7, // Sunday
     }
 }
 
@@ -232,7 +237,7 @@ fn trigger_to_cron(t: &jellyfin::TaskTriggerInfo) -> Option<String> {
         TaskTriggerInfoType::StartupTrigger => None,
         TaskTriggerInfoType::IntervalTrigger => {
             let hours = t.interval_ticks? / TICKS_PER_HOUR;
-            Some(format!("0 */{hours} * * *"))
+            Some(format!("0 0 */{hours} * * *"))
         }
         TaskTriggerInfoType::DailyTrigger | TaskTriggerInfoType::WeeklyTrigger => {
             let ticks = t.time_of_day_ticks?;
@@ -241,9 +246,9 @@ fn trigger_to_cron(t: &jellyfin::TaskTriggerInfo) -> Option<String> {
             let min = (total_secs % 3600) / 60;
             if kind == TaskTriggerInfoType::WeeklyTrigger {
                 let day = day_name_to_cron(t.day_of_week.as_deref().unwrap_or("Sunday"));
-                Some(format!("{min} {hour} * * {day}"))
+                Some(format!("0 {min} {hour} * * {day}"))
             } else {
-                Some(format!("{min} {hour} * * *"))
+                Some(format!("0 {min} {hour} * * *"))
             }
         }
     }
