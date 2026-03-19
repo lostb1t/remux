@@ -56,6 +56,12 @@ Install cargo make
 cargo install --force cargo-make
 ```
 
+Build jellyfin web
+
+```
+cargo make jellyfin-web
+```
+
 run
 
 ```
