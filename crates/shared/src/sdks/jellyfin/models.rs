@@ -807,7 +807,10 @@ impl DeviceProfile {
     /// Iterates all Video `DirectPlayProfiles` and picks the best-matching one
     /// (fewest failure flags). Mirrors `GetTranscodeReasonsFromDirectPlayProfile`
     /// in Jellyfin's `StreamBuilder`.
-    pub fn check_direct_play(&self, media_source: &MediaSourceInfo) -> TranscodeReasons {
+    pub fn check_direct_play(
+        &self,
+        media_source: &MediaSourceInfo,
+    ) -> TranscodeReasons {
         let mut best: Option<TranscodeReasons> = None;
         for profile in &self.direct_play_profiles {
             // Only consider Video profiles for video sources
@@ -824,7 +827,11 @@ impl DeviceProfile {
                 None => reasons,
                 Some(prev) => {
                     // Prefer the profile with fewer failure bits set
-                    if reasons.0.count_ones() < prev.0.count_ones() { reasons } else { prev }
+                    if reasons.0.count_ones() < prev.0.count_ones() {
+                        reasons
+                    } else {
+                        prev
+                    }
                 }
             });
         }
@@ -860,11 +867,15 @@ impl DirectPlayProfile {
         // A "Video" profile only applies to sources that have a video stream;
         // an "Audio" profile only applies to audio-only sources.
         if let Some(type_) = &self.type_ {
-            if type_.eq_ignore_ascii_case("Video") && media_source.video_stream().is_none() {
+            if type_.eq_ignore_ascii_case("Video")
+                && media_source.video_stream().is_none()
+            {
                 reasons.insert(TranscodeReason::ContainerNotSupported);
                 return reasons;
             }
-            if type_.eq_ignore_ascii_case("Audio") && media_source.video_stream().is_some() {
+            if type_.eq_ignore_ascii_case("Audio")
+                && media_source.video_stream().is_some()
+            {
                 reasons.insert(TranscodeReason::ContainerNotSupported);
                 return reasons;
             }
@@ -884,7 +895,9 @@ impl DirectPlayProfile {
         }
 
         // Check video codec match
-        if let (Some(_), Some(video_stream)) = (&self.video_codec, media_source.video_stream()) {
+        if let (Some(_), Some(video_stream)) =
+            (&self.video_codec, media_source.video_stream())
+        {
             if let Some(video_codec) = &video_stream.codec {
                 if !self.supports_video_codec(video_codec) {
                     reasons.insert(TranscodeReason::VideoCodecNotSupported);
@@ -893,7 +906,9 @@ impl DirectPlayProfile {
         }
 
         // Check audio codec match
-        if let (Some(_), Some(audio_stream)) = (&self.audio_codec, media_source.audio_stream()) {
+        if let (Some(_), Some(audio_stream)) =
+            (&self.audio_codec, media_source.audio_stream())
+        {
             if let Some(audio_codec) = &audio_stream.codec {
                 if !self.supports_audio_codec(audio_codec) {
                     reasons.insert(TranscodeReason::AudioCodecNotSupported);
@@ -907,21 +922,29 @@ impl DirectPlayProfile {
     pub fn supports_container(&self, container: &str) -> bool {
         self.container
             .as_ref()
-            .map(|c| c == "*" || c.split(',').any(|c| c.trim().eq_ignore_ascii_case(container)))
+            .map(|c| {
+                c == "*"
+                    || c.split(',')
+                        .any(|c| c.trim().eq_ignore_ascii_case(container))
+            })
             .unwrap_or(true)
     }
 
     pub fn supports_video_codec(&self, codec: &str) -> bool {
         self.video_codec
             .as_ref()
-            .map(|v| v == "*" || v.split(',').any(|v| v.trim().eq_ignore_ascii_case(codec)))
+            .map(|v| {
+                v == "*" || v.split(',').any(|v| v.trim().eq_ignore_ascii_case(codec))
+            })
             .unwrap_or(true)
     }
 
     pub fn supports_audio_codec(&self, codec: &str) -> bool {
         self.audio_codec
             .as_ref()
-            .map(|a| a == "*" || a.split(',').any(|a| a.trim().eq_ignore_ascii_case(codec)))
+            .map(|a| {
+                a == "*" || a.split(',').any(|a| a.trim().eq_ignore_ascii_case(codec))
+            })
             .unwrap_or(true)
     }
 }
@@ -1014,7 +1037,9 @@ pub struct BaseItemDtoQueryResult {
 
 /// Individual transcode reason flags, matching Jellyfin's `TranscodeReason` [Flags] enum
 /// bit positions exactly so numeric values are wire-compatible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display, strum_macros::EnumIter)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display, strum_macros::EnumIter,
+)]
 #[strum(serialize_all = "PascalCase")]
 pub enum TranscodeReason {
     ContainerNotSupported,
@@ -1026,9 +1051,9 @@ pub enum TranscodeReason {
 impl TranscodeReason {
     pub fn bit(self) -> u32 {
         match self {
-            Self::ContainerNotSupported        => 1 << 0,
-            Self::VideoCodecNotSupported       => 1 << 1,
-            Self::AudioCodecNotSupported       => 1 << 2,
+            Self::ContainerNotSupported => 1 << 0,
+            Self::VideoCodecNotSupported => 1 << 1,
+            Self::AudioCodecNotSupported => 1 << 2,
             Self::ContainerBitrateExceedsLimit => 1 << 18,
         }
     }
@@ -2433,14 +2458,25 @@ pub struct TaskResult {
     pub end_time_utc: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum_macros::Display, strum_macros::EnumIter, strum_macros::EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumIter,
+    strum_macros::EnumString,
+)]
 #[strum(serialize_all = "PascalCase")]
 #[serde(rename_all = "PascalCase")]
 pub enum TaskTriggerInfoType {
     DailyTrigger,
     WeeklyTrigger,
     IntervalTrigger,
-    StartupTrigger
+    StartupTrigger,
 }
 
 impl TryFrom<String> for TaskTriggerInfoType {

@@ -5,7 +5,9 @@ use std::sync::Arc;
 use super::{ProgressReporter, Task, TaskService};
 use crate::{
     AppContext, db,
-    providers::{AioMetaProvider, AioTreeSyncProvider, MetaProviderService, TmdbMetaProvider},
+    providers::{
+        AioMetaProvider, AioTreeSyncProvider, MetaProviderService, TmdbMetaProvider,
+    },
 };
 
 pub struct RefreshLibraryTask;

@@ -7,10 +7,9 @@ use anyhow::Result;
 pub trait MediaSourceInfoExt {
     fn probe(&self) -> Result<MediaSourceInfo>;
     fn probe_with_url(&self, url: &str) -> Result<MediaSourceInfo>;
-  }
+}
 
 impl MediaSourceInfoExt for db::Media {
-
     fn probe(&self) -> Result<MediaSourceInfo> {
         let url = self
             .url
@@ -181,7 +180,10 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 | db::MediaKind::Season
                 | db::MediaKind::Folder
         ),
-        channel_type: if matches!(media.kind, db::MediaKind::TvChannel | db::MediaKind::TvProgram) {
+        channel_type: if matches!(
+            media.kind,
+            db::MediaKind::TvChannel | db::MediaKind::TvProgram
+        ) {
             Some("TV".to_string())
         } else {
             None
@@ -189,7 +191,11 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         channel_number: media.channel_number.map(|n| n.to_string()),
         start_date: media.live_start.map(|d| d.and_utc().to_rfc3339()),
         end_date: media.live_end.map(|d| d.and_utc().to_rfc3339()),
-        is_live: if media.kind == db::MediaKind::TvChannel { Some(true) } else { None },
+        is_live: if media.kind == db::MediaKind::TvChannel {
+            Some(true)
+        } else {
+            None
+        },
         backdrop_image_tags: media.backdrop.clone().map(|url| vec![url]),
         provider_ids: Some(ProviderIds {
             imdb: media.imdb_id.clone(),
@@ -286,9 +292,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
 
     if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
         item.media_sources = match media.sources.clone() {
-            Some(sources) if sources.is_empty() => {
-                Some(vec![media.clone().into()])
-            }
+            Some(sources) if sources.is_empty() => Some(vec![media.clone().into()]),
             Some(sources) => {
                 Some(sources.into_iter().map(MediaSourceInfo::from).collect())
             }

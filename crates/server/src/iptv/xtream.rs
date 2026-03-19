@@ -36,7 +36,8 @@ pub async fn fetch_xtream_channels(
         .filter_map(|s| {
             let name = s.name.filter(|n| !n.is_empty())?;
             let stream_id = stream_id_to_string(&s.stream_id?)?;
-            let stream_url = format!("{}/{}/{}/{}", base, username, password, stream_id);
+            let stream_url =
+                format!("{}/{}/{}/{}", base, username, password, stream_id);
 
             Some(M3uChannel {
                 tvg_id: s.epg_channel_id.filter(|s| !s.is_empty()),

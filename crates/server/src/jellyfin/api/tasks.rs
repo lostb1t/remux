@@ -218,18 +218,20 @@ pub async fn stop_task(
 fn day_name_to_cron(day: &str) -> u8 {
     // Croner POSIX weekdays: 1=Mon … 6=Sat, 7=Sun
     match day {
-        "Monday"    => 1,
-        "Tuesday"   => 2,
+        "Monday" => 1,
+        "Tuesday" => 2,
         "Wednesday" => 3,
-        "Thursday"  => 4,
-        "Friday"    => 5,
-        "Saturday"  => 6,
-        _           => 7, // Sunday
+        "Thursday" => 4,
+        "Friday" => 5,
+        "Saturday" => 6,
+        _ => 7, // Sunday
     }
 }
 
 fn trigger_to_cron(t: &jellyfin::TaskTriggerInfo) -> Option<String> {
-    let kind = t.r#type.as_deref()
+    let kind = t
+        .r#type
+        .as_deref()
         .and_then(|s| s.parse::<TaskTriggerInfoType>().ok())
         .unwrap_or(TaskTriggerInfoType::DailyTrigger);
 
@@ -245,7 +247,8 @@ fn trigger_to_cron(t: &jellyfin::TaskTriggerInfo) -> Option<String> {
             let hour = total_secs / 3600;
             let min = (total_secs % 3600) / 60;
             if kind == TaskTriggerInfoType::WeeklyTrigger {
-                let day = day_name_to_cron(t.day_of_week.as_deref().unwrap_or("Sunday"));
+                let day =
+                    day_name_to_cron(t.day_of_week.as_deref().unwrap_or("Sunday"));
                 Some(format!("0 {min} {hour} * * {day}"))
             } else {
                 Some(format!("0 {min} {hour} * * *"))
@@ -266,7 +269,8 @@ pub async fn update_task_triggers(
         .map(|t| jellyfin::db::TaskTrigger {
             id: Uuid::new_v4().to_string(),
             task_id: task_id.clone(),
-            kind: t.r#type
+            kind: t
+                .r#type
                 .as_deref()
                 .and_then(|s| s.parse::<TaskTriggerInfoType>().ok())
                 .unwrap_or(TaskTriggerInfoType::DailyTrigger),

@@ -75,7 +75,10 @@ async fn items_playbackinfo_inner(
     // Load the top-level Movie/Episode for subtitle lookup.
     // `id` is always the movie/episode UUID; `media_source_id` may point to a
     // child Source, so we always resolve via `id` to get the IMDB fields.
-    let subtitle_media = db::Media::get_by_id(&state.ctx.db, &id).await.ok().flatten();
+    let subtitle_media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await
+        .ok()
+        .flatten();
 
     // Torrent streams: resolve magnet URI to a local HTTP URL first.
     let mut media = resolve_torrent(media, &state).await?;
@@ -109,17 +112,18 @@ async fn items_playbackinfo_inner(
     // Collect all playable sources. A Movie/Episode may have multiple
     // Source children (versions); return every one so the client can
     // show version selection and per-source stream lists.
-    let all_source_medias: Vec<db::Media> = if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
-        let sources = media.sources(&state.ctx.db).await?;
-        if sources.is_empty() {
-            // No children → treat the parent itself as the single source
-            vec![media]
+    let all_source_medias: Vec<db::Media> =
+        if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+            let sources = media.sources(&state.ctx.db).await?;
+            if sources.is_empty() {
+                // No children → treat the parent itself as the single source
+                vec![media]
+            } else {
+                sources
+            }
         } else {
-            sources
-        }
-    } else {
-        vec![media]
-    };
+            vec![media]
+        };
 
     // When the client requests a specific source, only process that one.
     // When no source is specified (e.g. details page open), return all versions
@@ -143,7 +147,9 @@ async fn items_playbackinfo_inner(
 
     let max_bitrate: Option<i64> = match (
         query.max_streaming_bitrate,
-        device_profile.as_ref().and_then(|p| p.max_streaming_bitrate),
+        device_profile
+            .as_ref()
+            .and_then(|p| p.max_streaming_bitrate),
     ) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -151,14 +157,14 @@ async fn items_playbackinfo_inner(
 
     let play_session_id = utils::get_uuid().as_simple().to_string();
 
-
     // --- Step 1: Resolve all source URLs concurrently -----------------------
     // (resolve_url is cheap / DB-backed so async is fine here)
     struct SourceWithUrl {
         sm: db::Media,
         resolved_url: Option<String>,
     }
-    let mut sources_with_urls: Vec<SourceWithUrl> = Vec::with_capacity(source_medias.len());
+    let mut sources_with_urls: Vec<SourceWithUrl> =
+        Vec::with_capacity(source_medias.len());
     for sm in source_medias {
         let resolved_url = match &sm.url {
             Some(u) => Some(crate::aio::resolve_url(&state.ctx.db, u).await),
@@ -238,20 +244,22 @@ async fn items_playbackinfo_inner(
     let mut media_sources = Vec::with_capacity(probed_results.len());
     for (swu, probe_join) in sources_with_urls.iter().zip(probed_results.into_iter()) {
         let sm = &swu.sm;
-        let mut source: jellyfin::MediaSourceInfo = probe_join.unwrap_or_else(|_| {
-            jellyfin::MediaSourceInfo::from(sm.clone())
-        });
+        let mut source: jellyfin::MediaSourceInfo =
+            probe_join.unwrap_or_else(|_| jellyfin::MediaSourceInfo::from(sm.clone()));
         source.id = sm.id;
         source.e_tag = sm.id;
 
-        let bitrate_exceeded = max_bitrate.map_or(false, |max| source.bitrate > Some(max));
+        let bitrate_exceeded =
+            max_bitrate.map_or(false, |max| source.bitrate > Some(max));
 
         let transcode_reasons: jellyfin::TranscodeReasons = device_profile
             .as_ref()
             .map(|profile| {
                 let mut reasons = profile.check_direct_play(&source);
                 if bitrate_exceeded {
-                    reasons.insert(jellyfin::TranscodeReason::ContainerBitrateExceedsLimit);
+                    reasons.insert(
+                        jellyfin::TranscodeReason::ContainerBitrateExceedsLimit,
+                    );
                 }
                 reasons
             })
@@ -270,7 +278,9 @@ async fn items_playbackinfo_inner(
         );
 
         if needs_transcoding {
-            let trans_profile = device_profile.as_ref().and_then(|p| p.video_transcoding_profile());
+            let trans_profile = device_profile
+                .as_ref()
+                .and_then(|p| p.video_transcoding_profile());
             let (trans_container, trans_protocol) = trans_profile
                 .map(|p| {
                     (
@@ -308,7 +318,14 @@ async fn items_playbackinfo_inner(
             source.supports_transcoding = Some(true);
             source.transcoding_url = Some(format!(
                 "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}",
-                id, play_session_id, source.id, video_codec, audio_codec, bitrate_param, reasons_param, audio_stream_param,
+                id,
+                play_session_id,
+                source.id,
+                video_codec,
+                audio_codec,
+                bitrate_param,
+                reasons_param,
+                audio_stream_param,
             ));
             source.transcoding_container = Some(trans_container);
             source.transcoding_sub_protocol = Some(trans_protocol);
@@ -356,7 +373,9 @@ async fn items_playbackinfo_inner(
 
                         let mut scored: Vec<_> = filtered
                             .iter()
-                            .map(|s| (score_subtitle(&s.url, &source.name, &source.path), s))
+                            .map(|s| {
+                                (score_subtitle(&s.url, &source.name, &source.path), s)
+                            })
                             .collect();
                         // Primary sort: preferred language order; secondary: filename score desc
                         scored.sort_by(|(sa, a), (sb, b)| {
@@ -364,7 +383,9 @@ async fn items_playbackinfo_inner(
                                 sub_langs
                                     .iter()
                                     .position(|l| {
-                                        s.lang.as_deref().map_or(false, |sl| sl.eq_ignore_ascii_case(l))
+                                        s.lang.as_deref().map_or(false, |sl| {
+                                            sl.eq_ignore_ascii_case(l)
+                                        })
                                     })
                                     .unwrap_or(usize::MAX)
                             };
@@ -375,7 +396,9 @@ async fn items_playbackinfo_inner(
                             && source.default_subtitle_stream_index.is_none();
                         for (i, (_, sub)) in scored.iter().enumerate() {
                             let mut stream =
-                                crate::conversions::subtitle_to_media_stream((*sub).clone());
+                                crate::conversions::subtitle_to_media_stream(
+                                    (*sub).clone(),
+                                );
                             stream.index = Some(next_idx + i as i64);
                             if wants_default && i == 0 {
                                 stream.is_default = Some(true);
@@ -530,7 +553,8 @@ async fn videos_stream_inner(
     }
 
     // Progressive transcode/remux: only reached when Static=false.
-    let wants_stream_selection = q.audio_stream_index.is_some() || q.subtitle_stream_index.is_some();
+    let wants_stream_selection =
+        q.audio_stream_index.is_some() || q.subtitle_stream_index.is_some();
     let container = q.container.as_deref().unwrap_or("mp4").to_string();
     let video_codec = q.video_codec.unwrap_or_else(|| "copy".to_string());
     let audio_codec = q.audio_codec.unwrap_or_else(|| "aac".to_string());
@@ -539,7 +563,12 @@ async fn videos_stream_inner(
 
     info!(
         "starting progressive transcode for: {:?} (container={}, vcodec={}, acodec={}, start_ticks={:?}, bitrate={:?})",
-        &media.title, container, video_codec, audio_codec, q.start_time_ticks, q.video_bit_rate
+        &media.title,
+        container,
+        video_codec,
+        audio_codec,
+        q.start_time_ticks,
+        q.video_bit_rate
     );
 
     let params = crate::transcode::engine::ProgressiveTranscodeParams {
@@ -587,14 +616,13 @@ pub async fn sessions_logout(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<StatusCode> {
-    auth::Device::delete_by_access_token(&state.ctx.db, &session.device.access_token).await?;
+    auth::Device::delete_by_access_token(&state.ctx.db, &session.device.access_token)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[post("/sessions/capabilities")]
-pub async fn sessions_capabilities(
-    _session: auth::AuthSession,
-) -> Result<StatusCode> {
+pub async fn sessions_capabilities(_session: auth::AuthSession) -> Result<StatusCode> {
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1024,7 +1052,7 @@ mod tests {
             .expect("TranscodingUrl should be set");
         assert!(url.contains("master.m3u8"), "should be an HLS URL: {}", url);
     }
-    
+
     #[tokio::test]
     async fn test_playbackinfo_minimal() {
         let (server, ctx, token) = authenticated_server().await;
@@ -1220,7 +1248,9 @@ mod tests {
         resp.assert_status_ok();
         let body: serde_json::Value = resp.json();
         assert!(
-            body["PlaySessionId"].as_str().is_some_and(|s| !s.is_empty()),
+            body["PlaySessionId"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty()),
             "PlaySessionId must be present and non-empty"
         );
     }
@@ -1807,8 +1837,10 @@ async fn resolve_torrent(mut media: db::Media, state: &AppState) -> Result<db::M
     // Check whether P2P is enabled in server config.
     let cfg = crate::db::Settings::get_config(&state.ctx.db).await?;
     if !cfg.p2p_enabled.unwrap_or(true) {
-        return Err(anyhow::anyhow!("P2P streams are disabled"))
-            .context_bad_request("torrent", "P2P streams are disabled by the server administrator");
+        return Err(anyhow::anyhow!("P2P streams are disabled")).context_bad_request(
+            "torrent",
+            "P2P streams are disabled by the server administrator",
+        );
     }
     let resolved = state
         .ctx
@@ -1826,7 +1858,12 @@ async fn resolve_torrent(mut media: db::Media, state: &AppState) -> Result<db::M
 pub async fn subtitles_stream(
     State(state): State<AppState>,
     _session: auth::AuthSession,
-    Path((item_id, media_source_id, stream_index, format)): Path<(Uuid, Uuid, i64, String)>,
+    Path((item_id, media_source_id, stream_index, format)): Path<(
+        Uuid,
+        Uuid,
+        i64,
+        String,
+    )>,
 ) -> Result<impl IntoResponse> {
     let _ = item_id; // Jellyfin API includes item_id in the path but we only need media_source_id
 
@@ -1859,16 +1896,26 @@ pub async fn subtitles_stream(
 
     let mut cmd = tokio::process::Command::new("ffmpeg");
     cmd.args([
-        "-i", &url,
-        "-map", &format!("0:{stream_index}"),
-        "-c:s", if ffmpeg_format == "sup" { "copy" } else { ffmpeg_format },
-        "-f", ffmpeg_format,
+        "-i",
+        &url,
+        "-map",
+        &format!("0:{stream_index}"),
+        "-c:s",
+        if ffmpeg_format == "sup" {
+            "copy"
+        } else {
+            ffmpeg_format
+        },
+        "-f",
+        ffmpeg_format,
         "-",
     ]);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let child = cmd.spawn().map_err(|e| anyhow!("failed to spawn ffmpeg: {e}"))?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| anyhow!("failed to spawn ffmpeg: {e}"))?;
     let output = child
         .wait_with_output()
         .await
@@ -1911,4 +1958,3 @@ fn score_subtitle(
     src_tok.extend(tokens(source_path.as_deref().unwrap_or("")));
     sub_tok.intersection(&src_tok).count() as i32
 }
-

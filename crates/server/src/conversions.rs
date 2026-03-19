@@ -6,29 +6,31 @@ use crate::utils::get_uuid;
 use anyhow::Result;
 use std::convert::{TryFrom, TryInto};
 
-
 impl From<db::Media> for jellyfin::MediaSourceInfo {
     fn from(source: db::Media) -> Self {
-    let clean_path = source.url.as_ref().and_then(|u| {
-        url::Url::parse(u).ok().and_then(|parsed| {
-            parsed.path_segments()?.last().map(|s| s.to_string())
-        })
-    }).unwrap_or_else(|| source.title.clone());
+        let clean_path = source
+            .url
+            .as_ref()
+            .and_then(|u| {
+                url::Url::parse(u).ok().and_then(|parsed| {
+                    parsed.path_segments()?.last().map(|s| s.to_string())
+                })
+            })
+            .unwrap_or_else(|| source.title.clone());
 
-    jellyfin::MediaSourceInfo {
-        id: source.id.clone(),
-        e_tag: source.id.clone(),
-        path: source.url.clone(),
-        protocol: Some("File".to_string()),
-        supports_transcoding: Some(false),
-        supports_direct_stream: Some(true),
-        supports_direct_play: Some(true),
-        is_remote: Some(false),
-        name: Some(source.title.clone()),
-        ..Default::default()
+        jellyfin::MediaSourceInfo {
+            id: source.id.clone(),
+            e_tag: source.id.clone(),
+            path: source.url.clone(),
+            protocol: Some("File".to_string()),
+            supports_transcoding: Some(false),
+            supports_direct_stream: Some(true),
+            supports_direct_play: Some(true),
+            is_remote: Some(false),
+            name: Some(source.title.clone()),
+            ..Default::default()
+        }
     }
-}
-
 }
 impl From<jellyfin::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
     fn from(dto: jellyfin::DisplayPreferencesDto) -> Self {

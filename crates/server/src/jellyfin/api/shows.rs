@@ -38,7 +38,9 @@ pub async fn shows_seasons(
 ) -> Result<impl IntoResponse> {
     q.parent_id = Some(id);
     q.include_item_types = Some(vec![jellyfin::MediaType::Season]);
-    let items = get_items(state, session.clone(), q.clone(), true).await?.with_permissions(&session);
+    let items = get_items(state, session.clone(), q.clone(), true)
+        .await?
+        .with_permissions(&session);
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
@@ -56,7 +58,9 @@ pub async fn shows_episodes(
     // q.season_id = Some(id);
     q.parent_id = q.season_id;
     q.include_item_types = Some(vec![jellyfin::MediaType::Episode]);
-    let items = get_items(state, session.clone(), q.clone(), true).await?.with_permissions(&session);
+    let items = get_items(state, session.clone(), q.clone(), true)
+        .await?
+        .with_permissions(&session);
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
@@ -109,8 +113,6 @@ pub async fn userviews_groupingoptions(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-  
-
     // Ok(Json(json!(
     // )))
     Ok(StatusCode::NO_CONTENT.into_response())

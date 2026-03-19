@@ -1,8 +1,6 @@
 //#![feature(duration_constructors)]
 #![allow(warnings)]
 
-
-
 use axum::response::Html;
 use reqwest;
 
@@ -65,8 +63,6 @@ use url::Url;
 
 use uuid::Uuid;
 
-
-
 //mod auth;
 mod conversions;
 mod errors;
@@ -79,8 +75,8 @@ mod db;
 mod iptv;
 mod jellyfin;
 mod log_capture;
-mod providers;
 mod playback_session;
+mod providers;
 mod tasks;
 mod torrent;
 mod transcode;

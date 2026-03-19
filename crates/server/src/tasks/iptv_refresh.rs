@@ -48,7 +48,9 @@ impl Task for IptvRefreshTask {
                 let user = source.xtream_username.as_deref().unwrap_or("");
                 let pass = source.xtream_password.as_deref().unwrap_or("");
                 debug!(source = %source.name, server = %source.m3u_url, "fetching Xtream live streams");
-                match iptv::fetch_xtream_channels(&client, &source.m3u_url, user, pass).await {
+                match iptv::fetch_xtream_channels(&client, &source.m3u_url, user, pass)
+                    .await
+                {
                     Ok(ch) => {
                         info!(source = %source.name, count = ch.len(), "fetched Xtream channels");
                         ch
@@ -105,7 +107,9 @@ impl Task for IptvRefreshTask {
                         import_epg_programs(&ctx, &programs, &channels).await?;
                         info!(source = %source.name, programs = programs.len(), "imported Xtream EPG");
                     }
-                    Err(e) => warn!(source = %source.name, error = %e, "failed to fetch Xtream EPG"),
+                    Err(e) => {
+                        warn!(source = %source.name, error = %e, "failed to fetch Xtream EPG")
+                    }
                 }
             }
 
@@ -115,7 +119,8 @@ impl Task for IptvRefreshTask {
         // Delete any tv_channel rows whose IDs are no longer produced by any source.
         // Doing this once after all sources are processed also handles deleted sources.
         if !all_channels.is_empty() {
-            let kept: Vec<String> = all_channels.iter().map(|c| c.id.to_string()).collect();
+            let kept: Vec<String> =
+                all_channels.iter().map(|c| c.id.to_string()).collect();
             let placeholders = kept
                 .iter()
                 .enumerate()
@@ -142,7 +147,9 @@ impl Task for IptvRefreshTask {
                     import_epg_programs(&ctx, &programs, &all_channels).await?;
                     info!(source = %epg_source.name, programs = programs.len(), "imported EPG");
                 }
-                Err(e) => warn!(source = %epg_source.name, error = %e, "failed to fetch EPG"),
+                Err(e) => {
+                    warn!(source = %epg_source.name, error = %e, "failed to fetch EPG")
+                }
             }
         }
 

@@ -159,8 +159,9 @@ impl From<jellyfin::MediaType> for MediaKind {
             jellyfin::MediaType::Season => MediaKind::Season,
             jellyfin::MediaType::Episode => MediaKind::Episode,
             jellyfin::MediaType::BoxSet => MediaKind::Collection,
-            jellyfin::MediaType::TvChannel
-            | jellyfin::MediaType::LiveTvChannel => MediaKind::TvChannel,
+            jellyfin::MediaType::TvChannel | jellyfin::MediaType::LiveTvChannel => {
+                MediaKind::TvChannel
+            }
             jellyfin::MediaType::TvProgram
             | jellyfin::MediaType::LiveTvProgram
             | jellyfin::MediaType::Program => MediaKind::TvProgram,
@@ -789,7 +790,10 @@ impl Media {
         Ok(rows)
     }
 
-    pub async fn get_distinct_years(db: &SqlitePool, kinds: &[MediaKind]) -> Result<Vec<i64>> {
+    pub async fn get_distinct_years(
+        db: &SqlitePool,
+        kinds: &[MediaKind],
+    ) -> Result<Vec<i64>> {
         let mut qb = sqlx::QueryBuilder::new(
             "SELECT DISTINCT CAST(strftime('%Y', released_at) AS INTEGER) as y FROM media WHERE released_at IS NOT NULL",
         );
@@ -899,7 +903,9 @@ impl Media {
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ").push_bind(user_id);
                     }
-                    qb.push(" AND ums.favorite = ").push_bind(favorite).push(")");
+                    qb.push(" AND ums.favorite = ")
+                        .push_bind(favorite)
+                        .push(")");
                 }
 
                 // played=true — EXISTS with play_count > 0
@@ -959,16 +965,19 @@ impl Media {
             }
 
             if let Some(s) = &filter.name_starts_with_or_greater {
-                qb.push(" AND title >= ").push_bind(s.clone()).push(" COLLATE NOCASE");
+                qb.push(" AND title >= ")
+                    .push_bind(s.clone())
+                    .push(" COLLATE NOCASE");
             }
 
             if let Some(s) = &filter.name_less_than {
-                qb.push(" AND title < ").push_bind(s.clone()).push(" COLLATE NOCASE");
+                qb.push(" AND title < ")
+                    .push_bind(s.clone())
+                    .push(" COLLATE NOCASE");
             }
 
             if let Some(s) = &filter.title_contains {
-                qb.push(" AND title LIKE ")
-                    .push_bind(format!("%{}%", s));
+                qb.push(" AND title LIKE ").push_bind(format!("%{}%", s));
             }
 
             if let Some(idx) = &filter.index_number {
@@ -979,9 +988,7 @@ impl Media {
                 qb.push(" AND json_array_length(trailers) > 0");
             }
             if let Some(false) = &filter.has_trailer {
-                qb.push(
-                    " AND (trailers IS NULL OR json_array_length(trailers) = 0)",
-                );
+                qb.push(" AND (trailers IS NULL OR json_array_length(trailers) = 0)");
             }
 
             if let Some(studio_ids) = &filter.studio_ids {
@@ -1043,14 +1050,17 @@ impl Media {
             }
 
             if let Some(enabled) = &filter.enabled {
-                qb.push(" AND enabled = ").push_bind(if *enabled { 1i64 } else { 0i64 });
+                qb.push(" AND enabled = ").push_bind(if *enabled {
+                    1i64
+                } else {
+                    0i64
+                });
             }
 
             if let Some(threshold) = &filter.digital_released_before {
-qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at IS NOT NULL AND digital_released_at <= ")
+                qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at IS NOT NULL AND digital_released_at <= ")
     .push_bind(threshold)
     .push("))");
-
             }
         }
 
@@ -1209,7 +1219,11 @@ qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at 
                     }
                     qb.push(")");
                     let rows = qb.build().fetch_all(db).await?;
-                    Some(rows.into_iter().filter_map(|r| r.get::<Option<Uuid>, _>(0)).collect())
+                    Some(
+                        rows.into_iter()
+                            .filter_map(|r| r.get::<Option<Uuid>, _>(0))
+                            .collect(),
+                    )
                 }
             } else {
                 None
@@ -1230,7 +1244,11 @@ qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at 
                     }
                     qb.push(")");
                     let rows = qb.build().fetch_all(db).await?;
-                    Some(rows.into_iter().filter_map(|r| r.get::<Option<Uuid>, _>(0)).collect())
+                    Some(
+                        rows.into_iter()
+                            .filter_map(|r| r.get::<Option<Uuid>, _>(0))
+                            .collect(),
+                    )
                 }
             } else {
                 None
@@ -1257,13 +1275,12 @@ qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at 
 
         // Merge studio IDs from query param and from studio names
         let studio_ids: Option<Vec<Uuid>> = {
-            let from_param: Option<Vec<Uuid>> =
-                filter.studio_ids.as_ref().map(|ids| {
-                    ids.iter()
-                        .flat_map(|s| s.split(','))
-                        .filter_map(|s| s.trim().parse::<Uuid>().ok())
-                        .collect()
-                });
+            let from_param: Option<Vec<Uuid>> = filter.studio_ids.as_ref().map(|ids| {
+                ids.iter()
+                    .flat_map(|s| s.split(','))
+                    .filter_map(|s| s.trim().parse::<Uuid>().ok())
+                    .collect()
+            });
             match (from_param, studio_ids_from_names) {
                 (Some(mut a), Some(b)) => {
                     a.extend(b);
@@ -1293,30 +1310,34 @@ qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at 
                 .then_some(true)
         });
 
-        let user_state = if favorite.is_some() || is_played || is_unplayed || is_resumable {
-            Some(super::UserMediaStateFilter {
-                user_id: filter.user_id,
-                favorite,
-                played: if is_played {
-                    Some(true)
-                } else if is_unplayed {
-                    Some(false)
-                } else {
-                    None
-                },
-                resumable: if is_resumable { Some(true) } else { None },
-                ..Default::default()
-            })
-        } else {
-            None
-        };
+        let user_state =
+            if favorite.is_some() || is_played || is_unplayed || is_resumable {
+                Some(super::UserMediaStateFilter {
+                    user_id: filter.user_id,
+                    favorite,
+                    played: if is_played {
+                        Some(true)
+                    } else if is_unplayed {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    resumable: if is_resumable { Some(true) } else { None },
+                    ..Default::default()
+                })
+            } else {
+                None
+            };
 
-        let digital_released_before = if server_config.map(|c| c.filter_by_digital_release_date) != Some(false) {
-            let buffer = server_config.map(|c| c.digital_release_buffer_days).unwrap_or(0);
-            Some(Utc::now().naive_utc() + Duration::days(buffer))
-        } else {
-            None
-        };
+        let digital_released_before =
+            if server_config.map(|c| c.filter_by_digital_release_date) != Some(false) {
+                let buffer = server_config
+                    .map(|c| c.digital_release_buffer_days)
+                    .unwrap_or(0);
+                Some(Utc::now().naive_utc() + Duration::days(buffer))
+            } else {
+                None
+            };
 
         Ok(Self::get_by_filter(
             db,
@@ -1336,9 +1357,7 @@ qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at 
                 years: filter.years.clone(),
                 official_ratings: filter.official_ratings.clone(),
                 name_starts_with: filter.name_starts_with.clone(),
-                name_starts_with_or_greater: filter
-                    .name_starts_with_or_greater
-                    .clone(),
+                name_starts_with_or_greater: filter.name_starts_with_or_greater.clone(),
                 name_less_than: filter.name_less_than.clone(),
                 title_contains: filter.search_term.clone(),
                 index_number: filter.index_number,
@@ -1483,20 +1502,25 @@ qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at 
         trace!(itle = self.title.clone(), "fetching subtitles from aio");
         let (imdb_id, media_type, season, episode) = match self.kind {
             MediaKind::Movie => (
-                self.imdb_id.as_deref().ok_or_else(|| anyhow::anyhow!("no imdb_id"))?,
+                self.imdb_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("no imdb_id"))?,
                 sdks::aio::MediaType::Movie,
                 None,
                 None,
             ),
             MediaKind::Episode => (
-                self.series_imdb_id.as_deref().ok_or_else(|| anyhow::anyhow!("no series_imdb_id"))?,
+                self.series_imdb_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("no series_imdb_id"))?,
                 sdks::aio::MediaType::Series,
                 self.parent_idx,
                 self.idx,
             ),
             _ => anyhow::bail!("get_subtitles called on {:?}", self.kind),
         };
-        aio.get_subtitles(media_type, imdb_id, season, episode).await
+        aio.get_subtitles(media_type, imdb_id, season, episode)
+            .await
     }
 
     pub async fn sources(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
@@ -1659,9 +1683,6 @@ impl From<sdks::aio::Catalog> for Media {
 
 impl From<sdks::aio::Stream> for Media {
     fn from(source: sdks::aio::Stream) -> Self {
-
-
-
         let url = match (&source.info_hash, &source.url) {
             (Some(hash), None) => {
                 let mut q = url::form_urlencoded::Serializer::new(String::new());
@@ -1711,14 +1732,14 @@ impl TryFrom<sdks::aio::Meta> for Media {
             .as_ref()
             .and_then(|e| e.release_dates.as_ref())
             .map(|rd| {
-              {
-                rd.results
-                    .iter()
-                    .flat_map(|country| country.release_dates.iter())
-                    .filter(|entry| entry.release_type >= 4)
-                    .map(|entry| entry.release_date)
-                    .min()
-                  }
+                {
+                    rd.results
+                        .iter()
+                        .flat_map(|country| country.release_dates.iter())
+                        .filter(|entry| entry.release_type >= 4)
+                        .map(|entry| entry.release_date)
+                        .min()
+                }
             })
             .flatten()
             .map(|dt| dt.naive_utc());
@@ -1727,8 +1748,12 @@ impl TryFrom<sdks::aio::Meta> for Media {
             sdks::aio::Status::Continuing
             | sdks::aio::Status::ReturningSeries
             | sdks::aio::Status::InProduction => MediaStatus::Continuing,
-            sdks::aio::Status::Ended | sdks::aio::Status::Canceled => MediaStatus::Ended,
-            sdks::aio::Status::Upcoming | sdks::aio::Status::Planned => MediaStatus::Unreleased,
+            sdks::aio::Status::Ended | sdks::aio::Status::Canceled => {
+                MediaStatus::Ended
+            }
+            sdks::aio::Status::Upcoming | sdks::aio::Status::Planned => {
+                MediaStatus::Unreleased
+            }
         });
 
         let media = Media {

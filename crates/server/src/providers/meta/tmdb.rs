@@ -4,8 +4,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tracing::warn;
 
-use crate::{AppContext, db, sdks};
 use crate::sdks::CachedEndpoint;
+use crate::{AppContext, db, sdks};
 
 use super::{MetaProvider, MetaResult};
 
@@ -20,7 +20,11 @@ fn tmdb_image(path: Option<&str>) -> Option<String> {
 
 #[async_trait]
 impl MetaProvider for TmdbMetaProvider {
-    async fn fetch(&self, media: &db::Media, ctx: &AppContext) -> Result<Option<MetaResult>> {
+    async fn fetch(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Option<MetaResult>> {
         // 1. Read API key from settings — skip if not configured
         let config = crate::db::Settings::get_config(&ctx.db).await?;
         let api_key = match config.tmdb_api_key.as_deref().filter(|k| !k.is_empty()) {
@@ -29,7 +33,8 @@ impl MetaProvider for TmdbMetaProvider {
         };
 
         // 2. Resolve IMDB ID
-        let imdb_id = match media.imdb_id.as_deref().or(media.series_imdb_id.as_deref()) {
+        let imdb_id = match media.imdb_id.as_deref().or(media.series_imdb_id.as_deref())
+        {
             Some(id) => id.to_string(),
             None => return Ok(None),
         };
@@ -59,18 +64,22 @@ impl MetaProvider for TmdbMetaProvider {
         // 4. Map TMDB result → MetaResult based on media.kind
         let result_media = match media.kind {
             db::MediaKind::Movie => {
-                find_resp.movie_results.into_iter().next().map(|m| db::Media {
-                    title: m.title,
-                    description: m.overview,
-                    released_at: m
-                        .release_date
-                        .map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
-                    runtime: m.runtime.map(|r| r * 60), // minutes → seconds
-                    rating_audience: m.vote_average,
-                    poster: tmdb_image(m.poster_path.as_deref()),
-                    backdrop: tmdb_image(m.backdrop_path.as_deref()),
-                    ..Default::default()
-                })
+                find_resp
+                    .movie_results
+                    .into_iter()
+                    .next()
+                    .map(|m| db::Media {
+                        title: m.title,
+                        description: m.overview,
+                        released_at: m
+                            .release_date
+                            .map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
+                        runtime: m.runtime.map(|r| r * 60), // minutes → seconds
+                        rating_audience: m.vote_average,
+                        poster: tmdb_image(m.poster_path.as_deref()),
+                        backdrop: tmdb_image(m.backdrop_path.as_deref()),
+                        ..Default::default()
+                    })
             }
             db::MediaKind::Series => {
                 find_resp.tv_results.into_iter().next().map(|s| db::Media {

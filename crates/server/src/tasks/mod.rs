@@ -204,7 +204,7 @@ impl TaskService {
 
         service.register_task(Arc::new(RefreshLibraryTask)).await?;
         service.register_task(Arc::new(CatalogImportTask)).await?;
-       // service.register_task(Arc::new(SeriesSyncTask)).await?;
+        // service.register_task(Arc::new(SeriesSyncTask)).await?;
         service.register_task(Arc::new(IptvRefreshTask)).await?;
         service.register_task(Arc::new(PurgeMediaTask)).await?;
 

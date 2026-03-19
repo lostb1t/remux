@@ -79,7 +79,8 @@ impl AioService {
                 }
                 // Only rewrite URLs that look Docker-internal:
                 // no dots in host means it's a Docker service name (e.g. "comet", "aiostreams")
-                let is_docker_internal = parsed.host_str()
+                let is_docker_internal = parsed
+                    .host_str()
                     .map(|h| !h.contains('.') && h != "localhost")
                     .unwrap_or(false);
                 if !is_docker_internal {

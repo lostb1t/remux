@@ -31,7 +31,10 @@ pub async fn studios(
     .records;
     let total = records.len() as i64;
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
-        items: records.into_iter().map(jellyfin::db_media_to_item).collect(),
+        items: records
+            .into_iter()
+            .map(jellyfin::db_media_to_item)
+            .collect(),
         total_record_count: total,
         start_index: q.start_index.unwrap_or(0),
     }))

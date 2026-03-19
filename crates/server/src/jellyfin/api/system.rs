@@ -546,7 +546,10 @@ mod test {
 
         let resp = server
             .get("/system/configuration")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .await;
 
         resp.assert_status_ok();
@@ -564,7 +567,10 @@ mod test {
         // Read current config
         let resp = server
             .get("/system/configuration")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .await;
         resp.assert_status_ok();
         let mut config: serde_json::Value = resp.json();
@@ -575,7 +581,10 @@ mod test {
         // POST modified config → 204
         let post_resp = server
             .post("/system/configuration")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&config)
             .await;
         post_resp.assert_status(StatusCode::NO_CONTENT);
@@ -583,7 +592,10 @@ mod test {
         // GET again and verify the change persisted
         let resp2 = server
             .get("/system/configuration")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .await;
         resp2.assert_status_ok();
         resp2.assert_json_contains(&json!({ "ServerName": "TestUpdated" }));
@@ -623,7 +635,10 @@ mod test {
 
         let resp = server
             .get("/syncplay/list")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .await;
 
         resp.assert_status_ok();
@@ -724,14 +739,20 @@ mod test {
     async fn branding_css_empty_test() {
         let (server, _ctx) = new_test_server().await.unwrap();
 
-        server.get("/branding/css").await.assert_status(StatusCode::NO_CONTENT);
+        server
+            .get("/branding/css")
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
     async fn branding_css_dotcss_empty_test() {
         let (server, _ctx) = new_test_server().await.unwrap();
 
-        server.get("/branding/css.css").await.assert_status(StatusCode::NO_CONTENT);
+        server
+            .get("/branding/css.css")
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -743,7 +764,10 @@ mod test {
         // POST CSS via /branding/configuration
         server
             .post("/branding/configuration")
-            .add_header(http::header::AUTHORIZATION, HeaderValue::from_str(&auth).unwrap())
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
             .json(&json!({ "CustomCss": css, "SplashscreenEnabled": false }))
             .await
             .assert_status(StatusCode::NO_CONTENT);

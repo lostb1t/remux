@@ -34,7 +34,10 @@ impl IptvSource {
         let base = self.m3u_url.trim_end_matches('/');
         let user = self.xtream_username.as_deref().unwrap_or("");
         let pass = self.xtream_password.as_deref().unwrap_or("");
-        Some(format!("{}/xmltv.php?username={}&password={}", base, user, pass))
+        Some(format!(
+            "{}/xmltv.php?username={}&password={}",
+            base, user, pass
+        ))
     }
 
     /// For M3U sources, returns the playlist URL. For Xtream sources, returns the server base URL
@@ -48,9 +51,11 @@ impl IptvSource {
     }
 
     pub async fn get_all(db: &SqlitePool) -> Result<Vec<Self>> {
-        Ok(sqlx::query_as::<_, Self>("SELECT * FROM iptv_sources ORDER BY name")
-            .fetch_all(db)
-            .await?)
+        Ok(
+            sqlx::query_as::<_, Self>("SELECT * FROM iptv_sources ORDER BY name")
+                .fetch_all(db)
+                .await?,
+        )
     }
 
     pub async fn get_by_id(db: &SqlitePool, id: &Uuid) -> Result<Option<Self>> {
@@ -110,9 +115,11 @@ pub struct EpgSource {
 
 impl EpgSource {
     pub async fn get_all(db: &SqlitePool) -> Result<Vec<Self>> {
-        Ok(sqlx::query_as::<_, Self>("SELECT * FROM epg_sources ORDER BY name")
-            .fetch_all(db)
-            .await?)
+        Ok(
+            sqlx::query_as::<_, Self>("SELECT * FROM epg_sources ORDER BY name")
+                .fetch_all(db)
+                .await?,
+        )
     }
 
     pub async fn get_by_id(db: &SqlitePool, id: &Uuid) -> Result<Option<Self>> {

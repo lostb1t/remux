@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::{error, debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 mod tmdb;
 pub use tmdb::TmdbMetaProvider;
@@ -27,7 +27,11 @@ pub struct MetaResult {
 pub trait MetaProvider: Send + Sync {
     /// Fetch metadata for the given media item.
     /// Returns `Some(MetaResult)` if found, `None` if not applicable/not found.
-    async fn fetch(&self, media: &db::Media, ctx: &AppContext) -> Result<Option<MetaResult>>;
+    async fn fetch(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Option<MetaResult>>;
 }
 
 /// Discovers the tree structure (seasons/episodes) for a series.
@@ -90,8 +94,10 @@ impl MetaProviderService {
                     merge_media(media, &result.media, replace);
                     apply_title_format(media);
 
-                    if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series)
-                        && !result.relations.is_empty()
+                    if matches!(
+                        media.kind,
+                        db::MediaKind::Movie | db::MediaKind::Series
+                    ) && !result.relations.is_empty()
                     {
                         let (rel_media, rels): (Vec<_>, Vec<_>) = result
                             .relations
@@ -273,12 +279,15 @@ fn apply_title_format(media: &mut db::Media) {
     }
 }
 
-
 pub struct AioMetaProvider;
 
 #[async_trait]
 impl MetaProvider for AioMetaProvider {
-    async fn fetch(&self, media: &db::Media, ctx: &AppContext) -> Result<Option<MetaResult>> {
+    async fn fetch(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Option<MetaResult>> {
         let imdb_id = media.series_imdb_id.clone().or(media.imdb_id.clone());
 
         let imdb_id = match imdb_id {
@@ -317,11 +326,12 @@ impl MetaProvider for AioMetaProvider {
 
         if let Some(found_media) = found {
             // Build relations for movies/series
-            let relations = if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
-                build_relations(media, &meta_raw)
-            } else {
-                vec![]
-            };
+            let relations =
+                if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
+                    build_relations(media, &meta_raw)
+                } else {
+                    vec![]
+                };
 
             Ok(Some(MetaResult {
                 media: found_media,

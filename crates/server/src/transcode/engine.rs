@@ -52,14 +52,8 @@ fn build_scale_filter(params: &TranscodeParams) -> Option<String> {
             "scale='min({},iw)':'min({},ih)':force_original_aspect_ratio=decrease",
             w, h
         )),
-        (Some(w), None) => Some(format!(
-            "scale='min({},iw)':-2",
-            w
-        )),
-        (None, Some(h)) => Some(format!(
-            "scale=-2:'min({},ih)'",
-            h
-        )),
+        (Some(w), None) => Some(format!("scale='min({},iw)':-2", w)),
+        (None, Some(h)) => Some(format!("scale=-2:'min({},ih)'", h)),
         _ => None,
     }
 }
@@ -158,20 +152,22 @@ pub async fn start_transcode(
             output = output.set_start_time_us(start_us);
         }
 
-        let mut builder = FfmpegContext::builder()
-            .input(input);
+        let mut builder = FfmpegContext::builder().input(input);
 
         // Add scale filter if needed (video-only; audio is auto-mapped separately)
         if let Some(filter) = build_scale_filter(&params_clone) {
             builder = builder.filter_desc(filter.as_str());
         }
 
-        let context = builder.output(output).build()
+        let context = builder
+            .output(output)
+            .build()
             .map_err(|e| anyhow!("Failed to build FFmpeg context: {}", e))?;
 
         debug!("Starting HLS transcode job via ez-ffmpeg");
 
-        context.start()
+        context
+            .start()
             .map_err(|e| anyhow!("Failed to start FFmpeg job: {}", e))?
             .wait()
             .map_err(|e| anyhow!("FFmpeg job failed: {}", e))?;
@@ -227,7 +223,9 @@ pub struct ProgressiveTranscodeParams {
 /// Uses ez-ffmpeg's write callback to pipe encoded data to a channel.
 pub fn start_progressive_transcode(
     params: ProgressiveTranscodeParams,
-) -> Result<impl futures::Stream<Item = std::result::Result<bytes::Bytes, std::io::Error>>> {
+) -> Result<
+    impl futures::Stream<Item = std::result::Result<bytes::Bytes, std::io::Error>>,
+> {
     // Map video codec
     let ffmpeg_video_codec = match params.video_codec.as_str() {
         "copy" => "copy",
@@ -267,7 +265,9 @@ pub fn start_progressive_transcode(
         }
     };
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<bytes::Bytes, std::io::Error>>(32);
+    let (tx, rx) = tokio::sync::mpsc::channel::<
+        std::result::Result<bytes::Bytes, std::io::Error>,
+    >(32);
 
     // Track the write position so the seek callback can report it.
     let position = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -295,10 +295,8 @@ pub fn start_progressive_transcode(
     // write callback; provide a position-tracking no-op implementation for both
     // mp4 and matroska (matroska is used when doing copy+mp4 → matroska promotion).
     if format == "mp4" {
-        output = output.set_format_opt(
-            "movflags",
-            "frag_keyframe+empty_moov+default_base_moof",
-        );
+        output = output
+            .set_format_opt("movflags", "frag_keyframe+empty_moov+default_base_moof");
     }
     if format == "mp4" || format == "matroska" {
         // Force hvc1 tag for HEVC to ensure compatibility with Apple devices and modern players.
@@ -391,7 +389,10 @@ pub fn start_progressive_transcode(
     // Only usable when there is NO filter_desc because ez-ffmpeg's
     // auto-mapping (which binds unlabeled filter outputs) is disabled
     // as soon as any explicit stream map is added.
-    if scale_filter.is_none() && (params.audio_stream_index.is_some() || params.subtitle_stream_index.is_some()) {
+    if scale_filter.is_none()
+        && (params.audio_stream_index.is_some()
+            || params.subtitle_stream_index.is_some())
+    {
         // Map video
         if ffmpeg_video_codec == "copy" {
             output = output.add_stream_map_with_copy("0:v");
@@ -418,14 +419,15 @@ pub fn start_progressive_transcode(
         }
     }
 
-    let mut builder = FfmpegContext::builder()
-        .input(input);
+    let mut builder = FfmpegContext::builder().input(input);
 
     if let Some(filter) = scale_filter {
         builder = builder.filter_desc(filter.as_str());
     }
 
-    let context = builder.output(output).build()
+    let context = builder
+        .output(output)
+        .build()
         .map_err(|e| anyhow!("Failed to create progressive pipeline: {}", e))?;
 
     info!(
@@ -434,19 +436,17 @@ pub fn start_progressive_transcode(
     );
 
     // Start the FFmpeg job on a blocking thread
-    tokio::task::spawn_blocking(move || {
-        match context.start() {
-            Ok(handle) => {
-                let res: std::result::Result<(), ez_ffmpeg::error::Error> = handle.wait();
-                if let Err(e) = res {
-                    error!("Progressive transcode error: {}", e);
-                } else {
-                    debug!("Progressive transcode completed");
-                }
+    tokio::task::spawn_blocking(move || match context.start() {
+        Ok(handle) => {
+            let res: std::result::Result<(), ez_ffmpeg::error::Error> = handle.wait();
+            if let Err(e) = res {
+                error!("Progressive transcode error: {}", e);
+            } else {
+                debug!("Progressive transcode completed");
             }
-            Err(e) => {
-                error!("Failed to start progressive transcode: {}", e);
-            }
+        }
+        Err(e) => {
+            error!("Failed to start progressive transcode: {}", e);
         }
     });
 

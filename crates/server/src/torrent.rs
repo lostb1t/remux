@@ -39,10 +39,7 @@ impl TorrentManager {
             // Ask librqbit to download only the matching file so we don't pull the
             // whole torrent.  The regex is anchored at the end so "Movie.mkv" doesn't
             // match "Movie.mkv.nfo".
-            only_files_regex: Some(format!(
-                "(?i){}$",
-                regex::escape(name)
-            )),
+            only_files_regex: Some(format!("(?i){}$", regex::escape(name))),
             ..Default::default()
         });
 
@@ -55,7 +52,9 @@ impl TorrentManager {
         let (torrent_id, handle) = match response {
             AddTorrentResponse::Added(id, h) => (id, h),
             AddTorrentResponse::AlreadyManaged(id, h) => (id, h),
-            AddTorrentResponse::ListOnly(_) => anyhow::bail!("unexpected ListOnly response"),
+            AddTorrentResponse::ListOnly(_) => {
+                anyhow::bail!("unexpected ListOnly response")
+            }
         };
 
         tokio::time::timeout(Duration::from_secs(30), handle.wait_until_initialized())

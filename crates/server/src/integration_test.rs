@@ -77,6 +77,9 @@ pub async fn insert_test_source(ctx: &AppContext) -> db::Media {
         updated_at: now,
         ..Default::default()
     };
-    media.save(&ctx.db).await.expect("insert_test_source failed");
+    media
+        .save(&ctx.db)
+        .await
+        .expect("insert_test_source failed");
     media
 }

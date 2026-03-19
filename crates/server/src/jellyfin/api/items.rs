@@ -18,9 +18,9 @@ use crate::jellyfin;
 use crate::sdks;
 use crate::utils::IntoVec;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
-use sqlx::SqlitePool;
 use chrono::Datelike;
 use chrono::Utc;
+use sqlx::SqlitePool;
 
 use super::{mock_items, stub_json};
 
@@ -45,7 +45,6 @@ pub async fn get_items(
     _count: bool,
 ) -> Result<ItemsQueryResult> {
     //trace!(?q, "get_items");
-
 
     let parent = if let Some(parent_id) = q.parent_id.clone() {
         db::Media::get_by_id(&state.ctx.db, &parent_id).await?
@@ -80,39 +79,37 @@ pub async fn get_items(
 
         if let Some(s) = search {
             // todo: need to to make parallel request for types
-    if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db)
-        .await
-{
-            let items = aio
-                .search(types[0].clone().into(), s)
-                .await?
-                .into_iter()
-                .filter_map(|meta| match db::Media::try_from(meta.clone()) {
-                    Ok(media) => {
-                        state.ctx.store.save(
-                            media.id.clone(),
-                            meta.clone(),
-                            Duration::from_secs(360),
-                        );
-                        Some(jellyfin::db_media_to_item(media))
-                    }
-                    Err(e) => {
-                        warn!("Failed to convert item to Media: {}", e);
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
+            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await
+            {
+                let items = aio
+                    .search(types[0].clone().into(), s)
+                    .await?
+                    .into_iter()
+                    .filter_map(|meta| match db::Media::try_from(meta.clone()) {
+                        Ok(media) => {
+                            state.ctx.store.save(
+                                media.id.clone(),
+                                meta.clone(),
+                                Duration::from_secs(360),
+                            );
+                            Some(jellyfin::db_media_to_item(media))
+                        }
+                        Err(e) => {
+                            warn!("Failed to convert item to Media: {}", e);
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
 
-            return Ok(ItemsQueryResult {
-                items: items,
-                total_count: 9999,
-            });
-          
-        } else {
-          // fallthrough for jellyfin
-          warn!("AIO not configured");
+                return Ok(ItemsQueryResult {
+                    items: items,
+                    total_count: 9999,
+                });
+            } else {
+                // fallthrough for jellyfin
+                warn!("AIO not configured");
+            }
         }
-         }
     }
 
     // if q.filters.is_some() {
@@ -123,12 +120,17 @@ pub async fn get_items(
     // }
 
     let requested = q.get_requested_item_types();
-    if q.include_item_types.as_deref().unwrap_or(&[]).iter().any(|t| {
-        matches!(
-            t,
-            jellyfin::MediaType::BoxSet | jellyfin::MediaType::CollectionFolder
-        )
-    }) {
+    if q.include_item_types
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .any(|t| {
+            matches!(
+                t,
+                jellyfin::MediaType::BoxSet | jellyfin::MediaType::CollectionFolder
+            )
+        })
+    {
         let records = db::Media::get_by_filter(
             &state.ctx.db,
             &db::MediaFilter {
@@ -221,9 +223,16 @@ pub async fn get_items(
             }
 
             let policy = session.user.policy.as_ref().map(|p| &p.0);
-            let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
-            let result =
-                db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, true, policy, server_config.as_ref()).await?;
+            let server_config =
+                crate::db::Settings::get_config(&state.ctx.db).await.ok();
+            let result = db::Media::get_by_jellyfin_filter(
+                &state.ctx.db,
+                &q,
+                true,
+                policy,
+                server_config.as_ref(),
+            )
+            .await?;
 
             return Ok(ItemsQueryResult {
                 total_count: result.total_count as i64,
@@ -251,17 +260,18 @@ pub async fn get_items(
     let policy = session.user.policy.as_ref().map(|p| &p.0);
     let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
 
-
-    let mut result =
-        db::Media::get_by_jellyfin_filter(&state.ctx.db, &q, want_total, policy, server_config.as_ref()).await?;
+    let mut result = db::Media::get_by_jellyfin_filter(
+        &state.ctx.db,
+        &q,
+        want_total,
+        policy,
+        server_config.as_ref(),
+    )
+    .await?;
 
     // handle details request
     if let Some(ids) = &q.ids {
         if ids.len() == 1 {
-
-            
-            
-
             let media = item(state, session, ids[0]).await?;
             if let Some(media) = media {
                 return Ok(ItemsQueryResult {
@@ -269,8 +279,7 @@ pub async fn get_items(
                     total_count: 1,
                 });
             }
-          }
-        
+        }
     }
 
     Ok(ItemsQueryResult {
@@ -289,7 +298,9 @@ pub async fn items_flat(
     session: auth::AuthSession,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let items = get_items(state.clone(), session.clone(), q, false).await?.with_permissions(&session);
+    let items = get_items(state.clone(), session.clone(), q, false)
+        .await?
+        .with_permissions(&session);
     Ok(Json::<Vec<jellyfin::BaseItemDto>>(items.items))
 }
 
@@ -300,7 +311,9 @@ pub async fn items(
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     //trace!(?q);
-    let items = get_items(state.clone(), session.clone(), q.clone(), true).await?.with_permissions(&session);
+    let items = get_items(state.clone(), session.clone(), q.clone(), true)
+        .await?
+        .with_permissions(&session);
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
@@ -389,7 +402,10 @@ pub async fn refresh_item(
         // Refresh streams: re-fetch sources from AIO.
         let aio = crate::aio::AioService::from_settings(&state.ctx.db)
             .await
-            .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
+            .context_bad_request(
+                "AIO not configured",
+                "Complete the setup wizard first",
+            )?;
         media
             .refresh_sources(&state.ctx.db, &aio)
             .await
@@ -586,8 +602,6 @@ pub async fn item(
     session: auth::AuthSession,
     id: Uuid,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
-  
-  
     let mut media = match db::Media::get_by_filter(
         &state.ctx.db,
         &db::MediaFilter {
@@ -602,7 +616,8 @@ pub async fn item(
     {
         Some(m) => m,
         None => {
-            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
+            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await
+            {
                 if let Some(meta) = state.ctx.store.get::<sdks::aio::Meta>(id) {
                     let mut media: db::Media = aio
                         .get_meta(meta.media_type.clone(), meta.id.clone())
@@ -632,7 +647,7 @@ pub async fn item(
             } else {
                 return Ok(None);
             }
-        },
+        }
     };
 
     if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
@@ -644,16 +659,19 @@ pub async fn item(
         media.user_state(&state.ctx.db, &session.user).await?;
     }
     media.load_relations(&state.ctx.db).await?;
-
-    Ok(Some(jellyfin::db_media_to_item(media)))
+    let mut base_item = jellyfin::db_media_to_item(media.clone());
+    if media.sources.as_ref().is_none_or(|s| s.is_empty()) {
+        base_item.location_type = Some("Virtual".to_string());
+        base_item.path = None;
+        base_item.can_download = Some(false);
+    }
+    Ok(Some(base_item))
 }
 
 /// Jellyfin web requests `/Items/livetv` (literal string) when navigating to
 /// the Live TV section — handle it before the `{id}` UUID route.
 #[get("/items/livetv")]
-pub async fn items_livetv(
-    _session: auth::AuthSession,
-) -> Result<impl IntoResponse> {
+pub async fn items_livetv(_session: auth::AuthSession) -> Result<impl IntoResponse> {
     Ok(Json(super::shows::livetv_view_item()))
 }
 
@@ -931,7 +949,7 @@ pub async fn aio_catalogs(
     let aio = crate::aio::AioService::from_settings(&state.ctx.db)
         .await
         .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
-    
+
     let manifest = aio.get_manifest().await?;
 
     // Look up existing catalog media items to merge enabled/max_items
@@ -1032,24 +1050,20 @@ pub async fn channels(
     mock_items(State(state)).await
 }
 
-
 async fn set_tags(db: &SqlitePool, id: Uuid, tags: &[String]) -> anyhow::Result<()> {
     sqlx::query("DELETE FROM media_tags WHERE media_id = ?")
         .bind(id)
         .execute(db)
         .await?;
     for tag in tags {
-        sqlx::query(
-            "INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)",
-        )
-        .bind(id)
-        .bind(tag)
-        .execute(db)
-        .await?;
+        sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)")
+            .bind(id)
+            .bind(tag)
+            .execute(db)
+            .await?;
     }
     Ok(())
 }
-
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]

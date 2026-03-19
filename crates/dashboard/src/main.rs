@@ -4,18 +4,20 @@ use gloo_net::eventsource::futures::EventSource;
 use gloo_storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
 use shared::sdks::jellyfin::{
-    AddTunerHost, AdminSetPassword, AioCatalogInfo, AuthenticateUserByName, BaseItemDto,
-    BrandingOptions, ChannelEditorItem, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteEpgSource, DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EpgSourceInfo,
-    GetAioCatalogs, GetBrandingConfiguration, GetEpgSources, GetIptvChannels,
-    GetItems, GetScheduledTasks, GetSessions, GetStartupConfiguration,
-    GetSystemConfiguration, GetTunerHosts, GetUsers, JellyfinAuth,
-    BulkChannelRequest, BulkChannels, PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
-    PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
-    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetLogLevel, StartTask, StartupConfiguration,
-    StartupUser, StopTask, TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo, UpdateBrandingConfiguration,
-    UpdateCatalogSettings, UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
-    UpdateTaskTriggers, UpdateUser, UpdateUserPolicy, UserDto,
+    AddTunerHost, AdminSetPassword, AioCatalogInfo, AuthenticateUserByName,
+    BaseItemDto, BrandingOptions, BulkChannelRequest, BulkChannels, ChannelEditorItem,
+    CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload, DeleteEpgSource,
+    DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EpgSourceInfo, GetAioCatalogs,
+    GetBrandingConfiguration, GetEpgSources, GetIptvChannels, GetItems,
+    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
+    GetTunerHosts, GetUsers, JellyfinAuth, PatchChannel, PatchChannelRequest,
+    PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
+    PostStartupUser, PublicSystemInfo, SaveEpgSource, ServerConfiguration,
+    SessionInfoDto, SetLogLevel, StartTask, StartupConfiguration, StartupUser,
+    StopTask, TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo,
+    UpdateBrandingConfiguration, UpdateCatalogSettings, UpdateCatalogSettingsPayload,
+    UpdateSystemConfiguration, UpdateTaskTriggers, UpdateUser, UpdateUserPolicy,
+    UserDto,
 };
 use shared::sdks::{ClientError, RestClient};
 use uuid::Uuid;
@@ -226,7 +228,10 @@ fn Login(on_login: EventHandler) -> Element {
             };
 
             match client
-                .execute(AuthenticateUserByName { username: Some(u), pw: Some(p) })
+                .execute(AuthenticateUserByName {
+                    username: Some(u),
+                    pw: Some(p),
+                })
                 .await
             {
                 Ok(result) => {
@@ -462,7 +467,9 @@ fn SessionsCard(app_state: AppState) -> Element {
 }
 
 fn trigger_label(t: &TaskTriggerInfo) -> String {
-    let kind = t.r#type.as_deref()
+    let kind = t
+        .r#type
+        .as_deref()
         .and_then(|s| s.parse::<TaskTriggerInfoType>().ok());
     match kind {
         Some(TaskTriggerInfoType::StartupTrigger) => "On server startup".into(),
@@ -1730,7 +1737,9 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
                     epg_sources.set(e);
                     error.set(None);
                 }
-                (Err(e), _) | (_, Err(e)) => error.set(Some(format!("Failed to load: {e}"))),
+                (Err(e), _) | (_, Err(e)) => {
+                    error.set(Some(format!("Failed to load: {e}")))
+                }
             }
             loading.set(false);
         });
@@ -2174,11 +2183,14 @@ fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
         loading.set(true);
         let client = app_state_effect.client.clone();
         spawn(async move {
-            match client.execute(GetIptvChannels {
-                limit: PAGE_SIZE,
-                offset: p * PAGE_SIZE,
-                search: s,
-            }).await {
+            match client
+                .execute(GetIptvChannels {
+                    limit: PAGE_SIZE,
+                    offset: p * PAGE_SIZE,
+                    search: s,
+                })
+                .await
+            {
                 Ok(r) => {
                     total.set(r.total_record_count);
                     channels.set(r.items);

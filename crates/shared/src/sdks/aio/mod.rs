@@ -449,7 +449,9 @@ where
 
 /// Accepts either a JSON string or an array of strings.
 /// A bare string becomes a single-element Vec; null or missing becomes None.
-fn deserialize_option_string_or_array<'de, D>(de: D) -> Result<Option<Vec<String>>, D::Error>
+fn deserialize_option_string_or_array<'de, D>(
+    de: D,
+) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {

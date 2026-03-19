@@ -61,7 +61,10 @@ pub async fn init_server_id(db: &sqlx::SqlitePool) -> anyhow::Result<()> {
 }
 
 pub fn server_id() -> String {
-    SERVER_ID.get().cloned().unwrap_or_else(|| "remux".to_string())
+    SERVER_ID
+        .get()
+        .cloned()
+        .unwrap_or_else(|| "remux".to_string())
 }
 
 pub fn native_to_utc(opt_date: Option<NaiveDate>) -> Option<DateTime<Utc>> {

@@ -428,7 +428,6 @@ pub async fn users_views(
     userviews(State(state), session).await
 }
 
-
 #[get("/users/{user_id}/items/resume")]
 pub async fn users_items_resume(
     State(state): State<AppState>,

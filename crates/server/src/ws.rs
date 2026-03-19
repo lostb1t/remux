@@ -209,15 +209,17 @@ fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
                 .ctx
                 .transcode
                 .get(&session.play_session_id)
-                .and_then(|ts| ts.try_read().ok().map(|ts| jellyfin::TranscodingInfo {
-                    audio_codec: Some(ts.audio_codec.clone()),
-                    video_codec: Some(ts.video_codec.clone()),
-                    container: Some("ts".to_string()),
-                    is_video_direct: ts.video_codec == "copy",
-                    is_audio_direct: ts.audio_codec == "copy",
-                    transcode_reasons: ts.transcode_reasons.0,
-                    ..Default::default()
-                }));
+                .and_then(|ts| {
+                    ts.try_read().ok().map(|ts| jellyfin::TranscodingInfo {
+                        audio_codec: Some(ts.audio_codec.clone()),
+                        video_codec: Some(ts.video_codec.clone()),
+                        container: Some("ts".to_string()),
+                        is_video_direct: ts.video_codec == "copy",
+                        is_audio_direct: ts.audio_codec == "copy",
+                        transcode_reasons: ts.transcode_reasons.0,
+                        ..Default::default()
+                    })
+                });
 
             jellyfin::SessionInfoDto {
                 id: Some(session.play_session_id.clone()),

@@ -1,6 +1,6 @@
 use crate::jellyfin;
 use anyhow::{Result, anyhow};
-use ez_ffmpeg::stream_info::{probe_media_info, StreamInfo};
+use ez_ffmpeg::stream_info::{StreamInfo, probe_media_info};
 use isolang::Language;
 use std::str::FromStr;
 

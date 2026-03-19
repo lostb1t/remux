@@ -74,7 +74,11 @@ pub async fn livetv_channels(
     )
     .await?;
 
-    let dtos: Vec<_> = result.records.into_iter().map(jellyfin::db_media_to_item).collect();
+    let dtos: Vec<_> = result
+        .records
+        .into_iter()
+        .map(jellyfin::db_media_to_item)
+        .collect();
     Ok(Json(jellyfin::QueryResult {
         total_record_count: result.total_count as i64,
         start_index: q.start_index.unwrap_or(0) as i32,
@@ -138,7 +142,11 @@ pub async fn livetv_programs(
 
     let result = db::Media::get_by_filter(&state.ctx.db, &filter).await?;
 
-    let dtos: Vec<_> = result.records.into_iter().map(jellyfin::db_media_to_item).collect();
+    let dtos: Vec<_> = result
+        .records
+        .into_iter()
+        .map(jellyfin::db_media_to_item)
+        .collect();
     Ok(Json(jellyfin::QueryResult {
         total_record_count: result.total_count as i64,
         start_index: q.start_index.unwrap_or(0) as i32,
@@ -180,7 +188,11 @@ pub async fn livetv_programs_post(
 
     let result = db::Media::get_by_filter(&state.ctx.db, &filter).await?;
 
-    let dtos: Vec<_> = result.records.into_iter().map(jellyfin::db_media_to_item).collect();
+    let dtos: Vec<_> = result
+        .records
+        .into_iter()
+        .map(jellyfin::db_media_to_item)
+        .collect();
     Ok(Json(jellyfin::QueryResult {
         total_record_count: result.total_count as i64,
         start_index: body.start_index.unwrap_or(0) as i32,
@@ -242,7 +254,9 @@ pub async fn livetv_add_tuner_host(
     Json(body): Json<TunerHostInfo>,
 ) -> Result<impl IntoResponse> {
     let source_type = body.type_.as_deref().unwrap_or("m3u").to_string();
-    let url = body.url.context_bad_request("bad request", "url is required")?;
+    let url = body
+        .url
+        .context_bad_request("bad request", "url is required")?;
 
     // If Id is present and parses as UUID, update existing; otherwise create new.
     let id = body
@@ -335,7 +349,9 @@ pub async fn remux_epg_sources(
     _session: AdminSession,
 ) -> Result<impl IntoResponse> {
     let sources = db::EpgSource::get_all(&state.ctx.db).await?;
-    Ok(Json(sources.iter().map(epg_source_to_dto).collect::<Vec<_>>()))
+    Ok(Json(
+        sources.iter().map(epg_source_to_dto).collect::<Vec<_>>(),
+    ))
 }
 
 // --------------------------------------------------------------------------
