@@ -2433,6 +2433,23 @@ pub struct TaskResult {
     pub end_time_utc: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum_macros::Display, strum_macros::EnumIter, strum_macros::EnumString)]
+#[strum(serialize_all = "PascalCase")]
+#[serde(rename_all = "PascalCase")]
+pub enum TaskTriggerInfoType {
+    DailyTrigger,
+    WeeklyTrigger,
+    IntervalTrigger,
+    StartupTrigger
+}
+
+impl TryFrom<String> for TaskTriggerInfoType {
+    type Error = strum::ParseError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.as_str().try_into()
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]

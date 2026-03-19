@@ -12,6 +12,7 @@ use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::{error, info};
 
 use crate::{AppContext, db, ws};
+use shared::sdks::jellyfin::models::TaskTriggerInfoType;
 
 mod catalog_import;
 mod catalog_item_import;
@@ -299,7 +300,7 @@ impl TaskService {
     pub async fn run_startup_tasks(&self) -> Result<()> {
         let triggers = db::TaskTrigger::get_all(&self.ctx.db).await?;
         for trigger in triggers {
-            if trigger.kind == db::TaskTriggerKind::Startup {
+            if trigger.kind == TaskTriggerInfoType::StartupTrigger {
                 self.run_task(&trigger.task_id).await?;
             }
         }

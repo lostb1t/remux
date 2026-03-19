@@ -5,38 +5,14 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::utils::get_uuid;
-
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    sqlx::Type,
-    strum_macros::EnumString,
-    strum_macros::Display,
-)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
-pub enum TaskTriggerKind {
-    Schedule,
-    Startup,
-}
-
-impl TryFrom<String> for TaskTriggerKind {
-    type Error = strum::ParseError;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        Self::try_from(s.as_str())
-    }
-}
+use shared::sdks::jellyfin::models::TaskTriggerInfoType;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TaskTrigger {
-    pub id: String,      // Keep as string for compatibility
-    pub task_id: String, // Now uses task key instead of UUID
-    pub kind: TaskTriggerKind,
+    pub id: String,
+    pub task_id: String,
+    #[sqlx(try_from = "String")]
+    pub kind: TaskTriggerInfoType,
     pub time_limit_hours: Option<i64>,
     pub cron: Option<String>,
 }
@@ -46,7 +22,7 @@ impl Default for TaskTrigger {
         Self {
             id: get_uuid().to_string(),
             task_id: String::new(),
-            kind: TaskTriggerKind::Schedule,
+            kind: TaskTriggerInfoType::DailyTrigger,
             time_limit_hours: None,
             cron: None,
         }
@@ -74,7 +50,7 @@ impl TaskTrigger {
         )
         .bind(&self.id)
         .bind(&self.task_id)
-        .bind(&self.kind)
+        .bind(self.kind.to_string())
         .bind(self.time_limit_hours)
         .bind(&self.cron)
         .execute(db)

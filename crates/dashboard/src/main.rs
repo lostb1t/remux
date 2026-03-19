@@ -13,7 +13,7 @@ use shared::sdks::jellyfin::{
     BulkChannelRequest, BulkChannels, PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
     PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
     SaveEpgSource, ServerConfiguration, SessionInfoDto, SetLogLevel, StartTask, StartupConfiguration,
-    StartupUser, StopTask, TaskInfo, TaskTriggerInfo, TunerHostInfo, UpdateBrandingConfiguration,
+    StartupUser, StopTask, TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo, UpdateBrandingConfiguration,
     UpdateCatalogSettings, UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
     UpdateTaskTriggers, UpdateUser, UpdateUserPolicy, UserDto,
 };
@@ -462,16 +462,30 @@ fn SessionsCard(app_state: AppState) -> Element {
 }
 
 fn trigger_label(t: &TaskTriggerInfo) -> String {
-    match t.r#type.as_deref() {
-        Some("StartupTrigger") => "On server startup".into(),
-        Some("DailyTrigger") => {
+    let kind = t.r#type.as_deref()
+        .and_then(|s| s.parse::<TaskTriggerInfoType>().ok());
+    match kind {
+        Some(TaskTriggerInfoType::StartupTrigger) => "On server startup".into(),
+        Some(TaskTriggerInfoType::DailyTrigger) => {
             let ticks = t.time_of_day_ticks.unwrap_or(0);
             let total_secs = ticks / 10_000_000;
             let hour = total_secs / 3600;
             let min = (total_secs % 3600) / 60;
             format!("Daily at {:02}:{:02}", hour, min)
         }
-        _ => "Unknown".into(),
+        Some(TaskTriggerInfoType::WeeklyTrigger) => {
+            let ticks = t.time_of_day_ticks.unwrap_or(0);
+            let total_secs = ticks / 10_000_000;
+            let hour = total_secs / 3600;
+            let min = (total_secs % 3600) / 60;
+            let day = t.day_of_week.as_deref().unwrap_or("Sunday");
+            format!("Weekly on {} at {:02}:{:02}", day, hour, min)
+        }
+        Some(TaskTriggerInfoType::IntervalTrigger) => {
+            let hours = t.interval_ticks.unwrap_or(0) / 36_000_000_000;
+            format!("Every {} hour(s)", hours)
+        }
+        None => "Unknown".into(),
     }
 }
 
@@ -483,9 +497,11 @@ fn TaskTriggersModal(
     on_cancel: EventHandler,
 ) -> Element {
     let mut triggers = use_signal(|| task.triggers.clone().unwrap_or_default());
-    let mut new_type = use_signal(|| "DailyTrigger".to_string());
+    let mut new_type = use_signal(|| TaskTriggerInfoType::DailyTrigger);
     let mut new_hour = use_signal(|| "0".to_string());
     let mut new_min = use_signal(|| "0".to_string());
+    let mut new_day = use_signal(|| "Sunday".to_string());
+    let mut new_interval_hours = use_signal(|| "24".to_string());
     let mut saving = use_signal(|| false);
     let mut error: Signal<Option<String>> = use_signal(|| None);
 
@@ -521,12 +537,54 @@ fn TaskTriggersModal(
             select {
                 class: "select-input",
                 value: "{new_type.read()}",
-                onchange: move |evt| new_type.set(evt.value()),
-                option { value: "DailyTrigger", "Daily" }
-                option { value: "StartupTrigger", "On server startup" }
+                onchange: move |evt| new_type.set(evt.value().parse().unwrap_or(TaskTriggerInfoType::DailyTrigger)),
+                option { value: "{TaskTriggerInfoType::DailyTrigger}", "Daily" }
+                option { value: "{TaskTriggerInfoType::WeeklyTrigger}", "Weekly" }
+                option { value: "{TaskTriggerInfoType::IntervalTrigger}", "Interval" }
+                option { value: "{TaskTriggerInfoType::StartupTrigger}", "On server startup" }
             }
         }
-        if *new_type.read() == "DailyTrigger" {
+        if *new_type.read() == TaskTriggerInfoType::WeeklyTrigger {
+            div { style: "display: flex; gap: 1rem;",
+                div { class: "field",
+                    label { class: "field-label", "Day" }
+                    select {
+                        class: "select-input",
+                        value: "{new_day.read()}",
+                        onchange: move |evt| new_day.set(evt.value()),
+                        option { value: "Sunday", "Sunday" }
+                        option { value: "Monday", "Monday" }
+                        option { value: "Tuesday", "Tuesday" }
+                        option { value: "Wednesday", "Wednesday" }
+                        option { value: "Thursday", "Thursday" }
+                        option { value: "Friday", "Friday" }
+                        option { value: "Saturday", "Saturday" }
+                    }
+                }
+                div { class: "field",
+                    label { class: "field-label", "Hour (0–23)" }
+                    input {
+                        class: "field-input",
+                        r#type: "number",
+                        min: "0",
+                        max: "23",
+                        value: "{new_hour.read()}",
+                        oninput: move |evt| new_hour.set(evt.value()),
+                    }
+                }
+                div { class: "field",
+                    label { class: "field-label", "Minute (0–59)" }
+                    input {
+                        class: "field-input",
+                        r#type: "number",
+                        min: "0",
+                        max: "59",
+                        value: "{new_min.read()}",
+                        oninput: move |evt| new_min.set(evt.value()),
+                    }
+                }
+            }
+        } else if *new_type.read() == TaskTriggerInfoType::DailyTrigger {
             div { style: "display: flex; gap: 1rem;",
                 div { class: "field",
                     label { class: "field-label", "Hour (0–23)" }
@@ -551,21 +609,43 @@ fn TaskTriggersModal(
                     }
                 }
             }
+        } else if *new_type.read() == TaskTriggerInfoType::IntervalTrigger {
+            div { class: "field",
+                label { class: "field-label", "Every (hours)" }
+                input {
+                    class: "field-input",
+                    r#type: "number",
+                    min: "1",
+                    value: "{new_interval_hours.read()}",
+                    oninput: move |evt| new_interval_hours.set(evt.value()),
+                }
+            }
         }
         button {
             class: "btn btn-secondary",
             onclick: move |_| {
-                let trigger = match new_type.read().as_str() {
-                    "StartupTrigger" => TaskTriggerInfo {
-                        r#type: Some("StartupTrigger".into()),
+                let kind = *new_type.read();
+                let trigger = match kind {
+                    TaskTriggerInfoType::StartupTrigger => TaskTriggerInfo {
+                        r#type: Some(kind.to_string()),
                         ..Default::default()
                     },
-                    _ => {
+                    TaskTriggerInfoType::IntervalTrigger => {
+                        let hours: i64 = new_interval_hours.read().parse().unwrap_or(24).max(1);
+                        TaskTriggerInfo {
+                            r#type: Some(kind.to_string()),
+                            interval_ticks: Some(hours * 36_000_000_000),
+                            ..Default::default()
+                        }
+                    }
+                    TaskTriggerInfoType::DailyTrigger | TaskTriggerInfoType::WeeklyTrigger => {
                         let h: i64 = new_hour.read().parse().unwrap_or(0).clamp(0, 23);
                         let m: i64 = new_min.read().parse().unwrap_or(0).clamp(0, 59);
                         TaskTriggerInfo {
-                            r#type: Some("DailyTrigger".into()),
+                            r#type: Some(kind.to_string()),
                             time_of_day_ticks: Some(h * 36_000_000_000 + m * 600_000_000),
+                            day_of_week: (kind == TaskTriggerInfoType::WeeklyTrigger)
+                                .then(|| new_day.read().clone()),
                             ..Default::default()
                         }
                     }

@@ -9,6 +9,7 @@ use crate::db::auth;
 use crate::jellyfin;
 use crate::tasks::{TaskStatus, TaskView};
 use axum_anyhow::ApiResult as Result;
+use shared::sdks::jellyfin::models::TaskTriggerInfoType;
 
 #[cfg(test)]
 use crate::integration_test;
@@ -21,30 +22,61 @@ const TICKS_PER_MINUTE: i64 = 60 * TICKS_PER_SECOND;
 fn db_trigger_to_jellyfin(
     trigger: &jellyfin::db::TaskTrigger,
 ) -> jellyfin::TaskTriggerInfo {
-    let (trigger_type, time_of_day_ticks) = match trigger.kind {
-        jellyfin::db::TaskTriggerKind::Startup => ("StartupTrigger", None),
-        jellyfin::db::TaskTriggerKind::Schedule => {
-            let ticks = trigger.cron.as_deref().and_then(cron_to_time_of_day_ticks);
-            ("DailyTrigger", ticks)
+    let cron = trigger.cron.as_deref();
+    let (time_of_day_ticks, interval_ticks, day_of_week) = match trigger.kind {
+        TaskTriggerInfoType::StartupTrigger => (None, None, None),
+        TaskTriggerInfoType::IntervalTrigger => {
+            let hours = cron.and_then(cron_to_interval_hours);
+            (None, hours.map(|h| h * TICKS_PER_HOUR), None)
+        }
+        TaskTriggerInfoType::WeeklyTrigger => {
+            let ticks = cron.and_then(cron_to_time_of_day_ticks);
+            let day = cron.and_then(cron_to_day_name).map(str::to_string);
+            (ticks, None, day)
+        }
+        TaskTriggerInfoType::DailyTrigger => {
+            (cron.and_then(cron_to_time_of_day_ticks), None, None)
         }
     };
 
     jellyfin::TaskTriggerInfo {
-        r#type: Some(trigger_type.to_string()),
+        r#type: Some(trigger.kind.to_string()),
         time_of_day_ticks,
+        interval_ticks,
+        day_of_week,
         max_runtime_ticks: trigger.time_limit_hours.map(|h| h * TICKS_PER_HOUR),
-        interval_ticks: None,
-        day_of_week: None,
     }
 }
 
-/// Parse `MIN HOUR * * *` cron expressions into ticks-since-midnight.
-/// Returns None for anything more complex.
+/// Parse `MIN HOUR * * [DAY]` cron into ticks-since-midnight.
 fn cron_to_time_of_day_ticks(cron: &str) -> Option<i64> {
     let mut parts = cron.split_whitespace();
     let min: i64 = parts.next()?.parse().ok()?;
     let hour: i64 = parts.next()?.parse().ok()?;
     Some(hour * TICKS_PER_HOUR + min * TICKS_PER_MINUTE)
+}
+
+/// Parse `0 */HOURS * * *` interval cron into hours.
+fn cron_to_interval_hours(cron: &str) -> Option<i64> {
+    let mut parts = cron.split_whitespace();
+    parts.next(); // min
+    let hour_part = parts.next()?;
+    let hours: i64 = hour_part.strip_prefix("*/")?.parse().ok()?;
+    Some(hours)
+}
+
+/// Parse `MIN HOUR * * DAY_NUM` cron into day name.
+fn cron_to_day_name(cron: &str) -> Option<&'static str> {
+    let day_num: u8 = cron.split_whitespace().nth(4)?.parse().ok()?;
+    Some(match day_num {
+        1 => "Monday",
+        2 => "Tuesday",
+        3 => "Wednesday",
+        4 => "Thursday",
+        5 => "Friday",
+        6 => "Saturday",
+        _ => "Sunday",
+    })
 }
 
 fn task_info(
@@ -159,7 +191,6 @@ pub async fn get_task_by_id(
     Ok(Json(task_info(handler, triggers, last_result)))
 }
 
-/// Start specified task
 #[post("/scheduledtasks/running/{task_id}")]
 pub async fn start_task(
     Path(task_id): Path<String>,
@@ -170,7 +201,6 @@ pub async fn start_task(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Stop specified task
 #[delete("/scheduledtasks/running/{task_id}")]
 pub async fn stop_task(
     Path(task_id): Path<String>,
@@ -181,7 +211,44 @@ pub async fn stop_task(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Update specified task triggers
+fn day_name_to_cron(day: &str) -> u8 {
+    match day {
+        "Monday"    => 1,
+        "Tuesday"   => 2,
+        "Wednesday" => 3,
+        "Thursday"  => 4,
+        "Friday"    => 5,
+        "Saturday"  => 6,
+        _           => 0, // Sunday
+    }
+}
+
+fn trigger_to_cron(t: &jellyfin::TaskTriggerInfo) -> Option<String> {
+    let kind = t.r#type.as_deref()
+        .and_then(|s| s.parse::<TaskTriggerInfoType>().ok())
+        .unwrap_or(TaskTriggerInfoType::DailyTrigger);
+
+    match kind {
+        TaskTriggerInfoType::StartupTrigger => None,
+        TaskTriggerInfoType::IntervalTrigger => {
+            let hours = t.interval_ticks? / TICKS_PER_HOUR;
+            Some(format!("0 */{hours} * * *"))
+        }
+        TaskTriggerInfoType::DailyTrigger | TaskTriggerInfoType::WeeklyTrigger => {
+            let ticks = t.time_of_day_ticks?;
+            let total_secs = ticks / TICKS_PER_SECOND;
+            let hour = total_secs / 3600;
+            let min = (total_secs % 3600) / 60;
+            if kind == TaskTriggerInfoType::WeeklyTrigger {
+                let day = day_name_to_cron(t.day_of_week.as_deref().unwrap_or("Sunday"));
+                Some(format!("{min} {hour} * * {day}"))
+            } else {
+                Some(format!("{min} {hour} * * *"))
+            }
+        }
+    }
+}
+
 #[post("/scheduledtasks/{task_id}/triggers")]
 pub async fn update_task_triggers(
     Path(task_id): Path<String>,
@@ -194,17 +261,12 @@ pub async fn update_task_triggers(
         .map(|t| jellyfin::db::TaskTrigger {
             id: Uuid::new_v4().to_string(),
             task_id: task_id.clone(),
-            kind: match t.r#type.as_deref() {
-                Some("StartupTrigger") => jellyfin::db::TaskTriggerKind::Startup,
-                _ => jellyfin::db::TaskTriggerKind::Schedule,
-            },
+            kind: t.r#type
+                .as_deref()
+                .and_then(|s| s.parse::<TaskTriggerInfoType>().ok())
+                .unwrap_or(TaskTriggerInfoType::DailyTrigger),
             time_limit_hours: t.max_runtime_ticks.map(|ticks| ticks / TICKS_PER_HOUR),
-            cron: t.time_of_day_ticks.map(|ticks| {
-                let total_secs = ticks / TICKS_PER_SECOND;
-                let hour = total_secs / 3600;
-                let min = (total_secs % 3600) / 60;
-                format!("{min} {hour} * * *")
-            }),
+            cron: trigger_to_cron(&t),
         })
         .collect();
 
