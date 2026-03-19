@@ -56,12 +56,6 @@ Install cargo make
 cargo install --force cargo-make
 ```
 
-setup db
-
-```
-cargo make db-reset
-```
-
 run
 
 ```
