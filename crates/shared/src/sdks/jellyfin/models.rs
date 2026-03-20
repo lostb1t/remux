@@ -227,7 +227,7 @@ impl<'de> serde::Deserialize<'de> for AuthenticateUserByName {
 pub struct AuthenticationResult {
     pub access_token: Option<String>,
     pub server_id: String,
-    //pub session_info: Option<SessionInfoDto>,
+    pub session_info: Option<SessionInfoDto>,
     pub user: Option<UserDto>,
 }
 

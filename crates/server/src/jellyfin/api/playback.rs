@@ -29,7 +29,6 @@ use crate::torrent;
 use crate::utils;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
-use super::stub;
 
 #[post("/items/{id}/playbackinfo")]
 pub async fn items_playbackinfo(
@@ -623,6 +622,14 @@ pub async fn sessions_logout(
 
 #[post("/sessions/capabilities")]
 pub async fn sessions_capabilities(_session: auth::AuthSession) -> Result<StatusCode> {
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[post("/sessions/{id}/capabilities")]
+pub async fn sessions_capabilities_by_id(
+    Path(_id): Path<String>,
+    _session: auth::AuthSession,
+) -> Result<StatusCode> {
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1357,11 +1364,16 @@ pub async fn ping_playback_session(
 }
 
 #[post("/sessions/capabilities/full")]
-pub async fn sessions_capabilities_full(
-    State(state): State<AppState>,
+pub async fn sessions_capabilities_full(_session: auth::AuthSession) -> Result<StatusCode> {
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[post("/sessions/{id}/capabilities/full")]
+pub async fn sessions_capabilities_full_by_id(
+    Path(_id): Path<String>,
     _session: auth::AuthSession,
-) -> Result<impl IntoResponse> {
-    stub(State(state)).await
+) -> Result<StatusCode> {
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize, Default)]
