@@ -9,7 +9,7 @@ use shared::sdks::jellyfin::{
     CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload, DeleteEpgSource,
     DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EpgSourceInfo, GetAioCatalogs,
     GetBrandingConfiguration, GetEpgSources, GetIptvChannels, GetItems,
-    AuthorizeQuickConnect, GetScheduledTasks, GetSessions, GetStartupConfiguration,
+    GetScheduledTasks, GetSessions, GetStartupConfiguration,
     GetSystemConfiguration,
     GetTunerHosts, GetUsers, JellyfinAuth, PatchChannel, PatchChannelRequest,
     PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
@@ -3281,76 +3281,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                                 if *saving.read() { "Saving…" } else { "Save Settings" }
                             }
                         }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn QuickConnectApproveCard(app_state: AppState) -> Element {
-    let mut code = use_signal(String::new);
-    let mut approving = use_signal(|| false);
-    let mut error = use_signal(|| Option::<String>::None);
-    let mut approved = use_signal(|| false);
-
-    let on_approve = move |e: Event<FormData>| {
-        e.prevent_default();
-        let client = app_state.client.clone();
-        let c = code.peek().trim().to_string();
-        if c.is_empty() {
-            return;
-        }
-        approving.set(true);
-        error.set(None);
-        approved.set(false);
-        spawn(async move {
-            match client.execute(AuthorizeQuickConnect { code: c }).await {
-                Ok(true) => {
-                    approved.set(true);
-                    code.set(String::new());
-                }
-                Ok(false) => error.set(Some("Code not found or already expired.".into())),
-                Err(e) => error.set(Some(format!("Failed: {e}"))),
-            }
-            approving.set(false);
-        });
-    };
-
-    rsx! {
-        div { class: "card",
-            div { class: "card-header",
-                span { class: "card-title", "QuickConnect" }
-            }
-            div { class: "card-body",
-                p { class: "field-hint", "Enter the 6-digit code shown on a client's login screen to approve it." }
-                if let Some(err) = error.read().as_ref() {
-                    div { class: "alert-error", "{err}" }
-                }
-                if *approved.read() {
-                    div { class: "alert-success", "Device approved. The client can now finish logging in." }
-                }
-                form {
-                    onsubmit: on_approve,
-                    style: "display:flex;gap:8px;align-items:flex-end",
-                    div { class: "field", style: "flex:1;margin:0",
-                        label { class: "field-label", r#for: "qc-code", "QuickConnect Code" }
-                        input {
-                            id: "qc-code",
-                            r#type: "text",
-                            class: "field-input",
-                            placeholder: "123456",
-                            maxlength: "6",
-                            value: "{code}",
-                            oninput: move |e| code.set(e.value()),
-                        }
-                    }
-                    button {
-                        r#type: "submit",
-                        class: "btn btn-primary",
-                        disabled: *approving.read(),
-                        if *approving.read() { "Approving…" } else { "Approve" }
                     }
                 }
             }
