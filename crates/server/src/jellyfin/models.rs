@@ -112,7 +112,7 @@ pub fn db_user_to_dto(user: db::User) -> UserDto {
     }
 }
 
-pub fn db_state_to_dto(state: db::UserMediaState) -> UserItemDataDto {
+pub fn db_state_to_dto(state: db::UserMediaState, media_id: uuid::Uuid) -> UserItemDataDto {
     UserItemDataDto {
         played: state.played_at.is_some(),
         last_played_date: state.played_at.map(|x| x.and_utc()),
@@ -120,6 +120,7 @@ pub fn db_state_to_dto(state: db::UserMediaState) -> UserItemDataDto {
         play_count: state.play_count as i32,
         is_favorite: state.favorite,
         key: state.media_key,
+        item_id: media_id,
         ..Default::default()
     }
 }
@@ -160,7 +161,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         }),
         series_id: media.parent_id,
         season_id: media.parent_id,
-        user_data: media.user_state.clone().map(db_state_to_dto),
+        user_data: media.user_state.clone().map(|s| db_state_to_dto(s, media.id.clone())),
         media_type: match media.kind {
             db::MediaKind::Movie | db::MediaKind::Episode => "Video".to_string(),
             db::MediaKind::TvChannel | db::MediaKind::TvProgram => "Video".to_string(),

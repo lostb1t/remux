@@ -1718,7 +1718,7 @@ pub struct UserItemDataDto {
     pub last_updated: Option<DateTime<Utc>>,
     #[default(String::new())]
     pub key: String,
-    pub item_id: Option<Uuid>,
+    pub item_id: Uuid,
 }
 
 #[derive(

@@ -1467,7 +1467,7 @@ pub async fn user_mark_played(
         .await?
         .context_not_found("not found", "not found")?;
     let ms = media.mark_played(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::db_state_to_dto(ms)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(ms, id)).into_response())
 }
 
 #[delete("/userplayeditems/{id}")]
@@ -1480,7 +1480,7 @@ pub async fn user_unmark_played(
         .await?
         .context_not_found("not found", "not found")?;
     let ms = media.mark_unplayed(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::db_state_to_dto(ms)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(ms, id)).into_response())
 }
 
 /// Jellyfin-compatible master HLS playlist endpoint.
