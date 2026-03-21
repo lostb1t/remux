@@ -233,7 +233,7 @@ fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
                 is_active: true,
                 supports_media_control: true,
                 supports_remote_control: true,
-                server_id: Some(crate::utils::server_id()),
+                server_id: crate::utils::server_id(),
                 ..Default::default()
             }
         })

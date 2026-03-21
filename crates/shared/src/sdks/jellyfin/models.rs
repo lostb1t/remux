@@ -2012,7 +2012,8 @@ pub struct SessionInfoDto {
     pub now_playing_queue_full_items: Option<Vec<BaseItemDto>>,
     pub has_custom_device_name: bool,
     pub playlist_item_id: Option<String>,
-    pub server_id: Option<String>,
+    #[default("remux".to_string())]
+    pub server_id: String,
     pub user_primary_image_tag: Option<String>,
     pub supported_commands: Vec<String>,
 }

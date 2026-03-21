@@ -128,6 +128,7 @@ pub async fn users_authenticatebyname(
         application_version: Some(device.app_version.clone()),
         user_id: device.user_id.to_string(),
         user_name: Some(user.username.clone()),
+        server_id: server_id(),
         is_active: true,
         ..Default::default()
     };

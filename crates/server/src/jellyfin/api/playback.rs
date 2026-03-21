@@ -1448,7 +1448,7 @@ pub async fn get_sessions(
                 now_playing_item: now_playing,
                 transcoding_info,
                 is_active: true,
-                server_id: Some(crate::utils::server_id()),
+                server_id: crate::utils::server_id(),
                 ..Default::default()
             }
         })
