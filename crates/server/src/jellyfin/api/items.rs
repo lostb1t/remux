@@ -272,7 +272,7 @@ pub async fn get_items(
     // handle details request
     if let Some(ids) = &q.ids {
         if ids.len() == 1 {
-            let media = item(state, session, ids[0]).await?;
+            let media = item(state, session, ids[0], q.fields.as_deref()).await?;
             if let Some(media) = media {
                 return Ok(ItemsQueryResult {
                     items: vec![media],
@@ -601,7 +601,11 @@ pub async fn item(
     state: AppState,
     session: auth::AuthSession,
     id: Uuid,
+    fields: Option<&[jellyfin::ItemFields]>,
 ) -> Result<Option<jellyfin::BaseItemDto>> {
+    let want_sources = fields
+        .map(|f| f.contains(&jellyfin::ItemFields::MediaSources))
+        .unwrap_or(true);
     let mut media = match db::Media::get_by_filter(
         &state.ctx.db,
         &db::MediaFilter {
@@ -619,13 +623,15 @@ pub async fn item(
             if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await
             {
                 if let Some(meta) = state.ctx.store.get::<sdks::aio::Meta>(id) {
+                    // Save basic media first (race-safe: if concurrent request already saved it, re-fetch)
                     let mut media: db::Media = aio
                         .get_meta(meta.media_type.clone(), meta.id.clone())
                         .await?
                         .try_into()?;
 
-                    // web client makes 2 simultaneous requests so we get race conditions.
-                    if let Err(_err) = media.save(&state.ctx.db).await {
+                    let is_new = media.save(&state.ctx.db).await.is_ok();
+                    if !is_new {
+                        // Already in DB (race condition) — re-fetch, skip enrichment, let post-match handle sources
                         media = db::Media::get_by_filter(
                             &state.ctx.db,
                             &db::MediaFilter {
@@ -639,7 +645,9 @@ pub async fn item(
                         .next()
                         .unwrap();
                     }
+                    state.ctx.store.delete(id.to_string());
 
+                    
                     media
                 } else {
                     return Ok(None);
@@ -649,15 +657,34 @@ pub async fn item(
             }
         }
     };
+  
+  let tasks = vec![];
+  if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
+  if media.refreshed_at.is_none() {
+    let service = crate::providers::MetaProviderService::new(
+                            vec![
+                                Box::new(crate::providers::AioMetaProvider),
+                                Box::new(crate::providers::TmdbMetaProvider),
+                            ],
+                            vec![Box::new(crate::providers::AioTreeSyncProvider)],
+                        );
+                        
+                            
+    tasks.push(service.process(vec![media.clone()], &state.ctx.clone(), false));
+  }
+  }
 
     if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-        if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
-            media.refresh_sources(&state.ctx.db, &aio).await?;
-            warm_subtitle_cache(&state.ctx.db, &media);
+        if want_sources {
+            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
+                tasks.push(media.refresh_sources(&state.ctx.db, &aio));
+                warm_subtitle_cache(&state.ctx.db, &media);
+            }
         }
         media.sources(&state.ctx.db).await?;
         media.user_state(&state.ctx.db, &session.user).await?;
     }
+    tokio.join(tasks)
     media.load_relations(&state.ctx.db).await?;
     let mut base_item = jellyfin::db_media_to_item(media.clone());
     if media.sources.as_ref().is_none_or(|s| s.is_empty()) {
@@ -680,8 +707,9 @@ pub async fn items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
+    Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    return Ok(Json(item(state, session, id).await?).into_response());
+    return Ok(Json(item(state, session, id, q.fields.as_deref()).await?).into_response());
 }
 
 #[get("/items/suggestions")]

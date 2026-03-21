@@ -473,8 +473,9 @@ pub async fn users_items_get(
     State(state): State<AppState>,
     session: auth::AuthSession,
     Path((user_id, id)): Path<(Uuid, Uuid)>,
+    Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    return Ok(Json(item(state, session, id).await?).into_response());
+    return Ok(Json(item(state, session, id, q.fields.as_deref()).await?).into_response());
 }
 
 #[get("/users/{user_id}/items")]
