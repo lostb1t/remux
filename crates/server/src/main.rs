@@ -213,6 +213,7 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
     let dashboard_index = format!("{}/index.html", ctx.config.dashboard_path);
     let router = Router::new()
         .route("/websocket", get(ws::ws_handler))
+        .route("/socket", get(ws::ws_handler))
         .merge(collect_routes())
         .nest_service(
             "/admin",

@@ -1308,7 +1308,8 @@ pub struct DisplayPreferencesDto {
     pub remember_indexing: bool,
     pub primary_image_height: i64,
     pub primary_image_width: i64,
-    pub custom_prefs: Option<HashMap<String, Option<String>>>,
+    #[serde(default)]
+    pub custom_prefs: HashMap<String, Option<String>>,
     #[serde(default, deserialize_with = "deserialize_optional")]
     pub scroll_direction: Option<ScrollDirection>,
     pub show_backdrop: bool,

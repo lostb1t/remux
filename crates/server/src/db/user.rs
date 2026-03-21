@@ -482,7 +482,8 @@ pub struct JellyfinDisplayPrefsData {
     pub primary_image_height: i64,
     #[default(250)]
     pub primary_image_width: i64,
-    pub custom_prefs: Option<HashMap<String, Option<String>>>,
+    #[serde(default)]
+    pub custom_prefs: HashMap<String, Option<String>>,
     #[default("Horizontal".to_string())]
     pub scroll_direction: String,
     #[default(true)]

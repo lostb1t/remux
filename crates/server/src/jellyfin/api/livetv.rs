@@ -103,6 +103,21 @@ pub async fn livetv_channel(
 }
 
 // --------------------------------------------------------------------------
+// GET /livetv/programs/recommended
+// --------------------------------------------------------------------------
+
+#[get("/livetv/programs/recommended")]
+pub async fn livetv_programs_recommended(
+    _session: AuthSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(jellyfin::QueryResult::<jellyfin::BaseItemDto> {
+        total_record_count: 0,
+        start_index: 0,
+        items: vec![],
+    }))
+}
+
+// --------------------------------------------------------------------------
 // GET /livetv/programs
 // --------------------------------------------------------------------------
 
