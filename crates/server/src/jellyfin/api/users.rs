@@ -14,7 +14,8 @@ use crate::db;
 use crate::db::auth;
 use crate::db::user::User;
 use crate::jellyfin;
-use crate::utils::server_id;
+use crate::jellyfin::api::system::QuickConnectEntry;
+use crate::utils::{get_uuid, server_id};
 use crate::ws::WsEvent;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 
@@ -119,6 +120,67 @@ pub async fn users_authenticatebyname(
     .context_unauthorized("not found", "not foubd")?;
     let device = auth::Device::new_from_header(auth_header, &user)?;
     device.save(&state.ctx.db).await?;
+
+    let session_info = jellyfin::SessionInfoDto {
+        id: Some(device.id.clone()),
+        device_id: Some(device.id.clone()),
+        device_name: Some(device.name.clone()),
+        client: Some(device.app_name.clone()),
+        application_version: Some(device.app_version.clone()),
+        user_id: device.user_id.to_string(),
+        user_name: Some(user.username.clone()),
+        server_id: server_id(),
+        is_active: true,
+        ..Default::default()
+    };
+
+    Ok(Json(jellyfin::AuthenticationResult {
+        access_token: Some(device.access_token),
+        server_id: server_id(),
+        session_info: Some(session_info),
+        user: Some(jellyfin::db_user_to_dto(user)),
+    }))
+}
+
+#[post("/users/authenticatewithquickconnect")]
+pub async fn authenticate_with_quickconnect(
+    State(state): State<AppState>,
+    auth_header: auth::JellyfinAuthHeader,
+    Json(body): Json<jellyfin::AuthenticateWithQuickConnect>,
+) -> Result<impl IntoResponse> {
+    let entry = state
+        .ctx
+        .store
+        .get::<QuickConnectEntry>(format!("qc:{}", body.secret))
+        .context_unauthorized("Unauthorized", "QuickConnect request not found or expired")?;
+
+    if !entry.authenticated {
+        return Err(anyhow::anyhow!("not authenticated"))
+            .context_unauthorized("Unauthorized", "QuickConnect request has not been approved yet");
+    }
+
+    let user_id = entry
+        .user_id
+        .context_unauthorized("Unauthorized", "QuickConnect entry missing user")?;
+
+    let user = db::User::get_by_id(&state.ctx.db, &user_id)
+        .await?
+        .context_unauthorized("Unauthorized", "User not found")?;
+
+    let device = auth::Device {
+        id: auth_header.device_id.unwrap_or_else(|| get_uuid().to_string()),
+        name: auth_header.device.unwrap_or_else(|| "QuickConnect".to_string()),
+        app_name: auth_header.client.unwrap_or_else(|| "QuickConnect".to_string()),
+        app_version: auth_header.version.unwrap_or_else(|| "1.0".to_string()),
+        user_id: user.id,
+        access_token: get_uuid().to_string(),
+        last_activity_at: None,
+    };
+    device.save(&state.ctx.db).await?;
+
+    // clean up store entries
+    state.ctx.store.delete(format!("qc:{}", body.secret));
+    state.ctx.store.delete(format!("qc:code:{}", entry.code));
 
     let session_info = jellyfin::SessionInfoDto {
         id: Some(device.id.clone()),

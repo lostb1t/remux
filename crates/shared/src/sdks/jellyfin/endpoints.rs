@@ -712,3 +712,24 @@ impl Endpoint for BulkChannels {
         Body::Json(serde_json::to_value(&self.request).unwrap_or_default())
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct AuthorizeQuickConnect {
+    pub code: String,
+}
+
+impl Endpoint for AuthorizeQuickConnect {
+    type Output = bool;
+
+    fn path(&self) -> String {
+        "/quickconnect/authorize".into()
+    }
+
+    fn method(&self) -> Method {
+        Method::POST
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        vec![("Code".into(), self.code.clone())]
+    }
+}

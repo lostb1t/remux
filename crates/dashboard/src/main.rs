@@ -9,7 +9,8 @@ use shared::sdks::jellyfin::{
     CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload, DeleteEpgSource,
     DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EpgSourceInfo, GetAioCatalogs,
     GetBrandingConfiguration, GetEpgSources, GetIptvChannels, GetItems,
-    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
+    AuthorizeQuickConnect, GetScheduledTasks, GetSessions, GetStartupConfiguration,
+    GetSystemConfiguration,
     GetTunerHosts, GetUsers, JellyfinAuth, PatchChannel, PatchChannelRequest,
     PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
     PostStartupUser, PublicSystemInfo, SaveEpgSource, ServerConfiguration,
@@ -2987,7 +2988,9 @@ fn UserForm(
 
 #[component]
 fn SettingsPage(app_state: AppState) -> Element {
-    rsx! { ServerSettingsCard { app_state } }
+    rsx! {
+        ServerSettingsCard { app_state }
+    }
 }
 
 #[component]
@@ -3002,6 +3005,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
+    let mut quick_connect_enabled = use_signal(|| true);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -3027,6 +3031,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             .map(|v| v.join(", "))
                             .unwrap_or_default(),
                     );
+                    quick_connect_enabled.set(cfg.quick_connect_available.unwrap_or(true));
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
@@ -3047,9 +3052,11 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages.peek().clone();
+        let qc_enabled = *quick_connect_enabled.peek();
 
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
         cfg.server_name = Some(name);
+        cfg.quick_connect_available = Some(qc_enabled);
         cfg.aio_url = Some(url);
         cfg.catalog_max_items = Some(max);
         cfg.p2p_enabled = Some(p2p_on);
@@ -3252,6 +3259,20 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                         }
 
+                        div { class: "field",
+                            label { class: "field-label",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *quick_connect_enabled.read(),
+                                    oninput: move |e| quick_connect_enabled.set(e.checked()),
+                                }
+                                " Enable QuickConnect"
+                            }
+                            p { class: "field-hint",
+                                "Allow clients to log in by entering a code shown on the login screen."
+                            }
+                        }
+
                         div { class: "form-actions",
                             button {
                                 r#type: "submit",
@@ -3260,6 +3281,76 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                                 if *saving.read() { "Saving…" } else { "Save Settings" }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn QuickConnectApproveCard(app_state: AppState) -> Element {
+    let mut code = use_signal(String::new);
+    let mut approving = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut approved = use_signal(|| false);
+
+    let on_approve = move |e: Event<FormData>| {
+        e.prevent_default();
+        let client = app_state.client.clone();
+        let c = code.peek().trim().to_string();
+        if c.is_empty() {
+            return;
+        }
+        approving.set(true);
+        error.set(None);
+        approved.set(false);
+        spawn(async move {
+            match client.execute(AuthorizeQuickConnect { code: c }).await {
+                Ok(true) => {
+                    approved.set(true);
+                    code.set(String::new());
+                }
+                Ok(false) => error.set(Some("Code not found or already expired.".into())),
+                Err(e) => error.set(Some(format!("Failed: {e}"))),
+            }
+            approving.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "QuickConnect" }
+            }
+            div { class: "card-body",
+                p { class: "field-hint", "Enter the 6-digit code shown on a client's login screen to approve it." }
+                if let Some(err) = error.read().as_ref() {
+                    div { class: "alert-error", "{err}" }
+                }
+                if *approved.read() {
+                    div { class: "alert-success", "Device approved. The client can now finish logging in." }
+                }
+                form {
+                    onsubmit: on_approve,
+                    style: "display:flex;gap:8px;align-items:flex-end",
+                    div { class: "field", style: "flex:1;margin:0",
+                        label { class: "field-label", r#for: "qc-code", "QuickConnect Code" }
+                        input {
+                            id: "qc-code",
+                            r#type: "text",
+                            class: "field-input",
+                            placeholder: "123456",
+                            maxlength: "6",
+                            value: "{code}",
+                            oninput: move |e| code.set(e.value()),
+                        }
+                    }
+                    button {
+                        r#type: "submit",
+                        class: "btn btn-primary",
+                        disabled: *approving.read(),
+                        if *approving.read() { "Approving…" } else { "Approve" }
                     }
                 }
             }

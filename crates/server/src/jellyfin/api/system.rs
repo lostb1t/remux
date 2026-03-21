@@ -1,17 +1,20 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use http::StatusCode;
 use remux_macros::{get, post, route};
+use serde::Deserialize;
 use serde_json::json;
+use std::time::Duration;
+use uuid::Uuid;
 
 use crate::AppState;
-use crate::db::auth;
+use crate::db::{self, auth};
 use crate::jellyfin;
-use crate::utils::server_id;
+use crate::utils::{self, get_uuid, server_id};
 use anyhow;
-use axum_anyhow::{ApiResult as Result, IntoApiError};
+use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 
 use super::{mock_items, stub};
 
@@ -184,7 +187,115 @@ pub async fn syncplay_list(
 pub async fn quickconnect_enabled(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
-    Ok("false".to_string())
+    let cfg = db::Settings::get_config(&state.ctx.db).await?;
+    let enabled = cfg.quick_connect_available.unwrap_or(true);
+    Ok(Json(enabled))
+}
+
+#[derive(Clone)]
+pub struct QuickConnectEntry {
+    pub code: String,
+    pub authenticated: bool,
+    pub user_id: Option<Uuid>,
+}
+
+#[post("/quickconnect/initiate")]
+pub async fn quickconnect_initiate(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    let cfg = db::Settings::get_config(&state.ctx.db).await?;
+    if !cfg.quick_connect_available.unwrap_or(true) {
+        return Err(anyhow::anyhow!("QuickConnect is disabled")).context_forbidden(
+            "Forbidden",
+            "QuickConnect is disabled on this server",
+        );
+    }
+
+    let secret = get_uuid().simple().to_string();
+    let code = format!("{:06}", get_uuid().as_u128() % 1_000_000);
+
+    let entry = QuickConnectEntry {
+        code: code.clone(),
+        authenticated: false,
+        user_id: None,
+    };
+    state.ctx.store.save(format!("qc:{secret}"), entry, Duration::from_secs(600));
+    state.ctx.store.save(format!("qc:code:{code}"), secret.clone(), Duration::from_secs(600));
+
+    Ok(Json(jellyfin::QuickConnectResult {
+        secret,
+        code,
+        authenticated: false,
+        date_added: Some(chrono::Utc::now()),
+        authentication_token: None,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct QuickConnectSecretQuery {
+    #[serde(rename = "Secret", alias = "secret")]
+    pub secret: String,
+}
+
+#[derive(Deserialize)]
+pub struct QuickConnectCodeQuery {
+    #[serde(rename = "Code", alias = "code")]
+    pub code: String,
+}
+
+#[get("/quickconnect/connect")]
+pub async fn quickconnect_connect(
+    State(state): State<AppState>,
+    Query(q): Query<QuickConnectSecretQuery>,
+) -> Result<impl IntoResponse> {
+    let entry = state
+        .ctx
+        .store
+        .get::<QuickConnectEntry>(format!("qc:{}", q.secret))
+        .context_not_found("NotFound", "QuickConnect request not found or expired")?;
+
+    Ok(Json(jellyfin::QuickConnectResult {
+        secret: q.secret.clone(),
+        code: entry.code.clone(),
+        authenticated: entry.authenticated,
+        authentication_token: if entry.authenticated {
+            Some(q.secret.clone())
+        } else {
+            None
+        },
+        date_added: None,
+    }))
+}
+
+#[post("/quickconnect/authorize")]
+pub async fn quickconnect_authorize(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Query(q): Query<QuickConnectCodeQuery>,
+) -> Result<impl IntoResponse> {
+    let secret = state
+        .ctx
+        .store
+        .get::<String>(format!("qc:code:{}", q.code))
+        .context_not_found("NotFound", "QuickConnect code not found or expired")?;
+
+    let entry = state
+        .ctx
+        .store
+        .get::<QuickConnectEntry>(format!("qc:{secret}"))
+        .context_not_found("NotFound", "QuickConnect request not found or expired")?;
+
+    state.ctx.store.save(
+        format!("qc:{secret}"),
+        QuickConnectEntry {
+            authenticated: true,
+            user_id: Some(session.user.id),
+            ..entry
+        },
+        Duration::from_secs(300),
+    );
+
+    Ok(Json(true))
 }
 
 const BRANDING_CONFIG_KEY: &str = "branding_configuration";

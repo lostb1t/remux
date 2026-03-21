@@ -59,6 +59,25 @@ pub struct BrandingOptions {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
 #[serde(rename_all = "PascalCase")]
+pub struct QuickConnectResult {
+    pub secret: String,
+    pub code: String,
+    pub authenticated: bool,
+    pub date_added: Option<DateTime<Utc>>,
+    pub authentication_token: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct AuthenticateWithQuickConnect {
+    #[serde(alias = "secret", default)]
+    pub secret: String,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
+#[serde(rename_all = "PascalCase")]
 pub struct ServerConfiguration {
     /// Gets or sets a value indicating whether to enable prometheus metrics exporting.
     #[default(Some(false))]
