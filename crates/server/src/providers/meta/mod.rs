@@ -186,11 +186,13 @@ impl MetaProviderService {
 
     /// Process a batch of media: enrich metadata and sync trees for series.
     /// Runs up to 10 items concurrently. Errors on individual items are logged and skipped.
+    /// If `save` is true, the resulting batch is upserted to the DB before returning.
     pub async fn process(
         &self,
         media: Vec<db::Media>,
         ctx: &AppContext,
         force_refresh: bool,
+        save: bool,
     ) -> Result<Vec<db::Media>> {
         let total = media.len();
         let counter = AtomicUsize::new(0);
@@ -230,7 +232,13 @@ impl MetaProviderService {
             .collect()
             .await;
 
-        Ok(results.into_iter().flatten().collect())
+        let batch: Vec<db::Media> = results.into_iter().flatten().collect();
+
+        if save && !batch.is_empty() {
+            db::Media::upsert(&ctx.db, &batch).await?;
+        }
+
+        Ok(batch)
     }
 }
 

@@ -42,8 +42,7 @@ impl Task for RefreshLibraryTask {
                 break;
             }
             let fetched = batch.len() as u32;
-            let updated = service.process(batch, &ctx, false).await?;
-            db::Media::upsert(&ctx.db, &updated).await?;
+            service.process(batch, &ctx, false, true).await?;
             if fetched < CHUNK_SIZE {
                 break;
             }

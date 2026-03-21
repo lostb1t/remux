@@ -44,8 +44,7 @@ impl Task for SeriesSyncTask {
         .await?
         .records;
 
-        let updated_media = service.process(media_list, &ctx, false).await?;
-        db::Media::upsert(&ctx.db, &updated_media).await?;
+        service.process(media_list, &ctx, false, true).await?;
 
         Ok(())
     }

@@ -421,10 +421,7 @@ pub async fn refresh_item(
             vec![Box::new(crate::providers::AioTreeSyncProvider)],
         );
         let force_refresh = q.replace_all_metadata;
-        let updated = service
-            .process(vec![media], &state.ctx, force_refresh)
-            .await?;
-        db::Media::upsert(&state.ctx.db, &updated).await?;
+        service.process(vec![media], &state.ctx, force_refresh, true).await?;
     }
 
     let _ = state.ctx.ws_tx.send(crate::ws::WsEvent::LibraryChanged);
@@ -658,33 +655,54 @@ pub async fn item(
         }
     };
   
-  let tasks = vec![];
-  if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
-  if media.refreshed_at.is_none() {
-    let service = crate::providers::MetaProviderService::new(
-                            vec![
-                                Box::new(crate::providers::AioMetaProvider),
-                                Box::new(crate::providers::TmdbMetaProvider),
-                            ],
-                            vec![Box::new(crate::providers::AioTreeSyncProvider)],
-                        );
-                        
-                            
-    tasks.push(service.process(vec![media.clone()], &state.ctx.clone(), false));
-  }
-  }
+    let need_refresh = media.refreshed_at.is_none()
+        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series);
+    let needs_sources = want_sources
+        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode);
+
+    let media_clone = media.clone();
+    let ctx2 = state.ctx.clone();
+    let mut media_for_sources = media.clone();
+    let db2 = state.ctx.db.clone();
+
+    let (refresh_res, src_res) = tokio::join!(
+        async move {
+            if need_refresh {
+                let service = crate::providers::MetaProviderService::new(
+                    vec![
+                        Box::new(crate::providers::AioMetaProvider),
+                        Box::new(crate::providers::TmdbMetaProvider),
+                    ],
+                    vec![Box::new(crate::providers::AioTreeSyncProvider)],
+                );
+                service.process(vec![media_clone], &ctx2, false, true).await
+            } else {
+                Ok(vec![])
+            }
+        },
+        async move {
+            if needs_sources {
+                if let Ok(aio) = crate::aio::AioService::from_settings(&db2).await {
+                    warm_subtitle_cache(&db2, &media_for_sources);
+                    media_for_sources.refresh_sources(&db2, &aio).await?;
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+    );
+
+    if let Err(e) = refresh_res {
+        warn!(id = %media.id, error = %e, "provider refresh failed");
+    }
+    if let Err(e) = src_res {
+        warn!(id = %media.id, error = %e, "source refresh failed");
+    }
 
     if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-        if want_sources {
-            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
-                tasks.push(media.refresh_sources(&state.ctx.db, &aio));
-                warm_subtitle_cache(&state.ctx.db, &media);
-            }
-        }
         media.sources(&state.ctx.db).await?;
         media.user_state(&state.ctx.db, &session.user).await?;
     }
-    tokio.join(tasks)
+
     media.load_relations(&state.ctx.db).await?;
     let mut base_item = jellyfin::db_media_to_item(media.clone());
     if media.sources.as_ref().is_none_or(|s| s.is_empty()) {
