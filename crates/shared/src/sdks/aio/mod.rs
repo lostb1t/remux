@@ -548,7 +548,8 @@ pub struct Episode {
     pub overview: Option<String>,
     pub number: Option<i64>,
     pub description: Option<String>,
-    pub rating: Option<String>,
+    #[serde(default, deserialize_with = "super::deserialize_option_number_from_string")]
+    pub rating: Option<f64>,
     #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
     pub runtime: Option<Duration>,
 }
