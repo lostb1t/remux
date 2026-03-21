@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
 
-/// Gracefully deserializes `Option<T>` where `T: FromStr`.
+///// Gracefully deserializes `Option<T>` where `T: FromStr`.
 /// Returns `None` on missing, null, empty string, or any parse failure.
 fn deserialize_optional<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
 where
@@ -19,6 +19,17 @@ where
 {
     let s: Option<String> = Option::deserialize(d)?;
     Ok(s.and_then(|s| s.parse().ok()))
+}
+
+/// Gracefully deserializes `T` where `T: FromStr + Default`.
+/// Returns `T::default()` on missing, null, empty string, or any parse failure.
+fn deserialize_optional_with_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    T: FromStr + Default,
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(d)?;
+    Ok(s.and_then(|s| s.parse().ok()).unwrap_or_default())
 }
 
 #[skip_serializing_none]
@@ -1254,37 +1265,35 @@ pub struct MetadataEditorInfo {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, default2::Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct UserConfiguration {
     pub audio_language_preference: Option<String>,
-    #[serde(default)]
-    pub play_default_audio_track: Option<bool>,
+    #[default(true)]
+    pub play_default_audio_track: bool,
     pub subtitle_language_preference: Option<String>,
-    #[serde(default)]
-    pub display_missing_episodes: Option<bool>,
+    pub display_missing_episodes: bool,
     #[serde(default)]
     pub grouped_folders: Vec<String>,
-    #[serde(default, deserialize_with = "deserialize_optional")]
-    pub subtitle_mode: Option<SubtitleMode>,
-    #[serde(default)]
-    pub display_collections_view: Option<bool>,
-    #[serde(default)]
-    pub enable_local_password: Option<bool>,
+    #[default(SubtitleMode::Default)]
+    #[serde(default, deserialize_with = "deserialize_optional_with_default")]
+    pub subtitle_mode: SubtitleMode,
+    pub display_collections_view: bool,
+    pub enable_local_password: bool,
     #[serde(default)]
     pub ordered_views: Vec<String>,
     #[serde(default)]
     pub latest_items_excludes: Vec<String>,
     #[serde(default)]
     pub my_media_excludes: Vec<String>,
-    #[serde(default)]
-    pub hide_played_in_latest: Option<bool>,
-    #[serde(default)]
-    pub remember_audio_selections: Option<bool>,
-    #[serde(default)]
-    pub remember_subtitle_selections: Option<bool>,
-    #[serde(default)]
-    pub enable_next_episode_auto_play: Option<bool>,
+    #[default(true)]
+    pub hide_played_in_latest: bool,
+    #[default(true)]
+    pub remember_audio_selections: bool,
+    #[default(true)]
+    pub remember_subtitle_selections: bool,
+    #[default(true)]
+    pub enable_next_episode_auto_play: bool,
     pub cast_receiver_id: Option<String>,
 }
 
@@ -1384,6 +1393,7 @@ pub enum SubtitleDeliveryMethod {
 #[derive(
     Debug,
     Clone,
+    Default,
     PartialEq,
     Eq,
     Serialize,
@@ -1394,6 +1404,7 @@ pub enum SubtitleDeliveryMethod {
 #[serde(rename_all = "PascalCase")]
 #[strum(serialize_all = "PascalCase")]
 pub enum SubtitleMode {
+    #[default]
     Default,
     Always,
     OnlyForced,
@@ -1470,111 +1481,81 @@ pub enum SyncPlayUserAccessType {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, default2::Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct UserPolicy {
     pub is_administrator: bool,
+    #[default(Some(true))]
     pub is_hidden: Option<bool>,
+    #[default(Some(false))]
     pub enable_collection_management: Option<bool>,
+    #[default(Some(false))]
     pub enable_subtitle_management: Option<bool>,
+    #[default(Some(false))]
     pub enable_lyric_management: Option<bool>,
+    #[default(Some(false))]
     pub is_disabled: Option<bool>,
     pub blocked_tags: Option<Vec<String>>,
     pub allowed_tags: Option<Vec<String>>,
-    pub enable_user_preference_access: Option<bool>,
+    #[default(true)]
+    pub enable_user_preference_access: bool,
     pub access_schedules: Option<Vec<String>>,
     pub block_unrated_items: Option<Vec<String>>,
-    pub enable_remote_control_of_other_users: Option<bool>,
-    pub enable_shared_device_control: Option<bool>,
-    pub enable_remote_access: Option<bool>,
-    pub enable_live_tv_management: Option<bool>,
-    pub enable_live_tv_access: Option<bool>,
+    pub enable_remote_control_of_other_users: bool,
+    #[default(true)]
+    pub enable_shared_device_control: bool,
+    #[default(true)]
+    pub enable_remote_access: bool,
+    #[default(true)]
+    pub enable_live_tv_management: bool,
+    #[default(true)]
+    pub enable_live_tv_access: bool,
+    #[default(Some(true))]
     pub enable_media_playback: Option<bool>,
-    pub enable_audio_playback_transcoding: Option<bool>,
+    #[default(true)]
+    pub enable_audio_playback_transcoding: bool,
+    #[default(Some(true))]
     pub enable_video_playback_transcoding: Option<bool>,
+    #[default(Some(true))]
     pub enable_playback_remuxing: Option<bool>,
-    pub force_remote_source_transcoding: Option<bool>,
-    pub enable_content_deletion: Option<bool>,
+    pub force_remote_source_transcoding: bool,
+    pub enable_content_deletion: bool,
     pub enable_content_deletion_from_folders: Option<Vec<String>>,
+    #[default(Some(true))]
     pub enable_content_downloading: Option<bool>,
-    pub enable_sync_transcoding: Option<bool>,
+    #[default(true)]
+    pub enable_sync_transcoding: bool,
+    #[default(Some(true))]
     pub enable_media_conversion: Option<bool>,
     pub enabled_devices: Option<Vec<String>>,
-    pub enable_all_devices: Option<bool>,
+    #[default(true)]
+    pub enable_all_devices: bool,
     pub enabled_channels: Option<Vec<String>>,
-    pub enable_all_channels: Option<bool>,
+    #[default(true)]
+    pub enable_all_channels: bool,
     pub enabled_folders: Option<Vec<String>>,
-    pub enable_all_folders: Option<bool>,
-    pub invalid_login_attempt_count: Option<i64>,
-    pub login_attempts_before_lockout: Option<i64>,
-    pub max_active_sessions: Option<i64>,
-    pub enable_public_sharing: Option<bool>,
+    #[default(true)]
+    pub enable_all_folders: bool,
+    pub invalid_login_attempt_count: i64,
+    #[default(-1)]
+    pub login_attempts_before_lockout: i64,
+    pub max_active_sessions: i64,
+    #[default(true)]
+    pub enable_public_sharing: bool,
     pub blocked_media_folders: Option<Vec<String>>,
     pub blocked_channels: Option<Vec<String>>,
-    pub remote_client_bitrate_limit: Option<i64>,
+    pub remote_client_bitrate_limit: i64,
+    #[default(Some("Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".to_string()))]
     pub authentication_provider_id: Option<String>,
+    #[default(Some("Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider".to_string()))]
     pub password_reset_provider_id: Option<String>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional",
         skip_serializing_if = "Option::is_none"
     )]
+    #[default(Some(SyncPlayUserAccessType::CreateAndJoinGroups))]
     pub sync_play_access: Option<SyncPlayUserAccessType>,
-}
-
-impl Default for UserPolicy {
-    fn default() -> Self {
-        Self {
-            access_schedules: None,
-            allowed_tags: None,
-            authentication_provider_id: Some(
-                "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider"
-                    .into(),
-            ),
-            block_unrated_items: None,
-            blocked_channels: None,
-            blocked_media_folders: None,
-            blocked_tags: None,
-            enable_all_channels: None,
-            enable_all_devices: None,
-            enable_all_folders: None,
-            enable_audio_playback_transcoding: None,
-            enable_collection_management: Some(false),
-            enable_content_deletion: None,
-            enable_content_deletion_from_folders: None,
-            enable_content_downloading: Some(true),
-            enable_live_tv_access: None,
-            enable_live_tv_management: None,
-            enable_lyric_management: Some(false),
-            enable_media_conversion: Some(true),
-            enable_media_playback: Some(true),
-            enable_playback_remuxing: Some(true),
-            enable_public_sharing: None,
-            enable_remote_access: None,
-            enable_remote_control_of_other_users: None,
-            enable_shared_device_control: None,
-            enable_subtitle_management: Some(false),
-            enable_sync_transcoding: None,
-            enable_user_preference_access: None,
-            enable_video_playback_transcoding: Some(true),
-            enabled_channels: None,
-            enabled_devices: None,
-            enabled_folders: None,
-            force_remote_source_transcoding: None,
-            invalid_login_attempt_count: None,
-            is_administrator: false,
-            is_disabled: Some(false),
-            is_hidden: Some(true),
-            login_attempts_before_lockout: None,
-            max_active_sessions: None,
-            password_reset_provider_id: Some(
-                "Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider"
-                    .into(),
-            ),
-            remote_client_bitrate_limit: None,
-            sync_play_access: Some(SyncPlayUserAccessType::CreateAndJoinGroups),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1968,7 +1949,7 @@ pub struct NameIdPair {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, default2::Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct SessionInfoDto {
     //pub play_state: Option<PlayerStateInfo>,
@@ -1977,10 +1958,13 @@ pub struct SessionInfoDto {
     pub remote_end_point: Option<String>,
     pub playable_media_types: Vec<MediaType>,
     pub id: Option<String>,
+    #[default(String::new())]
     pub user_id: String,
     pub user_name: Option<String>,
     pub client: Option<String>,
+    #[default(Utc::now())]
     pub last_activity_date: DateTime<Utc>,
+    #[default(Utc::now())]
     pub last_playback_check_in: DateTime<Utc>,
     pub last_paused_date: Option<DateTime<Utc>>,
     pub device_name: Option<String>,
@@ -1999,7 +1983,7 @@ pub struct SessionInfoDto {
     pub playlist_item_id: Option<String>,
     pub server_id: Option<String>,
     pub user_primary_image_tag: Option<String>,
-    // pub supported_commands: Vec<GeneralCommandType>,
+    pub supported_commands: Vec<String>,
 }
 
 #[skip_serializing_none]

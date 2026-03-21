@@ -223,30 +223,18 @@ fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
 
             jellyfin::SessionInfoDto {
                 id: Some(session.play_session_id.clone()),
-                user_id: session.user_id.to_string(),
-                user_name: None,
+                device_id: Some(session.device_id.clone()),
+                device_name: Some(session.device_id.clone()),
                 client: Some(session.client_name.clone()),
+                user_id: session.user_id.to_string(),
                 last_activity_date: session.last_activity,
                 last_playback_check_in: session.last_activity,
-                last_paused_date: None,
-                device_name: Some(session.device_id.clone()),
-                device_type: None,
-                now_playing_item: None,
-                now_viewing_item: None,
-                device_id: Some(session.device_id.clone()),
-                application_version: None,
                 transcoding_info,
                 is_active: true,
                 supports_media_control: true,
                 supports_remote_control: true,
-                has_custom_device_name: false,
-                playlist_item_id: None,
                 server_id: Some(crate::utils::server_id()),
-                user_primary_image_tag: None,
-                playable_media_types: vec![],
-                remote_end_point: None,
-                now_playing_queue: None,
-                now_playing_queue_full_items: None,
+                ..Default::default()
             }
         })
         .collect()

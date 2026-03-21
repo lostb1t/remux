@@ -21,7 +21,7 @@ pub async fn system_info_public(
 ) -> Result<impl IntoResponse> {
     let config = crate::db::Settings::get_config(&state.ctx.db).await?;
     Ok(Json(jellyfin::PublicSystemInfo {
-        local_address: "0.0.0.0".to_string(),
+        local_address: String::new(),
         server_name: config.server_name.unwrap_or_default(),
         product_name: "Jellyfin Server".to_string(),
         startup_wizard_completed: config.is_startup_wizard_completed.unwrap_or(false),
@@ -397,7 +397,7 @@ mod test {
         resp.assert_status_ok();
         resp.assert_json(&json!({
             "Id": expect_json::uuid(),
-            "LocalAddress": "0.0.0.0",
+            "LocalAddress": "",
             "ServerName": "Remux",
             "ProductName": "Jellyfin Server",
             "Version": "10.11.6",

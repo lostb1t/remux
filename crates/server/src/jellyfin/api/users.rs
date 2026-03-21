@@ -120,7 +120,6 @@ pub async fn users_authenticatebyname(
     let device = auth::Device::new_from_header(auth_header, &user)?;
     device.save(&state.ctx.db).await?;
 
-    let now = chrono::Utc::now();
     let session_info = jellyfin::SessionInfoDto {
         id: Some(device.id.clone()),
         device_id: Some(device.id.clone()),
@@ -129,24 +128,8 @@ pub async fn users_authenticatebyname(
         application_version: Some(device.app_version.clone()),
         user_id: device.user_id.to_string(),
         user_name: Some(user.username.clone()),
-        last_activity_date: now,
-        last_playback_check_in: now,
-        playable_media_types: vec![],
         is_active: true,
-        supports_media_control: false,
-        supports_remote_control: false,
-        has_custom_device_name: false,
-        remote_end_point: None,
-        last_paused_date: None,
-        device_type: None,
-        now_playing_item: None,
-        now_viewing_item: None,
-        transcoding_info: None,
-        now_playing_queue: None,
-        now_playing_queue_full_items: None,
-        playlist_item_id: None,
-        server_id: None,
-        user_primary_image_tag: None,
+        ..Default::default()
     };
 
     Ok(Json(jellyfin::AuthenticationResult {

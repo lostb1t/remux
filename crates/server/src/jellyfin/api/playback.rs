@@ -1438,32 +1438,18 @@ pub async fn get_sessions(
 
             jellyfin::SessionInfoDto {
                 id: Some(device.id.clone()),
-                user_id: device.user_id.to_string(),
-                user_name: None,
-                client: Some(device.app_name.clone()),
-                last_activity_date: device.last_activity_at.unwrap_or_else(Utc::now),
-                last_playback_check_in: device
-                    .last_activity_at
-                    .unwrap_or_else(Utc::now),
-                last_paused_date: None,
-                device_name: Some(device.name.clone()),
-                device_type: None,
-                now_playing_item: now_playing,
-                now_viewing_item: None,
                 device_id: Some(device.id.clone()),
+                device_name: Some(device.name.clone()),
+                client: Some(device.app_name.clone()),
                 application_version: Some(device.app_version.clone()),
+                user_id: device.user_id.to_string(),
+                last_activity_date: device.last_activity_at.unwrap_or_else(Utc::now),
+                last_playback_check_in: device.last_activity_at.unwrap_or_else(Utc::now),
+                now_playing_item: now_playing,
                 transcoding_info,
                 is_active: true,
-                supports_media_control: false,
-                supports_remote_control: false,
-                has_custom_device_name: false,
-                playlist_item_id: None,
                 server_id: Some(crate::utils::server_id()),
-                user_primary_image_tag: None,
-                playable_media_types: vec![],
-                remote_end_point: None,
-                now_playing_queue: None,
-                now_playing_queue_full_items: None,
+                ..Default::default()
             }
         })
         .collect::<Vec<jellyfin::SessionInfoDto>>();
