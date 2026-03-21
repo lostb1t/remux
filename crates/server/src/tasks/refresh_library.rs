@@ -5,9 +5,7 @@ use std::sync::Arc;
 use super::{ProgressReporter, Task, TaskService};
 use crate::{
     AppContext, db,
-    providers::{
-        AioMetaProvider, AioTreeSyncProvider, MetaProviderService, TmdbMetaProvider,
-    },
+    providers::MetaProviderService,
 };
 
 pub struct RefreshLibraryTask;
@@ -30,10 +28,7 @@ impl Task for RefreshLibraryTask {
         _tasks: Arc<TaskService>,
         _progress: ProgressReporter,
     ) -> Result<()> {
-        let service = MetaProviderService::new(
-            vec![Box::new(AioMetaProvider), Box::new(TmdbMetaProvider)],
-            vec![Box::new(AioTreeSyncProvider)],
-        );
+        let service = MetaProviderService::default();
         const CHUNK_SIZE: u32 = 500;
         let mut offset = 0u32;
         loop {

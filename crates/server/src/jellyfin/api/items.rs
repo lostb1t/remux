@@ -413,13 +413,7 @@ pub async fn refresh_item(
         warm_subtitle_cache(&state.ctx.db, &media);
     } else {
         // Refresh metadata via the full provider pipeline.
-        let service = crate::providers::MetaProviderService::new(
-            vec![
-                Box::new(crate::providers::AioMetaProvider),
-                Box::new(crate::providers::TmdbMetaProvider),
-            ],
-            vec![Box::new(crate::providers::AioTreeSyncProvider)],
-        );
+        let service = crate::providers::MetaProviderService::default();
         let force_refresh = q.replace_all_metadata;
         service.process(vec![media], &state.ctx, force_refresh, true).await?;
     }
@@ -668,13 +662,7 @@ pub async fn item(
     let (refresh_res, src_res) = tokio::join!(
         async move {
             if need_refresh {
-                let service = crate::providers::MetaProviderService::new(
-                    vec![
-                        Box::new(crate::providers::AioMetaProvider),
-                        Box::new(crate::providers::TmdbMetaProvider),
-                    ],
-                    vec![Box::new(crate::providers::AioTreeSyncProvider)],
-                );
+                let service = crate::providers::MetaProviderService::default();
                 service.process(vec![media_clone], &ctx2, false, true).await
             } else {
                 Ok(vec![])

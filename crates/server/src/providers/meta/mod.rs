@@ -55,6 +55,18 @@ pub struct MetaProviderService {
     tree_providers: Vec<Box<dyn TreeSyncProvider>>,
 }
 
+impl Default for MetaProviderService {
+    fn default() -> Self {
+        Self {
+            meta_providers: vec![
+                Box::new(AioMetaProvider),
+                Box::new(TmdbMetaProvider),
+            ],
+            tree_providers: vec![Box::new(AioTreeSyncProvider)],
+        }
+    }
+}
+
 impl MetaProviderService {
     pub fn new(
         meta_providers: Vec<Box<dyn MetaProvider>>,
