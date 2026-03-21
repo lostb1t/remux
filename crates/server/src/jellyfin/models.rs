@@ -150,7 +150,14 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
 
         type_,
         parent_id: media.parent_id.clone(),
-        remote_trailers: media.trailers.clone().map(|j| j.0),
+        remote_trailers: media.trailers.clone().map(|j| {
+            j.0.into_iter()
+                .map(|id| ExternalUrl {
+                    name: Some("YouTube".to_string()),
+                    url: Some(format!("https://www.youtube.com/watch?v={id}")),
+                })
+                .collect()
+        }),
         series_id: media.parent_id,
         season_id: media.parent_id,
         user_data: media.user_state.clone().map(db_state_to_dto),
@@ -336,6 +343,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         };
         if media.promoted == 1 {
             item.type_ = MediaType::CollectionFolder;
+            item.display_preferences_id = Some(item.id.to_string());
         } else {
             item.type_ = MediaType::BoxSet;
         }
@@ -344,6 +352,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     if media.kind == db::MediaKind::Folder {
         item.collection_type = Some(CollectionType::Boxsets);
         item.type_ = MediaType::CollectionFolder;
+        item.display_preferences_id = Some(item.id.to_string());
     }
 
     item
