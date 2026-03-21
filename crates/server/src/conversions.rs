@@ -22,11 +22,11 @@ impl From<db::Media> for jellyfin::MediaSourceInfo {
             id: source.id.clone(),
             e_tag: source.id.clone(),
             path: source.url.clone(),
-            protocol: Some("File".to_string()),
-            supports_transcoding: Some(false),
-            supports_direct_stream: Some(true),
-            supports_direct_play: Some(true),
-            is_remote: Some(false),
+            protocol: "File".to_string(),
+            supports_transcoding: false,
+            supports_direct_stream: true,
+            supports_direct_play: true,
+            is_remote: false,
             name: Some(source.title.clone()),
             ..Default::default()
         }
@@ -42,16 +42,10 @@ impl From<jellyfin::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
             primary_image_height: dto.primary_image_height,
             primary_image_width: dto.primary_image_width,
             custom_prefs: dto.custom_prefs,
-            scroll_direction: dto
-                .scroll_direction
-                .map(|d| d.to_string())
-                .unwrap_or_else(|| "Horizontal".to_string()),
+            scroll_direction: dto.scroll_direction.to_string(),
             show_backdrop: dto.show_backdrop,
             remember_sorting: dto.remember_sorting,
-            sort_order: dto
-                .sort_order
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "Ascending".to_string()),
+            sort_order: dto.sort_order.to_string(),
             show_sidebar: dto.show_sidebar,
             home_sections: None,
         }
@@ -111,11 +105,11 @@ pub fn stream_into_media_source_info(
         id: id.clone(),
         e_tag: id.clone(),
         path: stream.url,
-        protocol: Some("File".to_string()),
-        supports_transcoding: Some(false),
-        supports_direct_stream: Some(true),
-        supports_direct_play: Some(true),
-        is_remote: Some(false),
+        protocol: "File".to_string(),
+        supports_transcoding: false,
+        supports_direct_stream: true,
+        supports_direct_play: true,
+        is_remote: false,
         name: stream.name.clone(),
         ..Default::default()
     }

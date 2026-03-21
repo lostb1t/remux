@@ -257,14 +257,18 @@ pub struct PublicSystemInfo {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, default2::Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct SystemInfo {
     pub operating_system_display_name: Option<String>,
-    pub has_pending_restart: Option<bool>,
-    pub is_shutting_down: Option<bool>,
-    pub supports_library_monitor: Option<bool>,
-    pub web_socket_port_number: Option<u16>,
+    #[default(false)]
+    pub has_pending_restart: bool,
+    #[default(false)]
+    pub is_shutting_down: bool,
+    #[default(true)]
+    pub supports_library_monitor: bool,
+    #[default(8096_u16)]
+    pub web_socket_port_number: u16,
     pub completed_installations: Option<Vec<String>>,
     pub can_self_restart: Option<bool>,
     pub can_launch_web_browser: Option<bool>,
@@ -1155,14 +1159,19 @@ pub struct MediaSourceInfo {
     //  pub encoder_protocol: Option<MediaProtocol>,
     pub fallback_max_streaming_bitrate: Option<i64>,
     pub formats: Option<Vec<String>>,
-    pub gen_pts_input: Option<bool>,
-    pub has_segments: Option<bool>,
+    #[default(false)]
+    pub gen_pts_input: bool,
+    #[default(false)]
+    pub has_segments: bool,
     pub id: Uuid,
-    pub ignore_dts: Option<bool>,
-    pub ignore_index: Option<bool>,
-    pub is_infinite_stream: Option<bool>,
-    #[default(Some(false))]
-    pub is_remote: Option<bool>,
+    #[default(false)]
+    pub ignore_dts: bool,
+    #[default(false)]
+    pub ignore_index: bool,
+    #[default(false)]
+    pub is_infinite_stream: bool,
+    #[default(false)]
+    pub is_remote: bool,
     //pub iso_type: Option<IsoType>,
     pub live_stream_id: Option<String>,
     //pub media_attachments: Option<Vec<MediaAttachment>>,
@@ -1171,31 +1180,37 @@ pub struct MediaSourceInfo {
     pub name: Option<String>,
     pub open_token: Option<String>,
     pub path: Option<String>,
-    pub protocol: Option<String>,
-    pub read_at_native_framerate: Option<bool>,
+    #[default("File".to_string())]
+    pub protocol: String,
+    #[default(false)]
+    pub read_at_native_framerate: bool,
     //pub required_http_headers: Option<HashMap<String, Option<String>>>,
-    pub requires_closing: Option<bool>,
-    pub requires_looping: Option<bool>,
-    pub requires_opening: Option<bool>,
+    #[default(false)]
+    pub requires_closing: bool,
+    #[default(false)]
+    pub requires_looping: bool,
+    #[default(false)]
+    pub requires_opening: bool,
     pub run_time_ticks: Option<i64>,
     pub size: Option<i64>,
-    #[default(Some(true))]
-    pub supports_direct_play: Option<bool>,
-    #[default(Some(true))]
-    pub supports_direct_stream: Option<bool>,
+    #[default(true)]
+    pub supports_direct_play: bool,
+    #[default(true)]
+    pub supports_direct_stream: bool,
     pub supports_external_stream: Option<bool>,
-    #[default(Some(true))]
-    pub supports_probing: Option<bool>,
-    // TODO: implement
-    #[default(Some(false))]
-    pub supports_transcoding: Option<bool>,
+    #[default(true)]
+    pub supports_probing: bool,
+    #[default(false)]
+    pub supports_transcoding: bool,
     //  pub timestamp: Option<TransportStreamTimestamp>,
     pub transcoding_container: Option<String>,
     /// Media streaming protocol.
     /// Lowercase for backwards compatibility.
-    pub transcoding_sub_protocol: Option<String>,
+    #[default("http".to_string())]
+    pub transcoding_sub_protocol: String,
     pub transcoding_url: Option<String>,
-    // pub type_: Option<MediaSourceType>,
+    #[default("Default".to_string())]
+    pub type_: String,
     #[default(false)]
     pub use_most_compatible_transcoding_profile: bool,
     //  pub video3_d_format: Option<Video3DFormat>,
@@ -1310,17 +1325,18 @@ pub struct DisplayPreferencesDto {
     pub primary_image_width: i64,
     #[serde(default)]
     pub custom_prefs: HashMap<String, Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_optional")]
-    pub scroll_direction: Option<ScrollDirection>,
+    #[serde(default, deserialize_with = "deserialize_optional_with_default")]
+    pub scroll_direction: ScrollDirection,
     pub show_backdrop: bool,
     pub remember_sorting: bool,
-    #[serde(default, deserialize_with = "deserialize_optional")]
-    pub sort_order: Option<SortOrder>,
+    #[serde(default, deserialize_with = "deserialize_optional_with_default")]
+    pub sort_order: SortOrder,
     pub show_sidebar: bool,
     pub client: Option<String>,
 }
 
 #[derive(
+    Default,
     strum_macros::EnumString,
     strum_macros::Display,
     Debug,
@@ -1332,6 +1348,7 @@ pub struct DisplayPreferencesDto {
 #[strum(serialize_all = "PascalCase")]
 pub enum ScrollDirection {
     Horizontal,
+    #[default]
     Vertical,
 }
 
@@ -1428,9 +1445,9 @@ pub enum ImageType {
 pub struct UserDto {
     pub configuration: Option<UserConfiguration>,
     pub enable_auto_login: Option<bool>,
-    pub has_configured_easy_password: Option<bool>,
-    pub has_configured_password: Option<bool>,
-    pub has_password: Option<bool>,
+    pub has_configured_easy_password: bool,
+    pub has_configured_password: bool,
+    pub has_password: bool,
     pub id: Uuid,
     pub last_activity_date: Option<DateTime<Utc>>,
     pub last_login_date: Option<DateTime<Utc>>,
@@ -1447,9 +1464,9 @@ impl Default for UserDto {
         Self {
             configuration: Some(UserConfiguration::default()),
             enable_auto_login: Some(false),
-            has_configured_easy_password: Some(false),
-            has_configured_password: Some(true),
-            has_password: Some(true),
+            has_configured_easy_password: false,
+            has_configured_password: true,
+            has_password: true,
             id: Uuid::new_v4(),
             last_activity_date: None,
             last_login_date: None,
@@ -1464,6 +1481,7 @@ impl Default for UserDto {
 }
 
 #[derive(
+    Default,
     Debug,
     Clone,
     PartialEq,
@@ -1476,6 +1494,7 @@ impl Default for UserDto {
 #[serde(rename_all = "PascalCase")]
 #[strum(serialize_all = "PascalCase")]
 pub enum SyncPlayUserAccessType {
+    #[default]
     CreateAndJoinGroups,
     JoinGroups,
     None,
@@ -1486,16 +1505,16 @@ pub enum SyncPlayUserAccessType {
 #[serde(rename_all = "PascalCase")]
 pub struct UserPolicy {
     pub is_administrator: bool,
-    #[default(Some(true))]
-    pub is_hidden: Option<bool>,
-    #[default(Some(false))]
-    pub enable_collection_management: Option<bool>,
-    #[default(Some(false))]
-    pub enable_subtitle_management: Option<bool>,
-    #[default(Some(false))]
-    pub enable_lyric_management: Option<bool>,
-    #[default(Some(false))]
-    pub is_disabled: Option<bool>,
+    #[default(true)]
+    pub is_hidden: bool,
+    #[default(false)]
+    pub enable_collection_management: bool,
+    #[default(false)]
+    pub enable_subtitle_management: bool,
+    #[default(false)]
+    pub enable_lyric_management: bool,
+    #[default(false)]
+    pub is_disabled: bool,
     pub blocked_tags: Option<Vec<String>>,
     pub allowed_tags: Option<Vec<String>>,
     #[default(true)]
@@ -1511,23 +1530,23 @@ pub struct UserPolicy {
     pub enable_live_tv_management: bool,
     #[default(true)]
     pub enable_live_tv_access: bool,
-    #[default(Some(true))]
-    pub enable_media_playback: Option<bool>,
+    #[default(true)]
+    pub enable_media_playback: bool,
     #[default(true)]
     pub enable_audio_playback_transcoding: bool,
-    #[default(Some(true))]
-    pub enable_video_playback_transcoding: Option<bool>,
-    #[default(Some(true))]
-    pub enable_playback_remuxing: Option<bool>,
+    #[default(true)]
+    pub enable_video_playback_transcoding: bool,
+    #[default(true)]
+    pub enable_playback_remuxing: bool,
     pub force_remote_source_transcoding: bool,
     pub enable_content_deletion: bool,
     pub enable_content_deletion_from_folders: Option<Vec<String>>,
-    #[default(Some(true))]
-    pub enable_content_downloading: Option<bool>,
+    #[default(true)]
+    pub enable_content_downloading: bool,
     #[default(true)]
     pub enable_sync_transcoding: bool,
-    #[default(Some(true))]
-    pub enable_media_conversion: Option<bool>,
+    #[default(true)]
+    pub enable_media_conversion: bool,
     pub enabled_devices: Option<Vec<String>>,
     #[default(true)]
     pub enable_all_devices: bool,
@@ -1546,17 +1565,23 @@ pub struct UserPolicy {
     pub blocked_media_folders: Option<Vec<String>>,
     pub blocked_channels: Option<Vec<String>>,
     pub remote_client_bitrate_limit: i64,
-    #[default(Some("Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".to_string()))]
-    pub authentication_provider_id: Option<String>,
-    #[default(Some("Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider".to_string()))]
-    pub password_reset_provider_id: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_optional",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[default(Some(SyncPlayUserAccessType::CreateAndJoinGroups))]
-    pub sync_play_access: Option<SyncPlayUserAccessType>,
+    #[default("Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".to_string())]
+    #[serde(default = "default_authentication_provider_id")]
+    pub authentication_provider_id: String,
+    #[default("Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider".to_string())]
+    #[serde(default = "default_password_reset_provider_id")]
+    pub password_reset_provider_id: String,
+    #[serde(default, deserialize_with = "deserialize_optional_with_default")]
+    #[default(SyncPlayUserAccessType::CreateAndJoinGroups)]
+    pub sync_play_access: SyncPlayUserAccessType,
+}
+
+fn default_authentication_provider_id() -> String {
+    "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".to_string()
+}
+
+fn default_password_reset_provider_id() -> String {
+    "Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1677,18 +1702,23 @@ pub struct ProviderIds {
 #[serde(rename_all = "PascalCase")]
 pub struct UserItemDataDto {
     pub rating: Option<f32>,
-    pub played: Option<bool>,
+    #[default(false)]
+    pub played: bool,
     pub last_played_date: Option<DateTime<Utc>>,
-    pub playback_position_ticks: Option<i64>,
-    pub play_count: Option<i32>,
-    pub is_favorite: Option<bool>,
+    #[default(0_i64)]
+    pub playback_position_ticks: i64,
+    #[default(0_i32)]
+    pub play_count: i32,
+    #[default(false)]
+    pub is_favorite: bool,
     pub likes: Option<bool>,
     pub last_liked_date: Option<DateTime<Utc>>,
     pub favorite_added_date: Option<DateTime<Utc>>,
     pub played_percentage: Option<f32>,
     pub last_updated: Option<DateTime<Utc>>,
-    pub key: Option<String>,
-    // pub item_id: String,
+    #[default(String::new())]
+    pub key: String,
+    pub item_id: Option<Uuid>,
 }
 
 #[derive(
@@ -2145,6 +2175,7 @@ pub enum MediaType {
 }
 
 #[derive(
+    Default,
     Copy,
     Serialize,
     Debug,
@@ -2158,6 +2189,7 @@ pub enum MediaType {
 )]
 #[serde(rename_all = "PascalCase")]
 pub enum SortOrder {
+    #[default]
     Ascending,
     Descending,
 }

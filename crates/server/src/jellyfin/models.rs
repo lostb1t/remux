@@ -57,10 +57,10 @@ pub fn db_display_prefs_to_dto(
         primary_image_height: data.primary_image_height,
         primary_image_width: data.primary_image_width,
         custom_prefs: data.custom_prefs.clone(),
-        scroll_direction: data.scroll_direction.parse().ok(),
+        scroll_direction: data.scroll_direction.parse().unwrap_or_default(),
         show_backdrop: data.show_backdrop,
         remember_sorting: data.remember_sorting,
-        sort_order: data.sort_order.parse().ok(),
+        sort_order: data.sort_order.parse().unwrap_or_default(),
         show_sidebar: data.show_sidebar,
         client: prefs.client,
     }
@@ -95,8 +95,8 @@ pub fn db_user_to_dto(user: db::User) -> UserDto {
     let defaults = UserPolicy::default();
     macro_rules! default_if_empty {
         ($field:ident) => {
-            if policy.$field.as_deref() == Some("") {
-                policy.$field = defaults.$field;
+            if policy.$field.is_empty() {
+                policy.$field = defaults.$field.clone();
             }
         };
     }
@@ -114,12 +114,12 @@ pub fn db_user_to_dto(user: db::User) -> UserDto {
 
 pub fn db_state_to_dto(state: db::UserMediaState) -> UserItemDataDto {
     UserItemDataDto {
-        played: Some(state.played_at.is_some()),
+        played: state.played_at.is_some(),
         last_played_date: state.played_at.map(|x| x.and_utc()),
-        playback_position_ticks: Some(state.playback_position * 10_000),
-        play_count: Some(state.play_count as i32),
-        is_favorite: Some(state.favorite),
-        key: Some(state.media_key),
+        playback_position_ticks: state.playback_position * 10_000,
+        play_count: state.play_count as i32,
+        is_favorite: state.favorite,
+        key: state.media_key,
         ..Default::default()
     }
 }
@@ -313,11 +313,11 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             id: media.id,
             name: Some(media.title.clone()),
             path: media.url.clone(),
-            protocol: Some("Http".to_string()),
-            is_remote: Some(true),
-            supports_direct_play: Some(true),
-            supports_direct_stream: Some(true),
-            supports_transcoding: Some(false),
+            protocol: "Http".to_string(),
+            is_remote: true,
+            supports_direct_play: true,
+            supports_direct_stream: true,
+            supports_transcoding: false,
             ..Default::default()
         }]);
     }

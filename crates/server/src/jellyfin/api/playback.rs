@@ -92,11 +92,11 @@ async fn items_playbackinfo_inner(
             id: media.id,
             name: Some(media.title.clone()),
             path: Some(url),
-            protocol: Some("Http".to_string()),
-            is_remote: Some(true),
-            supports_direct_play: Some(true),
-            supports_direct_stream: Some(true),
-            supports_transcoding: Some(false),
+            protocol: "Http".to_string(),
+            is_remote: true,
+            supports_direct_play: true,
+            supports_direct_stream: true,
+            supports_transcoding: false,
             ..Default::default()
         };
         let play_session_id = utils::get_uuid().as_simple().to_string();
@@ -314,7 +314,7 @@ async fn items_playbackinfo_inner(
                 .map(|idx| format!("&AudioStreamIndex={}", idx))
                 .unwrap_or_default();
 
-            source.supports_transcoding = Some(true);
+            source.supports_transcoding = true;
             source.transcoding_url = Some(format!(
                 "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}",
                 id,
@@ -327,12 +327,12 @@ async fn items_playbackinfo_inner(
                 audio_stream_param,
             ));
             source.transcoding_container = Some(trans_container);
-            source.transcoding_sub_protocol = Some(trans_protocol);
-            source.supports_direct_play = Some(false);
-            source.supports_direct_stream = Some(false);
+            source.transcoding_sub_protocol = trans_protocol;
+            source.supports_direct_play = false;
+            source.supports_direct_stream = false;
         } else {
-            source.supports_transcoding = Some(false);
-            source.supports_direct_play = Some(true);
+            source.supports_transcoding = false;
+            source.supports_direct_play = true;
         }
 
         media_sources.push(source);

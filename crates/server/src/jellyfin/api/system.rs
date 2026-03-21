@@ -372,8 +372,10 @@ pub async fn system_info(
         id: Some(server_id()),
         server_name: config.server_name,
         can_self_restart: Some(true),
-        has_pending_restart: Some(false),
-        is_shutting_down: Some(false),
+        has_pending_restart: false,
+        is_shutting_down: false,
+        supports_library_monitor: true,
+        web_socket_port_number: 3000,
         ..Default::default()
     }))
 }
@@ -523,8 +525,8 @@ mod test {
 
         // Check that restart capabilities are properly indicated
         assert_eq!(system_info.can_self_restart, Some(true));
-        assert_eq!(system_info.has_pending_restart, Some(false));
-        assert_eq!(system_info.is_shutting_down, Some(false));
+        assert_eq!(system_info.has_pending_restart, false);
+        assert_eq!(system_info.is_shutting_down, false);
     }
 
     // --- GET /system/configuration ---
