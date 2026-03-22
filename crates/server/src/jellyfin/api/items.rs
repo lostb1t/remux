@@ -7,9 +7,10 @@ use http::StatusCode;
 use remux_macros::{delete, get, patch, post};
 use serde::Deserialize;
 use std::time::Duration;
+use tracing::error;
+use tracing::info;
 use tracing::trace;
 use tracing::warn;
-use tracing::info;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -418,16 +419,20 @@ pub async fn refresh_item(
                 "AIO not configured",
                 "Complete the setup wizard first",
             )?;
+
         media
             .refresh_sources(&state.ctx.db, &aio)
             .await
-            .context_bad_request("Refresh failed", "Could not refresh streams")?;
+            .inspect_err(|e| error!("Could not refresh streams: {e:#}"));
+
         warm_subtitle_cache(&state.ctx.db, &media);
     } else {
         // Refresh metadata via the full provider pipeline.
         let service = crate::providers::MetaProviderService::default();
         let force_refresh = q.replace_all_metadata;
-        service.process(vec![media], &state.ctx, force_refresh, true).await?;
+        service
+            .process(vec![media], &state.ctx, force_refresh, true)
+            .await?;
     }
 
     let _ = state.ctx.ws_tx.send(crate::ws::WsEvent::LibraryChanged);
@@ -650,7 +655,6 @@ pub async fn item(
                     }
                     state.ctx.store.delete(id.to_string());
 
-                    
                     media
                 } else {
                     return Ok(None);
@@ -660,7 +664,7 @@ pub async fn item(
             }
         }
     };
-  
+
     let need_refresh = media.refreshed_at.is_none()
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series);
     let needs_sources = want_sources
@@ -702,7 +706,7 @@ pub async fn item(
         media.sources(&state.ctx.db).await?;
         media.user_state(&state.ctx.db, &session.user).await?;
     }
-           // info!("Seasons length: {:?}", media.seasons(&state.ctx.db).await?.len());
+    // info!("Seasons length: {:?}", media.seasons(&state.ctx.db).await?.len());
     media.load_relations(&state.ctx.db).await?;
     let mut base_item = jellyfin::db_media_to_item(media.clone());
     if media.sources.as_ref().is_none_or(|s| s.is_empty()) {
@@ -727,7 +731,9 @@ pub async fn items_get(
     Path(id): Path<Uuid>,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    return Ok(Json(item(state, session, id, q.fields.as_deref()).await?).into_response());
+    return Ok(
+        Json(item(state, session, id, q.fields.as_deref()).await?).into_response()
+    );
 }
 
 #[get("/items/suggestions")]

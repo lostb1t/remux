@@ -152,11 +152,16 @@ pub async fn authenticate_with_quickconnect(
         .ctx
         .store
         .get::<QuickConnectEntry>(format!("qc:{}", body.secret))
-        .context_unauthorized("Unauthorized", "QuickConnect request not found or expired")?;
+        .context_unauthorized(
+            "Unauthorized",
+            "QuickConnect request not found or expired",
+        )?;
 
     if !entry.authenticated {
-        return Err(anyhow::anyhow!("not authenticated"))
-            .context_unauthorized("Unauthorized", "QuickConnect request has not been approved yet");
+        return Err(anyhow::anyhow!("not authenticated")).context_unauthorized(
+            "Unauthorized",
+            "QuickConnect request has not been approved yet",
+        );
     }
 
     let user_id = entry
@@ -168,9 +173,15 @@ pub async fn authenticate_with_quickconnect(
         .context_unauthorized("Unauthorized", "User not found")?;
 
     let device = auth::Device {
-        id: auth_header.device_id.unwrap_or_else(|| get_uuid().to_string()),
-        name: auth_header.device.unwrap_or_else(|| "QuickConnect".to_string()),
-        app_name: auth_header.client.unwrap_or_else(|| "QuickConnect".to_string()),
+        id: auth_header
+            .device_id
+            .unwrap_or_else(|| get_uuid().to_string()),
+        name: auth_header
+            .device
+            .unwrap_or_else(|| "QuickConnect".to_string()),
+        app_name: auth_header
+            .client
+            .unwrap_or_else(|| "QuickConnect".to_string()),
         app_version: auth_header.version.unwrap_or_else(|| "1.0".to_string()),
         user_id: user.id,
         access_token: get_uuid().to_string(),
@@ -475,7 +486,9 @@ pub async fn users_items_get(
     Path((user_id, id)): Path<(Uuid, Uuid)>,
     Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    return Ok(Json(item(state, session, id, q.fields.as_deref()).await?).into_response());
+    return Ok(
+        Json(item(state, session, id, q.fields.as_deref()).await?).into_response()
+    );
 }
 
 #[get("/users/{user_id}/items")]

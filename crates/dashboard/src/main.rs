@@ -9,8 +9,7 @@ use shared::sdks::jellyfin::{
     CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload, DeleteEpgSource,
     DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EpgSourceInfo, GetAioCatalogs,
     GetBrandingConfiguration, GetEpgSources, GetIptvChannels, GetItems,
-    GetScheduledTasks, GetSessions, GetStartupConfiguration,
-    GetSystemConfiguration,
+    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
     GetTunerHosts, GetUsers, JellyfinAuth, PatchChannel, PatchChannelRequest,
     PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
     PostStartupUser, PublicSystemInfo, SaveEpgSource, ServerConfiguration,
@@ -3031,7 +3030,8 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             .map(|v| v.join(", "))
                             .unwrap_or_default(),
                     );
-                    quick_connect_enabled.set(cfg.quick_connect_available.unwrap_or(true));
+                    quick_connect_enabled
+                        .set(cfg.quick_connect_available.unwrap_or(true));
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),

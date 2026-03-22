@@ -1063,7 +1063,7 @@ impl Media {
     .push("))");
             }
         }
-    //dbg!(records_qb.sql(), "get_items");
+        //dbg!(records_qb.sql(), "get_items");
         // For TvChannel queries, sort by user sort_order, then channel_number, then title.
         let is_channel_query = filter
             .kind
@@ -1821,9 +1821,8 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
                     );
             //info!("Seasons map: {:?}", seasons);
             for (season_idx, episodes) in seasons {
-                let season_aio_id =
-                    format!("{}:{}", imdb_id, season_idx);
-                
+                let season_aio_id = format!("{}:{}", imdb_id, season_idx);
+
                 let mut season = Media {
                     id: crate::utils::get_stable_uuid(season_aio_id.clone()),
                     title: format!("Season {}", season_idx),
@@ -1833,9 +1832,17 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
                     aio_id: Some(season_aio_id),
                     poster: meta.get_season_poster(season_idx),
                     parent_id: Some(media.id),
-                    released_at: episodes.get(0).unwrap().released.map(|x| x.naive_utc()),
-                    digital_released_at: episodes.get(0).unwrap().released.map(|x| x.naive_utc()),
-                    
+                    released_at: episodes
+                        .get(0)
+                        .unwrap()
+                        .released
+                        .map(|x| x.naive_utc()),
+                    digital_released_at: episodes
+                        .get(0)
+                        .unwrap()
+                        .released
+                        .map(|x| x.naive_utc()),
+
                     ..Default::default()
                 };
                 media_instances.push(season.clone());
@@ -1851,10 +1858,9 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
                     episode.parent_idx = Some(season_idx);
                     episode.released_at = ep.released.map(|x| x.naive_utc());
                     episode.digital_released_at = ep.released.map(|x| x.naive_utc());
-                    
+
                     media_instances.push(episode);
                 }
-
             }
         }
     }

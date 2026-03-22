@@ -29,7 +29,6 @@ use crate::torrent;
 use crate::utils;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
-
 #[post("/items/{id}/playbackinfo")]
 pub async fn items_playbackinfo(
     State(state): State<AppState>,
@@ -1364,7 +1363,9 @@ pub async fn ping_playback_session(
 }
 
 #[post("/sessions/capabilities/full")]
-pub async fn sessions_capabilities_full(_session: auth::AuthSession) -> Result<StatusCode> {
+pub async fn sessions_capabilities_full(
+    _session: auth::AuthSession,
+) -> Result<StatusCode> {
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1444,7 +1445,9 @@ pub async fn get_sessions(
                 application_version: Some(device.app_version.clone()),
                 user_id: device.user_id.to_string(),
                 last_activity_date: device.last_activity_at.unwrap_or_else(Utc::now),
-                last_playback_check_in: device.last_activity_at.unwrap_or_else(Utc::now),
+                last_playback_check_in: device
+                    .last_activity_at
+                    .unwrap_or_else(Utc::now),
                 now_playing_item: now_playing,
                 transcoding_info,
                 is_active: true,

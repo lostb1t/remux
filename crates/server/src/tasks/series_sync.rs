@@ -3,10 +3,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use super::{ProgressReporter, Task, TaskService};
-use crate::{
-    AppContext, db,
-    providers::MetaProviderService,
-};
+use crate::{AppContext, db, providers::MetaProviderService};
 
 pub struct SeriesSyncTask;
 

@@ -205,10 +205,8 @@ pub async fn quickconnect_initiate(
 ) -> Result<impl IntoResponse> {
     let cfg = db::Settings::get_config(&state.ctx.db).await?;
     if !cfg.quick_connect_available.unwrap_or(true) {
-        return Err(anyhow::anyhow!("QuickConnect is disabled")).context_forbidden(
-            "Forbidden",
-            "QuickConnect is disabled on this server",
-        );
+        return Err(anyhow::anyhow!("QuickConnect is disabled"))
+            .context_forbidden("Forbidden", "QuickConnect is disabled on this server");
     }
 
     let secret = get_uuid().simple().to_string();
@@ -219,8 +217,15 @@ pub async fn quickconnect_initiate(
         authenticated: false,
         user_id: None,
     };
-    state.ctx.store.save(format!("qc:{secret}"), entry, Duration::from_secs(600));
-    state.ctx.store.save(format!("qc:code:{code}"), secret.clone(), Duration::from_secs(600));
+    state
+        .ctx
+        .store
+        .save(format!("qc:{secret}"), entry, Duration::from_secs(600));
+    state.ctx.store.save(
+        format!("qc:code:{code}"),
+        secret.clone(),
+        Duration::from_secs(600),
+    );
 
     Ok(Json(jellyfin::QuickConnectResult {
         secret,

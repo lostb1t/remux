@@ -58,10 +58,7 @@ pub struct MetaProviderService {
 impl Default for MetaProviderService {
     fn default() -> Self {
         Self {
-            meta_providers: vec![
-                Box::new(AioMetaProvider),
-                Box::new(TmdbMetaProvider),
-            ],
+            meta_providers: vec![Box::new(AioMetaProvider), Box::new(TmdbMetaProvider)],
             tree_providers: vec![Box::new(AioTreeSyncProvider)],
         }
     }
@@ -247,7 +244,7 @@ impl MetaProviderService {
         let batch: Vec<db::Media> = results.into_iter().flatten().collect();
 
         if save && !batch.is_empty() {
-              //info!("Seasons length: {:?}", batch.len());
+            //info!("Seasons length: {:?}", batch.len());
             db::Media::upsert(&ctx.db, &batch).await?;
         }
 
