@@ -670,25 +670,23 @@ pub async fn item(
     let needs_sources = want_sources
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode);
 
-    let media_clone = media.clone();
-    let ctx2 = state.ctx.clone();
-    let mut media_for_sources = media.clone();
-    let db2 = state.ctx.db.clone();
-
     let (refresh_res, src_res) = tokio::join!(
-        async move {
+        async {
             if need_refresh {
                 let service = crate::providers::MetaProviderService::default();
-                service.process(vec![media_clone], &ctx2, false, true).await
+                service
+                    .process(vec![media.clone()], &state.ctx, false, true)
+                    .await
             } else {
                 Ok(vec![])
             }
         },
-        async move {
+        async {
             if needs_sources {
-                if let Ok(aio) = crate::aio::AioService::from_settings(&db2).await {
-                    warm_subtitle_cache(&db2, &media_for_sources);
-                    media_for_sources.refresh_sources(&db2, &aio).await?;
+                let db = state.ctx.db.clone();
+                if let Ok(aio) = crate::aio::AioService::from_settings(&db).await {
+                    warm_subtitle_cache(&db, &media);
+                    media.clone().refresh_sources(&db, &aio).await?;
                 }
             }
             Ok::<(), anyhow::Error>(())
