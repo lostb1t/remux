@@ -247,6 +247,7 @@ impl MetaProviderService {
         let batch: Vec<db::Media> = results.into_iter().flatten().collect();
 
         if save && !batch.is_empty() {
+              //info!("Seasons length: {:?}", batch.len());
             db::Media::upsert(&ctx.db, &batch).await?;
         }
 

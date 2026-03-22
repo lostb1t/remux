@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::str::FromStr;
 pub mod api_key;
 pub mod auth;
@@ -18,7 +18,9 @@ pub use task::*;
 pub use user::*;
 
 pub async fn connect(url: &str) -> Result<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(url)?;
+    let opts = SqliteConnectOptions::from_str(url)?
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
     Ok(SqlitePoolOptions::new()
         .max_connections(10)
         .connect_with(opts)

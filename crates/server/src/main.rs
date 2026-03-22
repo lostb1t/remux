@@ -141,7 +141,9 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
 
     let conn = db::connect(&config.database_url).await?;
 
+    info!("running database migrations…");
     db::migrate(&conn).await?;
+    info!("migrations complete");
     crate::utils::init_server_id(&conn).await?;
     db::ensure_collection_folder(&conn).await?;
 

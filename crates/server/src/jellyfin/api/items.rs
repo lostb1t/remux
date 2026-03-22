@@ -9,6 +9,7 @@ use serde::Deserialize;
 use std::time::Duration;
 use tracing::trace;
 use tracing::warn;
+use tracing::info;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -259,7 +260,7 @@ pub async fn get_items(
     let want_total = q.enable_total_record_count.unwrap_or(true);
     let policy = session.user.policy.as_ref().map(|p| &p.0);
     let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
-
+    //trace!(?q, "get_items");
     let mut result = db::Media::get_by_jellyfin_filter(
         &state.ctx.db,
         &q,
@@ -690,7 +691,7 @@ pub async fn item(
         media.sources(&state.ctx.db).await?;
         media.user_state(&state.ctx.db, &session.user).await?;
     }
-
+           // info!("Seasons length: {:?}", media.seasons(&state.ctx.db).await?.len());
     media.load_relations(&state.ctx.db).await?;
     let mut base_item = jellyfin::db_media_to_item(media.clone());
     if media.sources.as_ref().is_none_or(|s| s.is_empty()) {
