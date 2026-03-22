@@ -367,13 +367,24 @@ pub async fn delete_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Controls what happens during an item refresh.
+#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
+pub enum MetadataRefreshMode {
+    /// Re-fetch streams from AIO for the item (or its parent if a Source).
+    #[default]
+    Default,
+    /// Run the full metadata provider pipeline.
+    #[serde(other)]
+    Full,
+}
+
 /// Refresh a single item — behaviour depends on `MetadataRefreshMode`:
 /// - `Default`      → re-fetch streams from AIO for the item (or its parent if a Source).
 /// - anything else  → run the full metadata provider pipeline.
 #[derive(Debug, Deserialize, Default)]
 pub struct RefreshItemQuery {
     #[serde(rename = "MetadataRefreshMode", default)]
-    pub metadata_refresh_mode: String,
+    pub metadata_refresh_mode: MetadataRefreshMode,
     #[serde(rename = "ReplaceAllMetadata", default)]
     pub replace_all_metadata: bool,
 }
@@ -399,7 +410,7 @@ pub async fn refresh_item(
             .context_not_found("Not Found", "Parent item not found")?;
     }
 
-    if q.metadata_refresh_mode.eq_ignore_ascii_case("Default") {
+    if q.metadata_refresh_mode == MetadataRefreshMode::Default {
         // Refresh streams: re-fetch sources from AIO.
         let aio = crate::aio::AioService::from_settings(&state.ctx.db)
             .await
