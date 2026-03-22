@@ -19,6 +19,7 @@ use crate::db::auth;
 use crate::jellyfin;
 use crate::sdks;
 use crate::utils::IntoVec;
+use crate::errors::LogErr;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 use chrono::Datelike;
 use chrono::Utc;
@@ -670,13 +671,14 @@ pub async fn item(
     let needs_sources = want_sources
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode);
 
-    let (refresh_res, src_res) = tokio::join!(
+    tokio::join!(
         async {
             if need_refresh {
                 let service = crate::providers::MetaProviderService::default();
                 service
                     .process(vec![media.clone()], &state.ctx, false, true)
                     .await
+                    .log_err("failed to refresh metadata")
             } else {
                 Ok(vec![])
             }
@@ -686,19 +688,12 @@ pub async fn item(
                 let db = state.ctx.db.clone();
                 if let Ok(aio) = crate::aio::AioService::from_settings(&db).await {
                     warm_subtitle_cache(&db, &media);
-                    media.clone().refresh_sources(&db, &aio).await?;
+                    media.clone().refresh_sources(&db, &aio).await.log_err("failed to refresh sources");
                 }
             }
             Ok::<(), anyhow::Error>(())
         }
     );
-
-    if let Err(e) = refresh_res {
-        warn!(id = %media.id, error = %e, "provider refresh failed");
-    }
-    if let Err(e) = src_res {
-        warn!(id = %media.id, error = %e, "source refresh failed");
-    }
 
     if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
         media.sources(&state.ctx.db).await?;
