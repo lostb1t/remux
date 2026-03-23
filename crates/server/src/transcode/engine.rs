@@ -93,11 +93,11 @@ pub async fn start_transcode(
             other => other,
         };
 
-        // Map audio codec: respect "copy" when source is already AAC
-        let ffmpeg_audio_codec = match params_clone.audio_codec.as_str() {
-            "copy" => "copy",
-            _ => "aac",
-        };
+        // Always re-encode audio to AAC for HLS browser compatibility.
+        // Copying audio risks passing through codecs browsers cannot
+        // decode (AC3, DTS, etc.) when FFmpeg auto-selects a different
+        // stream than the one inspected during playback-info.
+        let ffmpeg_audio_codec = "aac";
 
         // Build the output
         let mut output = Output::new(playlist_path.to_string_lossy().to_string())
@@ -153,10 +153,22 @@ pub async fn start_transcode(
             output = output.set_start_time_us(start_us);
         }
 
+        // Compute scale filter early so we can decide on stream mapping.
+        let scale_filter = build_scale_filter(&params_clone);
+
+        // Explicit stream mapping for audio track selection.
+        // Only possible when there is no scale filter — ez-ffmpeg's
+        // auto-mapping is disabled once explicit stream maps are added.
+        if scale_filter.is_none() {
+            if let Some(audio_idx) = params_clone.audio_stream_index {
+                output = output.add_stream_map("0:v");
+                output = output.add_stream_map(&format!("0:{}", audio_idx));
+            }
+        }
+
         let mut builder = FfmpegContext::builder().input(input);
 
-        // Add scale filter if needed (video-only; audio is auto-mapped separately)
-        if let Some(filter) = build_scale_filter(&params_clone) {
+        if let Some(ref filter) = scale_filter {
             builder = builder.filter_desc(filter.as_str());
         }
 

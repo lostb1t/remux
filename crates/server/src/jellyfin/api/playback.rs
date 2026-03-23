@@ -293,17 +293,11 @@ async fn items_playbackinfo_inner(
                 .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
             let video_codec = "h264".to_string();
-            let audio_codec = {
-                let stream_codec = source
-                    .audio_stream()
-                    .and_then(|s| s.codec.as_deref())
-                    .unwrap_or("");
-                if stream_codec.eq_ignore_ascii_case("aac") {
-                    "copy".to_string()
-                } else {
-                    "aac".to_string()
-                }
-            };
+            // Always re-encode audio to AAC for HLS compatibility.
+            // Copying risks passing through codecs browsers cannot decode
+            // (AC3, DTS, etc.) when FFmpeg auto-selects a stream different
+            // from the one inspected here, causing MEDIA_ERR_SRC_NOT_SUPPORTED.
+            let audio_codec = "aac".to_string();
 
             let bitrate_param = max_bitrate
                 .map(|b| format!("&MaxStreamingBitrate={}", b))
