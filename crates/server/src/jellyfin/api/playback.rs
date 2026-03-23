@@ -26,6 +26,7 @@ use crate::jellyfin::MediaSourceInfoExt;
 use crate::playback_session::PlaybackSession;
 use crate::sdks;
 use crate::torrent;
+use crate::transcode::session::TranscodeState;
 use crate::utils;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
@@ -247,21 +248,22 @@ async fn items_playbackinfo_inner(
         source.id = sm.id;
         source.e_tag = sm.id;
 
-        let bitrate_exceeded =
-            max_bitrate.map_or(false, |max| source.bitrate > Some(max));
+        // Treat an unknown source bitrate as exceeding the limit when a cap is
+        // set — we can't verify it fits, so transcoding is the safe choice.
+        let bitrate_exceeded = max_bitrate.map_or(false, |max| {
+            source.bitrate.map_or(true, |b| b > max)
+        });
 
-        let transcode_reasons: jellyfin::TranscodeReasons = device_profile
-            .as_ref()
-            .map(|profile| {
-                let mut reasons = profile.check_direct_play(&source);
-                if bitrate_exceeded {
-                    reasons.insert(
-                        jellyfin::TranscodeReason::ContainerBitrateExceedsLimit,
-                    );
-                }
-                reasons
-            })
-            .unwrap_or_default();
+        let transcode_reasons: jellyfin::TranscodeReasons = {
+            let mut reasons = device_profile
+                .as_ref()
+                .map(|profile| profile.check_direct_play(&source))
+                .unwrap_or_default();
+            if bitrate_exceeded {
+                reasons.insert(jellyfin::TranscodeReason::ContainerBitrateExceedsLimit);
+            }
+            reasons
+        };
 
         let needs_transcoding = !transcode_reasons.is_empty()
             || query.enable_transcoding.unwrap_or(false)
@@ -416,7 +418,7 @@ async fn items_playbackinfo_inner(
         ..Default::default()
     };
 
-    trace!(?info, "items_playbackinfo_result");
+    //trace!(?info, "items_playbackinfo_result");
     Ok(Json(info))
 }
 
@@ -507,7 +509,6 @@ async fn videos_stream_inner(
     // Previously this fell into progressive transcode when AudioStreamIndex was set,
     // which broke seeking because live transcodes can't serve HTTP range requests.
     if q.static_.unwrap_or(false) {
-        info!("starting direct playback for: {:?}", &media.title);
         let mut req = reqwest::Client::new().get(&url);
         if let Some(v) = headers.get(http::header::RANGE) {
             req = req.header(http::header::RANGE, v.clone());
@@ -1585,9 +1586,12 @@ pub async fn master_hls_video(
             start_time_ticks: q.start_time_ticks,
             max_width: q.max_width.map(|v| v as u32),
             max_height: q.max_height.map(|v| v as u32),
-            // Only use explicit VideoBitrate — MaxStreamingBitrate is a cap,
-            // not a target. When no explicit bitrate is set, x264enc uses CRF mode.
-            video_bitrate: q.video_bit_rate.map(|v| v as u32),
+            // Prefer an explicit VideoBitRate; fall back to MaxStreamingBitrate so
+            // the encoder targets the client-requested cap rather than CRF mode.
+            video_bitrate: q
+                .video_bit_rate
+                .map(|v| v as u32)
+                .or_else(|| q.max_streaming_bitrate.map(|b| b as u32)),
             audio_bitrate: q.audio_bit_rate.map(|v| v as u32),
             // Force stereo downmix when transcoding audio — multi-channel AAC
             // (e.g. 6.1 from DTS-HD) causes MEDIA_ERR_SRC_NOT_SUPPORTED on most
@@ -1659,15 +1663,35 @@ async fn variant_hls_video_inner(
 
     let playlist_path = session.read().await.variant_playlist_path();
 
-    // Wait up to 30 seconds for the playlist to be created
-    let mut attempts = 0;
-    while !playlist_path.exists() && attempts < 60 {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        attempts += 1;
-    }
+    // Subscribe to state changes so we can react immediately when the
+    // transcoder reports an error instead of waiting the full timeout.
+    let mut state_rx = session.read().await.state_tx.subscribe();
 
-    if !playlist_path.exists() {
-        return Err(anyhow!("Variant playlist not ready after timeout").into());
+    // Wait up to 30 seconds for the variant playlist to appear, waking
+    // immediately on every state-change broadcast from the engine.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if playlist_path.exists() {
+            break;
+        }
+        if let TranscodeState::Error(ref msg) = *state_rx.borrow() {
+            return Err(anyhow!("Transcode failed: {}", msg).into());
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(anyhow!("Variant playlist not ready after timeout").into());
+        }
+        // Wake on state change or after a short poll interval (whichever is first).
+        tokio::select! {
+            _ = state_rx.changed() => {
+                if let TranscodeState::Error(ref msg) = *state_rx.borrow() {
+                    return Err(anyhow!("Transcode failed: {}", msg).into());
+                }
+            }
+            _ = tokio::time::sleep_until(deadline.min(
+                tokio::time::Instant::now() + std::time::Duration::from_millis(500)
+            )) => {}
+        }
     }
 
     // Update last accessed

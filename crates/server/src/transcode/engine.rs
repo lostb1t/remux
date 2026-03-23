@@ -70,6 +70,7 @@ pub async fn start_transcode(
     {
         let mut s = session.write().await;
         s.state = TranscodeState::Running;
+        let _ = s.state_tx.send(TranscodeState::Running);
     }
 
     let session_clone = session.clone();
@@ -182,19 +183,22 @@ pub async fn start_transcode(
         Ok(Ok(())) => {
             let mut s = session.write().await;
             s.state = TranscodeState::Complete;
+            let _ = s.state_tx.send(TranscodeState::Complete);
             info!(session_id = %s.id, "Transcode completed successfully");
         }
         Ok(Err(e)) => {
             let mut s = session.write().await;
             let err_msg = format!("{:#}", e);
             error!(session_id = %s.id, error = %err_msg, "Transcode failed");
-            s.state = TranscodeState::Error(err_msg);
+            s.state = TranscodeState::Error(err_msg.clone());
+            let _ = s.state_tx.send(TranscodeState::Error(err_msg));
         }
         Err(e) => {
             let mut s = session.write().await;
             let err_msg = format!("Task panicked: {:#}", e);
             error!(session_id = %s.id, error = %err_msg, "Transcode task panicked");
-            s.state = TranscodeState::Error(err_msg);
+            s.state = TranscodeState::Error(err_msg.clone());
+            let _ = s.state_tx.send(TranscodeState::Error(err_msg));
         }
     }
 

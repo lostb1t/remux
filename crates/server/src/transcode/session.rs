@@ -3,6 +3,7 @@ use shared::sdks::jellyfin::models::TranscodeReasons;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -21,6 +22,8 @@ pub struct TranscodeSession {
     pub output_dir: PathBuf,
     pub input_url: String,
     pub state: TranscodeState,
+    /// Broadcasts state transitions so waiters can react immediately.
+    pub state_tx: Arc<watch::Sender<TranscodeState>>,
     pub created_at: Instant,
     pub last_accessed: Instant,
     pub video_codec: String,
@@ -86,6 +89,8 @@ impl TranscodeSessionManager {
         let output_dir = self.base_dir.join(&play_session_id);
         let _ = std::fs::create_dir_all(&output_dir);
 
+        let (state_tx, _) = watch::channel(TranscodeState::Starting);
+
         let session = TranscodeSession {
             id: play_session_id.clone(),
             item_id,
@@ -93,6 +98,7 @@ impl TranscodeSessionManager {
             output_dir,
             input_url,
             state: TranscodeState::Starting,
+            state_tx: Arc::new(state_tx),
             created_at: Instant::now(),
             last_accessed: Instant::now(),
             video_codec,
