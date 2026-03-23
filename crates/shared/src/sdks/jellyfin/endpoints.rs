@@ -733,3 +733,48 @@ impl Endpoint for AuthorizeQuickConnect {
         vec![("Code".into(), self.code.clone())]
     }
 }
+
+// ── API Keys ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct GetApiKeys;
+
+impl Endpoint for GetApiKeys {
+    type Output = QueryResult<AuthenticationInfo>;
+    fn path(&self) -> String {
+        "/auth/keys".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateApiKey {
+    pub app: String,
+}
+
+impl Endpoint for CreateApiKey {
+    type Output = AuthenticationInfo;
+    fn path(&self) -> String {
+        "/auth/keys".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn query(&self) -> Vec<(String, String)> {
+        vec![("app".into(), self.app.clone())]
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteApiKey {
+    pub key: String,
+}
+
+impl Endpoint for DeleteApiKey {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/auth/keys/{}", self.key)
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+}

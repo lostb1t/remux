@@ -48,8 +48,14 @@ pub async fn create_api_key(
     session: auth::AdminSession,
     Query(params): Query<CreateKeyQuery>,
 ) -> Result<impl IntoResponse> {
-    ApiKey::create(&state.ctx.db, &params.app).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let key = ApiKey::create(&state.ctx.db, &params.app).await?;
+    let info = jellyfin::AuthenticationInfo {
+        access_token: Some(key.access_token),
+        app_name: Some(key.app_name),
+        date_created: Some(key.created_at),
+        is_active: Some(true),
+    };
+    Ok((StatusCode::OK, Json(info)))
 }
 
 /// Delete / revoke an API key (admin only)

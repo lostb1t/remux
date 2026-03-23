@@ -14,7 +14,7 @@ shared = { path = "../shared" }
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 uuid = { version = "1", features = ["v4", "serde", "js"] }
 #http = "1"
-web-sys = { version = "0.3", features = ["Window", "Location", "Document", "Element"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "Document", "Element", "Navigator", "Clipboard"] }
 serde_json = "1"
 
 [profile.release]

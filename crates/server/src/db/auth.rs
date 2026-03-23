@@ -216,14 +216,36 @@ impl FromRequestParts<AppState> for AuthSession {
         // device_id is optional — query-param-only auth (e.g. ?token=...)
         // doesn't carry a DeviceId. The device is looked up by token alone.
         let _device_id = jfauth.device_id;
-        let device = Device::get_by_access_token(&state.ctx.db, token)
+        // First try the devices table (normal session token).
+        if let Some(device) = Device::get_by_access_token(&state.ctx.db, token).await? {
+            let _ = device.touch(&state.ctx.db).await;
+            let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
+                .await?
+                .context_unauthorized("forbidden", "forbidden")?;
+            return Ok(AuthSession { device, user });
+        }
+
+        // Fall back to the api_keys table. API keys are admin-scoped tokens.
+        let api_key = db::ApiKey::get_by_token(&state.ctx.db, token)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
-        let _ = device.touch(&state.ctx.db).await;
-        let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
+
+        let user = sqlx::query_as::<_, db::User>("SELECT * FROM users WHERE is_admin = 1 LIMIT 1")
+            .fetch_optional(&state.ctx.db)
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
-        Ok(AuthSession { device, user })
+
+        let synthetic_device = Device {
+            id: format!("apikey-{}", api_key.access_token),
+            access_token: api_key.access_token,
+            user_id: user.id,
+            name: api_key.app_name.clone(),
+            app_name: api_key.app_name,
+            app_version: String::new(),
+            last_activity_at: None,
+        };
+
+        Ok(AuthSession { device: synthetic_device, user })
     }
 }
 
