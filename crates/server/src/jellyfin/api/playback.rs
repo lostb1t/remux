@@ -248,10 +248,12 @@ async fn items_playbackinfo_inner(
         source.id = sm.id;
         source.e_tag = sm.id;
 
-        // Treat an unknown source bitrate as exceeding the limit when a cap is
-        // set — we can't verify it fits, so transcoding is the safe choice.
+        // Only flag bitrate exceeded when the source bitrate is known and
+        // actually exceeds the cap. An unknown bitrate is treated as within
+        // limits so that clients with a high/unlimited cap aren't forced into
+        // transcoding unnecessarily.
         let bitrate_exceeded = max_bitrate.map_or(false, |max| {
-            source.bitrate.map_or(true, |b| b > max)
+            source.bitrate.map_or(false, |b| b > max)
         });
 
         let transcode_reasons: jellyfin::TranscodeReasons = {
