@@ -156,7 +156,7 @@ async fn items_playbackinfo_inner(
 
     let play_session_id = utils::get_uuid().as_simple().to_string();
 
-    // --- Step 1: Resolve all source URLs concurrently -----------------------
+    // Resolve all source URLs concurrently
     // (resolve_url is cheap / DB-backed so async is fine here)
     struct SourceWithUrl {
         sm: db::Media,
@@ -172,7 +172,7 @@ async fn items_playbackinfo_inner(
         sources_with_urls.push(SourceWithUrl { sm, resolved_url });
     }
 
-    // --- Step 2: Probe all sources in parallel (spawn_blocking + timeout) ----
+    // Probe all sources in parallel (spawn_blocking + timeout) ----
     // Each FFmpeg probe is a blocking CPU/network call.  Running them sequentially
     // inside the async fn blocks Tokio's runtime for 40-70 s when there are 10+
     // sources.  We launch all probes concurrently on the blocking thread pool and
@@ -183,20 +183,33 @@ async fn items_playbackinfo_inner(
         .enumerate()
         .map(|(idx, swu)| {
             let url_opt = swu.resolved_url.clone();
-            let sm_clone = swu.sm.clone();
+            let sm = swu.sm.clone();
+            let db = state.ctx.db.clone();
             // When no specific source was requested, only probe the first one.
             // The rest get static metadata so we don't spawn 20+ parallel FFmpeg
             // processes just to open a details page.
             let skip_probe = probe_only_first && idx > 0;
             tokio::spawn(async move {
                 if skip_probe {
-                    return jellyfin::MediaSourceInfo::from(sm_clone);
+                    return jellyfin::MediaSourceInfo::from(sm);
                 }
+
+                // Cache hit: deserialise stored probe result and skip FFmpeg.
+                if let Some(json) = &sm.probe_data {
+                    if let Ok(mut cached) = serde_json::from_str::<jellyfin::MediaSourceInfo>(json) {
+                        cached.id = sm.id;
+                        cached.name = Some(sm.title.clone());
+                        cached.path = sm.url.clone();
+                        tracing::debug!(id = %sm.id, "probe cache hit");
+                        return cached;
+                    }
+                }
+
                 match url_opt {
-                    None => jellyfin::MediaSourceInfo::from(sm_clone),
+                    None => jellyfin::MediaSourceInfo::from(sm),
                     Some(url) => {
                         let url2 = url.clone();
-                        let sm2 = sm_clone.clone();
+                        let sm2 = sm.clone();
                         // Wrap the blocking probe in a dedicated thread + 8 s timeout.
                         let probe_result = tokio::time::timeout(
                             std::time::Duration::from_secs(8),
@@ -207,11 +220,16 @@ async fn items_playbackinfo_inner(
                         .await;
 
                         match probe_result {
-                            // probe succeeded
+                            // probe succeeded — persist result to cache
                             Ok(Ok(Ok(mut probed))) => {
                                 probed.id = sm2.id;
                                 probed.name = Some(sm2.title.clone());
                                 probed.path = sm2.url.clone();
+                                if let Ok(json) = serde_json::to_string(&probed) {
+                                    if let Err(e) = db::Media::save_probe_data(&db, &sm2.id, &json).await {
+                                        tracing::warn!(id = %sm2.id, error = %e, "failed to save probe cache");
+                                    }
+                                }
                                 probed
                             }
                             // probe returned an error
@@ -239,7 +257,7 @@ async fn items_playbackinfo_inner(
     // Await all probes concurrently.
     let probed_results = futures_util::future::join_all(probe_futures).await;
 
-    // --- Step 3: Apply playback decision logic on the probed results ----------
+    // Apply playback decision logic on the probed results ----------
     let mut media_sources = Vec::with_capacity(probed_results.len());
     for (swu, probe_join) in sources_with_urls.iter().zip(probed_results.into_iter()) {
         let sm = &swu.sm;
@@ -335,7 +353,7 @@ async fn items_playbackinfo_inner(
         media_sources.push(source);
     }
 
-    // --- Step 4: Inject external subtitles from AIO (cache-backed) ----------
+    // Inject external subtitles from AIO (cache-backed) ----------
     if let Some(ref sm) = subtitle_media {
         if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
             let sub_langs: Vec<String> = crate::db::Settings::get_config(&state.ctx.db)

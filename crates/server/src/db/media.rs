@@ -496,7 +496,7 @@ impl Media {
             description = excluded.description,
             trailers = excluded.trailers,
             url = excluded.url,
-            probe_data = excluded.probe_data,
+            probe_data = CASE WHEN excluded.url IS NOT media.url THEN NULL ELSE media.probe_data END,
             remote_data = excluded.remote_data,
             series_imdb_id = excluded.series_imdb_id,
             imdb_id = excluded.imdb_id,
@@ -560,6 +560,26 @@ impl Media {
         .execute(db)
         .await?;
 
+        Ok(())
+    }
+
+    /// Persist a successful probe result for this media source.
+    /// The `json` value is the serialised `MediaSourceInfo`.
+    pub async fn save_probe_data(db: &sqlx::SqlitePool, id: &Uuid, json: &str) -> Result<()> {
+        sqlx::query("UPDATE media SET probe_data = ?1 WHERE id = ?2")
+            .bind(json)
+            .bind(id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
+
+    /// Invalidate the probe cache for a media source (e.g. after its URL changes).
+    pub async fn clear_probe_data(db: &sqlx::SqlitePool, id: &Uuid) -> Result<()> {
+        sqlx::query("UPDATE media SET probe_data = NULL WHERE id = ?1")
+            .bind(id)
+            .execute(db)
+            .await?;
         Ok(())
     }
 
@@ -705,7 +725,7 @@ impl Media {
                 url = excluded.url,
                 aio_id = excluded.aio_id,
                 imdb_id = excluded.imdb_id,
-                probe_data = excluded.probe_data,
+                probe_data = CASE WHEN excluded.url IS NOT media.url THEN NULL ELSE media.probe_data END,
                 remote_data = excluded.remote_data,
                 series_imdb_id = excluded.series_imdb_id,
                 updated_at = excluded.updated_at,
