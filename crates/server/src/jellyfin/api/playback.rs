@@ -2056,5 +2056,105 @@ async fn apply_user_playback_prefs(
                 }
             }
         }
+
+        // --- subtitle_mode ---
+        apply_subtitle_mode(&cfg.subtitle_mode, source);
+    }
+}
+
+fn apply_subtitle_mode(mode: &jellyfin::SubtitleMode, source: &mut jellyfin::MediaSourceInfo) {
+    let clear_all = |source: &mut jellyfin::MediaSourceInfo| {
+        for s in source.media_streams.iter_mut() {
+            if matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle)) {
+                s.is_default = Some(false);
+            }
+        }
+        source.default_subtitle_stream_index = None;
+    };
+
+    let set_default = |source: &mut jellyfin::MediaSourceInfo, idx: Option<i64>| {
+        for s in source.media_streams.iter_mut() {
+            if matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle)) {
+                s.is_default = Some(false);
+            }
+        }
+        source.default_subtitle_stream_index = idx;
+        if let Some(i) = idx {
+            if let Some(s) = source.media_streams.iter_mut().find(|s| s.index == Some(i)) {
+                s.is_default = Some(true);
+            }
+        }
+    };
+
+    match mode {
+        jellyfin::SubtitleMode::None => {
+            // Never auto-show subtitles
+            clear_all(source);
+        }
+        jellyfin::SubtitleMode::Always => {
+            // If no subtitle is already selected, pick the first non-forced subtitle
+            if source.default_subtitle_stream_index.is_none() {
+                let idx = source.media_streams.iter().find_map(|s| {
+                    if matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle))
+                        && !s.is_forced.unwrap_or(false)
+                    {
+                        s.index
+                    } else {
+                        None
+                    }
+                });
+                if idx.is_some() {
+                    set_default(source, idx);
+                }
+            }
+        }
+        jellyfin::SubtitleMode::OnlyForced => {
+            // Only a forced subtitle may be default; clear any non-forced default
+            let forced_idx = source.media_streams.iter().find_map(|s| {
+                if matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle))
+                    && s.is_forced.unwrap_or(false)
+                {
+                    s.index
+                } else {
+                    None
+                }
+            });
+            // Replace whatever is set with the first forced sub (or nothing)
+            set_default(source, forced_idx);
+        }
+        jellyfin::SubtitleMode::Smart => {
+            // Like Default but clear the selection if the subtitle language already
+            // matches the audio language (i.e. no translation needed).
+            if let Some(def_idx) = source.default_subtitle_stream_index {
+                let audio_lang = source
+                    .media_streams
+                    .iter()
+                    .find(|s| {
+                        matches!(s.type_, Some(jellyfin::MediaStreamType::Audio))
+                            && s.index == source.default_audio_stream_index
+                    })
+                    .and_then(|s| s.language.clone());
+
+                let sub_lang = source
+                    .media_streams
+                    .iter()
+                    .find(|s| s.index == Some(def_idx))
+                    .and_then(|s| s.language.clone());
+
+                let audio_two = audio_lang
+                    .as_deref()
+                    .and_then(crate::db::subtitle_lang_to_two_letter);
+                let sub_two = sub_lang
+                    .as_deref()
+                    .and_then(crate::db::subtitle_lang_to_two_letter);
+
+                if audio_two.is_some() && audio_two == sub_two {
+                    // Subtitle language matches audio — no need to display it
+                    clear_all(source);
+                }
+            }
+        }
+        // Default: do not alter what was already set by prior steps
+        jellyfin::SubtitleMode::Default => {}
     }
 }
