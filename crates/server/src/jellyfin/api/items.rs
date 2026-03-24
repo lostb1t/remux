@@ -81,6 +81,10 @@ pub async fn get_items(
         }
 
         if let Some(s) = search {
+            // Episode searches return empty — episodes are children of Series in AIO
+            if matches!(types[0], jellyfin::MediaType::Episode) {
+                return Ok(ItemsQueryResult { items: vec![], total_count: 0 });
+            }
             // todo: need to to make parallel request for types
             if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await
             {

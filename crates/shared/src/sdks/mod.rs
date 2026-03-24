@@ -412,7 +412,8 @@ impl From<jellyfin::MediaType> for aio::MediaType {
         match kind {
             jellyfin::MediaType::Movie => aio::MediaType::Movie,
             jellyfin::MediaType::Series => aio::MediaType::Series,
-            _ => todo!(),
+            jellyfin::MediaType::Episode => aio::MediaType::Series,
+            _ => aio::MediaType::Movie,
         }
     }
 }
