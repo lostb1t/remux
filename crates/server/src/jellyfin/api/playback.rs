@@ -40,26 +40,27 @@ pub async fn items_playbackinfo(
     let query_params = payload.clone();
     let media_source_id = payload.media_source_id;
     let device_profile = payload.device_profile;
-    items_playbackinfo_inner(state, id, media_source_id, device_profile, query_params)
+    items_playbackinfo_inner(state, session, id, media_source_id, device_profile, query_params)
         .await
 }
 
 #[get("/items/{id}/playbackinfo")]
 pub async fn items_playbackinfo_get(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<jellyfin::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
     let query_params = q.clone();
     let media_source_id = q.media_source_id;
     let device_profile = q.device_profile;
-    items_playbackinfo_inner(state, id, media_source_id, device_profile, query_params)
+    items_playbackinfo_inner(state, session, id, media_source_id, device_profile, query_params)
         .await
 }
 
 async fn items_playbackinfo_inner(
     state: AppState,
+    session: auth::AuthSession,
     id: Uuid,
     media_source_id: Option<Uuid>,
     device_profile: Option<jellyfin::DeviceProfile>,
@@ -353,10 +354,19 @@ async fn items_playbackinfo_inner(
         media_sources.push(source);
     }
 
-    // Inject external subtitles from AIO (cache-backed) ----------
-    if let Some(ref sm) = subtitle_media {
-        inject_external_subtitles(&state.ctx.db, sm, &mut media_sources).await;
-    }
+    // Inject external subtitles from AIO (cache-backed) 
+    //if let Some(ref sm) = subtitle_media {
+   //     inject_external_subtitles(&state.ctx.db, sm, &mut media_sources).await;
+   // }
+
+    // Apply per-user playback preferences
+    apply_user_playback_prefs(
+        &state.ctx.db,
+        &session.user,
+        &id,
+        &mut media_sources,
+    )
+    .await;
 
     let info = jellyfin::PlaybackInfoResponse {
         media_sources,
@@ -1922,4 +1932,129 @@ pub(super) async fn inject_external_subtitles(
     media_sources: &mut Vec<jellyfin::MediaSourceInfo>,
 ) {
     subtitle_media.inject_subtitles_into_sources(db, media_sources).await;
+}
+
+/// Apply per-user playback preferences to a list of `MediaSourceInfo` entries:
+///
+/// - **`remember_audio_selections`**: restore the last-used audio stream index as the
+///   default (only if that stream still exists in the probed list).
+/// - **`remember_subtitle_selections`**: same for subtitles.
+/// - **`play_default_audio_track`**: if `false`, clear the default audio stream index
+///   so the client plays without auto-selecting audio (after recall is applied).
+/// - **`subtitle_language_preference`**: if set and no subtitle is yet marked as
+///   default, find the first subtitle stream whose language matches (normalised to
+///   ISO 639-1) and mark it.
+async fn apply_user_playback_prefs(
+    db: &sqlx::SqlitePool,
+    user: &crate::db::User,
+    media_id: &uuid::Uuid,
+    media_sources: &mut Vec<jellyfin::MediaSourceInfo>,
+) {
+    let cfg = user
+        .configuration
+        .as_ref()
+        .map(|c| c.0.clone())
+        .unwrap_or_default();
+
+    // Load saved stream selections (best-effort; failure means no recall)
+    let user_state = crate::db::Media::get_by_id(db, media_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|m| {
+            // We only have an async get_or_new, so do a sync-compatible lookup inline
+            // via the aio_id key used by UserMediaState.
+            m.aio_id.map(|key| (key, m.kind))
+        })
+        .and_then(|(key, _kind)| {
+            // We can't `.await` inside an `and_then`, so capture key and fetch below.
+            Some(key)
+        });
+
+    let saved_audio: Option<i64>;
+    let saved_subtitle: Option<i64>;
+
+    if let Some(media_key) = user_state {
+        match sqlx::query_as::<_, crate::db::UserMediaState>(
+            "SELECT * FROM user_media_state WHERE user_id = ?1 AND media_key = ?2",
+        )
+        .bind(user.id)
+        .bind(&media_key)
+        .fetch_optional(db)
+        .await
+        {
+            Ok(Some(state)) => {
+                saved_audio = state.audio_idx;
+                saved_subtitle = state.subtitle_idx;
+            }
+            _ => {
+                saved_audio = None;
+                saved_subtitle = None;
+            }
+        }
+    } else {
+        saved_audio = None;
+        saved_subtitle = None;
+    }
+
+    for source in media_sources.iter_mut() {
+        // --- remember_audio_selections ---
+        if cfg.remember_audio_selections {
+            if let Some(idx) = saved_audio {
+                let exists = source.media_streams.iter().any(|s| {
+                    s.index == Some(idx)
+                        && matches!(s.type_, Some(jellyfin::MediaStreamType::Audio))
+                });
+                if exists {
+                    source.default_audio_stream_index = Some(idx);
+                }
+            }
+        }
+
+        // --- remember_subtitle_selections ---
+        if cfg.remember_subtitle_selections {
+            if let Some(idx) = saved_subtitle {
+                let exists = source.media_streams.iter().any(|s| {
+                    s.index == Some(idx)
+                        && matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle))
+                });
+                if exists {
+                    // Clear any previous default flag, set the recalled one
+                    for s in source.media_streams.iter_mut() {
+                        if matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle)) {
+                            s.is_default = Some(false);
+                        }
+                    }
+                    source.default_subtitle_stream_index = Some(idx);
+                    if let Some(s) = source.media_streams.iter_mut().find(|s| s.index == Some(idx)) {
+                        s.is_default = Some(true);
+                    }
+                }
+            }
+        }
+
+        // --- play_default_audio_track ---
+        if !cfg.play_default_audio_track {
+            source.default_audio_stream_index = None;
+        }
+
+        // --- subtitle_language_preference ---
+        // Only act if no subtitle default is already set
+        if source.default_subtitle_stream_index.is_none() {
+            if let Some(ref pref) = cfg.subtitle_language_preference {
+                let pref_two = crate::db::subtitle_lang_to_two_letter(pref);
+                if let Some(ref target) = pref_two {
+                    if let Some(stream) = source.media_streams.iter_mut().find(|s| {
+                        matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle))
+                            && s.language.as_deref().and_then(crate::db::subtitle_lang_to_two_letter).as_deref()
+                                == Some(target.as_str())
+                    }) {
+                        let idx = stream.index;
+                        stream.is_default = Some(true);
+                        source.default_subtitle_stream_index = idx;
+                    }
+                }
+            }
+        }
+    }
 }

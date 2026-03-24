@@ -1981,7 +1981,7 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
 /// - 2-letter input → returned as-is (lowercased).
 /// - 3-letter input (ISO 639-2/3) → converted via `isolang` to the 2-letter code.
 /// - Unknown or unconvertible code → `None`.
-fn subtitle_lang_to_two_letter(lang: &str) -> Option<String> {
+pub fn subtitle_lang_to_two_letter(lang: &str) -> Option<String> {
     let lang = lang.trim().to_lowercase();
     if lang.is_empty() {
         return None;
