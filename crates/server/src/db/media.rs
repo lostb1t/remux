@@ -47,6 +47,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
 use thiserror::Error;
 use timed;
@@ -1543,6 +1544,93 @@ impl Media {
             .await
     }
 
+    /// Inject external AIO subtitles into a list of `MediaSourceInfo` entries.
+    ///
+    /// Fetches available subtitles, filters by the server's `subtitle_languages`
+    /// preference (normalising 3-letter codes to ISO 639-1 before comparing),
+    /// scores each subtitle against each source by filename token overlap, and
+    /// appends matching streams. The first subtitle is marked as default when
+    /// language preferences are configured.
+    ///
+    /// No-op if AIO is not configured or no subtitles are found.
+    pub async fn inject_subtitles_into_sources(
+        &self,
+        db: &sqlx::SqlitePool,
+        media_sources: &mut Vec<jellyfin::MediaSourceInfo>,
+    ) {
+        let Ok(aio) = crate::aio::AioService::from_settings(db).await else {
+            return;
+        };
+        let sub_langs: Vec<String> = crate::db::Settings::get_config(db)
+            .await
+            .ok()
+            .and_then(|c| c.subtitle_languages)
+            .unwrap_or_default();
+
+        let Ok(all_subs) = self.get_subtitles(&aio).await else {
+            return;
+        };
+
+        let filtered: Vec<_> = if sub_langs.is_empty() {
+            all_subs
+        } else {
+            all_subs
+                .into_iter()
+                .filter(|s| {
+                    let two = s.lang.as_deref().and_then(subtitle_lang_to_two_letter);
+                    two.map_or(false, |two| {
+                        sub_langs.iter().any(|p| two.eq_ignore_ascii_case(p.trim()))
+                    })
+                })
+                .collect()
+        };
+
+        if filtered.is_empty() {
+            return;
+        }
+
+        for source in media_sources.iter_mut() {
+            let next_idx = source
+                .media_streams
+                .iter()
+                .filter_map(|s| s.index)
+                .max()
+                .map_or(0, |m| m + 1);
+
+            let mut scored: Vec<_> = filtered
+                .iter()
+                .map(|s| (score_subtitle_url(&s.url, &source.name, &source.path), s))
+                .collect();
+            // Primary sort: preferred language order; secondary: filename score desc
+            scored.sort_by(|(sa, a), (sb, b)| {
+                let rank = |s: &&sdks::aio::Subtitle| {
+                    let two = s.lang.as_deref().and_then(subtitle_lang_to_two_letter);
+                    sub_langs
+                        .iter()
+                        .position(|p| {
+                            two.as_deref()
+                                .map_or(false, |t| t.eq_ignore_ascii_case(p.trim()))
+                        })
+                        .unwrap_or(usize::MAX)
+                };
+                rank(a).cmp(&rank(b)).then(sb.cmp(sa))
+            });
+
+            let wants_default =
+                !sub_langs.is_empty() && source.default_subtitle_stream_index.is_none();
+            for (i, (_, sub)) in scored.iter().enumerate() {
+                let mut stream =
+                    crate::conversions::subtitle_to_media_stream((*sub).clone());
+                stream.index = Some(next_idx + i as i64);
+                if wants_default && i == 0 {
+                    stream.is_default = Some(true);
+                    source.default_subtitle_stream_index = Some(next_idx);
+                }
+                source.media_streams.push(stream);
+            }
+        }
+    }
+
     pub async fn sources(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
         if self.sources.is_none() {
             let mut sources = Self::get_by_filter(
@@ -1886,6 +1974,46 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
     }
 
     Ok(media_instances)
+}
+
+/// Normalise a subtitle language tag to its ISO 639-1 two-letter code.
+///
+/// - 2-letter input → returned as-is (lowercased).
+/// - 3-letter input (ISO 639-2/3) → converted via `isolang` to the 2-letter code.
+/// - Unknown or unconvertible code → `None`.
+fn subtitle_lang_to_two_letter(lang: &str) -> Option<String> {
+    let lang = lang.trim().to_lowercase();
+    if lang.is_empty() {
+        return None;
+    }
+    if lang.len() == 2 {
+        return Some(lang);
+    }
+    // Try ISO 639-3 (3-letter), then fall back to from_str which also tries 639-1
+    isolang::Language::from_639_3(&lang)
+        .or_else(|| isolang::Language::from_str(&lang).ok())
+        .and_then(|l| l.to_639_1())
+        .map(|s| s.to_string())
+}
+
+/// Score how well a subtitle URL matches a media source by counting shared
+/// alphanumeric tokens (year, resolution, release group, codec, etc.).
+fn score_subtitle_url(
+    sub_url: &str,
+    source_name: &Option<String>,
+    source_path: &Option<String>,
+) -> i32 {
+    fn tokens(s: &str) -> std::collections::HashSet<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|t| t.len() > 2)
+            .map(|t| t.to_lowercase())
+            .collect()
+    }
+    let sub_file = sub_url.rsplit('/').next().unwrap_or(sub_url);
+    let sub_tok = tokens(sub_file);
+    let mut src_tok = tokens(source_name.as_deref().unwrap_or(""));
+    src_tok.extend(tokens(source_path.as_deref().unwrap_or("")));
+    sub_tok.intersection(&src_tok).count() as i32
 }
 
 pub fn collection_uuid() -> Uuid {
