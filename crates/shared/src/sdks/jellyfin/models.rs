@@ -153,8 +153,8 @@ pub struct ServerConfiguration {
     /// Empty/None = all subtitles shown, none set as default.
     pub subtitle_languages: Option<Vec<String>>,
     /// Remux: inject external subtitles into item detail responses.
-    #[default(true)]
-    pub enable_subtitles_detail: bool,
+    #[default(Some(true))]
+    pub enable_subtitles_detail: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

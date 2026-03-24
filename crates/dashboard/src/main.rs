@@ -3313,7 +3313,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             .map(|v| v.join(", "))
                             .unwrap_or_default(),
                     );
-                    enable_subtitles_detail.set(cfg.enable_subtitles_detail);
+                    enable_subtitles_detail.set(cfg.enable_subtitles_detail.unwrap_or(true));
                     quick_connect_enabled
                         .set(cfg.quick_connect_available.unwrap_or(true));
                     base_cfg.set(Some(cfg));
@@ -3356,7 +3356,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                 .filter(|s| !s.is_empty())
                 .collect(),
         );
-        cfg.enable_subtitles_detail = subtitles_detail;
+        cfg.enable_subtitles_detail = Some(subtitles_detail);
 
         saving.set(true);
         error.set(None);

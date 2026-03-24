@@ -711,7 +711,7 @@ pub async fn item(
     let enable_subtitles_detail = crate::db::Settings::get_config(&state.ctx.db)
         .await
         .ok()
-        .map(|c| c.enable_subtitles_detail)
+        .and_then(|c| c.enable_subtitles_detail)
         .unwrap_or(true);
 
     if enable_subtitles_detail {

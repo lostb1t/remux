@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::io;
 use tokio_util::io::ReaderStream;
-use tracing::{info, trace};
+use tracing::{info, trace, debug};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -1947,6 +1947,7 @@ pub(super) async fn inject_external_subtitles(
     subtitle_media: &crate::db::Media,
     media_sources: &mut Vec<jellyfin::MediaSourceInfo>,
 ) {
+
     let Ok(aio) = crate::aio::AioService::from_settings(db).await else {
         return;
     };
@@ -1957,12 +1958,13 @@ pub(super) async fn inject_external_subtitles(
         .unwrap_or_default();
 
     let Ok(all_subs) = subtitle_media.get_subtitles(&aio).await else {
-        return;
+      return;
     };
+
     let filtered: Vec<_> = if sub_langs.is_empty() {
-        all_subs
+        all_subs.clone()
     } else {
-        all_subs
+        all_subs.clone()
             .into_iter()
             .filter(|s| {
                 s.lang.as_deref().map_or(false, |l| {
@@ -1971,7 +1973,7 @@ pub(super) async fn inject_external_subtitles(
             })
             .collect()
     };
-
+    debug!(?sub_langs, sub_count=all_subs.len(), filtered_count=filtered.len(), "inject_external_subtitles");
     if filtered.is_empty() {
         return;
     }
