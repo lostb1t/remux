@@ -223,8 +223,11 @@ pub struct CountryInfo {
 pub struct CultureDto {
     pub name: String,
     pub display_name: String,
+    #[serde(rename = "TwoLetterISOLanguageName")]
     pub two_letter_iso_language_name: String,
+    #[serde(rename = "ThreeLetterISOLanguageName")]
     pub three_letter_iso_language_name: String,
+    #[serde(rename = "ThreeLetterISOLanguageNames")]
     pub three_letter_iso_language_names: Vec<String>,
 }
 
