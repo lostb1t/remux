@@ -707,6 +707,26 @@ pub async fn item(
         base_item.path = None;
         base_item.can_download = Some(false);
     }
+
+    let enable_subtitles_detail = crate::db::Settings::get_config(&state.ctx.db)
+        .await
+        .ok()
+        .map(|c| c.enable_subtitles_detail)
+        .unwrap_or(true);
+
+    if enable_subtitles_detail {
+        if let Some(ref mut sources) = base_item.media_sources {
+            if !sources.is_empty() {
+                super::playback::inject_external_subtitles(
+                    &state.ctx.db,
+                    &media,
+                    sources,
+                )
+                .await;
+            }
+        }
+    }
+
     Ok(Some(base_item))
 }
 

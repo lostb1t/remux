@@ -355,75 +355,7 @@ async fn items_playbackinfo_inner(
 
     // Inject external subtitles from AIO (cache-backed) ----------
     if let Some(ref sm) = subtitle_media {
-        if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
-            let sub_langs: Vec<String> = crate::db::Settings::get_config(&state.ctx.db)
-                .await
-                .ok()
-                .and_then(|c| c.subtitle_languages)
-                .unwrap_or_default();
-
-            if let Ok(all_subs) = sm.get_subtitles(&aio).await {
-                let filtered: Vec<_> = if sub_langs.is_empty() {
-                    all_subs
-                } else {
-                    all_subs
-                        .into_iter()
-                        .filter(|s| {
-                            s.lang.as_deref().map_or(false, |l| {
-                                sub_langs.iter().any(|p| l.eq_ignore_ascii_case(p))
-                            })
-                        })
-                        .collect()
-                };
-
-                if !filtered.is_empty() {
-                    for source in &mut media_sources {
-                        let next_idx = source
-                            .media_streams
-                            .iter()
-                            .filter_map(|s| s.index)
-                            .max()
-                            .map_or(0, |m| m + 1);
-
-                        let mut scored: Vec<_> = filtered
-                            .iter()
-                            .map(|s| {
-                                (score_subtitle(&s.url, &source.name, &source.path), s)
-                            })
-                            .collect();
-                        // Primary sort: preferred language order; secondary: filename score desc
-                        scored.sort_by(|(sa, a), (sb, b)| {
-                            let rank = |s: &&crate::sdks::aio::Subtitle| {
-                                sub_langs
-                                    .iter()
-                                    .position(|l| {
-                                        s.lang.as_deref().map_or(false, |sl| {
-                                            sl.eq_ignore_ascii_case(l)
-                                        })
-                                    })
-                                    .unwrap_or(usize::MAX)
-                            };
-                            rank(a).cmp(&rank(b)).then(sb.cmp(sa))
-                        });
-
-                        let wants_default = !sub_langs.is_empty()
-                            && source.default_subtitle_stream_index.is_none();
-                        for (i, (_, sub)) in scored.iter().enumerate() {
-                            let mut stream =
-                                crate::conversions::subtitle_to_media_stream(
-                                    (*sub).clone(),
-                                );
-                            stream.index = Some(next_idx + i as i64);
-                            if wants_default && i == 0 {
-                                stream.is_default = Some(true);
-                                source.default_subtitle_stream_index = Some(next_idx);
-                            }
-                            source.media_streams.push(stream);
-                        }
-                    }
-                }
-            }
-        }
+        inject_external_subtitles(&state.ctx.db, sm, &mut media_sources).await;
     }
 
     let info = jellyfin::PlaybackInfoResponse {
@@ -2000,4 +1932,86 @@ fn score_subtitle(
     let mut src_tok = tokens(source_name.as_deref().unwrap_or(""));
     src_tok.extend(tokens(source_path.as_deref().unwrap_or("")));
     sub_tok.intersection(&src_tok).count() as i32
+}
+
+/// Inject external subtitles from AIO into a list of `MediaSourceInfo` entries.
+///
+/// Fetches available subtitles for `subtitle_media`, filters by the server's
+/// `subtitle_languages` preference, scores each subtitle against each source
+/// by filename token overlap, and appends matching streams. The first subtitle
+/// for a source is marked as default when language preferences are configured.
+///
+/// This is a no-op if AIO is not configured or if no subtitles are found.
+pub(super) async fn inject_external_subtitles(
+    db: &sqlx::SqlitePool,
+    subtitle_media: &crate::db::Media,
+    media_sources: &mut Vec<jellyfin::MediaSourceInfo>,
+) {
+    let Ok(aio) = crate::aio::AioService::from_settings(db).await else {
+        return;
+    };
+    let sub_langs: Vec<String> = crate::db::Settings::get_config(db)
+        .await
+        .ok()
+        .and_then(|c| c.subtitle_languages)
+        .unwrap_or_default();
+
+    let Ok(all_subs) = subtitle_media.get_subtitles(&aio).await else {
+        return;
+    };
+    let filtered: Vec<_> = if sub_langs.is_empty() {
+        all_subs
+    } else {
+        all_subs
+            .into_iter()
+            .filter(|s| {
+                s.lang.as_deref().map_or(false, |l| {
+                    sub_langs.iter().any(|p| l.eq_ignore_ascii_case(p))
+                })
+            })
+            .collect()
+    };
+
+    if filtered.is_empty() {
+        return;
+    }
+
+    for source in media_sources.iter_mut() {
+        let next_idx = source
+            .media_streams
+            .iter()
+            .filter_map(|s| s.index)
+            .max()
+            .map_or(0, |m| m + 1);
+
+        let mut scored: Vec<_> = filtered
+            .iter()
+            .map(|s| (score_subtitle(&s.url, &source.name, &source.path), s))
+            .collect();
+        // Primary sort: preferred language order; secondary: filename score desc
+        scored.sort_by(|(sa, a), (sb, b)| {
+            let rank = |s: &&crate::sdks::aio::Subtitle| {
+                sub_langs
+                    .iter()
+                    .position(|l| {
+                        s.lang.as_deref().map_or(false, |sl| sl.eq_ignore_ascii_case(l))
+                    })
+                    .unwrap_or(usize::MAX)
+            };
+            rank(a).cmp(&rank(b)).then(sb.cmp(sa))
+        });
+
+        let wants_default =
+            !sub_langs.is_empty() && source.default_subtitle_stream_index.is_none();
+        for (i, (_, sub)) in scored.iter().enumerate() {
+            let mut stream =
+                crate::conversions::subtitle_to_media_stream((*sub).clone());
+            stream.index = Some(next_idx + i as i64);
+            if wants_default && i == 0 {
+                stream.is_default = Some(true);
+                source.default_subtitle_stream_index = Some(next_idx);
+            }
+            source.media_streams.push(stream);
+        }
+    }
 }

@@ -152,6 +152,9 @@ pub struct ServerConfiguration {
     /// Remux: preferred subtitle language codes (ISO 639-1), e.g. ["en", "de"].
     /// Empty/None = all subtitles shown, none set as default.
     pub subtitle_languages: Option<Vec<String>>,
+    /// Remux: inject external subtitles into item detail responses.
+    #[default(true)]
+    pub enable_subtitles_detail: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -3286,6 +3286,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
+    let mut enable_subtitles_detail = use_signal(|| true);
     let mut quick_connect_enabled = use_signal(|| true);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
@@ -3312,6 +3313,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             .map(|v| v.join(", "))
                             .unwrap_or_default(),
                     );
+                    enable_subtitles_detail.set(cfg.enable_subtitles_detail);
                     quick_connect_enabled
                         .set(cfg.quick_connect_available.unwrap_or(true));
                     base_cfg.set(Some(cfg));
@@ -3334,6 +3336,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages.peek().clone();
+        let subtitles_detail = *enable_subtitles_detail.peek();
         let qc_enabled = *quick_connect_enabled.peek();
 
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
@@ -3353,6 +3356,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                 .filter(|s| !s.is_empty())
                 .collect(),
         );
+        cfg.enable_subtitles_detail = subtitles_detail;
 
         saving.set(true);
         error.set(None);
@@ -3538,6 +3542,23 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                                 "Comma-separated ISO 639-1 codes (e.g. \"en, de\"). "
                                 "Only subtitles in these languages are shown and the first match is selected by default. "
                                 "Leave empty to show all subtitles without a default."
+                            }
+                        }
+
+                        div { class: "toggle-row",
+                            div {
+                                span { class: "toggle-label", "Subtitles on Detail Page" }
+                                p { class: "field-hint",
+                                    "Show external subtitles in stream info when viewing item details."
+                                }
+                            }
+                            label { class: "toggle",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *enable_subtitles_detail.read(),
+                                    onchange: move |e| enable_subtitles_detail.set(e.checked()),
+                                }
+                                span { class: "toggle-track" }
                             }
                         }
 
