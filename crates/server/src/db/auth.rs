@@ -176,6 +176,11 @@ impl Device {
         Ok(())
     }
 
+    /// Load the user this device belongs to.
+    pub async fn user(&self, db: &SqlitePool) -> Result<Option<db::User>> {
+        db::User::get_by_id(db, &self.user_id).await
+    }
+
     /// Get devices by user ID
     pub async fn get_by_user_id(db: &SqlitePool, user_id: &Uuid) -> Result<Vec<Self>> {
         let devices = sqlx::query_as::<_, Self>(

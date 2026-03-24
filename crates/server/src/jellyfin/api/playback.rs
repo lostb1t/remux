@@ -1411,7 +1411,7 @@ pub async fn get_sessions(
     let devices = auth::Device::get_all(&state.ctx.db).await?;
     let playback_sessions = PlaybackSession::get_all(&state.ctx.store);
 
-    let sessions = devices
+    let filtered_devices: Vec<_> = devices
         .into_iter()
         .filter(|device| {
             if let Some(cutoff) = cutoff {
@@ -1420,57 +1420,61 @@ pub async fn get_sessions(
                 true
             }
         })
-        .map(|device| {
-            // Attach now-playing info if this device has an active playback session.
-            let now_playing = playback_sessions
-                .iter()
-                .find(|s| s.device_id == device.id)
-                .and_then(|s| {
-                    // Minimal stub so clients know something is playing.
-                    Some(jellyfin::BaseItemDto {
-                        id: s.item_id,
-                        ..Default::default()
-                    })
-                });
+        .collect();
 
-            // Attach TranscodingInfo if there is an active transcode session for this device.
-            let transcoding_info = playback_sessions
-                .iter()
-                .find(|s| s.device_id == device.id)
-                .and_then(|ps| state.ctx.transcode.get(&ps.play_session_id))
-                .map(|ts| {
-                    let ts = ts.try_read().ok();
-                    ts.map(|ts| jellyfin::TranscodingInfo {
-                        audio_codec: Some(ts.audio_codec.clone()),
-                        video_codec: Some(ts.video_codec.clone()),
-                        container: Some("ts".to_string()),
-                        is_video_direct: ts.video_codec == "copy",
-                        is_audio_direct: ts.audio_codec == "copy",
-                        transcode_reasons: ts.transcode_reasons.0,
-                        ..Default::default()
-                    })
-                })
-                .flatten();
-
-            jellyfin::SessionInfoDto {
-                id: Some(device.id.clone()),
-                device_id: Some(device.id.clone()),
-                device_name: Some(device.name.clone()),
-                client: Some(device.app_name.clone()),
-                application_version: Some(device.app_version.clone()),
-                user_id: device.user_id.to_string(),
-                last_activity_date: device.last_activity_at.unwrap_or_else(Utc::now),
-                last_playback_check_in: device
-                    .last_activity_at
-                    .unwrap_or_else(Utc::now),
-                now_playing_item: now_playing,
-                transcoding_info,
-                is_active: true,
-                server_id: crate::utils::server_id(),
+    let mut sessions = Vec::with_capacity(filtered_devices.len());
+    for device in filtered_devices {
+        // Attach now-playing info if this device has an active playback session.
+        let now_playing = playback_sessions
+            .iter()
+            .find(|s| s.device_id == device.id)
+            .map(|s| jellyfin::BaseItemDto {
+                id: s.item_id,
                 ..Default::default()
-            }
-        })
-        .collect::<Vec<jellyfin::SessionInfoDto>>();
+            });
+
+        // Attach TranscodingInfo if there is an active transcode session for this device.
+        let transcoding_info = playback_sessions
+            .iter()
+            .find(|s| s.device_id == device.id)
+            .and_then(|ps| state.ctx.transcode.get(&ps.play_session_id))
+            .map(|ts| {
+                let ts = ts.try_read().ok();
+                ts.map(|ts| jellyfin::TranscodingInfo {
+                    audio_codec: Some(ts.audio_codec.clone()),
+                    video_codec: Some(ts.video_codec.clone()),
+                    container: Some("ts".to_string()),
+                    is_video_direct: ts.video_codec == "copy",
+                    is_audio_direct: ts.audio_codec == "copy",
+                    transcode_reasons: ts.transcode_reasons.0,
+                    ..Default::default()
+                })
+            })
+            .flatten();
+
+        let user_name = device
+            .user(&state.ctx.db)
+            .await?
+            .map(|u| u.username)
+            .unwrap_or_default();
+
+        sessions.push(jellyfin::SessionInfoDto {
+            id: Some(device.id.clone()),
+            device_id: Some(device.id.clone()),
+            device_name: Some(device.name.clone()),
+            client: Some(device.app_name.clone()),
+            application_version: Some(device.app_version.clone()),
+            user_id: device.user_id.to_string(),
+            user_name: Some(user_name),
+            last_activity_date: device.last_activity_at.unwrap_or_else(Utc::now),
+            last_playback_check_in: device.last_activity_at.unwrap_or_else(Utc::now),
+            now_playing_item: now_playing,
+            transcoding_info,
+            is_active: true,
+            server_id: crate::utils::server_id(),
+            ..Default::default()
+        });
+    }
 
     Ok(Json(sessions))
 }
