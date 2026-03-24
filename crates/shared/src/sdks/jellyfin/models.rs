@@ -224,7 +224,8 @@ pub struct CultureDto {
     pub name: String,
     pub display_name: String,
     pub two_letter_iso_language_name: String,
-    pub three_letter_iso_language_name: Vec<String>,
+    pub three_letter_iso_language_name: String,
+    pub three_letter_iso_language_names: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]

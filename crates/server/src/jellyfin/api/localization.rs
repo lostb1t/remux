@@ -83,13 +83,16 @@ pub async fn get_cultures(State(_state): State<AppState>) -> Result<impl IntoRes
         .filter_map(|lang| {
             let two = lang.to_639_1()?;
             Some(jellyfin::CultureDto {
-                name: two.to_string(),
+                name: lang.to_name().to_string(),
                 display_name: lang.to_name().to_string(),
                 two_letter_iso_language_name: two.to_string(),
-                three_letter_iso_language_name: vec![lang.to_639_3().to_string()],
+                three_letter_iso_language_name: lang.to_639_3().to_string(),
+                three_letter_iso_language_names: vec![lang.to_639_3().to_string()],
             })
         })
         .collect::<Vec<_>>();
+    let mut cultures = cultures;
+    cultures.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     Ok(Json(cultures))
 }
 
