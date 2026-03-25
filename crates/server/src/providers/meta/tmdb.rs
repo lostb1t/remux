@@ -33,7 +33,7 @@ impl MetaProvider for TmdbMetaProvider {
         };
 
         // 2. Resolve IMDB ID
-        let imdb_id = match media.imdb_id.as_deref().or(media.series_imdb_id.as_deref())
+        let imdb_id = match media.external_ids.imdb.as_deref().or(media.series_aio_id.as_deref())
         {
             Some(id) => id.to_string(),
             None => return Ok(None),

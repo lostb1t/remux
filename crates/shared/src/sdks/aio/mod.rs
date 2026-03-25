@@ -624,7 +624,7 @@ pub struct Stream {
     pub request_headers: HashMap<String, String>,
     #[serde(default)]
     pub response_headers: HashMap<String, String>,
-    pub parsed_file: ParsedFile,
+    pub parsed_file: Option<ParsedFile>,
     pub name: Option<String>,
     pub description: Option<String>,
 }

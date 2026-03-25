@@ -212,7 +212,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         },
         backdrop_image_tags: media.backdrop.clone().map(|url| vec![url]),
         provider_ids: Some(ProviderIds {
-            imdb: media.imdb_id.clone(),
+            imdb: media.external_ids.imdb.clone(),
+            tmdb: media.external_ids.tmdb.map(|id| id.to_string()),
+            tvdb: media.external_ids.tvdb.map(|id| id.to_string()),
             aio: media.aio_id.clone(),
             ..Default::default()
         }),
@@ -294,7 +296,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
 
     // Build external URLs from provider IDs
     let mut external_urls = Vec::new();
-    if let Some(ref imdb_id) = media.imdb_id {
+    if let Some(ref imdb_id) = media.external_ids.imdb {
         external_urls.push(ExternalUrl {
             name: Some("IMDb".to_string()),
             url: Some(format!("https://www.imdb.com/title/{imdb_id}")),

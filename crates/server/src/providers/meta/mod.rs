@@ -306,7 +306,7 @@ impl MetaProvider for AioMetaProvider {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Option<MetaResult>> {
-        let imdb_id = media.series_imdb_id.clone().or(media.imdb_id.clone());
+        let imdb_id = media.series_aio_id.clone().or(media.external_ids.imdb.clone());
 
         let imdb_id = match imdb_id {
             Some(id) => id,
@@ -370,7 +370,7 @@ impl TreeSyncProvider for AioTreeSyncProvider {
         series: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let imdb_id = match series.imdb_id.clone() {
+        let imdb_id = match series.external_ids.imdb.clone() {
             Some(id) => id,
             None => return Ok(vec![]),
         };
@@ -404,7 +404,7 @@ impl TreeSyncProvider for AioTreeSyncProvider {
         season: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let imdb_id = match season.series_imdb_id.clone() {
+        let imdb_id = match season.series_aio_id.clone() {
             Some(id) => id,
             None => return Ok(vec![]),
         };
