@@ -29,8 +29,7 @@ impl TorrentManager {
     }
 
     /// Resolve a magnet URI (possibly with a `&file=<name>` param we encode) to a
-    /// local `http://127.0.0.1:<port>/torrents/<id>/stream/<file_idx>` URL that can
-    /// be fed directly into the existing GStreamer probe / transcode pipeline.
+    /// local `http://127.0.0.1:<port>/torrents/<id>/stream/<file_idx>` URL
     pub async fn resolve_url(&self, magnet: &str) -> Result<String> {
         let wanted_file = parse_file_param(magnet);
         debug!(magnet, ?wanted_file, "resolving torrent");
