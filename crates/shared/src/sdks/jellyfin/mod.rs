@@ -6,8 +6,6 @@ pub use models::*;
 pub mod endpoints;
 pub use endpoints::*;
 
-/// Auth implementation that sets the Jellyfin/Emby `MediaBrowser` Authorization header.
-/// Pass `token: None` for unauthenticated requests (e.g. login).
 #[derive(Clone, Debug)]
 pub struct JellyfinAuth {
     pub client: String,

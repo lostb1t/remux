@@ -1,4 +1,5 @@
 use super::{FilterResult, QueryBuilderExt};
+use serde_with::skip_serializing_none;
 use crate::aio;
 use crate::jellyfin;
 use crate::sdks;
@@ -1915,7 +1916,7 @@ impl TryFrom<sdks::aio::Meta> for Media {
             media_id: meta.imdb_id.clone(),
             external_ids: sqlx::types::Json({
                 // Start by parsing the AIO id for any provider prefix
-                let mut ids = ExternalIds::from_content_id(&meta.id);
+                let mut ids = ExternalIds::from_aio_id(&meta.id);
                 // imdb_id from meta is more authoritative — override if present
                 if let Some(ref imdb) = meta.imdb_id {
                     ids.imdb = Some(imdb.clone());

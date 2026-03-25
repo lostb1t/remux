@@ -10,8 +10,6 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
 
-///// Gracefully deserializes `Option<T>` where `T: FromStr`.
-/// Returns `None` on missing, null, empty string, or any parse failure.
 fn deserialize_optional<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
 where
     T: FromStr,
@@ -21,8 +19,6 @@ where
     Ok(s.and_then(|s| s.parse().ok()))
 }
 
-/// Gracefully deserializes `T` where `T: FromStr + Default`.
-/// Returns `T::default()` on missing, null, empty string, or any parse failure.
 fn deserialize_optional_with_default<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     T: FromStr + Default,
@@ -108,29 +104,19 @@ pub struct ServerConfiguration {
     #[serde(default)]
     #[serde(deserialize_with = "clean_aio_url")]
     pub aio_url: Option<String>,
-    /// Remux: maximum number of items imported per catalog.
     pub catalog_max_items: Option<i64>,
-    /// Remux: allow P2P (torrent) streams from AIO.
     #[default(Some(true))]
     pub p2p_enabled: Option<bool>,
-    /// Remux: P2P upload speed cap in KB/s. 0 = no uploading (default).
     #[default(Some(0_i64))]
     pub p2p_upload_speed_kbps: Option<i64>,
-    /// Remux: P2P download speed cap in KB/s. 0 = unlimited (default).
     #[default(Some(0_i64))]
     pub p2p_download_speed_kbps: Option<i64>,
-    /// Remux: hide items that haven't been digitally released yet.
     #[default(true)]
     pub filter_by_digital_release_date: bool,
-    /// Remux: days of lookahead when filtering by digital release date (0 = today only).
     #[default(0_i64)]
     pub digital_release_buffer_days: i64,
-    /// Remux: TMDB API key for gap-filling metadata.
     pub tmdb_api_key: Option<String>,
-    /// Remux: preferred subtitle language codes (ISO 639-1), e.g. ["en", "de"].
-    /// Empty/None = all subtitles shown, none set as default.
     pub subtitle_languages: Option<Vec<String>>,
-    /// Remux: inject external subtitles into item detail responses.
     #[default(Some(false))]
     pub enable_subtitles_detail: Option<bool>,
 }
@@ -303,9 +289,7 @@ pub struct VirtualFolderInfo {
     pub primary_image_item_id: Option<String>,
     pub refresh_progress: Option<f64>,
     pub refresh_status: Option<String>,
-    /// Remux extension: "manual" or "smart"
     pub collection_kind: Option<String>,
-    /// Remux extension: whether this collection is shown in library home
     pub promoted: Option<bool>,
     pub collection_max_items: Option<i64>,
 }
@@ -314,26 +298,19 @@ pub struct VirtualFolderInfo {
 #[serde(rename_all = "PascalCase")]
 pub struct CreateVirtualFolderPayload {
     pub name: String,
-    /// Jellyfin collection type: "movies" or "tvshows"
     pub collection_type: Option<String>,
-    /// Remux extension: "manual" or "smart"
     pub collection_kind: Option<String>,
     pub promoted: Option<bool>,
 }
 
-/// Remux extension: an AIO catalog available for import.
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct AioCatalogInfo {
-    /// Composite AIO identifier: "{kind}:{id}"
     pub aio_id: String,
     pub name: String,
-    /// Whether this catalog is enabled for import (promoted=1 on catalog media item)
     pub enabled: Option<bool>,
-    /// Per-catalog import item limit
     pub max_items: Option<i64>,
-    /// UUID of the catalog media item in the DB (present once the catalog has been enabled)
     pub media_id: Option<String>,
 }
 
@@ -348,7 +325,6 @@ pub struct UpdateVirtualFolderPayload {
     pub collection_max_items: Option<i64>,
 }
 
-/// Payload for PATCH /items/{id} — partial update, only present fields are written.
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
@@ -356,20 +332,17 @@ pub struct PatchItemPayload {
     pub name: Option<String>,
     pub collection_type: Option<String>,
     pub collection_kind: Option<String>,
-    /// UUIDs of catalog media items to filter this smart collection by
     pub collection_catalog_filter: Option<Vec<String>>,
     pub promoted: Option<bool>,
     pub tags: Option<Vec<String>>,
 }
 
-/// Payload for POST /aio/catalogs/{aio_id} — enable/disable a catalog and set its limit.
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct UpdateCatalogSettingsPayload {
     pub enabled: bool,
     pub max_items: Option<i64>,
-    /// Catalog display name — used when creating the catalog media item for the first time
     pub name: Option<String>,
 }
 
@@ -377,15 +350,10 @@ pub struct UpdateCatalogSettingsPayload {
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct FolderStorageInfo {
-    /// The path of the folder.
     pub path: Option<String>,
-    /// The free space of the underlying storage device.
     pub free_space: Option<i64>,
-    /// The used space of the underlying storage device.
     pub used_space: Option<i64>,
-    /// The kind of storage device.
     pub storage_type: Option<String>,
-    /// The Device Identifier.
     pub device_id: Option<String>,
 }
 
@@ -393,11 +361,8 @@ pub struct FolderStorageInfo {
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct LibraryStorageInfo {
-    /// The Library Id.
     pub id: Option<String>,
-    /// The name of the library.
     pub name: Option<String>,
-    /// The storage informations about the folders used in a library.
     pub folders: Option<Vec<FolderStorageInfo>>,
 }
 
@@ -405,21 +370,13 @@ pub struct LibraryStorageInfo {
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct SystemStorageInfo {
-    /// The program data path.
     pub program_data_folder: Option<FolderStorageInfo>,
-    /// The web UI resources path.
     pub web_folder: Option<FolderStorageInfo>,
-    /// The items by name path.
     pub image_cache_folder: Option<FolderStorageInfo>,
-    /// The cache path.
     pub cache_folder: Option<FolderStorageInfo>,
-    /// The log path.
     pub log_folder: Option<FolderStorageInfo>,
-    /// The internal metadata path.
     pub internal_metadata_folder: Option<FolderStorageInfo>,
-    /// The transcode path.
     pub transcoding_temp_folder: Option<FolderStorageInfo>,
-    /// The storage informations of all libraries.
     pub libraries: Option<Vec<LibraryStorageInfo>>,
 }
 
@@ -427,29 +384,17 @@ pub struct SystemStorageInfo {
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct ItemCounts {
-    /// The movie count.
     pub movie_count: i32,
-    /// The series count.
     pub series_count: i32,
-    /// The episode count.
     pub episode_count: i32,
-    /// The artist count.
     pub artist_count: i32,
-    /// The program count.
     pub program_count: i32,
-    /// The trailer count.
     pub trailer_count: i32,
-    /// The song count.
     pub song_count: i32,
-    /// The album count.
     pub album_count: i32,
-    /// The music video count.
     pub music_video_count: i32,
-    /// The box set count.
     pub box_set_count: i32,
-    /// The book count.
     pub book_count: i32,
-    /// The item count.
     pub item_count: i32,
 }
 
@@ -457,34 +402,18 @@ pub struct ItemCounts {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct DeviceInfo {
-    /// Gets or sets the name.
     pub name: Option<String>,
-    /// Gets or sets the custom name.
     pub custom_name: Option<String>,
-    /// Gets or sets the access token.
     pub access_token: Option<String>,
-    /// Gets or sets the identifier.
     pub id: Option<String>,
-    /// Gets or sets the last name of the user.
     pub last_user_name: Option<String>,
-    /// Gets or sets the name of the application.
     pub app_name: Option<String>,
-    /// Gets or sets the application version.
     pub app_version: Option<String>,
-    /// Gets or sets the last user identifier.
     pub last_user_id: Option<Uuid>,
-    /// Gets or sets the date last modified.
     pub date_last_activity: Option<DateTime<Utc>>,
-    /// Gets or sets the icon URL.
     pub icon_url: Option<String>,
 }
 
-// Placeholder for CollectionTypeOptions and LibraryOptions.
-// You'll need to define these according to your needs.
-#[derive(Debug, Serialize, Deserialize)]
-pub enum CollectionTypeOptions {
-    // Define your variants here
-}
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -803,7 +732,6 @@ pub struct DeviceProfile {
 }
 
 impl DeviceProfile {
-    /// Returns the first video transcoding profile, if any.
     pub fn video_transcoding_profile(&self) -> Option<&TranscodingProfile> {
         self.transcoding_profiles.iter().find(|p| {
             p.type_
@@ -813,17 +741,10 @@ impl DeviceProfile {
         })
     }
 
-    /// Returns true if the device supports direct play for the given media source.
     pub fn supports_direct_play(&self, media_source: &MediaSourceInfo) -> bool {
         self.check_direct_play(media_source).is_empty()
     }
 
-    /// Returns the reasons transcoding is needed for the given media source.
-    /// Empty means direct play is supported.
-    ///
-    /// Iterates all Video `DirectPlayProfiles` and picks the best-matching one
-    /// (fewest failure flags). Mirrors `GetTranscodeReasonsFromDirectPlayProfile`
-    /// in Jellyfin's `StreamBuilder`.
     pub fn check_direct_play(
         &self,
         media_source: &MediaSourceInfo,
@@ -876,8 +797,6 @@ impl DirectPlayProfile {
         self.check_reasons(media_source).is_empty()
     }
 
-    /// Returns the `TranscodeReasons` that prevent this profile from supporting the source.
-    /// Empty means direct play is supported.
     pub fn check_reasons(&self, media_source: &MediaSourceInfo) -> TranscodeReasons {
         let mut reasons = TranscodeReasons::default();
 
@@ -1039,21 +958,16 @@ pub struct ImageQuery {
 #[derive(Default, Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct BaseItemDtoQueryResult {
-    /// Gets or sets the items.
     #[serde(default)] // Always serialize, even if empty
     pub items: Vec<BaseItemDto>,
 
-    /// Gets or sets the index of the first record in Items.
     // #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_index: u32,
 
-    /// Gets or sets the total number of records available.
     // #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_record_count: i64,
 }
 
-/// Individual transcode reason flags, matching Jellyfin's `TranscodeReason` [Flags] enum
-/// bit positions exactly so numeric values are wire-compatible.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display, strum_macros::EnumIter,
 )]
@@ -1076,8 +990,6 @@ impl TranscodeReason {
     }
 }
 
-/// Bitfield of zero or more [`TranscodeReason`] values.
-/// `0` means direct play is fine; non-zero means transcoding is required.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscodeReasons(pub u32);
 
@@ -1094,8 +1006,6 @@ impl TranscodeReasons {
         self.0 == 0
     }
 
-    /// Comma-separated PascalCase names for use in query strings,
-    /// e.g. `"ContainerNotSupported,AudioCodecNotSupported"`. `None` when empty.
     pub fn to_query_value(self) -> Option<String> {
         use strum::IntoEnumIterator;
         if self.is_empty() {
@@ -1108,7 +1018,6 @@ impl TranscodeReasons {
         Some(names.join(","))
     }
 
-    /// Parse a comma-separated query string value back into a `TranscodeReasons` bitfield.
     pub fn from_query_value(s: &str) -> Self {
         use strum::IntoEnumIterator;
         let mut out = Self::default();
@@ -1125,8 +1034,6 @@ impl TranscodeReasons {
     }
 }
 
-/// Information about an active transcode, returned inside `SessionInfoDto`.
-/// Matches Jellyfin's `MediaBrowser.Model.Session.TranscodingInfo`.
 #[skip_serializing_none]
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -1142,7 +1049,6 @@ pub struct TranscodingInfo {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub audio_channels: Option<i32>,
-    /// Bitmask of [`TranscodeReason`] values — serialised as a `u32` integer in session JSON.
     pub transcode_reasons: u32,
 }
 
@@ -1206,8 +1112,6 @@ pub struct MediaSourceInfo {
     pub supports_transcoding: bool,
     //  pub timestamp: Option<TransportStreamTimestamp>,
     pub transcoding_container: Option<String>,
-    /// Media streaming protocol.
-    /// Lowercase for backwards compatibility.
     #[default("http".to_string())]
     pub transcoding_sub_protocol: String,
     pub transcoding_url: Option<String>,
@@ -1221,21 +1125,18 @@ pub struct MediaSourceInfo {
 }
 
 impl MediaSourceInfo {
-    /// Returns the first video stream, if any.
     pub fn video_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()
             .find(|s| matches!(s.type_, Some(MediaStreamType::Video)))
     }
 
-    /// Returns the first audio stream, if any.
     pub fn audio_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()
             .find(|s| matches!(s.type_, Some(MediaStreamType::Audio)))
     }
 
-    /// Returns the first subtitle stream, if any.
     pub fn subtitle_stream(&self) -> Option<&MediaStream> {
         self.media_streams
             .iter()
@@ -1770,8 +1671,6 @@ pub enum RemuxMediaKind {
     Studio,
 }
 
-/// Remux-specific fields not part of the Jellyfin spec, nested under `Remux`
-/// on BaseItemDto so they're easy to ignore by standard Jellyfin clients.
 #[skip_serializing_none]
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -2426,33 +2325,19 @@ pub enum VideoRangeType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct TaskInfo {
-    /// Gets or sets the name.
     pub name: String,
-    /// Gets or sets the state.
     pub state: Option<String>,
-    /// Gets or sets the current progress percentage.
     pub current_progress_percentage: Option<f64>,
-    /// Gets or sets the id.
     pub id: String,
-    /// Gets or sets the last execution result.
     pub last_execution_result: Option<TaskResult>,
-    /// Gets or sets the triggers.
     pub triggers: Option<Vec<TaskTriggerInfo>>,
-    /// Gets or sets the description.
     pub description: Option<String>,
-    /// Gets or sets the category.
     pub category: Option<String>,
-    /// Gets or sets a value indicating whether this task is hidden.
     pub is_hidden: Option<bool>,
-    /// Gets or sets a value indicating whether this task is enabled.
     pub is_enabled: Option<bool>,
-    /// Gets or sets the key.
     pub key: Option<String>,
-    /// Gets or sets the last execution date.
     pub last_execution_date: Option<String>,
-    /// Gets or sets the can_be_terminated.
     pub can_be_terminated: Option<bool>,
-    /// Gets or sets the can_be_deleted.
     pub can_be_deleted: Option<bool>,
 }
 
@@ -2460,21 +2345,13 @@ pub struct TaskInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct TaskResult {
-    /// Gets or sets the status.
     pub status: Option<String>,
-    /// Gets or sets the name.
     pub name: Option<String>,
-    /// Gets or sets the id.
     pub id: Option<String>,
-    /// Gets or sets the key.
     pub key: Option<String>,
-    /// Gets or sets the error_message.
     pub error_message: Option<String>,
-    /// Gets or sets the long_error_message.
     pub long_error_message: Option<String>,
-    /// Gets or sets the start_time_utc.
     pub start_time_utc: Option<String>,
-    /// Gets or sets the end_time_utc.
     pub end_time_utc: Option<String>,
 }
 
@@ -2510,15 +2387,10 @@ impl TryFrom<String> for TaskTriggerInfoType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct TaskTriggerInfo {
-    /// Gets or sets the type.
     pub r#type: Option<String>,
-    /// Gets or sets the time_of_day_ticks.
     pub time_of_day_ticks: Option<i64>,
-    /// Gets or sets the interval_ticks.
     pub interval_ticks: Option<i64>,
-    /// Gets or sets the day_of_week.
     pub day_of_week: Option<String>,
-    /// Gets or sets the max_runtime_ticks.
     pub max_runtime_ticks: Option<i64>,
 }
 
@@ -2526,9 +2398,7 @@ pub struct TaskTriggerInfo {
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct TaskQueryResult {
-    /// Gets or sets the items.
     pub items: Vec<TaskInfo>,
-    /// Gets or sets the total number of records available.
     pub total_record_count: i64,
 }
 
