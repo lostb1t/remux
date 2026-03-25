@@ -1964,7 +1964,7 @@ async fn apply_user_playback_prefs(
         .and_then(|m| {
             // We only have an async get_or_new, so do a sync-compatible lookup inline
             // via the aio_id key used by UserMediaState.
-            m.aio_id.map(|key| (key, m.kind))
+            m.media_id.map(|key| (key, m.kind))
         })
         .and_then(|(key, _kind)| {
             // We can't `.await` inside an `and_then`, so capture key and fetch below.

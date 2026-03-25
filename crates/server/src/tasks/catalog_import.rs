@@ -56,7 +56,7 @@ impl Task for CatalogImportTask {
         let pairs: Vec<(db::Media, crate::sdks::aio::Catalog)> = catalogs
             .into_iter()
             .filter_map(|cat| {
-                let aio_id = cat.aio_id.as_deref()?.to_string();
+                let aio_id = cat.media_id.as_deref()?.to_string();
                 let manifest_cat = manifest
                     .catalogs
                     .iter()
@@ -69,7 +69,7 @@ impl Task for CatalogImportTask {
         info!("{} catalogs matched in manifest", pairs.len());
 
         for (catalog, manifest_cat) in pairs {
-            let aio_id = catalog.aio_id.as_deref().unwrap_or("?");
+            let aio_id = catalog.media_id.as_deref().unwrap_or("?");
             let max = catalog
                 .collection_max_items
                 .map(|n| n as usize)

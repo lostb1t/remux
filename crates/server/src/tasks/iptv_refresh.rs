@@ -185,7 +185,7 @@ async fn import_epg_programs(
     // Delete old programs for channels we're about to update
     let channel_aio_ids: Vec<String> = channels
         .iter()
-        .filter_map(|ch| ch.aio_id.clone())
+        .filter_map(|ch| ch.media_id.clone())
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();

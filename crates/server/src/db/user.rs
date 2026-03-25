@@ -348,7 +348,7 @@ impl UserMediaState {
         "#,
         )
         .bind(user.id)
-        .bind(media.aio_id.clone())
+        .bind(media.media_id.clone())
         .fetch_optional(db)
         .await?;
 
@@ -363,7 +363,7 @@ impl UserMediaState {
         let row = Self::get_by_user_and_media(db, user, media).await?;
         Ok(row.unwrap_or_else(|| Self {
             user_id: user.id,
-            media_key: media.aio_id.clone().unwrap(),
+            media_key: media.media_id.clone().unwrap(),
             ..Default::default()
         }))
     }

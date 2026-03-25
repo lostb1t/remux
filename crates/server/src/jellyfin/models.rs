@@ -215,7 +215,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             imdb: media.external_ids.imdb.clone(),
             tmdb: media.external_ids.tmdb.map(|id| id.to_string()),
             tvdb: media.external_ids.tvdb.map(|id| id.to_string()),
-            aio: media.aio_id.clone(),
+            aio: media.media_id.clone(),
             ..Default::default()
         }),
         run_time_ticks: media

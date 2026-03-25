@@ -324,7 +324,7 @@ pub async fn livetv_delete_tuner_host(
     Query(q): Query<DeleteTunerQuery>,
 ) -> Result<impl IntoResponse> {
     let source_aio_id = q.id.simple().to_string();
-    sqlx::query("DELETE FROM media WHERE aio_id = $1 AND kind = 'tv_channel'")
+    sqlx::query("DELETE FROM media WHERE media_id = $1 AND kind = 'tv_channel'")
         .bind(&source_aio_id)
         .execute(&state.ctx.db)
         .await?;
@@ -592,6 +592,6 @@ fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
         sort_order: m.sort_order,
         enabled: m.enabled != 0,
         logo: m.poster.clone(),
-        group: m.aio_id.clone(),
+        group: m.media_id.clone(),
     }
 }

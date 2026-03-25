@@ -306,7 +306,7 @@ impl MetaProvider for AioMetaProvider {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Option<MetaResult>> {
-        let imdb_id = media.series_aio_id.clone().or(media.external_ids.imdb.clone());
+        let imdb_id = media.series_media_id.clone().or(media.external_ids.imdb.clone());
 
         let imdb_id = match imdb_id {
             Some(id) => id,
@@ -404,7 +404,7 @@ impl TreeSyncProvider for AioTreeSyncProvider {
         season: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let imdb_id = match season.series_aio_id.clone() {
+        let imdb_id = match season.series_media_id.clone() {
             Some(id) => id,
             None => return Ok(vec![]),
         };
@@ -455,7 +455,7 @@ fn build_relations(media: &db::Media, meta: &sdks::aio::Meta) -> Vec<MetaRelatio
                     id: genre_id,
                     title: genre_name.clone(),
                     kind: db::MediaKind::Genre,
-                    aio_id: Some(format!("genre:{}", genre_name.to_lowercase())),
+                    media_id: Some(format!("genre:{}", genre_name.to_lowercase())),
                     ..Default::default()
                 },
                 relation: db::MediaRelation {
@@ -483,7 +483,7 @@ fn build_relations(media: &db::Media, meta: &sdks::aio::Meta) -> Vec<MetaRelatio
                             title: name.clone(),
                             kind: db::MediaKind::Person,
                             poster: member.photo.clone(),
-                            aio_id: Some(format!("person:{}", name.to_lowercase())),
+                            media_id: Some(format!("person:{}", name.to_lowercase())),
                             ..Default::default()
                         },
                         relation: db::MediaRelation {
@@ -508,7 +508,7 @@ fn build_relations(media: &db::Media, meta: &sdks::aio::Meta) -> Vec<MetaRelatio
                         id: person_id,
                         title: name.clone(),
                         kind: db::MediaKind::Person,
-                        aio_id: Some(format!("person:{}", name.to_lowercase())),
+                        media_id: Some(format!("person:{}", name.to_lowercase())),
                         ..Default::default()
                     },
                     relation: db::MediaRelation {
@@ -532,7 +532,7 @@ fn build_relations(media: &db::Media, meta: &sdks::aio::Meta) -> Vec<MetaRelatio
                         id: person_id,
                         title: name.clone(),
                         kind: db::MediaKind::Person,
-                        aio_id: Some(format!("person:{}", name.to_lowercase())),
+                        media_id: Some(format!("person:{}", name.to_lowercase())),
                         ..Default::default()
                     },
                     relation: db::MediaRelation {

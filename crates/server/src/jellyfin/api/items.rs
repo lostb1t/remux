@@ -648,7 +648,7 @@ pub async fn item(
                         media = db::Media::get_by_filter(
                             &state.ctx.db,
                             &db::MediaFilter {
-                                aio_id: media.aio_id.clone(),
+                                media_id: media.media_id.clone(),
                                 ..Default::default()
                             },
                         )
@@ -1040,7 +1040,7 @@ pub async fn aio_catalogs(
             let aio_id = format!("{}:{}", c.kind, c.id);
             let db_cat = db_catalogs
                 .iter()
-                .find(|d| d.aio_id.as_deref() == Some(&aio_id));
+                .find(|d| d.media_id.as_deref() == Some(&aio_id));
             jellyfin::AioCatalogInfo {
                 aio_id,
                 name: c.name,
@@ -1241,7 +1241,7 @@ pub async fn update_catalog_settings(
         &state.ctx.db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Catalog]),
-            aio_id: Some(aio_id.clone()),
+            media_id: Some(aio_id.clone()),
             ..Default::default()
         },
     )
@@ -1267,7 +1267,7 @@ pub async fn update_catalog_settings(
         let mut media = db::Media {
             kind: db::MediaKind::Catalog,
             title,
-            aio_id: Some(aio_id),
+            media_id: Some(aio_id),
             promoted,
             collection_max_items: payload.max_items,
             ..Default::default()
