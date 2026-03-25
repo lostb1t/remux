@@ -48,7 +48,8 @@ async fn resolve_imdb_id<A: sdks::Auth + Clone>(
     if meta.imdb_id.is_some() {
       return true;
     }
-    let parsed = db::ExternalIds::from_content_id(&meta.id);
+
+    let parsed = db::ExternalIds::from_aio_id(&meta.id);
     if let Some(ref imdb) = parsed.imdb {
         meta.imdb_id = Some(imdb.clone());
         return true;

@@ -36,11 +36,8 @@ where
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct QueryResult<T> {
-    /// Gets or sets the items.
     pub items: Vec<T>,
-    /// Gets or sets the total number of records available.
     pub total_record_count: i64,
-    /// Gets or sets the index of the first record in Items.
     pub start_index: i32,
 }
 
@@ -48,11 +45,8 @@ pub struct QueryResult<T> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct BrandingOptions {
-    /// Gets or sets the login disclaimer.
     pub login_disclaimer: Option<String>,
-    /// Gets or sets the custom CSS.
     pub custom_css: Option<String>,
-    /// Gets or sets a value indicating whether to enable the splashscreen.
     pub splashscreen_enabled: Option<bool>,
 }
 
@@ -79,52 +73,36 @@ pub struct AuthenticateWithQuickConnect {
 #[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct ServerConfiguration {
-    /// Gets or sets a value indicating whether to enable prometheus metrics exporting.
     #[default(Some(false))]
     pub enable_metrics: Option<bool>,
-    /// Gets or sets a value indicating whether this instance is port authorized.
     #[default(Some(true))]
     pub is_port_authorized: Option<bool>,
-    /// Gets or sets a value indicating whether quick connect is available for use on this server.
     #[default(Some(true))]
     pub quick_connect_available: Option<bool>,
-    /// Gets or sets a value indicating whether [enable case-sensitive item ids].
     #[default(Some(true))]
     pub enable_case_sensitive_item_ids: Option<bool>,
-    /// Gets or sets the metadata path.
     #[default(Some("/metadata".to_string()))]
     pub metadata_path: Option<String>,
-    /// Gets or sets the preferred metadata language.
     #[default(Some("en".to_string()))]
     pub preferred_metadata_language: Option<String>,
-    /// Gets or sets the metadata country code.
     #[default(Some("US".to_string()))]
     pub metadata_country_code: Option<String>,
-    /// Gets or sets the path to the FFmpeg executable.
     #[default(Some("/usr/bin/ffmpeg".to_string()))]
     pub ffmpeg_path: Option<String>,
-    /// Gets or sets the path to the FFprobe executable.
     #[default(Some("/usr/bin/ffprobe".to_string()))]
     pub ffprobe_path: Option<String>,
-    /// Gets or sets the cache path.
     #[default(Some("/cache".to_string()))]
     pub cache_path: Option<String>,
-    /// Gets or sets the number of days we should retain log files.
     #[default(Some(3))]
     pub log_file_retention_days: Option<i32>,
-    /// Gets or sets a value indicating whether this instance is first run.
     #[default(Some(false))]
     pub is_startup_wizard_completed: Option<bool>,
-    /// Gets or sets the server name.
     #[default(Some("Remux".to_string()))]
     pub server_name: Option<String>,
-    /// Gets or sets the UI language culture.
     #[default(Some("en-US".to_string()))]
     pub ui_language_culture: Option<String>,
-    /// Gets or sets a value indicating whether to enable automatic updates.
     #[default(Some(false))]
     pub enable_automatic_updates: Option<bool>,
-    /// Gets or sets the path to the transcode temp folder.
     #[default(Some("/transcodes".to_string()))]
     pub transcoding_temp_path: Option<String>,
     #[serde(default)]
@@ -203,9 +181,7 @@ pub struct StartupUser {
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct LocalizationOption {
-    /// Gets or sets the name.
     pub name: String,
-    /// Gets or sets the value.
     pub value: String,
 }
 

@@ -277,20 +277,18 @@ impl MediaRelation {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExternalIds {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub imdb: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tmdb: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tvdb: Option<i64>,
 }
 
 impl ExternalIds {
     /// Parse an AIO `meta.id` string into external provider IDs using the
     /// standard Stremio/Jellyfin prefix conventions.
-    pub fn from_content_id(id: &str) -> Self {
+    pub fn from_aio_id(id: &str) -> Self {
         if id.starts_with("tt") {
             return Self { imdb: Some(id.to_string()), ..Default::default() };
         }
