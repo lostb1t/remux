@@ -201,7 +201,7 @@ impl Task for CatalogItemImportTask {
                 async move {
                         let resolved = resolve_imdb_id(&mut meta, &aio, tmdb_client).await;
                         if !resolved {
-                            warn!(?meta, id = %meta.id, "could not resolve imdb_id via any method, skipping");
+                            warn!(id = %meta.id, "could not resolve imdb_id via any method, skipping");
                             return vec![];
                         }
                     match db::aio_meta_to_medias(meta) {
