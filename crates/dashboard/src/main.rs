@@ -3401,7 +3401,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
-                            label { class: "field-label", r#for: "s-aio", "AIO URL" }
+                            label { class: "field-label", r#for: "s-aio", "AIO Manifest URL" }
                             input {
                                 id: "s-aio",
                                 r#type: "url",
@@ -3808,7 +3808,7 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                 }
 
                                 div { class: "field",
-                                    label { class: "field-label", r#for: "w-aio", "AIO URL" }
+                                    label { class: "field-label", r#for: "w-aio", "AIO Manifest URL" }
                                     input {
                                         id: "w-aio",
                                         r#type: "url",

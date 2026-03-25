@@ -600,24 +600,29 @@ pub struct Stream {
     pub yt_id: Option<String>,
     pub external_url: Option<String>,
     pub file_idx: Option<i64>,
+    #[serde(default)]
     pub proxied: bool,
     pub filename: Option<String>,
     pub folder_name: Option<String>,
     // pub size: i64,
     //pub folder_size: Option<i64>,
     pub message: Option<String>,
+    #[serde(default)]
     pub library: bool,
     pub addon: Option<String>,
     #[serde(rename = "type")]
     pub kind: String,
     pub indexer: Option<String>,
-    pub duration: i64,
+    pub duration: Option<i64>,
     pub size: Option<i64>,
     pub video_hash: Option<String>,
     #[serde(default)]
     pub subtitles: Vec<Subtitle>,
+    #[serde(default)]
     pub country_whitelist: Vec<String>,
+    #[serde(default)]
     pub request_headers: HashMap<String, String>,
+    #[serde(default)]
     pub response_headers: HashMap<String, String>,
     pub parsed_file: ParsedFile,
     pub name: Option<String>,
@@ -674,6 +679,7 @@ pub struct ParsedFile {
 
     pub languages: Vec<String>,
 
+    #[serde(default)]
     pub season_pack: bool,
 }
 

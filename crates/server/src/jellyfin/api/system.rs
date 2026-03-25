@@ -153,6 +153,13 @@ pub async fn update_system_configuration(
     _session: auth::AdminSession,
     Json(config): Json<jellyfin::ServerConfiguration>,
 ) -> Result<impl IntoResponse> {
+    if let Some(url) = config.aio_url.as_deref().filter(|s| !s.is_empty()) {
+        crate::aio::AioService::from_url(url)
+            .context_bad_request("Invalid AIO URL", "Could not build AIO client from the provided URL.")?
+            .get_manifest()
+            .await
+            .context_bad_request("Invalid AIO URL", "Could not fetch manifest from the provided AIO URL. Check the URL is correct and the service is reachable.")?;
+    }
     // Apply P2P speed limits before saving so they take effect immediately.
     if config.p2p_enabled.unwrap_or(true) {
         state.ctx.torrent.update_limits(

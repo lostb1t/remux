@@ -6,7 +6,7 @@ use remux_macros::{get, post};
 
 use crate::AppState;
 use crate::jellyfin;
-use axum_anyhow::ApiResult as Result;
+use axum_anyhow::{ApiResult as Result, ResultExt};
 
 #[get("/startup/configuration")]
 pub async fn get_startup_configuration(
@@ -34,6 +34,11 @@ pub async fn post_startup_configuration(
     config.metadata_country_code =
         body.metadata_country_code.or(config.metadata_country_code);
     if let Some(url) = body.aio_url {
+        crate::aio::AioService::from_url(&url)
+            .context_bad_request("Invalid AIO URL", "Could not build AIO client from the provided URL.")?
+            .get_manifest()
+            .await
+            .context_bad_request("Invalid AIO URL", "Could not fetch manifest from the provided AIO URL. Check the URL is correct and the service is reachable.")?;
         config.aio_url = Some(url);
     }
     crate::db::Settings::set_config(&state.ctx.db, &config).await?;
