@@ -536,9 +536,9 @@ impl Media {
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items, collection_catalog_filter,
             remote_data, series_media_id, media_id, external_ids, created_at, updated_at, certification, parent_idx,
-            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status
+            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -574,7 +574,8 @@ impl Media {
             enabled = excluded.enabled,
             sort_order = excluded.sort_order,
             custom_name = excluded.custom_name,
-            status = excluded.status
+            status = excluded.status,
+            refreshed_at = COALESCE(excluded.refreshed_at, media.refreshed_at)
         "#,
         )
         .bind(self.id)
@@ -615,6 +616,7 @@ impl Media {
         .bind(&self.custom_name)
         .bind(self.digital_released_at)
         .bind(&self.status)
+        .bind(self.refreshed_at)
         .execute(db)
         .await?;
 
@@ -727,7 +729,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at
             )",
         );
 
@@ -767,7 +769,8 @@ impl Media {
                     .push_bind(&item.sort_order)
                     .push_bind(&item.custom_name)
                     .push_bind(&item.digital_released_at)
-                    .push_bind(&item.status);
+                    .push_bind(&item.status)
+                    .push_bind(&item.refreshed_at);
             });
 
             query_builder.push(
@@ -800,6 +803,7 @@ impl Media {
                 tvg_id = excluded.tvg_id,
                 channel_number = excluded.channel_number,
                 status = excluded.status,
+                refreshed_at = COALESCE(excluded.refreshed_at, media.refreshed_at),
                 -- preserve user overrides: only update name/enabled/sort_order if not set by user
                 title = CASE WHEN custom_name IS NOT NULL THEN media.title ELSE excluded.title END,
                 enabled = CASE WHEN media.id IS NOT NULL THEN media.enabled ELSE excluded.enabled END,
