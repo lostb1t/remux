@@ -38,6 +38,8 @@ impl CatalogItemImportTask {
 /// 2. Call AIO `meta.resolve()` to fetch full metadata from the addon.
 /// 3. TMDB detail lookup — if we have a TMDB id (from step 1 or `meta.moviedb_id`)
 ///    and a valid API key, call the TMDB Movie/Series endpoint which returns `imdb_id`.
+/// 4. TVDB fallback — if we have a TVDB id (from a `tvdb:` id prefix) and a valid
+///    API key, call the TMDB find-by-external-id endpoint with `external_source=tvdb_id`.
 ///
 /// Returns `true` if `meta.imdb_id` is set after all attempts, `false` otherwise.
 async fn resolve_imdb_id<A: sdks::Auth + Clone>(
@@ -49,24 +51,13 @@ async fn resolve_imdb_id<A: sdks::Auth + Clone>(
       return true;
     }
 
-    let parsed = db::ExternalIds::from_aio_id(&meta.id);
-    if let Some(ref imdb) = parsed.imdb {
+    let external_ids = db::ExternalIds::from_aio_id(&meta.id);
+    if let Some(ref imdb) = external_ids.imdb {
         meta.imdb_id = Some(imdb.clone());
         return true;
     }
-    // Keep any tmdb/tvdb id extracted from the prefix for step 3.
-    let parsed_tmdb = parsed.tmdb;
 
-    if meta.imdb_id.is_none() {
-        if let Err(e) = meta.resolve(&aio.client).await {
-            warn!(id = %meta.id, error = %e, "failed to resolve meta from AIO addon");
-        }
-        if meta.imdb_id.is_some() {
-            return true;
-        }
-    }
-
-    let tmdb_id = parsed_tmdb
+    let tmdb_id = external_ids.tmdb
         .or_else(|| meta.moviedb_id.map(|n| n as i64));
 
     if let (Some(client), Some(tid)) = (tmdb_client, tmdb_id) {
@@ -94,6 +85,35 @@ async fn resolve_imdb_id<A: sdks::Auth + Clone>(
             }
             _ => None,
         };
+
+        if let Some(imdb) = imdb {
+            meta.imdb_id = Some(imdb);
+            return true;
+        }
+    }
+
+    // Step 4: TVDB fallback — use TMDB's find-by-external-id endpoint with tvdb_id.
+    if let (Some(client), Some(tvdb)) = (tmdb_client, external_ids.tvdb) {
+        let find_resp = client
+            .execute(
+                sdks::tmdb::FindByIdEndpoint {
+                    external_id: tvdb.to_string(),
+                    external_source: "tvdb_id".to_string(),
+                }
+                .with_cache(Duration::from_secs(3600)),
+            )
+            .await
+            .ok();
+
+        let imdb = find_resp.and_then(|r| match meta.media_type {
+            crate::sdks::aio::MediaType::Movie => {
+                r.movie_results.into_iter().next().and_then(|m| m.imdb_id)
+            }
+            crate::sdks::aio::MediaType::Series => {
+                r.tv_results.into_iter().next().and_then(|s| s.external_ids).and_then(|e| e.imdb_id)
+            }
+            _ => None,
+        });
 
         if let Some(imdb) = imdb {
             meta.imdb_id = Some(imdb);
