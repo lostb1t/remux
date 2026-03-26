@@ -37,13 +37,11 @@ jobs:
         uses: cargo-bins/cargo-binstall@main
 
       - name: Install dioxus-cli
-        run: |
-          cargo binstall dioxus-cli --no-confirm --locked
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        run: cargo binstall dioxus-cli --no-confirm --locked
 
       - name: Build dashboard
         working-directory: crates/remux-dashboard
-        run: dx build --release
+        run: ~/.cargo/bin/dx build --release
 
       - name: Upload dashboard artifact
         uses: actions/upload-artifact@v4
