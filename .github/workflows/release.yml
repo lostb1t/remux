@@ -39,7 +39,7 @@ jobs:
       - name: Install dioxus-cli
         run: |
           cargo binstall dioxus-cli --no-confirm --locked
-          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Build dashboard
         working-directory: crates/remux-dashboard
