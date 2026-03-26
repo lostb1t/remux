@@ -149,55 +149,88 @@ pub async fn start_transcode(
         let _ = s.state_tx.send(TranscodeState::Running);
     }
 
-    let session_clone = session.clone();
+    std::fs::create_dir_all(&params.output_dir)
+        .map_err(|e| anyhow!("Failed to create output dir: {}", e))?;
 
-    let handle = tokio::task::spawn_blocking(move || -> Result<()> {
-        std::fs::create_dir_all(&params.output_dir)?;
+    let args = build_hls_args(&params);
+    debug!("ffmpeg args: {:?}", args);
 
-        let args = build_hls_args(&params);
-        debug!("ffmpeg args: {:?}", args);
+    let mut child = tokio::process::Command::new(ffmpeg_bin())
+        .args(&args)
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
 
-        let output = std::process::Command::new(ffmpeg_bin())
-            .args(&args)
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
+    let stderr = child.stderr.take();
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!(
-                "ffmpeg exited with status {}: {}",
-                output.status,
-                stderr.trim()
-            ));
-        }
+    let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
 
-        info!("HLS transcode job completed");
-        Ok(())
-    });
-
-    match handle.await {
-        Ok(Ok(())) => {
-            let mut s = session_clone.write().await;
-            s.state = TranscodeState::Complete;
-            let _ = s.state_tx.send(TranscodeState::Complete);
-            info!(session_id = %s.id, "Transcode completed successfully");
-        }
-        Ok(Err(e)) => {
-            let mut s = session_clone.write().await;
-            let err_msg = format!("{:#}", e);
-            error!(session_id = %s.id, error = %err_msg, "Transcode failed");
-            s.state = TranscodeState::Error(err_msg.clone());
-            let _ = s.state_tx.send(TranscodeState::Error(err_msg));
-        }
-        Err(e) => {
-            let mut s = session_clone.write().await;
-            let err_msg = format!("Task panicked: {:#}", e);
-            error!(session_id = %s.id, error = %err_msg, "Transcode task panicked");
-            s.state = TranscodeState::Error(err_msg.clone());
-            let _ = s.state_tx.send(TranscodeState::Error(err_msg));
-        }
+    {
+        let mut s = session.write().await;
+        s.kill_tx = Some(kill_tx);
     }
+
+    let session_clone = session.clone();
+    tokio::spawn(async move {
+        // Drain stderr in the background while waiting for exit.
+        let stderr_task = async {
+            if let Some(stderr) = stderr {
+                use tokio::io::AsyncReadExt;
+                let mut buf = String::new();
+                let _ = tokio::io::BufReader::new(stderr)
+                    .read_to_string(&mut buf)
+                    .await;
+                buf
+            } else {
+                String::new()
+            }
+        };
+
+        let result = tokio::select! {
+            r = child.wait() => Some(r),
+            // kill_rx fires when stop() sends (), or when the sender is dropped.
+            _ = kill_rx => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                None
+            }
+        };
+
+        let stderr_out = stderr_task.await;
+
+        let mut s = session_clone.write().await;
+        s.kill_tx = None;
+
+        match result {
+            Some(Ok(status)) if status.success() => {
+                s.state = TranscodeState::Complete;
+                let _ = s.state_tx.send(TranscodeState::Complete);
+                info!(session_id = %s.id, "Transcode completed successfully");
+            }
+            Some(Ok(status)) => {
+                let err_msg = format!(
+                    "ffmpeg exited with status {}: {}",
+                    status,
+                    stderr_out.trim()
+                );
+                error!(session_id = %s.id, error = %err_msg, "Transcode failed");
+                s.state = TranscodeState::Error(err_msg.clone());
+                let _ = s.state_tx.send(TranscodeState::Error(err_msg));
+            }
+            Some(Err(e)) => {
+                let err_msg = format!("Failed to wait for ffmpeg: {}", e);
+                error!(session_id = %s.id, error = %err_msg, "Transcode error");
+                s.state = TranscodeState::Error(err_msg.clone());
+                let _ = s.state_tx.send(TranscodeState::Error(err_msg));
+            }
+            None => {
+                // Killed by stop() — session already removed, no state update needed.
+                debug!(session_id = %s.id, "ffmpeg killed by session stop");
+            }
+        }
+
+        s.wait_done.notify_one();
+    });
 
     Ok(())
 }

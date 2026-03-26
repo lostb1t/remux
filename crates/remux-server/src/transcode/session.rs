@@ -3,7 +3,7 @@ use remux_sdks::jellyfin::models::TranscodeReasons;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -30,6 +30,10 @@ pub struct TranscodeSession {
     pub audio_codec: String,
     pub segment_length: u32,
     pub transcode_reasons: TranscodeReasons,
+    /// Send `()` to this to request ffmpeg be killed.
+    pub kill_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Notified once the ffmpeg process has fully exited.
+    pub wait_done: Arc<Notify>,
 }
 
 impl TranscodeSession {
@@ -105,6 +109,8 @@ impl TranscodeSessionManager {
             audio_codec,
             segment_length,
             transcode_reasons,
+            kill_tx: None,
+            wait_done: Arc::new(Notify::new()),
         };
 
         let session = Arc::new(tokio::sync::RwLock::new(session));
@@ -123,9 +129,24 @@ impl TranscodeSessionManager {
 
     pub async fn stop(&self, play_session_id: &str) {
         if let Some((_, session)) = self.sessions.remove(play_session_id) {
-            let session = session.read().await;
-            // Clean up files
-            let _ = std::fs::remove_dir_all(&session.output_dir);
+            let (kill_tx, wait_done, output_dir) = {
+                let mut s = session.write().await;
+                (
+                    s.kill_tx.take(),
+                    s.wait_done.clone(),
+                    s.output_dir.clone(),
+                )
+            };
+
+            if let Some(kill_tx) = kill_tx {
+                // ffmpeg is still running — signal it and wait for exit before
+                // deleting the output directory.
+                let notification = wait_done.notified();
+                let _ = kill_tx.send(());
+                notification.await;
+            }
+
+            let _ = std::fs::remove_dir_all(&output_dir);
         }
     }
 
