@@ -46,43 +46,6 @@ jobs:
           path: dist/
           retention-days: 1
 
-  build-jellyfin-ffmpeg:
-    name: Download jellyfin-ffmpeg (${{ matrix.platform }})
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - platform: linux-amd64
-            asset: jellyfin-ffmpeg_7.1.3-3_portable_linux64-gpl.tar.xz
-          - platform: linux-arm64
-            asset: jellyfin-ffmpeg_7.1.3-3_portable_linuxarm64-gpl.tar.xz
-          - platform: macos-x86_64
-            asset: jellyfin-ffmpeg_7.1.3-3_portable_mac64-gpl.tar.xz
-          - platform: macos-arm64
-            asset: jellyfin-ffmpeg_7.1.3-3_portable_macarm64-gpl.tar.xz
-          - platform: win-x86_64
-            asset: jellyfin-ffmpeg_7.1.3-3_portable_win64-clang-gpl.zip
-    steps:
-      - name: Download portable archive
-        run: |
-          curl -fsSL "https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v7.1.3-3/${{ matrix.asset }}" \
-            -o ffmpeg-archive
-
-      - name: Extract
-        run: |
-          mkdir jellyfin-ffmpeg
-          case "${{ matrix.asset }}" in
-            *.tar.xz) tar -xJf ffmpeg-archive -C jellyfin-ffmpeg --strip-components=1 ;;
-            *.zip)    unzip -q ffmpeg-archive -d jellyfin-ffmpeg ;;
-          esac
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: jellyfin-ffmpeg-${{ matrix.platform }}
-          path: jellyfin-ffmpeg/
-          retention-days: 1
-
   build-dashboard:
     name: Build dashboard
     runs-on: ubuntu-latest
@@ -219,7 +182,6 @@ jobs:
     name: Build server (${{ matrix.arch }})
     needs: []
     runs-on: ${{ matrix.runner }}
-    container: debian:trixie-slim
     strategy:
       fail-fast: false
       matrix:
@@ -233,9 +195,8 @@ jobs:
     steps:
       - name: Install build dependencies
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            curl ca-certificates git gcc pkg-config libssl-dev
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
 
       - uses: actions/checkout@v4
 
@@ -263,7 +224,7 @@ jobs:
 
   build-docker:
     name: Build Docker (${{ matrix.platform }})
-    needs: [build-dashboard, build-server, build-jellyfin-web, build-jellyfin-ffmpeg]
+    needs: [build-dashboard, build-server, build-jellyfin-web]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -275,11 +236,11 @@ jobs:
           - platform: linux/amd64
             runner: ubuntu-latest
             arch: amd64
-            ffmpeg_platform: linux-amd64
+            ffmpeg_asset: jellyfin-ffmpeg_7.1.3-3_portable_linux64-gpl.tar.xz
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             arch: arm64
-            ffmpeg_platform: linux-arm64
+            ffmpeg_asset: jellyfin-ffmpeg_7.1.3-3_portable_linuxarm64-gpl.tar.xz
     steps:
       - name: Prepare
         run: |
@@ -300,11 +261,12 @@ jobs:
           name: jellyfin-web-dist
           path: jellyfin-web/
 
-      - name: Download jellyfin-ffmpeg artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: jellyfin-ffmpeg-${{ matrix.ffmpeg_platform }}
-          path: jellyfin-ffmpeg/
+      - name: Download jellyfin-ffmpeg
+        run: |
+          curl -fsSL "https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v7.1.3-3/${{ matrix.ffmpeg_asset }}" \
+            -o ffmpeg-archive.tar.xz
+          mkdir jellyfin-ffmpeg
+          tar -xJf ffmpeg-archive.tar.xz -C jellyfin-ffmpeg --strip-components=1
 
       - name: Download server binary
         uses: actions/download-artifact@v4
