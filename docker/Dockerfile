@@ -18,7 +18,6 @@ COPY remux-server .
 COPY dashboard ./dashboard
 COPY jellyfin-web ./jellyfin-web
 COPY jellyfin-ffmpeg ./jellyfin-ffmpeg
-RUN chmod +x ./jellyfin-ffmpeg/ffmpeg ./jellyfin-ffmpeg/ffprobe
 
 EXPOSE 3000
 CMD ["./remux-server"]
