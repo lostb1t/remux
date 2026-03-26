@@ -1,0 +1,22 @@
+[package]
+name = "remux-dashboard"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { version = "0.7", features = ["web", "router"] }
+serde = { version = "1", features = ["derive"] }
+#reqwest = { version = "0.12", default-features = false, features = ["json"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-net = { version = "0.6", features = ["eventsource"] }
+gloo-storage = { version = "0.3" }
+remux-sdks = { path = "../remux-sdks" }
+futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
+uuid = { version = "1", features = ["v4", "serde", "js"] }
+#http = "1"
+web-sys = { version = "0.3", features = ["Window", "Location", "Document", "Element", "Navigator", "Clipboard"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true

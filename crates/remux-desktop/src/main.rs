@@ -1,0 +1,108 @@
+use anyhow::{Context, Result};
+use std::path::PathBuf;
+use tray_icon::{
+    TrayIconBuilder,
+    menu::{Menu, MenuEvent, MenuItem},
+};
+
+#[cfg(dashboard_built)]
+include!(concat!(env!("OUT_DIR"), "/dashboard_embed.rs"));
+
+#[cfg(jellyfin_web_built)]
+include!(concat!(env!("OUT_DIR"), "/jellyfin_web_embed.rs"));
+
+fn data_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("remux")
+}
+
+fn build_config() -> remux_server::Config {
+    let base = data_dir();
+    let db_path = base.join("db.sqlite");
+    remux_server::Config {
+        database_url: format!("sqlite://{}?mode=rwc", db_path.display()),
+        log_file: base.join("logs").join("remux.jsonl").to_string_lossy().into_owned(),
+        torrent_data_dir: base.join("torrents").to_string_lossy().into_owned(),
+        ..Default::default()
+    }
+}
+
+fn server_url() -> String {
+    let port = std::env::var("REMUX_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(3000);
+    format!("http://localhost:{port}/admin")
+}
+
+fn ensure_data_dirs(config: &remux_server::Config) -> Result<()> {
+    std::fs::create_dir_all(&config.torrent_data_dir)?;
+    if let Some(parent) = std::path::Path::new(&config.log_file).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    remux_server::setup_logging();
+
+    let config = build_config();
+    ensure_data_dirs(&config)?;
+
+    // Register embedded assets so the server can serve them from memory.
+    #[cfg(all(dashboard_built, jellyfin_web_built))]
+    remux_server::set_embedded_assets(&DASHBOARD, &JELLYFIN_WEB);
+
+    // Ensure FFmpeg is available, downloading it on first run if needed.
+    ffmpeg_sidecar::download::auto_download().context("failed to download FFmpeg")?;
+
+    // Start the remux server in a background tokio thread.
+    let rt = tokio::runtime::Runtime::new()?;
+    let server_config = config.clone();
+    std::thread::spawn(move || {
+        rt.block_on(async move {
+            if let Err(e) = remux_server::serve(server_config).await {
+                tracing::error!("server error: {e:#}");
+            }
+        });
+    });
+
+    let open_item = MenuItem::new("Open Remux", true, None);
+    let quit_item = MenuItem::new("Quit", true, None);
+    let open_id = open_item.id().clone();
+    let quit_id = quit_item.id().clone();
+
+    let menu = Menu::new();
+    menu.append(&open_item)?;
+    menu.append(&quit_item)?;
+
+    let icon = load_icon();
+
+    let _tray = TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("Remux")
+        .with_icon(icon)
+        .build()?;
+
+    tracing::info!("remux desktop started — tray icon active");
+
+    let menu_channel = MenuEvent::receiver();
+    loop {
+        if let Ok(event) = menu_channel.try_recv() {
+            if event.id == open_id {
+                let url = server_url();
+                tracing::info!("opening {url}");
+                let _ = open::that(&url);
+            } else if event.id == quit_id {
+                tracing::info!("quit requested");
+                std::process::exit(0);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn load_icon() -> tray_icon::Icon {
+    tray_icon::Icon::from_rgba(vec![0u8, 0, 0, 0], 1, 1).expect("valid icon")
+}

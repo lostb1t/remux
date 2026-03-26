@@ -41,6 +41,9 @@ FROM debian:trixie-slim AS release
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WEB_PATH=/app/jellyfin-web
 ENV DASHBOARD_PATH=/app/dashboard
+ENV DATABASE_URL=sqlite:///data/db.sqlite?mode=rwc
+ENV LOG_FILE=/data/logs/remux.jsonl
+ENV TORRENT_DATA_DIR=/data/torrents
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -50,8 +53,8 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=builder /app/target/release/remux-server .
-COPY --from=builder /app/target/dx/dashboard/release/web/public /app/dashboard
-COPY --from=jf /jellyfin/jellyfin-web ${WEB_PATH}
+COPY --from=builder /app/target/dx/remux-dashboard/release/web/public /app/dashboard
+COPY --from=jf /jellyfin/jellyfin-web /app/jellyfin-web
 
 EXPOSE 3000
 CMD ["./remux-server"]

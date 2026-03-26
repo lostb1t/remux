@@ -1,0 +1,263 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  PUBLIC_REPO: your-org/remux
+  REGISTRY_IMAGE: ghcr.io/remuxd/remux
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: remux-desktop-linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: remux-desktop-macos-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: remux-desktop-macos-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: remux-desktop-windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }},wasm32-unknown-unknown
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --locked
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Install dioxus-cli
+        run: cargo install dioxus-cli --locked
+
+      - name: Build dashboard
+        working-directory: crates/remux-dashboard
+        run: dx build --release
+
+      - name: Bundle remux-desktop (Linux / macOS)
+        if: runner.os != 'Windows'
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo bundle --release --target ${{ matrix.target }} -p remux-desktop
+
+      - name: Build remux-desktop (Windows)
+        if: runner.os == 'Windows'
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo build --release --target ${{ matrix.target }} -p remux-desktop
+
+      - name: Package bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd target/${{ matrix.target }}/release/bundle/osx
+          zip -r ${{ github.workspace }}/${{ matrix.artifact }}.zip Remux.app
+
+      - name: Package bundle (Linux .deb)
+        if: runner.os == 'Linux'
+        run: cp target/${{ matrix.target }}/release/bundle/deb/*.deb ${{ matrix.artifact }}.deb
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/remux-desktop.exe" .
+          Compress-Archive -Path "remux-desktop.exe" -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: Upload artifact (macOS / Windows)
+        if: runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.deb
+
+  build-docker:
+    name: Build Docker (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-22.04-arm
+    steps:
+      - name: Prepare
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.PUBLIC_REPO_PAT }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},name-canonical=true,push=true
+          cache-from: type=gha,scope=build-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=build-${{ env.PLATFORM_PAIR }}
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-docker:
+    name: Merge Docker manifests
+    needs: build-docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set image tags
+        id: tags
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "tags=-t ${{ env.REGISTRY_IMAGE }}:${{ github.ref_name }} -t ${{ env.REGISTRY_IMAGE }}:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=-t ${{ env.REGISTRY_IMAGE }}:nightly" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.PUBLIC_REPO_PAT }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create and push manifest
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create ${{ steps.tags.outputs.tags }} \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+
+  release:
+    name: Publish to public repo
+    needs: [build, merge-docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: "remux-desktop-*"
+          merge-multiple: true
+
+      - name: Set release metadata
+        id: meta
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "tag=${{ github.ref_name }}"   >> "$GITHUB_OUTPUT"
+            echo "title=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false"             >> "$GITHUB_OUTPUT"
+            echo "nightly=false"                >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=nightly"                  >> "$GITHUB_OUTPUT"
+            echo "title=Nightly Build"          >> "$GITHUB_OUTPUT"
+            echo "prerelease=true"              >> "$GITHUB_OUTPUT"
+            echo "nightly=true"                 >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Delete existing nightly release
+        if: steps.meta.outputs.nightly == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_REPO_PAT }}
+        run: |
+          gh release delete nightly \
+            --repo "$PUBLIC_REPO" \
+            --cleanup-tag \
+            --yes \
+          || true
+
+      - name: Create release on public repo
+        env:
+          GH_TOKEN: ${{ secrets.PUBLIC_REPO_PAT }}
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            --repo "$PUBLIC_REPO" \
+            --title "${{ steps.meta.outputs.title }}" \
+            --generate-notes \
+            ${{ steps.meta.outputs.prerelease == 'true' && '--prerelease' || '' }} \
+            artifacts/*

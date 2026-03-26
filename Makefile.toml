@@ -9,7 +9,7 @@ AXUM_ANYHOW_EXPOSE_ERRORS=1
 # HTTP_PROXY="http://10.0.10.11:9090"
 # HTTPS_PROXY="http://10.0.10.11:9090"
 WEB_PATH = "./jellyfin-web/dist"
-DASHBOARD_PATH="./target/dx/dashboard/debug/web/public"
+DASHBOARD_PATH="./target/dx/remux-dashboard/debug/web/public"
 DB_URL = "sqlite://db.sqlite?mode=rwc"
 DATABASE_URL = "sqlite://db.sqlite?mode=rwc"
 DB="db.sqlite"
@@ -21,7 +21,7 @@ args = ["sqlx", "prepare"]
 
 
 [tasks.test]
-cwd = "crates/server"
+cwd = "crates/remux-server"
 command = "cargo"
 args = ["test", "--", "--nocapture"]
 
@@ -40,13 +40,31 @@ watch = true
 [tasks.dev-serve-dash]
 command = "dx"
 args = ["serve", "--addr", "0.0.0.0", "--port", "8888"]
-cwd = "crates/dashboard"
+cwd = "crates/remux-dashboard"
 
 [tasks.dev-build-dash]
 command = "dx"
 args = ["build"]
-cwd = "crates/dashboard"
-watch = {watch = ["${PWD}/crates/dashboard/src", "${PWD}/crates/dashboard/assets"]}
+cwd = "crates/remux-dashboard"
+watch = {watch = ["${PWD}/crates/remux-dashboard/src", "${PWD}/crates/remux-dashboard/assets"]}
+
+[tasks.build-desktop]
+description = "Build the remux-desktop binary (system tray app for Windows/macOS/Linux)"
+dependencies = ["build-desktop-dash"]
+command = "cargo"
+args = ["build", "--release", "-p", "remux-desktop"]
+
+[tasks.bundle-desktop]
+description = "Build and bundle remux-desktop into a native app package (.app / .deb / .exe)"
+dependencies = ["build-desktop-dash"]
+command = "cargo"
+args = ["bundle", "--release", "-p", "remux-desktop"]
+
+[tasks.build-desktop-dash]
+description = "Build the dashboard WASM assets required by remux-desktop"
+command = "dx"
+args = ["build", "--release"]
+cwd = "crates/remux-dashboard"
 
 [tasks.build-docker]
 command = "docker"

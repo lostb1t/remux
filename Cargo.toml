@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/dashboard", "crates/server", "crates/remux-macros", "crates/shared"]
+members = ["crates/remux-dashboard", "crates/remux-server", "crates/remux-macros", "crates/remux-sdks", "crates/remux-utils", "crates/remux-desktop"]
 
 
 [patch.crates-io]
