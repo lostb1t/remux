@@ -1,6 +1,7 @@
 use dashmap::DashMap;
 use remux_sdks::jellyfin::models::TranscodeReasons;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{watch, Notify};
@@ -30,10 +31,11 @@ pub struct TranscodeSession {
     pub audio_codec: String,
     pub segment_length: u32,
     pub transcode_reasons: TranscodeReasons,
-    /// Send `()` to this to request ffmpeg be killed.
+    /// Kill channel and done notifier for the ffmpeg subprocess.
     pub kill_tx: Option<tokio::sync::oneshot::Sender<()>>,
-    /// Notified once the ffmpeg process has fully exited.
     pub wait_done: Arc<Notify>,
+    /// Index of the last segment the client has requested (0-based).
+    pub last_segment_index: Arc<AtomicU32>,
 }
 
 impl TranscodeSession {
@@ -111,6 +113,7 @@ impl TranscodeSessionManager {
             transcode_reasons,
             kill_tx: None,
             wait_done: Arc::new(Notify::new()),
+            last_segment_index: Arc::new(AtomicU32::new(0)),
         };
 
         let session = Arc::new(tokio::sync::RwLock::new(session));

@@ -36,6 +36,7 @@ tracing-subscriber = { version = "^0.3", features = [
 ] }
 serde_derive = "1.0"
 anyhow = "^1.0"
+libc = "0.2"
 tracing = "^0.1"
 tracing-log = "^0.2"
 tower = { version = "^0.5", features = ["tokio", "util"] }

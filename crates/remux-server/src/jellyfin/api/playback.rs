@@ -1752,6 +1752,21 @@ async fn hls_segment_inner(
 
     let segment_path = session.read().await.segment_path(&segment_id);
 
+    // Parse segment index from name like "segment_00042" and update the
+    // playback position so the buffer monitor knows how far the client is.
+    if let Some(idx) = segment_id
+        .rsplit('_')
+        .next()
+        .and_then(|n| n.parse::<u32>().ok())
+    {
+        use std::sync::atomic::Ordering;
+        let s = session.read().await;
+        let prev = s.last_segment_index.load(Ordering::Relaxed);
+        if idx > prev {
+            s.last_segment_index.store(idx, Ordering::Relaxed);
+        }
+    }
+
     // Wait for the segment to be written (up to 60 seconds)
     let mut attempts = 0;
     while !segment_path.exists() && attempts < 120 {

@@ -1,14 +1,87 @@
 use anyhow::{Result, anyhow};
+#[cfg(unix)]
+use libc;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
 use super::session::{TranscodeSession, TranscodeState};
 
+/// Max seconds to buffer ahead of the current playback position.
+const MAX_BUFFER_SECS: u32 = 300;
+
 fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
+}
+
+/// Send SIGSTOP/SIGCONT to a process by PID on Unix.
+#[cfg(unix)]
+fn send_signal(pid: u32, sig: libc::c_int) {
+    unsafe { libc::kill(pid as libc::pid_t, sig) };
+}
+#[cfg(not(unix))]
+fn send_signal(_pid: u32, _sig: i32) {}
+
+/// Spawn the buffer-throttle task. It pauses/resumes ffmpeg so it never
+/// encodes more than MAX_BUFFER_SECS ahead of what the client has requested.
+fn spawn_buffer_monitor(
+    output_dir: PathBuf,
+    segment_length: u32,
+    last_segment_index: Arc<std::sync::atomic::AtomicU32>,
+    ffmpeg_pid: u32,
+    mut stop_rx: tokio::sync::oneshot::Receiver<()>,
+) {
+    tokio::spawn(async move {
+        let mut paused = false;
+        loop {
+            tokio::select! {
+                _ = &mut stop_rx => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            }
+
+            let produced = count_segments(&output_dir);
+            let buffered_secs = produced * segment_length;
+            let playback_secs = last_segment_index.load(Ordering::Relaxed) * segment_length;
+
+            let ahead = buffered_secs.saturating_sub(playback_secs);
+
+            if !paused && ahead >= MAX_BUFFER_SECS {
+                debug!(pid = ffmpeg_pid, ahead, "Buffer full — pausing ffmpeg");
+                #[cfg(unix)]
+                send_signal(ffmpeg_pid, libc::SIGSTOP);
+                paused = true;
+            } else if paused && ahead < MAX_BUFFER_SECS.saturating_sub(segment_length * 2) {
+                debug!(pid = ffmpeg_pid, ahead, "Buffer drained — resuming ffmpeg");
+                #[cfg(unix)]
+                send_signal(ffmpeg_pid, libc::SIGCONT);
+                paused = false;
+            }
+        }
+
+        // Ensure ffmpeg isn't left paused when we stop monitoring.
+        if paused {
+            #[cfg(unix)]
+            send_signal(ffmpeg_pid, libc::SIGCONT);
+        }
+    });
+}
+
+fn count_segments(dir: &PathBuf) -> u32 {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .ends_with(".ts")
+                })
+                .count() as u32
+        })
+        .unwrap_or(0)
 }
 
 /// Parameters for starting a new HLS transcode job.
@@ -162,8 +235,21 @@ pub async fn start_transcode(
         .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
 
     let stderr = child.stderr.take();
+    let ffmpeg_pid = child.id().unwrap_or(0);
 
     let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
+    let (monitor_stop_tx, monitor_stop_rx) = tokio::sync::oneshot::channel::<()>();
+
+    {
+        let s = session.read().await;
+        spawn_buffer_monitor(
+            s.output_dir.clone(),
+            s.segment_length,
+            s.last_segment_index.clone(),
+            ffmpeg_pid,
+            monitor_stop_rx,
+        );
+    }
 
     {
         let mut s = session.write().await;
@@ -190,11 +276,17 @@ pub async fn start_transcode(
             r = child.wait() => Some(r),
             // kill_rx fires when stop() sends (), or when the sender is dropped.
             _ = kill_rx => {
+                // Make sure ffmpeg isn't paused before we kill it.
+                #[cfg(unix)]
+                send_signal(ffmpeg_pid, libc::SIGCONT);
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 None
             }
         };
+
+        // Stop the buffer monitor.
+        let _ = monitor_stop_tx.send(());
 
         let stderr_out = stderr_task.await;
 
