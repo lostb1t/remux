@@ -81,6 +81,12 @@ impl TranscodeSessionManager {
         }
     }
 
+    pub fn segment_path(&self, play_session_id: &str, segment_id: &str) -> PathBuf {
+        self.base_dir
+            .join(play_session_id)
+            .join(format!("{}.ts", segment_id))
+    }
+
     pub fn create(
         &self,
         play_session_id: String,

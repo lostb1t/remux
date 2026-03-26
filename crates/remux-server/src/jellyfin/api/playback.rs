@@ -1328,6 +1328,11 @@ pub async fn ping_playback_session(
     Query(q): Query<PingQuery>,
 ) -> Result<impl IntoResponse> {
     PlaybackSession::ping(&state.ctx.store, &q.play_session_id);
+    // Also keep the transcode session alive so the 60s idle killer doesn't
+    // fire while the client is paused and only sending pings.
+    if let Some(session) = state.ctx.transcode.get(&q.play_session_id) {
+        session.write().await.last_accessed = std::time::Instant::now();
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1744,42 +1749,60 @@ async fn hls_segment_inner(
         .play_session_id
         .context_not_found("missing", "PlaySessionId is required")?;
 
-    let session = state
-        .ctx
-        .transcode
-        .get(&play_session_id)
-        .context_not_found("not found", "transcode session not found")?;
+    let session = state.ctx.transcode.get(&play_session_id);
 
-    let segment_path = session.read().await.segment_path(&segment_id);
+    // Derive the segment path — either from the live session or from the base
+    // dir directly (handles server restart where session is gone but files remain).
+    let segment_path = match &session {
+        Some(s) => s.read().await.segment_path(&segment_id),
+        None => state
+            .ctx
+            .transcode
+            .segment_path(&play_session_id, &segment_id),
+    };
 
-    // Parse segment index from name like "segment_00042" and update the
-    // playback position so the buffer monitor knows how far the client is.
-    if let Some(idx) = segment_id
-        .rsplit('_')
-        .next()
-        .and_then(|n| n.parse::<u32>().ok())
-    {
-        use std::sync::atomic::Ordering;
-        let s = session.read().await;
-        let prev = s.last_segment_index.load(Ordering::Relaxed);
-        if idx > prev {
-            s.last_segment_index.store(idx, Ordering::Relaxed);
+    if let Some(ref session) = session {
+        // Update playback position for the buffer monitor.
+        if let Some(idx) = segment_id
+            .rsplit('_')
+            .next()
+            .and_then(|n| n.parse::<u32>().ok())
+        {
+            use std::sync::atomic::Ordering;
+            let s = session.read().await;
+            let prev = s.last_segment_index.load(Ordering::Relaxed);
+            if idx > prev {
+                s.last_segment_index.store(idx, Ordering::Relaxed);
+            }
         }
     }
 
-    // Wait for the segment to be written (up to 60 seconds)
-    let mut attempts = 0;
-    while !segment_path.exists() && attempts < 120 {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        attempts += 1;
+    // If the session is live, wait up to 60s for ffmpeg to produce the segment.
+    // If there's no live session (e.g. after server restart), only serve from disk.
+    if session.is_some() {
+        let mut attempts = 0;
+        while !segment_path.exists() && attempts < 120 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            attempts += 1;
+        }
     }
 
     if !segment_path.exists() {
+        if session.is_none() {
+            return Err(anyhow!(
+                "Transcode session {} not found and segment {} not on disk",
+                play_session_id,
+                segment_id
+            )
+            .into());
+        }
         return Err(anyhow!("Segment {} not ready after timeout", segment_id).into());
     }
 
-    // Update last accessed
-    session.write().await.last_accessed = std::time::Instant::now();
+    // Update last accessed on the live session.
+    if let Some(ref session) = session {
+        session.write().await.last_accessed = std::time::Instant::now();
+    }
 
     let file = tokio::fs::File::open(&segment_path).await?;
     let stream = ReaderStream::new(file);

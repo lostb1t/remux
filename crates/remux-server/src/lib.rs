@@ -181,6 +181,12 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
         }
     }
 
+    // Kill idle transcode sessions after 60 seconds of no activity (matches Jellyfin's HLS timeout).
+    ctx.transcode.clone().spawn_cleanup_task(
+        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(60),
+    );
+
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
 
     // Register per-catalog import tasks for existing enabled catalogs.
