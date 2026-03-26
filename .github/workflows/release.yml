@@ -28,6 +28,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: dashboard
+
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
 
