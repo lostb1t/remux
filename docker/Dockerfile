@@ -17,22 +17,18 @@ RUN apt-get update \
         clang pkg-config build-essential libssl-dev \
         libavcodec-dev libavformat-dev libavfilter-dev \
         libavutil-dev libavdevice-dev libswscale-dev libswresample-dev \
-        libglib2.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN cargo install cargo-chef --locked \
-    && rustup target add wasm32-unknown-unknown \
-    && cargo install dioxus-cli --locked
+RUN cargo install cargo-chef --locked
 
 COPY vendor ./vendor
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
-RUN cd crates/remux-dashboard && dx build --release
 
 ENV SQLX_OFFLINE=true
 RUN cargo build --release -p remux-server && strip target/release/remux-server
