@@ -13,7 +13,7 @@ permissions:
   packages: write
 
 env:
-  PUBLIC_REPO: your-org/remux
+  PUBLIC_REPO: lostb1t/remux
   REGISTRY_IMAGE: ghcr.io/remuxd/remux
 
 jobs:
