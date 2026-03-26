@@ -81,7 +81,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-${{ matrix.target }}
+          key: desktop-${{ runner.os }}-${{ matrix.target }}
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
