@@ -1,6 +1,6 @@
 FROM jellyfin/jellyfin:10.11.6 AS jf
 
-# ── Recipe planner (Bookworm is fine, no FFmpeg needed here) ─────────────────
+# ── Recipe planner ────────────────────────────────────────────────────────────
 FROM lukemathwalker/cargo-chef:latest-rust-slim-bookworm AS planner
 WORKDIR /app
 COPY . .
@@ -17,6 +17,7 @@ RUN apt-get update \
         clang pkg-config build-essential libssl-dev \
         libavcodec-dev libavformat-dev libavfilter-dev \
         libavutil-dev libavdevice-dev libswscale-dev libswresample-dev \
+        libglib2.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
@@ -31,7 +32,7 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
-RUN cd crates/dashboard && dx build --release
+RUN cd crates/remux-dashboard && dx build --release
 
 ENV SQLX_OFFLINE=true
 RUN cargo build --release -p remux-server && strip target/release/remux-server
