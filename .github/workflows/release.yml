@@ -67,8 +67,9 @@ jobs:
             libssl-dev \
             pkg-config
 
-      - name: Install dioxus-cli
-        run: cargo install dioxus-cli --locked
+      - name: Install Dioxus CLI
+        run: |
+          cargo binstall --force --no-confirm dioxus-cli@0.7.3
 
       - name: Build dashboard
         working-directory: crates/remux-dashboard
