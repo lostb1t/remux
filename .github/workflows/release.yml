@@ -148,9 +148,54 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.deb
 
+  build-server:
+    name: Build server (${{ matrix.arch }})
+    needs: []
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: server-${{ matrix.arch }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libssl-dev pkg-config
+
+      - name: Build remux-server
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo build --release --target ${{ matrix.target }} -p remux-server
+
+      - name: Upload server artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/remux-server
+          retention-days: 1
+
   build-docker:
     name: Build Docker (${{ matrix.platform }})
-    needs: build-dashboard
+    needs: [build-dashboard, build-server]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -161,8 +206,10 @@ jobs:
         include:
           - platform: linux/amd64
             runner: ubuntu-latest
+            arch: amd64
           - platform: linux/arm64
             runner: ubuntu-22.04-arm
+            arch: arm64
     steps:
       - name: Prepare
         run: |
@@ -175,7 +222,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dashboard-dist
-          path: target/dx/remux-dashboard/release/web/public/
+          path: dashboard/
+
+      - name: Download server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: server-linux-${{ matrix.arch }}
+          path: ./
+
+      - name: Mark binary executable
+        run: chmod +x ./remux-server
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
