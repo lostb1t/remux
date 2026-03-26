@@ -32,6 +32,7 @@ use config;
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
+use itertools::Itertools;
 use reqwest::header::LOCATION;
 use serde::Serializer;
 use serde::{Deserialize, Serialize};
@@ -52,7 +53,6 @@ use tracing::debug;
 use tracing::info;
 use tracing::instrument;
 use tracing::warn;
-use itertools::Itertools;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry, fmt};
@@ -65,8 +65,6 @@ mod errors;
 pub mod sdks {
     pub use remux_sdks::*;
 }
-mod store;
-mod utils;
 mod aio;
 pub mod db;
 #[cfg(feature = "desktop")]
@@ -76,9 +74,11 @@ pub mod jellyfin;
 mod log_capture;
 mod playback_session;
 mod providers;
+mod store;
 pub mod tasks;
 mod torrent;
 pub mod transcode;
+mod utils;
 mod web_patches;
 mod web_transform;
 mod ws;
@@ -128,7 +128,8 @@ pub async fn serve(config: Config) -> Result<()> {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(3000);
     let addr = format!("0.0.0.0:{port}");
-    let app = MapRequestLayer::new(rewrite_request_uri).layer(init_app_with_config(config).await?);
+    let app = MapRequestLayer::new(rewrite_request_uri)
+        .layer(init_app_with_config(config).await?);
     tracing::info!("starting webserver at {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
@@ -216,15 +217,22 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
     #[cfg(feature = "desktop")]
     let router = {
         use embedded_static::EmbeddedDir;
-        let dashboard_dir = EMBEDDED_DASHBOARD.get().expect("embedded dashboard not set");
-        let jellyfin_web_dir = EMBEDDED_JELLYFIN_WEB.get().expect("embedded jellyfin-web not set");
+        let dashboard_dir = EMBEDDED_DASHBOARD
+            .get()
+            .expect("embedded dashboard not set");
+        let jellyfin_web_dir = EMBEDDED_JELLYFIN_WEB
+            .get()
+            .expect("embedded jellyfin-web not set");
         Router::new()
             .route("/websocket", get(ws::ws_handler))
             .route("/socket", get(ws::ws_handler))
             .merge(collect_routes())
             .nest_service(
                 "/admin",
-                EmbeddedDir { dir: dashboard_dir, spa_fallback: true },
+                EmbeddedDir {
+                    dir: dashboard_dir,
+                    spa_fallback: true,
+                },
             )
             .with_state(state)
             .layer(on_error(|err| {
@@ -247,10 +255,10 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
             }))
             .layer(tower_http::trace::TraceLayer::new_for_http())
             .layer(cors)
-            .fallback_service(
-                web_transform::TransformLayer::new()
-                    .layer(EmbeddedDir { dir: jellyfin_web_dir, spa_fallback: false }),
-            )
+            .fallback_service(web_transform::TransformLayer::new().layer(EmbeddedDir {
+                dir: jellyfin_web_dir,
+                spa_fallback: false,
+            }))
     };
 
     #[cfg(not(feature = "desktop"))]

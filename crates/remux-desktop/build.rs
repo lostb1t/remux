@@ -9,7 +9,8 @@ fn main() {
     let workspace_root = manifest_dir.join("..").join("..");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    let dashboard_dir = workspace_root.join("target/dx/remux-dashboard/release/web/public");
+    let dashboard_dir =
+        workspace_root.join("target/dx/remux-dashboard/release/web/public");
     if dashboard_dir.exists() {
         let path = dashboard_dir.canonicalize().unwrap();
         let path_str = path.to_str().unwrap().replace('\\', "/");
@@ -20,7 +21,9 @@ fn main() {
         println!("cargo:rustc-cfg=dashboard_built");
         println!("cargo:rerun-if-changed={path_str}");
     } else {
-        println!("cargo:warning=Dashboard not built — run `dx build --release` in crates/remux-dashboard first");
+        println!(
+            "cargo:warning=Dashboard not built — run `dx build --release` in crates/remux-dashboard first"
+        );
     }
 
     let jellyfin_web_dir = workspace_root.join("jellyfin-web/dist");
@@ -34,6 +37,8 @@ fn main() {
         println!("cargo:rustc-cfg=jellyfin_web_built");
         println!("cargo:rerun-if-changed={path_str}");
     } else {
-        println!("cargo:warning=jellyfin-web not built — run `cargo make jellyfin-web` first");
+        println!(
+            "cargo:warning=jellyfin-web not built — run `cargo make jellyfin-web` first"
+        );
     }
 }

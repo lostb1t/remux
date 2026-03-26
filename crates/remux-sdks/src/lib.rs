@@ -419,4 +419,3 @@ impl From<jellyfin::MediaType> for aio::MediaType {
         }
     }
 }
-

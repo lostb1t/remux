@@ -306,7 +306,10 @@ impl MetaProvider for AioMetaProvider {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Option<MetaResult>> {
-        let imdb_id = media.series_media_id.clone().or(media.external_ids.imdb.clone());
+        let imdb_id = media
+            .series_media_id
+            .clone()
+            .or(media.external_ids.imdb.clone());
 
         let imdb_id = match imdb_id {
             Some(id) => id,

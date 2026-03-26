@@ -16,10 +16,10 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::db;
 use crate::db::auth;
+use crate::errors::LogErr;
 use crate::jellyfin;
 use crate::sdks;
 use crate::utils::IntoVec;
-use crate::errors::LogErr;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 use chrono::Datelike;
 use chrono::Utc;
@@ -83,7 +83,10 @@ pub async fn get_items(
         if let Some(s) = search {
             // Episode searches return empty — episodes are children of Series in AIO
             if matches!(types[0], jellyfin::MediaType::Episode) {
-                return Ok(ItemsQueryResult { items: vec![], total_count: 0 });
+                return Ok(ItemsQueryResult {
+                    items: vec![],
+                    total_count: 0,
+                });
             }
             // todo: need to to make parallel request for types
             if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await
@@ -692,7 +695,11 @@ pub async fn item(
                 let db = state.ctx.db.clone();
                 if let Ok(aio) = crate::aio::AioService::from_settings(&db).await {
                     warm_subtitle_cache(&db, &media);
-                    media.clone().refresh_sources(&db, &aio).await.log_err("failed to refresh sources");
+                    media
+                        .clone()
+                        .refresh_sources(&db, &aio)
+                        .await
+                        .log_err("failed to refresh sources");
                 }
             }
             Ok::<(), anyhow::Error>(())

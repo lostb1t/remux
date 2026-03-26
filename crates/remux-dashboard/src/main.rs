@@ -2,14 +2,14 @@ use dioxus::prelude::*;
 use futures::StreamExt;
 use gloo_net::eventsource::futures::EventSource;
 use gloo_storage::{LocalStorage, Storage};
-use serde::{Deserialize, Serialize};
 use remux_sdks::jellyfin::{
-    AddTunerHost, AdminSetPassword, AioCatalogInfo, AuthenticationInfo, AuthenticateUserByName,
-    BaseItemDto, BrandingOptions, BulkChannelRequest, BulkChannels, ChannelEditorItem,
-    CreateApiKey, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload, DeleteApiKey,
-    DeleteEpgSource, DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EpgSourceInfo,
-    GetAioCatalogs, GetApiKeys, GetBrandingConfiguration, GetEpgSources, GetIptvChannels,
-    GetItems, GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
+    AddTunerHost, AdminSetPassword, AioCatalogInfo, AuthenticateUserByName,
+    AuthenticationInfo, BaseItemDto, BrandingOptions, BulkChannelRequest, BulkChannels,
+    ChannelEditorItem, CreateApiKey, CreateUser, CreateVirtualFolder,
+    CreateVirtualFolderPayload, DeleteApiKey, DeleteEpgSource, DeleteTunerHost,
+    DeleteUser, DeleteVirtualFolder, EpgSourceInfo, GetAioCatalogs, GetApiKeys,
+    GetBrandingConfiguration, GetEpgSources, GetIptvChannels, GetItems,
+    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
     GetTunerHosts, GetUsers, JellyfinAuth, PatchChannel, PatchChannelRequest,
     PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
     PostStartupUser, PublicSystemInfo, SaveEpgSource, ServerConfiguration,
@@ -20,6 +20,7 @@ use remux_sdks::jellyfin::{
     UserDto,
 };
 use remux_sdks::{ClientError, RestClient};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
@@ -1414,9 +1415,7 @@ fn CollectionForm(
             .and_then(|f| f.collection_type.as_ref())
             .map(|ct| match ct {
                 remux_sdks::jellyfin::CollectionType::Movies => "movies".to_string(),
-                remux_sdks::jellyfin::CollectionType::Tvshows => {
-                    "tvshows".to_string()
-                }
+                remux_sdks::jellyfin::CollectionType::Tvshows => "tvshows".to_string(),
                 _ => "movies".to_string(),
             })
             .unwrap_or_else(|| "movies".to_string())

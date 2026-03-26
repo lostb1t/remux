@@ -22,7 +22,11 @@ fn build_config() -> remux_server::Config {
     let db_path = base.join("db.sqlite");
     remux_server::Config {
         database_url: format!("sqlite://{}?mode=rwc", db_path.display()),
-        log_file: base.join("logs").join("remux.jsonl").to_string_lossy().into_owned(),
+        log_file: base
+            .join("logs")
+            .join("remux.jsonl")
+            .to_string_lossy()
+            .into_owned(),
         torrent_data_dir: base.join("torrents").to_string_lossy().into_owned(),
         ..Default::default()
     }

@@ -235,10 +235,12 @@ impl FromRequestParts<AppState> for AuthSession {
             .await?
             .context_unauthorized("forbidden", "forbidden")?;
 
-        let user = sqlx::query_as::<_, db::User>("SELECT * FROM users WHERE is_admin = 1 LIMIT 1")
-            .fetch_optional(&state.ctx.db)
-            .await?
-            .context_unauthorized("forbidden", "forbidden")?;
+        let user = sqlx::query_as::<_, db::User>(
+            "SELECT * FROM users WHERE is_admin = 1 LIMIT 1",
+        )
+        .fetch_optional(&state.ctx.db)
+        .await?
+        .context_unauthorized("forbidden", "forbidden")?;
 
         let synthetic_device = Device {
             id: format!("apikey-{}", api_key.access_token),
@@ -250,7 +252,10 @@ impl FromRequestParts<AppState> for AuthSession {
             last_activity_at: None,
         };
 
-        Ok(AuthSession { device: synthetic_device, user })
+        Ok(AuthSession {
+            device: synthetic_device,
+            user,
+        })
     }
 }
 

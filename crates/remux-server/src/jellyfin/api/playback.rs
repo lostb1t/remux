@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::io;
 use tokio_util::io::ReaderStream;
-use tracing::{info, trace, debug};
+use tracing::{debug, info, trace};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -40,8 +40,15 @@ pub async fn items_playbackinfo(
     let query_params = payload.clone();
     let media_source_id = payload.media_source_id;
     let device_profile = payload.device_profile;
-    items_playbackinfo_inner(state, session, id, media_source_id, device_profile, query_params)
-        .await
+    items_playbackinfo_inner(
+        state,
+        session,
+        id,
+        media_source_id,
+        device_profile,
+        query_params,
+    )
+    .await
 }
 
 #[get("/items/{id}/playbackinfo")]
@@ -54,8 +61,15 @@ pub async fn items_playbackinfo_get(
     let query_params = q.clone();
     let media_source_id = q.media_source_id;
     let device_profile = q.device_profile;
-    items_playbackinfo_inner(state, session, id, media_source_id, device_profile, query_params)
-        .await
+    items_playbackinfo_inner(
+        state,
+        session,
+        id,
+        media_source_id,
+        device_profile,
+        query_params,
+    )
+    .await
 }
 
 async fn items_playbackinfo_inner(
@@ -271,9 +285,8 @@ async fn items_playbackinfo_inner(
         // actually exceeds the cap. An unknown bitrate is treated as within
         // limits so that clients with a high/unlimited cap aren't forced into
         // transcoding unnecessarily.
-        let bitrate_exceeded = max_bitrate.map_or(false, |max| {
-            source.bitrate.map_or(false, |b| b > max)
-        });
+        let bitrate_exceeded =
+            max_bitrate.map_or(false, |max| source.bitrate.map_or(false, |b| b > max));
 
         let transcode_reasons: jellyfin::TranscodeReasons = {
             let mut reasons = device_profile
@@ -354,19 +367,14 @@ async fn items_playbackinfo_inner(
         media_sources.push(source);
     }
 
-    // Inject external subtitles from AIO (cache-backed) 
+    // Inject external subtitles from AIO (cache-backed)
     //if let Some(ref sm) = subtitle_media {
-   //     inject_external_subtitles(&state.ctx.db, sm, &mut media_sources).await;
-   // }
+    //     inject_external_subtitles(&state.ctx.db, sm, &mut media_sources).await;
+    // }
 
     // Apply per-user playback preferences
-    apply_user_playback_prefs(
-        &state.ctx.db,
-        &session.user,
-        &id,
-        &mut media_sources,
-    )
-    .await;
+    apply_user_playback_prefs(&state.ctx.db, &session.user, &id, &mut media_sources)
+        .await;
 
     let info = jellyfin::PlaybackInfoResponse {
         media_sources,
@@ -1931,7 +1939,9 @@ pub(super) async fn inject_external_subtitles(
     subtitle_media: &crate::db::Media,
     media_sources: &mut Vec<jellyfin::MediaSourceInfo>,
 ) {
-    subtitle_media.inject_subtitles_into_sources(db, media_sources).await;
+    subtitle_media
+        .inject_subtitles_into_sources(db, media_sources)
+        .await;
 }
 
 /// Apply per-user playback preferences to a list of `MediaSourceInfo` entries:
@@ -2021,12 +2031,17 @@ async fn apply_user_playback_prefs(
                 if exists {
                     // Clear any previous default flag, set the recalled one
                     for s in source.media_streams.iter_mut() {
-                        if matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle)) {
+                        if matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle))
+                        {
                             s.is_default = Some(false);
                         }
                     }
                     source.default_subtitle_stream_index = Some(idx);
-                    if let Some(s) = source.media_streams.iter_mut().find(|s| s.index == Some(idx)) {
+                    if let Some(s) = source
+                        .media_streams
+                        .iter_mut()
+                        .find(|s| s.index == Some(idx))
+                    {
                         s.is_default = Some(true);
                     }
                 }
@@ -2046,7 +2061,10 @@ async fn apply_user_playback_prefs(
                 if let Some(ref target) = pref_two {
                     if let Some(stream) = source.media_streams.iter_mut().find(|s| {
                         matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle))
-                            && s.language.as_deref().and_then(crate::db::subtitle_lang_to_two_letter).as_deref()
+                            && s.language
+                                .as_deref()
+                                .and_then(crate::db::subtitle_lang_to_two_letter)
+                                .as_deref()
                                 == Some(target.as_str())
                     }) {
                         let idx = stream.index;
@@ -2062,7 +2080,10 @@ async fn apply_user_playback_prefs(
     }
 }
 
-fn apply_subtitle_mode(mode: &jellyfin::SubtitleMode, source: &mut jellyfin::MediaSourceInfo) {
+fn apply_subtitle_mode(
+    mode: &jellyfin::SubtitleMode,
+    source: &mut jellyfin::MediaSourceInfo,
+) {
     let clear_all = |source: &mut jellyfin::MediaSourceInfo| {
         for s in source.media_streams.iter_mut() {
             if matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle)) {
@@ -2080,7 +2101,9 @@ fn apply_subtitle_mode(mode: &jellyfin::SubtitleMode, source: &mut jellyfin::Med
         }
         source.default_subtitle_stream_index = idx;
         if let Some(i) = idx {
-            if let Some(s) = source.media_streams.iter_mut().find(|s| s.index == Some(i)) {
+            if let Some(s) =
+                source.media_streams.iter_mut().find(|s| s.index == Some(i))
+            {
                 s.is_default = Some(true);
             }
         }

@@ -1,5 +1,4 @@
 use super::{FilterResult, QueryBuilderExt};
-use serde_with::skip_serializing_none;
 use crate::aio;
 use crate::jellyfin;
 use crate::sdks;
@@ -41,6 +40,7 @@ use reqwest;
 use reqwest::header::LOCATION;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use serde_with::skip_serializing_none;
 use sqlx::Row;
 use sqlx::SqlitePool;
 use std;
@@ -291,16 +291,25 @@ impl ExternalIds {
     /// standard Stremio/Jellyfin prefix conventions.
     pub fn from_aio_id(id: &str) -> Self {
         if id.starts_with("tt") {
-            return Self { imdb: Some(id.to_string()), ..Default::default() };
+            return Self {
+                imdb: Some(id.to_string()),
+                ..Default::default()
+            };
         }
         if let Some(rest) = id.strip_prefix("tmdb:") {
             if let Ok(n) = rest.parse::<i64>() {
-                return Self { tmdb: Some(n), ..Default::default() };
+                return Self {
+                    tmdb: Some(n),
+                    ..Default::default()
+                };
             }
         }
         if let Some(rest) = id.strip_prefix("tvdb:") {
             if let Ok(n) = rest.parse::<i64>() {
-                return Self { tvdb: Some(n), ..Default::default() };
+                return Self {
+                    tvdb: Some(n),
+                    ..Default::default()
+                };
             }
         }
         Self::default()
@@ -309,9 +318,15 @@ impl ExternalIds {
     /// Merge another `ExternalIds` into `self`, with `other` taking precedence
     /// for any field that is `Some`.
     pub fn merge(mut self, other: Self) -> Self {
-        if other.imdb.is_some() { self.imdb = other.imdb; }
-        if other.tmdb.is_some() { self.tmdb = other.tmdb; }
-        if other.tvdb.is_some() { self.tvdb = other.tvdb; }
+        if other.imdb.is_some() {
+            self.imdb = other.imdb;
+        }
+        if other.tmdb.is_some() {
+            self.tmdb = other.tmdb;
+        }
+        if other.tvdb.is_some() {
+            self.tvdb = other.tvdb;
+        }
         self
     }
 }
@@ -605,7 +620,11 @@ impl Media {
 
     /// Persist a successful probe result for this media source.
     /// The `json` value is the serialised `MediaSourceInfo`.
-    pub async fn save_probe_data(db: &sqlx::SqlitePool, id: &Uuid, json: &str) -> Result<()> {
+    pub async fn save_probe_data(
+        db: &sqlx::SqlitePool,
+        id: &Uuid,
+        json: &str,
+    ) -> Result<()> {
         sqlx::query("UPDATE media SET probe_data = ?1 WHERE id = ?2")
             .bind(json)
             .bind(id)
@@ -1524,12 +1543,14 @@ impl Media {
         aio: &aio::AioService,
     ) -> Result<Vec<Self>> {
         let kind = media_kind_to_aio(&self.kind);
-        let streams = aio.get_streams(kind, self.media_id.clone().unwrap()).await?;
+        let streams = aio
+            .get_streams(kind, self.media_id.clone().unwrap())
+            .await?;
 
         let items = streams
             .clone()
             .into_iter()
-            //  .filter(|x| x.is_valid())
+            .filter(|x| x.is_valid())
             .enumerate()
             .map(|(idx, stream)| {
                 let mut item: Self = stream.into();
@@ -1559,7 +1580,8 @@ impl Media {
         trace!(itle = self.title.clone(), "fetching subtitles from aio");
         let (imdb_id, media_type, season, episode) = match self.kind {
             MediaKind::Movie => (
-                self.external_ids.imdb
+                self.external_ids
+                    .imdb
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("no imdb_id"))?,
                 sdks::aio::MediaType::Movie,
@@ -1783,7 +1805,9 @@ impl Media {
 
     pub fn media_key(&self) -> String {
         match self.kind {
-            MediaKind::Movie | MediaKind::Series => self.external_ids.imdb.clone().unwrap(),
+            MediaKind::Movie | MediaKind::Series => {
+                self.external_ids.imdb.clone().unwrap()
+            }
             MediaKind::Season => format!(
                 "{}{}",
                 self.series_media_id.clone().unwrap(),

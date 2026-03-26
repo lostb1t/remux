@@ -48,7 +48,7 @@ async fn resolve_imdb_id<A: sdks::Auth + Clone>(
     tmdb_client: Option<&sdks::RestClient<A>>,
 ) -> bool {
     if meta.imdb_id.is_some() {
-      return true;
+        return true;
     }
 
     let external_ids = db::ExternalIds::from_aio_id(&meta.id);
@@ -57,32 +57,29 @@ async fn resolve_imdb_id<A: sdks::Auth + Clone>(
         return true;
     }
 
-    let tmdb_id = external_ids.tmdb
+    let tmdb_id = external_ids
+        .tmdb
         .or_else(|| meta.moviedb_id.map(|n| n as i64));
 
     if let (Some(client), Some(tid)) = (tmdb_client, tmdb_id) {
         let imdb = match meta.media_type {
-            crate::sdks::aio::MediaType::Movie => {
-                client
-                    .execute(
-                        sdks::tmdb::MovieEndpoint::new(tid)
-                            .with_cache(Duration::from_secs(3600)),
-                    )
-                    .await
-                    .ok()
-                    .and_then(|m| m.imdb_id)
-            }
-            crate::sdks::aio::MediaType::Series => {
-                client
-                    .execute(
-                        sdks::tmdb::SeriesEndpoint::new(tid)
-                            .with_cache(Duration::from_secs(3600)),
-                    )
-                    .await
-                    .ok()
-                    .and_then(|s| s.external_ids)
-                    .and_then(|e| e.imdb_id)
-            }
+            crate::sdks::aio::MediaType::Movie => client
+                .execute(
+                    sdks::tmdb::MovieEndpoint::new(tid)
+                        .with_cache(Duration::from_secs(3600)),
+                )
+                .await
+                .ok()
+                .and_then(|m| m.imdb_id),
+            crate::sdks::aio::MediaType::Series => client
+                .execute(
+                    sdks::tmdb::SeriesEndpoint::new(tid)
+                        .with_cache(Duration::from_secs(3600)),
+                )
+                .await
+                .ok()
+                .and_then(|s| s.external_ids)
+                .and_then(|e| e.imdb_id),
             _ => None,
         };
 
@@ -109,9 +106,12 @@ async fn resolve_imdb_id<A: sdks::Auth + Clone>(
             crate::sdks::aio::MediaType::Movie => {
                 r.movie_results.into_iter().next().and_then(|m| m.imdb_id)
             }
-            crate::sdks::aio::MediaType::Series => {
-                r.tv_results.into_iter().next().and_then(|s| s.external_ids).and_then(|e| e.imdb_id)
-            }
+            crate::sdks::aio::MediaType::Series => r
+                .tv_results
+                .into_iter()
+                .next()
+                .and_then(|s| s.external_ids)
+                .and_then(|e| e.imdb_id),
             _ => None,
         });
 
@@ -153,7 +153,11 @@ impl Task for CatalogItemImportTask {
                 .and_then(|key| {
                     sdks::RestClient::new("https://api.themoviedb.org/3/")
                         .ok()
-                        .map(|c| c.with_auth(sdks::BearerAuth { token: key.to_string() }))
+                        .map(|c| {
+                            c.with_auth(sdks::BearerAuth {
+                                token: key.to_string(),
+                            })
+                        })
                 })
         };
 

@@ -88,7 +88,9 @@ impl MetaProvider for TmdbMetaProvider {
                     db::Media {
                         title: m.title,
                         description: m.overview,
-                        released_at: m.release_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
+                        released_at: m
+                            .release_date
+                            .map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
                         runtime: m.runtime.map(|r| r * 60), // minutes → seconds
                         rating_audience: m.vote_average,
                         poster: tmdb_image(m.poster_path.as_deref()),
@@ -98,25 +100,25 @@ impl MetaProvider for TmdbMetaProvider {
                     }
                 })
             }
-            db::MediaKind::Series => {
-                find_resp.tv_results.into_iter().next().map(|s| {
-                    let external_ids = db::ExternalIds {
-                        tmdb: Some(s.id),
-                        imdb: ids.imdb.clone(),
-                        tvdb: ids.tvdb,
-                    };
-                    db::Media {
-                        title: s.name,
-                        description: s.overview,
-                        released_at: s.first_air_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
-                        rating_audience: s.vote_average,
-                        poster: tmdb_image(s.poster_path.as_deref()),
-                        backdrop: tmdb_image(s.backdrop_path.as_deref()),
-                        external_ids: sqlx::types::Json(external_ids),
-                        ..Default::default()
-                    }
-                })
-            }
+            db::MediaKind::Series => find_resp.tv_results.into_iter().next().map(|s| {
+                let external_ids = db::ExternalIds {
+                    tmdb: Some(s.id),
+                    imdb: ids.imdb.clone(),
+                    tvdb: ids.tvdb,
+                };
+                db::Media {
+                    title: s.name,
+                    description: s.overview,
+                    released_at: s
+                        .first_air_date
+                        .map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
+                    rating_audience: s.vote_average,
+                    poster: tmdb_image(s.poster_path.as_deref()),
+                    backdrop: tmdb_image(s.backdrop_path.as_deref()),
+                    external_ids: sqlx::types::Json(external_ids),
+                    ..Default::default()
+                }
+            }),
             // TMDB find doesn't cover Season/Episode
             _ => None,
         };

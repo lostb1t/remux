@@ -3,14 +3,15 @@ use http::Method;
 
 use anyhow::Result;
 //use chrono::{DateTime, Utc};
-use remux_utils as utils;
 use chrono::{DateTime, Duration, Utc};
+use remux_utils as utils;
 use serde::Deserializer;
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::str::FromStr;
+use url::Url;
 use uuid::Uuid;
 
 #[derive(
@@ -630,9 +631,30 @@ pub struct Stream {
 }
 
 impl Stream {
-    // pub fn is_valid(&self) -> bool {
-    //     self.info_hash.is_some()
-    // }
+    pub fn is_valid(&self) -> bool {
+        if self.info_hash.is_some() {
+            return true;
+        }
+
+        let url = match &self.url {
+            Some(u) => u,
+            None => return false,
+        };
+
+        if url.trim().is_empty() {
+            return false;
+        }
+
+        let parsed = match Url::parse(url) {
+            Ok(u) => u,
+            Err(_) => return false,
+        };
+
+        let path = parsed.path();
+
+        !(path == "/" || path.is_empty())
+    }
+
     pub fn id(&self) -> String {
         self.info_hash.clone().unwrap()
     }

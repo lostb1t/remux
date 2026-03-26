@@ -414,7 +414,6 @@ pub struct DeviceInfo {
     pub icon_url: Option<String>,
 }
 
-
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
