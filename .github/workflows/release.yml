@@ -52,6 +52,7 @@ jobs:
 
   build:
     name: Build (${{ matrix.target }})
+    if: false
     needs: build-dashboard
     runs-on: ${{ matrix.os }}
     strategy:
@@ -312,7 +313,7 @@ jobs:
 
   release:
     name: Publish to public repo
-    needs: [build, merge-docker]
+    needs: [merge-docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
