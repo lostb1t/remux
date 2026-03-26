@@ -14,7 +14,7 @@ permissions:
 
 env:
   PUBLIC_REPO: lostb1t/remux
-  REGISTRY_IMAGE: ghcr.io/lostb1t/remux
+  REGISTRY_IMAGE: ghcr.io/remuxd/remux
 
 jobs:
   build-dashboard:
