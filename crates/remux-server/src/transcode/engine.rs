@@ -157,13 +157,19 @@ pub async fn start_transcode(
         let args = build_hls_args(&params);
         debug!("ffmpeg args: {:?}", args);
 
-        let status = std::process::Command::new(ffmpeg_bin())
+        let output = std::process::Command::new(ffmpeg_bin())
             .args(&args)
-            .status()
+            .stderr(Stdio::piped())
+            .output()
             .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
 
-        if !status.success() {
-            return Err(anyhow!("ffmpeg exited with status {}", status));
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!(
+                "ffmpeg exited with status {}: {}",
+                output.status,
+                stderr.trim()
+            ));
         }
 
         info!("HLS transcode job completed");
@@ -337,7 +343,7 @@ pub fn start_progressive_transcode(
     let mut child = tokio::process::Command::new(ffmpeg_bin())
         .args(&args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
 
@@ -346,9 +352,24 @@ pub fn start_progressive_transcode(
         .take()
         .ok_or_else(|| anyhow!("Failed to capture ffmpeg stdout"))?;
 
-    // Detach child so it's not dropped — it will be reaped when stdout closes.
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture ffmpeg stderr"))?;
+
+    // Log stderr and reap child when done.
     tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if !line.is_empty() {
+                error!("ffmpeg: {}", line);
+            }
+        }
         match child.wait().await {
+            Ok(status) if !status.success() => {
+                error!("progressive ffmpeg exited: {}", status)
+            }
             Ok(status) => debug!("progressive ffmpeg exited: {}", status),
             Err(e) => error!("progressive ffmpeg wait error: {}", e),
         }
