@@ -37,7 +37,7 @@ jobs:
         uses: cargo-bins/cargo-binstall@main
 
       - name: Install dioxus-cli
-        run: cargo binstall dioxus-cli --no-confirm --locked
+        run: cargo binstall dioxus-cli --no-confirm --force
 
       - name: Build dashboard
         working-directory: crates/remux-dashboard
