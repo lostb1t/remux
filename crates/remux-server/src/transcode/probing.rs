@@ -1,8 +1,13 @@
 use crate::jellyfin;
 use anyhow::{Result, anyhow};
-use ez_ffmpeg::stream_info::{StreamInfo, probe_media_info};
 use isolang::Language;
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::str::FromStr;
+
+fn ffprobe_bin() -> String {
+    std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".into())
+}
 
 fn nonzero<T: Default + PartialOrd>(v: T) -> Option<T> {
     if v > T::default() { Some(v) } else { None }
@@ -44,160 +49,191 @@ fn display_title(
     }
 }
 
-/// Probe a media URL and return a Jellyfin MediaSourceInfo directly.
+#[derive(Deserialize)]
+struct FfprobeOutput {
+    streams: Vec<FfprobeStream>,
+    format: FfprobeFormat,
+}
+
+#[derive(Deserialize, Default)]
+struct FfprobeDisposition {
+    #[serde(default)]
+    default: i64,
+    #[serde(default)]
+    forced: i64,
+}
+
+#[derive(Deserialize)]
+struct FfprobeStream {
+    index: i64,
+    codec_type: Option<String>,
+    codec_name: Option<String>,
+    width: Option<i64>,
+    height: Option<i64>,
+    bit_rate: Option<String>,
+    avg_frame_rate: Option<String>,
+    channels: Option<i64>,
+    sample_rate: Option<String>,
+    #[serde(default)]
+    tags: HashMap<String, String>,
+    #[serde(default)]
+    disposition: FfprobeDisposition,
+}
+
+#[derive(Deserialize)]
+struct FfprobeFormat {
+    duration: Option<String>,
+    format_name: Option<String>,
+    bit_rate: Option<String>,
+}
+
+fn parse_frame_rate(s: &str) -> Option<f64> {
+    let mut parts = s.splitn(2, '/');
+    let num: f64 = parts.next()?.parse().ok()?;
+    let den: f64 = parts.next().unwrap_or("1").parse().ok()?;
+    if den == 0.0 { return None; }
+    let fps = num / den;
+    if fps > 0.0 { Some(fps) } else { None }
+}
+
+/// Probe a media URL with ffprobe and return a Jellyfin MediaSourceInfo.
 pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
     tracing::debug!(url, "probing media");
 
-    let info = ez_ffmpeg::stream_info::probe_media_info(url)
-        .map_err(|e| anyhow!("Failed to probe media {}: {}", url, e))?;
+    let output = std::process::Command::new(ffprobe_bin())
+        .args([
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            "-show_format",
+            url,
+        ])
+        .output()
+        .map_err(|e| anyhow!("Failed to run ffprobe: {}", e))?;
 
-    // Get duration (in microseconds) and convert to ticks (100ns units)
-    let run_time_ticks = nonzero(info.duration_us).map(|us| us * 10); // 1 µs = 10 ticks
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("ffprobe failed for {}: {}", url, stderr));
+    }
 
-    // Get container format
-    let container = {
-        let f = info.format_name;
-        // FFmpeg returns compound format names like "matroska,webm" — take the first
-        let base = f.split(',').next().unwrap_or(&f).to_string();
-        match base.as_str() {
-            "matroska" => Some("mkv".to_string()),
-            "mov" => Some("mp4".to_string()),
-            "mpegts" => Some("ts".to_string()),
-            other => Some(other.to_string()),
+    let probe: FfprobeOutput = serde_json::from_slice(&output.stdout)
+        .map_err(|e| anyhow!("Failed to parse ffprobe output: {}", e))?;
+
+    let run_time_ticks = probe.format.duration
+        .as_deref()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|secs| (secs * 1_000_000.0) as i64) // → µs
+        .and_then(nonzero)
+        .map(|us| us * 10); // µs → 100ns ticks
+
+    let container = probe.format.format_name.as_deref().map(|f| {
+        let base = f.split(',').next().unwrap_or(f);
+        match base {
+            "matroska" => "mkv".to_string(),
+            "mov" => "mp4".to_string(),
+            "mpegts" => "ts".to_string(),
+            other => other.to_string(),
         }
-    };
+    });
+
+    let overall_bitrate = probe.format.bit_rate
+        .as_deref()
+        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(nonzero);
 
     tracing::debug!(?run_time_ticks, ?container, "probe container info");
 
-    let all_streams = info.streams;
-
     let mut streams: Vec<jellyfin::MediaStream> = Vec::new();
-    let mut overall_bitrate: Option<i64> = None;
+    let mut video_idx: i64 = 0;
+    let mut audio_idx: i64 = 0;
+    let mut sub_idx: i64 = 0;
 
-    // Track per-type indices (Jellyfin uses per-type indices for audio/subtitle selection)
-    let mut _video_idx: i64 = 0;
-    let mut _audio_idx: i64 = 0;
-    let mut _sub_idx: i64 = 0;
+    for s in &probe.streams {
+        let codec_type = s.codec_type.as_deref().unwrap_or("");
+        let language = s.tags.get("language").map(|s| s.as_str());
+        let title = s.tags.get("title").cloned();
 
-    for info in &all_streams {
-        match info {
-            StreamInfo::Video {
-                index,
-                codec_name,
-                width,
-                height,
-                bit_rate,
-                fps,
-                metadata,
-                ..
-            } => {
-                let bitrate = nonzero(*bit_rate);
-                if overall_bitrate.is_none() {
-                    overall_bitrate = bitrate;
-                }
-
-                let language = metadata.get("language").map(|s: &String| s.as_str());
-                let title = metadata.get("title").cloned();
-
-                let fps_f32 = if *fps > 0.0 { Some(*fps as f32) } else { None };
+        match codec_type {
+            "video" => {
+                let bitrate = s.bit_rate.as_deref()
+                    .and_then(|b| b.parse::<i64>().ok())
+                    .and_then(nonzero);
+                let fps = s.avg_frame_rate.as_deref().and_then(parse_frame_rate);
+                let codec = s.codec_name.clone().unwrap_or_default();
 
                 streams.push(jellyfin::MediaStream {
                     type_: Some(jellyfin::MediaStreamType::Video),
-                    index: Some(*index as i64),
-                    codec: Some(codec_name.clone()),
-                    width: nonzero(*width as i64),
-                    height: nonzero(*height as i64),
+                    index: Some(s.index),
+                    codec: Some(codec.clone()),
+                    width: s.width.and_then(nonzero),
+                    height: s.height.and_then(nonzero),
                     bit_rate: bitrate,
-                    average_frame_rate: fps_f32.and_then(nonzero),
-                    real_frame_rate: fps_f32.and_then(nonzero),
-                    is_default: Some(_video_idx == 0),
-                    is_forced: Some(false),
-                    display_title: display_title(
-                        language,
-                        Some(codec_name),
-                        "Video",
-                        None,
-                    ),
-                    language: language.map(|s: &str| s.to_string()),
+                    average_frame_rate: fps.map(|f| f as f32).and_then(nonzero),
+                    real_frame_rate: fps.map(|f| f as f32).and_then(nonzero),
+                    is_default: Some(video_idx == 0),
+                    is_forced: Some(s.disposition.forced != 0),
+                    display_title: display_title(language, Some(&codec), "Video", None),
+                    language: language.map(str::to_string),
                     title,
                     ..Default::default()
                 });
-                _video_idx += 1;
+                video_idx += 1;
             }
-            StreamInfo::Audio {
-                index,
-                codec_name,
-                sample_rate,
-                nb_channels,
-                bit_rate,
-                metadata,
-                ..
-            } => {
-                let bitrate = nonzero(*bit_rate);
-                let channels = nonzero(*nb_channels);
-
-                let language = metadata.get("language").map(|s: &String| s.as_str());
-                let title = metadata.get("title").cloned();
+            "audio" => {
+                let bitrate = s.bit_rate.as_deref()
+                    .and_then(|b| b.parse::<i64>().ok())
+                    .and_then(nonzero);
+                let channels = s.channels.and_then(nonzero);
+                let sample_rate = s.sample_rate.as_deref()
+                    .and_then(|sr| sr.parse::<i64>().ok())
+                    .and_then(nonzero);
+                let codec = s.codec_name.clone().unwrap_or_default();
 
                 streams.push(jellyfin::MediaStream {
                     type_: Some(jellyfin::MediaStreamType::Audio),
-                    index: Some(*index as i64),
-                    codec: Some(codec_name.clone()),
-                    channels: channels.map(|v| v as i64),
-                    sample_rate: nonzero(*sample_rate as i64),
+                    index: Some(s.index),
+                    codec: Some(codec.clone()),
+                    channels,
+                    sample_rate,
                     bit_rate: bitrate,
-                    is_default: Some(_audio_idx == 0),
-                    is_forced: Some(false),
+                    is_default: Some(audio_idx == 0),
+                    is_forced: Some(s.disposition.forced != 0),
                     display_title: display_title(
                         language,
-                        Some(codec_name),
+                        Some(&codec),
                         "Audio",
-                        channels,
+                        channels.map(|c| c as i32),
                     ),
-                    language: language.map(|s: &str| s.to_string()),
+                    language: language.map(str::to_string),
                     title,
                     ..Default::default()
                 });
-                _audio_idx += 1;
+                audio_idx += 1;
             }
-            StreamInfo::Subtitle {
-                index,
-                codec_name,
-                metadata,
-                ..
-            } => {
-                let language = metadata.get("language").map(|s: &String| s.as_str());
-                let title = metadata.get("title").cloned();
+            "subtitle" => {
+                let codec = s.codec_name.clone().unwrap_or_default();
 
                 streams.push(jellyfin::MediaStream {
                     type_: Some(jellyfin::MediaStreamType::Subtitle),
-                    index: Some(*index as i64),
-                    codec: Some(codec_name.clone()),
-                    is_default: Some(_sub_idx == 0),
-                    is_forced: Some(false),
-                    display_title: display_title(
-                        language,
-                        Some(codec_name),
-                        "Subtitle",
-                        None,
-                    ),
-                    language: language.map(|s: &str| s.to_string()),
+                    index: Some(s.index),
+                    codec: Some(codec.clone()),
+                    is_default: Some(sub_idx == 0),
+                    is_forced: Some(s.disposition.forced != 0),
+                    display_title: display_title(language, Some(&codec), "Subtitle", None),
+                    language: language.map(str::to_string),
                     title,
                     ..Default::default()
                 });
-                _sub_idx += 1;
+                sub_idx += 1;
             }
-            _ => {} // Skip Data, Attachment, Unknown streams
+            _ => {}
         }
     }
 
-    // Set default stream indices (matches Jellyfin behavior)
-    let default_audio_stream_index = streams
-        .iter()
+    let default_audio_stream_index = streams.iter()
         .find(|s| matches!(s.type_, Some(jellyfin::MediaStreamType::Audio)))
         .and_then(|s| s.index);
-    let default_subtitle_stream_index = streams
-        .iter()
+    let default_subtitle_stream_index = streams.iter()
         .find(|s| matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle)))
         .and_then(|s| s.index);
 

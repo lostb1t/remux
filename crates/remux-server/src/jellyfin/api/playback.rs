@@ -1,5 +1,9 @@
 use anyhow::anyhow;
 use axum::Json;
+
+fn ffmpeg_bin() -> String {
+    std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
+}
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -1887,7 +1891,7 @@ pub async fn subtitles_stream(
         _ => ("srt", "text/plain; charset=utf-8"),
     };
 
-    let mut cmd = tokio::process::Command::new("ffmpeg");
+    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
     cmd.args([
         "-i",
         &url,

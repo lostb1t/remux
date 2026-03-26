@@ -46,7 +46,7 @@ uuid = { version = "1.8", features = ["v4", "v5", "serde"] }
 http = "1.4.0"
 http-body = "1.0"
 http-body-util = "0.1"
-tokio-util = { version = "0.7", features = ["compat"] }
+tokio-util = { version = "0.7", features = ["compat", "io"] }
 futures-util = "0.3.31"
 axum-extra = { version = "0.12.5", features = [
     "file-stream",
@@ -107,7 +107,6 @@ quick-xml = { version = "0.37", features = ["encoding"] }
 
 librqbit = { version = "8", features = ["http-api", "tracing-subscriber-utils"] }
 regex = "1"
-ez-ffmpeg = { path = "../../vendor/ez-ffmpeg" }
 log = "0.4"
 env_logger = "0.11"
 
