@@ -4,7 +4,7 @@ FROM jellyfin/jellyfin:10.11.6 AS jf
 FROM lukemathwalker/cargo-chef:latest-rust-slim-bookworm AS planner
 WORKDIR /app
 COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+RUN cargo chef prepare --recipe-path recipe.json -p remux-server
 
 # ── Builder: Debian Trixie ────────────────────────────────────────────────────
 FROM debian:trixie-slim AS builder
@@ -26,7 +26,7 @@ RUN cargo install cargo-chef --locked
 
 COPY vendor ./vendor
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json -p remux-server
 
 COPY . .
 
