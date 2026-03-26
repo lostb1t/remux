@@ -38,6 +38,10 @@ pub async fn shows_seasons(
 ) -> Result<impl IntoResponse> {
     q.parent_id = Some(id);
     q.include_item_types = Some(vec![jellyfin::MediaType::Season]);
+    if q.sort_by.is_none() {
+        q.sort_by = Some(vec![jellyfin::ItemSortBy::IndexNumber]);
+        q.sort_order = Some(vec![jellyfin::SortOrder::Ascending]);
+    }
     let items = get_items(state, session.clone(), q.clone(), true)
         .await?
         .with_permissions(&session);
@@ -58,6 +62,10 @@ pub async fn shows_episodes(
     // q.season_id = Some(id);
     q.parent_id = q.season_id;
     q.include_item_types = Some(vec![jellyfin::MediaType::Episode]);
+    if q.sort_by.is_none() {
+        q.sort_by = Some(vec![jellyfin::ItemSortBy::IndexNumber]);
+        q.sort_order = Some(vec![jellyfin::SortOrder::Ascending]);
+    }
     let items = get_items(state, session.clone(), q.clone(), true)
         .await?
         .with_permissions(&session);

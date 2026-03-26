@@ -481,6 +481,10 @@ pub struct GetItemsQuery {
     //pub sort_by: Option<Vec<ItemSortBy>>,
     //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, SortOrder>>")]
     //pub sort_order: Option<SortOrder>,
+    #[serde(deserialize_with = "deserialize_sort_by", default)]
+    pub sort_by: Option<Vec<ItemSortBy>>,
+    #[serde(deserialize_with = "deserialize_sort_order", default)]
+    pub sort_order: Option<Vec<SortOrder>>,
     pub enable_images: Option<bool>,
     // #[default(true)]
     pub enable_user_data: Option<bool>,
@@ -544,68 +548,13 @@ impl GetItemsQuery {
     }
 }
 
-pub fn deserialize_fields<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<ItemFields>>, D::Error>
+/// Generic helper: deserializes an optional comma-separated (or repeated) query-param
+/// value into `Option<Vec<T>>` for any `T: FromStr`.
+fn deserialize_comma_str<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
 where
     D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum FieldInput {
-        Single(String),
-        Multiple(Vec<String>),
-    }
-
-    let input = Option::<FieldInput>::deserialize(deserializer)?;
-
-    let fields = match input {
-        Some(FieldInput::Single(s)) => s
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| match s.parse::<ItemFields>() {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!(
-                        value = %s,
-                        error = ?e,
-                        "ItemFields parse failed, ignoring value"
-                    );
-                    None
-                }
-            })
-            .collect::<Vec<_>>(),
-
-        Some(FieldInput::Multiple(ss)) => ss
-            .iter()
-            .flat_map(|s| s.split(','))
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| match s.parse::<ItemFields>() {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!(
-                        value = %s,
-                        error = ?e,
-                        "ItemFields parse failed, ignoring value"
-                    );
-                    None
-                }
-            })
-            .collect::<Vec<_>>(),
-
-        None => return Ok(None),
-    };
-
-    Ok(Some(fields))
-}
-
-pub fn deserialize_media_types<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<MediaType>>, D::Error>
-where
-    D: Deserializer<'de>,
+    T: FromStr,
+    T::Err: std::fmt::Display,
 {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -615,16 +564,17 @@ where
     }
 
     let input = Option::<Input>::deserialize(deserializer)?;
+    let type_name = std::any::type_name::<T>();
 
-    let types = match input {
+    let values = match input {
         Some(Input::Single(s)) => s
             .split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .filter_map(|s| match s.parse::<MediaType>() {
+            .filter_map(|s| match s.parse::<T>() {
                 Ok(v) => Some(v),
                 Err(e) => {
-                    tracing::warn!(value = %s, "MediaType parse failed, ignoring value");
+                    tracing::warn!(value = %s, error = %e, type_name, "parse failed, ignoring value");
                     None
                 }
             })
@@ -634,10 +584,10 @@ where
             .flat_map(|s| s.split(','))
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .filter_map(|s| match s.parse::<MediaType>() {
+            .filter_map(|s| match s.parse::<T>() {
                 Ok(v) => Some(v),
                 Err(e) => {
-                    tracing::warn!(value = %s, "MediaType parse failed, ignoring value");
+                    tracing::warn!(value = %s, error = %e, type_name, "parse failed, ignoring value");
                     None
                 }
             })
@@ -645,7 +595,35 @@ where
         None => return Ok(None),
     };
 
-    Ok(Some(types))
+    Ok(Some(values))
+}
+
+pub fn deserialize_fields<'de, D>(d: D) -> Result<Option<Vec<ItemFields>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_comma_str(d)
+}
+
+pub fn deserialize_media_types<'de, D>(d: D) -> Result<Option<Vec<MediaType>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_comma_str(d)
+}
+
+pub fn deserialize_sort_by<'de, D>(d: D) -> Result<Option<Vec<ItemSortBy>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_comma_str(d)
+}
+
+pub fn deserialize_sort_order<'de, D>(d: D) -> Result<Option<Vec<SortOrder>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_comma_str(d)
 }
 
 #[derive(Default, Debug, Deserialize)]

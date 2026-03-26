@@ -366,6 +366,9 @@ pub struct MediaFilter {
     pub enabled: Option<bool>,
     /// If set, only return items where COALESCE(digital_released_at, released_at) <= threshold.
     pub digital_released_before: Option<NaiveDateTime>,
+    /// Sort order for results. Mapped from Jellyfin's ItemSortBy.
+    pub sort_by: Vec<jellyfin::ItemSortBy>,
+    pub sort_order: Vec<jellyfin::SortOrder>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -1139,14 +1142,62 @@ impl Media {
     .push("))");
             }
         }
-        //dbg!(records_qb.sql(), "get_items");
-        // For TvChannel queries, sort by user sort_order, then channel_number, then title.
+        // Apply ORDER BY driven by the sort_by field, with per-kind fallbacks.
         let is_channel_query = filter
             .kind
             .as_ref()
             .map(|k| k.iter().all(|k| matches!(k, MediaKind::TvChannel)))
             .unwrap_or(false);
-        if is_channel_query {
+
+        if !filter.sort_by.is_empty() {
+            let mut order_clauses: Vec<String> = filter
+                .sort_by
+                .iter()
+                .enumerate()
+                .map(|(i, sort)| {
+                    let order = filter
+                        .sort_order
+                        .get(i)
+                        .or_else(|| filter.sort_order.first())
+                        .copied()
+                        .unwrap_or(jellyfin::SortOrder::Ascending);
+                    let dir = match order {
+                        jellyfin::SortOrder::Ascending => "ASC",
+                        jellyfin::SortOrder::Descending => "DESC",
+                    };
+                    let col = match sort {
+                        jellyfin::ItemSortBy::SortName | jellyfin::ItemSortBy::Name => {
+                            format!("title COLLATE NOCASE {}", dir)
+                        }
+                        jellyfin::ItemSortBy::DateCreated => {
+                            format!("created_at {}", dir)
+                        }
+                        jellyfin::ItemSortBy::PremiereDate
+                        | jellyfin::ItemSortBy::ProductionYear => {
+                            format!("COALESCE(released_at, digital_released_at) {}", dir)
+                        }
+                        jellyfin::ItemSortBy::CommunityRating => {
+                            format!("CAST(json_extract(remote_data, '$.rating') AS REAL) {}", dir)
+                        }
+                        jellyfin::ItemSortBy::IndexNumber => {
+                            format!("COALESCE(idx, 999999) {}", dir)
+                        }
+                        jellyfin::ItemSortBy::ParentIndexNumber => {
+                            format!("COALESCE(parent_idx, 999999) {}", dir)
+                        }
+                        jellyfin::ItemSortBy::Runtime => {
+                            format!("COALESCE(runtime, 0) {}", dir)
+                        }
+                        jellyfin::ItemSortBy::Random => "RANDOM()".to_string(),
+                        // Default fallback
+                        _ => format!("title COLLATE NOCASE {}", dir),
+                    };
+                    col
+                })
+                .collect();
+            records_qb.push(" ORDER BY ");
+            records_qb.push(order_clauses.join(", "));
+        } else if is_channel_query {
             records_qb.push(
                 " ORDER BY COALESCE(sort_order, channel_number, 999999), title COLLATE NOCASE",
             );
@@ -1444,6 +1495,8 @@ impl Media {
                     .and_then(|p| p.allowed_tags.clone())
                     .filter(|v| !v.is_empty()),
                 digital_released_before,
+                sort_by: filter.sort_by.clone().unwrap_or_default(),
+                sort_order: filter.sort_order.clone().unwrap_or_default(),
                 ..Default::default()
             },
         )
