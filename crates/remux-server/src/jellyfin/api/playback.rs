@@ -1788,14 +1788,18 @@ async fn hls_segment_inner(
 
     if !segment_path.exists() {
         if session.is_none() {
-            return Err(anyhow!(
-                "Transcode session {} not found and segment {} not on disk",
-                play_session_id,
-                segment_id
-            )
-            .into());
+            None::<()>.context_not_found(
+                "not found",
+                &format!(
+                    "transcode session {} gone and segment {} not on disk",
+                    play_session_id, segment_id
+                ),
+            )?;
         }
-        return Err(anyhow!("Segment {} not ready after timeout", segment_id).into());
+        None::<()>.context_not_found(
+            "not found",
+            &format!("segment {} not ready after timeout", segment_id),
+        )?;
     }
 
     // Keep the session alive — the segment request counts as activity.

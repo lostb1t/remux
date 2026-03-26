@@ -179,10 +179,11 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
         }
     }
 
-    // Kill idle sessions after 60 seconds of no activity (matches Jellyfin's HLS timeout).
+    // Kill idle sessions after 30 minutes of no activity.
+    // 30 min matches a "stepped away" scenario; pings keep active sessions alive indefinitely.
     ctx.sessions.clone().spawn_cleanup_task(
-        std::time::Duration::from_secs(30),
         std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(60 * 30),
     );
 
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
