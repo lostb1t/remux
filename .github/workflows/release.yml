@@ -179,7 +179,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libssl-dev pkg-config
+            libssl-dev pkg-config \
+            libavutil-dev libavformat-dev libavcodec-dev \
+            libswscale-dev libswresample-dev libavfilter-dev
 
       - name: Build remux-server
         env:
