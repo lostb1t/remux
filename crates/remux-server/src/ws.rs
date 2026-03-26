@@ -10,7 +10,6 @@ use crate::AppState;
 use crate::db;
 use crate::db::auth::AuthSession;
 use crate::jellyfin;
-use crate::playback_session::PlaybackSession;
 use crate::utils::get_uuid;
 
 // ---------------------------------------------------------------------------
@@ -202,23 +201,24 @@ fn parse_sessions_data(data: Option<&serde_json::Value>) -> (u64, u64) {
 }
 
 fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
-    PlaybackSession::get_all(&state.ctx.store)
+    state
+        .ctx
+        .sessions
+        .get_all()
         .into_iter()
         .map(|session| {
-            let transcoding_info = state
-                .ctx
+            let transcoding_info = session
                 .transcode
-                .get(&session.play_session_id)
-                .and_then(|ts| {
-                    ts.try_read().ok().map(|ts| jellyfin::TranscodingInfo {
-                        audio_codec: Some(ts.audio_codec.clone()),
-                        video_codec: Some(ts.video_codec.clone()),
-                        container: Some("ts".to_string()),
-                        is_video_direct: ts.video_codec == "copy",
-                        is_audio_direct: ts.audio_codec == "copy",
-                        transcode_reasons: ts.transcode_reasons.0,
-                        ..Default::default()
-                    })
+                .as_ref()
+                .and_then(|ts| ts.try_read().ok())
+                .map(|ts| jellyfin::TranscodingInfo {
+                    audio_codec: Some(ts.audio_codec.clone()),
+                    video_codec: Some(ts.video_codec.clone()),
+                    container: Some("ts".to_string()),
+                    is_video_direct: ts.video_codec == "copy",
+                    is_audio_direct: ts.audio_codec == "copy",
+                    transcode_reasons: ts.transcode_reasons.0,
+                    ..Default::default()
                 });
 
             jellyfin::SessionInfoDto {

@@ -72,7 +72,7 @@ pub mod embedded_static;
 mod iptv;
 pub mod jellyfin;
 mod log_capture;
-mod playback_session;
+pub mod playback_session;
 mod providers;
 mod store;
 pub mod tasks;
@@ -163,9 +163,7 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
         config,
         db: conn.clone(),
         store: store::Store::new(100000),
-        transcode: transcode::session::TranscodeSessionManager::new(
-            "transcode_sessions",
-        ),
+        sessions: playback_session::PlaybackSessionManager::new("transcode_sessions"),
         torrent: torrent_mgr.clone(),
         ws_tx,
     };
@@ -181,8 +179,8 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
         }
     }
 
-    // Kill idle transcode sessions after 60 seconds of no activity (matches Jellyfin's HLS timeout).
-    ctx.transcode.clone().spawn_cleanup_task(
+    // Kill idle sessions after 60 seconds of no activity (matches Jellyfin's HLS timeout).
+    ctx.sessions.clone().spawn_cleanup_task(
         std::time::Duration::from_secs(30),
         std::time::Duration::from_secs(60),
     );
@@ -314,7 +312,7 @@ pub struct AppContext {
     pub config: Config,
     pub db: sqlx::SqlitePool,
     pub store: store::Store,
-    pub transcode: transcode::session::TranscodeSessionManager,
+    pub sessions: playback_session::PlaybackSessionManager,
     pub torrent: Arc<torrent::TorrentManager>,
     pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,
 }

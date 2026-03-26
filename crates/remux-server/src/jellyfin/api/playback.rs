@@ -27,10 +27,10 @@ use crate::db;
 use crate::db::auth;
 use crate::jellyfin;
 use crate::jellyfin::MediaSourceInfoExt;
-use crate::playback_session::PlaybackSession;
+use crate::playback_session::{PlaybackSession, PlaybackSessionManager};
 use crate::sdks;
 use crate::torrent;
-use crate::transcode::session::TranscodeState;
+use crate::transcode::session::{TranscodeSession, TranscodeState};
 use crate::utils;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
@@ -630,9 +630,10 @@ pub async fn report_playback_start(
         play_method: data.play_method.as_ref().map(|m| m.to_string()),
         started_at: Utc::now(),
         last_activity: Utc::now(),
+        transcode: None,
     };
 
-    ps.save(&state.ctx.store);
+    state.ctx.sessions.insert(ps);
     info!(play_session_id, %item_id, "Playback started");
 
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -1238,22 +1239,25 @@ pub async fn report_playback_progress(
     Json(data): Json<jellyfin::PlaybackProgressInfo>,
 ) -> Result<impl IntoResponse> {
     if let Some(ref psid) = data.play_session_id {
-        if let Some(mut ps) = PlaybackSession::get(&state.ctx.store, psid) {
-            ps.position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
-            ps.is_paused = data.is_paused;
-            ps.is_muted = data.is_muted;
-            ps.volume_level = data.volume_level.or(ps.volume_level);
-            ps.audio_stream_index = data.audio_stream_index.or(ps.audio_stream_index);
-            ps.subtitle_stream_index =
-                data.subtitle_stream_index.or(ps.subtitle_stream_index);
-            ps.last_activity = Utc::now();
-            ps.save(&state.ctx.store);
+        let ps_snapshot = state.ctx.sessions.get(psid);
+        if let Some(ref ps) = ps_snapshot {
+            let item_id = data.item_id.unwrap_or(ps.item_id);
+            state.ctx.sessions.update(psid, |ps| {
+                ps.position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
+                ps.is_paused = data.is_paused;
+                ps.is_muted = data.is_muted;
+                ps.volume_level = data.volume_level.or(ps.volume_level);
+                ps.audio_stream_index = data.audio_stream_index.or(ps.audio_stream_index);
+                ps.subtitle_stream_index =
+                    data.subtitle_stream_index.or(ps.subtitle_stream_index);
+                ps.last_activity = Utc::now();
+            });
 
             // persist position to db
-            let item_id = data.item_id.unwrap_or(ps.item_id);
+            let position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
             if let Ok(Some(media)) = db::Media::get_by_id(&state.ctx.db, &item_id).await
             {
-                let position_seconds = ps.position_ticks / 10_000_000;
+                let position_seconds = position_ticks / 10_000_000;
                 let mut ms = db::UserMediaState::get_or_new(
                     &state.ctx.db,
                     &session.user,
@@ -1261,8 +1265,8 @@ pub async fn report_playback_progress(
                 )
                 .await?;
                 ms.playback_position = position_seconds;
-                ms.audio_idx = ps.audio_stream_index.map(|x| x as i64);
-                ms.subtitle_idx = ps.subtitle_stream_index.map(|x| x as i64);
+                ms.audio_idx = data.audio_stream_index.or(ps.audio_stream_index).map(|x| x as i64);
+                ms.subtitle_idx = data.subtitle_stream_index.or(ps.subtitle_stream_index).map(|x| x as i64);
                 ms.save(&state.ctx.db).await?;
             }
         }
@@ -1277,7 +1281,7 @@ pub async fn report_playback_stopped(
     Json(data): Json<jellyfin::PlaybackStopInfo>,
 ) -> Result<impl IntoResponse> {
     if let Some(ref psid) = data.play_session_id {
-        let ps = PlaybackSession::remove(&state.ctx.store, psid);
+        let ps = state.ctx.sessions.stop(psid).await;
 
         let item_id = data.item_id.or(ps.as_ref().map(|s| s.item_id));
         let final_ticks = data
@@ -1327,12 +1331,7 @@ pub async fn ping_playback_session(
     _session: auth::AuthSession,
     Query(q): Query<PingQuery>,
 ) -> Result<impl IntoResponse> {
-    PlaybackSession::ping(&state.ctx.store, &q.play_session_id);
-    // Also keep the transcode session alive so the 60s idle killer doesn't
-    // fire while the client is paused and only sending pings.
-    if let Some(session) = state.ctx.transcode.get(&q.play_session_id) {
-        session.write().await.last_accessed = std::time::Instant::now();
-    }
+    state.ctx.sessions.ping(&q.play_session_id);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1368,7 +1367,7 @@ pub async fn get_sessions(
         .active_within_seconds
         .map(|s| Utc::now() - Duration::seconds(s));
     let devices = auth::Device::get_all(&state.ctx.db).await?;
-    let playback_sessions = PlaybackSession::get_all(&state.ctx.store);
+    let playback_sessions = state.ctx.sessions.get_all();
 
     let filtered_devices: Vec<_> = devices
         .into_iter()
@@ -1396,20 +1395,16 @@ pub async fn get_sessions(
         let transcoding_info = playback_sessions
             .iter()
             .find(|s| s.device_id == device.id)
-            .and_then(|ps| state.ctx.transcode.get(&ps.play_session_id))
-            .map(|ts| {
-                let ts = ts.try_read().ok();
-                ts.map(|ts| jellyfin::TranscodingInfo {
-                    audio_codec: Some(ts.audio_codec.clone()),
-                    video_codec: Some(ts.video_codec.clone()),
-                    container: Some("ts".to_string()),
-                    is_video_direct: ts.video_codec == "copy",
-                    is_audio_direct: ts.audio_codec == "copy",
-                    transcode_reasons: ts.transcode_reasons.0,
-                    ..Default::default()
-                })
-            })
-            .flatten();
+            .and_then(|ps| ps.transcode.as_ref().and_then(|ts| ts.try_read().ok()))
+            .map(|ts| jellyfin::TranscodingInfo {
+                audio_codec: Some(ts.audio_codec.clone()),
+                video_codec: Some(ts.video_codec.clone()),
+                container: Some("ts".to_string()),
+                is_video_direct: ts.video_codec == "copy",
+                is_audio_direct: ts.audio_codec == "copy",
+                transcode_reasons: ts.transcode_reasons.0,
+                ..Default::default()
+            });
 
         let user_name = device
             .user(&state.ctx.db)
@@ -1498,16 +1493,16 @@ pub async fn master_hls_video(
     // segments that the old job will never produce at the new offset.
     let is_seeking = q.start_time_ticks.is_some();
     if is_seeking {
-        if let Some(_existing) = state.ctx.transcode.get(&play_session_id) {
+        if state.ctx.sessions.get_transcode(&play_session_id).is_some() {
             tracing::debug!(
                 play_session_id = %play_session_id,
                 start_time_ticks = ?q.start_time_ticks,
                 "seek detected — stopping old transcode session and restarting"
             );
-            state.ctx.transcode.stop(&play_session_id).await;
+            state.ctx.sessions.stop_transcode(&play_session_id).await;
         }
     }
-    let session = if let Some(existing) = state.ctx.transcode.get(&play_session_id) {
+    let session = if let Some(existing) = state.ctx.sessions.get_transcode(&play_session_id) {
         existing
     } else {
         // Fetch media info to get the stream URL
@@ -1537,11 +1532,13 @@ pub async fn master_hls_video(
         // Resolve Docker-internal hostnames to user-configured origin.
         let input_url = crate::aio::resolve_url(&state.ctx.db, &raw_input_url).await;
 
-        let session = state.ctx.transcode.create(
+        let output_dir = std::path::PathBuf::from("transcode_sessions").join(&play_session_id);
+        let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
             media_source_id,
             input_url.clone(),
+            output_dir,
             video_codec.clone(),
             audio_codec.clone(),
             segment_length,
@@ -1551,6 +1548,8 @@ pub async fn master_hls_video(
                 .map(jellyfin::TranscodeReasons::from_query_value)
                 .unwrap_or_default(),
         );
+
+        state.ctx.sessions.attach_transcode(&play_session_id, session.clone());
 
         // Start transcoding in background
         let session_clone = session.clone();
@@ -1634,8 +1633,8 @@ async fn variant_hls_video_inner(
 
     let session = state
         .ctx
-        .transcode
-        .get(&play_session_id)
+        .sessions
+        .get_transcode(&play_session_id)
         .context_not_found("not found", "transcode session not found")?;
 
     let playlist_path = session.read().await.variant_playlist_path();
@@ -1671,8 +1670,8 @@ async fn variant_hls_video_inner(
         }
     }
 
-    // Update last accessed
-    session.write().await.last_accessed = std::time::Instant::now();
+    // Keep the session alive.
+    state.ctx.sessions.ping(&play_session_id);
 
     let raw = tokio::fs::read_to_string(&playlist_path).await?;
 
@@ -1749,7 +1748,7 @@ async fn hls_segment_inner(
         .play_session_id
         .context_not_found("missing", "PlaySessionId is required")?;
 
-    let session = state.ctx.transcode.get(&play_session_id);
+    let session = state.ctx.sessions.get_transcode(&play_session_id);
 
     // Derive the segment path — either from the live session or from the base
     // dir directly (handles server restart where session is gone but files remain).
@@ -1757,7 +1756,7 @@ async fn hls_segment_inner(
         Some(s) => s.read().await.segment_path(&segment_id),
         None => state
             .ctx
-            .transcode
+            .sessions
             .segment_path(&play_session_id, &segment_id),
     };
 
@@ -1799,10 +1798,8 @@ async fn hls_segment_inner(
         return Err(anyhow!("Segment {} not ready after timeout", segment_id).into());
     }
 
-    // Update last accessed on the live session.
-    if let Some(ref session) = session {
-        session.write().await.last_accessed = std::time::Instant::now();
-    }
+    // Keep the session alive — the segment request counts as activity.
+    state.ctx.sessions.ping(&play_session_id);
 
     let file = tokio::fs::File::open(&segment_path).await?;
     let stream = ReaderStream::new(file);
@@ -1825,7 +1822,7 @@ pub async fn delete_transcoding(
 ) -> Result<impl IntoResponse> {
     if let Some(play_session_id) = q.play_session_id {
         info!("Stopping transcode session: {}", play_session_id);
-        state.ctx.transcode.stop(&play_session_id).await;
+        state.ctx.sessions.stop_transcode(&play_session_id).await;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

@@ -1,12 +1,15 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use dashmap::DashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info};
+use tokio::task::JoinHandle;
+use tracing::info;
 use uuid::Uuid;
 
-use crate::store::Store;
+use crate::transcode::session::TranscodeSession;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct PlaybackSession {
     pub play_session_id: String,
     pub user_id: Uuid,
@@ -23,51 +26,162 @@ pub struct PlaybackSession {
     pub play_method: Option<String>,
     pub started_at: DateTime<Utc>,
     pub last_activity: DateTime<Utc>,
+    /// Active transcode session owned by this playback session, if any.
+    pub transcode: Option<Arc<tokio::sync::RwLock<TranscodeSession>>>,
 }
 
-const SESSION_TTL: Duration = Duration::from_secs(60 * 30); // 30 minutes
-const SESSION_PREFIX: &str = "playback_session:";
-
-fn session_key(play_session_id: &str) -> String {
-    format!("{}{}", SESSION_PREFIX, play_session_id)
+#[derive(Clone)]
+pub struct PlaybackSessionManager {
+    sessions: Arc<DashMap<String, PlaybackSession>>,
+    base_dir: PathBuf,
 }
 
-impl PlaybackSession {
-    pub fn save(&self, store: &Store) {
-        store.save(
-            session_key(&self.play_session_id),
-            self.clone(),
-            SESSION_TTL,
-        );
-    }
-
-    pub fn get(store: &Store, play_session_id: &str) -> Option<Self> {
-        store.get::<Self>(session_key(play_session_id))
-    }
-
-    pub fn remove(store: &Store, play_session_id: &str) -> Option<Self> {
-        let session = Self::get(store, play_session_id);
-        store.delete(session_key(play_session_id));
-        session
-    }
-
-    pub fn ping(store: &Store, play_session_id: &str) {
-        if let Some(mut session) = Self::get(store, play_session_id) {
-            session.last_activity = Utc::now();
-            session.save(store);
-            debug!("Pinged session: {}", play_session_id);
+impl PlaybackSessionManager {
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        let base_dir = base_dir.into();
+        let _ = std::fs::create_dir_all(&base_dir);
+        Self {
+            sessions: Arc::new(DashMap::new()),
+            base_dir,
         }
     }
 
-    /// Get all active playback sessions
-    pub fn get_all(store: &Store) -> Vec<Self> {
-        store
-            .scan_keys(SESSION_PREFIX)
-            .into_iter()
-            .filter_map(|key| {
-                let session_id = key.trim_start_matches(SESSION_PREFIX);
-                Self::get(store, &session_id)
-            })
-            .collect()
+    /// Insert (or replace) a playback session, preserving any transcode that was
+    /// pre-attached before `report_playback_start` fired.
+    pub fn insert(&self, mut session: PlaybackSession) {
+        if session.transcode.is_none() {
+            if let Some(existing) = self.sessions.get(&session.play_session_id) {
+                session.transcode = existing.value().transcode.clone();
+            }
+        }
+        self.sessions.insert(session.play_session_id.clone(), session);
     }
+
+    /// Return a clone of the session, if it exists.
+    pub fn get(&self, id: &str) -> Option<PlaybackSession> {
+        self.sessions.get(id).map(|e| e.value().clone())
+    }
+
+    /// Return a clone of the transcode session attached to this playback session.
+    pub fn get_transcode(&self, id: &str) -> Option<Arc<tokio::sync::RwLock<TranscodeSession>>> {
+        self.sessions.get(id)?.value().transcode.clone()
+    }
+
+    /// Return clones of all active sessions.
+    pub fn get_all(&self) -> Vec<PlaybackSession> {
+        self.sessions.iter().map(|e| e.value().clone()).collect()
+    }
+
+    /// Update a session in-place via a closure.
+    pub fn update<F: FnOnce(&mut PlaybackSession)>(&self, id: &str, f: F) {
+        if let Some(mut entry) = self.sessions.get_mut(id) {
+            f(entry.value_mut());
+        }
+    }
+
+    /// Update `last_activity` on the session.
+    pub fn ping(&self, id: &str) {
+        self.update(id, |s| s.last_activity = Utc::now());
+    }
+
+    /// Attach a transcode session. If no playback session exists yet (the client
+    /// calls master.m3u8 before POST /sessions/playing), a stub is inserted so the
+    /// transcode isn't lost. `insert` will later overwrite the stub fields while
+    /// preserving the transcode.
+    pub fn attach_transcode(
+        &self,
+        id: &str,
+        ts: Arc<tokio::sync::RwLock<TranscodeSession>>,
+    ) {
+        if let Some(mut entry) = self.sessions.get_mut(id) {
+            entry.value_mut().transcode = Some(ts);
+        } else {
+            self.sessions.insert(
+                id.to_string(),
+                PlaybackSession {
+                    play_session_id: id.to_string(),
+                    transcode: Some(ts),
+                    user_id: Uuid::nil(),
+                    item_id: Uuid::nil(),
+                    media_source_id: None,
+                    device_id: String::new(),
+                    client_name: String::new(),
+                    position_ticks: 0,
+                    is_paused: false,
+                    is_muted: false,
+                    volume_level: None,
+                    audio_stream_index: None,
+                    subtitle_stream_index: None,
+                    play_method: None,
+                    started_at: Utc::now(),
+                    last_activity: Utc::now(),
+                },
+            );
+        }
+    }
+
+    /// Stop and remove the transcode from a session (e.g. on seek or client stop),
+    /// but keep the playback session itself alive.
+    pub async fn stop_transcode(&self, id: &str) {
+        let ts = self
+            .sessions
+            .get_mut(id)
+            .and_then(|mut e| e.value_mut().transcode.take());
+        if let Some(ts) = ts {
+            kill_transcode(ts).await;
+        }
+    }
+
+    /// Stop the transcode (if any) and remove the playback session entirely.
+    /// Returns the removed session so callers can read final position/item data.
+    pub async fn stop(&self, id: &str) -> Option<PlaybackSession> {
+        let (_, session) = self.sessions.remove(id)?;
+        if let Some(ts) = session.transcode.clone() {
+            kill_transcode(ts).await;
+        }
+        Some(session)
+    }
+
+    /// Path where a given HLS segment lives on disk (used for disk-based recovery).
+    pub fn segment_path(&self, play_session_id: &str, segment_id: &str) -> PathBuf {
+        self.base_dir
+            .join(play_session_id)
+            .join(format!("{}.ts", segment_id))
+    }
+
+    /// Spawn a background task that reaps sessions idle longer than `max_age`.
+    pub fn spawn_cleanup_task(self, interval: Duration, max_age: Duration) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                let cutoff = Utc::now()
+                    - chrono::Duration::from_std(max_age).unwrap_or_default();
+                let stale: Vec<String> = self
+                    .sessions
+                    .iter()
+                    .filter(|e| e.value().last_activity < cutoff)
+                    .map(|e| e.key().clone())
+                    .collect();
+                for id in stale {
+                    info!("Cleaning up idle session: {}", id);
+                    self.stop(&id).await;
+                }
+            }
+        })
+    }
+}
+
+/// Kill an ffmpeg process and wait for it to exit before returning.
+async fn kill_transcode(ts: Arc<tokio::sync::RwLock<TranscodeSession>>) {
+    let (kill_tx, wait_done, output_dir) = {
+        let mut s = ts.write().await;
+        (s.kill_tx.take(), s.wait_done.clone(), s.output_dir.clone())
+    };
+    if let Some(kill_tx) = kill_tx {
+        let notification = wait_done.notified();
+        let _ = kill_tx.send(());
+        notification.await;
+    }
+    let _ = std::fs::remove_dir_all(&output_dir);
 }
