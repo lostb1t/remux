@@ -90,7 +90,7 @@ jobs:
           path: target/dx/remux-dashboard/release/web/public/
           retention-days: 1
 
-  build:
+  build-desktop:
     name: Build (${{ matrix.target }})
     if: false
     needs: build-dashboard
@@ -367,7 +367,7 @@ jobs:
 
   release:
     name: Publish to public repo
-    needs: [merge-docker]
+    needs: [build-desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
