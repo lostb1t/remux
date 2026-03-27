@@ -1,6 +1,5 @@
 # 1.0.0 (2026-03-27)
 
-
 ### Bug Fixes
 
 * always re-encode audio to AAC in HLS transcoding ([aa1444e](https://github.com/Remuxd/remux-server/commit/aa1444ed1fca5b8f41553ab039b124b3826a72a2))
