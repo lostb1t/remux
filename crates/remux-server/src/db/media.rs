@@ -239,7 +239,7 @@ impl MediaRelation {
         }
 
         let mut tx = db.begin().await?;
-        const BATCH_SIZE: usize = 900;
+        const BATCH_SIZE: usize = 500;
 
         for chunk in items.chunks(BATCH_SIZE) {
             let mut qb = sqlx::QueryBuilder::new(
@@ -653,7 +653,7 @@ impl Media {
         }
 
         let mut tx = db.begin().await?;
-        const BATCH_SIZE: usize = 900;
+        const BATCH_SIZE: usize = 500;
 
         for chunk in items.chunks(BATCH_SIZE) {
             let mut query_builder = sqlx::QueryBuilder::new(
@@ -721,7 +721,7 @@ impl Media {
         }
 
         let mut tx = db.begin().await?;
-        const BATCH_SIZE: usize = 900;
+        const BATCH_SIZE: usize = 500;
 
         for chunk in items.chunks(BATCH_SIZE) {
             let mut query_builder = sqlx::QueryBuilder::new(

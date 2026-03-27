@@ -5363,7 +5363,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "remux-dashboard"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "dioxus",
  "futures",
@@ -5379,7 +5379,7 @@ dependencies = [
 
 [[package]]
 name = "remux-desktop"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -5404,7 +5404,7 @@ dependencies = [
 
 [[package]]
 name = "remux-sdks"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5433,7 +5433,7 @@ dependencies = [
 
 [[package]]
 name = "remux-server"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -5501,7 +5501,7 @@ dependencies = [
 
 [[package]]
 name = "remux-utils"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "uuid",
 ]
