@@ -12,6 +12,8 @@ use super::session::{TranscodeSession, TranscodeState};
 
 /// Max seconds to buffer ahead of the current playback position.
 const MAX_BUFFER_SECS: u32 = 300;
+/// Seconds behind the playback position before a segment is eligible for deletion.
+const SEGMENT_KEEP_SECS: u32 = 300;
 
 fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
@@ -36,11 +38,13 @@ fn spawn_buffer_monitor(
 ) {
     tokio::spawn(async move {
         let mut paused = false;
+        let mut ticks: u32 = 0;
         loop {
             tokio::select! {
                 _ = &mut stop_rx => break,
                 _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
             }
+            ticks += 1;
 
             let produced = count_segments(&output_dir);
             let buffered_secs = produced * segment_length;
@@ -61,6 +65,13 @@ fn spawn_buffer_monitor(
                 send_signal(ffmpeg_pid, libc::SIGCONT);
                 paused = false;
             }
+
+            // Every 30 seconds, delete segments that are more than SEGMENT_KEEP_SECS
+            // behind the current playback position.
+            if ticks % 30 == 0 && playback_secs > SEGMENT_KEEP_SECS {
+                let cutoff_idx = (playback_secs - SEGMENT_KEEP_SECS) / segment_length;
+                delete_old_segments(&output_dir, cutoff_idx);
+            }
         }
 
         // Ensure ffmpeg isn't left paused when we stop monitoring.
@@ -69,6 +80,22 @@ fn spawn_buffer_monitor(
             send_signal(ffmpeg_pid, libc::SIGCONT);
         }
     });
+}
+
+/// Delete `.ts` segment files whose index is less than `cutoff_idx`.
+fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.ends_with(".ts") { continue; }
+        // segment_00042.ts → parse the numeric suffix
+        let Some(idx_str) = name.strip_suffix(".ts").and_then(|s| s.rsplit('_').next()) else { continue };
+        let Ok(idx) = idx_str.parse::<u32>() else { continue };
+        if idx < cutoff_idx {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn count_segments(dir: &PathBuf) -> u32 {
