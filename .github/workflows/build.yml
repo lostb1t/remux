@@ -13,6 +13,14 @@ on:
           e.g. "-t ghcr.io/remuxd/remux:1.2.3 -t ghcr.io/remuxd/remux:latest"
         type: string
         required: true
+      cargo_version:
+        description: >-
+          Semver string to inject into all workspace Cargo.toml files before
+          building. Leave empty to use the version already in Cargo.toml
+          (e.g. after semantic-release has committed it).
+        type: string
+        required: false
+        default: ""
       ref:
         description: Git ref to checkout (leave empty for the triggering SHA)
         type: string
@@ -84,6 +92,12 @@ jobs:
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
 
+      - name: Set workspace version
+        if: inputs.cargo_version != ''
+        run: |
+          cargo binstall cargo-edit --no-confirm --locked
+          cargo set-version --workspace "${{ inputs.cargo_version }}"
+
       - name: Install dioxus-cli
         run: cargo binstall dioxus-cli --no-confirm --force
 
@@ -131,6 +145,12 @@ jobs:
         with:
           key: server-${{ matrix.arch }}
 
+      - name: Set workspace version
+        if: inputs.cargo_version != ''
+        run: |
+          cargo install cargo-edit --locked
+          cargo set-version --workspace "${{ inputs.cargo_version }}"
+
       - name: Build remux-server
         env:
           SQLX_OFFLINE: "true"
@@ -142,6 +162,104 @@ jobs:
           name: server-linux-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/remux-server
           retention-days: 1
+
+  build-desktop:
+    name: Build desktop (${{ matrix.target }})
+    if: false
+    needs: build-dashboard
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: remux-desktop-linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: remux-desktop-macos-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: remux-desktop-macos-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: remux-desktop-windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ runner.os }}-${{ matrix.target }}
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Download dashboard artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dashboard-dist
+          path: target/dx/remux-dashboard/release/web/public/
+
+      - name: Bundle remux-desktop (Linux / macOS)
+        if: runner.os != 'Windows'
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo bundle --release --target ${{ matrix.target }} -p remux-desktop
+
+      - name: Build remux-desktop (Windows)
+        if: runner.os == 'Windows'
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo build --release --target ${{ matrix.target }} -p remux-desktop
+
+      - name: Package bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd target/${{ matrix.target }}/release/bundle/osx
+          zip -r ${{ github.workspace }}/${{ matrix.artifact }}.zip Remux.app
+
+      - name: Package bundle (Linux .deb)
+        if: runner.os == 'Linux'
+        run: cp target/${{ matrix.target }}/release/bundle/deb/*.deb ${{ matrix.artifact }}.deb
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/remux-desktop.exe" .
+          Compress-Archive -Path "remux-desktop.exe" -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: Upload artifact (macOS / Windows)
+        if: runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+
+      - name: Upload artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.deb
 
   build-docker:
     name: Build Docker (${{ matrix.platform }})
