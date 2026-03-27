@@ -1,6 +1,6 @@
 [package]
 name = "remux-server"
-version = "0.1.0"
+version = "0.0.0"
 authors = ["lostb1t <coding-mosses0z@icloud.com>"]
 edition = "2024"
 default-run = "remux-server"
