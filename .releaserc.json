@@ -11,7 +11,6 @@
         "assets": ["CHANGELOG.md", "Cargo.toml", "Cargo.lock", "crates/*/Cargo.toml"],
         "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
       }
-    ],
-    "@semantic-release/github"
+    ]
   ]
 }
