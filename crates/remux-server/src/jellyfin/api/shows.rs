@@ -48,6 +48,8 @@ pub async fn shows_seasons(
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
+        total_record_count: items.total_count as i64,
+        start_index: q.start_index.unwrap_or(0),
         ..Default::default()
     }))
 }
@@ -72,8 +74,8 @@ pub async fn shows_episodes(
 
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
         items: items.items,
-        // total_record_count: items.total_count as i64,
-        // start_index: q.start_index.unwrap_or_else(|| 0),
+        total_record_count: items.total_count as i64,
+        start_index: q.start_index.unwrap_or(0),
         ..Default::default()
     }))
 }

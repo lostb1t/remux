@@ -344,6 +344,7 @@ pub struct MediaFilter {
     pub recursive: bool,
     pub total_count: bool,
     pub include_user_state: bool,
+    pub include_child_count: bool,
     pub user_state: Option<super::UserMediaStateFilter>,
     pub genre_ids: Option<Vec<Uuid>>,
     pub catalog_ids: Option<Vec<Uuid>>,
@@ -406,11 +407,13 @@ pub struct Media {
     pub external_ids: sqlx::types::Json<ExternalIds>,
     pub media_id: Option<String>,
     //pub media_key: Option<String>,
-    //pub series_id: Option<Uuid>,
+    pub series_id: Option<Uuid>,
     //pub season_id: Option<Uuid>,
     //pub description: Option<String>,
     #[sqlx(skip)]
     pub tags: Vec<String>,
+    #[sqlx(skip)]
+    pub child_count: Option<i64>,
     #[sqlx(skip)]
     pub sources: Option<Vec<Media>>,
     #[sqlx(skip)]
@@ -537,9 +540,9 @@ impl Media {
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items, collection_catalog_filter,
             remote_data, series_media_id, media_id, external_ids, created_at, updated_at, certification, parent_idx,
-            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at
+            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -558,6 +561,7 @@ impl Media {
             probe_data = CASE WHEN excluded.url IS NOT media.url THEN NULL ELSE media.probe_data END,
             remote_data = excluded.remote_data,
             series_media_id = excluded.series_media_id,
+            series_id = excluded.series_id,
             external_ids = excluded.external_ids,
             media_id = excluded.media_id,
             promoted = excluded.promoted,
@@ -618,6 +622,7 @@ impl Media {
         .bind(self.digital_released_at)
         .bind(&self.status)
         .bind(self.refreshed_at)
+        .bind(self.series_id)
         .execute(db)
         .await?;
 
@@ -647,7 +652,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, series_id
             )",
         );
             for item in chunk {
@@ -689,7 +694,8 @@ impl Media {
                     .push_bind(&item.sort_order)
                     .push_bind(&item.custom_name)
                     .push_bind(&item.digital_released_at)
-                    .push_bind(&item.status);
+                    .push_bind(&item.status)
+                    .push_bind(&item.series_id);
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -715,7 +721,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id
             )",
         );
 
@@ -756,7 +762,8 @@ impl Media {
                     .push_bind(&item.custom_name)
                     .push_bind(&item.digital_released_at)
                     .push_bind(&item.status)
-                    .push_bind(&item.refreshed_at);
+                    .push_bind(&item.refreshed_at)
+                    .push_bind(&item.series_id);
             });
 
             query_builder.push(
@@ -779,6 +786,7 @@ impl Media {
                 probe_data = CASE WHEN excluded.url IS NOT media.url THEN NULL ELSE media.probe_data END,
                 remote_data = excluded.remote_data,
                 series_media_id = excluded.series_media_id,
+                series_id = excluded.series_id,
                 updated_at = excluded.updated_at,
                 promoted = excluded.promoted,
                 certification = excluded.certification,
@@ -1239,6 +1247,46 @@ impl Media {
             }
         }
 
+        // Batch-load child counts for folder-like items (Series, Season, Collection, Folder)
+        if filter.include_child_count && !records.is_empty() {
+            let folder_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| matches!(
+                    m.kind,
+                    MediaKind::Series | MediaKind::Season | MediaKind::Collection | MediaKind::Folder
+                ))
+                .map(|m| m.id)
+                .collect();
+            if !folder_ids.is_empty() {
+                let mut cc_qb = sqlx::QueryBuilder::new(
+                    "SELECT parent_id, COUNT(*) as cnt FROM media WHERE parent_id IN (",
+                );
+                let mut sep = cc_qb.separated(", ");
+                for id in &folder_ids {
+                    sep.push_bind(id);
+                }
+                cc_qb.push(") GROUP BY parent_id");
+                match cc_qb.build().fetch_all(db).await {
+                    Ok(cc_rows) => {
+                        let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
+                        for row in cc_rows {
+                            let pid: Uuid = row.get(0);
+                            let cnt: i64 = row.get(1);
+                            cc_map.insert(pid, cnt);
+                        }
+                        for media in &mut records {
+                            if let Some(&cnt) = cc_map.get(&media.id) {
+                                media.child_count = Some(cnt);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to load child counts: {e}");
+                    }
+                }
+            }
+        }
+
         if filter.include_user_state {
             if let Some(user_state_filter) = &filter.user_state {
                 let media_keys: Vec<String> =
@@ -1466,6 +1514,11 @@ impl Media {
                 offset: filter.start_index.clone(),
                 recursive: filter.recursive.unwrap_or(false),
                 include_user_state: filter.enable_user_data.is_none(),
+                include_child_count: filter
+                    .fields
+                    .as_deref()
+                    .map(|f| f.contains(&jellyfin::ItemFields::ChildCount))
+                    .unwrap_or(false),
                 total_count,
                 user_state,
                 genre_ids,
@@ -2048,6 +2101,7 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
                     kind: MediaKind::Season,
                     idx: Some(season_idx),
                     series_media_id: media.media_id.clone(),
+                    series_id: Some(media.id),
                     media_id: Some(season_media_id.clone()),
                     poster: meta.get_season_poster(season_idx),
                     parent_id: Some(media.id),
@@ -2073,6 +2127,7 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
                     episode.idx = ep.episode;
                     episode.media_id = Some(ep.id.clone());
                     episode.series_media_id = media.media_id.clone();
+                    episode.series_id = Some(media.id);
                     episode.parent_id = Some(season.id);
                     episode.parent_idx = Some(season_idx);
                     episode.released_at = ep.released.map(|x| x.naive_utc());

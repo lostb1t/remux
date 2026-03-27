@@ -146,15 +146,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSes
                         }
                     }
                     Ok(WsEvent::LibraryChanged) => {
-                        if !send_msg(&mut socket, SessionMessageType::LIBRARY_CHANGED, Some(serde_json::json!({
-                            "FoldersAddedTo": [],
-                            "FoldersRemovedFrom": [],
-                            "ItemsAdded": [],
-                            "ItemsRemoved": [],
-                            "ItemsUpdated": []
-                        }))).await {
-                            return;
-                        }
+                        // LibraryChanged (type 11) is not registered in the Jellyfin Android TV
+                        // SDK's polymorphic deserializer, causing a crash. Skip it for now.
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,

@@ -162,12 +162,17 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 })
                 .collect()
         }),
-        series_id: media.parent_id,
+        series_id: media.series_id.or(media.parent_id),
         season_id: media.parent_id,
-        user_data: media
+        user_data: Some(media
             .user_state
             .clone()
-            .map(|s| db_state_to_dto(s, media.id.clone())),
+            .map(|s| db_state_to_dto(s, media.id.clone()))
+            .unwrap_or_else(|| UserItemDataDto {
+                item_id: media.id.clone(),
+                key: media.id.to_string(),
+                ..Default::default()
+            })),
         media_type: match media.kind {
             db::MediaKind::Movie | db::MediaKind::Episode => "Video".to_string(),
             db::MediaKind::TvChannel | db::MediaKind::TvProgram => "Video".to_string(),
@@ -267,6 +272,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 })
                 .collect()
         }),
+        child_count: media.child_count,
         tags: if media.tags.is_empty() {
             None
         } else {
@@ -293,6 +299,11 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         }),
         ..Default::default()
     };
+
+    // For Season items, season_id should be the season's own ID (not the parent series ID)
+    if media.kind == db::MediaKind::Season {
+        item.season_id = Some(item.id);
+    }
 
     // Build external URLs from provider IDs
     let mut external_urls = Vec::new();
