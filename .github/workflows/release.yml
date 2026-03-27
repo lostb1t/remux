@@ -36,6 +36,7 @@ jobs:
             @semantic-release/git
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: "not-publishing-to-crates-io"
 
   build:
     name: Build
