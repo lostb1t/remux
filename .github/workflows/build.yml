@@ -1,0 +1,269 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version string (for labels/artifact naming)
+        type: string
+        required: true
+      docker_tags:
+        description: >-
+          Space-separated imagetools tag flags,
+          e.g. "-t ghcr.io/remuxd/remux:1.2.3 -t ghcr.io/remuxd/remux:latest"
+        type: string
+        required: true
+      ref:
+        description: Git ref to checkout (leave empty for the triggering SHA)
+        type: string
+        required: false
+        default: ""
+
+env:
+  REGISTRY_IMAGE: ghcr.io/remuxd/remux
+
+jobs:
+  build-jellyfin-web:
+    name: Build jellyfin-web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cache jellyfin-web dist
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: dist/
+          key: jellyfin-web-v10.11.6
+
+      - name: Checkout jellyfin-web
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: jellyfin/jellyfin-web
+          ref: v10.11.6
+
+      - name: Setup Node
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: npm run build:production
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jellyfin-web-dist
+          path: dist/
+          retention-days: 90
+
+  build-dashboard:
+    name: Build dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: dashboard
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install dioxus-cli
+        run: cargo binstall dioxus-cli --no-confirm --force
+
+      - name: Build dashboard
+        working-directory: crates/remux-dashboard
+        run: ~/.cargo/bin/dx build --release
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist
+          path: target/dx/remux-dashboard/release/web/public/
+          retention-days: 1
+
+  build-server:
+    name: Build server (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            arch: arm64
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: server-${{ matrix.arch }}
+
+      - name: Build remux-server
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo build --release --target ${{ matrix.target }} -p remux-server
+
+      - name: Upload server artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/remux-server
+          retention-days: 1
+
+  build-docker:
+    name: Build Docker (${{ matrix.platform }})
+    needs: [build-dashboard, build-server, build-jellyfin-web]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+            ffmpeg_asset: jellyfin-ffmpeg_7.1.3-3_portable_linux64-gpl.tar.xz
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+            ffmpeg_asset: jellyfin-ffmpeg_7.1.3-3_portable_linuxarm64-gpl.tar.xz
+    steps:
+      - name: Prepare
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Download dashboard artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dashboard-dist
+          path: dashboard/
+
+      - name: Download jellyfin-web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: jellyfin-web-dist
+          path: jellyfin-web/
+
+      - name: Download jellyfin-ffmpeg
+        run: |
+          curl -fsSL "https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v7.1.3-3/${{ matrix.ffmpeg_asset }}" \
+            -o ffmpeg-archive.tar.xz
+          mkdir jellyfin-ffmpeg
+          tar -xJf ffmpeg-archive.tar.xz -C jellyfin-ffmpeg
+
+      - name: Download server binary
+        uses: actions/download-artifact@v4
+        with:
+          name: server-linux-${{ matrix.arch }}
+          path: ./
+
+      - name: Mark binaries executable
+        run: |
+          chmod +x ./remux-server
+          chmod +x ./jellyfin-ffmpeg/ffmpeg ./jellyfin-ffmpeg/ffprobe
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},name-canonical=true,push=true
+          cache-from: type=gha,scope=build-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=build-${{ env.PLATFORM_PAIR }}
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-docker:
+    name: Merge Docker manifests
+    needs: build-docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create and push manifest
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create ${{ inputs.docker_tags }} \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
