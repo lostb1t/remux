@@ -30,7 +30,7 @@ fn send_signal(_pid: u32, _sig: i32) {}
 fn spawn_buffer_monitor(
     output_dir: PathBuf,
     segment_length: u32,
-    last_segment_index: Arc<std::sync::atomic::AtomicU32>,
+    playback_offset_secs: Arc<std::sync::atomic::AtomicU32>,
     ffmpeg_pid: u32,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
@@ -44,7 +44,9 @@ fn spawn_buffer_monitor(
 
             let produced = count_segments(&output_dir);
             let buffered_secs = produced * segment_length;
-            let playback_secs = last_segment_index.load(Ordering::Relaxed) * segment_length;
+            // playback_offset_secs is how far the client has actually played
+            // relative to the start of this transcode session (from progress reports).
+            let playback_secs = playback_offset_secs.load(Ordering::Relaxed);
 
             let ahead = buffered_secs.saturating_sub(playback_secs);
 
@@ -241,11 +243,15 @@ pub async fn start_transcode(
     let (monitor_stop_tx, monitor_stop_rx) = tokio::sync::oneshot::channel::<()>();
 
     {
-        let s = session.read().await;
+        let mut s = session.write().await;
+        s.start_time_secs = params
+            .start_time_ticks
+            .map(|t| (t / 10_000_000) as u32)
+            .unwrap_or(0);
         spawn_buffer_monitor(
             s.output_dir.clone(),
             s.segment_length,
-            s.last_segment_index.clone(),
+            s.playback_offset_secs.clone(),
             ffmpeg_pid,
             monitor_stop_rx,
         );

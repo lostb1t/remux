@@ -33,6 +33,10 @@ pub struct TranscodeSession {
     pub wait_done: Arc<Notify>,
     /// Index of the last segment the client has requested (0-based).
     pub last_segment_index: Arc<AtomicU32>,
+    /// Start offset of this transcode in seconds (from start_time_ticks).
+    pub start_time_secs: u32,
+    /// Playback offset in seconds relative to start_time_secs, updated from progress reports.
+    pub playback_offset_secs: Arc<AtomicU32>,
 }
 
 impl TranscodeSession {
@@ -65,6 +69,8 @@ impl TranscodeSession {
             kill_tx: None,
             wait_done: Arc::new(Notify::new()),
             last_segment_index: Arc::new(AtomicU32::new(0)),
+            start_time_secs: 0,
+            playback_offset_secs: Arc::new(AtomicU32::new(0)),
         }))
     }
 
