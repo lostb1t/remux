@@ -228,9 +228,9 @@ async fn items_playbackinfo_inner(
                     Some(url) => {
                         let url2 = url.clone();
                         let sm2 = sm.clone();
-                        // Wrap the blocking probe in a dedicated thread + 8 s timeout.
+                        // Wrap the blocking probe in a dedicated thread.
                         let probe_result = tokio::time::timeout(
-                            std::time::Duration::from_secs(8),
+                            std::time::Duration::from_secs(30),
                             tokio::task::spawn_blocking(move || {
                                 crate::transcode::probing::probe_media(&url2)
                             }),
@@ -260,7 +260,7 @@ async fn items_playbackinfo_inner(
                             }
                             // timeout elapsed
                             Err(_) => {
-                                tracing::warn!(url = %url, "probe timed out after 8 s, falling back to static metadata");
+                                tracing::warn!(url = %url, "probe timed out after 30s, falling back to static metadata");
                                 jellyfin::MediaSourceInfo::from(sm2)
                             }
                         }
