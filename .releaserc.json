@@ -4,7 +4,7 @@
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
     "@semantic-release/changelog",
-    ["semantic-release-cargo", { "workspace": true, "publish": false }],
+    ["semantic-release-cargo", { "workspace": true, "publish": false, "check": false }],
     [
       "@semantic-release/git",
       {
