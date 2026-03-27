@@ -76,11 +76,11 @@ jobs:
 
       - name: Upload to GitHub release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PUBLIC_REPO_PAT }}
         run: |
           VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
           TAG="${{ needs.semantic-release.outputs.new_release_git_tag }}"
           gh release upload "${TAG}" \
             "remux-server-${VERSION}-linux-amd64" \
             "remux-server-${VERSION}-linux-arm64" \
-            --repo "${{ github.repository }}"
+            --repo "lostb1t/remux"

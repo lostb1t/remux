@@ -64,21 +64,21 @@ jobs:
 
       - name: Delete existing nightly release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PUBLIC_REPO_PAT }}
         run: |
           gh release delete nightly \
-            --repo "${{ github.repository }}" \
+            --repo "lostb1t/remux" \
             --cleanup-tag \
             --yes \
           || true
 
       - name: Create nightly release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PUBLIC_REPO_PAT }}
         run: |
           VERSION="${{ needs.version.outputs.version }}"
           gh release create nightly \
-            --repo "${{ github.repository }}" \
+            --repo "lostb1t/remux" \
             --title "Nightly ${VERSION}" \
             --notes "Automated nightly build." \
             --prerelease \
