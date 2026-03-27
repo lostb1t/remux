@@ -1,6 +1,7 @@
 use super::{FilterResult, QueryBuilderExt};
 use crate::aio;
 use crate::jellyfin;
+use crate::jellyfin::MediaSourceInfo;
 use crate::sdks;
 use crate::utils::IntoVec;
 use crate::utils::get_uuid;
@@ -239,7 +240,7 @@ impl MediaRelation {
         }
 
         let mut tx = db.begin().await?;
-        const BATCH_SIZE: usize = 500;
+        const BATCH_SIZE: usize = 600;
 
         for chunk in items.chunks(BATCH_SIZE) {
             let mut qb = sqlx::QueryBuilder::new(
@@ -423,7 +424,7 @@ pub struct Media {
 
     // stream
     pub url: Option<String>,
-    pub probe_data: Option<String>,
+    pub probe_data: Option<sqlx::types::Json<MediaSourceInfo>>,
     pub remote_data: Option<String>,
 
     // collection
@@ -623,21 +624,6 @@ impl Media {
         Ok(())
     }
 
-    /// Persist a successful probe result for this media source.
-    /// The `json` value is the serialised `MediaSourceInfo`.
-    pub async fn save_probe_data(
-        db: &sqlx::SqlitePool,
-        id: &Uuid,
-        json: &str,
-    ) -> Result<()> {
-        sqlx::query("UPDATE media SET probe_data = ?1 WHERE id = ?2")
-            .bind(json)
-            .bind(id)
-            .execute(db)
-            .await?;
-        Ok(())
-    }
-
     /// Invalidate the probe cache for a media source (e.g. after its URL changes).
     pub async fn clear_probe_data(db: &sqlx::SqlitePool, id: &Uuid) -> Result<()> {
         sqlx::query("UPDATE media SET probe_data = NULL WHERE id = ?1")
@@ -653,7 +639,7 @@ impl Media {
         }
 
         let mut tx = db.begin().await?;
-        const BATCH_SIZE: usize = 500;
+        const BATCH_SIZE: usize = 600;
 
         for chunk in items.chunks(BATCH_SIZE) {
             let mut query_builder = sqlx::QueryBuilder::new(
@@ -721,7 +707,7 @@ impl Media {
         }
 
         let mut tx = db.begin().await?;
-        const BATCH_SIZE: usize = 500;
+        const BATCH_SIZE: usize = 600;
 
         for chunk in items.chunks(BATCH_SIZE) {
             let mut query_builder = sqlx::QueryBuilder::new(

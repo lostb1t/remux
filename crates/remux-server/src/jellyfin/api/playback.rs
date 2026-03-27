@@ -202,7 +202,7 @@ async fn items_playbackinfo_inner(
         .enumerate()
         .map(|(idx, swu)| {
             let url_opt = swu.resolved_url.clone();
-            let sm = swu.sm.clone();
+            let mut sm = swu.sm.clone();
             let db = state.ctx.db.clone();
             // When no specific source was requested, only probe the first one.
             // The rest get static metadata so we don't spawn 20+ parallel FFmpeg
@@ -215,13 +215,12 @@ async fn items_playbackinfo_inner(
 
                 // Cache hit: deserialise stored probe result and skip FFmpeg.
                 if let Some(json) = &sm.probe_data {
-                    if let Ok(mut cached) = serde_json::from_str::<jellyfin::MediaSourceInfo>(json) {
-                        cached.id = sm.id;
-                        cached.name = Some(sm.title.clone());
-                        cached.path = sm.url.clone();
-                        tracing::debug!(id = %sm.id, "probe cache hit");
-                        return cached;
-                    }
+                    let mut cached = json.0.clone();
+                    cached.id = sm.id;
+                    cached.name = Some(sm.title.clone());
+                    cached.path = sm.url.clone();
+                    tracing::debug!(id = %sm.id, "probe cache hit");
+                    return cached;
                 }
 
                 match url_opt {
@@ -244,11 +243,9 @@ async fn items_playbackinfo_inner(
                                 probed.id = sm2.id;
                                 probed.name = Some(sm2.title.clone());
                                 probed.path = sm2.url.clone();
-                                if let Ok(json) = serde_json::to_string(&probed) {
-                                    if let Err(e) = db::Media::save_probe_data(&db, &sm2.id, &json).await {
-                                        tracing::warn!(id = %sm2.id, error = %e, "failed to save probe cache");
-                                    }
-                                }
+                                sm.probe_data = Some(sqlx::types::Json(probed.clone()));
+                                sm.save(&db).await;
+                                
                                 probed
                             }
                             // probe returned an error
