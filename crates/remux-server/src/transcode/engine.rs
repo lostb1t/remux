@@ -203,14 +203,18 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     args.extend(["-c:v".into(), ffmpeg_video_codec.into()]);
 
     if ffmpeg_video_codec == "libx264" {
-        args.extend(["-profile:v".into(), "high".into()]);
+        args.extend([
+            "-profile:v".into(), "high".into(),
+            "-crf".into(), "23".into(),
+            "-preset".into(), "fast".into(),
+            "-tune".into(), "zerolatency".into(),
+        ]);
+        // Use client's max bitrate as a ceiling, not a CBR target.
+        // This keeps libx264 memory usage low while honouring the cap.
         if let Some(bitrate) = params.video_bitrate {
-            args.extend(["-b:v".into(), bitrate.to_string()]);
-        } else {
             args.extend([
-                "-crf".into(), "23".into(),
-                "-preset".into(), "fast".into(),
-                "-tune".into(), "zerolatency".into(),
+                "-maxrate".into(), bitrate.to_string(),
+                "-bufsize".into(), (bitrate * 2).to_string(),
             ]);
         }
     } else if let Some(bitrate) = params.video_bitrate {
