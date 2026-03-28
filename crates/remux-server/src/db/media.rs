@@ -1494,8 +1494,14 @@ impl Media {
                 None
             };
 
+        let release_date_applies = kinds.is_empty()
+            || kinds
+                .iter()
+                .any(|k| matches!(k, MediaKind::Movie | MediaKind::Series | MediaKind::Season | MediaKind::Episode));
         let digital_released_before =
-            if server_config.map(|c| c.filter_by_digital_release_date) != Some(false) {
+            if release_date_applies
+                && server_config.map(|c| c.filter_by_digital_release_date) != Some(false)
+            {
                 let buffer = server_config
                     .map(|c| c.digital_release_buffer_days)
                     .unwrap_or(0);

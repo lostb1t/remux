@@ -134,24 +134,13 @@ pub async fn get_items(
 
     if let Some(parent) = &parent {
         if parent.id == db::collection_uuid() {
-            let result = db::Media::get_by_filter(
-                &state.ctx.db,
-                &db::MediaFilter {
-                    kind: Some(vec![db::MediaKind::Collection]),
-                    //promoted: Some(true),
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-            return Ok(ItemsQueryResult {
-                total_count: result.total_count as i64,
-                items: result
-                    .records
-                    .into_iter()
-                    .map(jellyfin::db_media_to_item)
-                    .collect(),
-            });
+            // Virtual collections root — clear parent_id (collections have no parent in DB)
+            // and ensure we only return BoxSet/CollectionFolder items.
+            q.parent_id = None;
+            if q.include_item_types.is_none() {
+                q.include_item_types =
+                    Some(vec![jellyfin::MediaType::BoxSet]);
+            }
         }
 
         // collection browse
