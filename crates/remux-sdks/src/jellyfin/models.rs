@@ -2219,6 +2219,20 @@ pub enum ItemFields {
     #[strum(serialize = "IsHD")]
     IsHd,
     SpecialFeatureCount,
+    OfficialRating,
+    CommunityRating,
+    CriticRating,
+    RunTimeTicks,
+    ProductionYear,
+    ImageTags,
+    BackdropImageTags,
+    BasicSyncInfo,
+    SeriesName,
+    ParentIndexNumber,
+    IndexNumber,
+    Status,
+    ParentBackdropItemId,
+    ParentBackdropImageTags,
 }
 
 #[derive(
