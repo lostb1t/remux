@@ -204,7 +204,6 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     if ffmpeg_video_codec == "libx264" {
         args.extend([
-            "-profile:v".into(), "high".into(),
             "-crf".into(), "23".into(),
             "-preset".into(), "fast".into(),
             "-tune".into(), "zerolatency".into(),
