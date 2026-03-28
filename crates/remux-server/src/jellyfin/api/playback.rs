@@ -325,12 +325,11 @@ async fn items_playbackinfo_inner(
                 })
                 .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
-            let video_codec = "h264".to_string();
-            // Always re-encode audio to AAC for HLS compatibility.
-            // Copying risks passing through codecs browsers cannot decode
-            // (AC3, DTS, etc.) when FFmpeg auto-selects a stream different
-            // from the one inspected here, causing MEDIA_ERR_SRC_NOT_SUPPORTED.
-            let audio_codec = "aac".to_string();
+            let needs_video_transcode = transcode_reasons.contains(jellyfin::TranscodeReason::VideoCodecNotSupported)
+                || transcode_reasons.contains(jellyfin::TranscodeReason::ContainerBitrateExceedsLimit);
+            let video_codec = if needs_video_transcode { "h264" } else { "copy" }.to_string();
+            let needs_audio_transcode = transcode_reasons.contains(jellyfin::TranscodeReason::AudioCodecNotSupported);
+            let audio_codec = if needs_audio_transcode { "aac" } else { "copy" }.to_string();
 
             let bitrate_param = max_bitrate
                 .map(|b| format!("&MaxStreamingBitrate={}", b))

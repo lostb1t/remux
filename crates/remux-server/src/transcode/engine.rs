@@ -167,11 +167,15 @@ fn build_scale_filter(params: &TranscodeParams) -> Option<String> {
 /// Build the ffmpeg CLI args for an HLS transcode.
 fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     let ffmpeg_video_codec = match params.video_codec.as_str() {
-        "copy" | "h264" | "libx264" => "libx264",
+        "copy" => "copy",
+        "h264" | "libx264" => "libx264",
         "hevc" | "libx265" | "h265" => "libx265",
         other => other,
     };
-    let ffmpeg_audio_codec = "aac";
+    let ffmpeg_audio_codec = match params.audio_codec.as_str() {
+        "copy" => "copy",
+        _ => "aac",
+    };
 
     let mut args: Vec<String> = vec![
         "-v".into(), "error".into(),
@@ -188,7 +192,11 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     args.extend(["-i".into(), params.input_url.clone()]);
 
     // Stream mapping
-    let scale_filter = build_scale_filter(params);
+    let scale_filter = if ffmpeg_video_codec != "copy" {
+        build_scale_filter(params)
+    } else {
+        None
+    };
 
     if let Some(ref filter) = scale_filter {
         args.extend(["-vf".into(), filter.clone()]);
@@ -222,10 +230,12 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     // Audio codec
     args.extend(["-c:a".into(), ffmpeg_audio_codec.into()]);
-    let audio_bitrate = params.audio_bitrate.unwrap_or(128_000);
-    args.extend(["-b:a".into(), audio_bitrate.to_string()]);
-    if let Some(ch) = params.audio_channels {
-        args.extend(["-ac".into(), ch.to_string()]);
+    if ffmpeg_audio_codec != "copy" {
+        let audio_bitrate = params.audio_bitrate.unwrap_or(128_000);
+        args.extend(["-b:a".into(), audio_bitrate.to_string()]);
+        if let Some(ch) = params.audio_channels {
+            args.extend(["-ac".into(), ch.to_string()]);
+        }
     }
 
     // HLS output
