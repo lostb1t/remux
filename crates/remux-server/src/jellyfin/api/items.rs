@@ -129,35 +129,6 @@ pub async fn get_items(
     //     });
     // }
 
-    let requested = q.get_requested_item_types();
-    if q.include_item_types
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .any(|t| {
-            matches!(
-                t,
-                jellyfin::MediaType::BoxSet | jellyfin::MediaType::CollectionFolder
-            )
-        })
-    {
-        let records = db::Media::get_by_filter(
-            &state.ctx.db,
-            &db::MediaFilter {
-                kind: Some(vec![db::MediaKind::Collection]),
-                ..Default::default()
-            },
-        )
-        .await?
-        .records;
-        return Ok(ItemsQueryResult {
-            total_count: records.len() as i64,
-            items: records
-                .into_iter()
-                .map(jellyfin::db_media_to_item)
-                .collect(),
-        });
-    }
 
     //let manifest = aio.get_manifest().await?;
 
