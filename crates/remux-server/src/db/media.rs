@@ -790,7 +790,7 @@ impl Media {
                 updated_at = excluded.updated_at,
                 promoted = excluded.promoted,
                 certification = excluded.certification,
-                parent_id = COALESCE(media.parent_id, excluded.parent_id),
+                parent_id = excluded.parent_id,
                 parent_idx = excluded.parent_idx,
                 live_start = excluded.live_start,
                 live_end = excluded.live_end,
