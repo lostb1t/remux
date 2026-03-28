@@ -670,7 +670,9 @@ pub async fn item(
         }
     );
 
-    if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
+    if media.kind == db::MediaKind::Source {
+        media.sources = Some(vec![media.clone()]);
+    } else if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
         media.sources(&state.ctx.db).await?;
         media.user_state(&state.ctx.db, &session.user).await?;
     }

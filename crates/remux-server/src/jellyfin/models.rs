@@ -162,8 +162,12 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 })
                 .collect()
         }),
-        series_id: media.series_id.or(media.parent_id),
-        season_id: media.parent_id,
+        series_id: matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season)
+            .then(|| media.series_id.or(media.parent_id))
+            .flatten(),
+        season_id: (media.kind == db::MediaKind::Episode)
+            .then(|| media.parent_id)
+            .flatten(),
         user_data: Some(media
             .user_state
             .clone()
