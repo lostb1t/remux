@@ -32,10 +32,14 @@ pub struct ItemsQueryResult {
     pub total_count: i64,
 }
 
+fn apply_permissions(item: &mut jellyfin::BaseItemDto, user: &db::User) {
+    item.can_delete = Some(db::Media::can_delete(user));
+}
+
 impl ItemsQueryResult {
     pub fn with_permissions(mut self, session: &auth::AuthSession) -> Self {
         for item in &mut self.items {
-            item.can_delete = Some(db::Media::can_delete(&session.user));
+            apply_permissions(item, &session.user);
         }
         self
     }
@@ -698,6 +702,7 @@ pub async fn item(
         }
     }
 
+    apply_permissions(&mut base_item, &session.user);
     Ok(Some(base_item))
 }
 
