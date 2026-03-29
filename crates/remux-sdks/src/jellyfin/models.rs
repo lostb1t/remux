@@ -451,10 +451,15 @@ pub struct SpecialViewOptionDto {
 pub struct GetItemsQuery {
     pub user_id: Option<Uuid>,
     pub max_official_rating: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub has_theme_song: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub has_theme_video: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub has_subtitles: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub has_special_feature: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub has_trailer: Option<bool>,
     pub adjacent_to: Option<String>,
     pub index_number: Option<i64>,
@@ -471,6 +476,7 @@ pub struct GetItemsQuery {
     pub exclude_item_types: Option<Vec<MediaType>>,
     #[serde(deserialize_with = "deserialize_media_types", default)]
     pub include_item_types: Option<Vec<MediaType>>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub is_favorite: Option<bool>,
     pub image_type_limit: Option<i64>,
     pub enable_image_types: Option<Vec<String>>,
@@ -485,12 +491,17 @@ pub struct GetItemsQuery {
     pub sort_by: Option<Vec<ItemSortBy>>,
     #[serde(deserialize_with = "deserialize_sort_order", default)]
     pub sort_order: Option<Vec<SortOrder>>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub enable_images: Option<bool>,
-    // #[default(true)]
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub enable_user_data: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub enable_total_record_count: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub enable_resumable: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub enable_rewatching: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub disable_first_episode: Option<bool>,
     pub next_up_date_cutoff: Option<String>,
     pub years: Option<Vec<i64>>,
@@ -506,7 +517,8 @@ pub struct GetItemsQuery {
     pub studio_ids: Option<Vec<String>>,
     pub exclude_artist_ids: Option<Vec<String>>,
     pub ids: Option<Vec<Uuid>>,
-    pub recursive: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_bool_from_anything")]
+    pub recursive: bool,
 }
 
 impl GetItemsQuery {
@@ -545,6 +557,19 @@ impl GetItemsQuery {
         //}
 
         requested
+    }
+}
+
+fn bool_true() -> bool { true }
+
+fn deserialize_option_bool_from_anything<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(d)?;
+    match opt {
+        None => Ok(None),
+        Some(v) => deserialize_bool_from_anything(v).map(Some).map_err(serde::de::Error::custom),
     }
 }
 
@@ -1982,6 +2007,7 @@ pub struct QueueItem {
     strum_macros::Display,
     strum_macros::EnumString,
 )]
+#[strum(ascii_case_insensitive)]
 #[serde(rename_all = "PascalCase")]
 pub enum ItemFilter {
     IsFolder,
@@ -2010,6 +2036,7 @@ pub enum ItemFilter {
     strum_macros::EnumString,
     Default,
 )]
+#[strum(ascii_case_insensitive)]
 #[serde(rename_all = "PascalCase")]
 pub enum MediaType {
     AggregateFolder,
@@ -2066,6 +2093,7 @@ pub enum MediaType {
     strum_macros::Display,
     strum_macros::EnumString,
 )]
+#[strum(ascii_case_insensitive)]
 #[serde(rename_all = "PascalCase")]
 pub enum SortOrder {
     #[default]
@@ -2085,6 +2113,7 @@ pub enum SortOrder {
     strum_macros::Display,
     strum_macros::EnumString,
 )]
+#[strum(ascii_case_insensitive)]
 #[serde(rename_all = "PascalCase")]
 pub enum ItemSortBy {
     Default,
@@ -2154,8 +2183,8 @@ pub enum Status {
     strum_macros::Display,
     strum_macros::EnumString,
 )]
+#[strum(ascii_case_insensitive, serialize_all = "PascalCase")]
 #[serde(rename_all = "PascalCase")]
-#[strum(serialize_all = "PascalCase")]
 pub enum ItemFields {
     AirTime,
     CanDelete,
