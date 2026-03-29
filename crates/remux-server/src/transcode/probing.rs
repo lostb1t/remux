@@ -91,7 +91,9 @@ fn parse_frame_rate(s: &str) -> Option<f64> {
     let mut parts = s.splitn(2, '/');
     let num: f64 = parts.next()?.parse().ok()?;
     let den: f64 = parts.next().unwrap_or("1").parse().ok()?;
-    if den == 0.0 { return None; }
+    if den == 0.0 {
+        return None;
+    }
     let fps = num / den;
     if fps > 0.0 { Some(fps) } else { None }
 }
@@ -102,8 +104,10 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
 
     let output = std::process::Command::new(ffprobe_bin())
         .args([
-            "-v", "quiet",
-            "-print_format", "json",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
             "-show_streams",
             "-show_format",
             url,
@@ -119,7 +123,9 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
     let probe: FfprobeOutput = serde_json::from_slice(&output.stdout)
         .map_err(|e| anyhow!("Failed to parse ffprobe output: {}", e))?;
 
-    let run_time_ticks = probe.format.duration
+    let run_time_ticks = probe
+        .format
+        .duration
         .as_deref()
         .and_then(|s| s.parse::<f64>().ok())
         .map(|secs| (secs * 1_000_000.0) as i64) // → µs
@@ -136,7 +142,9 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
         }
     });
 
-    let overall_bitrate = probe.format.bit_rate
+    let overall_bitrate = probe
+        .format
+        .bit_rate
         .as_deref()
         .and_then(|s| s.parse::<i64>().ok())
         .and_then(nonzero);
@@ -155,7 +163,9 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
 
         match codec_type {
             "video" => {
-                let bitrate = s.bit_rate.as_deref()
+                let bitrate = s
+                    .bit_rate
+                    .as_deref()
                     .and_then(|b| b.parse::<i64>().ok())
                     .and_then(nonzero);
                 let fps = s.avg_frame_rate.as_deref().and_then(parse_frame_rate);
@@ -180,11 +190,15 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
                 video_idx += 1;
             }
             "audio" => {
-                let bitrate = s.bit_rate.as_deref()
+                let bitrate = s
+                    .bit_rate
+                    .as_deref()
                     .and_then(|b| b.parse::<i64>().ok())
                     .and_then(nonzero);
                 let channels = s.channels.and_then(nonzero);
-                let sample_rate = s.sample_rate.as_deref()
+                let sample_rate = s
+                    .sample_rate
+                    .as_deref()
                     .and_then(|sr| sr.parse::<i64>().ok())
                     .and_then(nonzero);
                 let codec = s.codec_name.clone().unwrap_or_default();
@@ -219,7 +233,12 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
                     codec: Some(codec.clone()),
                     is_default: Some(sub_idx == 0),
                     is_forced: Some(s.disposition.forced != 0),
-                    display_title: display_title(language, Some(&codec), "Subtitle", None),
+                    display_title: display_title(
+                        language,
+                        Some(&codec),
+                        "Subtitle",
+                        None,
+                    ),
                     language: language.map(str::to_string),
                     title,
                     ..Default::default()
@@ -230,10 +249,12 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
         }
     }
 
-    let default_audio_stream_index = streams.iter()
+    let default_audio_stream_index = streams
+        .iter()
         .find(|s| matches!(s.type_, Some(jellyfin::MediaStreamType::Audio)))
         .and_then(|s| s.index);
-    let default_subtitle_stream_index = streams.iter()
+    let default_subtitle_stream_index = streams
+        .iter()
         .find(|s| matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle)))
         .and_then(|s| s.index);
 

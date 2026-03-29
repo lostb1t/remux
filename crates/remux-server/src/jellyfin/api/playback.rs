@@ -325,11 +325,20 @@ async fn items_playbackinfo_inner(
                 })
                 .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
-            let needs_video_transcode = transcode_reasons.contains(jellyfin::TranscodeReason::VideoCodecNotSupported)
-                || transcode_reasons.contains(jellyfin::TranscodeReason::ContainerBitrateExceedsLimit);
-            let video_codec = if needs_video_transcode { "h264" } else { "copy" }.to_string();
-            let needs_audio_transcode = transcode_reasons.contains(jellyfin::TranscodeReason::AudioCodecNotSupported);
-            let audio_codec = if needs_audio_transcode { "aac" } else { "copy" }.to_string();
+            let needs_video_transcode = transcode_reasons
+                .contains(jellyfin::TranscodeReason::VideoCodecNotSupported)
+                || transcode_reasons
+                    .contains(jellyfin::TranscodeReason::ContainerBitrateExceedsLimit);
+            let video_codec = if needs_video_transcode {
+                "h264"
+            } else {
+                "copy"
+            }
+            .to_string();
+            let needs_audio_transcode = transcode_reasons
+                .contains(jellyfin::TranscodeReason::AudioCodecNotSupported);
+            let audio_codec =
+                if needs_audio_transcode { "aac" } else { "copy" }.to_string();
 
             let bitrate_param = max_bitrate
                 .map(|b| format!("&MaxStreamingBitrate={}", b))
@@ -1243,7 +1252,8 @@ pub async fn report_playback_progress(
                 ps.is_paused = data.is_paused;
                 ps.is_muted = data.is_muted;
                 ps.volume_level = data.volume_level.or(ps.volume_level);
-                ps.audio_stream_index = data.audio_stream_index.or(ps.audio_stream_index);
+                ps.audio_stream_index =
+                    data.audio_stream_index.or(ps.audio_stream_index);
                 ps.subtitle_stream_index =
                     data.subtitle_stream_index.or(ps.subtitle_stream_index);
                 ps.last_activity = Utc::now();
@@ -1255,7 +1265,8 @@ pub async fn report_playback_progress(
                     if let Ok(ts) = ts_lock.try_read() {
                         let position_secs = (position_ticks / 10_000_000) as u32;
                         let offset = position_secs.saturating_sub(ts.start_time_secs);
-                        ts.playback_offset_secs.store(offset, std::sync::atomic::Ordering::Relaxed);
+                        ts.playback_offset_secs
+                            .store(offset, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -1272,8 +1283,14 @@ pub async fn report_playback_progress(
                 )
                 .await?;
                 ms.playback_position = position_seconds;
-                ms.audio_idx = data.audio_stream_index.or(ps.audio_stream_index).map(|x| x as i64);
-                ms.subtitle_idx = data.subtitle_stream_index.or(ps.subtitle_stream_index).map(|x| x as i64);
+                ms.audio_idx = data
+                    .audio_stream_index
+                    .or(ps.audio_stream_index)
+                    .map(|x| x as i64);
+                ms.subtitle_idx = data
+                    .subtitle_stream_index
+                    .or(ps.subtitle_stream_index)
+                    .map(|x| x as i64);
                 ms.save(&state.ctx.db).await?;
             }
         }
@@ -1509,7 +1526,9 @@ pub async fn master_hls_video(
             state.ctx.sessions.stop_transcode(&play_session_id).await;
         }
     }
-    let session = if let Some(existing) = state.ctx.sessions.get_transcode(&play_session_id) {
+    let session = if let Some(existing) =
+        state.ctx.sessions.get_transcode(&play_session_id)
+    {
         existing
     } else {
         // Fetch media info to get the stream URL
@@ -1539,7 +1558,8 @@ pub async fn master_hls_video(
         // Resolve Docker-internal hostnames to user-configured origin.
         let input_url = crate::aio::resolve_url(&state.ctx.db, &raw_input_url).await;
 
-        let output_dir = std::path::PathBuf::from("transcode_sessions").join(&play_session_id);
+        let output_dir =
+            std::path::PathBuf::from("transcode_sessions").join(&play_session_id);
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -1556,7 +1576,10 @@ pub async fn master_hls_video(
                 .unwrap_or_default(),
         );
 
-        state.ctx.sessions.attach_transcode(&play_session_id, session.clone());
+        state
+            .ctx
+            .sessions
+            .attach_transcode(&play_session_id, session.clone());
 
         // Start transcoding in background
         let session_clone = session.clone();

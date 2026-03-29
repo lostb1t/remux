@@ -54,7 +54,8 @@ impl PlaybackSessionManager {
                 session.transcode = existing.value().transcode.clone();
             }
         }
-        self.sessions.insert(session.play_session_id.clone(), session);
+        self.sessions
+            .insert(session.play_session_id.clone(), session);
     }
 
     /// Return a clone of the session, if it exists.
@@ -63,7 +64,10 @@ impl PlaybackSessionManager {
     }
 
     /// Return a clone of the transcode session attached to this playback session.
-    pub fn get_transcode(&self, id: &str) -> Option<Arc<tokio::sync::RwLock<TranscodeSession>>> {
+    pub fn get_transcode(
+        &self,
+        id: &str,
+    ) -> Option<Arc<tokio::sync::RwLock<TranscodeSession>>> {
         self.sessions.get(id)?.value().transcode.clone()
     }
 
@@ -150,7 +154,11 @@ impl PlaybackSessionManager {
     }
 
     /// Spawn a background task that reaps sessions idle longer than `max_age`.
-    pub fn spawn_cleanup_task(self, interval: Duration, max_age: Duration) -> JoinHandle<()> {
+    pub fn spawn_cleanup_task(
+        self,
+        interval: Duration,
+        max_age: Duration,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {

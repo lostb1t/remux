@@ -20,7 +20,9 @@ async fn items_images_inner(
         return Ok(Redirect::temporary(url.as_str()));
     }
 
-    let media = db::Media::get_by_id(&state.ctx.db, &id).await?.context_not_found("Not Found", "media not found")?;
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context_not_found("Not Found", "media not found")?;
 
     let url = match image_type {
         jellyfin::ImageType::Primary => media.poster,

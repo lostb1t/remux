@@ -3,8 +3,8 @@ use anyhow::{Result, anyhow};
 use libc;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
@@ -59,7 +59,9 @@ fn spawn_buffer_monitor(
                 #[cfg(unix)]
                 send_signal(ffmpeg_pid, libc::SIGSTOP);
                 paused = true;
-            } else if paused && ahead < MAX_BUFFER_SECS.saturating_sub(segment_length * 2) {
+            } else if paused
+                && ahead < MAX_BUFFER_SECS.saturating_sub(segment_length * 2)
+            {
                 debug!(pid = ffmpeg_pid, ahead, "Buffer drained — resuming ffmpeg");
                 #[cfg(unix)]
                 send_signal(ffmpeg_pid, libc::SIGCONT);
@@ -84,14 +86,23 @@ fn spawn_buffer_monitor(
 
 /// Delete `.ts` segment files whose index is less than `cutoff_idx`.
 fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.ends_with(".ts") { continue; }
+        if !name.ends_with(".ts") {
+            continue;
+        }
         // segment_00042.ts → parse the numeric suffix
-        let Some(idx_str) = name.strip_suffix(".ts").and_then(|s| s.rsplit('_').next()) else { continue };
-        let Ok(idx) = idx_str.parse::<u32>() else { continue };
+        let Some(idx_str) = name.strip_suffix(".ts").and_then(|s| s.rsplit('_').next())
+        else {
+            continue;
+        };
+        let Ok(idx) = idx_str.parse::<u32>() else {
+            continue;
+        };
         if idx < cutoff_idx {
             let _ = std::fs::remove_file(entry.path());
         }
@@ -103,11 +114,7 @@ fn count_segments(dir: &PathBuf) -> u32 {
         .map(|entries| {
             entries
                 .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .ends_with(".ts")
-                })
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".ts"))
                 .count() as u32
         })
         .unwrap_or(0)
@@ -178,9 +185,12 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     };
 
     let mut args: Vec<String> = vec![
-        "-v".into(), "error".into(),
-        "-analyzeduration".into(), "1000000".into(),
-        "-probesize".into(), "1000000".into(),
+        "-v".into(),
+        "error".into(),
+        "-analyzeduration".into(),
+        "1000000".into(),
+        "-probesize".into(),
+        "1000000".into(),
     ];
 
     // Input seek (fast, before -i)
@@ -202,8 +212,10 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         args.extend(["-vf".into(), filter.clone()]);
     } else if let Some(audio_idx) = params.audio_stream_index {
         args.extend([
-            "-map".into(), "0:v".into(),
-            "-map".into(), format!("0:{}", audio_idx),
+            "-map".into(),
+            "0:v".into(),
+            "-map".into(),
+            format!("0:{}", audio_idx),
         ]);
     }
 
@@ -212,16 +224,21 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     if ffmpeg_video_codec == "libx264" {
         args.extend([
-            "-crf".into(), "23".into(),
-            "-preset".into(), "fast".into(),
-            "-tune".into(), "zerolatency".into(),
+            "-crf".into(),
+            "23".into(),
+            "-preset".into(),
+            "fast".into(),
+            "-tune".into(),
+            "zerolatency".into(),
         ]);
         // Use client's max bitrate as a ceiling, not a CBR target.
         // This keeps libx264 memory usage low while honouring the cap.
         if let Some(bitrate) = params.video_bitrate {
             args.extend([
-                "-maxrate".into(), bitrate.to_string(),
-                "-bufsize".into(), (bitrate * 2).to_string(),
+                "-maxrate".into(),
+                bitrate.to_string(),
+                "-bufsize".into(),
+                (bitrate * 2).to_string(),
             ]);
         }
     } else if let Some(bitrate) = params.video_bitrate {
@@ -242,11 +259,16 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     let playlist = params.output_dir.join("main.m3u8");
     let segment = params.output_dir.join("segment_%05d.ts");
     args.extend([
-        "-f".into(), "hls".into(),
-        "-hls_time".into(), params.segment_length.to_string(),
-        "-hls_segment_filename".into(), segment.to_string_lossy().into_owned(),
-        "-hls_playlist_type".into(), "event".into(),
-        "-hls_list_size".into(), "0".into(),
+        "-f".into(),
+        "hls".into(),
+        "-hls_time".into(),
+        params.segment_length.to_string(),
+        "-hls_segment_filename".into(),
+        segment.to_string_lossy().into_owned(),
+        "-hls_playlist_type".into(),
+        "event".into(),
+        "-hls_list_size".into(),
+        "0".into(),
         playlist.to_string_lossy().into_owned(),
     ]);
 
@@ -423,13 +445,20 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
     };
 
     let mut args: Vec<String> = vec![
-        "-v".into(), "error".into(),
-        "-analyzeduration".into(), "5000000".into(),
-        "-probesize".into(), "5000000".into(),
-        "-reconnect".into(), "1".into(),
-        "-reconnect_at_eof".into(), "1".into(),
-        "-reconnect_streamed".into(), "1".into(),
-        "-reconnect_delay_max".into(), "5".into(),
+        "-v".into(),
+        "error".into(),
+        "-analyzeduration".into(),
+        "5000000".into(),
+        "-probesize".into(),
+        "5000000".into(),
+        "-reconnect".into(),
+        "1".into(),
+        "-reconnect_at_eof".into(),
+        "1".into(),
+        "-reconnect_streamed".into(),
+        "1".into(),
+        "-reconnect_delay_max".into(),
+        "5".into(),
     ];
 
     // Input seek (fast, before -i)
@@ -454,7 +483,9 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
 
     if let Some(ref filter) = scale_filter {
         args.extend(["-vf".into(), filter.clone()]);
-    } else if params.audio_stream_index.is_some() || params.subtitle_stream_index.is_some() {
+    } else if params.audio_stream_index.is_some()
+        || params.subtitle_stream_index.is_some()
+    {
         args.extend(["-map".into(), "0:v".into()]);
         if let Some(audio_idx) = params.audio_stream_index {
             args.extend(["-map".into(), format!("0:{}", audio_idx)]);

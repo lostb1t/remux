@@ -1,4 +1,4 @@
-use anyhow::{Result};
+use anyhow::Result;
 use std::path::PathBuf;
 use tray_icon::{
     TrayIconBuilder,
@@ -114,7 +114,9 @@ fn load_icon() -> tray_icon::Icon {
 /// Detect jellyfin-ffmpeg binaries bundled next to the executable and set
 /// FFMPEG_PATH / FFPROBE_PATH so the server uses them instead of system ffmpeg.
 fn set_ffmpeg_paths() {
-    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
     let Some(dir) = exe.parent() else { return };
 
     #[cfg(target_os = "windows")]

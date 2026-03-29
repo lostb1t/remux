@@ -1253,10 +1253,15 @@ impl Media {
         if filter.include_child_count && !records.is_empty() {
             let folder_ids: Vec<Uuid> = records
                 .iter()
-                .filter(|m| matches!(
-                    m.kind,
-                    MediaKind::Series | MediaKind::Season | MediaKind::Collection | MediaKind::Folder
-                ))
+                .filter(|m| {
+                    matches!(
+                        m.kind,
+                        MediaKind::Series
+                            | MediaKind::Season
+                            | MediaKind::Collection
+                            | MediaKind::Folder
+                    )
+                })
                 .map(|m| m.id)
                 .collect();
             if !folder_ids.is_empty() {
@@ -1294,10 +1299,8 @@ impl Media {
                 .user_id
                 .or_else(|| filter.user_state.as_ref().and_then(|s| s.user_id));
             if let Some(user_id) = uid {
-                let media_keys: Vec<String> = records
-                    .iter()
-                    .filter_map(|m| m.media_id.clone())
-                    .collect();
+                let media_keys: Vec<String> =
+                    records.iter().filter_map(|m| m.media_id.clone()).collect();
 
                 let states = super::UserMediaState::get_by_filter(
                     db,
@@ -1364,29 +1367,39 @@ impl Media {
         db: &sqlx::SqlitePool,
         filter: &jellyfin::GetItemsQuery,
         total_count: bool,
-        user_policy: Option<&jellyfin::UserPolicy>,
+        user: Option<&super::User>,
         server_config: Option<&jellyfin::ServerConfiguration>,
     ) -> Result<FilterResult<Media>> {
+        let user_policy = user.and_then(|u| u.policy.as_ref()).map(|p| &p.0);
         // Map media_types (Video, Book, ...) to MediaKind constraints
-        let media_type_kinds: Option<Vec<MediaKind>> = filter.media_types.as_ref().map(|types| {
-            types
-                .iter()
-                .flat_map(|t| match t {
-                    jellyfin::MediaType::Video => vec![MediaKind::Movie, MediaKind::Episode],
-                    _ => vec![],
-                })
-                .collect()
-        });
+        let media_type_kinds: Option<Vec<MediaKind>> =
+            filter.media_types.as_ref().map(|types| {
+                types
+                    .iter()
+                    .flat_map(|t| match t {
+                        jellyfin::MediaType::Video => {
+                            vec![MediaKind::Movie, MediaKind::Episode]
+                        }
+                        _ => vec![],
+                    })
+                    .collect()
+            });
 
         // media_types was specified but maps to no kinds we serve — return empty
         if matches!(&media_type_kinds, Some(v) if v.is_empty()) {
-            return Ok(FilterResult { records: vec![], total_count: 0 });
+            return Ok(FilterResult {
+                records: vec![],
+                total_count: 0,
+            });
         }
 
         let kinds = if let Some(include_item_types) = &filter.include_item_types {
             let ikt_kinds = include_item_types.clone().into_vec::<MediaKind>();
             if let Some(mt_kinds) = media_type_kinds {
-                ikt_kinds.into_iter().filter(|k| mt_kinds.contains(k)).collect()
+                ikt_kinds
+                    .into_iter()
+                    .filter(|k| mt_kinds.contains(k))
+                    .collect()
             } else {
                 ikt_kinds
             }
@@ -1522,20 +1535,25 @@ impl Media {
             };
 
         let release_date_applies = kinds.is_empty()
-            || kinds
-                .iter()
-                .any(|k| matches!(k, MediaKind::Movie | MediaKind::Series | MediaKind::Season | MediaKind::Episode));
-        let digital_released_before =
-            if release_date_applies
-                && server_config.map(|c| c.filter_by_digital_release_date) != Some(false)
-            {
-                let buffer = server_config
-                    .map(|c| c.digital_release_buffer_days)
-                    .unwrap_or(0);
-                Some(Utc::now().naive_utc() + Duration::days(buffer))
-            } else {
-                None
-            };
+            || kinds.iter().any(|k| {
+                matches!(
+                    k,
+                    MediaKind::Movie
+                        | MediaKind::Series
+                        | MediaKind::Season
+                        | MediaKind::Episode
+                )
+            });
+        let digital_released_before = if release_date_applies
+            && server_config.map(|c| c.filter_by_digital_release_date) != Some(false)
+        {
+            let buffer = server_config
+                .map(|c| c.digital_release_buffer_days)
+                .unwrap_or(0);
+            Some(Utc::now().naive_utc() + Duration::days(buffer))
+        } else {
+            None
+        };
 
         Ok(Self::get_by_filter(
             db,

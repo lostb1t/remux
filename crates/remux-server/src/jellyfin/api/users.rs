@@ -527,18 +527,21 @@ async fn resume_items(
     if q.limit.is_none() {
         q.limit = Some(50);
     }
-    let policy = session.user.policy.as_ref().map(|p| &p.0);
     let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
     let result = db::Media::get_by_jellyfin_filter(
         &state.ctx.db,
         &q,
         true,
-        policy,
+        Some(&session.user),
         server_config.as_ref(),
     )
     .await?;
     Ok(Json(jellyfin::BaseItemDtoQueryResult {
-        items: result.records.into_iter().map(jellyfin::db_media_to_item).collect(),
+        items: result
+            .records
+            .into_iter()
+            .map(jellyfin::db_media_to_item)
+            .collect(),
         total_record_count: result.total_count as i64,
         start_index: q.start_index.unwrap_or(0),
         ..Default::default()

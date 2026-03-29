@@ -561,7 +561,9 @@ impl GetItemsQuery {
     }
 }
 
-fn bool_true() -> bool { true }
+fn bool_true() -> bool {
+    true
+}
 
 fn deserialize_option_bool_from_anything<'de, D>(d: D) -> Result<Option<bool>, D::Error>
 where
@@ -570,7 +572,9 @@ where
     let opt = Option::<serde_json::Value>::deserialize(d)?;
     match opt {
         None => Ok(None),
-        Some(v) => deserialize_bool_from_anything(v).map(Some).map_err(serde::de::Error::custom),
+        Some(v) => deserialize_bool_from_anything(v)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
     }
 }
 

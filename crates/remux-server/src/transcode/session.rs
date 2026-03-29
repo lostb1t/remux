@@ -1,9 +1,9 @@
 use remux_sdks::jellyfin::models::TranscodeReasons;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 use std::time::Instant;
-use tokio::sync::{watch, Notify};
+use tokio::sync::{Notify, watch};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq)]

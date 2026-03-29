@@ -133,7 +133,6 @@ pub async fn get_items(
     //     });
     // }
 
-
     //let manifest = aio.get_manifest().await?;
 
     if let Some(parent) = &parent {
@@ -142,8 +141,7 @@ pub async fn get_items(
             // and ensure we only return BoxSet/CollectionFolder items.
             q.parent_id = None;
             if q.include_item_types.is_none() {
-                q.include_item_types =
-                    Some(vec![jellyfin::MediaType::BoxSet]);
+                q.include_item_types = Some(vec![jellyfin::MediaType::BoxSet]);
             }
         }
 
@@ -196,14 +194,13 @@ pub async fn get_items(
                 });
             }
 
-            let policy = session.user.policy.as_ref().map(|p| &p.0);
             let server_config =
                 crate::db::Settings::get_config(&state.ctx.db).await.ok();
             let result = db::Media::get_by_jellyfin_filter(
                 &state.ctx.db,
                 &q,
                 true,
-                policy,
+                Some(&session.user),
                 server_config.as_ref(),
             )
             .await?;
@@ -231,14 +228,13 @@ pub async fn get_items(
     }
 
     let want_total = q.enable_total_record_count.unwrap_or(true);
-    let policy = session.user.policy.as_ref().map(|p| &p.0);
     let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
     //trace!(?q, "get_items");
     let mut result = db::Media::get_by_jellyfin_filter(
         &state.ctx.db,
         &q,
         want_total,
-        policy,
+        Some(&session.user),
         server_config.as_ref(),
     )
     .await?;
