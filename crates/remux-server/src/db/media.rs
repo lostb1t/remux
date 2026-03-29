@@ -1367,8 +1367,31 @@ impl Media {
         user_policy: Option<&jellyfin::UserPolicy>,
         server_config: Option<&jellyfin::ServerConfiguration>,
     ) -> Result<FilterResult<Media>> {
+        // Map media_types (Video, Book, ...) to MediaKind constraints
+        let media_type_kinds: Option<Vec<MediaKind>> = filter.media_types.as_ref().map(|types| {
+            types
+                .iter()
+                .flat_map(|t| match t {
+                    jellyfin::MediaType::Video => vec![MediaKind::Movie, MediaKind::Episode],
+                    _ => vec![],
+                })
+                .collect()
+        });
+
+        // media_types was specified but maps to no kinds we serve — return empty
+        if matches!(&media_type_kinds, Some(v) if v.is_empty()) {
+            return Ok(FilterResult { records: vec![], total_count: 0 });
+        }
+
         let kinds = if let Some(include_item_types) = &filter.include_item_types {
-            include_item_types.clone().into_vec::<MediaKind>()
+            let ikt_kinds = include_item_types.clone().into_vec::<MediaKind>();
+            if let Some(mt_kinds) = media_type_kinds {
+                ikt_kinds.into_iter().filter(|k| mt_kinds.contains(k)).collect()
+            } else {
+                ikt_kinds
+            }
+        } else if let Some(mt_kinds) = media_type_kinds {
+            mt_kinds
         } else {
             Vec::new()
         };
@@ -1908,26 +1931,6 @@ impl Media {
 
         self.relations = Some(pairs);
         Ok(())
-    }
-
-    pub fn media_key(&self) -> String {
-        match self.kind {
-            MediaKind::Movie | MediaKind::Series => {
-                self.external_ids.imdb.clone().unwrap()
-            }
-            MediaKind::Season => format!(
-                "{}{}",
-                self.series_media_id.clone().unwrap(),
-                self.idx.unwrap()
-            ),
-            MediaKind::Episode => format!(
-                "{}{}{}",
-                self.series_media_id.clone().unwrap(),
-                self.parent_idx.unwrap(),
-                self.idx.unwrap()
-            ),
-            _ => panic!("in the discoteq"),
-        }
     }
 
     /// Count items by kind

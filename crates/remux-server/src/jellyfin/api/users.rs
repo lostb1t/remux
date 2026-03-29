@@ -517,12 +517,41 @@ pub async fn users_views(
     userviews(State(state), session).await
 }
 
+async fn resume_items(
+    state: AppState,
+    session: auth::AuthSession,
+    mut q: jellyfin::GetItemsQuery,
+) -> Result<impl IntoResponse> {
+    q.user_id = Some(session.user.id);
+    q.filters = Some(vec![jellyfin::ItemFilter::IsResumable]);
+    if q.limit.is_none() {
+        q.limit = Some(50);
+    }
+    let policy = session.user.policy.as_ref().map(|p| &p.0);
+    let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
+    let result = db::Media::get_by_jellyfin_filter(
+        &state.ctx.db,
+        &q,
+        true,
+        policy,
+        server_config.as_ref(),
+    )
+    .await?;
+    Ok(Json(jellyfin::BaseItemDtoQueryResult {
+        items: result.records.into_iter().map(jellyfin::db_media_to_item).collect(),
+        total_record_count: result.total_count as i64,
+        start_index: q.start_index.unwrap_or(0),
+        ..Default::default()
+    }))
+}
+
 #[get("/users/{user_id}/items/resume")]
 pub async fn users_items_resume(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
+    Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    mock_items(State(state)).await
+    resume_items(state, session, q).await
 }
 
 #[get("/users/{user_id}/items/similar")]
@@ -552,9 +581,10 @@ pub async fn users_items_intros(
 #[get("/useritems/resume")]
 pub async fn useritems_resume(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
+    Query(q): Query<jellyfin::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    mock_items(State(state)).await
+    resume_items(state, session, q).await
 }
 
 #[cfg(test)]

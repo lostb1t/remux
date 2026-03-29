@@ -509,7 +509,8 @@ pub struct GetItemsQuery {
     pub genre_ids: Option<Vec<String>>,
     pub official_ratings: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
-    pub media_types: Option<Vec<String>>,
+    #[serde(deserialize_with = "deserialize_media_types", default)]
+    pub media_types: Option<Vec<MediaType>>,
     pub filters: Option<Vec<ItemFilter>>,
     pub person_ids: Option<Vec<String>>,
     pub person_types: Option<Vec<String>>,
