@@ -345,6 +345,8 @@ pub struct MediaFilter {
     pub total_count: bool,
     pub include_user_state: bool,
     pub include_child_count: bool,
+    /// User ID to use when loading user state (separate from user_state filter)
+    pub user_id: Option<Uuid>,
     pub user_state: Option<super::UserMediaStateFilter>,
     pub genre_ids: Option<Vec<Uuid>>,
     pub catalog_ids: Option<Vec<Uuid>>,
@@ -1288,17 +1290,20 @@ impl Media {
         }
 
         if filter.include_user_state {
-            if let Some(user_state_filter) = &filter.user_state {
-                let media_keys: Vec<String> =
-                    records.iter().map(|m| m.media_key()).collect();
+            let uid = filter
+                .user_id
+                .or_else(|| filter.user_state.as_ref().and_then(|s| s.user_id));
+            if let Some(user_id) = uid {
+                let media_keys: Vec<String> = records
+                    .iter()
+                    .filter_map(|m| m.media_id.clone())
+                    .collect();
 
                 let states = super::UserMediaState::get_by_filter(
                     db,
                     &super::UserMediaStateFilter {
-                        user_id: user_state_filter.user_id,
+                        user_id: Some(user_id),
                         media_key: Some(media_keys),
-                        played: user_state_filter.played,
-                        favorite: user_state_filter.favorite,
                         ..Default::default()
                     },
                 )
@@ -1310,10 +1315,9 @@ impl Media {
                     .map(|state| (state.media_key.clone(), state))
                     .collect();
 
-                // Only attach user state if include_user_state is set
-                if filter.include_user_state {
-                    for media in &mut records {
-                        if let Some(state) = states_map.get(&media.media_key()) {
+                for media in &mut records {
+                    if let Some(ref mk) = media.media_id {
+                        if let Some(state) = states_map.get(mk) {
                             media.user_state = Some(state.clone());
                         }
                     }
@@ -1520,6 +1524,7 @@ impl Media {
                 offset: filter.start_index.clone(),
                 recursive: filter.recursive,
                 include_user_state: filter.enable_user_data.is_none(),
+                user_id: filter.user_id,
                 include_child_count: filter
                     .fields
                     .as_deref()

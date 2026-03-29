@@ -119,7 +119,7 @@ pub fn db_state_to_dto(
     UserItemDataDto {
         played: state.played_at.is_some(),
         last_played_date: state.played_at.map(|x| x.and_utc()),
-        playback_position_ticks: state.playback_position * 10_000,
+        playback_position_ticks: state.playback_position * 10_000_000,
         play_count: state.play_count as i32,
         is_favorite: state.favorite,
         key: state.media_key,
