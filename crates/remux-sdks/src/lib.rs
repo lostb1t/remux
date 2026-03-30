@@ -96,13 +96,36 @@ pub enum ClientError {
     Other(#[from] anyhow::Error),
 }
 
+impl ClientError {
+    /// Human-readable message suitable for display in a UI.
+    /// For `Http` errors this is just the message field, omitting the status/endpoint noise.
+    pub fn user_message(&self) -> String {
+        match self {
+            ClientError::Http { message, .. } => message.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
+fn try_extract_error_message(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let title = v.get("title")?.as_str()?;
+    let detail = v.get("detail").and_then(|d| d.as_str());
+    Some(match detail {
+        Some(d) if !d.is_empty() => format!("{title}: {d}"),
+        _ => title.to_string(),
+    })
+}
+
 fn default_error_mapper(status: u16, endpoint: &str, body: &str) -> ClientError {
     if status == 401 {
         ClientError::Unauthorized
     } else {
+        let message = try_extract_error_message(body)
+            .unwrap_or_else(|| "http error".to_string());
         ClientError::Http {
             status,
-            message: "http error".to_string(),
+            message,
             endpoint: Some(endpoint.to_string()),
             body: Some(body.to_string()),
         }

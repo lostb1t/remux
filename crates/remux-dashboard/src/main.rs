@@ -687,7 +687,7 @@ fn TaskTriggersModal(
                             Ok(_) => on_done.call(()),
                             Err(e) => {
                                 saving.set(false);
-                                error.set(Some(e.to_string()));
+                                error.set(Some(e.user_message()));
                             }
                         }
                     });
@@ -1512,7 +1512,7 @@ fn CollectionForm(
             match result {
                 Ok(_) => on_done.call(()),
                 Err(e) => {
-                    err.set(Some(format!("{e}")));
+                    err.set(Some(e.user_message()));
                     saving.set(false);
                 }
             }
@@ -1522,10 +1522,6 @@ fn CollectionForm(
     rsx! {
         p { class: "modal-title",
             if is_edit { "Edit Collection" } else { "New Collection" }
-        }
-
-        if let Some(e) = err.read().as_ref() {
-            div { class: "alert-error", "{e}" }
         }
 
         form {
@@ -1636,6 +1632,10 @@ fn CollectionForm(
                     }
                     span { class: "toggle-track" }
                 }
+            }
+
+            if let Some(e) = err.read().as_ref() {
+                div { class: "alert-error", "{e}" }
             }
 
             div { class: "form-actions",
@@ -2013,7 +2013,7 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
                                                     let v = *refresh.peek() + 1;
                                                     refresh.set(v);
                                                 }
-                                                Err(e) => ch_save_error.set(Some(e.to_string())),
+                                                Err(e) => ch_save_error.set(Some(e.user_message())),
                                             }
                                             ch_saving.set(false);
                                         });
@@ -2157,7 +2157,7 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
                                                     let v = *refresh.peek() + 1;
                                                     refresh.set(v);
                                                 }
-                                                Err(e) => epg_save_error.set(Some(e.to_string())),
+                                                Err(e) => epg_save_error.set(Some(e.user_message())),
                                             }
                                             epg_saving.set(false);
                                         });
@@ -2905,7 +2905,7 @@ fn UserForm(
             match result {
                 Ok(_) => on_done.call(()),
                 Err(e) => {
-                    err.set(Some(format!("{e}")));
+                    err.set(Some(e.user_message()));
                     saving.set(false);
                 }
             }
@@ -2915,10 +2915,6 @@ fn UserForm(
     rsx! {
         p { class: "modal-title",
             if is_edit { "Edit User" } else { "New User" }
-        }
-
-        if let Some(e) = err.read().as_ref() {
-            div { class: "alert-error", "{e}" }
         }
 
         form {
@@ -2976,6 +2972,10 @@ fn UserForm(
                     }
                     span { class: "toggle-track" }
                 }
+            }
+
+            if let Some(e) = err.read().as_ref() {
+                div { class: "alert-error", "{e}" }
             }
 
             div { class: "form-actions",
@@ -3362,7 +3362,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                 .await
             {
                 Ok(_) => saved.set(true),
-                Err(e) => error.set(Some(format!("Failed to save: {e}"))),
+                Err(e) => error.set(Some(e.user_message())),
             }
             saving.set(false);
         });
@@ -3377,13 +3377,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                 if *loading.read() {
                     span { class: "loading-text", "Loading…" }
                 } else {
-                    if let Some(err) = error.read().as_ref() {
-                        div { class: "alert-error", "{err}" }
-                    }
-                    if *saved.read() {
-                        div { class: "alert-success", "Settings saved." }
-                    }
-
                     form {
                         onsubmit: on_submit,
                         style: "display:flex;flex-direction:column;gap:14px",
@@ -3554,6 +3547,13 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                         }
 
+                        if let Some(err) = error.read().as_ref() {
+                            div { class: "alert-error", "{err}" }
+                        }
+                        if *saved.read() {
+                            div { class: "alert-success", "Settings saved." }
+                        }
+
                         div { class: "form-actions",
                             button {
                                 r#type: "submit",
@@ -3617,7 +3617,7 @@ fn BrandingPage(app_state: AppState) -> Element {
                 .await
             {
                 Ok(_) => saved.set(true),
-                Err(e) => error.set(Some(format!("Failed to save: {e}"))),
+                Err(e) => error.set(Some(e.user_message())),
             }
             saving.set(false);
         });
@@ -3632,13 +3632,6 @@ fn BrandingPage(app_state: AppState) -> Element {
                 if *loading.read() {
                     span { class: "loading-text", "Loading…" }
                 } else {
-                    if let Some(err) = error.read().as_ref() {
-                        div { class: "alert-error", "{err}" }
-                    }
-                    if *saved.read() {
-                        div { class: "alert-success", "Branding saved." }
-                    }
-
                     form {
                         onsubmit: on_submit,
                         style: "display:flex;flex-direction:column;gap:14px",
@@ -3665,6 +3658,13 @@ fn BrandingPage(app_state: AppState) -> Element {
                                 value: "{login_disclaimer}",
                                 oninput: move |e| login_disclaimer.set(e.value()),
                             }
+                        }
+
+                        if let Some(err) = error.read().as_ref() {
+                            div { class: "alert-error", "{err}" }
+                        }
+                        if *saved.read() {
+                            div { class: "alert-success", "Branding saved." }
                         }
 
                         div { class: "form-actions",
