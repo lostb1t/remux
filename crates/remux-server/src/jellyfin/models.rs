@@ -112,12 +112,9 @@ pub fn db_user_to_dto(user: db::User) -> UserDto {
     }
 }
 
-pub fn db_state_to_dto(
-    state: db::UserMediaState,
-    media_id: uuid::Uuid,
-    runtime: Option<i64>,
-) -> UserItemDataDto {
-    let played_percentage = runtime
+pub fn db_state_to_dto(state: db::UserMediaState, media: &db::Media) -> UserItemDataDto {
+    let played_percentage = media
+        .runtime
         .filter(|&r| r > 0)
         .map(|r| (state.playback_position as f32 / r as f32 * 100.0).clamp(0.0, 100.0));
     UserItemDataDto {
@@ -128,7 +125,7 @@ pub fn db_state_to_dto(
         is_favorite: state.favorite,
         played_percentage,
         key: state.media_key,
-        item_id: media_id,
+        item_id: media.id,
         ..Default::default()
     }
 }
@@ -177,7 +174,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             media
                 .user_state
                 .clone()
-                .map(|s| db_state_to_dto(s, media.id.clone(), media.runtime))
+                .map(|s| db_state_to_dto(s, &media))
                 .unwrap_or_else(|| UserItemDataDto {
                     item_id: media.id.clone(),
                     key: media.id.to_string(),

@@ -267,7 +267,7 @@ pub async fn mark_favorite(
         .await?
         .context("not foubd")?;
     let state = media.mark_favorite(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::db_state_to_dto(state, id, media.runtime)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(state, &media)).into_response())
 }
 
 #[delete("/users/{user_id}/favoriteitems/{id}")]
@@ -280,7 +280,7 @@ pub async fn unmark_favorite(
         .await?
         .context("not foubd")?;
     let state = media.unmark_favorite(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::db_state_to_dto(state, id, media.runtime)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(state, &media)).into_response())
 }
 
 #[post("/userfavoriteitems/{id}")]
@@ -293,7 +293,7 @@ pub async fn mark_favorite_modern(
         .await?
         .context_not_found("Not Found", "Item not found")?;
     let s = media.mark_favorite(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::db_state_to_dto(s, id, media.runtime)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(s, &media)).into_response())
 }
 
 #[delete("/userfavoriteitems/{id}")]
@@ -306,7 +306,7 @@ pub async fn unmark_favorite_modern(
         .await?
         .context_not_found("Not Found", "Item not found")?;
     let s = media.unmark_favorite(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::db_state_to_dto(s, id, media.runtime)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(s, &media)).into_response())
 }
 
 #[post("/users/{user_id}/playeditems/{id}")]
@@ -319,7 +319,7 @@ pub async fn mark_played(
         .await?
         .context("not foubd")?;
     let state = media.mark_played(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::db_state_to_dto(state, id, media.runtime)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(state, &media)).into_response())
 }
 
 #[delete("/users/{user_id}/playeditems/{id}")]
@@ -332,7 +332,7 @@ pub async fn unmark_played(
         .await?
         .context("not foubd")?;
     let state = media.mark_unplayed(&state.ctx.db, &session.user).await?;
-    Ok(Json(jellyfin::db_state_to_dto(state, id, media.runtime)).into_response())
+    Ok(Json(jellyfin::db_state_to_dto(state, &media)).into_response())
 }
 
 #[get("/users/{user_id}/groupingoptions")]
