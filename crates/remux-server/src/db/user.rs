@@ -318,6 +318,7 @@ pub struct UserMediaState {
     pub play_count: i64,
     pub played_at: Option<NaiveDateTime>,
     pub playback_position: i64,
+    pub last_played_at: Option<NaiveDateTime>,
     //pub stream_id: Option<Uuid>,
     pub subtitle_idx: Option<i64>,
     pub audio_idx: Option<i64>,
@@ -374,6 +375,7 @@ impl UserMediaState {
             self.user_id, self.media_key
         );
 
+        let now = chrono::Utc::now().naive_utc();
         sqlx::query(
             r#"
             INSERT INTO user_media_state (
@@ -384,10 +386,11 @@ impl UserMediaState {
                 play_count,
                 played_at,
                 playback_position,
+                last_played_at,
                 subtitle_idx,
                 audio_idx
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(user_id, media_key)
             DO UPDATE SET
                 stream_id = excluded.stream_id,
@@ -395,6 +398,7 @@ impl UserMediaState {
                 play_count = excluded.play_count,
                 played_at = excluded.played_at,
                 playback_position = excluded.playback_position,
+                last_played_at = excluded.last_played_at,
                 subtitle_idx = excluded.subtitle_idx,
                 audio_idx = excluded.audio_idx
             "#,
@@ -406,6 +410,7 @@ impl UserMediaState {
         .bind(self.play_count)
         .bind(self.played_at)
         .bind(self.playback_position)
+        .bind(now)
         .bind(self.subtitle_idx)
         .bind(self.audio_idx)
         .execute(db)
