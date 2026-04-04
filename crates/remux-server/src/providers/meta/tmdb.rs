@@ -90,18 +90,9 @@ impl MetaProvider for TmdbMetaProvider {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Option<MetaResult>> {
-        // 1. Read API key from settings — skip if not configured
         let config = crate::db::Settings::get_config(&ctx.db).await?;
-        let api_key = match config.tmdb_api_key.as_deref().filter(|k| !k.is_empty()) {
-            Some(k) => k.to_string(),
-            None => {
-                tracing::debug!("TMDB API key is not configured; skipping metadata enrichment. This is required for full Cast & Crew info.");
-                return Ok(None);
-            }
-        };
-        // 2. Determine the best available external ID and its source type.
-        //    Priority: tmdb > imdb > tvdb.
-        //    For seasons/episodes fall back to series_media_id which holds the series imdb.
+        let api_key = config.get_tmdb_key().to_string();
+
         let ids = &media.external_ids;
         let lookup = if let Some(tmdb_id) = ids.tmdb {
             Some((tmdb_id.to_string(), "tmdb_id"))
@@ -121,7 +112,6 @@ impl MetaProvider for TmdbMetaProvider {
             None => return Ok(None),
         };
 
-        // 3. TMDB Find-by-external-ID
         let client = sdks::RestClient::new("https://api.themoviedb.org/3/")?
             .with_auth(sdks::BearerAuth { token: api_key });
 
@@ -143,7 +133,6 @@ impl MetaProvider for TmdbMetaProvider {
             }
         };
 
-        // 4. Follow up with detail calls for certain types to get credits/full meta
         match media.kind {
             db::MediaKind::Movie => {
                 let m = find_resp.movie_results.into_iter().next();

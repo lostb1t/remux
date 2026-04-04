@@ -121,6 +121,17 @@ pub struct ServerConfiguration {
     pub enable_subtitles_detail: Option<bool>,
 }
 
+impl ServerConfiguration {
+    const DEFAULT_TMDB_KEY: &'static str = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIwZDczZTBjYjkxZjM5ZTY3MGIwZWZhNjkxM2FmYmQ1OCIsIm5iZiI6MTUzMjkzOTA3My41MzcsInN1YiI6IjViNWVjYjQxMGUwYTI2MmU5MDA0NjNjMCIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.vfOGe8_35CxhjjZXdnR2iAwdOMIY0VFYMBQrLWuRqn8";
+
+    pub fn get_tmdb_key(&self) -> &str {
+        self.tmdb_api_key
+            .as_deref()
+            .filter(|k| !k.is_empty())
+            .unwrap_or(Self::DEFAULT_TMDB_KEY)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct StartupConfiguration {

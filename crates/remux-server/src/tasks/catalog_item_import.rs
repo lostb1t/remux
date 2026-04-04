@@ -144,20 +144,16 @@ impl Task for CatalogItemImportTask {
     ) -> Result<()> {
         let aio = crate::aio::AioService::from_settings(&ctx.db).await?;
 
-        // Build TMDB client once if an API key is configured; used as fallback in resolve_imdb_id.
+        // Build TMDB client using the configured key, or the built-in default.
         let tmdb_client = {
-            let cfg = crate::db::Settings::get_config(&ctx.db).await.ok();
-            cfg.as_ref()
-                .and_then(|c| c.tmdb_api_key.as_deref())
-                .filter(|k| !k.is_empty())
-                .and_then(|key| {
-                    sdks::RestClient::new("https://api.themoviedb.org/3/")
-                        .ok()
-                        .map(|c| {
-                            c.with_auth(sdks::BearerAuth {
-                                token: key.to_string(),
-                            })
-                        })
+            let cfg = crate::db::Settings::get_config(&ctx.db).await.unwrap_or_default();
+            let key = cfg.get_tmdb_key().to_string();
+            sdks::RestClient::new("https://api.themoviedb.org/3/")
+                .ok()
+                .map(|c| {
+                    c.with_auth(sdks::BearerAuth {
+                        token: key,
+                    })
                 })
         };
 
