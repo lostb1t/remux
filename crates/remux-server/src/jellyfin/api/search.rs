@@ -3,7 +3,9 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use axum_extra::extract::Query;
 use chrono::Datelike;
+use itertools::Itertools;
 use remux_macros::get;
+use std::time::Duration;
 
 use crate::AppState;
 use crate::db;
@@ -34,7 +36,6 @@ pub async fn search_hints(
             kind: Some(vec![
                 db::MediaKind::Movie,
                 db::MediaKind::Series,
-                db::MediaKind::Episode,
             ]),
             limit: Some(limit),
             ..Default::default()
@@ -46,12 +47,22 @@ pub async fn search_hints(
     // AIO live search if DB returns nothing
     let results = if db_results.is_empty() {
         if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
-            let media_type = crate::sdks::aio::MediaType::Movie;
-            aio.search(media_type, term.clone())
-                .await
-                .unwrap_or_default()
+            let movie_fut = aio.search(crate::sdks::aio::MediaType::Movie, term.clone());
+            let series_fut = aio.search(crate::sdks::aio::MediaType::Series, term.clone());
+            let (movie_res, series_res) = tokio::join!(movie_fut, series_fut);
+
+            let mut combined = series_res.unwrap_or_default();
+            combined.extend(movie_res.unwrap_or_default());
+
+            combined
                 .into_iter()
-                .filter_map(|meta| db::Media::try_from(meta).ok())
+                // Deduplicate by IMDb ID if available, otherwise by AIO ID
+                .unique_by(|meta| meta.imdb_id.clone().unwrap_or_else(|| meta.id.clone()))
+                .filter_map(|meta| {
+                    let m = db::Media::try_from(meta.clone()).ok()?;
+                    state.ctx.store.insert(m.id, meta, Duration::from_secs(3600));
+                    Some(m)
+                })
                 .collect()
         } else {
             vec![]
@@ -73,10 +84,11 @@ pub async fn search_hints(
                 m.kind,
                 db::MediaKind::Series | db::MediaKind::Season
             )),
-            media_type: Some(match m.kind {
-                db::MediaKind::Movie | db::MediaKind::Episode => "Video".to_string(),
-                _ => "Unknown".to_string(),
-            }),
+            media_type: match m.kind {
+                db::MediaKind::Movie | db::MediaKind::Episode => Some("Video".to_string()),
+                _ => None,
+            },
+            series_id: m.series_id,
             ..Default::default()
         })
         .collect::<Vec<_>>();

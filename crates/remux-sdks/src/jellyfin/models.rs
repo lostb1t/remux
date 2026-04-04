@@ -1346,6 +1346,7 @@ pub enum ImageType {
     Primary,
     Backdrop,
     Logo,
+    LogoImageAspectRatio,
     Thumb,
 }
 
@@ -2216,6 +2217,7 @@ pub enum ItemFields {
     Path,
     People,
     PlayAccess,
+    PremiereDate,
     ProductionLocations,
     ProviderIds,
     PrimaryImageAspectRatio,
@@ -2242,6 +2244,7 @@ pub enum ItemFields {
     SeriesPresentationUniqueKey,
     DateLastRefreshed,
     DateLastSaved,
+    UserData,
     RefreshState,
     ChannelImage,
     EnableMediaSourceDisplay,

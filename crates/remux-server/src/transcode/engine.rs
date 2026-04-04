@@ -199,7 +199,12 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         args.extend(["-ss".into(), format!("{:.6}", secs)]);
     }
 
-    args.extend(["-i".into(), params.input_url.clone()]);
+    args.extend([
+        "-copyts".into(),
+        "-i".into(), params.input_url.clone(),
+        "-avoid_negative_ts".into(), "disabled".into(),
+        "-max_muxing_queue_size".into(), "2048".into(),
+    ]);
 
     // Stream mapping
     let scale_filter = if ffmpeg_video_codec != "copy" {
@@ -224,12 +229,11 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     if ffmpeg_video_codec == "libx264" {
         args.extend([
-            "-crf".into(),
-            "23".into(),
-            "-preset".into(),
-            "fast".into(),
-            "-tune".into(),
-            "zerolatency".into(),
+            "-profile:v".into(), "high".into(),
+            "-pix_fmt".into(), "yuv420p".into(),
+            "-crf".into(), "23".into(),
+            "-preset".into(), "fast".into(),
+            "-tune".into(), "zerolatency".into(),
         ]);
         // Use client's max bitrate as a ceiling, not a CBR target.
         // This keeps libx264 memory usage low while honouring the cap.
@@ -258,17 +262,18 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     // HLS output
     let playlist = params.output_dir.join("main.m3u8");
     let segment = params.output_dir.join("segment_%05d.ts");
+    
+    let start_number = params.start_time_ticks
+        .map(|t| (t as f64 / 10_000_000.0 / params.segment_length as f64).floor() as u32)
+        .unwrap_or(0);
+
     args.extend([
-        "-f".into(),
-        "hls".into(),
-        "-hls_time".into(),
-        params.segment_length.to_string(),
-        "-hls_segment_filename".into(),
-        segment.to_string_lossy().into_owned(),
-        "-hls_playlist_type".into(),
-        "event".into(),
-        "-hls_list_size".into(),
-        "0".into(),
+        "-f".into(), "hls".into(),
+        "-hls_time".into(), params.segment_length.to_string(),
+        "-start_number".into(), start_number.to_string(),
+        "-hls_segment_filename".into(), segment.to_string_lossy().into_owned(),
+        "-hls_playlist_type".into(), "event".into(),
+        "-hls_list_size".into(), "0".into(),
         playlist.to_string_lossy().into_owned(),
     ]);
 
@@ -502,10 +507,15 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
     if ffmpeg_video_codec == "copy" {
         // Force hvc1 tag for HEVC Apple compatibility
         args.extend(["-tag:v".into(), "hvc1".into()]);
-    } else if let Some(bitrate) = params.video_bitrate {
-        args.extend(["-b:v".into(), bitrate.to_string()]);
     } else {
-        args.extend(["-preset".into(), "fast".into()]);
+        if ffmpeg_video_codec == "libx264" {
+            args.extend(["-pix_fmt".into(), "yuv420p".into()]);
+        }
+        if let Some(bitrate) = params.video_bitrate {
+            args.extend(["-b:v".into(), bitrate.to_string()]);
+        } else {
+            args.extend(["-preset".into(), "fast".into()]);
+        }
     }
 
     // Audio

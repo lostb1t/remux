@@ -25,6 +25,7 @@ pub struct Movie {
     pub original_language: String,
     pub genres: Option<Vec<super::Genre>>,
     pub external_ids: Option<super::ExternalIds>,
+    pub credits: Option<super::Credits>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,9 +61,9 @@ impl Endpoint for MovieEndpoint {
         if let Some(lang) = &self.language {
             params.push(("language".to_string(), lang.clone()));
         }
-        // if let Some(appends) = &self.append_to_response {
-        //params.push(("append_to_response".to_string(), self.append_to_response.join(",")));
-        //    }
+        if !self.append_to_response.is_empty() {
+            params.push(("append_to_response".to_string(), self.append_to_response.join(",")));
+        }
         params
     }
 }

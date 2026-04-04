@@ -220,6 +220,8 @@ pub enum RelationRole {
     Actor,
     Director,
     Writer,
+    Producer,
+    Creator,
     Catalog,
 }
 
@@ -231,6 +233,7 @@ pub struct MediaRelation {
     pub right_media_id: Uuid,
     pub weight: Option<i64>,
     pub role: Option<RelationRole>,
+    pub character: Option<String>,
 }
 
 impl MediaRelation {
@@ -244,7 +247,7 @@ impl MediaRelation {
 
         for chunk in items.chunks(BATCH_SIZE) {
             let mut qb = sqlx::QueryBuilder::new(
-                "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, weight, role) ",
+                "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, weight, role, character) ",
             );
 
             qb.push_values(chunk.iter(), |mut b, item| {
@@ -252,10 +255,11 @@ impl MediaRelation {
                     .push_bind(&item.left_media_id)
                     .push_bind(&item.right_media_id)
                     .push_bind(&item.weight)
-                    .push_bind(&item.role);
+                    .push_bind(&item.role)
+                    .push_bind(&item.character);
             });
 
-            qb.push(" ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight");
+            qb.push(" ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight, character = excluded.character");
 
             qb.build().execute(&mut *tx).await?;
         }
@@ -646,6 +650,9 @@ impl Media {
         }
 
         let mut tx = db.begin().await?;
+        sqlx::query("PRAGMA defer_foreign_keys = ON")
+            .execute(&mut *tx)
+            .await?;
         const BATCH_SIZE: usize = 500;
 
         for chunk in items.chunks(BATCH_SIZE) {
@@ -715,6 +722,9 @@ impl Media {
         }
 
         let mut tx = db.begin().await?;
+        sqlx::query("PRAGMA defer_foreign_keys = ON")
+            .execute(&mut *tx)
+            .await?;
         const BATCH_SIZE: usize = 500;
 
         for chunk in items.chunks(BATCH_SIZE) {
@@ -2019,9 +2029,10 @@ impl TryFrom<sdks::aio::Meta> for Media {
         //self.info_hash.is_some()
         // let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
 
-        let media_kind = MediaKind::from(meta.media_type.clone());
-        //let imdb_id = meta.imdb_id.clone();
-        //debug!(?meta.id);
+        let mut media_kind = MediaKind::from(meta.media_type.clone());
+        if media_kind == MediaKind::Movie && meta.videos.as_ref().map_or(false, |v| !v.is_empty()) {
+            media_kind = MediaKind::Series;
+        }
 
         let digital_released_at = meta
             .app_extras
@@ -2086,6 +2097,7 @@ impl TryFrom<sdks::aio::Meta> for Media {
             }),
 
             //tmdb_id: Some(imdb_id.clone()),
+            id: crate::utils::get_stable_uuid(meta.id.clone()),
             ..Default::default()
         };
 

@@ -12,7 +12,7 @@ use serde_with::{DisplayFromStr, serde_as};
 pub struct Series {
     pub adult: bool,
     pub backdrop_path: Option<String>,
-    //pub created_by: Option<Vec<Creator>>,
+    pub created_by: Option<Vec<super::Creator>>,
     // pub episode_run_time: Vec<u32>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub first_air_date: Option<NaiveDate>,
@@ -45,6 +45,7 @@ pub struct Series {
     pub vote_average: Option<f64>,
     pub vote_count: u32,
     pub external_ids: Option<super::ExternalIds>,
+    pub credits: Option<super::Credits>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +74,20 @@ impl Endpoint for SeriesEndpoint {
 
     fn path(&self) -> String {
         format!("tv/{}", self.id)
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        let mut params = vec![];
+        if let Some(lang) = &self.language {
+            params.push(("language".to_string(), lang.clone()));
+        }
+        if !self.append_to_response.is_empty() {
+            params.push((
+                "append_to_response".to_string(),
+                self.append_to_response.join(","),
+            ));
+        }
+        params
     }
 }
 
@@ -130,4 +145,55 @@ pub struct Episode {
     pub season_number: i64,
     pub show_id: i64,
     pub still_path: Option<String>,
+    pub credits: Option<super::Credits>,
+    pub external_ids: Option<super::ExternalIds>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpisodeEndpoint {
+    pub series_id: i64,
+    pub season_number: i64,
+    pub episode_number: i64,
+
+    // #[builder(default = "en")]
+    pub language: Option<String>,
+
+    //#[builder(default = "Some(vec![\"images\".to_string(), \"external_ids\".to_string()])")]
+    pub append_to_response: Option<Vec<String>>,
+}
+
+impl EpisodeEndpoint {
+    pub fn new(series_id: i64, season_number: i64, episode_number: i64) -> Self {
+        Self {
+            series_id,
+            season_number,
+            episode_number,
+            language: Some("en".to_string()),
+            append_to_response: Some(super::default_append_to_response()),
+        }
+    }
+}
+
+impl Endpoint for EpisodeEndpoint {
+    type Output = Episode;
+
+    fn path(&self) -> String {
+        format!(
+            "tv/{}/season/{}/episode/{}",
+            self.series_id, self.season_number, self.episode_number
+        )
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        let mut params = vec![];
+        if let Some(lang) = &self.language {
+            params.push(("language".to_string(), lang.clone()));
+        }
+        if let Some(append) = &self.append_to_response {
+            if !append.is_empty() {
+                params.push(("append_to_response".to_string(), append.join(",")));
+            }
+        }
+        params
+    }
 }

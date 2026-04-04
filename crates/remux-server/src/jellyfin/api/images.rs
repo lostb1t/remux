@@ -27,7 +27,7 @@ async fn items_images_inner(
     let url = match image_type {
         jellyfin::ImageType::Primary => media.poster,
         jellyfin::ImageType::Backdrop => media.backdrop,
-        jellyfin::ImageType::Logo => media.logo,
+        jellyfin::ImageType::Logo | jellyfin::ImageType::LogoImageAspectRatio => media.logo,
         jellyfin::ImageType::Thumb => media.poster,
     }
     .unwrap_or_else(|| "https://placehold.co/600x400".to_string());

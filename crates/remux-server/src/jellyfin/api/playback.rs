@@ -347,14 +347,19 @@ async fn items_playbackinfo_inner(
                 .to_query_value()
                 .map(|v| format!("&TranscodeReasons={}", v))
                 .unwrap_or_default();
-            let audio_stream_param = source
-                .default_audio_stream_index
+            let audio_stream_param = query.audio_stream_index.or(source.default_audio_stream_index)
                 .map(|idx| format!("&AudioStreamIndex={}", idx))
+                .unwrap_or_default();
+            let subtitle_stream_param = query.subtitle_stream_index.or(source.default_subtitle_stream_index)
+                .map(|idx| format!("&SubtitleStreamIndex={}", idx))
+                .unwrap_or_default();
+            let start_time_param = query.start_time_ticks
+                .map(|t| format!("&StartTimeTicks={}", t))
                 .unwrap_or_default();
 
             source.supports_transcoding = true;
             source.transcoding_url = Some(format!(
-                "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}",
+                "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}",
                 id,
                 play_session_id,
                 source.id,
@@ -363,6 +368,8 @@ async fn items_playbackinfo_inner(
                 bitrate_param,
                 reasons_param,
                 audio_stream_param,
+                subtitle_stream_param,
+                start_time_param
             ));
             source.transcoding_container = Some(trans_container);
             source.transcoding_sub_protocol = trans_protocol;
@@ -1558,8 +1565,11 @@ pub async fn master_hls_video(
         // Resolve Docker-internal hostnames to user-configured origin.
         let input_url = crate::aio::resolve_url(&state.ctx.db, &raw_input_url).await;
 
-        let output_dir =
-            std::path::PathBuf::from("transcode_sessions").join(&play_session_id);
+        let output_dir = std::path::PathBuf::from("transcode_sessions")
+            .join(&play_session_id);
+        // Keep the API stable (no RunId in URLs) by reusing one on-disk path per
+        // PlaySessionId and clearing stale segments when a transcode restarts.
+        let _ = std::fs::remove_dir_all(&output_dir);
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,

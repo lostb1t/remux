@@ -183,9 +183,13 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         ),
         media_type: match media.kind {
             db::MediaKind::Movie | db::MediaKind::Episode => "Video".to_string(),
-            db::MediaKind::TvChannel | db::MediaKind::TvProgram => "Video".to_string(),
-            _ => "Unknown".to_string(),
+            db::MediaKind::TvChannel | db::MediaKind::TvProgram => {
+                "Video".to_string()
+            }
+            _ => String::new(),
         },
+        is_movie: Some(media.kind == db::MediaKind::Movie),
+        is_series: Some(media.kind == db::MediaKind::Series),
         is_place_holder: media.sources.as_ref().map(|sources| sources.is_empty()),
         premiere_date: media.released_at.clone().map(|d| d.and_utc()),
         digital_release_date: media.digital_released_at.map(|d| d.and_utc()),
@@ -256,15 +260,19 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                     id: m.id,
                     name: m.title.clone(),
                     role: rel.role.as_ref().and_then(|r| match r {
-                        db::RelationRole::Actor => Some("Actor".to_string()),
+                        db::RelationRole::Actor => rel.character.clone().or_else(|| Some("Actor".to_string())),
                         db::RelationRole::Director => Some("Director".to_string()),
                         db::RelationRole::Writer => Some("Writer".to_string()),
+                        db::RelationRole::Producer => Some("Producer".to_string()),
+                        db::RelationRole::Creator => Some("Creator".to_string()),
                         db::RelationRole::Catalog => None,
                     }),
                     type_: rel.role.as_ref().and_then(|r| match r {
                         db::RelationRole::Actor => Some("Actor".to_string()),
                         db::RelationRole::Director => Some("Director".to_string()),
                         db::RelationRole::Writer => Some("Writer".to_string()),
+                        db::RelationRole::Producer => Some("Producer".to_string()),
+                        db::RelationRole::Creator => Some("Creator".to_string()),
                         db::RelationRole::Catalog => None,
                     }),
                     primary_image_tag: m.poster.clone(),

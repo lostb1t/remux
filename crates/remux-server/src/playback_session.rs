@@ -148,9 +148,26 @@ impl PlaybackSessionManager {
 
     /// Path where a given HLS segment lives on disk (used for disk-based recovery).
     pub fn segment_path(&self, play_session_id: &str, segment_id: &str) -> PathBuf {
-        self.base_dir
-            .join(play_session_id)
-            .join(format!("{}.ts", segment_id))
+        let session_dir = self.base_dir.join(play_session_id);
+
+        if let Ok(entries) = std::fs::read_dir(&session_dir) {
+            let mut latest_dir: Option<(PathBuf, std::time::SystemTime)> = None;
+            for entry in entries.flatten() {
+                if let Ok(metadata) = entry.metadata() {
+                    if metadata.is_dir() {
+                        let modified = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        if latest_dir.as_ref().map_or(true, |(_, max)| modified > *max) {
+                            latest_dir = Some((entry.path(), modified));
+                        }
+                    }
+                }
+            }
+            if let Some((dir, _)) = latest_dir {
+                return dir.join(format!("{}.ts", segment_id));
+            }
+        }
+
+        session_dir.join(format!("{}.ts", segment_id))
     }
 
     /// Spawn a background task that reaps sessions idle longer than `max_age`.

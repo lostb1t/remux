@@ -25,10 +25,13 @@ cwd = "crates/remux-server"
 command = "cargo"
 args = ["test", "--", "--nocapture"]
 
+[tasks.jellyfin-web-ensure]
+description = "Ensure jellyfin-web is built"
+condition = { files_not_exist = ["./jellyfin-web/dist"] }
+run_task = "jellyfin-web"
+
 [tasks.dev]
-#command = "cargo"
-#args = ["run"]
-#dependencies = ["dev-server", "dev-dash"]
+dependencies = ["jellyfin-web-ensure"]
 run_task = { name = ["dev-server", "dev-build-dash"], fork = true, parallel = true }
 
 [tasks.dev-server]

@@ -66,6 +66,7 @@ pub fn default_append_to_response() -> Vec<String> {
         "genres".to_string(),
         "images".to_string(),
         "external_ids".to_string(),
+        "credits".to_string(),
     ]
 }
 
@@ -102,7 +103,7 @@ pub enum Status {
 }
 //use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Creator {
     pub id: u64,
     pub credit_id: String,
@@ -110,6 +111,30 @@ pub struct Creator {
     pub original_name: String,
     pub gender: Option<u8>,
     pub profile_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct CastMember {
+    pub id: i64,
+    pub name: String,
+    pub character: Option<String>,
+    pub profile_path: Option<String>,
+    pub order: i32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct CrewMember {
+    pub id: i64,
+    pub name: String,
+    pub job: String,
+    pub department: String,
+    pub profile_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Credits {
+    pub cast: Vec<CastMember>,
+    pub crew: Vec<CrewMember>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

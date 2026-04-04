@@ -322,6 +322,19 @@ pub struct Meta {
     pub country: Option<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_option_string_or_array")]
     pub director: Option<Vec<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_option_string_or_array",
+        alias = "actors"
+    )]
+    pub cast: Option<Vec<String>>,
+    #[serde(
+        default,
+        rename = "writer",
+        alias = "writers",
+        deserialize_with = "deserialize_option_string_or_array"
+    )]
+    pub writer: Option<Vec<String>>,
     pub description: Option<String>,
     pub genre: Option<Vec<String>>,
     #[serde(
@@ -400,9 +413,12 @@ impl Meta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppExtras {
+    #[serde(default, deserialize_with = "deserialize_option_cast_members")]
     pub cast: Option<Vec<CastMember>>,
-    pub directors: Option<Vec<String>>,
-    pub writers: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_option_cast_members")]
+    pub directors: Option<Vec<CastMember>>,
+    #[serde(default, deserialize_with = "deserialize_option_cast_members")]
+    pub writers: Option<Vec<CastMember>>,
     pub season_posters: Option<Vec<Option<String>>>,
     pub certification: Option<String>,
     pub release_dates: Option<ReleaseDates>,
@@ -465,6 +481,36 @@ where
     Ok(Option::<Repr>::deserialize(de)?.map(|r| match r {
         Repr::S(s) => vec![s],
         Repr::V(v) => v,
+    }))
+}
+
+pub fn deserialize_option_cast_members<'de, D>(
+    de: D,
+) -> Result<Option<Vec<CastMember>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Item {
+        S(String),
+        O(CastMember),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        Single(Item),
+        Array(Vec<Item>),
+    }
+
+    Ok(Option::<Repr>::deserialize(de)?.map(|r| match r {
+        Repr::Single(Item::S(s)) => vec![CastMember { name: Some(s), character: None, photo: None }],
+        Repr::Single(Item::O(o)) => vec![o],
+        Repr::Array(arr) => arr.into_iter().map(|item| match item {
+            Item::S(s) => CastMember { name: Some(s), character: None, photo: None },
+            Item::O(o) => o,
+        }).collect()
     }))
 }
 
@@ -556,6 +602,9 @@ pub struct Episode {
     pub rating: Option<f64>,
     #[serde(default, deserialize_with = "deserialize_opt_duration_empty_ok")]
     pub runtime: Option<Duration>,
+    pub directors: Option<Vec<String>>,
+    pub writers: Option<Vec<String>>,
+    pub cast: Option<Vec<CastMember>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

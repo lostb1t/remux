@@ -11,6 +11,7 @@ use tracing::error;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
+use itertools::Itertools;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -92,35 +93,84 @@ pub async fn get_items(
                     total_count: 0,
                 });
             }
-            // todo: need to to make parallel request for types
-            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await
-            {
-                let items = aio
-                    .search(types[0].clone().into(), s)
-                    .await?
+            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
+                // Parallel search for all requested types (usually Movie and Series)
+                // Always search both catalogs during a unified search query.
+                // This ensures we can properly deduplicate and classify items (Show vs Movie)
+                // before filtering for the specific row the client is requesting.
+                let search_types = [jellyfin::MediaType::Movie, jellyfin::MediaType::Series];
+                let futures = search_types.iter().map(|t| {
+                    aio.search((*t).clone().into(), s.clone())
+                });
+
+                let mut all_metas = Vec::new();
+                for res in futures_util::future::join_all(futures).await {
+                    if let Ok(res_items) = res {
+                        all_metas.extend(res_items);
+                    }
+                }
+
+                let items: Vec<_> = all_metas
                     .into_iter()
-                    .filter_map(|meta| match db::Media::try_from(meta.clone()) {
-                        Ok(media) => {
-                            state.ctx.store.save(
-                                media.id.clone(),
-                                meta.clone(),
-                                Duration::from_secs(360),
-                            );
-                            Some(jellyfin::db_media_to_item(media))
-                        }
-                        Err(e) => {
-                            warn!("Failed to convert item to Media: {}", e);
-                            None
-                        }
+                    // Deduplicate primarily by IMDb ID.
+                    // If IMDb is missing, include kind in the fallback key because
+                    // provider-local IDs (for example TMDB IDs) can collide across kinds.
+                    .unique_by(|m| {
+                        m.imdb_id
+                            .as_ref()
+                            .filter(|id| !id.is_empty())
+                            .map(|id| format!("imdb:{}", id))
+                            .unwrap_or_else(|| {
+                                let kind = match m.media_type {
+                                    sdks::aio::MediaType::Movie => "movie",
+                                    sdks::aio::MediaType::Series
+                                    | sdks::aio::MediaType::Tv => "series",
+                                    _ => "other",
+                                };
+                                format!("{}:{}", kind, m.id)
+                            })
                     })
-                    .collect::<Vec<_>>();
+                    .filter_map(|meta| {
+                        let media = db::Media::try_from(meta.clone()).ok()?;
+                        
+                        // Cache the meta result in our ephemeral store. This ensures that
+                        // clicking a result from a search correctly resolves and saves the item.
+                        state.ctx.store.insert(media.id, meta, Duration::from_secs(3600));
+                        
+                        Some(jellyfin::db_media_to_item(media))
+                    })
+                    // Now filter the final set by BOTH the BaseItem type and the requested MediaType
+                    .filter(|item| {
+                        // 1. Check if the BaseItem type (Movie, Series, etc) matches what the client asked for
+                        let type_match = types.contains(&item.type_);
+                        
+                        // 2. Check if the Media type (Video, etc) matches what the client asked for (if specific)
+                        // Most Jellyfin clients request "Video" for rows they want to be purely files vs folders.
+                        let media_type_match = q.media_types.as_ref().map_or(true, |mt| {
+                            item.media_type
+                                .parse::<jellyfin::MediaType>()
+                                .ok()
+                                .map_or(false, |item_media_type| {
+                                    mt.contains(&item_media_type)
+                                })
+                        });
+                        
+                        type_match && media_type_match
+                    })
+                    .collect();
+
+                let total_count = items.len() as i64;
+                let paged_items = items
+                    .into_iter()
+                    .skip(skip as usize)
+                    .take(q.limit.unwrap_or(u32::MAX) as usize)
+                    .collect();
 
                 return Ok(ItemsQueryResult {
-                    items: items,
-                    total_count: 9999,
+                    total_count,
+                    items: paged_items,
                 });
             } else {
-                // fallthrough for jellyfin
                 warn!("AIO not configured");
             }
         }
@@ -675,6 +725,28 @@ pub async fn item(
     // info!("Seasons length: {:?}", media.seasons(&state.ctx.db).await?.len());
     media.load_relations(&state.ctx.db).await?;
     let mut base_item = jellyfin::db_media_to_item(media.clone());
+
+    if media.kind == db::MediaKind::Episode {
+        if let Some(sid) = media.series_id {
+            if let Ok(Some(s)) = db::Media::get_by_id(&state.ctx.db, &sid).await {
+                base_item.series_name = Some(s.title);
+                base_item.series_id = Some(s.id);
+            }
+        }
+        if let Some(pid) = media.parent_id {
+            if let Ok(Some(s)) = db::Media::get_by_id(&state.ctx.db, &pid).await {
+                base_item.season_name = Some(s.title);
+                base_item.season_id = Some(s.id);
+            }
+        }
+    } else if media.kind == db::MediaKind::Season {
+        if let Some(pid) = media.parent_id {
+            if let Ok(Some(s)) = db::Media::get_by_id(&state.ctx.db, &pid).await {
+                base_item.series_name = Some(s.title);
+                base_item.series_id = Some(s.id);
+            }
+        }
+    }
     if media.sources.as_ref().is_none_or(|s| s.is_empty()) {
         base_item.location_type = Some("Virtual".to_string());
         base_item.path = None;
