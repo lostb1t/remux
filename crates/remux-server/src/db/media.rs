@@ -1714,11 +1714,6 @@ impl Media {
                 let mut item: Self = stream.into();
                 item.parent_id = Some(self.id.clone());
                 item.idx = Some(idx as i64);
-                // Rewrite AIOStreams-internal URLs to use the configured origin
-                // so they're reachable from outside Docker.
-                if let Some(ref url) = item.url {
-                    item.url = Some(aio.rewrite_url(url));
-                }
                 item
             })
             .collect::<Vec<Self>>();

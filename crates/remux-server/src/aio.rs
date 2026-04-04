@@ -12,26 +12,11 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use url::Url;
-
-/// Rewrite a media URL if it points to a Docker-internal service.
-/// Creates an AioService from DB settings on-demand; returns the URL
-/// unchanged if AIO is not configured.
-pub async fn resolve_url(db: &sqlx::SqlitePool, url: &str) -> String {
-    match AioService::from_settings(db).await {
-        Ok(aio) => aio.rewrite_url(url),
-        Err(_) => url.to_string(),
-    }
-}
-
 #[derive(Clone)]
 pub struct AioService {
     pub client: sdks::RestClient,
     // to be clear,this is a searc for streams. Not meta
     pub search_client: sdks::RestClient<sdks::BasicAuth>,
-    /// The origin (scheme+host+port) of the user-configured aio_url.
-    /// Used to rewrite AIOStreams-internal playback URLs so they are
-    /// reachable from remux-server (which may be outside Docker).
-    pub origin: String,
 }
 
 impl AioService {
@@ -52,46 +37,10 @@ impl AioService {
     pub fn from_url(url: &str) -> Result<Self> {
         let client = Self::get_aio(url)?;
         let search_client = Self::get_aio_search(url)?;
-        let parsed = Url::parse(url)?;
-        let origin = parsed.origin().unicode_serialization();
         Ok(Self {
             client,
             search_client,
-            origin,
         })
-    }
-
-    /// Rewrite an AIOStreams playback URL to use our configured origin.
-    ///
-    /// AIOStreams generates playback proxy URLs using its `BASE_URL` env var,
-    /// which may be a Docker-internal hostname (e.g. `http://aiostreams:6006`).
-    /// If we're outside that Docker network, those URLs are unreachable.
-    /// Replace the origin with the one from the user-configured `aio_url`.
-    ///
-    /// Also rewrites other Docker-internal addon URLs (e.g. Comet) that share
-    /// the same Docker network, since these are also unreachable from outside.
-    pub fn rewrite_url(&self, url: &str) -> String {
-        match Url::parse(url) {
-            Ok(parsed) => {
-                let url_origin = parsed.origin().unicode_serialization();
-                if url_origin == self.origin {
-                    return url.to_string(); // Already using our origin
-                }
-                // Only rewrite URLs that look Docker-internal:
-                // no dots in host means it's a Docker service name (e.g. "comet", "aiostreams")
-                let is_docker_internal = parsed
-                    .host_str()
-                    .map(|h| !h.contains('.') && h != "localhost")
-                    .unwrap_or(false);
-                if !is_docker_internal {
-                    return url.to_string();
-                }
-                // Replace the origin portion of the URL
-                let rest = &url[url_origin.len()..];
-                format!("{}{}", self.origin, rest)
-            }
-            Err(_) => url.to_string(),
-        }
     }
 
     //pub fn from_user(user: &db::User) -> Result<Self> {

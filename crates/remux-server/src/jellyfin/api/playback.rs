@@ -175,8 +175,6 @@ async fn items_playbackinfo_inner(
 
     let play_session_id = utils::get_uuid().as_simple().to_string();
 
-    // Resolve all source URLs concurrently
-    // (resolve_url is cheap / DB-backed so async is fine here)
     struct SourceWithUrl {
         sm: db::Media,
         resolved_url: Option<String>,
@@ -184,10 +182,7 @@ async fn items_playbackinfo_inner(
     let mut sources_with_urls: Vec<SourceWithUrl> =
         Vec::with_capacity(source_medias.len());
     for sm in source_medias {
-        let resolved_url = match &sm.url {
-            Some(u) => Some(crate::aio::resolve_url(&state.ctx.db, u).await),
-            None => None,
-        };
+        let resolved_url = sm.url.clone();
         sources_with_urls.push(SourceWithUrl { sm, resolved_url });
     }
 
@@ -479,8 +474,7 @@ async fn videos_stream_inner(
         .clone()
         .context_not_found("no url", "media source has no URL")?;
 
-    // Resolve Docker-internal hostnames to user-configured origin.
-    let url = crate::aio::resolve_url(&state.ctx.db, &raw_url).await;
+    let url = raw_url;
 
     // Direct play: proxy the original stream with range support.
     // Real Jellyfin always proxies the raw file bytes for Static=true, regardless
@@ -1562,8 +1556,7 @@ pub async fn master_hls_video(
             .url
             .context_not_found("no url", "media source has no URL")?;
 
-        // Resolve Docker-internal hostnames to user-configured origin.
-        let input_url = crate::aio::resolve_url(&state.ctx.db, &raw_input_url).await;
+        let input_url = raw_input_url;
 
         let output_dir = std::path::PathBuf::from("transcode_sessions")
             .join(&play_session_id);
