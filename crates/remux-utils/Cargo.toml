@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
+moka = { version = "0.12.12", features = ["sync"] }

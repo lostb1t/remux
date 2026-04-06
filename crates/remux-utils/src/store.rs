@@ -1,6 +1,5 @@
 use moka::{Expiry, sync::Cache};
 use std::{any::Any, sync::Arc, time::Duration};
-use tracing::trace;
 
 #[derive(Debug)]
 pub struct StoreEntry {
@@ -84,7 +83,7 @@ impl Store {
         self.inner.invalidate(&key.into());
     }
 
-    /// Scan all keys with a given prefix
+    /// Scan all keys with a given prefix.
     pub fn scan_keys(&self, prefix: &str) -> Vec<String> {
         self.inner
             .iter()

@@ -68,6 +68,7 @@ itertools = "0.14.0"
 tempfile = "3.20.0"
 #reqwest-middleware = { version = "0.4", default-features = false, features = ["rustls-tls"] }
 remux-sdks = { path = "../remux-sdks", features = ["native"] }
+remux-utils = { path = "../remux-utils" }
 isolang = { version = "2.4.0", features = ["list_languages"] }
 timed = "0.2.1"
 async-trait = "0.1.88"

@@ -7,6 +7,7 @@ pub mod tmdb;
 use http::{HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
 use md5;
+use remux_utils::Store;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -15,17 +16,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::iter;
 use std::ops;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 
-struct CacheEntry {
-    body: String,
-    expires_at: Instant,
-}
-
-static HTTP_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CacheEntry>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static HTTP_CACHE: std::sync::LazyLock<Store> =
+    std::sync::LazyLock::new(|| Store::new(10_000));
 
 fn hash_key(key: &str) -> String {
     let result = md5::compute(key.as_bytes());
@@ -214,19 +209,13 @@ impl<A: Auth + Clone> RestClient<A> {
         let cache_key = hash_key(&url.to_string());
 
         if endpoint.cache_ttl().is_some() {
-            if let Ok(cache) = HTTP_CACHE.lock() {
-                if let Some(entry) = cache.get(&cache_key) {
-                    if entry.expires_at > Instant::now() {
-                        return Ok(serde_json::from_str(&entry.body).map_err(|e| {
-                            ClientError::Json {
-                                status: 0,
-                                source: e,
-                                endpoint: Some(url.to_string()),
-                                body: None,
-                            }
-                        })?);
-                    }
-                }
+            if let Some(body) = HTTP_CACHE.get::<String>(&cache_key) {
+                return Ok(serde_json::from_str(&body).map_err(|e| ClientError::Json {
+                    status: 0,
+                    source: e,
+                    endpoint: Some(url.to_string()),
+                    body: None,
+                })?);
             }
         }
 
@@ -281,15 +270,7 @@ impl<A: Auth + Clone> RestClient<A> {
                     });
                 if result.is_ok() {
                     if let Some(ttl) = endpoint.cache_ttl() {
-                        if let Ok(mut cache) = HTTP_CACHE.lock() {
-                            cache.insert(
-                                cache_key,
-                                CacheEntry {
-                                    body: text.clone(),
-                                    expires_at: Instant::now() + ttl,
-                                },
-                            );
-                        }
+                        HTTP_CACHE.save(cache_key, text.clone(), ttl);
                     }
                 }
                 result

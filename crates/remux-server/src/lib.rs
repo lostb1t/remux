@@ -60,6 +60,8 @@ use url::Url;
 
 use uuid::Uuid;
 
+use remux_utils::Store;
+
 mod conversions;
 mod errors;
 pub mod sdks {
@@ -74,7 +76,6 @@ pub mod jellyfin;
 mod log_capture;
 pub mod playback_session;
 mod providers;
-mod store;
 pub mod tasks;
 mod torrent;
 pub mod transcode;
@@ -162,7 +163,7 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
     let ctx = AppContext {
         config,
         db: conn.clone(),
-        store: store::Store::new(100000),
+        store: Store::new(100000),
         sessions: playback_session::PlaybackSessionManager::new("transcode_sessions"),
         torrent: torrent_mgr.clone(),
         ws_tx,
@@ -312,7 +313,7 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
 pub struct AppContext {
     pub config: Config,
     pub db: sqlx::SqlitePool,
-    pub store: store::Store,
+    pub store: Store,
     pub sessions: playback_session::PlaybackSessionManager,
     pub torrent: Arc<torrent::TorrentManager>,
     pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,
