@@ -148,8 +148,8 @@ pub async fn get_items(
                         // Most Jellyfin clients request "Video" for rows they want to be purely files vs folders.
                         let media_type_match = q.media_types.as_ref().map_or(true, |mt| {
                             item.media_type
-                                .parse::<jellyfin::MediaType>()
-                                .ok()
+                                .as_deref()
+                                .and_then(|s| s.parse::<jellyfin::MediaType>().ok())
                                 .map_or(false, |item_media_type| {
                                     mt.contains(&item_media_type)
                                 })
@@ -453,8 +453,7 @@ pub async fn items_filters2(
         .include_item_types
         .unwrap_or_default()
         .into_iter()
-        .map(db::MediaKind::from)
-        .filter(|k| !matches!(k, db::MediaKind::Unknown))
+        .filter_map(|t| db::MediaKind::try_from(t).ok())
         .collect();
     let genres = db::Media::get_genres(&state.ctx.db, &kinds).await?;
     let tag_rows = sqlx::query("SELECT DISTINCT tag FROM media_tags ORDER BY tag")
@@ -823,8 +822,7 @@ pub async fn items_filters(
         .include_item_types
         .unwrap_or_default()
         .into_iter()
-        .map(db::MediaKind::from)
-        .filter(|k| !matches!(k, db::MediaKind::Unknown))
+        .filter_map(|t| db::MediaKind::try_from(t).ok())
         .collect();
 
     let genres = db::Media::get_genres(&state.ctx.db, &kinds).await?;
@@ -1098,8 +1096,7 @@ pub async fn genres(
         .include_item_types
         .unwrap_or_default()
         .into_iter()
-        .map(db::MediaKind::from)
-        .filter(|k| !matches!(k, db::MediaKind::Unknown))
+        .filter_map(|t| db::MediaKind::try_from(t).ok())
         .collect();
 
     let genres = db::Media::get_genres(&state.ctx.db, &related_kinds).await?;

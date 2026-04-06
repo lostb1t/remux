@@ -77,8 +77,7 @@ pub async fn years(
             vec![jellyfin::MediaType::Movie, jellyfin::MediaType::Series]
         })
         .into_iter()
-        .map(db::MediaKind::from)
-        .filter(|k| !matches!(k, db::MediaKind::Unknown))
+        .filter_map(|t| db::MediaKind::try_from(t).ok())
         .collect();
 
     let year_vals = db::Media::get_distinct_years(&state.ctx.db, &kinds).await?;

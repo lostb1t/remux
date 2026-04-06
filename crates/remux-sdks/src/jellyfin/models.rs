@@ -1876,8 +1876,7 @@ pub struct BaseItemDto {
     //pub chapters: Option<Vec<ChapterInfo>>,
     pub location_type: Option<String>,
     pub iso_type: Option<String>,
-    #[default("Unknown".to_string())]
-    pub media_type: String,
+    pub media_type: Option<String>,
     pub end_date: Option<String>,
     //pub locked_fields: Option<Vec<MetadataFields>>,
     pub trailer_count: Option<i64>,

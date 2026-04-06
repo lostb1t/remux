@@ -182,11 +182,11 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 }),
         ),
         media_type: match media.kind {
-            db::MediaKind::Movie | db::MediaKind::Episode => "Video".to_string(),
-            db::MediaKind::TvChannel | db::MediaKind::TvProgram => {
-                "Video".to_string()
-            }
-            _ => String::new(),
+            db::MediaKind::Movie
+            | db::MediaKind::Episode
+            | db::MediaKind::TvChannel
+            | db::MediaKind::TvProgram => Some("Video".to_string()),
+            _ => None,
         },
         is_movie: Some(media.kind == db::MediaKind::Movie),
         is_series: Some(media.kind == db::MediaKind::Series),

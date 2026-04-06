@@ -92,7 +92,6 @@ pub enum MediaStatus {
 }
 
 #[derive(
-    Default,
     strum_macros::EnumString,
     strum_macros::Display,
     Debug,
@@ -122,13 +121,12 @@ pub enum MediaKind {
     Source,
     TvChannel,
     TvProgram,
-    #[default]
-    Unknown,
 }
 
-impl From<String> for MediaKind {
-    fn from(s: String) -> Self {
-        Self::try_from(s.as_str()).unwrap_or(MediaKind::Unknown)
+impl TryFrom<String> for MediaKind {
+    type Error = strum::ParseError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::try_from(s.as_str())
     }
 }
 
@@ -154,21 +152,31 @@ pub fn media_kind_to_aio(kind: &MediaKind) -> sdks::aio::MediaType {
     }
 }
 
-impl From<jellyfin::MediaType> for MediaKind {
-    fn from(media_type: jellyfin::MediaType) -> Self {
+impl TryFrom<jellyfin::MediaType> for MediaKind {
+    type Error = ();
+    fn try_from(media_type: jellyfin::MediaType) -> Result<Self, ()> {
         match media_type {
-            jellyfin::MediaType::Movie => MediaKind::Movie,
-            jellyfin::MediaType::Series => MediaKind::Series,
-            jellyfin::MediaType::Season => MediaKind::Season,
-            jellyfin::MediaType::Episode => MediaKind::Episode,
-            jellyfin::MediaType::BoxSet => MediaKind::Collection,
+            jellyfin::MediaType::Movie => Ok(MediaKind::Movie),
+            jellyfin::MediaType::Series => Ok(MediaKind::Series),
+            jellyfin::MediaType::Season => Ok(MediaKind::Season),
+            jellyfin::MediaType::Episode => Ok(MediaKind::Episode),
+            jellyfin::MediaType::BoxSet => Ok(MediaKind::Collection),
             jellyfin::MediaType::TvChannel | jellyfin::MediaType::LiveTvChannel => {
-                MediaKind::TvChannel
+                Ok(MediaKind::TvChannel)
             }
             jellyfin::MediaType::TvProgram
             | jellyfin::MediaType::LiveTvProgram
-            | jellyfin::MediaType::Program => MediaKind::TvProgram,
-            _ => MediaKind::Unknown,
+            | jellyfin::MediaType::Program => Ok(MediaKind::TvProgram),
+            jellyfin::MediaType::Folder
+            | jellyfin::MediaType::CollectionFolder
+            | jellyfin::MediaType::UserView
+            | jellyfin::MediaType::UserRootFolder => Ok(MediaKind::Folder),
+            jellyfin::MediaType::Genre | jellyfin::MediaType::MusicGenre => {
+                Ok(MediaKind::Genre)
+            }
+            jellyfin::MediaType::Person => Ok(MediaKind::Person),
+            jellyfin::MediaType::Studio => Ok(MediaKind::Studio),
+            _ => Err(()),
         }
     }
 }
@@ -390,6 +398,7 @@ pub struct Media {
     #[default(get_uuid())]
     pub id: Uuid,
     pub title: String,
+    #[default(MediaKind::Movie)]
     pub kind: MediaKind,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
@@ -523,13 +532,6 @@ impl Media {
                     self.kind
                 )));
             }
-        }
-
-        if self.kind == MediaKind::Unknown {
-            return Err(MediaError::ValidationError(format!(
-                "{:?} requires an kind",
-                self.kind
-            )));
         }
 
         Ok(())
@@ -1414,7 +1416,10 @@ impl Media {
         }
 
         let kinds = if let Some(include_item_types) = &filter.include_item_types {
-            let ikt_kinds = include_item_types.clone().into_vec::<MediaKind>();
+            let ikt_kinds: Vec<MediaKind> = include_item_types
+                .iter()
+                .filter_map(|t| MediaKind::try_from(t.clone()).ok())
+                .collect();
             if let Some(mt_kinds) = media_type_kinds {
                 ikt_kinds
                     .into_iter()
