@@ -310,7 +310,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .as_ref()
                 .and_then(|k| k.to_string().parse().ok()),
             collection_max_items: media.collection_max_items,
-            collection_catalog_filter: Some(media.catalog_filter_ids()),
+            smart_filter: media.parse_smart_filter().cloned(),
             promoted: Some(media.promoted != 0),
         }),
         ..Default::default()
@@ -367,16 +367,6 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .unwrap_or(CollectionType::Unknown),
         );
         item.collection_kind = media.collection_kind.as_ref().map(|k| k.to_string());
-        item.collection_catalog_filter = if media.collection_catalog_filter.is_some() {
-            let ids = media.catalog_filter_ids();
-            if ids.is_empty() {
-                None
-            } else {
-                Some(ids.iter().map(|u| u.to_string()).collect())
-            }
-        } else {
-            None
-        };
         if media.promoted == 1 {
             item.type_ = MediaType::CollectionFolder;
             item.display_preferences_id = Some(item.id.to_string());

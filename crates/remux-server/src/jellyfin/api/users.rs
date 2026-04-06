@@ -534,6 +534,7 @@ async fn resume_items(
         true,
         Some(&session.user),
         server_config.as_ref(),
+        None,
     )
     .await?;
     Ok(Json(jellyfin::BaseItemDtoQueryResult {

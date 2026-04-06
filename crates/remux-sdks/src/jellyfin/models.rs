@@ -343,7 +343,7 @@ pub struct PatchItemPayload {
     pub name: Option<String>,
     pub collection_type: Option<String>,
     pub collection_kind: Option<String>,
-    pub collection_catalog_filter: Option<Vec<String>>,
+    pub smart_filter: Option<CollectionFilter>,
     pub promoted: Option<bool>,
     pub tags: Option<Vec<String>>,
 }
@@ -1690,6 +1690,63 @@ pub enum RemuxMediaKind {
     Studio,
 }
 
+/// Operators for numeric fields (Year, Rating).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NumericOp {
+    Eq,
+    NotEq,
+    Gt,
+    Lt,
+}
+
+/// Operators for text/set fields (Genre, Tag, Studio, etc.).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetOp {
+    Is,
+    IsNot,
+    In,
+    NotIn,
+}
+
+/// One condition in a smart collection filter.
+/// Each variant carries its own typed value(s) and only the operators valid for that field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "field", rename_all = "snake_case")]
+pub enum FilterRule {
+    Genre          { op: SetOp,     values: Vec<String> },
+    Year           { op: NumericOp, value: i64 },
+    RatingAudience { op: NumericOp, value: f64 },
+    RatingCritic   { op: NumericOp, value: f64 },
+    Certification  { op: SetOp,     values: Vec<String> },
+    Tag            { op: SetOp,     values: Vec<String> },
+    Studio         { op: SetOp,     values: Vec<String> },
+    Catalog        { op: SetOp,     values: Vec<String> },
+    HasTrailer     { value: bool },
+    Country        { op: SetOp,     values: Vec<String> },
+}
+
+/// Whether all rules must match (AND) or any rule must match (OR).
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterMatchMode {
+    #[default]
+    All,
+    Any,
+}
+
+/// The filter config stored on a smart collection.
+/// Deserialised directly into `MediaFilter.filter_rules` / `filter_match` at query time.
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CollectionFilter {
+    #[serde(default)]
+    pub match_mode: FilterMatchMode,
+    #[serde(default)]
+    pub rules: Vec<FilterRule>,
+}
+
 #[skip_serializing_none]
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -1697,7 +1754,7 @@ pub struct RemuxInfo {
     pub collection_kind: Option<RemuxCollectionKind>,
     pub collection_media_kind: Option<RemuxMediaKind>,
     pub collection_max_items: Option<i64>,
-    pub collection_catalog_filter: Option<Vec<Uuid>>,
+    pub smart_filter: Option<CollectionFilter>,
     pub promoted: Option<bool>,
 }
 

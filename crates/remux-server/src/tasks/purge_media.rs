@@ -7,6 +7,8 @@ use crate::AppContext;
 
 pub struct PurgeMediaTask;
 
+const PURGE_KINDS: &str = "'movie','series','season','episode','source'";
+
 #[async_trait]
 impl Task for PurgeMediaTask {
     fn key(&self) -> &str {
@@ -25,11 +27,36 @@ impl Task for PurgeMediaTask {
         _tasks: Arc<TaskService>,
         _progress: ProgressReporter,
     ) -> Result<()> {
-        sqlx::query(
-            "DELETE FROM media WHERE kind IN ('movie','series','season','episode','source')",
-        )
-        .execute(&ctx.db)
+        let mut tx = ctx.db.begin().await?;
+
+        // Pre-delete from child tables in bulk before touching `media`.
+        // Relying on ON DELETE CASCADE fires one delete per parent row into these
+        // tables, which is very slow for large libraries even with indexes.
+        // Doing it explicitly here is a single bulk scan each.
+        sqlx::query(&format!(
+            "DELETE FROM media_tags WHERE media_id IN \
+             (SELECT id FROM media WHERE kind IN ({PURGE_KINDS}))"
+        ))
+        .execute(&mut *tx)
         .await?;
+
+        sqlx::query(&format!(
+            "DELETE FROM media_relations WHERE \
+             left_media_id  IN (SELECT id FROM media WHERE kind IN ({PURGE_KINDS})) OR \
+             right_media_id IN (SELECT id FROM media WHERE kind IN ({PURGE_KINDS}))"
+        ))
+        .execute(&mut *tx)
+        .await?;
+
+        // Now the cascade machinery (parent_id self-ref, series_id check) has
+        // almost no child-table work left — this runs fast.
+        sqlx::query(&format!(
+            "DELETE FROM media WHERE kind IN ({PURGE_KINDS})"
+        ))
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
         Ok(())
     }
 }

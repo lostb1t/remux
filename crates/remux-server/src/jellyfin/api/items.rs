@@ -219,30 +219,13 @@ pub async fn get_items(
             }
             q.user_id = Some(session.user.id.clone());
 
-            // For smart collections with a catalog filter: query via media_relations
-            let catalog_ids = parent.catalog_filter_ids();
-            if parent.collection_kind == Some(db::CollectionKind::Smart)
-                && !catalog_ids.is_empty()
-            {
-                let result = db::Media::get_by_filter(
-                    &state.ctx.db,
-                    &db::MediaFilter {
-                        kind: Some(media_kind_filter),
-                        catalog_ids: Some(catalog_ids),
-                        limit: q.limit,
-                        ..Default::default()
-                    },
-                )
-                .await?;
-                return Ok(ItemsQueryResult {
-                    total_count: result.total_count as i64,
-                    items: result
-                        .records
-                        .into_iter()
-                        .map(jellyfin::db_media_to_item)
-                        .collect(),
-                });
-            }
+            // Smart collection: extract stored filter rules so they are applied
+            // alongside the Jellyfin query (sort, pagination, user-state, etc.).
+            let smart_filter = if parent.collection_kind == Some(db::CollectionKind::Smart) {
+                parent.parse_smart_filter()
+            } else {
+                None
+            };
 
             let server_config =
                 crate::db::Settings::get_config(&state.ctx.db).await.ok();
@@ -252,6 +235,7 @@ pub async fn get_items(
                 true,
                 Some(&session.user),
                 server_config.as_ref(),
+                smart_filter,
             )
             .await?;
 
@@ -286,6 +270,7 @@ pub async fn get_items(
         want_total,
         Some(&session.user),
         server_config.as_ref(),
+        None,
     )
     .await?;
 
@@ -1205,7 +1190,7 @@ struct PatchItemRequest {
     name: Option<String>,
     collection_type: Option<String>,
     collection_kind: Option<String>,
-    collection_catalog_filter: Option<Vec<String>>,
+    smart_filter: Option<jellyfin::CollectionFilter>,
     promoted: Option<bool>,
     tags: Option<Vec<String>>,
     digital_released_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -1233,9 +1218,8 @@ pub async fn patch_item(
     if let Some(ck) = &payload.collection_kind {
         qb.push(", collection_kind = ").push_bind(ck);
     }
-    if let Some(filter) = &payload.collection_catalog_filter {
-        let json = serde_json::to_string(filter).unwrap_or_else(|_| "[]".into());
-        qb.push(", collection_catalog_filter = ").push_bind(json);
+    if let Some(sf) = &payload.smart_filter {
+        qb.push(", collection_smart_filter = ").push_bind(sqlx::types::Json(sf));
     }
     if let Some(prm) = payload.promoted {
         qb.push(", promoted = ")

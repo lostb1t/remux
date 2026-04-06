@@ -13,6 +13,7 @@ use remux_sdks::jellyfin::{
     GetTunerHosts, GetUsers, JellyfinAuth, PatchChannel, PatchChannelRequest,
     PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
     PostStartupUser, PublicSystemInfo, SaveEpgSource, ServerConfiguration,
+    CollectionFilter, FilterMatchMode, FilterRule, NumericOp, SetOp,
     SessionInfoDto, SetLogLevel, StartTask, StartupConfiguration, StartupUser,
     StopTask, TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo,
     UpdateBrandingConfiguration, UpdateCatalogSettings, UpdateCatalogSettingsPayload,
@@ -1428,40 +1429,25 @@ fn CollectionForm(
             .map(|k| k.to_string())
             .unwrap_or_else(|| "smart".to_string())
     });
-    let mut tags_str = use_signal(|| {
-        existing
-            .as_ref()
-            .and_then(|f| f.tags.as_ref())
-            .map(|t| t.join(", "))
-            .unwrap_or_default()
-    });
-    // Selected catalog UUIDs for smart collection filter
-    let mut catalog_filter: Signal<Vec<String>> = use_signal(|| {
+    // Smart filter rules
+    let sf_match: Signal<FilterMatchMode> = use_signal(|| {
         existing
             .as_ref()
             .and_then(|f| f.remux.as_ref())
-            .and_then(|r| r.collection_catalog_filter.as_ref())
-            .map(|ids| ids.iter().map(|id| id.to_string()).collect())
+            .and_then(|r| r.smart_filter.as_ref())
+            .map(|sf| sf.match_mode.clone())
+            .unwrap_or(FilterMatchMode::All)
+    });
+    let sf_rules: Signal<Vec<FilterRule>> = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|f| f.remux.as_ref())
+            .and_then(|r| r.smart_filter.as_ref())
+            .map(|sf| sf.rules.clone())
             .unwrap_or_default()
     });
-    let mut aio_catalogs: Signal<Vec<AioCatalogInfo>> = use_signal(Vec::new);
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
-
-    // Fetch AIO catalogs when kind=smart (for catalog filter checkboxes)
-    {
-        let client = app_state.client.clone();
-        use_effect(move || {
-            if col_kind.read().as_str() == "smart" {
-                let client = client.clone();
-                spawn(async move {
-                    if let Ok(catalogs) = client.execute(GetAioCatalogs).await {
-                        aio_catalogs.set(catalogs);
-                    }
-                });
-            }
-        });
-    }
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
@@ -1471,14 +1457,14 @@ fn CollectionForm(
         let ct = col_type.peek().clone();
         let ck = col_kind.peek().clone();
         let prm = *promoted.peek();
-        let filter = catalog_filter.peek().clone();
-        let catalog_filter_payload = if ck == "smart" { Some(filter) } else { None };
-        let tags_parsed: Vec<String> = tags_str
-            .peek()
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let smart_filter_payload = if ck == "smart" {
+            Some(CollectionFilter {
+                match_mode: sf_match.peek().clone(),
+                rules: sf_rules.peek().clone(),
+            })
+        } else {
+            None
+        };
         saving.set(true);
         err.set(None);
         spawn(async move {
@@ -1490,9 +1476,9 @@ fn CollectionForm(
                             name: Some(name),
                             collection_type: Some(ct),
                             collection_kind: Some(ck),
-                            collection_catalog_filter: catalog_filter_payload,
+                            smart_filter: smart_filter_payload,
                             promoted: Some(prm),
-                            tags: Some(tags_parsed),
+                            tags: None,
                         },
                     })
                     .await
@@ -1566,60 +1552,7 @@ fn CollectionForm(
             }
 
             if col_kind.read().as_str() == "smart" {
-                div { class: "field",
-                    label { class: "field-label", "Catalog Filter" }
-                    p { class: "field-hint", "Only show items imported from these catalogs. Leave all unchecked for no filter." }
-                    {
-                        let cats = aio_catalogs.read();
-                        let selected = catalog_filter.read();
-                        if cats.is_empty() {
-                            rsx! { span { class: "field-hint", "Loading catalogs…" } }
-                        } else {
-                            rsx! {
-                                div { style: "display:flex;flex-direction:column;gap:6px",
-                                    for cat in cats.iter() {
-                                        // Only show catalogs that have a media_id (i.e. have been enabled)
-                                        if let Some(mid) = cat.media_id.clone() {
-                                            label { style: "display:flex;align-items:center;gap:8px",
-                                                input {
-                                                    r#type: "checkbox",
-                                                    checked: selected.contains(&mid),
-                                                    onchange: {
-                                                        let cat_id = mid.clone();
-                                                        move |e: Event<FormData>| {
-                                                            let mut f = catalog_filter.write();
-                                                            if e.checked() {
-                                                                if !f.contains(&cat_id) {
-                                                                    f.push(cat_id.clone());
-                                                                }
-                                                            } else {
-                                                                f.retain(|x| x != &cat_id);
-                                                            }
-                                                        }
-                                                    },
-                                                }
-                                                span { "{cat.name}" }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            div { class: "field",
-                label { class: "field-label", r#for: "col-tags", "Tags" }
-                input {
-                    id: "col-tags",
-                    r#type: "text",
-                    class: "field-input",
-                    placeholder: "action, family, kids",
-                    value: "{tags_str}",
-                    oninput: move |e| tags_str.set(e.value()),
-                }
-                p { class: "field-hint", "Comma-separated. Used for per-user content filtering." }
+                FilterRuleEditor { match_mode: sf_match, rules: sf_rules }
             }
 
             div { class: "toggle-row",
@@ -1651,6 +1584,290 @@ fn CollectionForm(
                     disabled: *saving.read(),
                     if *saving.read() { "Saving…" } else { "Save" }
                 }
+            }
+        }
+    }
+}
+
+// ── Smart Filter Editor ──────────────────────────────────────────────
+
+fn field_label(key: &str) -> &'static str {
+    match key {
+        "genre"          => "Genre",
+        "year"           => "Year",
+        "rating_audience" => "Audience Rating",
+        "rating_critic"  => "Critic Rating",
+        "certification"  => "Certification",
+        "tag"            => "Tag",
+        "studio"         => "Studio",
+        "catalog"        => "Catalog",
+        "has_trailer"    => "Has Trailer",
+        "country"        => "Country",
+        _                => "",
+    }
+}
+
+/// Returns valid operators for a field key as (value, label) pairs.
+fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
+    match field_key {
+        "year" | "rating_audience" | "rating_critic" => vec![
+            ("eq",     "is"),
+            ("not_eq", "is not"),
+            ("gt",     ">"),
+            ("lt",     "<"),
+        ],
+        "has_trailer" => vec![],
+        _ => vec![
+            ("is",     "is"),
+            ("is_not", "is not"),
+            ("in",     "is any of"),
+            ("not_in", "is none of"),
+        ],
+    }
+}
+
+fn value_placeholder(field_key: &str) -> &'static str {
+    match field_key {
+        "year"                          => "2020",
+        "rating_audience" | "rating_critic" => "7.5",
+        "certification"                 => "PG-13",
+        "country"                       => "US",
+        _                               => "Action, Horror",
+    }
+}
+
+/// Decompose a `FilterRule` into `(field_key, op_key, value_str)` for rendering.
+fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
+    match rule {
+        FilterRule::Year { op, value } => {
+            let op_str = match op {
+                NumericOp::Eq    => "eq",
+                NumericOp::NotEq => "not_eq",
+                NumericOp::Gt    => "gt",
+                NumericOp::Lt    => "lt",
+            };
+            ("year".into(), op_str.into(), value.to_string())
+        }
+        FilterRule::RatingAudience { op, value } => {
+            let op_str = match op {
+                NumericOp::Eq    => "eq",
+                NumericOp::NotEq => "not_eq",
+                NumericOp::Gt    => "gt",
+                NumericOp::Lt    => "lt",
+            };
+            ("rating_audience".into(), op_str.into(), value.to_string())
+        }
+        FilterRule::RatingCritic { op, value } => {
+            let op_str = match op {
+                NumericOp::Eq    => "eq",
+                NumericOp::NotEq => "not_eq",
+                NumericOp::Gt    => "gt",
+                NumericOp::Lt    => "lt",
+            };
+            ("rating_critic".into(), op_str.into(), value.to_string())
+        }
+        FilterRule::Genre          { op, values } => ("genre".into(),         set_op_str(op), values.join(", ")),
+        FilterRule::Certification  { op, values } => ("certification".into(), set_op_str(op), values.join(", ")),
+        FilterRule::Tag            { op, values } => ("tag".into(),           set_op_str(op), values.join(", ")),
+        FilterRule::Studio         { op, values } => ("studio".into(),        set_op_str(op), values.join(", ")),
+        FilterRule::Catalog        { op, values } => ("catalog".into(),       set_op_str(op), values.join(", ")),
+        FilterRule::Country        { op, values } => ("country".into(),       set_op_str(op), values.join(", ")),
+        FilterRule::HasTrailer     { value }       => ("has_trailer".into(),   String::new(),  value.to_string()),
+    }
+}
+
+fn set_op_str(op: &SetOp) -> String {
+    match op {
+        SetOp::Is    => "is",
+        SetOp::IsNot => "is_not",
+        SetOp::In    => "in",
+        SetOp::NotIn => "not_in",
+    }.into()
+}
+
+/// Build a typed `FilterRule` from raw UI strings.
+fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
+    let set_op = match op {
+        "is_not" => SetOp::IsNot,
+        "in"     => SetOp::In,
+        "not_in" => SetOp::NotIn,
+        _        => SetOp::Is,
+    };
+    let num_op = match op {
+        "not_eq" => NumericOp::NotEq,
+        "gt"     => NumericOp::Gt,
+        "lt"     => NumericOp::Lt,
+        _        => NumericOp::Eq,
+    };
+    let set_values = || -> Vec<String> {
+        value_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    };
+
+    match field {
+        "year"            => FilterRule::Year           { op: num_op, value: value_str.parse().unwrap_or(0) },
+        "rating_audience" => FilterRule::RatingAudience { op: num_op, value: value_str.parse().unwrap_or(0.0) },
+        "rating_critic"   => FilterRule::RatingCritic   { op: num_op, value: value_str.parse().unwrap_or(0.0) },
+        "certification"   => FilterRule::Certification  { op: set_op, values: set_values() },
+        "tag"             => FilterRule::Tag             { op: set_op, values: set_values() },
+        "studio"          => FilterRule::Studio          { op: set_op, values: set_values() },
+        "catalog"         => FilterRule::Catalog         { op: set_op, values: set_values() },
+        "country"         => FilterRule::Country         { op: set_op, values: set_values() },
+        "has_trailer"     => FilterRule::HasTrailer      { value: value_str == "true" },
+        _                 => FilterRule::Genre           { op: set_op, values: set_values() },
+    }
+}
+
+#[component]
+fn FilterRuleEditor(
+    match_mode: Signal<FilterMatchMode>,
+    rules: Signal<Vec<FilterRule>>,
+) -> Element {
+    rsx! {
+        div { class: "field",
+            div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px",
+                label { class: "field-label", style: "margin:0", "Filter Rules" }
+                div { style: "display:flex;align-items:center;gap:8px",
+                    span { style: "font-size:0.8rem;color:var(--text-muted)", "Match" }
+                    select {
+                        class: "select-input",
+                        style: "padding:2px 6px;font-size:0.8rem",
+                        value: if *match_mode.read() == FilterMatchMode::All { "all" } else { "any" },
+                        onchange: move |e| {
+                            match_mode.set(if e.value() == "any" {
+                                FilterMatchMode::Any
+                            } else {
+                                FilterMatchMode::All
+                            });
+                        },
+                        option { value: "all", "All (AND)" }
+                        option { value: "any", "Any (OR)" }
+                    }
+                }
+            }
+
+            div { style: "display:flex;flex-direction:column;gap:6px",
+                for (idx, rule) in rules.read().iter().enumerate() {
+                    FilterRuleRow {
+                        key: "{idx}",
+                        idx,
+                        rule: rule.clone(),
+                        rules,
+                    }
+                }
+            }
+
+            button {
+                r#type: "button",
+                class: "btn btn-ghost",
+                style: "margin-top:8px;font-size:0.85rem",
+                onclick: move |_| {
+                    rules.write().push(FilterRule::Genre { op: SetOp::Is, values: vec![] });
+                },
+                "+ Add Rule"
+            }
+        }
+    }
+}
+
+#[component]
+fn FilterRuleRow(
+    idx: usize,
+    rule: FilterRule,
+    rules: Signal<Vec<FilterRule>>,
+) -> Element {
+    let (field_val, op_val, value_val) = rule_to_raw(&rule);
+    let ops = ops_for_field(&field_val);
+    let is_trailer = field_val == "has_trailer";
+
+    // Clones for closures that capture by move
+    let fv1 = field_val.clone();
+    let fv2 = field_val.clone();
+    let ov1 = op_val.clone();
+    let ov2 = op_val.clone();
+    let vv1 = value_val.clone();
+    let vv2 = value_val.clone();
+
+    rsx! {
+        div { style: "display:flex;align-items:center;gap:6px",
+            // Field selector
+            select {
+                class: "select-input",
+                style: "flex:1.2",
+                value: "{field_val}",
+                onchange: move |e| {
+                    let new_field = e.value();
+                    let default_op = ops_for_field(&new_field).first().map(|(v, _)| *v).unwrap_or("");
+                    if let Some(row) = rules.write().get_mut(idx) {
+                        *row = raw_to_rule(&new_field, default_op, "");
+                    }
+                },
+                option { value: "genre",           selected: field_val == "genre",           { field_label("genre") } }
+                option { value: "year",            selected: field_val == "year",            { field_label("year") } }
+                option { value: "rating_audience", selected: field_val == "rating_audience", { field_label("rating_audience") } }
+                option { value: "rating_critic",   selected: field_val == "rating_critic",   { field_label("rating_critic") } }
+                option { value: "certification",   selected: field_val == "certification",   { field_label("certification") } }
+                option { value: "tag",             selected: field_val == "tag",             { field_label("tag") } }
+                option { value: "studio",          selected: field_val == "studio",          { field_label("studio") } }
+                option { value: "catalog",         selected: field_val == "catalog",         { field_label("catalog") } }
+                option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
+                option { value: "country",         selected: field_val == "country",         { field_label("country") } }
+            }
+            // Operator selector (hidden for has_trailer which has no operator)
+            if !is_trailer {
+                select {
+                    class: "select-input",
+                    style: "flex:1",
+                    value: "{op_val}",
+                    onchange: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule(&fv1, &e.value(), &vv1);
+                        }
+                    },
+                    for (op_v, op_l) in ops.iter() {
+                        option { value: *op_v, selected: op_val == *op_v, "{op_l}" }
+                    }
+                }
+            }
+            // Value input — dropdown for has_trailer, text otherwise
+            if is_trailer {
+                select {
+                    class: "select-input",
+                    style: "flex:1",
+                    value: "{value_val}",
+                    onchange: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule("has_trailer", "", &e.value());
+                        }
+                    },
+                    option { value: "true",  selected: value_val == "true",  "Yes" }
+                    option { value: "false", selected: value_val == "false", "No" }
+                }
+            } else {
+                input {
+                    class: "field-input",
+                    style: "flex:1.5",
+                    r#type: "text",
+                    placeholder: value_placeholder(&fv2),
+                    value: "{vv2}",
+                    oninput: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule(&fv2, &ov1, &e.value());
+                        }
+                    },
+                }
+            }
+            // Remove button
+            button {
+                r#type: "button",
+                class: "btn btn-ghost",
+                style: "padding:4px 8px;color:var(--text-muted)",
+                onclick: move |_| {
+                    let mut r = rules.write();
+                    if idx < r.len() {
+                        r.remove(idx);
+                    }
+                },
+                "✕"
             }
         }
     }

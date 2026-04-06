@@ -377,6 +377,10 @@ pub struct MediaFilter {
     /// Sort order for results. Mapped from Jellyfin's ItemSortBy.
     pub sort_by: Vec<jellyfin::ItemSortBy>,
     pub sort_order: Vec<jellyfin::SortOrder>,
+    /// Structured filter rules (from smart collections). Evaluated with `filter_match`.
+    pub filter_rules: Vec<remux_sdks::jellyfin::models::FilterRule>,
+    /// Whether all rules must match (AND) or any rule (OR). Defaults to All.
+    pub filter_match: remux_sdks::jellyfin::models::FilterMatchMode,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -401,6 +405,8 @@ pub struct Media {
     pub rating_critic: Option<f64>,
     pub rating_audience: Option<f64>,
     pub certification: Option<String>,
+    /// ISO 3166-1 alpha-2 country code (e.g. "US", "GB").
+    pub country: Option<String>,
     pub poster: Option<String>,
     pub logo: Option<String>,
     pub backdrop: Option<String>,
@@ -443,8 +449,7 @@ pub struct Media {
     // MediaKind
     pub collection_media_kind: Option<MediaKind>,
     pub collection_max_items: Option<i64>,
-    // JSON array of catalog media item UUIDs (for smart collections with catalog filter)
-    pub collection_catalog_filter: Option<String>,
+    pub collection_smart_filter: Option<sqlx::types::Json<remux_sdks::jellyfin::models::CollectionFilter>>,
 
     // IPTV / Live TV
     pub live_start: Option<NaiveDateTime>,
@@ -461,15 +466,9 @@ pub struct Media {
 }
 
 impl Media {
-    /// Parse the JSON catalog filter into a list of UUIDs.
-    pub fn catalog_filter_ids(&self) -> Vec<Uuid> {
-        self.collection_catalog_filter
-            .as_deref()
-            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|s| Uuid::parse_str(&s).ok())
-            .collect()
+
+    pub fn parse_smart_filter(&self) -> Option<&remux_sdks::jellyfin::models::CollectionFilter> {
+        self.collection_smart_filter.as_ref().map(|j| &j.0)
     }
 }
 
@@ -544,11 +543,12 @@ impl Media {
         r#"
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
-            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items, collection_catalog_filter,
+            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
             remote_data, series_media_id, media_id, external_ids, created_at, updated_at, certification, parent_idx,
-            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id
+            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id,
+            collection_smart_filter, country
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -574,7 +574,8 @@ impl Media {
             collection_kind = excluded.collection_kind,
             collection_media_kind = excluded.collection_media_kind,
             collection_max_items = excluded.collection_max_items,
-            collection_catalog_filter = excluded.collection_catalog_filter,
+            collection_smart_filter = excluded.collection_smart_filter,
+            country = excluded.country,
             updated_at = excluded.updated_at,
             certification = excluded.certification,
             parent_idx = excluded.parent_idx,
@@ -609,7 +610,6 @@ impl Media {
         .bind(&self.collection_kind)
         .bind(&self.collection_media_kind)
         .bind(self.collection_max_items)
-        .bind(&self.collection_catalog_filter)
         .bind(&self.remote_data)
         .bind(&self.series_media_id)
         .bind(&self.media_id)
@@ -629,6 +629,8 @@ impl Media {
         .bind(&self.status)
         .bind(self.refreshed_at)
         .bind(self.series_id)
+        .bind(&self.collection_smart_filter)
+        .bind(&self.country)
         .execute(db)
         .await?;
 
@@ -661,7 +663,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, series_id
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, series_id, country
             )",
         );
             for item in chunk {
@@ -704,7 +706,8 @@ impl Media {
                     .push_bind(&item.custom_name)
                     .push_bind(&item.digital_released_at)
                     .push_bind(&item.status)
-                    .push_bind(&item.series_id);
+                    .push_bind(&item.series_id)
+                    .push_bind(&item.country);
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -733,7 +736,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id, country
             )",
         );
 
@@ -775,7 +778,8 @@ impl Media {
                     .push_bind(&item.digital_released_at)
                     .push_bind(&item.status)
                     .push_bind(&item.refreshed_at)
-                    .push_bind(&item.series_id);
+                    .push_bind(&item.series_id)
+                    .push_bind(&item.country);
             });
 
             query_builder.push(
@@ -809,6 +813,7 @@ impl Media {
                 tvg_id = excluded.tvg_id,
                 channel_number = excluded.channel_number,
                 status = excluded.status,
+                country = excluded.country,
                 refreshed_at = COALESCE(excluded.refreshed_at, media.refreshed_at),
                 -- preserve user overrides: only update name/enabled/sort_order if not set by user
                 title = CASE WHEN custom_name IS NOT NULL THEN media.title ELSE excluded.title END,
@@ -1151,6 +1156,10 @@ impl Media {
     .push_bind(threshold)
     .push("))");
             }
+
+            if !filter.filter_rules.is_empty() {
+                apply_filter_rules(qb, &filter.filter_rules, &filter.filter_match);
+            }
         }
         // Apply ORDER BY driven by the sort_by field, with per-kind fallbacks.
         let is_channel_query = filter
@@ -1379,6 +1388,7 @@ impl Media {
         total_count: bool,
         user: Option<&super::User>,
         server_config: Option<&jellyfin::ServerConfiguration>,
+        smart_filter: Option<&remux_sdks::jellyfin::models::CollectionFilter>,
     ) -> Result<FilterResult<Media>> {
         let user_policy = user.and_then(|u| u.policy.as_ref()).map(|p| &p.0);
         // Map media_types (Video, Book, ...) to MediaKind constraints
@@ -1602,6 +1612,12 @@ impl Media {
                 digital_released_before,
                 sort_by: filter.sort_by.clone().unwrap_or_default(),
                 sort_order: filter.sort_order.clone().unwrap_or_default(),
+                filter_rules: smart_filter
+                    .map(|sf| sf.rules.clone())
+                    .unwrap_or_default(),
+                filter_match: smart_filter
+                    .map(|sf| sf.match_mode.clone())
+                    .unwrap_or_default(),
                 ..Default::default()
             },
         )
@@ -2068,6 +2084,17 @@ impl TryFrom<sdks::aio::Meta> for Media {
             rating_audience: meta.imdb_rating,
             description: meta.description,
             certification: meta.certification,
+            country: meta.country.and_then(|v| v.into_iter().next()).map(|c| {
+                if c.len() == 2 {
+                    c.to_uppercase()
+                } else {
+                    rust_iso3166::ALL
+                        .iter()
+                        .find(|cc| cc.name.eq_ignore_ascii_case(&c))
+                        .map(|cc| cc.alpha2.to_string())
+                        .unwrap_or_else(|| c.to_uppercase())
+                }
+            }),
             poster: meta.poster.or(meta.thumbnail),
             logo: meta.logo,
             backdrop: meta.background,
@@ -2181,11 +2208,234 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
     Ok(media_instances)
 }
 
-/// Normalise a subtitle language tag to its ISO 639-1 two-letter code.
+/// Append WHERE clauses for a set of `FilterRule`s onto a query builder.
 ///
-/// - 2-letter input → returned as-is (lowercased).
-/// - 3-letter input (ISO 639-2/3) → converted via `isolang` to the 2-letter code.
-/// - Unknown or unconvertible code → `None`.
+/// Called once for both the count and records builders inside `get_by_filter`.
+///
+/// # SQL strategy per field
+/// - `year` / `rating_*` / `certification` — direct column comparison
+/// - `tag` — EXISTS in `media_tags`
+/// - `genre` / `studio` — EXISTS in `media_relations` joining by title
+/// - `catalog` — EXISTS in `media_relations` with `role = 'catalog'` joining by title
+/// - `has_trailer` — json_array_length check
+pub fn apply_filter_rules(
+    qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+    rules: &[remux_sdks::jellyfin::models::FilterRule],
+    match_mode: &remux_sdks::jellyfin::models::FilterMatchMode,
+) {
+    use remux_sdks::jellyfin::models::FilterMatchMode;
+
+    if rules.is_empty() {
+        return;
+    }
+
+    let is_any = *match_mode == FilterMatchMode::Any;
+    if is_any {
+        qb.push(" AND (");
+    }
+
+    let mut first = true;
+    for rule in rules {
+        if let Some((sql, negated)) = filter_rule_to_sql(rule) {
+            if is_any {
+                if !first {
+                    qb.push(" OR ");
+                }
+            } else {
+                qb.push(" AND ");
+            }
+            first = false;
+            if negated {
+                qb.push("NOT (");
+            }
+            qb.push(sql);
+            if negated {
+                qb.push(")");
+            }
+        }
+    }
+
+    if is_any && !first {
+        qb.push(")");
+    }
+}
+
+/// Translate one `FilterRule` into a raw SQL fragment.
+///
+/// Values are embedded directly — no string parsing needed since the rule carries typed values.
+/// Returns `(sql, negated)` — caller wraps in `NOT(...)` when negated is true.
+/// Returns `None` if the rule should be skipped (e.g. empty values list).
+fn filter_rule_to_sql(
+    rule: &remux_sdks::jellyfin::models::FilterRule,
+) -> Option<(String, bool)> {
+    use remux_sdks::jellyfin::models::{FilterRule as R, NumericOp, SetOp};
+
+    fn esc(s: &str) -> String {
+        s.replace('\'', "''")
+    }
+
+    fn in_list(values: &[String]) -> Option<String> {
+        let items: Vec<String> = values
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("lower('{}')", esc(s)))
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        Some(items.join(", "))
+    }
+
+    match rule {
+        R::Year { op, value } => {
+            let negated = *op == NumericOp::NotEq;
+            let sql = match op {
+                NumericOp::Eq | NumericOp::NotEq => {
+                    format!("CAST(strftime('%Y', released_at) AS INTEGER) = {value}")
+                }
+                NumericOp::Gt => format!("CAST(strftime('%Y', released_at) AS INTEGER) > {value}"),
+                NumericOp::Lt => format!("CAST(strftime('%Y', released_at) AS INTEGER) < {value}"),
+            };
+            Some((sql, negated))
+        }
+        R::RatingAudience { op, value } => {
+            let negated = *op == NumericOp::NotEq;
+            let sql = match op {
+                NumericOp::Eq | NumericOp::NotEq => format!("rating_audience = {value}"),
+                NumericOp::Gt => format!("rating_audience > {value}"),
+                NumericOp::Lt => format!("rating_audience < {value}"),
+            };
+            Some((sql, negated))
+        }
+        R::RatingCritic { op, value } => {
+            let negated = *op == NumericOp::NotEq;
+            let sql = match op {
+                NumericOp::Eq | NumericOp::NotEq => format!("rating_critic = {value}"),
+                NumericOp::Gt => format!("rating_critic > {value}"),
+                NumericOp::Lt => format!("rating_critic < {value}"),
+            };
+            Some((sql, negated))
+        }
+        R::Certification { op, values } => {
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            let sql = match op {
+                SetOp::Is | SetOp::IsNot => {
+                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    format!("lower(certification) = lower('{v}')")
+                }
+                SetOp::In | SetOp::NotIn => {
+                    let list = in_list(values)?;
+                    format!("lower(certification) IN ({list})")
+                }
+            };
+            Some((sql, negated))
+        }
+        R::Country { op, values } => {
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            let sql = match op {
+                SetOp::Is | SetOp::IsNot => {
+                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    format!("lower(country) = lower('{v}')")
+                }
+                SetOp::In | SetOp::NotIn => {
+                    let list = in_list(values)?;
+                    format!("lower(country) IN ({list})")
+                }
+            };
+            Some((sql, negated))
+        }
+        R::Tag { op, values } => {
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            let sql = match op {
+                SetOp::Is | SetOp::IsNot => {
+                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    format!("EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND lower(mt.tag) = lower('{v}'))")
+                }
+                SetOp::In | SetOp::NotIn => {
+                    let list = in_list(values)?;
+                    format!("EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND lower(mt.tag) IN ({list}))")
+                }
+            };
+            Some((sql, negated))
+        }
+        R::Genre { op, values } => {
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            let sql = match op {
+                SetOp::Is | SetOp::IsNot => {
+                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_relations mr \
+                         JOIN media g ON g.id = mr.right_media_id \
+                         WHERE mr.left_media_id = media.id AND lower(g.title) = lower('{v}') AND g.kind = 'genre')"
+                    )
+                }
+                SetOp::In | SetOp::NotIn => {
+                    let list = in_list(values)?;
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_relations mr \
+                         JOIN media g ON g.id = mr.right_media_id \
+                         WHERE mr.left_media_id = media.id AND g.kind = 'genre' AND lower(g.title) IN ({list}))"
+                    )
+                }
+            };
+            Some((sql, negated))
+        }
+        R::Studio { op, values } => {
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            let sql = match op {
+                SetOp::Is | SetOp::IsNot => {
+                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_relations mr \
+                         JOIN media s ON s.id = mr.right_media_id \
+                         WHERE mr.left_media_id = media.id AND lower(s.title) = lower('{v}') AND s.kind = 'studio')"
+                    )
+                }
+                SetOp::In | SetOp::NotIn => {
+                    let list = in_list(values)?;
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_relations mr \
+                         JOIN media s ON s.id = mr.right_media_id \
+                         WHERE mr.left_media_id = media.id AND s.kind = 'studio' AND lower(s.title) IN ({list}))"
+                    )
+                }
+            };
+            Some((sql, negated))
+        }
+        R::Catalog { op, values } => {
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            let sql = match op {
+                SetOp::Is | SetOp::IsNot => {
+                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_relations mr \
+                         JOIN media c ON c.id = mr.right_media_id \
+                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND lower(c.title) = lower('{v}'))"
+                    )
+                }
+                SetOp::In | SetOp::NotIn => {
+                    let list = in_list(values)?;
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_relations mr \
+                         JOIN media c ON c.id = mr.right_media_id \
+                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND lower(c.title) IN ({list}))"
+                    )
+                }
+            };
+            Some((sql, negated))
+        }
+        R::HasTrailer { value } => {
+            let sql = if *value {
+                "json_array_length(trailers) > 0".to_string()
+            } else {
+                "(trailers IS NULL OR json_array_length(trailers) = 0)".to_string()
+            };
+            Some((sql, false))
+        }
+    }
+}
+
 pub fn subtitle_lang_to_two_letter(lang: &str) -> Option<String> {
     let lang = lang.trim().to_lowercase();
     if lang.is_empty() {
