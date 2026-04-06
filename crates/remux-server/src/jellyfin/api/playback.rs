@@ -1516,7 +1516,7 @@ pub async fn master_hls_video(
     // StartTimeTicks.  In that case we must stop the old transcode job and
     // restart from the requested position — otherwise the player waits for
     // segments that the old job will never produce at the new offset.
-    let is_seeking = q.start_time_ticks.is_some();
+    let is_seeking = q.start_time_ticks.is_some_and(|t| t > 0);
     if is_seeking {
         if state.ctx.sessions.get_transcode(&play_session_id).is_some() {
             tracing::debug!(
@@ -1563,6 +1563,38 @@ pub async fn master_hls_video(
         // Keep the API stable (no RunId in URLs) by reusing one on-disk path per
         // PlaySessionId and clearing stale segments when a transcode restarts.
         let _ = std::fs::remove_dir_all(&output_dir);
+        // runtime in Jellyfin ticks (100-ns units).
+        // Try: resolved source runtime → parent item runtime → cached probe data → parent item DB lookup.
+        let runtime_ticks = resolved_media
+            .runtime
+            .or(media.runtime)
+            .filter(|&r| r > 0)
+            .map(|r| r * 10_000_000)
+            .or_else(|| {
+                resolved_media
+                    .probe_data
+                    .as_ref()
+                    .and_then(|p| p.run_time_ticks)
+            });
+        let runtime_ticks = match runtime_ticks {
+            Some(t) if t > 0 => t,
+            _ => {
+                // Last resort: look up the parent item by path ID
+                db::Media::get_by_id(&state.ctx.db, &id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|m| m.runtime)
+                    .filter(|&r| r > 0)
+                    .map(|r| r * 10_000_000)
+                    .unwrap_or(0)
+            }
+        };
+        debug!(
+            runtime_ticks,
+            segment_length,
+            "VOD playlist: runtime_ticks for transcode session"
+        );
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -1577,6 +1609,7 @@ pub async fn master_hls_video(
                 .as_deref()
                 .map(jellyfin::TranscodeReasons::from_query_value)
                 .unwrap_or_default(),
+            runtime_ticks,
         );
 
         state
@@ -1670,57 +1703,23 @@ async fn variant_hls_video_inner(
         .get_transcode(&play_session_id)
         .context_not_found("not found", "transcode session not found")?;
 
-    let playlist_path = session.read().await.variant_playlist_path();
-
-    // Subscribe to state changes so we can react immediately when the
-    // transcoder reports an error instead of waiting the full timeout.
-    let mut state_rx = session.read().await.state_tx.subscribe();
-
-    // Wait up to 30 seconds for the variant playlist to appear, waking
-    // immediately on every state-change broadcast from the engine.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        if playlist_path.exists() {
-            break;
-        }
-        if let TranscodeState::Error(ref msg) = *state_rx.borrow() {
-            return Err(anyhow!("Transcode failed: {}", msg).into());
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(anyhow!("Variant playlist not ready after timeout").into());
-        }
-        // Wake on state change or after a short poll interval (whichever is first).
-        tokio::select! {
-            _ = state_rx.changed() => {
-                if let TranscodeState::Error(ref msg) = *state_rx.borrow() {
-                    return Err(anyhow!("Transcode failed: {}", msg).into());
-                }
-            }
-            _ = tokio::time::sleep_until(deadline.min(
-                tokio::time::Instant::now() + std::time::Duration::from_millis(500)
-            )) => {}
-        }
-    }
-
     // Keep the session alive.
     state.ctx.sessions.ping(&play_session_id);
 
-    let raw = tokio::fs::read_to_string(&playlist_path).await?;
-
-    // FFmpeg writes bare filenames (e.g. `segment_00001.ts`). Inject
-    // PlaySessionId so the segment handler can look up the transcode session.
-    let content = raw
-        .lines()
-        .map(|line| {
-            if !line.starts_with('#') && line.ends_with(".ts") {
-                format!("{}?PlaySessionId={}", line, play_session_id)
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    // Generate the variant playlist server-side as a complete VOD playlist
+    // so HLS.js can seek to any position immediately. We no longer read
+    // FFmpeg's incrementally-built EVENT playlist.
+    let session_read = session.read().await;
+    debug!(
+        runtime_ticks = session_read.runtime_ticks,
+        segment_length = session_read.segment_length,
+        play_session_id = %play_session_id,
+        "Generating VOD variant playlist"
+    );
+    let content = crate::transcode::engine::generate_variant_playlist(
+        &session_read,
+        "", // no extra query string needed
+    );
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -1772,6 +1771,25 @@ fn strip_segment_extension(filename: &str) -> String {
         .unwrap_or_else(|| filename.to_string())
 }
 
+/// Find the highest segment index currently on disk in `dir`.
+fn get_current_transcoding_index(dir: &std::path::Path) -> Option<u32> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut max_idx: Option<u32> = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.ends_with(".ts") {
+            continue;
+        }
+        if let Some(idx_str) = name.strip_suffix(".ts").and_then(|s| s.rsplit('_').next()) {
+            if let Ok(idx) = idx_str.parse::<u32>() {
+                max_idx = Some(max_idx.map_or(idx, |m: u32| m.max(idx)));
+            }
+        }
+    }
+    max_idx
+}
+
 async fn hls_segment_inner(
     state: AppState,
     segment_id: String,
@@ -1780,6 +1798,13 @@ async fn hls_segment_inner(
     let play_session_id = q
         .play_session_id
         .context_not_found("missing", "PlaySessionId is required")?;
+
+    info!(
+        segment_id = %segment_id,
+        play_session_id = %play_session_id,
+        runtime_ticks = ?q.runtime_ticks,
+        "HLS segment request"
+    );
 
     let session = state.ctx.sessions.get_transcode(&play_session_id);
 
@@ -1793,13 +1818,15 @@ async fn hls_segment_inner(
             .segment_path(&play_session_id, &segment_id),
     };
 
+    // Parse the requested segment index from the filename.
+    let requested_idx: Option<u32> = segment_id
+        .rsplit('_')
+        .next()
+        .and_then(|n| n.parse::<u32>().ok());
+
     if let Some(ref session) = session {
         // Update playback position for the buffer monitor.
-        if let Some(idx) = segment_id
-            .rsplit('_')
-            .next()
-            .and_then(|n| n.parse::<u32>().ok())
-        {
+        if let Some(idx) = requested_idx {
             use std::sync::atomic::Ordering;
             let s = session.read().await;
             let prev = s.last_segment_index.load(Ordering::Relaxed);
@@ -1809,7 +1836,116 @@ async fn hls_segment_inner(
         }
     }
 
-    // If the session is live, wait up to 60s for ffmpeg to produce the segment.
+    // ── Segment-driven transcode restart ──
+    // If the segment doesn't exist and we have a live session, check whether
+    // FFmpeg needs to be restarted at a different position (like Jellyfin does).
+    if !segment_path.exists() {
+        if let (Some(session), Some(requested_idx)) = (&session, requested_idx) {
+            let s = session.read().await;
+            let output_dir = s.output_dir.clone();
+            let segment_length = s.segment_length;
+            let current_idx = get_current_transcoding_index(&output_dir);
+            let segment_gap_threshold = 24 / segment_length;
+
+            let needs_restart = match current_idx {
+                None => {
+                    // No segments on disk yet. If FFmpeg is still running
+                    // (Starting/Running), just fall through to the wait loop —
+                    // killing it here causes an infinite restart cycle.
+                    matches!(s.state, TranscodeState::Error(_) | TranscodeState::Complete)
+                }
+                Some(cur) if requested_idx < cur => true, // seeking backward
+                Some(cur) if requested_idx.saturating_sub(cur) > segment_gap_threshold => true, // too far ahead
+                _ => false, // within range — just wait for FFmpeg
+            };
+
+            if needs_restart {
+                // Guard against concurrent restart: only proceed if FFmpeg
+                // is actually running (kill_tx is Some). If another request
+                // already killed it and started a new one, just wait.
+                let has_running_ffmpeg = s.kill_tx.is_some();
+                if !has_running_ffmpeg {
+                    drop(s);
+                    // Another request already restarted — fall through to wait loop.
+                } else {
+                debug!(
+                    requested_idx,
+                    ?current_idx,
+                    segment_gap_threshold,
+                    "Segment-driven transcode restart"
+                );
+
+                // Gather params we need before dropping the read lock.
+                let input_url = s.input_url.clone();
+                let video_codec = s.video_codec.clone();
+                let audio_codec = s.audio_codec.clone();
+                drop(s);
+
+                // Kill running FFmpeg and clean up stale segments (params
+                // like bitrate/codec may change, so old segments are invalid).
+                {
+                    let (kill_tx, wait_done) = {
+                        let mut s = session.write().await;
+                        (s.kill_tx.take(), s.wait_done.clone())
+                    };
+                    if let Some(kill_tx) = kill_tx {
+                        let notification = wait_done.notified();
+                        let _ = kill_tx.send(());
+                        notification.await;
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&output_dir);
+                let _ = std::fs::create_dir_all(&output_dir);
+
+                // Calculate the seek position from the runtimeTicks query param
+                // (cumulative ticks to start of this segment) provided by our
+                // server-generated VOD playlist. Fall back to segment_index * segment_length.
+                let start_time_ticks = q.runtime_ticks
+                    .unwrap_or_else(|| requested_idx as i64 * segment_length as i64 * 10_000_000);
+
+                let params = crate::transcode::engine::TranscodeParams {
+                    input_url,
+                    output_dir: output_dir.clone(),
+                    video_codec,
+                    audio_codec: audio_codec.clone(),
+                    segment_length,
+                    start_time_ticks: Some(start_time_ticks),
+                    max_width: q.max_width.map(|v| v as u32),
+                    max_height: q.max_height.map(|v| v as u32),
+                    video_bitrate: q
+                        .video_bit_rate
+                        .map(|v| v as u32)
+                        .or_else(|| q.max_streaming_bitrate.map(|b| b as u32)),
+                    audio_bitrate: q.audio_bit_rate.map(|v| v as u32),
+                    audio_channels: if audio_codec == "copy" { None } else { Some(2) },
+                    audio_stream_index: q.audio_stream_index.map(|v| v as i32),
+                    subtitle_stream_index: q.subtitle_stream_index.map(|v| v as i32),
+                };
+
+                // Reinitialise the session's state for the new transcode run.
+                {
+                    let mut s = session.write().await;
+                    s.state = TranscodeState::Starting;
+                    let _ = s.state_tx.send(TranscodeState::Starting);
+                    s.start_time_secs = (start_time_ticks / 10_000_000) as u32;
+                    s.playback_offset_secs
+                        .store(s.start_time_secs, std::sync::atomic::Ordering::Relaxed);
+                }
+
+                let session_clone = session.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        crate::transcode::engine::start_transcode(session_clone, params).await
+                    {
+                        tracing::error!("Transcode restart failed: {:#}", e);
+                    }
+                });
+            } // else: has_running_ffmpeg
+            } // needs_restart
+        }
+    }
+
+    // Wait up to 60s for ffmpeg to produce the segment.
     // If there's no live session (e.g. after server restart), only serve from disk.
     if session.is_some() {
         let mut attempts = 0;

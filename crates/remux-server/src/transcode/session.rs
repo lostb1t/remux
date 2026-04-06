@@ -37,6 +37,8 @@ pub struct TranscodeSession {
     pub start_time_secs: u32,
     /// Playback offset in seconds relative to start_time_secs, updated from progress reports.
     pub playback_offset_secs: Arc<AtomicU32>,
+    /// Total runtime of the media in Jellyfin ticks (100-ns units).
+    pub runtime_ticks: i64,
 }
 
 impl TranscodeSession {
@@ -50,6 +52,7 @@ impl TranscodeSession {
         audio_codec: String,
         segment_length: u32,
         transcode_reasons: TranscodeReasons,
+        runtime_ticks: i64,
     ) -> Arc<tokio::sync::RwLock<Self>> {
         let _ = std::fs::create_dir_all(&output_dir);
         let (state_tx, _) = watch::channel(TranscodeState::Starting);
@@ -71,6 +74,7 @@ impl TranscodeSession {
             last_segment_index: Arc::new(AtomicU32::new(0)),
             start_time_secs: 0,
             playback_offset_secs: Arc::new(AtomicU32::new(0)),
+            runtime_ticks,
         }))
     }
 

@@ -595,6 +595,74 @@ pub fn start_progressive_transcode(
     Ok(tokio_util::io::ReaderStream::new(stdout))
 }
 
+/// Generate the variant (child) HLS playlist server-side as a VOD playlist.
+///
+/// Lists ALL segments from time 0 to the end of the media so HLS.js can seek
+/// to any position immediately. Each segment URL includes `runtimeTicks` and
+/// `actualSegmentLengthTicks` query params so the segment handler knows the
+/// cumulative position when it needs to restart FFmpeg.
+pub fn generate_variant_playlist(session: &TranscodeSession, query_string: &str) -> String {
+    let runtime_ticks = session.runtime_ticks;
+    let segment_length = session.segment_length;
+    let play_session_id = &session.id;
+
+    if runtime_ticks <= 0 || segment_length == 0 {
+        // Fallback: single long segment (shouldn't happen in practice)
+        return format!(
+            "#EXTM3U\n\
+             #EXT-X-PLAYLIST-TYPE:VOD\n\
+             #EXT-X-VERSION:3\n\
+             #EXT-X-TARGETDURATION:{seg}\n\
+             #EXT-X-MEDIA-SEQUENCE:0\n\
+             #EXTINF:{seg}.000000, nodesc\n\
+             segment_00000.ts?PlaySessionId={psid}{qs}\n\
+             #EXT-X-ENDLIST\n",
+            seg = segment_length,
+            psid = play_session_id,
+            qs = if query_string.is_empty() { String::new() } else { format!("&{}", query_string) },
+        );
+    }
+
+    let seg_length_ticks = segment_length as i64 * 10_000_000;
+    let whole_segments = runtime_ticks / seg_length_ticks;
+    let remaining_ticks = runtime_ticks % seg_length_ticks;
+    let total_segments = whole_segments + if remaining_ticks > 0 { 1 } else { 0 };
+
+    let target_duration = segment_length; // always an integer ceiling
+
+    let mut buf = String::with_capacity(total_segments as usize * 120);
+    buf.push_str("#EXTM3U\n");
+    buf.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
+    buf.push_str("#EXT-X-VERSION:3\n");
+    buf.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", target_duration));
+    buf.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
+
+    let mut cumulative_ticks: i64 = 0;
+    for i in 0..total_segments {
+        let length_ticks = if i < whole_segments {
+            seg_length_ticks
+        } else {
+            remaining_ticks
+        };
+        let length_secs = length_ticks as f64 / 10_000_000.0;
+
+        buf.push_str(&format!("#EXTINF:{:.6}, nodesc\n", length_secs));
+        buf.push_str(&format!(
+            "segment_{:05}.ts?PlaySessionId={}&runtimeTicks={}&actualSegmentLengthTicks={}{}\n",
+            i,
+            play_session_id,
+            cumulative_ticks,
+            length_ticks,
+            if query_string.is_empty() { String::new() } else { format!("&{}", query_string) },
+        ));
+
+        cumulative_ticks += length_ticks;
+    }
+
+    buf.push_str("#EXT-X-ENDLIST\n");
+    buf
+}
+
 /// Generate a master HLS playlist that references the variant playlist.
 pub fn generate_master_playlist(session: &TranscodeSession) -> String {
     let play_session_id = &session.id;

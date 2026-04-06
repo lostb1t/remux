@@ -210,3 +210,4 @@ async fn kill_transcode(ts: Arc<tokio::sync::RwLock<TranscodeSession>>) {
     }
     let _ = std::fs::remove_dir_all(&output_dir);
 }
+

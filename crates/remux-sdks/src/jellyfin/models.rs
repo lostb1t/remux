@@ -2559,6 +2559,12 @@ pub struct HlsVideoQuery {
     pub subtitle_stream_index: Option<i32>,
     pub max_streaming_bitrate: Option<i64>,
     pub transcode_reasons: Option<String>,
+    /// Cumulative runtime ticks up to the start of this segment.
+    #[serde(alias = "runtimeTicks")]
+    pub runtime_ticks: Option<i64>,
+    /// Length of this segment in ticks.
+    #[serde(alias = "actualSegmentLengthTicks")]
+    pub actual_segment_length_ticks: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
