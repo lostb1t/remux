@@ -1022,13 +1022,14 @@ impl Media {
                     qb.push(" AND ums.play_count > 0)");
                 }
 
-                // resumable — EXISTS with playback_position > 0 AND play_count = 0
+                // resumable — use IN subquery so SQLite materialises the (small) in-progress
+                // set once rather than running a correlated EXISTS for every media row.
                 if user_state_filter.resumable == Some(true) {
-                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = media.media_id");
+                    qb.push(" AND media.media_id IN (SELECT ums.media_key FROM user_media_state ums WHERE ums.playback_position > 0 AND ums.play_count = 0");
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ").push_bind(user_id);
                     }
-                    qb.push(" AND ums.playback_position > 0 AND ums.play_count = 0)");
+                    qb.push(")");
                 }
             }
 
