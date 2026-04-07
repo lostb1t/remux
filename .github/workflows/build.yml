@@ -95,7 +95,7 @@ jobs:
       - name: Set workspace version
         if: inputs.cargo_version != ''
         run: |
-          cargo binstall cargo-edit --no-confirm --locked
+          cargo binstall cargo-edit@0.11.11 --no-confirm --locked
           cargo set-version "${{ inputs.cargo_version }}"
 
       - name: Install dioxus-cli
@@ -148,7 +148,7 @@ jobs:
       - name: Set workspace version
         if: inputs.cargo_version != ''
         run: |
-          cargo install cargo-edit --locked
+          cargo install cargo-edit@0.11.11 --locked
           cargo set-version "${{ inputs.cargo_version }}"
 
       - name: Build remux-server
