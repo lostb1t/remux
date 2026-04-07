@@ -34,7 +34,6 @@ use futures_util::StreamExt;
 use http::Uri;
 use reqwest::header::LOCATION;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::SqlitePool;
 use std;
 use std::collections::HashMap;
@@ -70,6 +69,8 @@ pub struct Device {
     pub app_name: String,
     pub app_version: String,
     pub last_activity_at: Option<DateTime<Utc>>,
+    pub capabilities: Option<sqlx::types::Json<crate::jellyfin::ClientCapabilitiesDto>>,
+    pub remote_ip: Option<String>,
 }
 
 impl Device {
@@ -163,17 +164,34 @@ impl Device {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Update last_activity_at to now.
-    pub async fn touch(&self, db: &SqlitePool) -> Result<()> {
+    /// Update last_activity_at to now, optionally recording the client's remote IP.
+    pub async fn touch(&self, db: &SqlitePool, remote_ip: Option<&str>) -> Result<()> {
         sqlx::query(
-            "UPDATE devices SET last_activity_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') \
+            "UPDATE devices SET last_activity_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), \
+             remote_ip = COALESCE(?, remote_ip) \
              WHERE id = ? AND user_id = ?",
         )
+        .bind(remote_ip)
         .bind(&self.id)
         .bind(self.user_id)
         .execute(db)
         .await?;
         Ok(())
+    }
+
+    /// Store client capabilities JSON for this device.
+    pub async fn save_capabilities(db: &SqlitePool, device_id: &str, caps: &crate::jellyfin::ClientCapabilitiesDto) -> Result<()> {
+        sqlx::query("UPDATE devices SET capabilities = ? WHERE id = ?")
+            .bind(sqlx::types::Json(caps))
+            .bind(device_id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
+
+    /// Get the stored capabilities for this device, if present.
+    pub fn parsed_capabilities(&self) -> Option<crate::jellyfin::ClientCapabilitiesDto> {
+        self.capabilities.as_ref().map(|j| j.0.clone())
     }
 
     /// Load the user this device belongs to.
@@ -221,9 +239,25 @@ impl FromRequestParts<AppState> for AuthSession {
         // device_id is optional — query-param-only auth (e.g. ?token=...)
         // doesn't carry a DeviceId. The device is looked up by token alone.
         let _device_id = jfauth.device_id;
+
+        // Capture client IP from proxy headers or peer address.
+        let remote_ip = parts
+            .headers
+            .get("X-Forwarded-For")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|s| s.trim().to_string())
+            .or_else(|| {
+                parts
+                    .headers
+                    .get("X-Real-IP")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string())
+            });
+
         // First try the devices table (normal session token).
         if let Some(device) = Device::get_by_access_token(&state.ctx.db, token).await? {
-            let _ = device.touch(&state.ctx.db).await;
+            let _ = device.touch(&state.ctx.db, remote_ip.as_deref()).await;
             let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
                 .await?
                 .context_unauthorized("forbidden", "forbidden")?;
@@ -250,6 +284,8 @@ impl FromRequestParts<AppState> for AuthSession {
             app_name: api_key.app_name,
             app_version: String::new(),
             last_activity_at: None,
+            capabilities: None,
+            remote_ip: None,
         };
 
         Ok(AuthSession {

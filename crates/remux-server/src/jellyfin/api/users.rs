@@ -186,6 +186,8 @@ pub async fn authenticate_with_quickconnect(
         user_id: user.id,
         access_token: get_uuid().to_string(),
         last_activity_at: None,
+        capabilities: None,
+        remote_ip: None,
     };
     device.save(&state.ctx.db).await?;
 

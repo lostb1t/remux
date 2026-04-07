@@ -566,7 +566,10 @@ impl Media {
             description = excluded.description,
             trailers = excluded.trailers,
             url = excluded.url,
-            probe_data = CASE WHEN excluded.url IS NOT media.url THEN NULL ELSE media.probe_data END,
+            probe_data = CASE
+                WHEN excluded.url IS NOT media.url THEN NULL
+                ELSE COALESCE(excluded.probe_data, media.probe_data)
+            END,
             remote_data = excluded.remote_data,
             series_media_id = excluded.series_media_id,
             series_id = excluded.series_id,
@@ -801,7 +804,10 @@ impl Media {
                 url = excluded.url,
                 media_id = excluded.media_id,
                 external_ids = excluded.external_ids,
-                probe_data = CASE WHEN excluded.url IS NOT media.url THEN NULL ELSE media.probe_data END,
+                probe_data = CASE
+                WHEN excluded.url IS NOT media.url THEN NULL
+                ELSE COALESCE(excluded.probe_data, media.probe_data)
+            END,
                 remote_data = excluded.remote_data,
                 series_media_id = excluded.series_media_id,
                 series_id = excluded.series_id,

@@ -8,6 +8,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::transcode::session::TranscodeSession;
+use remux_sdks::jellyfin::QueueItem;
 
 #[derive(Clone)]
 pub struct PlaybackSession {
@@ -18,12 +19,16 @@ pub struct PlaybackSession {
     pub device_id: String,
     pub client_name: String,
     pub position_ticks: i64,
+    pub can_seek: bool,
     pub is_paused: bool,
+    pub last_paused_at: Option<DateTime<Utc>>,
     pub is_muted: bool,
     pub volume_level: Option<i32>,
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub play_method: Option<String>,
+    pub now_playing_queue: Option<Vec<QueueItem>>,
+    pub playlist_item_id: Option<String>,
     pub started_at: DateTime<Utc>,
     pub last_activity: DateTime<Utc>,
     /// Active transcode session owned by this playback session, if any.
@@ -48,10 +53,27 @@ impl PlaybackSessionManager {
 
     /// Insert (or replace) a playback session, preserving any transcode that was
     /// pre-attached before `report_playback_start` fired.
+    /// Removes stale sessions for the same device so `get_sessions` always
+    /// finds the most recent playback.
     pub fn insert(&self, mut session: PlaybackSession) {
         if session.transcode.is_none() {
             if let Some(existing) = self.sessions.get(&session.play_session_id) {
                 session.transcode = existing.value().transcode.clone();
+            }
+        }
+        // Remove any previous session for this device (different play_session_id).
+        if !session.device_id.is_empty() {
+            let stale: Vec<String> = self
+                .sessions
+                .iter()
+                .filter(|e| {
+                    e.value().device_id == session.device_id
+                        && e.key() != &session.play_session_id
+                })
+                .map(|e| e.key().clone())
+                .collect();
+            for id in stale {
+                self.sessions.remove(&id);
             }
         }
         self.sessions
@@ -111,12 +133,16 @@ impl PlaybackSessionManager {
                     device_id: String::new(),
                     client_name: String::new(),
                     position_ticks: 0,
+                    can_seek: true,
                     is_paused: false,
+                    last_paused_at: None,
                     is_muted: false,
                     volume_level: None,
                     audio_stream_index: None,
                     subtitle_stream_index: None,
                     play_method: None,
+                    now_playing_queue: None,
+                    playlist_item_id: None,
                     started_at: Utc::now(),
                     last_activity: Utc::now(),
                 },

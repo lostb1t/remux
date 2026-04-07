@@ -1008,8 +1008,24 @@ impl TranscodeReason {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct TranscodeReasons(pub u32);
+
+impl serde::Serialize for TranscodeReasons {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        use strum::IntoEnumIterator;
+        let reasons: Vec<String> = TranscodeReason::iter()
+            .filter(|r| self.contains(*r))
+            .map(|r| r.to_string())
+            .collect();
+        let mut seq = s.serialize_seq(Some(reasons.len()))?;
+        for r in &reasons {
+            seq.serialize_element(r)?;
+        }
+        seq.end()
+    }
+}
 
 impl TranscodeReasons {
     pub fn insert(&mut self, reason: TranscodeReason) {
@@ -1067,7 +1083,8 @@ pub struct TranscodingInfo {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub audio_channels: Option<i32>,
-    pub transcode_reasons: u32,
+    pub hardware_acceleration_type: Option<String>,
+    pub transcode_reasons: TranscodeReasons,
 }
 
 #[skip_serializing_none]
@@ -1957,14 +1974,41 @@ pub struct NameIdPair {
     pub name: String,
 }
 
+#[skip_serializing_none]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct PlayerStateInfo {
+    pub position_ticks: Option<i64>,
+    pub can_seek: bool,
+    pub is_paused: bool,
+    pub is_muted: bool,
+    pub volume_level: Option<i32>,
+    pub audio_stream_index: Option<i32>,
+    pub subtitle_stream_index: Option<i32>,
+    pub media_source_id: Option<String>,
+    pub play_method: Option<String>,
+    pub repeat_mode: String,
+    pub playback_order: String,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ClientCapabilitiesDto {
+    pub playable_media_types: Vec<String>,
+    pub supported_commands: Vec<String>,
+    pub supports_media_control: bool,
+    pub supports_persistent_identifier: bool,
+}
+
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct SessionInfoDto {
-    //pub play_state: Option<PlayerStateInfo>,
-    // pub additional_users: Option<Vec<SessionUserInfo>>,
-    //pub capabilities: Option<ClientCapabilitiesDto>,
+    pub play_state: Option<PlayerStateInfo>,
+    pub additional_users: Vec<serde_json::Value>,
+    pub capabilities: Option<ClientCapabilitiesDto>,
     pub remote_end_point: Option<String>,
-    pub playable_media_types: Vec<MediaType>,
+    pub playable_media_types: Vec<String>,
     pub id: Option<String>,
     #[default(String::new())]
     pub user_id: String,

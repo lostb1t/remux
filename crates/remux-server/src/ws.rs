@@ -123,7 +123,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSes
                     None => std::future::pending::<()>().await,
                 }
             } => {
-                let sessions = build_sessions(&state);
+                let sessions = build_sessions(&state).await;
                 if !send_msg(&mut socket, SessionMessageType::SESSIONS, Some(sessions)).await {
                     return;
                 }
@@ -193,7 +193,15 @@ fn parse_sessions_data(data: Option<&serde_json::Value>) -> (u64, u64) {
     (initial, interval)
 }
 
-fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
+async fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
+    let devices: std::collections::HashMap<String, db::auth::Device> =
+        db::auth::Device::get_all(&state.ctx.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| (d.id.clone(), d))
+            .collect();
+
     state
         .ctx
         .sessions
@@ -210,9 +218,32 @@ fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
                     container: Some("ts".to_string()),
                     is_video_direct: ts.video_codec == "copy",
                     is_audio_direct: ts.audio_codec == "copy",
-                    transcode_reasons: ts.transcode_reasons.0,
+                    transcode_reasons: ts.transcode_reasons,
                     ..Default::default()
                 });
+
+            let play_state = jellyfin::PlayerStateInfo {
+                position_ticks: Some(session.position_ticks),
+                can_seek: session.can_seek,
+                is_paused: session.is_paused,
+                is_muted: session.is_muted,
+                volume_level: session.volume_level,
+                audio_stream_index: session.audio_stream_index,
+                subtitle_stream_index: session.subtitle_stream_index,
+                media_source_id: session.media_source_id.clone(),
+                play_method: session.play_method.clone(),
+                repeat_mode: "RepeatNone".to_string(),
+                playback_order: "Default".to_string(),
+            };
+
+            let device = devices.get(&session.device_id);
+            let capabilities = device.and_then(|d| d.parsed_capabilities());
+
+            let (playable_media_types, supported_commands, supports_media_control, supports_remote_control) =
+                capabilities.as_ref().map_or(
+                    (vec![], vec![], true, true),
+                    |c| (c.playable_media_types.clone(), c.supported_commands.clone(), c.supports_media_control, c.supports_media_control),
+                );
 
             jellyfin::SessionInfoDto {
                 id: Some(session.play_session_id.clone()),
@@ -222,10 +253,21 @@ fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
                 user_id: session.user_id.to_string(),
                 last_activity_date: session.last_activity,
                 last_playback_check_in: session.last_activity,
+                last_paused_date: session.last_paused_at,
+                play_state: Some(play_state),
+                capabilities,
+                playable_media_types,
+                supported_commands,
+                supports_media_control,
+                supports_remote_control,
+                now_playing_item: Some(jellyfin::BaseItemDto {
+                    id: session.item_id,
+                    ..Default::default()
+                }),
+                now_playing_queue: session.now_playing_queue.clone(),
+                playlist_item_id: session.playlist_item_id.clone(),
                 transcoding_info,
                 is_active: true,
-                supports_media_control: true,
-                supports_remote_control: true,
                 server_id: crate::utils::server_id(),
                 ..Default::default()
             }

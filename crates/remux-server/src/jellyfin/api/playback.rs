@@ -595,15 +595,27 @@ pub async fn sessions_logout(
 }
 
 #[post("/sessions/capabilities")]
-pub async fn sessions_capabilities(_session: auth::AuthSession) -> Result<StatusCode> {
+pub async fn sessions_capabilities(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    body: Option<Json<jellyfin::ClientCapabilitiesDto>>,
+) -> Result<StatusCode> {
+    if let Some(Json(caps)) = body {
+        let _ = auth::Device::save_capabilities(&state.ctx.db, &session.device.id, &caps).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[post("/sessions/{id}/capabilities")]
 pub async fn sessions_capabilities_by_id(
-    Path(_id): Path<String>,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
     _session: auth::AuthSession,
+    body: Option<Json<jellyfin::ClientCapabilitiesDto>>,
 ) -> Result<StatusCode> {
+    if let Some(Json(caps)) = body {
+        let _ = auth::Device::save_capabilities(&state.ctx.db, &id, &caps).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -628,19 +640,23 @@ pub async fn report_playback_start(
         device_id: session.device.id.clone(),
         client_name: session.device.app_name.clone(),
         position_ticks: data.position_ticks.unwrap_or(0),
+        can_seek: data.can_seek,
         is_paused: data.is_paused,
+        last_paused_at: if data.is_paused { Some(Utc::now()) } else { None },
         is_muted: data.is_muted,
         volume_level: data.volume_level,
         audio_stream_index: data.audio_stream_index,
         subtitle_stream_index: data.subtitle_stream_index,
         play_method: data.play_method.as_ref().map(|m| m.to_string()),
+        now_playing_queue: data.now_playing_queue.clone(),
+        playlist_item_id: data.playlist_item_id.clone(),
         started_at: Utc::now(),
         last_activity: Utc::now(),
         transcode: None,
     };
 
     state.ctx.sessions.insert(ps);
-    info!(play_session_id, %item_id, "Playback started");
+    info!(play_session_id, %item_id, media_source_id = ?data.media_source_id, "Playback started");
 
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -1250,6 +1266,11 @@ pub async fn report_playback_progress(
             let item_id = data.item_id.unwrap_or(ps.item_id);
             state.ctx.sessions.update(psid, |ps| {
                 ps.position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
+                if data.is_paused && !ps.is_paused {
+                    ps.last_paused_at = Some(Utc::now());
+                } else if !data.is_paused {
+                    ps.last_paused_at = None;
+                }
                 ps.is_paused = data.is_paused;
                 ps.is_muted = data.is_muted;
                 ps.volume_level = data.volume_level.or(ps.volume_level);
@@ -1362,16 +1383,26 @@ pub async fn ping_playback_session(
 
 #[post("/sessions/capabilities/full")]
 pub async fn sessions_capabilities_full(
-    _session: auth::AuthSession,
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    body: Option<Json<jellyfin::ClientCapabilitiesDto>>,
 ) -> Result<StatusCode> {
+    if let Some(Json(caps)) = body {
+        let _ = auth::Device::save_capabilities(&state.ctx.db, &session.device.id, &caps).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[post("/sessions/{id}/capabilities/full")]
 pub async fn sessions_capabilities_full_by_id(
-    Path(_id): Path<String>,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
     _session: auth::AuthSession,
+    body: Option<Json<jellyfin::ClientCapabilitiesDto>>,
 ) -> Result<StatusCode> {
+    if let Some(Json(caps)) = body {
+        let _ = auth::Device::save_capabilities(&state.ctx.db, &id, &caps).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1407,29 +1438,151 @@ pub async fn get_sessions(
 
     let mut sessions = Vec::with_capacity(filtered_devices.len());
     for device in filtered_devices {
-        // Attach now-playing info if this device has an active playback session.
-        let now_playing = playback_sessions
-            .iter()
-            .find(|s| s.device_id == device.id)
-            .map(|s| jellyfin::BaseItemDto {
-                id: s.item_id,
-                ..Default::default()
+        let ps = playback_sessions.iter().find(|s| s.device_id == device.id);
+
+        // Load full media from DB if there's an active playback session.
+        let mut media = if let Some(ps) = ps {
+            db::Media::get_by_id(&state.ctx.db, &ps.item_id)
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+
+        // Load the source being played directly by media_source_id.
+        // The source has probe_data with MediaStreams from ffprobe.
+        let mut source_media = if let Some(msid) = ps.and_then(|p| p.media_source_id.as_ref()) {
+            if let Ok(source_id) = msid.parse::<Uuid>() {
+                db::Media::get_by_id(&state.ctx.db, &source_id).await.ok().flatten()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Fallback: if media_source_id didn't yield probe data, try the first
+        // Source child of the item (covers cases where media_source_id is missing
+        // or points to the parent item itself without probe data).
+        if source_media.as_ref().and_then(|m| m.probe_data.as_ref()).is_none() {
+            if let Some(m) = media.as_mut() {
+                if let Ok(sources) = m.sources(&state.ctx.db).await {
+                    if let Some(s) = sources.into_iter().find(|s| s.probe_data.is_some()) {
+                        source_media = Some(s);
+                    }
+                }
+            }
+        }
+
+        let probe_data = source_media.as_ref()
+            .and_then(|m| m.probe_data.as_ref())
+            .or_else(|| media.as_ref().and_then(|m| m.probe_data.as_ref()));
+
+        // Populate now-playing item from DB for full metadata.
+        let now_playing = if let Some(ps) = ps {
+            let mut item = media.as_ref()
+                .map(|m| jellyfin::db_media_to_item(m.clone()))
+                .unwrap_or_else(|| jellyfin::BaseItemDto {
+                    id: ps.item_id,
+                    ..Default::default()
+                });
+            // Attach MediaStreams from probe data so clients can see track info.
+            if item.media_streams.is_none() {
+                if let Some(probe) = probe_data {
+                    if !probe.media_streams.is_empty() {
+                        item.media_streams = Some(probe.media_streams.clone());
+                    }
+                }
+            }
+            Some(item)
+        } else {
+            None
+        };
+
+        // Attach TranscodingInfo with enriched metadata from probe data.
+        let transcoding_info = ps
+            .and_then(|ps| ps.transcode.as_ref().and_then(|ts| ts.try_read().ok()))
+            .map(|ts| {
+                // Pull width/height/bitrate/channels from source media probe data.
+                let video_stream = probe_data.and_then(|p| {
+                    p.media_streams.iter().find(|s| s.type_ == Some(jellyfin::MediaStreamType::Video))
+                });
+                let width = video_stream.and_then(|v| v.width.map(|x| x as i32));
+                let height = video_stream.and_then(|v| v.height.map(|x| x as i32));
+                let audio_channels = probe_data.and_then(|p| {
+                    p.media_streams.iter()
+                        .find(|s| s.type_ == Some(jellyfin::MediaStreamType::Audio))
+                        .and_then(|a| a.channels.map(|x| x as i32))
+                });
+
+                // Compute completion percentage from transcode progress.
+                let completion_percentage = if ts.runtime_ticks > 0 {
+                    let start_ticks = ts.start_time_secs as i64 * 10_000_000;
+                    let last_seg = ts.last_segment_index.load(std::sync::atomic::Ordering::Relaxed) as i64;
+                    let transcoded_ticks = start_ticks + (last_seg + 1) * ts.segment_length as i64 * 10_000_000;
+                    Some((transcoded_ticks as f64 / ts.runtime_ticks as f64 * 100.0).min(100.0))
+                } else {
+                    None
+                };
+
+                jellyfin::TranscodingInfo {
+                    audio_codec: Some(ts.audio_codec.clone()),
+                    video_codec: Some(ts.video_codec.clone()),
+                    container: Some("ts".to_string()),
+                    is_video_direct: ts.video_codec == "copy",
+                    is_audio_direct: ts.audio_codec == "copy",
+                    bitrate: probe_data.and_then(|p| p.bitrate),
+                    width,
+                    height,
+                    audio_channels,
+                    completion_percentage,
+                    transcode_reasons: ts.transcode_reasons,
+                    ..Default::default()
+                }
             });
 
-        // Attach TranscodingInfo if there is an active transcode session for this device.
-        let transcoding_info = playback_sessions
-            .iter()
-            .find(|s| s.device_id == device.id)
-            .and_then(|ps| ps.transcode.as_ref().and_then(|ts| ts.try_read().ok()))
-            .map(|ts| jellyfin::TranscodingInfo {
-                audio_codec: Some(ts.audio_codec.clone()),
-                video_codec: Some(ts.video_codec.clone()),
-                container: Some("ts".to_string()),
-                is_video_direct: ts.video_codec == "copy",
-                is_audio_direct: ts.audio_codec == "copy",
-                transcode_reasons: ts.transcode_reasons.0,
-                ..Default::default()
-            });
+        // Build PlayState from active playback session.
+        let play_state = ps.map(|ps| jellyfin::PlayerStateInfo {
+            position_ticks: Some(ps.position_ticks),
+            can_seek: ps.can_seek,
+            is_paused: ps.is_paused,
+            is_muted: ps.is_muted,
+            volume_level: ps.volume_level,
+            audio_stream_index: ps.audio_stream_index,
+            subtitle_stream_index: ps.subtitle_stream_index,
+            media_source_id: ps.media_source_id.clone(),
+            play_method: ps.play_method.clone(),
+            repeat_mode: "RepeatNone".to_string(),
+            playback_order: "Default".to_string(),
+        });
+
+        let capabilities = device.parsed_capabilities();
+
+        let (playable_media_types, supported_commands, supports_media_control, supports_remote_control) =
+            capabilities.as_ref().map_or(
+                (vec![], vec![], false, false),
+                |c| (c.playable_media_types.clone(), c.supported_commands.clone(), c.supports_media_control, c.supports_media_control),
+            );
+
+        let last_paused_date = ps.and_then(|ps| ps.last_paused_at);
+        let now_playing_queue = ps.and_then(|ps| ps.now_playing_queue.clone());
+        let playlist_item_id = ps.and_then(|ps| ps.playlist_item_id.clone());
+
+        // Populate NowPlayingQueueFullItems from queue item IDs.
+        let now_playing_queue_full_items = if let Some(ref queue) = now_playing_queue {
+            let mut items = Vec::with_capacity(queue.len());
+            for qi in queue {
+                if let Ok(Some(m)) = db::Media::get_by_id(&state.ctx.db, &qi.id).await {
+                    items.push(jellyfin::db_media_to_item(m));
+                }
+            }
+            if items.is_empty() { None } else { Some(items) }
+        } else {
+            None
+        };
+
+        let remote_end_point = device.remote_ip.clone();
 
         let user_name = device
             .user(&state.ctx.db)
@@ -1447,8 +1600,19 @@ pub async fn get_sessions(
             user_name: Some(user_name),
             last_activity_date: device.last_activity_at.unwrap_or_else(Utc::now),
             last_playback_check_in: device.last_activity_at.unwrap_or_else(Utc::now),
+            last_paused_date,
+            remote_end_point,
             now_playing_item: now_playing,
+            now_playing_queue,
+            now_playing_queue_full_items,
+            playlist_item_id,
             transcoding_info,
+            play_state,
+            capabilities,
+            playable_media_types,
+            supported_commands,
+            supports_media_control,
+            supports_remote_control,
             is_active: true,
             server_id: crate::utils::server_id(),
             ..Default::default()
