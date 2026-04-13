@@ -87,8 +87,8 @@ pub fn subtitle_to_media_stream(sub: aio::Subtitle) -> jellyfin::MediaStream {
         }),
         is_default: Some(false),
         is_forced: Some(false),
-        is_external: Some(true),
-        is_text_subtitle_stream: Some(true),
+        is_external: true,
+        is_text_subtitle_stream: true,
         delivery_url: Some(sub.url.clone()),
         is_external_url: Some(true),
         ..Default::default()
