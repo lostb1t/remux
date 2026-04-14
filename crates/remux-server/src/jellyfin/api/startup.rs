@@ -17,6 +17,9 @@ pub async fn get_startup_configuration(
         server_name: config.server_name,
         preferred_metadata_language: config.preferred_metadata_language,
         metadata_country_code: config.metadata_country_code,
+        default_web_client: Some(crate::web_client::normalize_web_client(
+            config.default_web_client,
+        )),
         aio_url: config.aio_url,
     }))
 }
@@ -26,14 +29,21 @@ pub async fn post_startup_configuration(
     State(state): State<AppState>,
     Json(body): Json<jellyfin::StartupConfiguration>,
 ) -> Result<impl IntoResponse> {
+    let jellyfin::StartupConfiguration {
+        server_name,
+        preferred_metadata_language,
+        metadata_country_code,
+        default_web_client,
+        aio_url,
+    } = body;
+
     let mut config = crate::db::Settings::get_config(&state.ctx.db).await?;
-    config.server_name = body.server_name.or(config.server_name);
-    config.preferred_metadata_language = body
-        .preferred_metadata_language
-        .or(config.preferred_metadata_language);
+    config.server_name = server_name.or(config.server_name);
+    config.preferred_metadata_language =
+        preferred_metadata_language.or(config.preferred_metadata_language);
     config.metadata_country_code =
-        body.metadata_country_code.or(config.metadata_country_code);
-    if let Some(url) = body.aio_url {
+        metadata_country_code.or(config.metadata_country_code);
+    if let Some(url) = aio_url {
         crate::aio::AioService::from_url(&url)
             .context_bad_request("Invalid AIO URL", "Could not build AIO client from the provided URL.")?
             .get_manifest()
@@ -41,7 +51,11 @@ pub async fn post_startup_configuration(
             .context_bad_request("Invalid AIO URL", "Could not fetch manifest from the provided AIO URL. Check the URL is correct and the service is reachable.")?;
         config.aio_url = Some(url);
     }
+    config.default_web_client = Some(crate::web_client::normalize_web_client(
+        default_web_client.or(config.default_web_client),
+    ));
     crate::db::Settings::set_config(&state.ctx.db, &config).await?;
+
     Ok(StatusCode::NO_CONTENT)
 }
 

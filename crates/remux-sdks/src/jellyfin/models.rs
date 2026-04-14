@@ -28,6 +28,41 @@ where
     Ok(s.and_then(|s| s.parse().ok()).unwrap_or_default())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultWebClient {
+    #[default]
+    Jellyfin,
+    Anfiteatro,
+}
+
+impl DefaultWebClient {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Jellyfin => "jellyfin",
+            Self::Anfiteatro => "anfiteatro",
+        }
+    }
+
+    pub fn from_str_lossy(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("anfiteatro") {
+            Self::Anfiteatro
+        } else {
+            Self::Jellyfin
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DefaultWebClient {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(Self::from_str_lossy(&value))
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
@@ -93,6 +128,8 @@ pub struct ServerConfiguration {
     pub log_file_retention_days: Option<i32>,
     #[default(Some(false))]
     pub is_startup_wizard_completed: Option<bool>,
+    #[default(Some(DefaultWebClient::Jellyfin))]
+    pub default_web_client: Option<DefaultWebClient>,
     #[default(Some("Remux".to_string()))]
     pub server_name: Option<String>,
     #[default(Some("en-US".to_string()))]
@@ -138,6 +175,7 @@ pub struct StartupConfiguration {
     pub server_name: Option<String>,
     pub preferred_metadata_language: Option<String>,
     pub metadata_country_code: Option<String>,
+    pub default_web_client: Option<DefaultWebClient>,
     #[serde(deserialize_with = "clean_aio_url")]
     pub aio_url: Option<String>,
 }
@@ -1638,6 +1676,30 @@ pub struct ProviderIds {
 }
 
 #[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct AnfiteatroReleaseStatus {
+    pub local_commit: Option<String>,
+    pub local_version_display: Option<String>,
+    pub latest_version_tag: Option<String>,
+    pub latest_commit: Option<String>,
+    pub latest_release_url: Option<String>,
+    pub update_available: bool,
+    pub check_error: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct AnfiteatroInstallResult {
+    pub installed_tag: Option<String>,
+    pub installed_commit: Option<String>,
+    pub local_version_display: Option<String>,
+    pub changed: bool,
+    pub message: String,
+}
+
+#[skip_serializing_none]
 #[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct UserItemDataDto {
@@ -2328,6 +2390,11 @@ pub enum ItemFields {
     Path,
     People,
     PlayAccess,
+    SeriesId,
+    SeasonId,
+    SeasonName,
+    CollectionType,
+    LogoImageAspectRatio,
     PremiereDate,
     ProductionLocations,
     ProviderIds,

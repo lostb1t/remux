@@ -80,6 +80,7 @@ pub mod tasks;
 mod torrent;
 pub mod transcode;
 mod utils;
+mod web_client;
 mod web_patches;
 mod web_transform;
 mod ws;
@@ -90,14 +91,21 @@ static EMBEDDED_DASHBOARD: std::sync::OnceLock<&'static include_dir::Dir<'static
 #[cfg(feature = "desktop")]
 static EMBEDDED_JELLYFIN_WEB: std::sync::OnceLock<&'static include_dir::Dir<'static>> =
     std::sync::OnceLock::new();
+#[cfg(feature = "desktop")]
+static EMBEDDED_ANFITEATRO_WEB: std::sync::OnceLock<&'static include_dir::Dir<'static>> =
+    std::sync::OnceLock::new();
 
 #[cfg(feature = "desktop")]
 pub fn set_embedded_assets(
     dashboard: &'static include_dir::Dir<'static>,
     jellyfin_web: &'static include_dir::Dir<'static>,
+    anfiteatro_web: Option<&'static include_dir::Dir<'static>>,
 ) {
     EMBEDDED_DASHBOARD.set(dashboard).ok();
     EMBEDDED_JELLYFIN_WEB.set(jellyfin_web).ok();
+    if let Some(dir) = anfiteatro_web {
+        EMBEDDED_ANFITEATRO_WEB.set(dir).ok();
+    }
 }
 
 /// Route auto-registration via `#[get("/path")]`, `#[post("/path")]`, etc.
@@ -150,6 +158,13 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
     crate::utils::init_server_id(&conn).await?;
     db::ensure_collection_folder(&conn).await?;
 
+    let saved_config = db::Settings::get_config(&conn).await?;
+    let default_web_client = Arc::new(tokio::sync::RwLock::new(
+        web_client::normalize_web_client(saved_config.default_web_client)
+            .as_str()
+            .to_string(),
+    ));
+
     let (ws_tx, _) = tokio::sync::broadcast::channel(128);
 
     let torrent_mgr = Arc::new(
@@ -167,15 +182,15 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
         sessions: playback_session::PlaybackSessionManager::new("transcode_sessions"),
         torrent: torrent_mgr.clone(),
         ws_tx,
+        default_web_client,
     };
 
     // Apply saved P2P speed limits on startup.
     {
-        let cfg = db::Settings::get_config(&conn).await?;
-        if cfg.p2p_enabled.unwrap_or(true) {
+        if saved_config.p2p_enabled.unwrap_or(true) {
             torrent_mgr.update_limits(
-                cfg.p2p_upload_speed_kbps.unwrap_or(0),
-                cfg.p2p_download_speed_kbps.unwrap_or(0),
+                saved_config.p2p_upload_speed_kbps.unwrap_or(0),
+                saved_config.p2p_download_speed_kbps.unwrap_or(0),
             );
         }
     }
@@ -261,10 +276,11 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
             }))
             .layer(tower_http::trace::TraceLayer::new_for_http())
             .layer(cors)
-            .fallback_service(web_transform::TransformLayer::new().layer(EmbeddedDir {
-                dir: jellyfin_web_dir,
-                spa_fallback: false,
-            }))
+            .fallback_service(web_client::DynamicWebClientService::from_embedded(
+                ctx.default_web_client.clone(),
+                jellyfin_web_dir,
+                EMBEDDED_ANFITEATRO_WEB.get().copied(),
+            ))
     };
 
     #[cfg(not(feature = "desktop"))]
@@ -300,10 +316,9 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
             }))
             .layer(tower_http::trace::TraceLayer::new_for_http())
             .layer(cors)
-            .fallback_service(
-                web_transform::TransformLayer::new()
-                    .layer(ServeDir::new(ctx.config.web_path.clone())),
-            )
+            .fallback_service(web_client::DynamicWebClientService::from_filesystem(
+                &ctx,
+            ))
     };
 
     Ok((router, ctx))
@@ -317,6 +332,7 @@ pub struct AppContext {
     pub sessions: playback_session::PlaybackSessionManager,
     pub torrent: Arc<torrent::TorrentManager>,
     pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,
+    pub default_web_client: Arc<tokio::sync::RwLock<String>>,
 }
 
 #[derive(Clone)]
@@ -331,6 +347,14 @@ fn default_web_path() -> String {
         .map(|d| d.join("remux").join("jellyfin-web"))
         .and_then(|p| p.to_str().map(str::to_owned))
         .unwrap_or_else(|| "/data/jellyfin-web".to_string())
+}
+
+#[cfg(not(feature = "desktop"))]
+fn default_anfiteatro_web_path() -> String {
+    dirs::data_dir()
+        .map(|d| d.join("remux").join("anfiteatro-web"))
+        .and_then(|p| p.to_str().map(str::to_owned))
+        .unwrap_or_else(|| "/data/anfiteatro-web".to_string())
 }
 
 #[cfg(not(feature = "desktop"))]
@@ -371,6 +395,9 @@ pub struct Config {
     #[serde(default = "default_web_path")]
     pub web_path: String,
     #[cfg(not(feature = "desktop"))]
+    #[serde(default = "default_anfiteatro_web_path")]
+    pub anfiteatro_web_path: String,
+    #[cfg(not(feature = "desktop"))]
     #[serde(default = "default_dashboard_path")]
     pub dashboard_path: String,
     #[serde(default = "default_database_url")]
@@ -387,6 +414,8 @@ impl Default for Config {
             #[cfg(not(feature = "desktop"))]
             web_path: default_web_path(),
             #[cfg(not(feature = "desktop"))]
+            anfiteatro_web_path: default_anfiteatro_web_path(),
+            #[cfg(not(feature = "desktop"))]
             dashboard_path: default_dashboard_path(),
             database_url: default_database_url(),
             log_file: default_log_file(),
@@ -397,14 +426,28 @@ impl Default for Config {
 
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     let uri = req.uri();
-    let path = uri.path().replace("/emby", "");
-
-    if path == "/" || (path.matches('/').count() == 1 && path.matches('.').count() > 0)
-    {
-        return req;
+    let mut path = uri.path().replace("/emby", "");
+    if path.is_empty() {
+        path = "/".to_string();
     }
 
-    let new_path = path.to_ascii_lowercase();
+    // Keep file paths case-sensitive (Linux filesystems are case-sensitive).
+    // Only normalize API-style routes that don't look like files, plus known
+    // API file endpoints (for example /Videos/.../Stream.vtt).
+    let last_segment = path.rsplit('/').next().unwrap_or_default();
+    let is_file_like = last_segment.contains('.');
+    let lower_path = path.to_ascii_lowercase();
+    let api_file_like = is_file_like
+        && (lower_path.starts_with("/videos/")
+            || lower_path.starts_with("/audio/")
+            || lower_path.starts_with("/items/")
+            || lower_path.starts_with("/mediasegments/")
+            || lower_path.starts_with("/sessions/"));
+    let new_path = if path != "/" && (!is_file_like || api_file_like) {
+        lower_path
+    } else {
+        path
+    };
 
     let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
 
@@ -415,6 +458,47 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
 
     *req.uri_mut() = new_uri;
     req
+}
+
+#[cfg(test)]
+mod rewrite_uri_tests {
+    use super::rewrite_request_uri;
+
+    #[test]
+    fn keeps_static_file_case() {
+        let req = http::Request::builder()
+            .uri("/fonts/FontAwesome.OTF?v=4")
+            .body(())
+            .unwrap();
+        let req = rewrite_request_uri(req);
+        assert_eq!(req.uri().path(), "/fonts/FontAwesome.OTF");
+        assert_eq!(req.uri().query(), Some("v=4"));
+    }
+
+    #[test]
+    fn normalizes_video_stream_file_route() {
+        let req = http::Request::builder()
+            .uri("/Videos/abc/Stream.mp4?x=1")
+            .body(())
+            .unwrap();
+        let req = rewrite_request_uri(req);
+        assert_eq!(req.uri().path(), "/videos/abc/stream.mp4");
+        assert_eq!(req.uri().query(), Some("x=1"));
+    }
+
+    #[test]
+    fn normalizes_video_subtitle_file_route() {
+        let req = http::Request::builder()
+            .uri("/Videos/item/source/Subtitles/11/Stream.vtt?token=t")
+            .body(())
+            .unwrap();
+        let req = rewrite_request_uri(req);
+        assert_eq!(
+            req.uri().path(),
+            "/videos/item/source/subtitles/11/stream.vtt"
+        );
+        assert_eq!(req.uri().query(), Some("token=t"));
+    }
 }
 
 pub fn setup_logging() {

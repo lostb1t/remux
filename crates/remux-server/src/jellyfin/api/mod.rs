@@ -8,6 +8,7 @@ pub mod localization;
 pub mod logs;
 pub mod metadata;
 pub mod networking;
+pub mod remux;
 pub mod playback;
 pub mod search;
 pub mod shows;

@@ -366,6 +366,10 @@ html, body {
   letter-spacing: .02em;
 }
 
+.inline-alert {
+  margin: 14px 28px 0;
+}
+
 /* ── Login page ──────────────────────────────────────────────────── */
 .login-page {
   min-height: 100vh;
@@ -659,6 +663,38 @@ html, body {
   letter-spacing: -.01em;
   text-transform: uppercase;
   margin: 0;
+}
+
+.update-banner {
+  margin: 14px 28px 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(230, 126, 34, .55);
+  border-radius: var(--radius-sm);
+  background: rgba(230, 126, 34, .1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.update-banner-copy {
+  min-width: 0;
+}
+
+.update-banner-title {
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  font-weight: 700;
+  color: var(--warning);
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+
+.update-banner-meta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  color: var(--text-secondary);
 }
 
 /* ── Hamburger (mobile only) ─────────────────────────────────────── */
@@ -1047,6 +1083,12 @@ html, body {
   .sidebar-open { transform: translateX(0); box-shadow: var(--shadow-md); }
   .hamburger { display: flex; }
   .main { margin-left: 0; }
+  .inline-alert { margin: 12px 16px 0; }
+  .update-banner {
+    margin: 12px 16px 0;
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 /* ── Tab group ───────────────────────────────────────────────────── */

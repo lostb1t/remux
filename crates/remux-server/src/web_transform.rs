@@ -110,19 +110,7 @@ where
                 return Ok(Response::from_parts(parts, Body::from(bytes)));
             }
 
-            // Cache hit — reuse previously transformed bytes, rebuild response with
-            // fresh headers (ETag, Date, etc. come from `parts`).
-            if let Some(cached) = cache.get(&path) {
-                let mut response =
-                    Response::from_parts(parts, Body::from(cached.clone()));
-                response.headers_mut().insert(
-                    http::header::CONTENT_LENGTH,
-                    http::HeaderValue::from(cached.len()),
-                );
-                return Ok(response);
-            }
-
-            // Buffer → inject → cache
+            // Buffer → inject
             let bytes = body
                 .collect()
                 .await
@@ -141,7 +129,6 @@ where
             }
 
             let out = Bytes::from(html.into_bytes());
-            cache.insert(path, out.clone());
             let mut response = Response::from_parts(parts, Body::from(out.clone()));
             response.headers_mut().insert(
                 http::header::CONTENT_LENGTH,

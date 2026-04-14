@@ -20,6 +20,7 @@ use serde_json::json;
 use std::io;
 use tokio_util::io::ReaderStream;
 use tracing::{debug, info, trace};
+use url::Url;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -33,6 +34,42 @@ use crate::torrent;
 use crate::transcode::session::{TranscodeSession, TranscodeState};
 use crate::utils;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
+
+fn remap_internal_aio_url(raw_url: &str, aio_url: Option<&str>) -> String {
+    // Some manifests expose `aiostreams` as an internal hostname that is not
+    // resolvable from the Remux process/network namespace. Remap that host to
+    // the configured AIO origin while preserving path/query.
+    let Ok(mut parsed) = Url::parse(raw_url) else {
+        return raw_url.to_string();
+    };
+
+    let Some(host) = parsed.host_str() else {
+        return raw_url.to_string();
+    };
+    if !host.eq_ignore_ascii_case("aiostreams") {
+        return raw_url.to_string();
+    }
+
+    let Some(aio_url) = aio_url else {
+        return raw_url.to_string();
+    };
+    let Ok(aio_parsed) = Url::parse(aio_url) else {
+        return raw_url.to_string();
+    };
+    let Some(aio_host) = aio_parsed.host_str() else {
+        return raw_url.to_string();
+    };
+
+    let _ = parsed.set_scheme(aio_parsed.scheme());
+    if parsed.set_host(Some(aio_host)).is_err() {
+        return raw_url.to_string();
+    }
+    if parsed.set_port(aio_parsed.port()).is_err() {
+        return raw_url.to_string();
+    }
+
+    parsed.to_string()
+}
 
 #[post("/items/{id}/playbackinfo")]
 pub async fn items_playbackinfo(
@@ -179,10 +216,17 @@ async fn items_playbackinfo_inner(
         sm: db::Media,
         resolved_url: Option<String>,
     }
+    let aio_url = crate::db::Settings::get_config(&state.ctx.db)
+        .await
+        .ok()
+        .and_then(|c| c.aio_url);
     let mut sources_with_urls: Vec<SourceWithUrl> =
         Vec::with_capacity(source_medias.len());
     for sm in source_medias {
-        let resolved_url = sm.url.clone();
+        let resolved_url = sm
+            .url
+            .as_deref()
+            .map(|u| remap_internal_aio_url(u, aio_url.as_deref()));
         sources_with_urls.push(SourceWithUrl { sm, resolved_url });
     }
 
@@ -295,9 +339,12 @@ async fn items_playbackinfo_inner(
             reasons
         };
 
-        let needs_transcoding = !transcode_reasons.is_empty()
-            || query.enable_transcoding.unwrap_or(false)
-            || !query.enable_direct_play.unwrap_or(true);
+        // `EnableTranscoding=true` means "allowed", not "forced".
+        let transcode_required = !transcode_reasons.is_empty()
+            || !query.enable_direct_play.unwrap_or(true)
+            || !query.enable_direct_stream.unwrap_or(true);
+        let needs_transcoding = transcode_required
+            && query.enable_transcoding.unwrap_or(true);
 
         tracing::debug!(
             source_id = %sm.id,
@@ -474,7 +521,11 @@ async fn videos_stream_inner(
         .clone()
         .context_not_found("no url", "media source has no URL")?;
 
-    let url = raw_url;
+    let aio_url = crate::db::Settings::get_config(&state.ctx.db)
+        .await
+        .ok()
+        .and_then(|c| c.aio_url);
+    let url = remap_internal_aio_url(&raw_url, aio_url.as_deref());
 
     // Direct play: proxy the original stream with range support.
     // Real Jellyfin always proxies the raw file bytes for Static=true, regardless
@@ -990,6 +1041,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_sessions_refreshes_device_metadata_from_auth_header() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let auth = format!(
+            "MediaBrowser Client=\"Jellyfin Web\", Device=\"Chrome Laptop\", DeviceId=\"test-device\", Version=\"10.11.0\", Token=\"{}\"",
+            token
+        );
+
+        let resp = server
+            .get("/sessions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        let sessions: Vec<crate::jellyfin::SessionInfoDto> = resp.json();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].device_name.as_deref(),
+            Some("Chrome Laptop")
+        );
+        assert_eq!(sessions[0].client.as_deref(), Some("Jellyfin Web"));
+        assert_eq!(sessions[0].application_version.as_deref(), Some("10.11.0"));
+    }
+
+    #[tokio::test]
     async fn test_playbackinfo_requires_auth() {
         let (server, _ctx) = new_test_server().await.unwrap();
         let fake_id = uuid::Uuid::new_v4();
@@ -1429,7 +1507,7 @@ pub async fn get_sessions(
         .into_iter()
         .filter(|device| {
             if let Some(cutoff) = cutoff {
-                device.last_activity_at.map_or(true, |t| t >= cutoff)
+                device.last_activity_at.is_some_and(|t| t >= cutoff)
             } else {
                 true
             }
@@ -1720,7 +1798,11 @@ pub async fn master_hls_video(
             .url
             .context_not_found("no url", "media source has no URL")?;
 
-        let input_url = raw_input_url;
+        let aio_url = crate::db::Settings::get_config(&state.ctx.db)
+            .await
+            .ok()
+            .and_then(|c| c.aio_url);
+        let input_url = remap_internal_aio_url(&raw_input_url, aio_url.as_deref());
 
         let output_dir = std::path::PathBuf::from("transcode_sessions")
             .join(&play_session_id);
@@ -2249,10 +2331,15 @@ pub async fn subtitles_stream(
             .clone();
     }
 
-    let url = media
+    let raw_url = media
         .url
         .clone()
         .context_not_found("no url", "media source has no URL")?;
+    let aio_url = crate::db::Settings::get_config(&state.ctx.db)
+        .await
+        .ok()
+        .and_then(|c| c.aio_url);
+    let url = remap_internal_aio_url(&raw_url, aio_url.as_deref());
 
     let output_format = format.to_ascii_lowercase();
     let (ffmpeg_format, content_type) = match output_format.as_str() {
@@ -2263,12 +2350,38 @@ pub async fn subtitles_stream(
         _ => ("srt", "text/plain; charset=utf-8"),
     };
 
+    // FFmpeg expects subtitle-ordinal form (0:s:N) for reliable subtitle mapping.
+    // Clients pass the Jellyfin stream index, so convert when probe metadata exists.
+    let map_spec = media
+        .probe_data
+        .as_ref()
+        .and_then(|probe| {
+            let mut sub_indexes: Vec<i64> = probe
+                .media_streams
+                .iter()
+                .filter(|s| {
+                    matches!(
+                        s.type_,
+                        Some(jellyfin::MediaStreamType::Subtitle)
+                    )
+                })
+                .filter_map(|s| s.index)
+                .collect();
+
+            sub_indexes.sort_unstable();
+            sub_indexes
+                .iter()
+                .position(|idx| *idx == stream_index)
+                .map(|ordinal| format!("0:s:{}", ordinal))
+        })
+        .unwrap_or_else(|| format!("0:{stream_index}"));
+
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
     cmd.args([
         "-i",
         &url,
         "-map",
-        &format!("0:{stream_index}"),
+        &map_spec,
         "-c:s",
         if ffmpeg_format == "sup" {
             "copy"
@@ -2292,7 +2405,13 @@ pub async fn subtitles_stream(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!("ffmpeg subtitle extraction failed: {stderr}");
+        tracing::error!(
+            media_source_id = %media_source_id,
+            stream_index,
+            map = %map_spec,
+            format = %ffmpeg_format,
+            "ffmpeg subtitle extraction failed: {stderr}"
+        );
         return Ok(Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(Body::from("subtitle extraction failed"))

@@ -6,8 +6,125 @@ use crate::utils::get_uuid;
 use anyhow::Result;
 use std::convert::{TryFrom, TryInto};
 
+// Heuristic metadata fallback for remote source URLs when ffprobe metadata is
+// unavailable. This keeps clients functional (stream selection/transcode
+// decisions) instead of exposing empty stream lists.
+fn infer_container_from_url(url: &str) -> Option<String> {
+    let path = url::Url::parse(url)
+        .ok()
+        .map(|u| u.path().to_string())
+        .unwrap_or_else(|| url.to_string());
+    let filename = path.rsplit('/').next().unwrap_or(path.as_str());
+    let ext = filename.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "matroska" | "mkv" => Some("mkv".to_string()),
+        "mp4" | "m4v" | "mov" => Some("mp4".to_string()),
+        "webm" => Some("webm".to_string()),
+        "avi" => Some("avi".to_string()),
+        "m2ts" | "ts" => Some("ts".to_string()),
+        "m3u8" => Some("ts".to_string()),
+        _ => None,
+    }
+}
+
+fn infer_video_codec(text: &str) -> Option<String> {
+    if text.contains("hevc") || text.contains("h265") || text.contains("x265") {
+        Some("hevc".to_string())
+    } else if text.contains("av1") {
+        Some("av1".to_string())
+    } else if text.contains("vp9") {
+        Some("vp9".to_string())
+    } else if text.contains("h264") || text.contains("x264") || text.contains("avc") {
+        Some("h264".to_string())
+    } else {
+        None
+    }
+}
+
+fn infer_audio_codec(text: &str) -> Option<String> {
+    if text.contains("truehd") {
+        Some("truehd".to_string())
+    } else if text.contains("dts") || text.contains("dca") {
+        Some("dts".to_string())
+    } else if text.contains("eac3") || text.contains("ddp") {
+        Some("eac3".to_string())
+    } else if text.contains("ac3") {
+        Some("ac3".to_string())
+    } else if text.contains("aac") {
+        Some("aac".to_string())
+    } else {
+        None
+    }
+}
+
+fn infer_audio_channels(text: &str) -> Option<i64> {
+    if text.contains("7.1") {
+        Some(8)
+    } else if text.contains("5.1") {
+        Some(6)
+    } else if text.contains("2.0") || text.contains("stereo") {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+fn fallback_media_streams(source: &db::Media) -> Vec<jellyfin::MediaStream> {
+    // Only synthesize streams for remote source entries.
+    if source.kind != db::MediaKind::Source {
+        return Vec::new();
+    }
+
+    if !source.is_remote_url() {
+        return Vec::new();
+    }
+
+    let text = source.title.to_ascii_lowercase();
+    let video_codec = infer_video_codec(&text);
+    let audio_codec = infer_audio_codec(&text);
+    let channels = infer_audio_channels(&text);
+
+    let video_title = video_codec
+        .as_ref()
+        .map(|c| format!("{} - Fallback", c.to_uppercase()))
+        .unwrap_or_else(|| "Video - Fallback".to_string());
+    let audio_title = match (&audio_codec, channels) {
+        (Some(c), Some(8)) => format!("{} - 7.1 - Fallback", c.to_uppercase()),
+        (Some(c), Some(6)) => format!("{} - 5.1 - Fallback", c.to_uppercase()),
+        (Some(c), Some(2)) => format!("{} - Stereo - Fallback", c.to_uppercase()),
+        (Some(c), _) => format!("{} - Fallback", c.to_uppercase()),
+        (None, Some(8)) => "Audio - 7.1 - Fallback".to_string(),
+        (None, Some(6)) => "Audio - 5.1 - Fallback".to_string(),
+        (None, Some(2)) => "Audio - Stereo - Fallback".to_string(),
+        (None, _) => "Audio - Fallback".to_string(),
+    };
+
+    vec![
+        jellyfin::MediaStream {
+            type_: Some(jellyfin::MediaStreamType::Video),
+            codec: video_codec,
+            is_default: Some(true),
+            display_title: Some(video_title),
+            ..Default::default()
+        },
+        jellyfin::MediaStream {
+            type_: Some(jellyfin::MediaStreamType::Audio),
+            codec: audio_codec,
+            channels,
+            is_default: Some(true),
+            display_title: Some(audio_title),
+            ..Default::default()
+        },
+    ]
+}
+
 impl From<db::Media> for jellyfin::MediaSourceInfo {
     fn from(source: db::Media) -> Self {
+        let is_remote = source.is_remote_url();
+        let protocol = source.media_source_protocol().to_string();
+        let container = source.url.as_deref().and_then(infer_container_from_url);
+        let media_streams = fallback_media_streams(&source);
+
         let clean_path = source
             .url
             .as_ref()
@@ -22,12 +139,14 @@ impl From<db::Media> for jellyfin::MediaSourceInfo {
             id: source.id.clone(),
             e_tag: source.id.clone(),
             path: source.url.clone(),
-            protocol: "File".to_string(),
+            protocol,
             supports_transcoding: false,
             supports_direct_stream: true,
             supports_direct_play: true,
-            is_remote: false,
+            is_remote,
             name: Some(source.title.clone()),
+            container,
+            media_streams,
             ..Default::default()
         }
     }

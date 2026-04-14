@@ -116,6 +116,32 @@ impl Endpoint for GetAioCatalogs {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct GetAnfiteatroReleaseStatus;
+
+impl Endpoint for GetAnfiteatroReleaseStatus {
+    type Output = AnfiteatroReleaseStatus;
+
+    fn path(&self) -> String {
+        "/admin/clients/anfiteatro/release".into()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InstallLatestAnfiteatroRelease;
+
+impl Endpoint for InstallLatestAnfiteatroRelease {
+    type Output = AnfiteatroInstallResult;
+
+    fn path(&self) -> String {
+        "/admin/clients/anfiteatro/release/install".into()
+    }
+
+    fn method(&self) -> Method {
+        Method::POST
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UpdateCatalogSettings {
     pub aio_id: String,

@@ -1078,6 +1078,45 @@ pub async fn aio_catalogs(
     Ok(Json(catalogs))
 }
 
+// Anfiteatro/Gelato compatibility aliases.
+#[get("/gelato/catalogs")]
+pub async fn gelato_catalogs(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    aio_catalogs(State(state), session).await
+}
+
+#[get("/gelato/subtitles/{id}")]
+pub async fn gelato_subtitles(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    // Source entries can sit under an episode/movie; normalize to the parent
+    // media item before resolving subtitles.
+    let Some(mut media) = db::Media::get_by_id(&state.ctx.db, &id).await? else {
+        return Ok(Json(Vec::<sdks::aio::Subtitle>::new()));
+    };
+
+    if media.kind == db::MediaKind::Source {
+        if let Some(parent) = media.parent(&state.ctx.db).await? {
+            media = parent;
+        }
+    }
+
+    if !matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
+        return Ok(Json(Vec::<sdks::aio::Subtitle>::new()));
+    }
+
+    let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await else {
+        return Ok(Json(Vec::<sdks::aio::Subtitle>::new()));
+    };
+
+    let subtitles = media.get_subtitles(&aio).await.unwrap_or_default();
+    Ok(Json(subtitles))
+}
+
 fn parse_collection_type(s: &str) -> Option<db::MediaKind> {
     match s {
         "movies" => Some(db::MediaKind::Movie),

@@ -105,7 +105,7 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
     let output = std::process::Command::new(ffprobe_bin())
         .args([
             "-v",
-            "quiet",
+            "error",
             "-print_format",
             "json",
             "-show_streams",

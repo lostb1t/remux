@@ -11,6 +11,9 @@ include!(concat!(env!("OUT_DIR"), "/dashboard_embed.rs"));
 #[cfg(jellyfin_web_built)]
 include!(concat!(env!("OUT_DIR"), "/jellyfin_web_embed.rs"));
 
+#[cfg(anfiteatro_web_built)]
+include!(concat!(env!("OUT_DIR"), "/anfiteatro_web_embed.rs"));
+
 fn data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -59,7 +62,16 @@ fn main() -> Result<()> {
 
     // Register embedded assets so the server can serve them from memory.
     #[cfg(all(dashboard_built, jellyfin_web_built))]
-    remux_server::set_embedded_assets(&DASHBOARD, &JELLYFIN_WEB);
+    {
+        #[cfg(anfiteatro_web_built)]
+        remux_server::set_embedded_assets(
+            &DASHBOARD,
+            &JELLYFIN_WEB,
+            Some(&ANFITEATRO_WEB),
+        );
+        #[cfg(not(anfiteatro_web_built))]
+        remux_server::set_embedded_assets(&DASHBOARD, &JELLYFIN_WEB, None);
+    }
 
     // Start the remux server in a background tokio thread.
     let rt = tokio::runtime::Runtime::new()?;

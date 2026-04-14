@@ -575,12 +575,20 @@ pub fn start_progressive_transcode(
         let mut lines = tokio::io::BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if !line.is_empty() {
-                error!("ffmpeg: {}", line);
+                if line.to_ascii_lowercase().contains("broken pipe") {
+                    debug!("ffmpeg: {}", line);
+                } else {
+                    error!("ffmpeg: {}", line);
+                }
             }
         }
         match child.wait().await {
             Ok(status) if !status.success() => {
-                error!("progressive ffmpeg exited: {}", status)
+                if status.code() == Some(224) {
+                    debug!("progressive ffmpeg exited after client disconnect: {}", status)
+                } else {
+                    error!("progressive ffmpeg exited: {}", status)
+                }
             }
             Ok(status) => debug!("progressive ffmpeg exited: {}", status),
             Err(e) => error!("progressive ffmpeg wait error: {}", e),

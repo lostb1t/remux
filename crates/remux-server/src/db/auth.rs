@@ -164,14 +164,62 @@ impl Device {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Update last_activity_at to now, optionally recording the client's remote IP.
-    pub async fn touch(&self, db: &SqlitePool, remote_ip: Option<&str>) -> Result<()> {
+    fn merge_runtime_metadata_from_header(
+        &mut self,
+        header: &JellyfinAuthHeader,
+    ) {
+        // Only trust metadata updates for this exact device identity.
+        if let Some(device_id) = header.device_id.as_deref() {
+            if device_id != self.id {
+                return;
+            }
+        }
+
+        if let Some(device_name) = header
+            .device
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            self.name = device_name.to_string();
+        }
+        if let Some(client_name) = header
+            .client
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            self.app_name = client_name.to_string();
+        }
+        if let Some(client_version) = header
+            .version
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            self.app_version = client_version.to_string();
+        }
+    }
+
+    /// Update last_activity_at to now and refresh runtime-identifying fields
+    /// (device name/client/version) when present.
+    pub async fn touch(
+        &self,
+        db: &SqlitePool,
+        remote_ip: Option<&str>,
+    ) -> Result<()> {
         sqlx::query(
             "UPDATE devices SET last_activity_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), \
-             remote_ip = COALESCE(?, remote_ip) \
+             remote_ip = COALESCE(?, remote_ip), \
+             name = COALESCE(NULLIF(?, ''), name), \
+             app_name = COALESCE(NULLIF(?, ''), app_name), \
+             app_version = COALESCE(NULLIF(?, ''), app_version) \
              WHERE id = ? AND user_id = ?",
         )
         .bind(remote_ip)
+        .bind(&self.name)
+        .bind(&self.app_name)
+        .bind(&self.app_version)
         .bind(&self.id)
         .bind(self.user_id)
         .execute(db)
@@ -238,7 +286,7 @@ impl FromRequestParts<AppState> for AuthSession {
             .context_unauthorized("forbidden", "forbidden")?;
         // device_id is optional — query-param-only auth (e.g. ?token=...)
         // doesn't carry a DeviceId. The device is looked up by token alone.
-        let _device_id = jfauth.device_id;
+        let _device_id = jfauth.device_id.as_deref();
 
         // Capture client IP from proxy headers or peer address.
         let remote_ip = parts
@@ -256,7 +304,8 @@ impl FromRequestParts<AppState> for AuthSession {
             });
 
         // First try the devices table (normal session token).
-        if let Some(device) = Device::get_by_access_token(&state.ctx.db, token).await? {
+        if let Some(mut device) = Device::get_by_access_token(&state.ctx.db, token).await? {
+            device.merge_runtime_metadata_from_header(&jfauth);
             let _ = device.touch(&state.ctx.db, remote_ip.as_deref()).await;
             let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
                 .await?
@@ -332,6 +381,15 @@ pub struct JellyfinAuthHeader {
 }
 
 impl JellyfinAuthHeader {
+    fn decode_header_text(value: &str) -> String {
+        // Some clients send header values percent-encoded (for example
+        // Jellyfin%20Web). Decode once so active-session labels are readable.
+        let wrapped = format!("v={value}");
+        url::form_urlencoded::parse(wrapped.as_bytes())
+            .find_map(|(k, v)| if k == "v" { Some(v.into_owned()) } else { None })
+            .unwrap_or_else(|| value.to_string())
+    }
+
     fn from_str(header: &str) -> Result<Self> {
         let mut map = HashMap::new();
         let mut parts = header.splitn(2, ' ');
@@ -358,10 +416,18 @@ impl JellyfinAuthHeader {
         }
 
         Ok(Self {
-            client: map.get("Client").cloned(),
-            device: map.get("Device").cloned(),
-            device_id: map.get("DeviceId").cloned(),
-            version: map.get("Version").cloned(),
+            client: map
+                .get("Client")
+                .map(|v| Self::decode_header_text(v)),
+            device: map
+                .get("Device")
+                .map(|v| Self::decode_header_text(v)),
+            device_id: map
+                .get("DeviceId")
+                .map(|v| Self::decode_header_text(v)),
+            version: map
+                .get("Version")
+                .map(|v| Self::decode_header_text(v)),
             token: map.get("Token").cloned(),
             ..Default::default()
         })

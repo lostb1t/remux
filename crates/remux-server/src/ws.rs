@@ -238,6 +238,19 @@ async fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
 
             let device = devices.get(&session.device_id);
             let capabilities = device.and_then(|d| d.parsed_capabilities());
+            // Prefer persisted device metadata when present; fall back to
+            // transient playback-session values for compatibility.
+            let device_name = device
+                .map(|d| d.name.clone())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| session.device_id.clone());
+            let client_name = device
+                .map(|d| d.app_name.clone())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| session.client_name.clone());
+            let application_version = device
+                .map(|d| d.app_version.clone())
+                .filter(|v| !v.is_empty());
 
             let (playable_media_types, supported_commands, supports_media_control, supports_remote_control) =
                 capabilities.as_ref().map_or(
@@ -248,8 +261,9 @@ async fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
             jellyfin::SessionInfoDto {
                 id: Some(session.play_session_id.clone()),
                 device_id: Some(session.device_id.clone()),
-                device_name: Some(session.device_id.clone()),
-                client: Some(session.client_name.clone()),
+                device_name: Some(device_name),
+                client: Some(client_name),
+                application_version,
                 user_id: session.user_id.to_string(),
                 last_activity_date: session.last_activity,
                 last_playback_check_in: session.last_activity,

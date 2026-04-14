@@ -475,9 +475,25 @@ pub struct Media {
 }
 
 impl Media {
-
     pub fn parse_smart_filter(&self) -> Option<&remux_sdks::jellyfin::models::CollectionFilter> {
         self.collection_smart_filter.as_ref().map(|j| &j.0)
+    }
+
+    pub fn is_remote_url(&self) -> bool {
+        self.url
+            .as_deref()
+            .map(|url| {
+                url.starts_with("http://") || url.starts_with("https://")
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn media_source_protocol(&self) -> &'static str {
+        if self.is_remote_url() {
+            "Http"
+        } else {
+            "File"
+        }
     }
 }
 

@@ -62,6 +62,12 @@ Build jellyfin web
 cargo make jellyfin-web
 ```
 
+Fetch/build all supported web clients (Jellyfin + Anfiteatro)
+
+```
+cargo make web-clients
+```
+
 run
 
 ```

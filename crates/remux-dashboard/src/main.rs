@@ -1,24 +1,27 @@
 use dioxus::prelude::*;
 use futures::StreamExt;
 use gloo_net::eventsource::futures::EventSource;
-use gloo_storage::{LocalStorage, Storage};
+use gloo_storage::{LocalStorage, SessionStorage, Storage};
 use remux_sdks::jellyfin::{
-    AddTunerHost, AdminSetPassword, AioCatalogInfo, AuthenticateUserByName,
-    AuthenticationInfo, BaseItemDto, BrandingOptions, BulkChannelRequest, BulkChannels,
-    ChannelEditorItem, CreateApiKey, CreateUser, CreateVirtualFolder,
-    CreateVirtualFolderPayload, DeleteApiKey, DeleteEpgSource, DeleteTunerHost,
-    DeleteUser, DeleteVirtualFolder, EpgSourceInfo, GetAioCatalogs, GetApiKeys,
+    AddTunerHost, AdminSetPassword, AioCatalogInfo, AnfiteatroReleaseStatus,
+    AuthenticateUserByName, AuthenticationInfo, BaseItemDto, BrandingOptions,
+    BulkChannelRequest, BulkChannels, ChannelEditorItem, CollectionFilter,
+    CreateApiKey, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload,
+    DeleteApiKey, DeleteEpgSource, DeleteTunerHost, DeleteUser,
+    DeleteVirtualFolder, EpgSourceInfo, FilterMatchMode, FilterRule,
+    GetAioCatalogs, GetAnfiteatroReleaseStatus, GetApiKeys,
     GetBrandingConfiguration, GetEpgSources, GetIptvChannels, GetItems,
-    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
-    GetTunerHosts, GetUsers, JellyfinAuth, PatchChannel, PatchChannelRequest,
-    PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
-    PostStartupUser, PublicSystemInfo, SaveEpgSource, ServerConfiguration,
-    CollectionFilter, FilterMatchMode, FilterRule, NumericOp, SetOp,
-    SessionInfoDto, SetLogLevel, StartTask, StartupConfiguration, StartupUser,
-    StopTask, TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo,
-    UpdateBrandingConfiguration, UpdateCatalogSettings, UpdateCatalogSettingsPayload,
-    UpdateSystemConfiguration, UpdateTaskTriggers, UpdateUser, UpdateUserPolicy,
-    UserDto,
+    GetScheduledTasks, GetSessions, GetStartupConfiguration,
+    GetSystemConfiguration, GetTunerHosts, GetUsers,
+    InstallLatestAnfiteatroRelease, JellyfinAuth, NumericOp, PatchChannel,
+    PatchChannelRequest, PatchItem, PatchItemPayload, PostStartupComplete,
+    PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
+    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetLogLevel, SetOp,
+    StartTask, StartupConfiguration, StartupUser, StopTask, TaskInfo,
+    TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo,
+    UpdateBrandingConfiguration, UpdateCatalogSettings,
+    UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
+    UpdateTaskTriggers, UpdateUser, UpdateUserPolicy, UserDto,
 };
 use remux_sdks::{ClientError, RestClient};
 use serde::{Deserialize, Serialize};
@@ -29,6 +32,7 @@ const THEME_CSS: Asset = asset!("/assets/theme.css");
 
 const CREDENTIALS_KEY: &str = "jellyfin_credentials";
 const DEVICE_ID_KEY: &str = "remux_device_id";
+const ANFITEATRO_HANDOFF_KEY: &str = "remux_anfiteatro_handoff";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -45,6 +49,13 @@ struct StoredServer {
 #[serde(rename_all = "PascalCase")]
 struct StoredCredentials {
     servers: Vec<StoredServer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AnfiteatroHandoff {
+    token: String,
+    user_id: String,
 }
 
 #[derive(Clone)]
@@ -84,6 +95,10 @@ impl AppState {
 fn fmt_time(dt: impl std::fmt::Display) -> String {
     let s = dt.to_string();
     s.chars().skip(11).take(5).collect()
+}
+
+fn fmt_commit_short(commit: &str) -> String {
+    commit.chars().take(7).collect()
 }
 
 fn get_origin() -> String {
@@ -1010,7 +1025,34 @@ fn DashboardLayout() -> Element {
 
     let mut logged_in = use_context::<Signal<bool>>();
     let mut sidebar_open = use_signal(|| false);
+    let mut checked_anfiteatro_release = use_signal(|| false);
+    let mut anfiteatro_release: Signal<Option<AnfiteatroReleaseStatus>> =
+        use_signal(|| None);
+    let mut anfiteatro_installing = use_signal(|| false);
+    let mut anfiteatro_install_error: Signal<Option<String>> =
+        use_signal(|| None);
+    let mut anfiteatro_install_success: Signal<Option<String>> =
+        use_signal(|| None);
     let route = use_route::<Route>();
+    let release_check_client = app_state.client.clone();
+    let install_client = app_state.client.clone();
+    let anfiteatro_handoff_token = app_state.server.access_token.clone();
+    let anfiteatro_handoff_user_id = app_state.server.user_id.clone();
+
+    use_effect(move || {
+        if *checked_anfiteatro_release.read() {
+            return;
+        }
+
+        checked_anfiteatro_release.set(true);
+
+        let client = release_check_client.clone();
+        spawn(async move {
+            if let Ok(status) = client.execute(GetAnfiteatroReleaseStatus).await {
+                anfiteatro_release.set(Some(status));
+            }
+        });
+    });
 
     let page_title = match route {
         Route::OverviewRoute => "Overview",
@@ -1108,8 +1150,21 @@ fn DashboardLayout() -> Element {
                     a {
                         class: "btn btn-ghost",
                         style: "width:100%;margin-bottom:8px",
+                        href: "/anfiteatro/",
+                        onclick: move |_| {
+                            let payload = AnfiteatroHandoff {
+                                token: anfiteatro_handoff_token.clone(),
+                                user_id: anfiteatro_handoff_user_id.clone(),
+                            };
+                            let _ = SessionStorage::set(ANFITEATRO_HANDOFF_KEY, payload);
+                        },
+                        "Anfiteatro Web"
+                    }
+                    a {
+                        class: "btn btn-ghost",
+                        style: "width:100%;margin-bottom:8px",
                         href: "/",
-                        "Home"
+                        "Jellyfin Web"
                     }
                     button {
                         class: "btn btn-ghost",
@@ -1135,6 +1190,58 @@ fn DashboardLayout() -> Element {
                         "☰"
                     }
                     h2 { class: "main-title", "{page_title}" }
+                }
+
+                if let Some(msg) = anfiteatro_install_error.read().as_ref() {
+                    div { class: "inline-alert alert-error", "{msg}" }
+                }
+
+                if let Some(msg) = anfiteatro_install_success.read().as_ref() {
+                    div { class: "inline-alert alert-success", "{msg}" }
+                }
+
+                if let Some(status) = anfiteatro_release.read().as_ref() {
+                    if status.update_available {
+                        div { class: "update-banner",
+                            div { class: "update-banner-copy",
+                                div { class: "update-banner-title", "Anfiteatro update available" }
+                                div { class: "update-banner-meta",
+                                    "Installed: {status.local_version_display.as_deref().unwrap_or(\"unknown\")}" 
+                                    " | Latest commit: {status.latest_commit.as_deref().map(fmt_commit_short).or_else(|| status.latest_version_tag.clone()).unwrap_or_else(|| \"unknown\".to_string())}" 
+                                }
+                            }
+                            button {
+                                class: "btn btn-primary",
+                                disabled: *anfiteatro_installing.read(),
+                                onclick: move |_| {
+                                    if *anfiteatro_installing.read() {
+                                        return;
+                                    }
+
+                                    anfiteatro_installing.set(true);
+                                    anfiteatro_install_error.set(None);
+                                    anfiteatro_install_success.set(None);
+
+                                    let client = install_client.clone();
+                                    spawn(async move {
+                                        match client.execute(InstallLatestAnfiteatroRelease).await {
+                                            Ok(result) => {
+                                                anfiteatro_install_success.set(Some(result.message));
+                                                if let Ok(status) = client.execute(GetAnfiteatroReleaseStatus).await {
+                                                    anfiteatro_release.set(Some(status));
+                                                }
+                                            }
+                                            Err(err) => {
+                                                anfiteatro_install_error.set(Some(format!("Install failed: {err}")));
+                                            }
+                                        }
+                                        anfiteatro_installing.set(false);
+                                    });
+                                },
+                                if *anfiteatro_installing.read() { "Installing..." } else { "Install update" }
+                            }
+                        }
+                    }
                 }
 
                 div { class: "shell",
@@ -1783,7 +1890,6 @@ fn FilterRuleRow(
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
     let ov1 = op_val.clone();
-    let ov2 = op_val.clone();
     let vv1 = value_val.clone();
     let vv2 = value_val.clone();
 
