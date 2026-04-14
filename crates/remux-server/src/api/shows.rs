@@ -1,0 +1,140 @@
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::response::IntoResponse;
+use axum_extra::extract::Query;
+use http::StatusCode;
+use remux_macros::get;
+use uuid::Uuid;
+
+use crate::AppState;
+use crate::db;
+use crate::db::auth;
+use crate::api;
+use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
+
+use super::items::get_items;
+use super::mock_items;
+
+pub fn livetv_view_id() -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_OID, b"remux-livetv-view")
+}
+
+pub fn livetv_view_item() -> api::BaseItemDto {
+    api::BaseItemDto {
+        id: livetv_view_id(),
+        name: Some("Live TV".to_string()),
+        type_: api::MediaType::CollectionFolder,
+        collection_type: Some(api::CollectionType::Livetv),
+        ..Default::default()
+    }
+}
+
+#[get("/shows/{id}/seasons")]
+pub async fn shows_seasons(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Query(mut q): Query<api::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    q.parent_id = Some(id);
+    q.include_item_types = Some(vec![api::MediaType::Season]);
+    if q.sort_by.is_none() {
+        q.sort_by = Some(vec![api::ItemSortBy::IndexNumber]);
+        q.sort_order = Some(vec![api::SortOrder::Ascending]);
+    }
+    let items = get_items(state, session.clone(), q.clone(), true)
+        .await?
+        .with_permissions(&session);
+
+    Ok(Json(api::BaseItemDtoQueryResult {
+        items: items.items,
+        total_record_count: items.total_count as i64,
+        start_index: q.start_index.unwrap_or(0),
+        ..Default::default()
+    }))
+}
+
+#[get("/shows/{id}/episodes")]
+pub async fn shows_episodes(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Query(mut q): Query<api::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    // q.season_id = Some(id);
+    q.parent_id = q.season_id;
+    q.include_item_types = Some(vec![api::MediaType::Episode]);
+    if q.sort_by.is_none() {
+        q.sort_by = Some(vec![api::ItemSortBy::IndexNumber]);
+        q.sort_order = Some(vec![api::SortOrder::Ascending]);
+    }
+    let items = get_items(state, session.clone(), q.clone(), true)
+        .await?
+        .with_permissions(&session);
+
+    Ok(Json(api::BaseItemDtoQueryResult {
+        items: items.items,
+        total_record_count: items.total_count as i64,
+        start_index: q.start_index.unwrap_or(0),
+        ..Default::default()
+    }))
+}
+
+/// This sbould hold dynamic collections
+#[get("/userviews")]
+pub async fn userviews(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    let library_filter = db::MediaFilter {
+        kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
+        promoted: Some(true),
+        ..Default::default()
+    };
+    let channel_filter = db::MediaFilter {
+        kind: Some(vec![db::MediaKind::TvChannel]),
+        enabled: Some(true),
+        ..Default::default()
+    };
+    let (library_result, channel_result) = tokio::join!(
+        db::Media::get_by_filter(&state.ctx.db, &library_filter),
+        db::Media::get_by_filter(&state.ctx.db, &channel_filter),
+    );
+
+    let mut items = library_result?
+        .records
+        .into_iter()
+        .map(api::db_media_to_item)
+        .collect::<Vec<api::BaseItemDto>>();
+
+    // Inject a synthetic Live TV view if any enabled channels exist
+    if !channel_result?.records.is_empty() {
+        items.push(livetv_view_item());
+    }
+
+    Ok(Json(api::BaseItemDtoQueryResult {
+        items,
+        ..Default::default()
+    }))
+}
+
+#[get("/userviews/groupingoptions")]
+pub async fn userviews_groupingoptions(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    // Ok(Json(json!(
+    // )))
+    Ok(StatusCode::NO_CONTENT.into_response())
+    // Ok(Json(json!(
+    //     crate::api::get_virtual_folders(&state).await?
+    // )))
+}
+
+#[get("/shows/nextup")]
+pub async fn shows_nextup(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    mock_items(State(state)).await
+}
