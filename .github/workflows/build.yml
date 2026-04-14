@@ -81,9 +81,6 @@ jobs:
           repository: j4ckgrey/Anfiteatro_web
           ref: main
 
-      - name: Remove VCS metadata
-        run: rm -rf .git
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
