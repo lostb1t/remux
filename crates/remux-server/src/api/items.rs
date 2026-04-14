@@ -926,11 +926,7 @@ pub async fn create_virtual_folder(
         .and_then(|s| db::CollectionKind::try_from(s).ok())
         .unwrap_or(db::CollectionKind::Smart);
 
-    let promoted: i64 = if payload.promoted.unwrap_or(false) {
-        1
-    } else {
-        0
-    };
+    let promoted = payload.promoted.unwrap_or(false);
 
     let mut media = db::Media {
         title: payload.name,
@@ -982,11 +978,7 @@ pub async fn update_virtual_folder(
         .as_deref()
         .and_then(|s| db::CollectionKind::try_from(s).ok());
 
-    let promoted: i64 = if payload.promoted.unwrap_or(false) {
-        1
-    } else {
-        0
-    };
+    let promoted = payload.promoted.unwrap_or(false);
     let updated_at = Utc::now().naive_utc();
 
     sqlx::query(
@@ -1296,7 +1288,7 @@ pub async fn update_catalog_settings(
     Path(aio_id): Path<String>,
     Json(payload): Json<UpdateCatalogSettingsRequest>,
 ) -> Result<StatusCode> {
-    let promoted: i64 = if payload.enabled { 1 } else { 0 };
+    let promoted = payload.enabled;
     let now = Utc::now().naive_utc();
 
     let existing = db::Media::get_by_filter(

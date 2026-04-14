@@ -149,7 +149,7 @@ impl MetaProvider for TmdbMetaProvider {
                     let mut result_media = db::Media {
                         title: movie_details.title,
                         description: movie_details.overview,
-                        released_at: movie_details.release_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
+                        released_at: movie_details.release_date.and_then(|d| d.and_hms_opt(0, 0, 0)),
                         runtime: movie_details.runtime.map(|r| r * 60),
                         rating_audience: movie_details.vote_average,
                         poster: tmdb_image(movie_details.poster_path.as_deref()),
@@ -184,7 +184,7 @@ impl MetaProvider for TmdbMetaProvider {
                     let mut result_media = db::Media {
                         title: tv_details.name,
                         description: tv_details.overview,
-                        released_at: tv_details.first_air_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
+                        released_at: tv_details.first_air_date.and_then(|d| d.and_hms_opt(0, 0, 0)),
                         rating_audience: tv_details.vote_average,
                         poster: tmdb_image(tv_details.poster_path.as_deref()),
                         backdrop: tmdb_image(tv_details.backdrop_path.as_deref()),
@@ -252,7 +252,7 @@ impl MetaProvider for TmdbMetaProvider {
                     let mut result_media = db::Media {
                         title: ep_details.name,
                         description: ep_details.overview,
-                        released_at: ep_details.air_date.map(|d| d.and_hms_opt(0, 0, 0).unwrap()),
+                        released_at: ep_details.air_date.and_then(|d| d.and_hms_opt(0, 0, 0)),
                         runtime: ep_details.runtime.map(|r| r * 60),
                         rating_audience: ep_details.vote_average,
                         poster: tmdb_image(ep_details.still_path.as_deref()),

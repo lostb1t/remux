@@ -51,15 +51,7 @@ fn short_sha(sha: &str) -> String {
 }
 
 fn configured_anfiteatro_path(state: &AppState) -> Option<String> {
-    #[cfg(not(feature = "desktop"))]
-    {
-        Some(state.ctx.config.anfiteatro_web_path.clone())
-    }
-    #[cfg(feature = "desktop")]
-    {
-        let _ = state;
-        None
-    }
+    state.ctx.web_paths.as_ref().map(|p| p.anfiteatro_web_path.clone())
 }
 
 fn local_anfiteatro_commit(path: &str) -> Option<String> {
@@ -424,8 +416,8 @@ pub async fn update_system_configuration(
     _session: auth::AdminSession,
     Json(mut config): Json<api::ServerConfiguration>,
 ) -> Result<impl IntoResponse> {
-    if let Some(url) = config.aio_url.as_deref().filter(|s| !s.is_empty()) {
-        crate::aio::AioService::from_url(url)
+    if let Some(url) = &config.aio_url {
+        crate::aio::AioService::from_url(url.as_ref())
             .context_bad_request("Invalid AIO URL", "Could not build AIO client from the provided URL.")?
             .get_manifest()
             .await

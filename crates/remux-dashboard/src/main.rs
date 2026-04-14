@@ -3,7 +3,7 @@ use futures::StreamExt;
 use gloo_net::eventsource::futures::EventSource;
 use gloo_storage::{LocalStorage, SessionStorage, Storage};
 use remux_sdks::remux::{
-    AddTunerHost, AdminSetPassword, AioCatalogInfo, AnfiteatroReleaseStatus,
+    AddTunerHost, AdminSetPassword, AioCatalogInfo, AioUrl, AnfiteatroReleaseStatus,
     AuthenticateUserByName, AuthenticationInfo, BaseItemDto, BrandingOptions,
     BulkChannelRequest, BulkChannels, ChannelEditorItem, CollectionFilter,
     CreateApiKey, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload,
@@ -17,11 +17,11 @@ use remux_sdks::remux::{
     PatchChannelRequest, PatchItem, PatchItemPayload, PostStartupComplete,
     PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
     SaveEpgSource, ServerConfiguration, SessionInfoDto, SetLogLevel, SetOp,
-    StartTask, StartupConfiguration, StartupUser, StopTask, TaskInfo,
+    SourceUrl, StartTask, StartupConfiguration, StartupUser, StopTask, TaskInfo,
     TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo,
     UpdateBrandingConfiguration, UpdateCatalogSettings,
     UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
-    UpdateTaskTriggers, UpdateUser, UpdateUserPolicy, UserDto,
+    UpdateTaskTriggers, UpdateUser, UpdateUserPolicy, UserDto, Username,
 };
 use remux_sdks::{ClientError, RestClient};
 use serde::{Deserialize, Serialize};
@@ -2392,7 +2392,7 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
                                                     onclick: move |_| {
                                                         epg_edit_id.set(epg_clone.id.clone());
                                                         epg_form_name.set(epg_clone.name.clone());
-                                                        epg_form_url.set(epg_clone.url.clone());
+                                                        epg_form_url.set(epg_clone.url.as_ref().to_string());
                                                         epg_save_error.set(None);
                                                         show_epg_form.set(true);
                                                     },
@@ -2464,10 +2464,13 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
                                         let url = epg_form_url.peek().clone();
                                         let edit_id = epg_edit_id.peek().clone();
 
-                                        if url.is_empty() {
-                                            epg_save_error.set(Some("URL is required".into()));
-                                            return;
-                                        }
+                                        let url = match SourceUrl::try_new(url) {
+                                            Ok(u) => u,
+                                            Err(_) => {
+                                                epg_save_error.set(Some("URL is required".into()));
+                                                return;
+                                            }
+                                        };
 
                                         epg_saving.set(true);
                                         epg_save_error.set(None);
@@ -3621,7 +3624,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
             match client.execute(GetSystemConfiguration).await {
                 Ok(cfg) => {
                     server_name.set(cfg.server_name.clone().unwrap_or_default());
-                    aio_url.set(cfg.aio_url.clone().unwrap_or_default());
+                    aio_url.set(cfg.aio_url.as_ref().map(|u| u.as_ref().to_string()).unwrap_or_default());
                     catalog_max_items.set(cfg.catalog_max_items.unwrap_or(100));
                     p2p_enabled.set(cfg.p2p_enabled.unwrap_or(true));
                     p2p_upload_speed.set(cfg.p2p_upload_speed_kbps.unwrap_or(0));
@@ -3661,7 +3664,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
         cfg.server_name = Some(name);
         cfg.quick_connect_available = Some(qc_enabled);
-        cfg.aio_url = Some(url);
+        cfg.aio_url = AioUrl::try_new(url).ok();
         cfg.catalog_max_items = Some(max);
         cfg.p2p_enabled = Some(p2p_on);
         cfg.p2p_upload_speed_kbps = Some(upload);
@@ -4046,8 +4049,8 @@ fn Wizard(on_complete: EventHandler) -> Element {
                     if let Some(name) = cfg.server_name.filter(|s| !s.is_empty()) {
                         server_name.set(name);
                     }
-                    if let Some(url) = cfg.aio_url.filter(|s| !s.is_empty()) {
-                        aio_url.set(url);
+                    if let Some(url) = cfg.aio_url {
+                        aio_url.set(url.into_inner());
                     }
                 }
             }
@@ -4099,7 +4102,7 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                             Ok(c) => match c.execute(PostStartupConfiguration {
                                                 payload: StartupConfiguration {
                                                     server_name: Some(name),
-                                                    aio_url: Some(url),
+                                                    aio_url: AioUrl::try_new(url).ok(),
                                                     ..Default::default()
                                                 },
                                             }).await {
@@ -4165,10 +4168,13 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                     let name = username.peek().clone();
                                     let pw   = password.peek().clone();
                                     let pw2  = password2.peek().clone();
-                                    if name.is_empty() {
-                                        error.set(Some("Username is required".into()));
-                                        return;
-                                    }
+                                    let name = match Username::try_new(name) {
+                                        Ok(u) => u,
+                                        Err(_) => {
+                                            error.set(Some("Invalid username: must contain only letters, digits, spaces, and -'._@+, and be at most 255 characters".into()));
+                                            return;
+                                        }
+                                    };
                                     if pw != pw2 {
                                         error.set(Some("Passwords do not match".into()));
                                         return;

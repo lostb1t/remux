@@ -5,6 +5,26 @@ use uuid::Uuid;
 
 use crate::utils::get_uuid;
 
+#[derive(
+    Default,
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+#[sqlx(type_name = "TEXT", rename_all = "lowercase")]
+pub enum IptvSourceType {
+    #[default]
+    M3u,
+    Xtream,
+}
+
 // ── Channel sources (M3U / Xtream) ──────────────────────────────────────────
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -18,8 +38,7 @@ pub struct IptvSource {
     /// Deprecated — kept for schema compatibility; ignored in favour of EpgSource.
     pub epg_url: Option<String>,
     pub refresh_interval: String,
-    /// "m3u" or "xtream"
-    pub source_type: String,
+    pub source_type: IptvSourceType,
     pub xtream_username: Option<String>,
     pub xtream_password: Option<String>,
 }
@@ -28,7 +47,7 @@ impl IptvSource {
     /// Return the XMLTV EPG URL for Xtream sources (auto-derived from credentials).
     /// Returns `None` for M3U sources (EPG is managed via separate `EpgSource` entries).
     pub fn xtream_epg_url(&self) -> Option<String> {
-        if self.source_type != "xtream" {
+        if self.source_type != IptvSourceType::Xtream {
             return None;
         }
         let base = self.m3u_url.trim_end_matches('/');
@@ -43,7 +62,7 @@ impl IptvSource {
     /// For M3U sources, returns the playlist URL. For Xtream sources, returns the server base URL
     /// (channels are fetched via the native player API, not via this URL).
     pub fn m3u_playlist_url(&self) -> Option<String> {
-        if self.source_type == "m3u" {
+        if self.source_type == IptvSourceType::M3u {
             Some(self.m3u_url.clone())
         } else {
             None

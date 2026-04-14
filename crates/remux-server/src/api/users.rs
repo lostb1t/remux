@@ -18,6 +18,7 @@ use crate::api::system::QuickConnectEntry;
 use crate::utils::{get_uuid, server_id};
 use crate::ws::WsEvent;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
+use remux_sdks::remux::models::Username;
 
 use super::items::{item, items, items_flat};
 use super::mock_items;
@@ -353,7 +354,7 @@ pub async fn create_user(
 ) -> Result<impl IntoResponse> {
     let password = payload.password.as_deref().unwrap_or("");
     let mut user =
-        User::new_with_password(String::new(), payload.name, password, None)?;
+        User::new_with_password(String::new(), payload.name.into_inner(), password, None)?;
     user.save(&state.ctx.db).await?;
     let _ = state.ctx.ws_tx.send(WsEvent::UserUpdated(user.id));
     Ok((StatusCode::OK, Json(api::db_user_to_dto(user))).into_response())
@@ -442,7 +443,10 @@ pub async fn update_user(
     let mut user = db::User::get_by_id(&state.ctx.db, &user_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("User not found"))?;
-    user.username = payload.name;
+    let username = Username::try_new(payload.name)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context_bad_request("InvalidUsername", "Invalid username")?;
+    user.username = username.into_inner();
     if let Some(config) = payload.configuration {
         user.configuration = Some(sqlx::types::Json(config));
     }

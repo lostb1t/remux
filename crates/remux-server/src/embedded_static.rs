@@ -48,6 +48,11 @@ impl<B> Service<Request<B>> for EmbeddedDir {
 }
 
 impl EmbeddedDir {
+    /// Wrap this service into the opaque `AdminService` type expected by `init_app`.
+    pub fn into_admin_service(self) -> crate::AdminService {
+        tower::util::BoxCloneSyncService::new(self)
+    }
+
     fn serve(&self, uri_path: &str) -> Response<Body> {
         let path = uri_path.trim_start_matches('/');
         let path = if path.is_empty() { "index.html" } else { path };

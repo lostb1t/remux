@@ -44,7 +44,7 @@ pub async fn post_startup_configuration(
     config.metadata_country_code =
         metadata_country_code.or(config.metadata_country_code);
     if let Some(url) = aio_url {
-        crate::aio::AioService::from_url(&url)
+        crate::aio::AioService::from_url(url.as_ref())
             .context_bad_request("Invalid AIO URL", "Could not build AIO client from the provided URL.")?
             .get_manifest()
             .await
@@ -73,7 +73,7 @@ pub async fn post_startup_user(
 ) -> Result<impl IntoResponse> {
     if let (Some(name), Some(password)) = (body.name, body.password) {
         let mut user =
-            crate::db::User::new_with_password(String::new(), name, &password, None)?;
+            crate::db::User::new_with_password(String::new(), name.into_inner(), &password, None)?;
         user.is_admin = true;
         user.save_by_username(&state.ctx.db).await?;
     }

@@ -27,11 +27,10 @@ impl AioService {
         let url = crate::db::Settings::get_config(db)
             .await?
             .aio_url
-            .filter(|s| !s.is_empty())
             .ok_or_else(|| {
                 anyhow!("AIO URL not configured — complete the setup wizard first")
             })?;
-        Self::from_url(&url)
+        Self::from_url(url.as_ref())
     }
 
     pub fn from_url(url: &str) -> Result<Self> {

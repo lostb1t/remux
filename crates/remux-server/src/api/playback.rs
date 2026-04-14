@@ -226,7 +226,7 @@ async fn items_playbackinfo_inner(
         let resolved_url = sm
             .url
             .as_deref()
-            .map(|u| remap_internal_aio_url(u, aio_url.as_deref()));
+            .map(|u| remap_internal_aio_url(u, aio_url.as_ref().map(AsRef::as_ref)));
         sources_with_urls.push(SourceWithUrl { sm, resolved_url });
     }
 
@@ -525,7 +525,7 @@ async fn videos_stream_inner(
         .await
         .ok()
         .and_then(|c| c.aio_url);
-    let url = remap_internal_aio_url(&raw_url, aio_url.as_deref());
+    let url = remap_internal_aio_url(&raw_url, aio_url.as_ref().map(AsRef::as_ref));
 
     // Direct play: proxy the original stream with range support.
     // Real Jellyfin always proxies the raw file bytes for Static=true, regardless
@@ -1802,7 +1802,7 @@ pub async fn master_hls_video(
             .await
             .ok()
             .and_then(|c| c.aio_url);
-        let input_url = remap_internal_aio_url(&raw_input_url, aio_url.as_deref());
+        let input_url = remap_internal_aio_url(&raw_input_url, aio_url.as_ref().map(AsRef::as_ref));
 
         let output_dir = std::path::PathBuf::from("transcode_sessions")
             .join(&play_session_id);
@@ -2339,7 +2339,7 @@ pub async fn subtitles_stream(
         .await
         .ok()
         .and_then(|c| c.aio_url);
-    let url = remap_internal_aio_url(&raw_url, aio_url.as_deref());
+    let url = remap_internal_aio_url(&raw_url, aio_url.as_ref().map(AsRef::as_ref));
 
     let output_format = format.to_ascii_lowercase();
     let (ffmpeg_format, content_type) = match output_format.as_str() {

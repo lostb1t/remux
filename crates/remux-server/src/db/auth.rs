@@ -441,7 +441,6 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // 1. Standard MediaBrowser/Emby Authorization header
         if let Some(raw) = parts
             .headers
             .get(http::header::AUTHORIZATION)
@@ -456,7 +455,6 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
             return Ok(JellyfinAuthHeader::from_str(raw)?);
         }
 
-        // 2. Bare token headers (X-Emby-Token / X-MediaBrowser-Token)
         if let Some(token) = parts
             .headers
             .get("X-Emby-Token")
@@ -469,7 +467,6 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
             });
         }
 
-        // 3. api_key / ApiKey query parameter
         if let Some(query) = parts.uri.query() {
             for pair in query.split('&') {
                 let mut kv = pair.splitn(2, '=');

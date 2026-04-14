@@ -60,25 +60,12 @@ fn main() -> Result<()> {
     let config = build_config();
     ensure_data_dirs(&config)?;
 
-    // Register embedded assets so the server can serve them from memory.
-    #[cfg(all(dashboard_built, jellyfin_web_built))]
-    {
-        #[cfg(anfiteatro_web_built)]
-        remux_server::set_embedded_assets(
-            &DASHBOARD,
-            &JELLYFIN_WEB,
-            Some(&ANFITEATRO_WEB),
-        );
-        #[cfg(not(anfiteatro_web_built))]
-        remux_server::set_embedded_assets(&DASHBOARD, &JELLYFIN_WEB, None);
-    }
-
-    // Start the remux server in a background tokio thread.
+    // Start the remux server in a background tokio thread with embedded assets.
     let rt = tokio::runtime::Runtime::new()?;
     let server_config = config.clone();
     std::thread::spawn(move || {
         rt.block_on(async move {
-            if let Err(e) = remux_server::serve(server_config).await {
+            if let Err(e) = serve(server_config).await {
                 tracing::error!("server error: {e:#}");
             }
         });
@@ -117,6 +104,37 @@ fn main() -> Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
+    #[cfg(anfiteatro_web_built)]
+    let anfiteatro = Some(&ANFITEATRO_WEB);
+    #[cfg(not(anfiteatro_web_built))]
+    let anfiteatro: Option<&'static include_dir::Dir<'static>> = None;
+
+    #[cfg(all(dashboard_built, jellyfin_web_built))]
+    let admin = remux_server::embedded_static::EmbeddedDir {
+        dir: &DASHBOARD,
+        spa_fallback: true,
+    }
+    .into_admin_service();
+
+    #[cfg(not(all(dashboard_built, jellyfin_web_built)))]
+    let admin = remux_server::admin_from_filesystem(
+        &remux_server::FilesystemPaths::default().dashboard_path,
+    );
+
+    #[cfg(all(dashboard_built, jellyfin_web_built))]
+    let web_client = remux_server::WebClientService::from_embedded(&JELLYFIN_WEB, anfiteatro);
+
+    #[cfg(not(all(dashboard_built, jellyfin_web_built)))]
+    let web_client = {
+        let paths = remux_server::FilesystemPaths::default();
+        remux_server::WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path)
+    };
+
+    let (router, _) = remux_server::init_app(config, None, admin, web_client).await?;
+    remux_server::bind_and_serve(router).await
 }
 
 fn load_icon() -> tray_icon::Icon {

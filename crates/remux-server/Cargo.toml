@@ -111,6 +111,7 @@ librqbit = { version = "8", features = ["http-api", "tracing-subscriber-utils"] 
 regex = "1"
 log = "0.4"
 env_logger = "0.11"
+nutype = { version = "0.6", features = ["serde"] }
 
 [features]
 default = []

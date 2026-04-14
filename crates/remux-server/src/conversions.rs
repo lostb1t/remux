@@ -161,10 +161,10 @@ impl From<api::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
             primary_image_height: dto.primary_image_height,
             primary_image_width: dto.primary_image_width,
             custom_prefs: dto.custom_prefs,
-            scroll_direction: dto.scroll_direction.to_string(),
+            scroll_direction: dto.scroll_direction,
             show_backdrop: dto.show_backdrop,
             remember_sorting: dto.remember_sorting,
-            sort_order: dto.sort_order.to_string(),
+            sort_order: dto.sort_order,
             show_sidebar: dto.show_sidebar,
             home_sections: None,
         }

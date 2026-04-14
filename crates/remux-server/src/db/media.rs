@@ -452,7 +452,7 @@ pub struct Media {
     pub remote_data: Option<String>,
 
     // collection
-    pub promoted: i64,
+    pub promoted: bool,
     // CollectionKind
     pub collection_kind: Option<CollectionKind>,
     // MediaKind
@@ -465,9 +465,9 @@ pub struct Media {
     pub live_end: Option<NaiveDateTime>,
     pub tvg_id: Option<String>,
     pub channel_number: Option<i64>,
-    /// Whether this channel is shown to clients (1 = enabled, 0 = hidden).
-    #[default(1)]
-    pub enabled: i64,
+    /// Whether this channel is shown to clients (true = enabled, false = hidden).
+    #[default(true)]
+    pub enabled: bool,
     /// User-defined display order for channels. Lower = earlier.
     pub sort_order: Option<i64>,
     /// User-defined name override; takes precedence over `title` for display.
@@ -523,11 +523,7 @@ impl Media {
     }
 
     pub fn is_promoted(&self) -> bool {
-        match self.promoted {
-            0 => false,
-            1 => true,
-            _ => panic!("invalid boolean value"),
-        }
+        self.promoted
     }
 
     pub fn validate(&self) -> Result<(), MediaError> {
@@ -1169,11 +1165,7 @@ impl Media {
             }
 
             if let Some(enabled) = &filter.enabled {
-                qb.push(" AND enabled = ").push_bind(if *enabled {
-                    1i64
-                } else {
-                    0i64
-                });
+                qb.push(" AND enabled = ").push_bind(*enabled);
             }
 
             if let Some(threshold) = &filter.digital_released_before {
@@ -1745,9 +1737,11 @@ impl Media {
         aio: &aio::AioService,
     ) -> Result<Vec<Self>> {
         let kind = media_kind_to_aio(&self.kind);
-        let streams = aio
-            .get_streams(kind, self.media_id.clone().unwrap())
-            .await?;
+        let media_id = self
+            .media_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("cannot refresh sources: media has no media_id"))?;
+        let streams = aio.get_streams(kind, media_id).await?;
 
         let items = streams
             .clone()
@@ -1903,7 +1897,7 @@ impl Media {
 
             self.sources = Some(sources);
         };
-        Ok(self.sources.clone().unwrap())
+        Ok(self.sources.as_deref().unwrap_or_default().to_vec())
     }
 
     pub async fn seasons(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
@@ -1926,7 +1920,7 @@ impl Media {
             self.seasons = Some(seasons);
         }
 
-        Ok(self.seasons.clone().unwrap())
+        Ok(self.seasons.as_deref().unwrap_or_default().to_vec())
     }
 
     pub async fn episodes(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
@@ -1949,7 +1943,7 @@ impl Media {
             self.episodes = Some(episodes);
         }
 
-        Ok(self.episodes.clone().unwrap())
+        Ok(self.episodes.as_deref().unwrap_or_default().to_vec())
     }
 
     pub async fn user_state(
@@ -2508,7 +2502,7 @@ pub async fn ensure_collection_folder(db: &SqlitePool) -> Result<()> {
         id: collection_uuid(),
         title: "Collections".to_string(),
         kind: MediaKind::Folder,
-        promoted: 1,
+        promoted: true,
         ..Default::default()
     }
     .save(db)

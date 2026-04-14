@@ -5,7 +5,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::{ProgressReporter, Task, TaskService};
-use crate::{AppContext, db, iptv};
+use crate::{AppContext, db, db::IptvSourceType, iptv};
 
 pub struct IptvRefreshTask;
 
@@ -44,7 +44,7 @@ impl Task for IptvRefreshTask {
             let xtream_epg_url = source.xtream_epg_url();
             let m3u_fetch_url = source.m3u_playlist_url().unwrap_or_default();
 
-            let channels_parsed = if source.source_type == "xtream" {
+            let channels_parsed = if source.source_type == IptvSourceType::Xtream {
                 let user = source.xtream_username.as_deref().unwrap_or("");
                 let pass = source.xtream_password.as_deref().unwrap_or("");
                 debug!(source = %source.name, server = %source.m3u_url, "fetching Xtream live streams");

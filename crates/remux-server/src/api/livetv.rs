@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::db;
+use crate::db::IptvSourceType;
 use crate::db::auth::{AdminSession, AuthSession};
 use crate::api;
 
@@ -268,7 +269,9 @@ pub async fn livetv_add_tuner_host(
     _session: AdminSession,
     Json(body): Json<TunerHostInfo>,
 ) -> Result<impl IntoResponse> {
-    let source_type = body.type_.as_deref().unwrap_or("m3u").to_string();
+    let source_type = body.type_.as_deref()
+        .and_then(|s| s.parse::<IptvSourceType>().ok())
+        .unwrap_or(IptvSourceType::M3u);
     let url = body
         .url
         .context_bad_request("bad request", "url is required")?;
@@ -281,7 +284,7 @@ pub async fn livetv_add_tuner_host(
         .unwrap_or_else(crate::utils::get_uuid);
 
     // For Xtream updates, preserve existing password if new one is blank.
-    let password = if source_type == "xtream" {
+    let password = if source_type == IptvSourceType::Xtream {
         let provided = body.password.filter(|p| !p.is_empty());
         if provided.is_none() {
             // Fetch existing to keep password
@@ -479,7 +482,7 @@ pub async fn remux_bulk_channels(
     _session: AdminSession,
     Json(body): Json<BulkChannelBody>,
 ) -> Result<impl IntoResponse> {
-    let enabled_val = if body.enabled { 1i64 } else { 0i64 };
+    let enabled_val = body.enabled;
     if let Some(search) = body.search.filter(|s| !s.is_empty()) {
         sqlx::query(
             "UPDATE media SET enabled = $1, updated_at = datetime('now')
@@ -530,7 +533,7 @@ pub async fn remux_patch_channel(
         WHERE id = $4 AND kind = 'tv_channel'
         "#,
     )
-    .bind(body.enabled.map(|b| if b { 1i64 } else { 0i64 }))
+    .bind(body.enabled)
     .bind(body.sort_order)
     .bind(body.custom_name)
     .bind(id)
@@ -549,7 +552,7 @@ fn iptv_source_to_tuner_host(source: &db::IptvSource) -> serde_json::Value {
         "Id": source.id.simple().to_string(),
         "Url": source.m3u_url,
         "FriendlyName": source.name,
-        "Type": source.source_type,
+        "Type": source.source_type.to_string(),
         "Username": source.xtream_username,
         "Status": "Online",
     })
@@ -590,7 +593,7 @@ fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
         custom_name: m.custom_name.clone(),
         channel_number: m.channel_number,
         sort_order: m.sort_order,
-        enabled: m.enabled != 0,
+        enabled: m.enabled,
         logo: m.poster.clone(),
         group: m.media_id.clone(),
     }

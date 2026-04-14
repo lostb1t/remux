@@ -1,15 +1,24 @@
 use anyhow::Result;
-use remux_server::{Config, serve, setup_logging};
+use remux_server::{Config, FilesystemPaths, serve, setup_logging};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct CliConfig {
+    #[serde(flatten)]
+    base: Config,
+    #[serde(flatten)]
+    paths: FilesystemPaths,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_logging();
     dotenvy::dotenv().ok();
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
-    let config: Config = config::Config::builder()
+    let cli_config: CliConfig = config::Config::builder()
         .add_source(config::File::with_name(&cfg).required(false))
         .add_source(config::Environment::default())
         .build()?
         .try_deserialize()?;
-    serve(config).await
+    serve(cli_config.base, cli_config.paths).await
 }

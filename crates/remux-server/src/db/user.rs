@@ -1,4 +1,5 @@
 use super::{FilterResult, QueryBuilderExt};
+use crate::api::{ScrollDirection, SortOrder};
 use crate::sdks;
 use crate::utils::get_uuid;
 use anyhow::Context;
@@ -493,13 +494,13 @@ pub struct JellyfinDisplayPrefsData {
     pub primary_image_width: i64,
     #[serde(default)]
     pub custom_prefs: HashMap<String, Option<String>>,
-    #[default("Horizontal".to_string())]
-    pub scroll_direction: String,
+    #[default(ScrollDirection::Horizontal)]
+    pub scroll_direction: ScrollDirection,
     #[default(true)]
     pub show_backdrop: bool,
     pub remember_sorting: bool,
-    #[default("Ascending".to_string())]
-    pub sort_order: String,
+    #[default(SortOrder::Ascending)]
+    pub sort_order: SortOrder,
     pub show_sidebar: bool,
     pub home_sections: Option<Vec<HomeSection>>,
 }

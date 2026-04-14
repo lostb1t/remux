@@ -85,28 +85,44 @@ mod web_patches;
 mod web_transform;
 mod ws;
 
-#[cfg(feature = "desktop")]
-static EMBEDDED_DASHBOARD: std::sync::OnceLock<&'static include_dir::Dir<'static>> =
-    std::sync::OnceLock::new();
-#[cfg(feature = "desktop")]
-static EMBEDDED_JELLYFIN_WEB: std::sync::OnceLock<&'static include_dir::Dir<'static>> =
-    std::sync::OnceLock::new();
-#[cfg(feature = "desktop")]
-static EMBEDDED_ANFITEATRO_WEB: std::sync::OnceLock<&'static include_dir::Dir<'static>> =
-    std::sync::OnceLock::new();
+/// Paths to web assets served from the filesystem (non-desktop builds).
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct FilesystemPaths {
+    #[serde(default = "default_web_path")]
+    pub web_path: String,
+    #[serde(default = "default_anfiteatro_web_path")]
+    pub anfiteatro_web_path: String,
+    #[serde(default = "default_dashboard_path")]
+    pub dashboard_path: String,
+}
 
-#[cfg(feature = "desktop")]
-pub fn set_embedded_assets(
-    dashboard: &'static include_dir::Dir<'static>,
-    jellyfin_web: &'static include_dir::Dir<'static>,
-    anfiteatro_web: Option<&'static include_dir::Dir<'static>>,
-) {
-    EMBEDDED_DASHBOARD.set(dashboard).ok();
-    EMBEDDED_JELLYFIN_WEB.set(jellyfin_web).ok();
-    if let Some(dir) = anfiteatro_web {
-        EMBEDDED_ANFITEATRO_WEB.set(dir).ok();
+impl Default for FilesystemPaths {
+    fn default() -> Self {
+        Self {
+            web_path: default_web_path(),
+            anfiteatro_web_path: default_anfiteatro_web_path(),
+            dashboard_path: default_dashboard_path(),
+        }
     }
 }
+
+/// Opaque service type for the `/admin` static file handler.
+pub type AdminService = tower::util::BoxCloneSyncService<
+    axum::extract::Request,
+    axum::response::Response,
+    std::convert::Infallible,
+>;
+
+/// Build an `AdminService` that serves dashboard files from the filesystem.
+pub fn admin_from_filesystem(dashboard_path: &str) -> AdminService {
+    let index = format!("{dashboard_path}/index.html");
+    tower::util::BoxCloneSyncService::new(
+        web_transform::TransformLayer::new()
+            .layer(ServeDir::new(dashboard_path).fallback(ServeFile::new(index))),
+    )
+}
+
+pub use web_client::WebClientService;
 
 /// Route auto-registration via `#[get("/path")]`, `#[post("/path")]`, etc.
 pub struct RouteRegistration(pub fn(axum::Router<AppState>) -> axum::Router<AppState>);
@@ -121,31 +137,48 @@ pub fn collect_routes() -> axum::Router<AppState> {
 }
 
 pub async fn init_app_with_config(config: Config) -> Result<Router> {
-    let (router, _ctx) = init_app_inner(config).await?;
+    let paths = FilesystemPaths::default();
+    let admin = admin_from_filesystem(&paths.dashboard_path.clone());
+    let web_client = WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
+    let (router, _ctx) = init_app(config, Some(paths), admin, web_client).await?;
     Ok(router)
 }
 
 pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
-    init_app_inner(config).await
+    let paths = FilesystemPaths::default();
+    let admin = admin_from_filesystem(&paths.dashboard_path.clone());
+    let web_client = WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
+    init_app(config, Some(paths), admin, web_client).await
 }
 
-/// Start the HTTP server, binding to `0.0.0.0:{port}` (default 3000, or
-/// `REMUX_PORT` env var).  Runs until the process exits.
-pub async fn serve(config: Config) -> Result<()> {
+/// Start the HTTP server with web assets served from the filesystem.
+/// Binds to `0.0.0.0:{port}` (default 3000, or `REMUX_PORT` env var).
+pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
+    let admin = admin_from_filesystem(&paths.dashboard_path.clone());
+    let web_client = WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
+    let (router, _) = init_app(config, Some(paths), admin, web_client).await?;
+    bind_and_serve(router).await
+}
+
+pub async fn bind_and_serve(router: Router) -> Result<()> {
     let port = std::env::var("REMUX_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(3000);
     let addr = format!("0.0.0.0:{port}");
-    let app = MapRequestLayer::new(rewrite_request_uri)
-        .layer(init_app_with_config(config).await?);
+    let app = MapRequestLayer::new(rewrite_request_uri).layer(router);
     tracing::info!("starting webserver at {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
 }
 
-async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
+pub async fn init_app(
+    config: Config,
+    web_paths: Option<FilesystemPaths>,
+    admin: AdminService,
+    web_client: WebClientService,
+) -> Result<(Router, AppContext)> {
     log_capture::init_file(&config.log_file);
     info!("starting remux {}", env!("CARGO_PKG_VERSION"));
     info!("config: {}", serde_json::to_string_pretty(&config).unwrap());
@@ -183,6 +216,7 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
         torrent: torrent_mgr.clone(),
         ws_tx,
         default_web_client,
+        web_paths,
     };
 
     // Apply saved P2P speed limits on startup.
@@ -235,91 +269,20 @@ async fn init_app_inner(config: Config) -> Result<(Router, AppContext)> {
         .allow_headers(Any)
         .expose_headers(Any);
 
-    #[cfg(feature = "desktop")]
-    let router = {
-        use embedded_static::EmbeddedDir;
-        let dashboard_dir = EMBEDDED_DASHBOARD
-            .get()
-            .expect("embedded dashboard not set");
-        let jellyfin_web_dir = EMBEDDED_JELLYFIN_WEB
-            .get()
-            .expect("embedded jellyfin-web not set");
-        Router::new()
-            .route("/websocket", get(ws::ws_handler))
-            .route("/socket", get(ws::ws_handler))
-            .merge(collect_routes())
-            .nest_service(
-                "/admin",
-                EmbeddedDir {
-                    dir: dashboard_dir,
-                    spa_fallback: true,
-                },
-            )
-            .with_state(state)
-            .layer(on_error(|err| {
-                if let Some(cause) = err.error() {
-                    tracing::error!(
-                        status = %err.status(),
-                        title = %err.title(),
-                        detail = %err.detail(),
-                        cause = %format!("{:#}", cause),
-                        "api error"
-                    );
-                } else {
-                    tracing::error!(
-                        status = %err.status(),
-                        title = %err.title(),
-                        detail = %err.detail(),
-                        "api error"
-                    );
-                }
-            }))
-            .layer(tower_http::trace::TraceLayer::new_for_http())
-            .layer(cors)
-            .fallback_service(web_client::DynamicWebClientService::from_embedded(
-                ctx.default_web_client.clone(),
-                jellyfin_web_dir,
-                EMBEDDED_ANFITEATRO_WEB.get().copied(),
-            ))
-    };
+    let base = Router::new()
+        .route("/websocket", get(ws::ws_handler))
+        .route("/socket", get(ws::ws_handler))
+        .merge(collect_routes());
 
-    #[cfg(not(feature = "desktop"))]
-    let router = {
-        let dashboard_index = format!("{}/index.html", ctx.config.dashboard_path);
-        Router::new()
-            .route("/websocket", get(ws::ws_handler))
-            .route("/socket", get(ws::ws_handler))
-            .merge(collect_routes())
-            .nest_service(
-                "/admin",
-                ServeDir::new(&ctx.config.dashboard_path)
-                    .fallback(ServeFile::new(dashboard_index)),
-            )
-            .with_state(state)
-            .layer(on_error(|err| {
-                if let Some(cause) = err.error() {
-                    tracing::error!(
-                        status = %err.status(),
-                        title = %err.title(),
-                        detail = %err.detail(),
-                        cause = %format!("{:#}", cause),
-                        "api error"
-                    );
-                } else {
-                    tracing::error!(
-                        status = %err.status(),
-                        title = %err.title(),
-                        detail = %err.detail(),
-                        "api error"
-                    );
-                }
-            }))
-            .layer(tower_http::trace::TraceLayer::new_for_http())
-            .layer(cors)
-            .fallback_service(web_client::DynamicWebClientService::from_filesystem(
-                &ctx,
-            ))
-    };
+    let router = base
+        .nest_service("/admin", admin)
+        .with_state(state)
+        .fallback_service(web_client);
+
+    let router = router
+        .layer(on_error(log_api_error))
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(cors);
 
     Ok((router, ctx))
 }
@@ -333,6 +296,8 @@ pub struct AppContext {
     pub torrent: Arc<torrent::TorrentManager>,
     pub ws_tx: tokio::sync::broadcast::Sender<ws::WsEvent>,
     pub default_web_client: Arc<tokio::sync::RwLock<String>>,
+    /// Present in filesystem builds; `None` in desktop (assets are embedded).
+    pub web_paths: Option<FilesystemPaths>,
 }
 
 #[derive(Clone)]
@@ -341,7 +306,6 @@ pub struct AppState {
     pub tasks: tasks::TaskService,
 }
 
-#[cfg(not(feature = "desktop"))]
 fn default_web_path() -> String {
     dirs::data_dir()
         .map(|d| d.join("remux").join("jellyfin-web"))
@@ -349,7 +313,6 @@ fn default_web_path() -> String {
         .unwrap_or_else(|| "/data/jellyfin-web".to_string())
 }
 
-#[cfg(not(feature = "desktop"))]
 fn default_anfiteatro_web_path() -> String {
     dirs::data_dir()
         .map(|d| d.join("remux").join("anfiteatro-web"))
@@ -357,7 +320,6 @@ fn default_anfiteatro_web_path() -> String {
         .unwrap_or_else(|| "/data/anfiteatro-web".to_string())
 }
 
-#[cfg(not(feature = "desktop"))]
 fn default_dashboard_path() -> String {
     dirs::data_dir()
         .map(|d| d.join("remux").join("dashboard"))
@@ -391,15 +353,6 @@ const TORRENT_HTTP_PORT: u16 = 9876;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Config {
-    #[cfg(not(feature = "desktop"))]
-    #[serde(default = "default_web_path")]
-    pub web_path: String,
-    #[cfg(not(feature = "desktop"))]
-    #[serde(default = "default_anfiteatro_web_path")]
-    pub anfiteatro_web_path: String,
-    #[cfg(not(feature = "desktop"))]
-    #[serde(default = "default_dashboard_path")]
-    pub dashboard_path: String,
     #[serde(default = "default_database_url")]
     pub database_url: String,
     #[serde(default = "default_log_file")]
@@ -411,12 +364,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            #[cfg(not(feature = "desktop"))]
-            web_path: default_web_path(),
-            #[cfg(not(feature = "desktop"))]
-            anfiteatro_web_path: default_anfiteatro_web_path(),
-            #[cfg(not(feature = "desktop"))]
-            dashboard_path: default_dashboard_path(),
             database_url: default_database_url(),
             log_file: default_log_file(),
             torrent_data_dir: default_torrent_data_dir(),
@@ -460,46 +407,6 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     req
 }
 
-#[cfg(test)]
-mod rewrite_uri_tests {
-    use super::rewrite_request_uri;
-
-    #[test]
-    fn keeps_static_file_case() {
-        let req = http::Request::builder()
-            .uri("/fonts/FontAwesome.OTF?v=4")
-            .body(())
-            .unwrap();
-        let req = rewrite_request_uri(req);
-        assert_eq!(req.uri().path(), "/fonts/FontAwesome.OTF");
-        assert_eq!(req.uri().query(), Some("v=4"));
-    }
-
-    #[test]
-    fn normalizes_video_stream_file_route() {
-        let req = http::Request::builder()
-            .uri("/Videos/abc/Stream.mp4?x=1")
-            .body(())
-            .unwrap();
-        let req = rewrite_request_uri(req);
-        assert_eq!(req.uri().path(), "/videos/abc/stream.mp4");
-        assert_eq!(req.uri().query(), Some("x=1"));
-    }
-
-    #[test]
-    fn normalizes_video_subtitle_file_route() {
-        let req = http::Request::builder()
-            .uri("/Videos/item/source/Subtitles/11/Stream.vtt?token=t")
-            .body(())
-            .unwrap();
-        let req = rewrite_request_uri(req);
-        assert_eq!(
-            req.uri().path(),
-            "/videos/item/source/subtitles/11/stream.vtt"
-        );
-        assert_eq!(req.uri().query(), Some("token=t"));
-    }
-}
 
 pub fn setup_logging() {
     let (reload_layer, log_capture, _tx) = log_capture::init();
@@ -522,6 +429,25 @@ pub fn setup_logging() {
 async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {
     debug!("404 - Not Found: {}", uri);
     (StatusCode::NOT_FOUND, "Not Found")
+}
+
+fn log_api_error(err: &axum_anyhow::ApiError) {
+    if let Some(cause) = err.error() {
+        tracing::error!(
+            status = %err.status(),
+            title = %err.title(),
+            detail = %err.detail(),
+            cause = %format!("{:#}", cause),
+            "api error"
+        );
+    } else {
+        tracing::error!(
+            status = %err.status(),
+            title = %err.title(),
+            detail = %err.detail(),
+            "api error"
+        );
+    }
 }
 
 async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {

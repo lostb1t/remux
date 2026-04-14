@@ -57,10 +57,10 @@ pub fn db_display_prefs_to_dto(
         primary_image_height: data.primary_image_height,
         primary_image_width: data.primary_image_width,
         custom_prefs: data.custom_prefs.clone(),
-        scroll_direction: data.scroll_direction.parse().unwrap_or_default(),
+        scroll_direction: data.scroll_direction.clone(),
         show_backdrop: data.show_backdrop,
         remember_sorting: data.remember_sorting,
-        sort_order: data.sort_order.parse().unwrap_or_default(),
+        sort_order: data.sort_order.clone(),
         show_sidebar: data.show_sidebar,
         client: prefs.client,
     }
@@ -311,7 +311,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .and_then(|k| k.to_string().parse().ok()),
             collection_max_items: media.collection_max_items,
             smart_filter: media.parse_smart_filter().cloned(),
-            promoted: Some(media.promoted != 0),
+            promoted: Some(media.promoted),
         }),
         ..Default::default()
     };
@@ -367,7 +367,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .unwrap_or(CollectionType::Unknown),
         );
         item.collection_kind = media.collection_kind.as_ref().map(|k| k.to_string());
-        if media.promoted == 1 {
+        if media.promoted {
             item.type_ = MediaType::CollectionFolder;
             item.display_preferences_id = Some(item.id.to_string());
         } else {

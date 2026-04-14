@@ -18,7 +18,9 @@ impl ApiKey {
             .bind(app_name)
             .execute(db)
             .await?;
-        Ok(Self::get_by_token(db, &token).await?.unwrap())
+        Ok(Self::get_by_token(db, &token)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("api key not found after insert"))?)
     }
 
     pub async fn get_by_token(db: &SqlitePool, token: &str) -> Result<Option<Self>> {

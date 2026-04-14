@@ -11,20 +11,11 @@ use http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use tower::{Layer, Service};
 use tower::util::BoxCloneSyncService;
-
-#[cfg(feature = "desktop")]
-use std::sync::Arc;
-#[cfg(feature = "desktop")]
-use tokio::sync::RwLock;
+use tower_http::services::ServeDir;
 
 #[cfg(feature = "desktop")]
 use crate::embedded_static::EmbeddedDir;
-#[cfg(not(feature = "desktop"))]
-use crate::AppContext;
 use crate::web_transform::TransformLayer;
-
-#[cfg(not(feature = "desktop"))]
-use tower_http::services::ServeDir;
 
 pub const WEB_CLIENT_JELLYFIN: &str = "jellyfin";
 pub const WEB_CLIENT_ANFITEATRO: &str = "anfiteatro";
@@ -208,48 +199,37 @@ pub fn normalize_web_client(
 }
 
 #[derive(Clone)]
-pub struct DynamicWebClientService {
+pub struct WebClientService {
     jellyfin: StaticService,
     anfiteatro: Option<StaticService>,
 }
 
-#[cfg(not(feature = "desktop"))]
-impl DynamicWebClientService {
-    pub fn from_filesystem(ctx: &AppContext) -> Self {
-        let jellyfin = TransformLayer::new()
-            .layer(ServeDir::new(ctx.config.web_path.clone()));
-        let jellyfin = BoxCloneSyncService::new(jellyfin);
+impl WebClientService {
+    pub fn from_filesystem(web_path: &str, anfiteatro_web_path: &str) -> Self {
+        let jellyfin = BoxCloneSyncService::new(TransformLayer::new().layer(ServeDir::new(web_path)));
 
-        let anfiteatro = if std::path::Path::new(&ctx.config.anfiteatro_web_path)
+        let anfiteatro = if std::path::Path::new(anfiteatro_web_path)
             .join("index.html")
             .exists()
         {
-            Some(
-                BoxCloneSyncService::new(
-                    TransformLayer::new().layer(ServeDir::new(
-                        ctx.config.anfiteatro_web_path.clone(),
-                    )),
-                ),
-            )
+            Some(BoxCloneSyncService::new(
+                TransformLayer::new().layer(ServeDir::new(anfiteatro_web_path)),
+            ))
         } else {
             tracing::warn!(
-                path = %ctx.config.anfiteatro_web_path,
+                path = %anfiteatro_web_path,
                 "anfiteatro web client not found; using jellyfin web client"
             );
             None
         };
 
-        Self {
-            jellyfin,
-            anfiteatro,
-        }
+        Self { jellyfin, anfiteatro }
     }
 }
 
 #[cfg(feature = "desktop")]
-impl DynamicWebClientService {
+impl WebClientService {
     pub fn from_embedded(
-        _default_web_client: Arc<RwLock<String>>,
         jellyfin_web: &'static include_dir::Dir<'static>,
         anfiteatro_web: Option<&'static include_dir::Dir<'static>>,
     ) -> Self {
@@ -280,7 +260,7 @@ impl DynamicWebClientService {
     }
 }
 
-impl Service<Request<Body>> for DynamicWebClientService {
+impl Service<Request<Body>> for WebClientService {
     type Response = Response<Body>;
     type Error = Infallible;
     type Future =

@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use nutype::nutype;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -100,6 +101,53 @@ pub struct AuthenticateWithQuickConnect {
     pub secret: String,
 }
 
+/// A sanitized, non-empty URL string used for IPTV channel sources and EPG feeds.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Clone, Display, PartialEq, Serialize, Deserialize, AsRef, Deref)
+)]
+pub struct SourceUrl(String);
+
+/// A validated Jellyfin-compatible username.
+///
+/// Rules (mirrors Jellyfin's `UserManager.ThrowIfInvalidUsername`):
+/// - Leading/trailing whitespace is trimmed.
+/// - Must not be empty after trimming.
+/// - Maximum 255 characters.
+/// - Characters restricted to: word characters (`\w`), spaces, `-`, `'`, `.`, `_`, `@`, `+`.
+#[nutype(
+    sanitize(trim),
+    validate(not_empty, len_char_max = 255, regex = r"^[\w \-'._@+]+$"),
+    derive(Debug, Clone, PartialEq, Serialize, Deserialize, AsRef, Deref, Display)
+)]
+pub struct Username(String);
+
+/// A sanitized and validated AIO service URL.
+///
+/// On construction (including serde deserialization) the value is trimmed and
+/// stripped of any trailing `/`, `/manifest.json`, or `/configure` suffix so
+/// callers always receive a clean base URL.
+#[nutype(
+    sanitize(trim, with = |s: String| {
+        let s = s.trim_end_matches('/');
+        let s = s.strip_suffix("/manifest.json").unwrap_or(s);
+        s.strip_suffix("/configure").unwrap_or(s).to_string()
+    }),
+    validate(not_empty),
+    derive(Debug, Clone, PartialEq, Serialize, Deserialize, AsRef, Deref)
+)]
+pub struct AioUrl(String);
+
+/// Deserialize `Option<AioUrl>`, treating an empty or unsanitizable string as `None`.
+fn deserialize_option_aio_url<'de, D>(de: D) -> Result<Option<AioUrl>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(de)?;
+    Ok(raw.and_then(|s| AioUrl::try_new(s).ok()))
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
 #[serde(rename_all = "PascalCase")]
@@ -139,8 +187,8 @@ pub struct ServerConfiguration {
     #[default(Some("/transcodes".to_string()))]
     pub transcoding_temp_path: Option<String>,
     #[serde(default)]
-    #[serde(deserialize_with = "clean_aio_url")]
-    pub aio_url: Option<String>,
+    #[serde(deserialize_with = "deserialize_option_aio_url")]
+    pub aio_url: Option<AioUrl>,
     pub catalog_max_items: Option<i64>,
     #[default(Some(true))]
     pub p2p_enabled: Option<bool>,
@@ -176,38 +224,16 @@ pub struct StartupConfiguration {
     pub preferred_metadata_language: Option<String>,
     pub metadata_country_code: Option<String>,
     pub default_web_client: Option<DefaultWebClient>,
-    #[serde(deserialize_with = "clean_aio_url")]
-    pub aio_url: Option<String>,
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_option_aio_url")]
+    pub aio_url: Option<AioUrl>,
 }
 
-fn clean_aio_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let url: Option<String> = Option::deserialize(deserializer)?;
-    match url {
-        Some(url) => {
-            let cleaned = clean_aio_url_str(&url);
-            if cleaned.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(cleaned.to_string()))
-            }
-        }
-        None => Ok(None),
-    }
-}
-
-fn clean_aio_url_str(url: &str) -> &str {
-    let url = url.trim_end_matches('/');
-    let url = url.strip_suffix("/manifest.json").unwrap_or(url);
-    url.strip_suffix("/configure").unwrap_or(url)
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct StartupUser {
-    pub name: Option<String>,
+    pub name: Option<Username>,
     pub password: Option<String>,
     pub password_confirm: Option<String>,
 }
@@ -1564,7 +1590,7 @@ fn default_password_reset_provider_id() -> String {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct CreateUserByName {
-    pub name: String,
+    pub name: Username,
     pub password: Option<String>,
 }
 
@@ -2820,11 +2846,11 @@ pub struct TunerHostInfo {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpgSourceInfo {
     pub id: Option<String>,
     pub name: String,
-    pub url: String,
+    pub url: SourceUrl,
 }
 
 #[skip_serializing_none]
