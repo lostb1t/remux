@@ -69,7 +69,7 @@ pub struct Device {
     pub app_name: String,
     pub app_version: String,
     pub last_activity_at: Option<DateTime<Utc>>,
-    pub capabilities: Option<sqlx::types::Json<crate::jellyfin::ClientCapabilitiesDto>>,
+    pub capabilities: Option<sqlx::types::Json<crate::api::ClientCapabilitiesDto>>,
     pub remote_ip: Option<String>,
 }
 
@@ -228,7 +228,7 @@ impl Device {
     }
 
     /// Store client capabilities JSON for this device.
-    pub async fn save_capabilities(db: &SqlitePool, device_id: &str, caps: &crate::jellyfin::ClientCapabilitiesDto) -> Result<()> {
+    pub async fn save_capabilities(db: &SqlitePool, device_id: &str, caps: &crate::api::ClientCapabilitiesDto) -> Result<()> {
         sqlx::query("UPDATE devices SET capabilities = ? WHERE id = ?")
             .bind(sqlx::types::Json(caps))
             .bind(device_id)
@@ -238,7 +238,7 @@ impl Device {
     }
 
     /// Get the stored capabilities for this device, if present.
-    pub fn parsed_capabilities(&self) -> Option<crate::jellyfin::ClientCapabilitiesDto> {
+    pub fn parsed_capabilities(&self) -> Option<crate::api::ClientCapabilitiesDto> {
         self.capabilities.as_ref().map(|j| j.0.clone())
     }
 

@@ -1,7 +1,7 @@
 #![allow(warnings)]
 
 pub mod aio;
-pub mod jellyfin;
+pub mod remux;
 pub mod tmdb;
 
 use http::{HeaderMap, HeaderValue, Method, header};
@@ -403,22 +403,22 @@ where
     }
 }
 
-impl From<aio::MediaType> for jellyfin::MediaType {
+impl From<aio::MediaType> for remux::MediaType {
     fn from(kind: aio::MediaType) -> Self {
         match kind {
-            aio::MediaType::Movie => jellyfin::MediaType::Movie,
-            aio::MediaType::Series => jellyfin::MediaType::Series,
-            _ => jellyfin::MediaType::Unknown,
+            aio::MediaType::Movie => remux::MediaType::Movie,
+            aio::MediaType::Series => remux::MediaType::Series,
+            _ => remux::MediaType::Unknown,
         }
     }
 }
 
-impl From<jellyfin::MediaType> for aio::MediaType {
-    fn from(kind: jellyfin::MediaType) -> Self {
+impl From<remux::MediaType> for aio::MediaType {
+    fn from(kind: remux::MediaType) -> Self {
         match kind {
-            jellyfin::MediaType::Movie => aio::MediaType::Movie,
-            jellyfin::MediaType::Series => aio::MediaType::Series,
-            jellyfin::MediaType::Episode => aio::MediaType::Series,
+            remux::MediaType::Movie => aio::MediaType::Movie,
+            remux::MediaType::Series => aio::MediaType::Series,
+            remux::MediaType::Episode => aio::MediaType::Series,
             _ => aio::MediaType::Movie,
         }
     }

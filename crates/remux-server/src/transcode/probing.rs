@@ -1,4 +1,4 @@
-use crate::jellyfin;
+use crate::api;
 use anyhow::{Result, anyhow};
 use isolang::Language;
 use serde::Deserialize;
@@ -99,7 +99,7 @@ fn parse_frame_rate(s: &str) -> Option<f64> {
 }
 
 /// Probe a media URL with ffprobe and return a Jellyfin MediaSourceInfo.
-pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
+pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
     tracing::debug!(url, "probing media");
 
     let output = std::process::Command::new(ffprobe_bin())
@@ -151,7 +151,7 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
 
     tracing::debug!(?run_time_ticks, ?container, "probe container info");
 
-    let mut streams: Vec<jellyfin::MediaStream> = Vec::new();
+    let mut streams: Vec<api::MediaStream> = Vec::new();
     let mut video_idx: i64 = 0;
     let mut audio_idx: i64 = 0;
     let mut sub_idx: i64 = 0;
@@ -171,8 +171,8 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
                 let fps = s.avg_frame_rate.as_deref().and_then(parse_frame_rate);
                 let codec = s.codec_name.clone().unwrap_or_default();
 
-                streams.push(jellyfin::MediaStream {
-                    type_: Some(jellyfin::MediaStreamType::Video),
+                streams.push(api::MediaStream {
+                    type_: Some(api::MediaStreamType::Video),
                     index: Some(s.index),
                     codec: Some(codec.clone()),
                     width: s.width.and_then(nonzero),
@@ -203,8 +203,8 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
                     .and_then(nonzero);
                 let codec = s.codec_name.clone().unwrap_or_default();
 
-                streams.push(jellyfin::MediaStream {
-                    type_: Some(jellyfin::MediaStreamType::Audio),
+                streams.push(api::MediaStream {
+                    type_: Some(api::MediaStreamType::Audio),
                     index: Some(s.index),
                     codec: Some(codec.clone()),
                     channels,
@@ -227,8 +227,8 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
             "subtitle" => {
                 let codec = s.codec_name.clone().unwrap_or_default();
 
-                streams.push(jellyfin::MediaStream {
-                    type_: Some(jellyfin::MediaStreamType::Subtitle),
+                streams.push(api::MediaStream {
+                    type_: Some(api::MediaStreamType::Subtitle),
                     index: Some(s.index),
                     codec: Some(codec.clone()),
                     is_default: Some(sub_idx == 0),
@@ -251,14 +251,14 @@ pub fn probe_media(url: &str) -> Result<jellyfin::MediaSourceInfo> {
 
     let default_audio_stream_index = streams
         .iter()
-        .find(|s| matches!(s.type_, Some(jellyfin::MediaStreamType::Audio)))
+        .find(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
         .and_then(|s| s.index);
     let default_subtitle_stream_index = streams
         .iter()
-        .find(|s| matches!(s.type_, Some(jellyfin::MediaStreamType::Subtitle)))
+        .find(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)))
         .and_then(|s| s.index);
 
-    Ok(jellyfin::MediaSourceInfo {
+    Ok(api::MediaSourceInfo {
         media_streams: streams,
         container,
         run_time_ticks,

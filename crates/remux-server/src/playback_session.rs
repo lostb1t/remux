@@ -8,7 +8,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::transcode::session::TranscodeSession;
-use remux_sdks::jellyfin::QueueItem;
+use remux_sdks::remux::QueueItem;
 
 #[derive(Clone)]
 pub struct PlaybackSession {

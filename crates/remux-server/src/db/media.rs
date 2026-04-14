@@ -1,7 +1,7 @@
 use super::{FilterResult, QueryBuilderExt};
 use crate::aio;
-use crate::jellyfin;
-use crate::jellyfin::MediaSourceInfo;
+use crate::api;
+use crate::api::MediaSourceInfo;
 use crate::sdks;
 use crate::utils::IntoVec;
 use crate::utils::get_uuid;
@@ -152,30 +152,30 @@ pub fn media_kind_to_aio(kind: &MediaKind) -> sdks::aio::MediaType {
     }
 }
 
-impl TryFrom<jellyfin::MediaType> for MediaKind {
+impl TryFrom<api::MediaType> for MediaKind {
     type Error = ();
-    fn try_from(media_type: jellyfin::MediaType) -> Result<Self, ()> {
+    fn try_from(media_type: api::MediaType) -> Result<Self, ()> {
         match media_type {
-            jellyfin::MediaType::Movie => Ok(MediaKind::Movie),
-            jellyfin::MediaType::Series => Ok(MediaKind::Series),
-            jellyfin::MediaType::Season => Ok(MediaKind::Season),
-            jellyfin::MediaType::Episode => Ok(MediaKind::Episode),
-            jellyfin::MediaType::BoxSet => Ok(MediaKind::Collection),
-            jellyfin::MediaType::TvChannel | jellyfin::MediaType::LiveTvChannel => {
+            api::MediaType::Movie => Ok(MediaKind::Movie),
+            api::MediaType::Series => Ok(MediaKind::Series),
+            api::MediaType::Season => Ok(MediaKind::Season),
+            api::MediaType::Episode => Ok(MediaKind::Episode),
+            api::MediaType::BoxSet => Ok(MediaKind::Collection),
+            api::MediaType::TvChannel | api::MediaType::LiveTvChannel => {
                 Ok(MediaKind::TvChannel)
             }
-            jellyfin::MediaType::TvProgram
-            | jellyfin::MediaType::LiveTvProgram
-            | jellyfin::MediaType::Program => Ok(MediaKind::TvProgram),
-            jellyfin::MediaType::Folder
-            | jellyfin::MediaType::CollectionFolder
-            | jellyfin::MediaType::UserView
-            | jellyfin::MediaType::UserRootFolder => Ok(MediaKind::Folder),
-            jellyfin::MediaType::Genre | jellyfin::MediaType::MusicGenre => {
+            api::MediaType::TvProgram
+            | api::MediaType::LiveTvProgram
+            | api::MediaType::Program => Ok(MediaKind::TvProgram),
+            api::MediaType::Folder
+            | api::MediaType::CollectionFolder
+            | api::MediaType::UserView
+            | api::MediaType::UserRootFolder => Ok(MediaKind::Folder),
+            api::MediaType::Genre | api::MediaType::MusicGenre => {
                 Ok(MediaKind::Genre)
             }
-            jellyfin::MediaType::Person => Ok(MediaKind::Person),
-            jellyfin::MediaType::Studio => Ok(MediaKind::Studio),
+            api::MediaType::Person => Ok(MediaKind::Person),
+            api::MediaType::Studio => Ok(MediaKind::Studio),
             _ => Err(()),
         }
     }
@@ -383,12 +383,12 @@ pub struct MediaFilter {
     /// If set, only return items where COALESCE(digital_released_at, released_at) <= threshold.
     pub digital_released_before: Option<NaiveDateTime>,
     /// Sort order for results. Mapped from Jellyfin's ItemSortBy.
-    pub sort_by: Vec<jellyfin::ItemSortBy>,
-    pub sort_order: Vec<jellyfin::SortOrder>,
+    pub sort_by: Vec<api::ItemSortBy>,
+    pub sort_order: Vec<api::SortOrder>,
     /// Structured filter rules (from smart collections). Evaluated with `filter_match`.
-    pub filter_rules: Vec<remux_sdks::jellyfin::models::FilterRule>,
+    pub filter_rules: Vec<remux_sdks::remux::models::FilterRule>,
     /// Whether all rules must match (AND) or any rule (OR). Defaults to All.
-    pub filter_match: remux_sdks::jellyfin::models::FilterMatchMode,
+    pub filter_match: remux_sdks::remux::models::FilterMatchMode,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -458,7 +458,7 @@ pub struct Media {
     // MediaKind
     pub collection_media_kind: Option<MediaKind>,
     pub collection_max_items: Option<i64>,
-    pub collection_smart_filter: Option<sqlx::types::Json<remux_sdks::jellyfin::models::CollectionFilter>>,
+    pub collection_smart_filter: Option<sqlx::types::Json<remux_sdks::remux::models::CollectionFilter>>,
 
     // IPTV / Live TV
     pub live_start: Option<NaiveDateTime>,
@@ -475,7 +475,7 @@ pub struct Media {
 }
 
 impl Media {
-    pub fn parse_smart_filter(&self) -> Option<&remux_sdks::jellyfin::models::CollectionFilter> {
+    pub fn parse_smart_filter(&self) -> Option<&remux_sdks::remux::models::CollectionFilter> {
         self.collection_smart_filter.as_ref().map(|j| &j.0)
     }
 
@@ -1204,35 +1204,35 @@ impl Media {
                         .get(i)
                         .or_else(|| filter.sort_order.first())
                         .copied()
-                        .unwrap_or(jellyfin::SortOrder::Ascending);
+                        .unwrap_or(api::SortOrder::Ascending);
                     let dir = match order {
-                        jellyfin::SortOrder::Ascending => "ASC",
-                        jellyfin::SortOrder::Descending => "DESC",
+                        api::SortOrder::Ascending => "ASC",
+                        api::SortOrder::Descending => "DESC",
                     };
                     let col = match sort {
-                        jellyfin::ItemSortBy::SortName | jellyfin::ItemSortBy::Name => {
+                        api::ItemSortBy::SortName | api::ItemSortBy::Name => {
                             format!("title COLLATE NOCASE {}", dir)
                         }
-                        jellyfin::ItemSortBy::DateCreated => {
+                        api::ItemSortBy::DateCreated => {
                             format!("created_at {}", dir)
                         }
-                        jellyfin::ItemSortBy::PremiereDate
-                        | jellyfin::ItemSortBy::ProductionYear => {
+                        api::ItemSortBy::PremiereDate
+                        | api::ItemSortBy::ProductionYear => {
                             format!("COALESCE(released_at, digital_released_at) {}", dir)
                         }
-                        jellyfin::ItemSortBy::CommunityRating => {
+                        api::ItemSortBy::CommunityRating => {
                             format!("CAST(json_extract(remote_data, '$.rating') AS REAL) {}", dir)
                         }
-                        jellyfin::ItemSortBy::IndexNumber => {
+                        api::ItemSortBy::IndexNumber => {
                             format!("COALESCE(idx, 999999) {}", dir)
                         }
-                        jellyfin::ItemSortBy::ParentIndexNumber => {
+                        api::ItemSortBy::ParentIndexNumber => {
                             format!("COALESCE(parent_idx, 999999) {}", dir)
                         }
-                        jellyfin::ItemSortBy::Runtime => {
+                        api::ItemSortBy::Runtime => {
                             format!("COALESCE(runtime, 0) {}", dir)
                         }
-                        jellyfin::ItemSortBy::Random => "RANDOM()".to_string(),
+                        api::ItemSortBy::Random => "RANDOM()".to_string(),
                         // Default fallback
                         _ => format!("title COLLATE NOCASE {}", dir),
                     };
@@ -1409,11 +1409,11 @@ impl Media {
 
     pub async fn get_by_jellyfin_filter(
         db: &sqlx::SqlitePool,
-        filter: &jellyfin::GetItemsQuery,
+        filter: &api::GetItemsQuery,
         total_count: bool,
         user: Option<&super::User>,
-        server_config: Option<&jellyfin::ServerConfiguration>,
-        smart_filter: Option<&remux_sdks::jellyfin::models::CollectionFilter>,
+        server_config: Option<&api::ServerConfiguration>,
+        smart_filter: Option<&remux_sdks::remux::models::CollectionFilter>,
     ) -> Result<FilterResult<Media>> {
         let user_policy = user.and_then(|u| u.policy.as_ref()).map(|p| &p.0);
         // Map media_types (Video, Book, ...) to MediaKind constraints
@@ -1422,7 +1422,7 @@ impl Media {
                 types
                     .iter()
                     .flat_map(|t| match t {
-                        jellyfin::MediaType::Video => {
+                        api::MediaType::Video => {
                             vec![MediaKind::Movie, MediaKind::Episode]
                         }
                         _ => vec![],
@@ -1554,12 +1554,12 @@ impl Media {
 
         // Build user-state filter from is_favorite + filters[] items
         let item_filters = filter.filters.as_deref().unwrap_or(&[]);
-        let is_played = item_filters.contains(&jellyfin::ItemFilter::IsPlayed);
-        let is_unplayed = item_filters.contains(&jellyfin::ItemFilter::IsUnplayed);
-        let is_resumable = item_filters.contains(&jellyfin::ItemFilter::IsResumable);
+        let is_played = item_filters.contains(&api::ItemFilter::IsPlayed);
+        let is_unplayed = item_filters.contains(&api::ItemFilter::IsUnplayed);
+        let is_resumable = item_filters.contains(&api::ItemFilter::IsResumable);
         let favorite = filter.is_favorite.or_else(|| {
             item_filters
-                .contains(&jellyfin::ItemFilter::IsFavorite)
+                .contains(&api::ItemFilter::IsFavorite)
                 .then_some(true)
         });
 
@@ -1617,7 +1617,7 @@ impl Media {
                 include_child_count: filter
                     .fields
                     .as_deref()
-                    .map(|f| f.contains(&jellyfin::ItemFields::ChildCount))
+                    .map(|f| f.contains(&api::ItemFields::ChildCount))
                     .unwrap_or(false),
                 total_count,
                 user_state,
@@ -1655,13 +1655,13 @@ impl Media {
     pub async fn into_base_item(
         self,
         db: &sqlx::SqlitePool,
-    ) -> Result<jellyfin::BaseItemDto> {
+    ) -> Result<api::BaseItemDto> {
         //  let provider_ids = ProviderIds::get_by_media_id(db, &self.id).await?;
 
-        let mut item = jellyfin::BaseItemDto {
+        let mut item = api::BaseItemDto {
             id: self.id,
             server_id: server_id(),
-            type_: jellyfin::db_media_kind_to_type(self.kind.clone()),
+            type_: api::db_media_kind_to_type(self.kind.clone()),
             parent_id: self.parent_id,
             index_number: self.idx,
             name: Some(match self.kind {
@@ -1811,7 +1811,7 @@ impl Media {
     pub async fn inject_subtitles_into_sources(
         &self,
         db: &sqlx::SqlitePool,
-        media_sources: &mut Vec<jellyfin::MediaSourceInfo>,
+        media_sources: &mut Vec<api::MediaSourceInfo>,
     ) {
         let Ok(aio) = crate::aio::AioService::from_settings(db).await else {
             return;
@@ -2248,10 +2248,10 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
 /// - `has_trailer` — json_array_length check
 pub fn apply_filter_rules(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
-    rules: &[remux_sdks::jellyfin::models::FilterRule],
-    match_mode: &remux_sdks::jellyfin::models::FilterMatchMode,
+    rules: &[remux_sdks::remux::models::FilterRule],
+    match_mode: &remux_sdks::remux::models::FilterMatchMode,
 ) {
-    use remux_sdks::jellyfin::models::FilterMatchMode;
+    use remux_sdks::remux::models::FilterMatchMode;
 
     if rules.is_empty() {
         return;
@@ -2294,9 +2294,9 @@ pub fn apply_filter_rules(
 /// Returns `(sql, negated)` — caller wraps in `NOT(...)` when negated is true.
 /// Returns `None` if the rule should be skipped (e.g. empty values list).
 fn filter_rule_to_sql(
-    rule: &remux_sdks::jellyfin::models::FilterRule,
+    rule: &remux_sdks::remux::models::FilterRule,
 ) -> Option<(String, bool)> {
-    use remux_sdks::jellyfin::models::{FilterRule as R, NumericOp, SetOp};
+    use remux_sdks::remux::models::{FilterRule as R, NumericOp, SetOp};
 
     fn esc(s: &str) -> String {
         s.replace('\'', "''")

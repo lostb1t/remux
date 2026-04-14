@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::db;
 use crate::db::auth::AuthSession;
-use crate::jellyfin;
+use crate::api;
 use crate::utils::get_uuid;
 
 // ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSes
                 match result {
                     Ok(WsEvent::UserUpdated(user_id)) => {
                         if let Ok(Some(user)) = db::User::get_by_id(&state.ctx.db, &user_id).await {
-                            if !send_msg(&mut socket, SessionMessageType::USER_UPDATED, Some(jellyfin::db_user_to_dto(user))).await {
+                            if !send_msg(&mut socket, SessionMessageType::USER_UPDATED, Some(api::db_user_to_dto(user))).await {
                                 return;
                             }
                         }
@@ -193,7 +193,7 @@ fn parse_sessions_data(data: Option<&serde_json::Value>) -> (u64, u64) {
     (initial, interval)
 }
 
-async fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
+async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
     let devices: std::collections::HashMap<String, db::auth::Device> =
         db::auth::Device::get_all(&state.ctx.db)
             .await
@@ -212,7 +212,7 @@ async fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
                 .transcode
                 .as_ref()
                 .and_then(|ts| ts.try_read().ok())
-                .map(|ts| jellyfin::TranscodingInfo {
+                .map(|ts| api::TranscodingInfo {
                     audio_codec: Some(ts.audio_codec.clone()),
                     video_codec: Some(ts.video_codec.clone()),
                     container: Some("ts".to_string()),
@@ -222,7 +222,7 @@ async fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
                     ..Default::default()
                 });
 
-            let play_state = jellyfin::PlayerStateInfo {
+            let play_state = api::PlayerStateInfo {
                 position_ticks: Some(session.position_ticks),
                 can_seek: session.can_seek,
                 is_paused: session.is_paused,
@@ -258,7 +258,7 @@ async fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
                     |c| (c.playable_media_types.clone(), c.supported_commands.clone(), c.supports_media_control, c.supports_media_control),
                 );
 
-            jellyfin::SessionInfoDto {
+            api::SessionInfoDto {
                 id: Some(session.play_session_id.clone()),
                 device_id: Some(session.device_id.clone()),
                 device_name: Some(device_name),
@@ -274,7 +274,7 @@ async fn build_sessions(state: &AppState) -> Vec<jellyfin::SessionInfoDto> {
                 supported_commands,
                 supports_media_control,
                 supports_remote_control,
-                now_playing_item: Some(jellyfin::BaseItemDto {
+                now_playing_item: Some(api::BaseItemDto {
                     id: session.item_id,
                     ..Default::default()
                 }),

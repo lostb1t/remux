@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use futures::StreamExt;
 use gloo_net::eventsource::futures::EventSource;
 use gloo_storage::{LocalStorage, SessionStorage, Storage};
-use remux_sdks::jellyfin::{
+use remux_sdks::remux::{
     AddTunerHost, AdminSetPassword, AioCatalogInfo, AnfiteatroReleaseStatus,
     AuthenticateUserByName, AuthenticationInfo, BaseItemDto, BrandingOptions,
     BulkChannelRequest, BulkChannels, ChannelEditorItem, CollectionFilter,
@@ -84,7 +84,7 @@ impl AppState {
         let device_id = get_or_create_device_id();
         let auth =
             JellyfinAuth::new(&device_id).with_token(server.access_token.clone());
-        let client = remux_sdks::jellyfin::client(&server.manual_address)
+        let client = remux_sdks::remux::client(&server.manual_address)
             .unwrap_or_else(|_| panic!("invalid server url: {}", server.manual_address))
             .with_auth(auth);
         Self { server, client }
@@ -144,7 +144,7 @@ fn App() -> Element {
     use_effect(move || {
         spawn(async move {
             let origin = get_origin();
-            let needed = match remux_sdks::jellyfin::client(&origin) {
+            let needed = match remux_sdks::remux::client(&origin) {
                 Ok(c) => c
                     .execute(PublicSystemInfo::default())
                     .await
@@ -204,7 +204,7 @@ fn Login(on_login: EventHandler) -> Element {
     use_effect(move || {
         spawn(async move {
             let origin = get_origin();
-            let reachable = match remux_sdks::jellyfin::client(&origin) {
+            let reachable = match remux_sdks::remux::client(&origin) {
                 Ok(c) => c.execute(PublicSystemInfo::default()).await.is_ok(),
                 Err(_) => false,
             };
@@ -235,7 +235,7 @@ fn Login(on_login: EventHandler) -> Element {
         error.set(None);
 
         spawn(async move {
-            let client = match remux_sdks::jellyfin::client(&url) {
+            let client = match remux_sdks::remux::client(&url) {
                 Ok(c) => c.with_auth(JellyfinAuth::new(&device_id)),
                 Err(e) => {
                     error.set(Some(format!("Bad server URL: {e}")));
@@ -1415,15 +1415,15 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                     let name = col.name.clone().unwrap_or_default();
                                     let col_type_label = match col.collection_type.as_ref() {
                                         Some(ct) => match ct {
-                                            remux_sdks::jellyfin::CollectionType::Movies  => "Movies",
-                                            remux_sdks::jellyfin::CollectionType::Tvshows => "Shows",
+                                            remux_sdks::remux::CollectionType::Movies  => "Movies",
+                                            remux_sdks::remux::CollectionType::Tvshows => "Shows",
                                             _ => "Unknown",
                                         },
                                         None => "Unknown",
                                     };
                                     let col_kind_label = match col.remux.as_ref().and_then(|r| r.collection_kind.as_ref()) {
-                                        Some(remux_sdks::jellyfin::RemuxCollectionKind::Smart)  => "Smart",
-                                        Some(remux_sdks::jellyfin::RemuxCollectionKind::Manual) => "Manual",
+                                        Some(remux_sdks::remux::RemuxCollectionKind::Smart)  => "Smart",
+                                        Some(remux_sdks::remux::RemuxCollectionKind::Manual) => "Manual",
                                         None => "",
                                     };
                                     rsx! {
@@ -1522,8 +1522,8 @@ fn CollectionForm(
             .as_ref()
             .and_then(|f| f.collection_type.as_ref())
             .map(|ct| match ct {
-                remux_sdks::jellyfin::CollectionType::Movies => "movies".to_string(),
-                remux_sdks::jellyfin::CollectionType::Tvshows => "tvshows".to_string(),
+                remux_sdks::remux::CollectionType::Movies => "movies".to_string(),
+                remux_sdks::remux::CollectionType::Tvshows => "tvshows".to_string(),
                 _ => "movies".to_string(),
             })
             .unwrap_or_else(|| "movies".to_string())
@@ -4041,7 +4041,7 @@ fn Wizard(on_complete: EventHandler) -> Element {
     use_effect(move || {
         let origin = get_origin();
         spawn(async move {
-            if let Ok(c) = remux_sdks::jellyfin::client(&origin) {
+            if let Ok(c) = remux_sdks::remux::client(&origin) {
                 if let Ok(cfg) = c.execute(GetStartupConfiguration::default()).await {
                     if let Some(name) = cfg.server_name.filter(|s| !s.is_empty()) {
                         server_name.set(name);
@@ -4095,7 +4095,7 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                     saving.set(true);
                                     error.set(None);
                                     spawn(async move {
-                                        match remux_sdks::jellyfin::client(&origin) {
+                                        match remux_sdks::remux::client(&origin) {
                                             Ok(c) => match c.execute(PostStartupConfiguration {
                                                 payload: StartupConfiguration {
                                                     server_name: Some(name),
@@ -4176,7 +4176,7 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                     saving.set(true);
                                     error.set(None);
                                     spawn(async move {
-                                        match remux_sdks::jellyfin::client(&origin) {
+                                        match remux_sdks::remux::client(&origin) {
                                             Ok(c) => match c.execute(PostStartupUser {
                                                 payload: StartupUser {
                                                     name: Some(name),
@@ -4269,7 +4269,7 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                             saving.set(true);
                                             error.set(None);
                                             spawn(async move {
-                                                if let Ok(c) = remux_sdks::jellyfin::client(&origin) {
+                                                if let Ok(c) = remux_sdks::remux::client(&origin) {
                                                     let _ = c.execute(PostStartupComplete::default()).await;
                                                 }
                                                 on_complete.call(());

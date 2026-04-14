@@ -35,7 +35,7 @@ use std::{
     time::Duration,
 };
 
-use crate::jellyfin;
+use crate::api;
 use crate::sdks;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use uuid::Uuid;

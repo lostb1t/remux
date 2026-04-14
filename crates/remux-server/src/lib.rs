@@ -72,7 +72,7 @@ pub mod db;
 #[cfg(feature = "desktop")]
 pub mod embedded_static;
 mod iptv;
-pub mod jellyfin;
+pub mod api;
 mod log_capture;
 pub mod playback_session;
 mod providers;

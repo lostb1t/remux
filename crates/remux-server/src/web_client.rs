@@ -202,8 +202,8 @@ async fn inject_anfiteatro_runtime_guards(
 }
 
 pub fn normalize_web_client(
-    value: Option<crate::jellyfin::DefaultWebClient>,
-) -> crate::jellyfin::DefaultWebClient {
+    value: Option<crate::api::DefaultWebClient>,
+) -> crate::api::DefaultWebClient {
     value.unwrap_or_default()
 }
 

@@ -73,9 +73,9 @@ pub struct User {
     pub password_hash: String,
     #[serde(skip_serializing)]
     pub aio_url: Option<String>,
-    pub configuration: Option<sqlx::types::Json<crate::jellyfin::UserConfiguration>>,
+    pub configuration: Option<sqlx::types::Json<crate::api::UserConfiguration>>,
     pub is_admin: bool,
-    pub policy: Option<sqlx::types::Json<crate::jellyfin::UserPolicy>>,
+    pub policy: Option<sqlx::types::Json<crate::api::UserPolicy>>,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -142,7 +142,7 @@ impl User {
     pub async fn save_configuration(
         db: &SqlitePool,
         id: &Uuid,
-        config: &crate::jellyfin::UserConfiguration,
+        config: &crate::api::UserConfiguration,
     ) -> Result<()> {
         let json = sqlx::types::Json(config.clone());
         sqlx::query(r#"UPDATE users SET configuration = ?1 WHERE id = ?2"#)

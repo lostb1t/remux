@@ -1,4 +1,4 @@
-use remux_sdks::jellyfin::models::TranscodeReasons;
+use remux_sdks::remux::models::TranscodeReasons;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;

@@ -12,7 +12,7 @@ use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::{error, info};
 
 use crate::{AppContext, db, ws};
-use remux_sdks::jellyfin::models::TaskTriggerInfoType;
+use remux_sdks::remux::models::TaskTriggerInfoType;
 
 mod catalog_import;
 mod catalog_item_import;

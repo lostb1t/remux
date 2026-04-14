@@ -1,7 +1,7 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
 
-use crate::jellyfin::ServerConfiguration;
+use crate::api::ServerConfiguration;
 
 const SERVER_CONFIG_KEY: &str = "server_configuration";
 

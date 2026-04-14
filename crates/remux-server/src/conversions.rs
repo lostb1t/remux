@@ -1,5 +1,5 @@
 use crate::db;
-use crate::jellyfin;
+use crate::api;
 use crate::sdks::aio;
 use crate::utils;
 use crate::utils::get_uuid;
@@ -69,7 +69,7 @@ fn infer_audio_channels(text: &str) -> Option<i64> {
     }
 }
 
-fn fallback_media_streams(source: &db::Media) -> Vec<jellyfin::MediaStream> {
+fn fallback_media_streams(source: &db::Media) -> Vec<api::MediaStream> {
     // Only synthesize streams for remote source entries.
     if source.kind != db::MediaKind::Source {
         return Vec::new();
@@ -100,15 +100,15 @@ fn fallback_media_streams(source: &db::Media) -> Vec<jellyfin::MediaStream> {
     };
 
     vec![
-        jellyfin::MediaStream {
-            type_: Some(jellyfin::MediaStreamType::Video),
+        api::MediaStream {
+            type_: Some(api::MediaStreamType::Video),
             codec: video_codec,
             is_default: Some(true),
             display_title: Some(video_title),
             ..Default::default()
         },
-        jellyfin::MediaStream {
-            type_: Some(jellyfin::MediaStreamType::Audio),
+        api::MediaStream {
+            type_: Some(api::MediaStreamType::Audio),
             codec: audio_codec,
             channels,
             is_default: Some(true),
@@ -118,7 +118,7 @@ fn fallback_media_streams(source: &db::Media) -> Vec<jellyfin::MediaStream> {
     ]
 }
 
-impl From<db::Media> for jellyfin::MediaSourceInfo {
+impl From<db::Media> for api::MediaSourceInfo {
     fn from(source: db::Media) -> Self {
         let is_remote = source.is_remote_url();
         let protocol = source.media_source_protocol().to_string();
@@ -135,7 +135,7 @@ impl From<db::Media> for jellyfin::MediaSourceInfo {
             })
             .unwrap_or_else(|| source.title.clone());
 
-        jellyfin::MediaSourceInfo {
+        api::MediaSourceInfo {
             id: source.id.clone(),
             e_tag: source.id.clone(),
             path: source.url.clone(),
@@ -151,8 +151,8 @@ impl From<db::Media> for jellyfin::MediaSourceInfo {
         }
     }
 }
-impl From<jellyfin::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
-    fn from(dto: jellyfin::DisplayPreferencesDto) -> Self {
+impl From<api::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
+    fn from(dto: api::DisplayPreferencesDto) -> Self {
         Self {
             view_type: dto.view_type,
             sort_by: dto.sort_by,
@@ -186,7 +186,7 @@ impl TryFrom<aio::Episode> for db::Media {
     }
 }
 
-pub fn subtitle_to_media_stream(sub: aio::Subtitle) -> jellyfin::MediaStream {
+pub fn subtitle_to_media_stream(sub: aio::Subtitle) -> api::MediaStream {
     let lc = sub.url.to_ascii_lowercase();
     let codec = if lc.ends_with(".vtt") {
         "webvtt"
@@ -195,9 +195,9 @@ pub fn subtitle_to_media_stream(sub: aio::Subtitle) -> jellyfin::MediaStream {
     } else {
         "webvtt"
     };
-    jellyfin::MediaStream {
+    api::MediaStream {
         index: Some(0),
-        type_: Some(jellyfin::MediaStreamType::Subtitle),
+        type_: Some(api::MediaStreamType::Subtitle),
         codec: Some(codec.to_string()),
         language: sub.lang.clone(),
         display_title: Some({
@@ -216,11 +216,11 @@ pub fn subtitle_to_media_stream(sub: aio::Subtitle) -> jellyfin::MediaStream {
 
 pub fn stream_into_media_source_info(
     id: String,
-    jellyfin_media_type: jellyfin::MediaType,
+    jellyfin_media_type: api::MediaType,
     stream: aio::Stream,
-) -> jellyfin::MediaSourceInfo {
+) -> api::MediaSourceInfo {
     let id = get_uuid();
-    jellyfin::MediaSourceInfo {
+    api::MediaSourceInfo {
         id: id.clone(),
         e_tag: id.clone(),
         path: stream.url,
