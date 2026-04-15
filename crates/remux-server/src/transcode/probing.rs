@@ -173,7 +173,7 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
 
                 streams.push(api::MediaStream {
                     type_: Some(api::MediaStreamType::Video),
-                    index: Some(s.index),
+                    index: s.index,
                     codec: Some(codec.clone()),
                     width: s.width.and_then(nonzero),
                     height: s.height.and_then(nonzero),
@@ -181,7 +181,7 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
                     average_frame_rate: fps.map(|f| f as f32).and_then(nonzero),
                     real_frame_rate: fps.map(|f| f as f32).and_then(nonzero),
                     is_default: Some(video_idx == 0),
-                    is_forced: Some(s.disposition.forced != 0),
+                    is_forced: s.disposition.forced != 0,
                     display_title: display_title(language, Some(&codec), "Video", None),
                     language: language.map(str::to_string),
                     title,
@@ -205,13 +205,13 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
 
                 streams.push(api::MediaStream {
                     type_: Some(api::MediaStreamType::Audio),
-                    index: Some(s.index),
+                    index: s.index,
                     codec: Some(codec.clone()),
                     channels,
                     sample_rate,
                     bit_rate: bitrate,
                     is_default: Some(audio_idx == 0),
-                    is_forced: Some(s.disposition.forced != 0),
+                    is_forced: s.disposition.forced != 0,
                     display_title: display_title(
                         language,
                         Some(&codec),
@@ -229,10 +229,10 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
 
                 streams.push(api::MediaStream {
                     type_: Some(api::MediaStreamType::Subtitle),
-                    index: Some(s.index),
+                    index: s.index,
                     codec: Some(codec.clone()),
                     is_default: Some(sub_idx == 0),
-                    is_forced: Some(s.disposition.forced != 0),
+                    is_forced: s.disposition.forced != 0,
                     display_title: display_title(
                         language,
                         Some(&codec),
@@ -252,11 +252,11 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
     let default_audio_stream_index = streams
         .iter()
         .find(|s| matches!(s.type_, Some(api::MediaStreamType::Audio)))
-        .and_then(|s| s.index);
+        .map(|s| s.index);
     let default_subtitle_stream_index = streams
         .iter()
         .find(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)))
-        .and_then(|s| s.index);
+        .map(|s| s.index);
 
     Ok(api::MediaSourceInfo {
         media_streams: streams,

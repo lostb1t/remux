@@ -2365,7 +2365,7 @@ pub async fn subtitles_stream(
                         Some(api::MediaStreamType::Subtitle)
                     )
                 })
-                .filter_map(|s| s.index)
+                .map(|s| s.index)
                 .collect();
 
             sub_indexes.sort_unstable();
@@ -2507,7 +2507,7 @@ async fn apply_user_playback_prefs(
         if cfg.remember_audio_selections {
             if let Some(idx) = saved_audio {
                 let exists = source.media_streams.iter().any(|s| {
-                    s.index == Some(idx)
+                    s.index == idx
                         && matches!(s.type_, Some(api::MediaStreamType::Audio))
                 });
                 if exists {
@@ -2520,7 +2520,7 @@ async fn apply_user_playback_prefs(
         if cfg.remember_subtitle_selections {
             if let Some(idx) = saved_subtitle {
                 let exists = source.media_streams.iter().any(|s| {
-                    s.index == Some(idx)
+                    s.index == idx
                         && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
                 });
                 if exists {
@@ -2535,7 +2535,7 @@ async fn apply_user_playback_prefs(
                     if let Some(s) = source
                         .media_streams
                         .iter_mut()
-                        .find(|s| s.index == Some(idx))
+                        .find(|s| s.index == idx)
                     {
                         s.is_default = Some(true);
                     }
@@ -2564,7 +2564,7 @@ async fn apply_user_playback_prefs(
                     }) {
                         let idx = stream.index;
                         stream.is_default = Some(true);
-                        source.default_subtitle_stream_index = idx;
+                        source.default_subtitle_stream_index = Some(idx);
                     }
                 }
             }
@@ -2597,7 +2597,7 @@ fn apply_subtitle_mode(
         source.default_subtitle_stream_index = idx;
         if let Some(i) = idx {
             if let Some(s) =
-                source.media_streams.iter_mut().find(|s| s.index == Some(i))
+                source.media_streams.iter_mut().find(|s| s.index == i)
             {
                 s.is_default = Some(true);
             }
@@ -2614,9 +2614,9 @@ fn apply_subtitle_mode(
             if source.default_subtitle_stream_index.is_none() {
                 let idx = source.media_streams.iter().find_map(|s| {
                     if matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                        && !s.is_forced.unwrap_or(false)
+                        && !s.is_forced
                     {
-                        s.index
+                        Some(s.index)
                     } else {
                         None
                     }
@@ -2630,9 +2630,9 @@ fn apply_subtitle_mode(
             // Only a forced subtitle may be default; clear any non-forced default
             let forced_idx = source.media_streams.iter().find_map(|s| {
                 if matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                    && s.is_forced.unwrap_or(false)
+                    && s.is_forced
                 {
-                    s.index
+                    Some(s.index)
                 } else {
                     None
                 }
@@ -2649,14 +2649,14 @@ fn apply_subtitle_mode(
                     .iter()
                     .find(|s| {
                         matches!(s.type_, Some(api::MediaStreamType::Audio))
-                            && s.index == source.default_audio_stream_index
+                            && Some(s.index) == source.default_audio_stream_index
                     })
                     .and_then(|s| s.language.clone());
 
                 let sub_lang = source
                     .media_streams
                     .iter()
-                    .find(|s| s.index == Some(def_idx))
+                    .find(|s| s.index == def_idx)
                     .and_then(|s| s.language.clone());
 
                 let audio_two = audio_lang

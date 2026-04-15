@@ -1632,13 +1632,15 @@ pub struct MediaStream {
     pub dv_version_minor: Option<i64>,
     pub el_present_flag: Option<i64>,
     pub height: Option<i64>,
-    pub index: Option<i64>,
+    #[serde(default)]
+    pub index: i64,
     pub is_anamorphic: Option<bool>,
     pub is_avc: Option<bool>,
     pub is_default: Option<bool>,
     pub is_external: bool,
     pub is_external_url: Option<bool>,
-    pub is_forced: Option<bool>,
+    #[serde(default)]
+    pub is_forced: bool,
     pub is_hearing_impaired: bool,
     pub is_interlaced: bool,
     pub is_text_subtitle_stream: bool,

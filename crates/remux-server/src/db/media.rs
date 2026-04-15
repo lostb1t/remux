@@ -1842,7 +1842,7 @@ impl Media {
             let next_idx = source
                 .media_streams
                 .iter()
-                .filter_map(|s| s.index)
+                .map(|s| s.index)
                 .max()
                 .map_or(0, |m| m + 1);
 
@@ -1870,7 +1870,7 @@ impl Media {
             for (i, (_, sub)) in scored.iter().enumerate() {
                 let mut stream =
                     crate::conversions::subtitle_to_media_stream((*sub).clone());
-                stream.index = Some(next_idx + i as i64);
+                stream.index = next_idx + i as i64;
                 if wants_default && i == 0 {
                     stream.is_default = Some(true);
                     source.default_subtitle_stream_index = Some(next_idx);

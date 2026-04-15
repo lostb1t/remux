@@ -196,7 +196,7 @@ pub fn subtitle_to_media_stream(sub: aio::Subtitle) -> api::MediaStream {
         "webvtt"
     };
     api::MediaStream {
-        index: Some(0),
+        index: 0,
         type_: Some(api::MediaStreamType::Subtitle),
         codec: Some(codec.to_string()),
         language: sub.lang.clone(),
@@ -205,7 +205,7 @@ pub fn subtitle_to_media_stream(sub: aio::Subtitle) -> api::MediaStream {
             format!("{} - {} - External", lang, codec.to_uppercase())
         }),
         is_default: Some(false),
-        is_forced: Some(false),
+        is_forced: false,
         is_external: true,
         is_text_subtitle_stream: true,
         delivery_url: Some(sub.url.clone()),
