@@ -595,6 +595,7 @@ pub struct GetItemsQuery {
     pub ids: Option<Vec<Uuid>>,
     #[serde(default, deserialize_with = "deserialize_bool_from_anything")]
     pub recursive: bool,
+    pub series_id: Option<Uuid>,
 }
 
 impl GetItemsQuery {
@@ -1746,6 +1747,7 @@ pub struct UserItemDataDto {
     pub favorite_added_date: Option<DateTime<Utc>>,
     pub played_percentage: Option<f32>,
     pub last_updated: Option<DateTime<Utc>>,
+    pub unplayed_item_count: Option<i64>,
     #[default(String::new())]
     pub key: String,
     pub item_id: Uuid,

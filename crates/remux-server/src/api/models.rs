@@ -124,6 +124,7 @@ pub fn db_state_to_dto(state: db::UserMediaState, media: &db::Media) -> UserItem
         play_count: state.play_count as i32,
         is_favorite: state.favorite,
         played_percentage,
+        unplayed_item_count: media.unplayed_item_count,
         key: state.media_key,
         item_id: media.id,
         ..Default::default()
@@ -153,6 +154,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         name: Some(media.title.clone()),
         original_title: Some(media.title.clone()),
         overview: media.description.clone(),
+        play_access: Some("Full".to_string()),
 
         type_,
         parent_id: media.parent_id.clone(),
@@ -178,6 +180,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .unwrap_or_else(|| UserItemDataDto {
                     item_id: media.id.clone(),
                     key: media.id.to_string(),
+                    unplayed_item_count: media.unplayed_item_count,
                     ..Default::default()
                 }),
         ),

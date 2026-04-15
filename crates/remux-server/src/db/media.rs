@@ -436,6 +436,8 @@ pub struct Media {
     #[sqlx(skip)]
     pub child_count: Option<i64>,
     #[sqlx(skip)]
+    pub unplayed_item_count: Option<i64>,
+    #[sqlx(skip)]
     pub sources: Option<Vec<Media>>,
     #[sqlx(skip)]
     pub seasons: Option<Vec<Media>>,
@@ -1241,6 +1243,8 @@ impl Media {
 
         if let Some(limit) = &filter.limit {
             records_qb.push(" LIMIT ").push_bind(limit);
+        } else if filter.offset.is_some() {
+            records_qb.push(" LIMIT -1");
         }
         if let Some(offset) = &filter.offset {
             records_qb.push(" OFFSET ").push_bind(offset);
@@ -1358,6 +1362,53 @@ impl Media {
                     if let Some(ref mk) = media.media_id {
                         if let Some(state) = states_map.get(mk) {
                             media.user_state = Some(state.clone());
+                        }
+                    }
+                }
+
+                // Compute unplayed episode count for series/seasons
+                let series_ids: Vec<Uuid> = records
+                    .iter()
+                    .filter(|m| matches!(m.kind, MediaKind::Series | MediaKind::Season))
+                    .map(|m| m.id)
+                    .collect();
+
+                if !series_ids.is_empty() {
+                    // Count episodes per series_id that have NOT been played by this user
+                    let mut qb = sqlx::QueryBuilder::new(
+                        "SELECT e.series_id, COUNT(*) as cnt FROM media e \
+                         WHERE e.kind = 'episode' AND e.series_id IN (",
+                    );
+                    let mut sep = qb.separated(", ");
+                    for id in &series_ids {
+                        sep.push_bind(id);
+                    }
+                    qb.push(
+                        ") AND NOT EXISTS (\
+                           SELECT 1 FROM user_media_state ums \
+                           WHERE ums.media_key = e.media_id \
+                           AND ums.user_id = ",
+                    );
+                    qb.push_bind(user_id);
+                    qb.push(" AND ums.play_count > 0) GROUP BY e.series_id");
+
+                    match qb.build().fetch_all(db).await {
+                        Ok(rows) => {
+                            let mut unplayed_map: HashMap<Uuid, i64> = HashMap::new();
+                            for row in rows {
+                                let sid: Uuid = row.get(0);
+                                let cnt: i64 = row.get(1);
+                                unplayed_map.insert(sid, cnt);
+                            }
+                            for media in &mut records {
+                                if matches!(media.kind, MediaKind::Series | MediaKind::Season) {
+                                    media.unplayed_item_count =
+                                        Some(unplayed_map.get(&media.id).copied().unwrap_or(0));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to load unplayed counts: {e}");
                         }
                     }
                 }

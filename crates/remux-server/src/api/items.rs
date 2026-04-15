@@ -699,6 +699,9 @@ pub async fn item(
         &state.ctx.db,
         &db::MediaFilter {
             id: Some(vec![id]),
+            include_user_state: true,
+            include_child_count: true,
+            user_id: Some(session.user.id),
             ..Default::default()
         },
     )
