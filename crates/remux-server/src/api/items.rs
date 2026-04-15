@@ -63,8 +63,11 @@ pub async fn get_items(
     let search = q.search_term.clone();
     let skip = q.start_index.unwrap_or(0) as u32;
 
-    // only support Movie, Series, and Episode for search and catalogs
-    if search.is_some()
+    // "local:" prefix bypasses AIO and falls through to the DB query path below,
+    // enabling local title-contains search for any media kind (Genre, Studio, Person, …).
+    if let Some(local_term) = search.as_deref().and_then(|s| s.strip_prefix("local:")) {
+        q.search_term = Some(local_term.to_string());
+    } else if search.is_some()
         || parent
             .clone()
             .map_or(false, |p| p.kind == db::MediaKind::Collection)
@@ -480,6 +483,82 @@ pub async fn items_filters2(
         ),
     }))
 }
+
+/// List distinct tags, optionally filtered by search_term (substring match)
+#[get("/items/tags")]
+pub async fn items_tags(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Query(q): Query<api::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    let tags: Vec<String> = match q.search_term.as_deref() {
+        Some(s) if !s.is_empty() => {
+            let pattern = format!("%{}%", s.to_lowercase());
+            sqlx::query(
+                "SELECT DISTINCT tag FROM media_tags WHERE lower(tag) LIKE ? ORDER BY tag LIMIT 25",
+            )
+            .bind(&pattern)
+            .fetch_all(&state.ctx.db)
+            .await?
+            .iter()
+            .map(|r| {
+                use sqlx::Row;
+                r.get::<String, _>(0)
+            })
+            .collect()
+        }
+        _ => {
+            sqlx::query("SELECT DISTINCT tag FROM media_tags ORDER BY tag LIMIT 50")
+                .fetch_all(&state.ctx.db)
+                .await?
+                .iter()
+                .map(|r| {
+                    use sqlx::Row;
+                    r.get::<String, _>(0)
+                })
+                .collect()
+        }
+    };
+    Ok(Json(tags))
+}
+
+/// List distinct certifications, optionally filtered by search_term
+#[get("/items/certifications")]
+pub async fn items_certifications(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Query(q): Query<api::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    let values: Vec<String> = match q.search_term.as_deref() {
+        Some(s) if !s.is_empty() => {
+            let pattern = format!("%{}%", s.to_lowercase());
+            sqlx::query(
+                "SELECT DISTINCT certification FROM media \
+                 WHERE certification IS NOT NULL AND lower(certification) LIKE ? \
+                 ORDER BY certification LIMIT 25",
+            )
+            .bind(&pattern)
+            .fetch_all(&state.ctx.db)
+            .await?
+            .iter()
+            .map(|r| { use sqlx::Row; r.get::<String, _>(0) })
+            .collect()
+        }
+        _ => {
+            sqlx::query(
+                "SELECT DISTINCT certification FROM media \
+                 WHERE certification IS NOT NULL ORDER BY certification LIMIT 50",
+            )
+            .fetch_all(&state.ctx.db)
+            .await?
+            .iter()
+            .map(|r| { use sqlx::Row; r.get::<String, _>(0) })
+            .collect()
+        }
+    };
+    Ok(Json(values))
+}
+
 
 /// Trigger a full library refresh (re-imports all promoted catalogs)
 #[post("/library/refresh")]

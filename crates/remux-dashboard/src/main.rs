@@ -11,8 +11,9 @@ use remux_sdks::remux::{
     DeleteVirtualFolder, EpgSourceInfo, FilterMatchMode, FilterRule,
     GetAioCatalogs, GetAnfiteatroReleaseStatus, GetApiKeys,
     GetBrandingConfiguration, GetEpgSources, GetIptvChannels, GetItems,
+    GetCertificationSuggestions, GetCountries, GetLocalSuggestions,
     GetScheduledTasks, GetSessions, GetStartupConfiguration,
-    GetSystemConfiguration, GetTunerHosts, GetUsers,
+    GetSystemConfiguration, GetTagSuggestions, GetTunerHosts, GetUsers, GetVirtualFolders,
     InstallLatestAnfiteatroRelease, JellyfinAuth, NumericOp, PatchChannel,
     PatchChannelRequest, PatchItem, PatchItemPayload, PostStartupComplete,
     PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
@@ -1698,6 +1699,88 @@ fn CollectionForm(
 
 // ── Smart Filter Editor ──────────────────────────────────────────────
 
+/// Extract the values vec from a set-type FilterRule without going through the string repr.
+fn rule_values(rule: &FilterRule) -> Vec<String> {
+    match rule {
+        FilterRule::Genre         { values, .. }
+        | FilterRule::Certification { values, .. }
+        | FilterRule::Tag           { values, .. }
+        | FilterRule::Studio        { values, .. }
+        | FilterRule::Catalog       { values, .. }
+        | FilterRule::Country       { values, .. }
+        | FilterRule::Person        { values, .. } => values.clone(),
+        _ => vec![],
+    }
+}
+
+/// Returns true for fields whose values are a set of strings (use ChipInput).
+fn is_set_field(key: &str) -> bool {
+    matches!(key, "genre" | "certification" | "tag" | "studio" | "catalog" | "country" | "person")
+}
+
+/// Fetch autocomplete suggestions for a field. Returns `(label, value)` pairs —
+/// label is shown in the dropdown, value is what gets stored in the filter rule.
+/// For most fields label == value; country is the exception (label = "United States", value = "US").
+async fn fetch_suggestions(client: &RestClient<JellyfinAuth>, field: &str, query: &str) -> Vec<(String, String)> {
+    match field {
+        "genre" | "studio" | "person" => {
+            let kind = match field {
+                "genre"  => "Genre",
+                "studio" => "Studio",
+                _        => "Person",
+            };
+            match client.execute(GetLocalSuggestions { kind: kind.into(), search_term: query.into() }).await {
+                Ok(r) => r.items.into_iter().filter_map(|i| i.name).map(|n| (n.clone(), n)).collect(),
+                Err(_) => vec![],
+            }
+        }
+        "tag" => {
+            match client.execute(GetTagSuggestions { search_term: query.into() }).await {
+                Ok(tags) => tags.into_iter().map(|t| (t.clone(), t)).collect(),
+                Err(_) => vec![],
+            }
+        }
+        "catalog" => {
+            match client.execute(GetVirtualFolders).await {
+                Ok(folders) => {
+                    let q = query.to_lowercase();
+                    folders.into_iter()
+                        .filter_map(|f| f.name)
+                        .filter(|n| n.to_lowercase().contains(&q))
+                        .take(25)
+                        .map(|n| (n.clone(), n))
+                        .collect()
+                }
+                Err(_) => vec![],
+            }
+        }
+        "certification" => {
+            match client.execute(GetCertificationSuggestions { search_term: query.into() }).await {
+                Ok(v) => v.into_iter().map(|s| (s.clone(), s)).collect(),
+                Err(_) => vec![],
+            }
+        }
+        "country" => {
+            match client.execute(GetCountries).await {
+                Ok(countries) => {
+                    let q = query.to_lowercase();
+                    countries.into_iter()
+                        .filter(|c| {
+                            c.name.to_lowercase().contains(&q)
+                                || c.two_letter_iso_region_name.to_lowercase().contains(&q)
+                        })
+                        // label shows full name, value is the alpha-2 code stored in the DB
+                        .map(|c| (format!("{} ({})", c.name, c.two_letter_iso_region_name), c.two_letter_iso_region_name))
+                        .take(25)
+                        .collect()
+                }
+                Err(_) => vec![],
+            }
+        }
+        _ => vec![],
+    }
+}
+
 fn field_label(key: &str) -> &'static str {
     match key {
         "genre"          => "Genre",
@@ -1710,6 +1793,7 @@ fn field_label(key: &str) -> &'static str {
         "catalog"        => "Catalog",
         "has_trailer"    => "Has Trailer",
         "country"        => "Country",
+        "person"         => "Person",
         _                => "",
     }
 }
@@ -1727,8 +1811,6 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         _ => vec![
             ("is",     "is"),
             ("is_not", "is not"),
-            ("in",     "is any of"),
-            ("not_in", "is none of"),
         ],
     }
 }
@@ -1779,26 +1861,24 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
         FilterRule::Studio         { op, values } => ("studio".into(),        set_op_str(op), values.join(", ")),
         FilterRule::Catalog        { op, values } => ("catalog".into(),       set_op_str(op), values.join(", ")),
         FilterRule::Country        { op, values } => ("country".into(),       set_op_str(op), values.join(", ")),
+        FilterRule::Person         { op, values } => ("person".into(),        set_op_str(op), values.join(", ")),
         FilterRule::HasTrailer     { value }       => ("has_trailer".into(),   String::new(),  value.to_string()),
     }
 }
 
 fn set_op_str(op: &SetOp) -> String {
     match op {
-        SetOp::Is    => "is",
-        SetOp::IsNot => "is_not",
-        SetOp::In    => "in",
-        SetOp::NotIn => "not_in",
+        SetOp::Is | SetOp::In       => "is",
+        SetOp::IsNot | SetOp::NotIn => "is_not",
     }.into()
 }
 
 /// Build a typed `FilterRule` from raw UI strings.
 fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
+    // Set fields always use In/NotIn — single values are just a one-element vec.
     let set_op = match op {
-        "is_not" => SetOp::IsNot,
-        "in"     => SetOp::In,
-        "not_in" => SetOp::NotIn,
-        _        => SetOp::Is,
+        "is_not" => SetOp::NotIn,
+        _        => SetOp::In,
     };
     let num_op = match op {
         "not_eq" => NumericOp::NotEq,
@@ -1819,6 +1899,7 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
         "studio"          => FilterRule::Studio          { op: set_op, values: set_values() },
         "catalog"         => FilterRule::Catalog         { op: set_op, values: set_values() },
         "country"         => FilterRule::Country         { op: set_op, values: set_values() },
+        "person"          => FilterRule::Person          { op: set_op, values: set_values() },
         "has_trailer"     => FilterRule::HasTrailer      { value: value_str == "true" },
         _                 => FilterRule::Genre           { op: set_op, values: set_values() },
     }
@@ -1868,9 +1949,146 @@ fn FilterRuleEditor(
                 class: "btn btn-ghost",
                 style: "margin-top:8px;font-size:0.85rem",
                 onclick: move |_| {
-                    rules.write().push(FilterRule::Genre { op: SetOp::Is, values: vec![] });
+                    rules.write().push(FilterRule::Genre { op: SetOp::In, values: vec![] });
                 },
                 "+ Add Rule"
+            }
+        }
+    }
+}
+
+/// Multi-value chip input with server-side autocomplete dropdown.
+#[component]
+fn ChipInput(
+    field_key: String,
+    op_val: String,
+    values: Vec<String>,
+    idx: usize,
+    rules: Signal<Vec<FilterRule>>,
+) -> Element {
+    let app_state = use_context::<AppState>();
+    let mut input_text: Signal<String> = use_signal(String::new);
+    // (label, value) — label shown in dropdown, value stored in rule
+    let mut suggestions: Signal<Vec<(String, String)>> = use_signal(Vec::new);
+    let mut show_dropdown = use_signal(|| false);
+
+    // Re-fetch suggestions whenever the typed text changes.
+    let fk_fetch = field_key.clone();
+    let client_fetch = app_state.client.clone();
+    use_effect(move || {
+        let q = input_text.read().clone();
+        let fk = fk_fetch.clone();
+        let client = client_fetch.clone();
+        spawn(async move {
+            if q.is_empty() {
+                suggestions.set(vec![]);
+                show_dropdown.set(false);
+                return;
+            }
+            let result = fetch_suggestions(&client, &fk, &q).await;
+            show_dropdown.set(!result.is_empty());
+            suggestions.set(result);
+        });
+    });
+
+    rsx! {
+        div { style: "position:relative;flex:1.5",
+            div { class: "chip-input",
+                for (ci, chip) in values.iter().enumerate() {
+                    {
+                        let chip_str = chip.clone();
+                        let mut v = values.clone();
+                        let fk = field_key.clone();
+                        let op = op_val.clone();
+                        rsx! {
+                            span { class: "chip", key: "{ci}",
+                                "{chip_str}"
+                                button {
+                                    r#type: "button",
+                                    class: "chip-remove",
+                                    onclick: move |_| {
+                                        v.remove(ci);
+                                        if let Some(row) = rules.write().get_mut(idx) {
+                                            *row = raw_to_rule(&fk, &op, &v.join(", "));
+                                        }
+                                    },
+                                    "×"
+                                }
+                            }
+                        }
+                    }
+                }
+                {
+                    let fk_kd = field_key.clone();
+                    let op_kd = op_val.clone();
+                    let vals_kd = values.clone();
+                    rsx! {
+                        input {
+                            r#type: "text",
+                            class: "chip-text-input",
+                            placeholder: if values.is_empty() { "type to search…" } else { "" },
+                            value: "{input_text}",
+                            oninput: move |e| input_text.set(e.value()),
+                            onkeydown: move |e| {
+                                let key = e.key().to_string();
+                                let text = input_text.read().replace(',', "");
+                                let text = text.trim().to_string();
+                                if (key == "Enter" || key == ",") && !text.is_empty() {
+                                    e.prevent_default();
+                                    let mut v = vals_kd.clone();
+                                    if !v.contains(&text) { v.push(text); }
+                                    if let Some(row) = rules.write().get_mut(idx) {
+                                        *row = raw_to_rule(&fk_kd, &op_kd, &v.join(", "));
+                                    }
+                                    input_text.set(String::new());
+                                    suggestions.set(vec![]);
+                                    show_dropdown.set(false);
+                                } else if key == "Backspace" && input_text.read().is_empty() {
+                                    let mut v = vals_kd.clone();
+                                    if !v.is_empty() {
+                                        v.pop();
+                                        if let Some(row) = rules.write().get_mut(idx) {
+                                            *row = raw_to_rule(&fk_kd, &op_kd, &v.join(", "));
+                                        }
+                                    }
+                                }
+                            },
+                            onblur: move |_| show_dropdown.set(false),
+                            onfocus: move |_| {
+                                if !suggestions.read().is_empty() { show_dropdown.set(true); }
+                            },
+                        }
+                    }
+                }
+            }
+            if *show_dropdown.read() {
+                div {
+                    class: "chip-dropdown",
+                    onmousedown: |e| e.prevent_default(),
+                    for (label, value) in suggestions.read().clone() {
+                        {
+                            let mut v = values.clone();
+                            let fk = field_key.clone();
+                            let op = op_val.clone();
+                            rsx! {
+                                div {
+                                    class: "chip-dropdown-item",
+                                    key: "{value}",
+                                    onmousedown: move |_| {
+                                        if !v.contains(&value) { v.push(value.clone()); }
+                                        if let Some(row) = rules.write().get_mut(idx) {
+                                            *row = raw_to_rule(&fk, &op, &v.join(", "));
+                                        }
+                                        input_text.set(String::new());
+                                        suggestions.set(vec![]);
+                                        show_dropdown.set(false);
+                                    },
+                                    "{label}"
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1917,6 +2135,7 @@ fn FilterRuleRow(
                 option { value: "catalog",         selected: field_val == "catalog",         { field_label("catalog") } }
                 option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
                 option { value: "country",         selected: field_val == "country",         { field_label("country") } }
+                option { value: "person",          selected: field_val == "person",          { field_label("person") } }
             }
             // Operator selector (hidden for has_trailer which has no operator)
             if !is_trailer {
@@ -1934,7 +2153,7 @@ fn FilterRuleRow(
                     }
                 }
             }
-            // Value input — dropdown for has_trailer, text otherwise
+            // Value input — dropdown for has_trailer, chip input for set fields, text for numeric
             if is_trailer {
                 select {
                     class: "select-input",
@@ -1947,6 +2166,14 @@ fn FilterRuleRow(
                     },
                     option { value: "true",  selected: value_val == "true",  "Yes" }
                     option { value: "false", selected: value_val == "false", "No" }
+                }
+            } else if is_set_field(&field_val) {
+                ChipInput {
+                    field_key: field_val.clone(),
+                    op_val: op_val.clone(),
+                    values: rule_values(&rule),
+                    idx,
+                    rules,
                 }
             } else {
                 input {

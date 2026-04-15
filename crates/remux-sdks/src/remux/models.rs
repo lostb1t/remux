@@ -1830,6 +1830,7 @@ pub enum FilterRule {
     Catalog        { op: SetOp,     values: Vec<String> },
     HasTrailer     { value: bool },
     Country        { op: SetOp,     values: Vec<String> },
+    Person         { op: SetOp,     values: Vec<String> },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).

@@ -188,6 +188,87 @@ impl Endpoint for GetItems {
     }
 }
 
+/// Local DB title-contains search for a specific media kind (Genre, Studio, Person, …).
+/// Sends `SearchTerm=local:{query}` so the server skips AIO and queries the DB directly.
+#[derive(Debug, Clone)]
+pub struct GetLocalSuggestions {
+    pub kind: String,
+    pub search_term: String,
+}
+
+impl Endpoint for GetLocalSuggestions {
+    type Output = QueryResult<BaseItemDto>;
+
+    fn path(&self) -> String {
+        "/items".into()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        vec![
+            ("IncludeItemTypes".into(), self.kind.clone()),
+            ("SearchTerm".into(), format!("local:{}", self.search_term)),
+            ("Limit".into(), "25".into()),
+        ]
+    }
+}
+
+/// Fetch distinct tag suggestions from the local DB, optionally filtered.
+#[derive(Debug, Clone, Default)]
+pub struct GetTagSuggestions {
+    pub search_term: String,
+}
+
+impl Endpoint for GetTagSuggestions {
+    type Output = Vec<String>;
+
+    fn path(&self) -> String {
+        "/items/tags".into()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        if self.search_term.is_empty() {
+            vec![]
+        } else {
+            vec![("SearchTerm".into(), self.search_term.clone())]
+        }
+    }
+}
+
+/// Fetch distinct certification values, optionally filtered.
+#[derive(Debug, Clone, Default)]
+pub struct GetCertificationSuggestions {
+    pub search_term: String,
+}
+
+impl Endpoint for GetCertificationSuggestions {
+    type Output = Vec<String>;
+
+    fn path(&self) -> String {
+        "/items/certifications".into()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        if self.search_term.is_empty() {
+            vec![]
+        } else {
+            vec![("SearchTerm".into(), self.search_term.clone())]
+        }
+    }
+}
+
+/// Fetch the full ISO 3166-1 country list from the locale endpoint.
+/// The client filters by name/alpha2 locally (only ~250 entries).
+#[derive(Debug, Clone, Default)]
+pub struct GetCountries;
+
+impl Endpoint for GetCountries {
+    type Output = Vec<CountryInfo>;
+
+    fn path(&self) -> String {
+        "/localization/countries".into()
+    }
+}
+
 // ── Virtual folder (Collection) endpoints ─────────────────────────
 
 #[derive(Debug, Clone, Default)]

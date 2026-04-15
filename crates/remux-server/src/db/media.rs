@@ -2455,6 +2455,28 @@ fn filter_rule_to_sql(
             };
             Some((sql, false))
         }
+        R::Person { op, values } => {
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            let sql = match op {
+                SetOp::Is | SetOp::IsNot => {
+                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_relations mr \
+                         JOIN media p ON p.id = mr.right_media_id \
+                         WHERE mr.left_media_id = media.id AND p.kind = 'person' AND lower(p.title) = lower('{v}'))"
+                    )
+                }
+                SetOp::In | SetOp::NotIn => {
+                    let list = in_list(values)?;
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_relations mr \
+                         JOIN media p ON p.id = mr.right_media_id \
+                         WHERE mr.left_media_id = media.id AND p.kind = 'person' AND lower(p.title) IN ({list}))"
+                    )
+                }
+            };
+            Some((sql, negated))
+        }
     }
 }
 
