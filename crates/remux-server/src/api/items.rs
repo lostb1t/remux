@@ -157,10 +157,7 @@ pub async fn get_items(
                                 .filter(|item| {
                                     let type_match = types.contains(&item.type_);
                                     let media_type_match = q.media_types.as_ref().map_or(true, |mt| {
-                                        item.media_type
-                                            .as_deref()
-                                            .and_then(|s| s.parse::<api::MediaType>().ok())
-                                            .map_or(false, |t| mt.contains(&t))
+                                        mt.contains(&item.media_type)
                                     });
                                     type_match && media_type_match
                                 })

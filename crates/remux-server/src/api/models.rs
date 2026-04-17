@@ -194,9 +194,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             db::MediaKind::Movie
             | db::MediaKind::Episode
             | db::MediaKind::TvChannel
-            | db::MediaKind::TvProgram => Some("Video".to_string()),
-            db::MediaKind::Track => Some("Audio".to_string()),
-            _ => None,
+            | db::MediaKind::TvProgram => MediaType::Video,
+            db::MediaKind::Track => MediaType::Audio,
+            _ => MediaType::Unknown,
         },
         is_movie: Some(media.kind == db::MediaKind::Movie),
         is_series: Some(media.kind == db::MediaKind::Series),
