@@ -11,6 +11,7 @@ pub mod livetv;
 pub mod localization;
 pub mod logs;
 pub mod metadata;
+pub mod music;
 pub mod networking;
 pub mod remux;
 pub mod playback;

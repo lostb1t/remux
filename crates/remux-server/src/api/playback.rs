@@ -164,6 +164,58 @@ async fn items_playbackinfo_inner(
         return Ok(Json(info));
     }
 
+    // Music tracks: served via HLS through the server so the browser never needs
+    // direct access to IP-locked YouTube CDN URLs.
+    if media.kind == db::MediaKind::Track {
+        let play_session_id = utils::get_uuid().as_simple().to_string();
+        let transcoding_url = format!(
+            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=copy&AudioCodec=aac",
+            id, play_session_id, media.id
+        );
+
+        // Load Source child to get real probe data (codec, channels, bitrate).
+        let media_streams: Vec<api::MediaStream> = {
+            let source_id = uuid::Uuid::new_v5(&media.id, b"audio_source");
+            db::Media::get_by_id(&state.ctx.db, &source_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|s| s.probe_data)
+                .map(|p| p.0.media_streams)
+                .unwrap_or_else(|| vec![api::MediaStream {
+                    index: 0,
+                    type_: Some(api::MediaStreamType::Audio),
+                    codec: Some("aac".to_string()),
+                    channels: Some(2),
+                    is_default: Some(true),
+                    display_title: Some("Audio".to_string()),
+                    ..Default::default()
+                }])
+        };
+
+        let source = api::MediaSourceInfo {
+            id: media.id,
+            name: Some(media.title.clone()),
+            protocol: "Http".to_string(),
+            is_remote: true,
+            supports_direct_play: false,
+            supports_direct_stream: false,
+            supports_transcoding: true,
+            transcoding_url: Some(transcoding_url),
+            transcoding_sub_protocol: "hls".to_string(),
+            transcoding_container: Some("ts".to_string()),
+            run_time_ticks: media.runtime.map(|s| s * 10_000_000),
+            media_streams,
+            ..Default::default()
+        };
+        let info = api::PlaybackInfoResponse {
+            media_sources: vec![source],
+            play_session_id: Some(play_session_id),
+            ..Default::default()
+        };
+        return Ok(Json(info));
+    }
+
     // Collect all playable sources. A Movie/Episode may have multiple
     // Source children (versions); return every one so the client can
     // show version selection and per-source stream lists.
@@ -1794,9 +1846,28 @@ pub async fn master_hls_video(
             .context_not_found("not found", "no playable source found")?;
         }
 
-        let raw_input_url = resolved_media
-            .url
-            .context_not_found("no url", "media source has no URL")?;
+        // For audio tracks, resolve a fresh CDN stream URL via yt-dlp.
+        // The URL stored in media.url is the stable YouTube watch URL, which
+        // FFmpeg cannot open directly — we need the actual CDN stream URL.
+        let raw_input_url = if resolved_media.kind == db::MediaKind::Track {
+            let streams = state
+                .ctx
+                .streams
+                .get_streams(&resolved_media, &state.ctx)
+                .await
+                .map_err(|e| anyhow!("could not resolve track stream for HLS: {e:#}"))?;
+            let best = streams
+                .iter()
+                .find(|s| s.is_audio_only)
+                .or_else(|| streams.first())
+                .cloned()
+                .ok_or_else(|| anyhow!("no streams found for track '{}'", resolved_media.title))?;
+            best.url
+        } else {
+            resolved_media
+                .url
+                .context_not_found("no url", "media source has no URL")?
+        };
 
         let aio_url = crate::db::Settings::get_config(&state.ctx.db)
             .await
@@ -2082,7 +2153,6 @@ async fn hls_segment_inner(
         }
     }
 
-    // ── Segment-driven transcode restart ──
     // If the segment doesn't exist and we have a live session, check whether
     // FFmpeg needs to be restarted at a different position (like Jellyfin does).
     if !segment_path.exists() {
@@ -2254,6 +2324,31 @@ pub async fn video_additional_parts(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     Ok(Json(api::BaseItemDtoQueryResult::default()))
+}
+
+/// Audio universal stream endpoint used by Jellyfin mobile/web clients for music tracks.
+/// Resolves the track's CDN stream URL via yt-dlp and redirects to it so the server
+/// acts as the origin (clients cannot reach IP-locked YouTube CDN URLs directly).
+#[get("/audio/{id}/universal")]
+pub async fn audio_universal(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Query(q): Query<api::HlsVideoQuery>,
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .context_not_found("not found", "track not found")?;
+
+    let play_session_id = q.play_session_id
+        .unwrap_or_else(|| utils::get_uuid().as_simple().to_string());
+
+    let transcoding_url = format!(
+        "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=copy&AudioCodec=aac",
+        id, play_session_id, id
+    );
+
+    Ok(axum::response::Redirect::temporary(&transcoding_url).into_response())
 }
 
 /// Bitrate test endpoint - returns a body of the requested size for bandwidth measurement.

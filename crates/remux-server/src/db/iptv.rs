@@ -25,7 +25,6 @@ pub enum IptvSourceType {
     Xtream,
 }
 
-// ── Channel sources (M3U / Xtream) ──────────────────────────────────────────
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct IptvSource {
@@ -121,7 +120,6 @@ impl IptvSource {
     }
 }
 
-// ── EPG sources (XMLTV) ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct EpgSource {

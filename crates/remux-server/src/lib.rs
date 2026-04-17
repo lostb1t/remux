@@ -217,6 +217,9 @@ pub async fn init_app(
         ws_tx,
         default_web_client,
         web_paths,
+        search: Arc::new(providers::SearchServiceManager::default()),
+        streams: Arc::new(providers::StreamServiceManager::default()),
+        music_meta: Arc::new(providers::MusicMetaProviderService::default()),
     };
 
     // Apply saved P2P speed limits on startup.
@@ -298,6 +301,9 @@ pub struct AppContext {
     pub default_web_client: Arc<tokio::sync::RwLock<String>>,
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
+    pub search: Arc<providers::SearchServiceManager>,
+    pub streams: Arc<providers::StreamServiceManager>,
+    pub music_meta: Arc<providers::MusicMetaProviderService>,
 }
 
 #[derive(Clone)]

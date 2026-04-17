@@ -104,7 +104,6 @@ impl Endpoint for UpdateTaskTriggers {
     }
 }
 
-// ── AIO catalogs ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetAioCatalogs;
@@ -161,7 +160,6 @@ impl Endpoint for UpdateCatalogSettings {
     }
 }
 
-// ── Items ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetItems {
@@ -269,7 +267,6 @@ impl Endpoint for GetCountries {
     }
 }
 
-// ── Virtual folder (Collection) endpoints ─────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetVirtualFolders;
@@ -335,7 +332,6 @@ impl Endpoint for DeleteVirtualFolder {
     }
 }
 
-// ── Item patch ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct PatchItem {
@@ -356,7 +352,6 @@ impl Endpoint for PatchItem {
     }
 }
 
-// ── System configuration ───────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetSystemConfiguration;
@@ -386,7 +381,6 @@ impl Endpoint for UpdateSystemConfiguration {
     }
 }
 
-// ── Branding endpoints ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetBrandingConfiguration;
@@ -416,7 +410,6 @@ impl Endpoint for UpdateBrandingConfiguration {
     }
 }
 
-// ── Startup wizard endpoints ───────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetStartupConfiguration;
@@ -490,7 +483,6 @@ impl Endpoint for PostStartupComplete {
     }
 }
 
-// ── Users ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetCurrentUser;
@@ -641,7 +633,6 @@ impl Endpoint for AuthenticateUserByName {
     }
 }
 
-// ── Log level endpoint ─────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct SetLogLevel {
@@ -661,7 +652,6 @@ impl Endpoint for SetLogLevel {
     }
 }
 
-// ── IPTV / Live TV endpoints ───────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetTunerHosts;
@@ -709,7 +699,6 @@ impl Endpoint for DeleteTunerHost {
     }
 }
 
-// ── EPG sources ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetEpgSources;
@@ -757,7 +746,6 @@ impl Endpoint for DeleteEpgSource {
     }
 }
 
-// ── Channel editor ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetIptvChannels {
@@ -841,7 +829,6 @@ impl Endpoint for AuthorizeQuickConnect {
     }
 }
 
-// ── API Keys ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct GetApiKeys;

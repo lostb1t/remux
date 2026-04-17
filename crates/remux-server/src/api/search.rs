@@ -26,50 +26,95 @@ pub async fn search_hints(
             total_record_count: 0,
         }));
     }
-    let limit = q.limit.unwrap_or(20);
+    let limit = q.limit.unwrap_or(20) as usize;
 
-    // DB title-match search (fast path)
-    let db_results = db::Media::get_by_filter(
-        &state.ctx.db,
-        &db::MediaFilter {
-            title_contains: Some(term.clone()),
-            kind: Some(vec![
-                db::MediaKind::Movie,
-                db::MediaKind::Series,
-            ]),
-            limit: Some(limit),
-            ..Default::default()
-        },
-    )
-    .await?
-    .records;
+    // Determine which media types the caller wants.
+    // An empty filter means "everything".
+    let requested_types = q.include_item_types.unwrap_or_default();
+    let wants_video = requested_types.is_empty()
+        || requested_types.contains(&api::MediaType::Movie)
+        || requested_types.contains(&api::MediaType::Series);
+    let wants_music = requested_types.is_empty()
+        || requested_types.contains(&api::MediaType::Audio)
+        || requested_types.contains(&api::MediaType::MusicAlbum)
+        || requested_types.contains(&api::MediaType::MusicArtist);
 
-    // AIO live search if DB returns nothing
-    let results = if db_results.is_empty() {
-        if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
-            let movie_fut = aio.search(crate::sdks::aio::MediaType::Movie, term.clone());
-            let series_fut = aio.search(crate::sdks::aio::MediaType::Series, term.clone());
-            let (movie_res, series_res) = tokio::join!(movie_fut, series_fut);
+    tracing::info!(
+        term,
+        limit,
+        wants_video,
+        wants_music,
+        ?requested_types,
+        "search_hints request"
+    );
 
-            let mut combined = series_res.unwrap_or_default();
-            combined.extend(movie_res.unwrap_or_default());
+    let mut results: Vec<db::Media> = vec![];
 
-            combined
-                .into_iter()
-                // Deduplicate by IMDb ID if available, otherwise by AIO ID
-                .unique_by(|meta| meta.imdb_id.clone().unwrap_or_else(|| meta.id.clone()))
-                .filter_map(|meta| {
-                    let m = db::Media::try_from(meta.clone()).ok()?;
-                    state.ctx.store.insert(m.id, meta, Duration::from_secs(3600));
-                    Some(m)
-                })
-                .collect()
+    if wants_video {
+        // DB title-match search (fast path)
+        let db_results = db::Media::get_by_filter(
+            &state.ctx.db,
+            &db::MediaFilter {
+                title_contains: Some(term.clone()),
+                kind: Some(vec![
+                    db::MediaKind::Movie,
+                    db::MediaKind::Series,
+                ]),
+                limit: Some(limit as u32),
+                ..Default::default()
+            },
+        )
+        .await?
+        .records;
+
+        tracing::info!(count = db_results.len(), "search_hints DB results");
+
+        // AIO live search if DB returns nothing
+        let video_results = if db_results.is_empty() {
+            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
+                let movie_fut = aio.search(crate::sdks::aio::MediaType::Movie, term.clone());
+                let series_fut = aio.search(crate::sdks::aio::MediaType::Series, term.clone());
+                let (movie_res, series_res) = tokio::join!(movie_fut, series_fut);
+
+                let mut combined = series_res.unwrap_or_default();
+                combined.extend(movie_res.unwrap_or_default());
+
+                combined
+                    .into_iter()
+                    .unique_by(|meta| meta.imdb_id.clone().unwrap_or_else(|| meta.id.clone()))
+                    .filter_map(|meta| {
+                        let m = db::Media::try_from(meta.clone()).ok()?;
+                        state.ctx.store.insert(m.id, meta, Duration::from_secs(3600));
+                        Some(m)
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
         } else {
-            vec![]
+            db_results
+        };
+
+        results.extend(video_results);
+    }
+
+    if wants_music {
+        tracing::info!(term, "search_hints: querying music via SearchServiceManager");
+        match state
+            .ctx
+            .search
+            .search(&db::MediaKind::Track, &term, limit, &state.ctx)
+            .await
+        {
+            Ok(tracks) => {
+                tracing::info!(count = tracks.len(), "search_hints: music results");
+                results.extend(tracks);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, term, "search_hints: music search failed");
+            }
         }
-    } else {
-        db_results
-    };
+    }
 
     let hints = results
         .into_iter()
@@ -86,12 +131,15 @@ pub async fn search_hints(
             )),
             media_type: match m.kind {
                 db::MediaKind::Movie | db::MediaKind::Episode => Some("Video".to_string()),
+                db::MediaKind::Track => Some("Audio".to_string()),
                 _ => None,
             },
             series_id: m.series_id,
             ..Default::default()
         })
         .collect::<Vec<_>>();
+
+    tracing::info!(total = hints.len(), "search_hints: returning results");
 
     let total = hints.len() as i64;
     Ok(Json(api::SearchHintResult {

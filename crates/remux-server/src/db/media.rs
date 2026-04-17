@@ -121,6 +121,10 @@ pub enum MediaKind {
     Source,
     TvChannel,
     TvProgram,
+    // Music
+    Track,
+    Album,
+    Artist,
 }
 
 impl TryFrom<String> for MediaKind {
@@ -176,6 +180,9 @@ impl TryFrom<api::MediaType> for MediaKind {
             }
             api::MediaType::Person => Ok(MediaKind::Person),
             api::MediaType::Studio => Ok(MediaKind::Studio),
+            api::MediaType::Audio => Ok(MediaKind::Track),
+            api::MediaType::MusicAlbum => Ok(MediaKind::Album),
+            api::MediaType::MusicArtist => Ok(MediaKind::Artist),
             _ => Err(()),
         }
     }
@@ -204,6 +211,36 @@ pub enum CollectionKind {
 impl TryFrom<String> for CollectionKind {
     type Error = strum::ParseError;
 
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::try_from(s.as_str())
+    }
+}
+
+/// What kind of content a Collection/library holds.
+/// Stored as TEXT in the DB (snake_case).
+#[derive(
+    Default,
+    strum_macros::EnumString,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+pub enum CollectionMediaKind {
+    #[default]
+    Movie,
+    Series,
+    Music,
+}
+
+impl TryFrom<String> for CollectionMediaKind {
+    type Error = strum::ParseError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
         Self::try_from(s.as_str())
     }
@@ -380,6 +417,8 @@ pub struct MediaFilter {
     pub allowed_tags: Option<Vec<String>>,
     /// Filter by enabled flag (for TvChannel). None = no filter.
     pub enabled: Option<bool>,
+    /// Filter albums/tracks by artist (parent_id IN these IDs).
+    pub artist_ids: Option<Vec<Uuid>>,
     /// If set, only return items where COALESCE(digital_released_at, released_at) <= threshold.
     pub digital_released_before: Option<NaiveDateTime>,
     /// Sort order for results. Mapped from Jellyfin's ItemSortBy.
@@ -436,6 +475,16 @@ pub struct Media {
     #[sqlx(skip)]
     pub child_count: Option<i64>,
     #[sqlx(skip)]
+    pub album_count: Option<i64>,
+    #[sqlx(skip)]
+    pub song_count: Option<i64>,
+    /// Album title for tracks (parent item's title), populated post-query.
+    #[sqlx(skip)]
+    pub parent_title: Option<String>,
+    /// Artist title for tracks (series item's title), populated post-query.
+    #[sqlx(skip)]
+    pub series_title: Option<String>,
+    #[sqlx(skip)]
     pub unplayed_item_count: Option<i64>,
     #[sqlx(skip)]
     pub sources: Option<Vec<Media>>,
@@ -457,8 +506,8 @@ pub struct Media {
     pub promoted: bool,
     // CollectionKind
     pub collection_kind: Option<CollectionKind>,
-    // MediaKind
-    pub collection_media_kind: Option<MediaKind>,
+    // CollectionMediaKind
+    pub collection_media_kind: Option<CollectionMediaKind>,
     pub collection_max_items: Option<i64>,
     pub collection_smart_filter: Option<sqlx::types::Json<remux_sdks::remux::models::CollectionFilter>>,
 
@@ -1012,6 +1061,17 @@ impl Media {
                 }
             }
 
+            if let Some(artist_ids) = &filter.artist_ids {
+                if !artist_ids.is_empty() {
+                    qb.push(" AND parent_id IN (");
+                    let mut sep = qb.separated(", ");
+                    for id in artist_ids {
+                        sep.push_bind(id);
+                    }
+                    qb.push(")");
+                }
+            }
+
             if let Some(user_state_filter) = &filter.user_state {
                 // favorite — always uses EXISTS
                 if let Some(favorite) = &user_state_filter.favorite {
@@ -1300,6 +1360,8 @@ impl Media {
                             | MediaKind::Season
                             | MediaKind::Collection
                             | MediaKind::Folder
+                            | MediaKind::Album
+                            | MediaKind::Artist
                     )
                 })
                 .map(|m| m.id)
@@ -1329,6 +1391,93 @@ impl Media {
                     }
                     Err(e) => {
                         tracing::warn!("failed to load child counts: {e}");
+                    }
+                }
+            }
+
+            // For artists: populate album_count and song_count
+            let artist_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| m.kind == MediaKind::Artist)
+                .map(|m| m.id)
+                .collect();
+            if !artist_ids.is_empty() {
+                let mut alb_qb = sqlx::QueryBuilder::new(
+                    "SELECT parent_id, COUNT(*) as cnt FROM media WHERE kind = 'album' AND parent_id IN (",
+                );
+                let mut sep = alb_qb.separated(", ");
+                for id in &artist_ids {
+                    sep.push_bind(id);
+                }
+                alb_qb.push(") GROUP BY parent_id");
+                if let Ok(rows) = alb_qb.build().fetch_all(db).await {
+                    let mut map: HashMap<Uuid, i64> = HashMap::new();
+                    for row in rows {
+                        map.insert(row.get(0), row.get(1));
+                    }
+                    for media in &mut records {
+                        if media.kind == MediaKind::Artist {
+                            media.album_count = map.get(&media.id).copied();
+                        }
+                    }
+                }
+
+                let mut song_qb = sqlx::QueryBuilder::new(
+                    "SELECT series_id, COUNT(*) as cnt FROM media WHERE kind = 'track' AND series_id IN (",
+                );
+                let mut sep = song_qb.separated(", ");
+                for id in &artist_ids {
+                    sep.push_bind(id);
+                }
+                song_qb.push(") GROUP BY series_id");
+                if let Ok(rows) = song_qb.build().fetch_all(db).await {
+                    let mut map: HashMap<Uuid, i64> = HashMap::new();
+                    for row in rows {
+                        map.insert(row.get(0), row.get(1));
+                    }
+                    for media in &mut records {
+                        if media.kind == MediaKind::Artist {
+                            media.song_count = map.get(&media.id).copied();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Populate parent_title / series_title for tracks (album name, artist name)
+        let track_ids_needing_parents: Vec<_> = records
+            .iter()
+            .filter(|m| m.kind == MediaKind::Track)
+            .flat_map(|m| [m.parent_id, m.series_id].into_iter().flatten())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if !track_ids_needing_parents.is_empty() {
+            let mut title_map: HashMap<Uuid, String> = HashMap::new();
+            // SQLite limit is 999 variables; chunk to stay safe.
+            for chunk in track_ids_needing_parents.chunks(500) {
+                let mut qb = sqlx::QueryBuilder::new("SELECT id, title FROM media WHERE id IN (");
+                let mut sep = qb.separated(", ");
+                for id in chunk {
+                    sep.push_bind(id);
+                }
+                qb.push(")");
+                if let Ok(rows) = qb.build().fetch_all(db).await {
+                    title_map.extend(rows.into_iter().filter_map(|r| {
+                        let id: Option<Uuid> = r.get(0);
+                        let title: Option<String> = r.get(1);
+                        id.zip(title)
+                    }));
+                }
+            }
+            if !title_map.is_empty() {
+                for media in &mut records {
+                    if media.kind == MediaKind::Track {
+                        media.parent_title =
+                            media.parent_id.and_then(|id| title_map.get(&id).cloned());
+                        media.series_title =
+                            media.series_id.and_then(|id| title_map.get(&id).cloned());
                     }
                 }
             }
@@ -1486,6 +1635,11 @@ impl Media {
                 .iter()
                 .filter_map(|t| MediaKind::try_from(t.clone()).ok())
                 .collect();
+            // If types were specified but none map to a known kind (e.g. MusicVideo),
+            // return empty rather than falling through to an unbounded query.
+            if ikt_kinds.is_empty() {
+                return Ok(FilterResult { records: vec![], total_count: 0 });
+            }
             if let Some(mt_kinds) = media_type_kinds {
                 ikt_kinds
                     .into_iter()
@@ -1625,8 +1779,8 @@ impl Media {
                 None
             };
 
-        let release_date_applies = kinds.is_empty()
-            || kinds.iter().any(|k| {
+        let release_date_applies = !kinds.is_empty()
+            && kinds.iter().any(|k| {
                 matches!(
                     k,
                     MediaKind::Movie
@@ -1652,7 +1806,9 @@ impl Media {
                 kind: Some(kinds),
                 limit: filter.limit.clone(),
                 id: filter.ids.clone(),
-                parent_id: filter.parent_id.clone(),
+                // album_ids maps directly to parent_id (tracks are children of albums)
+                parent_id: filter.parent_id.clone()
+                    .or_else(|| filter.album_ids.as_ref().and_then(|v| v.first().cloned())),
                 offset: filter.start_index.clone(),
                 recursive: filter.recursive,
                 include_user_state: filter.enable_user_data.is_none(),
@@ -1689,6 +1845,10 @@ impl Media {
                 filter_match: smart_filter
                     .map(|sf| sf.match_mode.clone())
                     .unwrap_or_default(),
+                artist_ids: filter
+                    .contributing_artist_ids
+                    .clone()
+                    .or_else(|| filter.album_artist_ids.clone()),
                 ..Default::default()
             },
         )

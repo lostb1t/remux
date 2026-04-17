@@ -3,16 +3,24 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum_extra::extract::Query;
+use dashmap::DashMap;
 use http::StatusCode;
 use remux_macros::{delete, get, patch, post};
 use serde::Deserialize;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::Mutex;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
 use itertools::Itertools;
 use uuid::Uuid;
+
+static PERSIST_LOCKS: OnceLock<DashMap<Uuid, Arc<Mutex<()>>>> = OnceLock::new();
+
+fn persist_locks() -> &'static DashMap<Uuid, Arc<Mutex<()>>> {
+    PERSIST_LOCKS.get_or_init(DashMap::new)
+}
 
 use crate::AppState;
 use crate::db;
@@ -73,109 +81,108 @@ pub async fn get_items(
             .map_or(false, |p| p.kind == db::MediaKind::Collection)
     {
         let types = q.get_requested_item_types();
-        // if types.len() != 0 {
-        if types.len() == 0
-            || ![
-                api::MediaType::Movie,
-                api::MediaType::Series,
-                api::MediaType::Episode,
-            ]
-            .contains(&types[0])
-        {
-            return Ok(ItemsQueryResult {
-                items: vec![],
-                total_count: 0,
-            });
+
+        // Music (Audio / MusicAlbum / MusicArtist) — route to yt-dlp search.
+        // Must check q.include_item_types directly because get_requested_item_types()
+        // strips music kinds out.
+        let raw_types = q.include_item_types.as_deref().unwrap_or(&[]);
+        let music_enabled = {
+            let cfg = db::Settings::get_config(&state.ctx.db).await?;
+            cfg.music_enabled.unwrap_or(true)
+        };
+        let wants_tracks = music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::Audio));
+        let wants_albums = music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicAlbum));
+        let wants_music = wants_tracks || wants_albums || (music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicArtist)));
+        let wants_video = types.iter().any(|t| {
+            matches!(t, api::MediaType::Movie | api::MediaType::Series | api::MediaType::Episode)
+        });
+
+        if !wants_video && !wants_music {
+            return Ok(ItemsQueryResult { items: vec![], total_count: 0 });
         }
 
         if let Some(s) = search {
-            // Episode searches return empty — episodes are children of Series in AIO
-            if matches!(types[0], api::MediaType::Episode) {
-                return Ok(ItemsQueryResult {
-                    items: vec![],
-                    total_count: 0,
-                });
-            }
-            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
-                // Parallel search for all requested types (usually Movie and Series)
-                // Always search both catalogs during a unified search query.
-                // This ensures we can properly deduplicate and classify items (Show vs Movie)
-                // before filtering for the specific row the client is requesting.
-                let search_types = [api::MediaType::Movie, api::MediaType::Series];
-                let futures = search_types.iter().map(|t| {
-                    aio.search((*t).clone().into(), s.clone())
-                });
+            let limit = q.limit.unwrap_or(800) as usize;
+            let music_limit = limit.min(50);
+            let mut all_items: Vec<api::BaseItemDto> = vec![];
 
-                let mut all_metas = Vec::new();
-                for res in futures_util::future::join_all(futures).await {
-                    if let Ok(res_items) = res {
-                        all_metas.extend(res_items);
+            if wants_tracks {
+                info!(term = %s, "get_items: track search via SearchServiceManager");
+                match state
+                    .ctx
+                    .search
+                    .search(&db::MediaKind::Track, &s, music_limit, &state.ctx)
+                    .await
+                {
+                    Ok(tracks) => {
+                        info!(count = tracks.len(), "get_items: track search returned results");
+                        all_items.extend(tracks.into_iter().map(api::db_media_to_item));
+                    }
+                    Err(e) => {
+                        warn!(error = %e, term = %s, "get_items: track search failed");
                     }
                 }
-
-                let items: Vec<_> = all_metas
-                    .into_iter()
-                    // Deduplicate primarily by IMDb ID.
-                    // If IMDb is missing, include kind in the fallback key because
-                    // provider-local IDs (for example TMDB IDs) can collide across kinds.
-                    .unique_by(|m| {
-                        m.imdb_id
-                            .as_ref()
-                            .filter(|id| !id.is_empty())
-                            .map(|id| format!("imdb:{}", id))
-                            .unwrap_or_else(|| {
-                                let kind = match m.media_type {
-                                    sdks::aio::MediaType::Movie => "movie",
-                                    sdks::aio::MediaType::Series
-                                    | sdks::aio::MediaType::Tv => "series",
-                                    _ => "other",
-                                };
-                                format!("{}:{}", kind, m.id)
-                            })
-                    })
-                    .filter_map(|meta| {
-                        let media = db::Media::try_from(meta.clone()).ok()?;
-                        
-                        // Cache the meta result in our ephemeral store. This ensures that
-                        // clicking a result from a search correctly resolves and saves the item.
-                        state.ctx.store.insert(media.id, meta, Duration::from_secs(3600));
-                        
-                        Some(api::db_media_to_item(media))
-                    })
-                    // Now filter the final set by BOTH the BaseItem type and the requested MediaType
-                    .filter(|item| {
-                        // 1. Check if the BaseItem type (Movie, Series, etc) matches what the client asked for
-                        let type_match = types.contains(&item.type_);
-                        
-                        // 2. Check if the Media type (Video, etc) matches what the client asked for (if specific)
-                        // Most Jellyfin clients request "Video" for rows they want to be purely files vs folders.
-                        let media_type_match = q.media_types.as_ref().map_or(true, |mt| {
-                            item.media_type
-                                .as_deref()
-                                .and_then(|s| s.parse::<api::MediaType>().ok())
-                                .map_or(false, |item_media_type| {
-                                    mt.contains(&item_media_type)
-                                })
-                        });
-                        
-                        type_match && media_type_match
-                    })
-                    .collect();
-
-                let total_count = items.len() as i64;
-                let paged_items = items
-                    .into_iter()
-                    .skip(skip as usize)
-                    .take(q.limit.unwrap_or(u32::MAX) as usize)
-                    .collect();
-
-                return Ok(ItemsQueryResult {
-                    total_count,
-                    items: paged_items,
-                });
-            } else {
-                warn!("AIO not configured");
             }
+
+            if wants_albums {
+                let album_limit = music_limit.min(10);
+                info!(term = %s, "get_items: album search via SearchServiceManager");
+                match state
+                    .ctx
+                    .search
+                    .search(&db::MediaKind::Album, &s, album_limit, &state.ctx)
+                    .await
+                {
+                    Ok(albums) => {
+                        info!(count = albums.len(), "get_items: album search returned results");
+                        all_items.extend(albums.into_iter().map(api::db_media_to_item));
+                    }
+                    Err(e) => {
+                        warn!(error = %e, term = %s, "get_items: album search failed");
+                    }
+                }
+            }
+
+            if wants_video && !matches!(types[0], api::MediaType::Episode) {
+                for kind in &[db::MediaKind::Movie, db::MediaKind::Series] {
+                    let kind_type = api::db_media_kind_to_type(kind.clone());
+                    if !types.contains(&kind_type) {
+                        continue;
+                    }
+                    match state.ctx.search.search(kind, &s, limit, &state.ctx).await {
+                        Ok(results) => {
+                            let video_items: Vec<_> = results
+                                .into_iter()
+                                .map(api::db_media_to_item)
+                                .filter(|item| {
+                                    let type_match = types.contains(&item.type_);
+                                    let media_type_match = q.media_types.as_ref().map_or(true, |mt| {
+                                        item.media_type
+                                            .as_deref()
+                                            .and_then(|s| s.parse::<api::MediaType>().ok())
+                                            .map_or(false, |t| mt.contains(&t))
+                                    });
+                                    type_match && media_type_match
+                                })
+                                .collect();
+                            all_items.extend(video_items);
+                        }
+                        Err(e) => warn!(error = %e, ?kind, "get_items: video search failed"),
+                    }
+                }
+            }
+
+            let total_count = all_items.len() as i64;
+            let paged_items = all_items
+                .into_iter()
+                .skip(skip as usize)
+                .take(limit)
+                .collect();
+
+            return Ok(ItemsQueryResult {
+                total_count,
+                items: paged_items,
+            });
         }
     }
 
@@ -205,17 +212,41 @@ pub async fn get_items(
 
             let media_kind_filter =
                 if let Some(kind) = parent.collection_media_kind.clone() {
-                    vec![kind]
+                    match kind {
+                        db::CollectionMediaKind::Movie => vec![db::MediaKind::Movie],
+                        db::CollectionMediaKind::Series => vec![db::MediaKind::Series],
+                        db::CollectionMediaKind::Music => vec![
+                            db::MediaKind::Track,
+                            db::MediaKind::Album,
+                            db::MediaKind::Artist,
+                        ],
+                    }
                 } else {
                     vec![db::MediaKind::Movie, db::MediaKind::Series]
                 };
 
-            q.include_item_types = Some(
-                media_kind_filter
+            q.include_item_types = Some({
+                let collection_types: Vec<api::MediaType> = media_kind_filter
                     .iter()
                     .map(|k| api::db_media_kind_to_type(k.clone()))
-                    .collect(),
-            );
+                    .collect();
+                // Respect the client's IncludeItemTypes filter if provided,
+                // but constrain it to what this collection actually holds.
+                if let Some(requested) = &q.include_item_types {
+                    let intersection: Vec<_> = requested
+                        .iter()
+                        .filter(|t| collection_types.contains(t))
+                        .cloned()
+                        .collect();
+                    if intersection.is_empty() {
+                        collection_types
+                    } else {
+                        intersection
+                    }
+                } else {
+                    collection_types
+                }
+            });
 
             if q.limit.is_none() {
                 q.limit = Some(250);
@@ -712,39 +743,32 @@ pub async fn item(
     {
         Some(m) => m,
         None => {
-            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await
+            // Two concurrent requests for the same id (Jellyfin web UI bug):
+            // serialise here so only one triggers the expensive persist.
+            let lock = persist_locks().entry(id).or_insert_with(|| Arc::new(Mutex::new(()))).clone();
+            let _guard = lock.lock().await;
+
+            // Re-check under lock — first waiter may have just saved it.
+            match db::Media::get_by_filter(
+                &state.ctx.db,
+                &db::MediaFilter {
+                    id: Some(vec![id]),
+                    include_user_state: true,
+                    include_child_count: true,
+                    user_id: Some(session.user.id),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .records
+            .into_iter()
+            .next()
             {
-                if let Some(meta) = state.ctx.store.get::<sdks::aio::Meta>(id) {
-                    // Save basic media first (race-safe: if concurrent request already saved it, re-fetch)
-                    let mut media: db::Media = aio
-                        .get_meta(meta.media_type.clone(), meta.id.clone())
-                        .await?
-                        .try_into()?;
-
-                    let is_new = media.save(&state.ctx.db).await.is_ok();
-                    if !is_new {
-                        // Already in DB (race condition) — re-fetch, skip enrichment, let post-match handle sources
-                        media = db::Media::get_by_filter(
-                            &state.ctx.db,
-                            &db::MediaFilter {
-                                media_id: media.media_id.clone(),
-                                ..Default::default()
-                            },
-                        )
-                        .await?
-                        .records
-                        .into_iter()
-                        .next()
-                        .unwrap();
-                    }
-                    state.ctx.store.delete(id.to_string());
-
-                    media
-                } else {
-                    return Ok(None);
-                }
-            } else {
-                return Ok(None);
+                Some(m) => m,
+                None => match state.ctx.search.persist(id, &state.ctx).await? {
+                    Some(m) => { persist_locks().remove(&id); m }
+                    None => { persist_locks().remove(&id); return Ok(None); }
+                },
             }
         }
     };
@@ -753,6 +777,7 @@ pub async fn item(
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series);
     let needs_sources = want_sources
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode);
+    let needs_track_stream = want_sources && media.kind == db::MediaKind::Track;
 
     tokio::join!(
         async {
@@ -782,15 +807,107 @@ pub async fn item(
         }
     );
 
+    // For tracks: resolve the YouTube watch URL and ensure a Source row with probe_data
+    // exists in DB. This mirrors how Movie/Episode handle stream sources.
+    if needs_track_stream {
+        if let Some(ytdlp) = state.ctx.streams.ytdlp() {
+            // Step 1: resolve + cache the watch URL on the track itself.
+            let watch_url = if let Some(u) = media.url.clone() {
+                Some(u)
+            } else {
+                match ytdlp.resolve_watch_url(&media).await {
+                    Ok(watch_url) => {
+                        let _ = sqlx::query("UPDATE media SET url = ? WHERE id = ?")
+                            .bind(&watch_url)
+                            .bind(media.id)
+                            .execute(&state.ctx.db)
+                            .await;
+                        media.url = Some(watch_url.clone());
+                        Some(watch_url)
+                    }
+                    Err(e) => {
+                        warn!("failed to resolve track watch URL for {}: {e:#}", media.id);
+                        None
+                    }
+                }
+            };
+
+            // Step 2: ensure a Source child row with probe_data exists.
+            if let Some(watch_url) = watch_url {
+                let source_id = uuid::Uuid::new_v5(&media.id, b"audio_source");
+                let has_source = db::Media::get_by_id(&state.ctx.db, &source_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|s| s.probe_data)
+                    .is_some();
+
+                if !has_source {
+                    match ytdlp.get_audio_source_info(&media, &watch_url).await {
+                        Ok(source) => {
+                            let _ = db::Media::upsert(&state.ctx.db, &[source]).await;
+                        }
+                        Err(e) => {
+                            warn!("failed to get audio source info for {}: {e:#}", media.id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if media.kind == db::MediaKind::Source {
         media.sources = Some(vec![media.clone()]);
     } else if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
+        media.sources(&state.ctx.db).await?;
+        media.user_state(&state.ctx.db, &session.user).await?;
+    } else if media.kind == db::MediaKind::Track {
         media.sources(&state.ctx.db).await?;
         media.user_state(&state.ctx.db, &session.user).await?;
     }
     // info!("Seasons length: {:?}", media.seasons(&state.ctx.db).await?.len());
     media.load_relations(&state.ctx.db).await?;
     let mut base_item = api::db_media_to_item(media.clone());
+
+    // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.
+    // CDN URLs are IP-locked to the server; the client must go through the HLS pipeline.
+    if media.kind == db::MediaKind::Track {
+        let transcoding_url = format!(
+            "/videos/{}/master.m3u8?MediaSourceId={}&VideoCodec=copy&AudioCodec=aac",
+            media.id, media.id
+        );
+        let sources = media.sources.as_deref().unwrap_or(&[]);
+        let media_streams: Vec<api::MediaStream> = sources
+            .first()
+            .and_then(|s| s.probe_data.as_ref())
+            .map(|p| p.media_streams.clone())
+            .unwrap_or_else(|| vec![api::MediaStream {
+                index: 0,
+                type_: Some(api::MediaStreamType::Audio),
+                codec: Some("aac".to_string()),
+                channels: Some(2),
+                is_default: Some(true),
+                display_title: Some("Audio".to_string()),
+                ..Default::default()
+            }]);
+
+        base_item.media_sources = Some(vec![api::MediaSourceInfo {
+            id: media.id,
+            e_tag: media.id,
+            name: Some(media.title.clone()),
+            protocol: "Http".to_string(),
+            is_remote: true,
+            supports_direct_play: false,
+            supports_direct_stream: false,
+            supports_transcoding: true,
+            transcoding_url: Some(transcoding_url),
+            transcoding_sub_protocol: "hls".to_string(),
+            transcoding_container: Some("ts".to_string()),
+            run_time_ticks: media.runtime.map(|s| s * 10_000_000),
+            media_streams,
+            ..Default::default()
+        }]);
+    }
 
     if media.kind == db::MediaKind::Episode {
         if let Some(sid) = media.series_id {
@@ -1191,10 +1308,11 @@ pub async fn gelato_subtitles(
     Ok(Json(subtitles))
 }
 
-fn parse_collection_type(s: &str) -> Option<db::MediaKind> {
+fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
     match s {
-        "movies" => Some(db::MediaKind::Movie),
-        "tvshows" => Some(db::MediaKind::Series),
+        "movies" => Some(db::CollectionMediaKind::Movie),
+        "tvshows" => Some(db::CollectionMediaKind::Series),
+        "music" => Some(db::CollectionMediaKind::Music),
         _ => None,
     }
 }
@@ -1292,7 +1410,6 @@ pub async fn update_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── PATCH /items/{id} — partial update ────────────────────────────
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -1352,7 +1469,6 @@ pub async fn patch_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── POST /aio/catalogs/{aio_id} — upsert catalog settings ─────────
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]

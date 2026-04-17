@@ -16,7 +16,6 @@ use tower::{Layer, Service};
 
 use crate::web_patches::{CSS, JS};
 
-// ── Cache ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Default)]
 pub struct TransformCache(Arc<Mutex<HashMap<String, Bytes>>>);
@@ -30,7 +29,6 @@ impl TransformCache {
     }
 }
 
-// ── Layer ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct TransformLayer {
@@ -55,7 +53,6 @@ impl<S> Layer<S> for TransformLayer {
     }
 }
 
-// ── Service ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct TransformService<S> {

@@ -76,15 +76,18 @@ pub fn db_media_kind_to_type(kind: db::MediaKind) -> MediaType {
         db::MediaKind::Genre => MediaType::Genre,
         db::MediaKind::TvChannel => MediaType::TvChannel,
         db::MediaKind::TvProgram => MediaType::Program,
+        db::MediaKind::Track => MediaType::Audio,
+        db::MediaKind::Album => MediaType::MusicAlbum,
+        db::MediaKind::Artist => MediaType::MusicArtist,
         _ => MediaType::Unknown,
     }
 }
 
-pub fn db_media_kind_to_collection_type(kind: db::MediaKind) -> CollectionType {
+pub fn db_media_kind_to_collection_type(kind: db::CollectionMediaKind) -> CollectionType {
     match kind {
-        db::MediaKind::Movie => CollectionType::Movies,
-        db::MediaKind::Series => CollectionType::Tvshows,
-        _ => CollectionType::Unknown,
+        db::CollectionMediaKind::Movie => CollectionType::Movies,
+        db::CollectionMediaKind::Series => CollectionType::Tvshows,
+        db::CollectionMediaKind::Music => CollectionType::Music,
     }
 }
 
@@ -144,6 +147,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         db::MediaKind::Genre => MediaType::Genre,
         db::MediaKind::TvChannel => MediaType::TvChannel,
         db::MediaKind::TvProgram => MediaType::Program,
+        db::MediaKind::Track => MediaType::Audio,
+        db::MediaKind::Album => MediaType::MusicAlbum,
+        db::MediaKind::Artist => MediaType::MusicArtist,
         _ => MediaType::Unknown,
     };
 
@@ -189,6 +195,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             | db::MediaKind::Episode
             | db::MediaKind::TvChannel
             | db::MediaKind::TvProgram => Some("Video".to_string()),
+            db::MediaKind::Track => Some("Audio".to_string()),
             _ => None,
         },
         is_movie: Some(media.kind == db::MediaKind::Movie),
@@ -213,6 +220,8 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 | db::MediaKind::Collection
                 | db::MediaKind::Season
                 | db::MediaKind::Folder
+                | db::MediaKind::Album
+                | db::MediaKind::Artist
         ),
         channel_type: if matches!(
             media.kind,
@@ -292,6 +301,40 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .collect()
         }),
         child_count: media.child_count,
+        album_count: media.album_count,
+        song_count: media.song_count,
+        // Music track fields: album name, album id, artist name
+        album: (media.kind == db::MediaKind::Track)
+            .then(|| media.parent_title.clone())
+            .flatten(),
+        album_id: (media.kind == db::MediaKind::Track)
+            .then(|| media.parent_id.map(|id| id.to_string()))
+            .flatten(),
+        album_primary_image_tag: (media.kind == db::MediaKind::Track)
+            .then(|| media.poster.clone())
+            .flatten(),
+        album_artist: (media.kind == db::MediaKind::Track)
+            .then(|| media.series_title.clone())
+            .flatten(),
+        album_artists: (media.kind == db::MediaKind::Track)
+            .then(|| {
+                media.series_id.zip(media.series_title.clone()).map(|(id, name)| {
+                    vec![NameIdPair { id, name }]
+                })
+            })
+            .flatten(),
+        artists: (media.kind == db::MediaKind::Track)
+            .then(|| {
+                media.series_title.clone().map(|name| vec![name])
+            })
+            .flatten(),
+        artist_items: (media.kind == db::MediaKind::Track)
+            .then(|| {
+                media.series_id.zip(media.series_title.clone()).map(|(id, name)| {
+                    vec![NameIdPair { id, name }]
+                })
+            })
+            .flatten(),
         tags: if media.tags.is_empty() {
             None
         } else {
@@ -336,7 +379,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         item.external_urls = Some(external_urls);
     }
 
-    if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+    if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode
+        || media.kind == db::MediaKind::Track
+    {
         item.media_sources = match media.sources.clone() {
             Some(sources) if sources.is_empty() => Some(vec![media.clone().into()]),
             Some(sources) => {

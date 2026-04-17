@@ -204,6 +204,8 @@ pub struct ServerConfiguration {
     pub subtitle_languages: Option<Vec<String>>,
     #[default(Some(false))]
     pub enable_subtitles_detail: Option<bool>,
+    #[default(Some(true))]
+    pub music_enabled: Option<bool>,
 }
 
 impl ServerConfiguration {
@@ -592,6 +594,13 @@ pub struct GetItemsQuery {
     pub studios: Option<Vec<String>>,
     pub studio_ids: Option<Vec<String>>,
     pub exclude_artist_ids: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_uuids")]
+    pub contributing_artist_ids: Option<Vec<Uuid>>,
+    #[serde(default, deserialize_with = "deserialize_uuids")]
+    pub album_artist_ids: Option<Vec<Uuid>>,
+    #[serde(default, deserialize_with = "deserialize_uuids")]
+    pub album_ids: Option<Vec<Uuid>>,
+    #[serde(default, deserialize_with = "deserialize_uuids")]
     pub ids: Option<Vec<Uuid>>,
     #[serde(default, deserialize_with = "deserialize_bool_from_anything")]
     pub recursive: bool,
@@ -726,6 +735,13 @@ where
 }
 
 pub fn deserialize_sort_order<'de, D>(d: D) -> Result<Option<Vec<SortOrder>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_comma_str(d)
+}
+
+pub fn deserialize_uuids<'de, D>(d: D) -> Result<Option<Vec<Uuid>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -1960,7 +1976,9 @@ pub struct BaseItemDto {
     pub primary_image_aspect_ratio: f32,
     //pub artists: Option<Vec<String>>,
     //pub artist_items: Option<Vec<NameIdPair>>,
-    //pub album: Option<String>,
+    pub artists: Option<Vec<String>>,
+    pub artist_items: Option<Vec<NameIdPair>>,
+    pub album: Option<String>,
     pub collection_type: Option<CollectionType>,
     pub collection_kind: Option<String>,
     pub collection_catalog_filter: Option<Vec<String>>,
@@ -1968,8 +1986,8 @@ pub struct BaseItemDto {
     pub album_id: Option<String>,
     pub album_primary_image_tag: Option<String>,
     pub series_primary_image_tag: Option<String>,
-    //pub album_artist: Option<String>,
-    //pub album_artists: Option<Vec<NameIdPair>>,
+    pub album_artist: Option<String>,
+    pub album_artists: Option<Vec<NameIdPair>>,
     pub season_name: Option<String>,
     pub media_streams: Option<Vec<MediaStream>>,
     pub video_type: Option<String>,
@@ -2833,7 +2851,6 @@ pub struct SearchHintsQuery {
     pub include_item_types: Option<Vec<MediaType>>,
 }
 
-// ── IPTV / Live TV ───────────────────────────────────────────────────────────
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

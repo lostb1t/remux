@@ -190,7 +190,6 @@ fn App() -> Element {
     }
 }
 
-// ── Login ─────────────────────────────────────────────────────────────────────
 
 #[component]
 fn Login(on_login: EventHandler) -> Element {
@@ -353,7 +352,6 @@ fn Login(on_login: EventHandler) -> Element {
     }
 }
 
-// ── Dashboard ─────────────────────────────────────────────────────────────────
 
 #[component]
 fn ServerInfoCard(app_state: AppState) -> Element {
@@ -1253,7 +1251,6 @@ fn DashboardLayout() -> Element {
     }
 }
 
-// ── Route components ────────────────────────────────────────────────
 // Thin wrappers: pull AppState from context (provided by DashboardLayout)
 // then pass as props to the real page components.
 
@@ -1333,7 +1330,6 @@ fn NotFound(segments: Vec<String>) -> Element {
     rsx! {}
 }
 
-// ── Collections page ───────────────────────────────────────────────
 
 /// Which collection is currently being edited (None = creating new).
 #[derive(Clone, Debug)]
@@ -1418,6 +1414,7 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                         Some(ct) => match ct {
                                             remux_sdks::remux::CollectionType::Movies  => "Movies",
                                             remux_sdks::remux::CollectionType::Tvshows => "Shows",
+                                            remux_sdks::remux::CollectionType::Music   => "Music",
                                             _ => "Unknown",
                                         },
                                         None => "Unknown",
@@ -1525,6 +1522,7 @@ fn CollectionForm(
             .map(|ct| match ct {
                 remux_sdks::remux::CollectionType::Movies => "movies".to_string(),
                 remux_sdks::remux::CollectionType::Tvshows => "tvshows".to_string(),
+                remux_sdks::remux::CollectionType::Music => "music".to_string(),
                 _ => "movies".to_string(),
             })
             .unwrap_or_else(|| "movies".to_string())
@@ -1643,6 +1641,7 @@ fn CollectionForm(
                     onchange: move |e| col_type.set(e.value()),
                     option { value: "movies",  "Movies"   }
                     option { value: "tvshows", "TV Shows" }
+                    option { value: "music",   "Music"    }
                 }
             }
 
@@ -1697,7 +1696,6 @@ fn CollectionForm(
     }
 }
 
-// ── Smart Filter Editor ──────────────────────────────────────────────
 
 /// Extract the values vec from a set-type FilterRule without going through the string repr.
 fn rule_values(rule: &FilterRule) -> Vec<String> {
@@ -2206,7 +2204,6 @@ fn FilterRuleRow(
     }
 }
 
-// ── Users page ──────────────────────────────────────────────────────
 
 #[derive(Clone)]
 enum UserFormMode {
@@ -2224,7 +2221,6 @@ impl PartialEq for UserFormMode {
     }
 }
 
-// ── IPTV page ─────────────────────────────────────────────────────
 
 #[component]
 fn IptvPage(app_state: AppState) -> Element {
@@ -2255,7 +2251,6 @@ fn IptvPage(app_state: AppState) -> Element {
     }
 }
 
-// ── IPTV Sources tab ──────────────────────────────────────────────
 
 #[component]
 fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
@@ -2333,7 +2328,6 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
     let error_v = error.read().clone();
 
     rsx! {
-        // ── Channel sources card ───────────────────────────────────
         div { class: "card",
             div { class: "card-header",
                 span { class: "card-title", "Channel Sources" }
@@ -2577,7 +2571,6 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
             }
         }
 
-        // ── EPG sources card ───────────────────────────────────────
         div { class: "card",
             div { class: "card-header",
                 span { class: "card-title", "EPG Sources" }
@@ -2726,7 +2719,6 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
     }
 }
 
-// ── IPTV Channels tab ─────────────────────────────────────────────
 
 const PAGE_SIZE: u32 = 50;
 
@@ -3018,7 +3010,6 @@ fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
     }
 }
 
-// ── Imports page ───────────────────────────────────────────────────
 
 #[component]
 fn ImportsPage(app_state: AppState) -> Element {
@@ -3549,7 +3540,6 @@ fn UserForm(
     }
 }
 
-// ── API Keys page ────────────────────────────────────────────────────
 
 #[component]
 fn ApiKeysPage(app_state: AppState) -> Element {
@@ -3649,7 +3639,6 @@ fn ApiKeysPage(app_state: AppState) -> Element {
             }
         }
 
-        // ── Create dialog ──────────────────────────────────────────────
         if *show_create.read() {
             div { class: "modal-backdrop",
                 div { class: "modal",
@@ -3711,7 +3700,6 @@ fn ApiKeysPage(app_state: AppState) -> Element {
             }
         }
 
-        // ── Reveal dialog (shown once after creation) ──────────────────
         if let Some(new_key) = revealed_key.read().clone() {
             {
                 let token = new_key.access_token.clone().unwrap_or_default();
@@ -3765,7 +3753,6 @@ fn ApiKeysPage(app_state: AppState) -> Element {
             }
         }
 
-        // ── Confirm revoke dialog ─────────────────────────────────────
         if let Some(token) = key_to_delete.read().clone() {
             {
                 let client = app_state.client.clone();
@@ -3817,7 +3804,6 @@ fn ApiKeysPage(app_state: AppState) -> Element {
     }
 }
 
-// ── Settings page ───────────────────────────────────────────────────
 
 #[component]
 fn SettingsPage(app_state: AppState) -> Element {
@@ -3839,6 +3825,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
     let mut quick_connect_enabled = use_signal(|| true);
+    let mut music_enabled = use_signal(|| true);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -3866,6 +3853,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                     );
                     quick_connect_enabled
                         .set(cfg.quick_connect_available.unwrap_or(true));
+                    music_enabled.set(cfg.music_enabled.unwrap_or(true));
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
@@ -3887,10 +3875,12 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages.peek().clone();
         let qc_enabled = *quick_connect_enabled.peek();
+        let music_on = *music_enabled.peek();
 
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
         cfg.server_name = Some(name);
         cfg.quick_connect_available = Some(qc_enabled);
+        cfg.music_enabled = Some(music_on);
         cfg.aio_url = AioUrl::try_new(url).ok();
         cfg.catalog_max_items = Some(max);
         cfg.p2p_enabled = Some(p2p_on);
@@ -4100,6 +4090,20 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                         }
 
+                        div { class: "field",
+                            label { class: "field-label",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *music_enabled.read(),
+                                    oninput: move |e| music_enabled.set(e.checked()),
+                                }
+                                " Enable Music"
+                            }
+                            p { class: "field-hint",
+                                "Enable music search and browsing. When disabled, music search returns no results."
+                            }
+                        }
+
                         if let Some(err) = error.read().as_ref() {
                             div { class: "alert-error", "{err}" }
                         }
@@ -4122,7 +4126,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     }
 }
 
-// ── Branding page ────────────────────────────────────────────────────
 
 #[component]
 fn BrandingPage(app_state: AppState) -> Element {
@@ -4235,7 +4238,6 @@ fn BrandingPage(app_state: AppState) -> Element {
     }
 }
 
-// ── Setup wizard ────────────────────────────────────────────────────
 
 #[component]
 fn WizardStep(n: u8, label: &'static str, active: bool, done: bool) -> Element {
@@ -4314,7 +4316,6 @@ fn Wizard(on_complete: EventHandler) -> Element {
 
                     {match *step.read() {
 
-                        // ── Step 0: server info ────────────────────
                         0 => rsx! {
                             form {
                                 onsubmit: move |e| {
@@ -4386,7 +4387,6 @@ fn Wizard(on_complete: EventHandler) -> Element {
                             }
                         },
 
-                        // ── Step 1: admin account ──────────────────
                         1 => rsx! {
                             form {
                                 onsubmit: move |e| {
@@ -4485,7 +4485,6 @@ fn Wizard(on_complete: EventHandler) -> Element {
                             }
                         },
 
-                        // ── Step 2: finish ─────────────────────────
                         _ => rsx! {
                             div { style: "display:flex;flex-direction:column;gap:20px",
                                 p { class: "wizard-desc",
@@ -4520,7 +4519,6 @@ fn Wizard(on_complete: EventHandler) -> Element {
     }
 }
 
-// ── Logs page ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
 struct LogLine {

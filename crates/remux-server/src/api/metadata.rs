@@ -11,7 +11,6 @@ use crate::db::auth;
 use crate::api;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt};
 
-// ── Studios ───────────────────────────────────────────────────────────────────
 
 #[get("/studios")]
 pub async fn studios(
@@ -63,7 +62,6 @@ pub async fn studio_by_name(
     Ok(Json(api::db_media_to_item(record)))
 }
 
-// ── Years ─────────────────────────────────────────────────────────────────────
 
 #[get("/years")]
 pub async fn years(
@@ -120,7 +118,6 @@ pub async fn year_by_value(
     }))
 }
 
-// ── Persons ───────────────────────────────────────────────────────────────────
 
 #[get("/persons/{name}")]
 pub async fn person_by_name(
@@ -145,7 +142,6 @@ pub async fn person_by_name(
     Ok(Json(api::db_media_to_item(record)))
 }
 
-// ── Genres ────────────────────────────────────────────────────────────────────
 
 #[get("/genres/{name}")]
 pub async fn genre_by_name(
