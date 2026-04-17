@@ -483,6 +483,13 @@ async fn items_playbackinfo_inner(
         } else {
             source.supports_transcoding = false;
             source.supports_direct_play = true;
+            // Proxy through the server so clients never need direct CDN access.
+            if track_stream_url.is_some() {
+                source.path = Some(format!(
+                    "/Audio/{}/stream?Static=true&MediaSourceId={}",
+                    id, source.id
+                ));
+            }
         }
 
         media_sources.push(source);
@@ -518,6 +525,29 @@ async fn items_playbackinfo_inner(
 ///
 /// If the `static_` query parameter is set to `true`, the response will be a static
 /// video stream. Otherwise, a progressive transcode is started.
+#[get("/Audio/{id}/stream")]
+pub async fn audio_stream(
+    headers: headers::HeaderMap,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<api::VideoStreamQuery>,
+) -> Result<impl IntoResponse> {
+    videos_stream_inner(headers, state, id, q).await
+}
+
+#[get("/Audio/{id}/stream.{container}")]
+pub async fn audio_stream_by_container(
+    headers: headers::HeaderMap,
+    State(state): State<AppState>,
+    Path((id, container)): Path<(Uuid, String)>,
+    Query(mut q): Query<api::VideoStreamQuery>,
+) -> Result<impl IntoResponse> {
+    if q.container.is_none() {
+        q.container = Some(container);
+    }
+    videos_stream_inner(headers, state, id, q).await
+}
+
 #[get("/videos/{id}/stream")]
 pub async fn videos_stream(
     headers: headers::HeaderMap,

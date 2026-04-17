@@ -956,12 +956,21 @@ impl DirectPlayProfile {
     }
 
     pub fn supports_container(&self, container: &str) -> bool {
+        // Normalize aliases: mp4 and m4a are the same format.
+        let aliases: &[&str] = match container.to_ascii_lowercase().as_str() {
+            "mp4" => &["mp4", "m4a"],
+            "m4a" => &["m4a", "mp4"],
+            _ => &[],
+        };
         self.container
             .as_ref()
             .map(|c| {
                 c == "*"
-                    || c.split(',')
-                        .any(|c| c.trim().eq_ignore_ascii_case(container))
+                    || c.split(',').any(|c| {
+                        let c = c.trim();
+                        c.eq_ignore_ascii_case(container)
+                            || aliases.iter().any(|a| c.eq_ignore_ascii_case(a))
+                    })
             })
             .unwrap_or(true)
     }
