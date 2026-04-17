@@ -1846,8 +1846,9 @@ impl Media {
                     .map(|sf| sf.match_mode.clone())
                     .unwrap_or_default(),
                 artist_ids: filter
-                    .contributing_artist_ids
+                    .artist_ids
                     .clone()
+                    .or_else(|| filter.contributing_artist_ids.clone())
                     .or_else(|| filter.album_artist_ids.clone()),
                 ..Default::default()
             },

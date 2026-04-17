@@ -595,6 +595,8 @@ pub struct GetItemsQuery {
     pub studio_ids: Option<Vec<String>>,
     pub exclude_artist_ids: Option<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_uuids")]
+    pub artist_ids: Option<Vec<Uuid>>,
+    #[serde(default, deserialize_with = "deserialize_uuids")]
     pub contributing_artist_ids: Option<Vec<Uuid>>,
     #[serde(default, deserialize_with = "deserialize_uuids")]
     pub album_artist_ids: Option<Vec<Uuid>>,
