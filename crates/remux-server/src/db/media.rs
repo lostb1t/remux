@@ -1444,19 +1444,19 @@ impl Media {
             }
         }
 
-        // Populate parent_title / series_title for tracks (album name, artist name)
-        let track_ids_needing_parents: Vec<_> = records
+        // Populate parent_title / series_title for tracks and albums (album name, artist name)
+        let music_ids_needing_parents: Vec<_> = records
             .iter()
-            .filter(|m| m.kind == MediaKind::Track)
+            .filter(|m| matches!(m.kind, MediaKind::Track | MediaKind::Album))
             .flat_map(|m| [m.parent_id, m.series_id].into_iter().flatten())
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
 
-        if !track_ids_needing_parents.is_empty() {
+        if !music_ids_needing_parents.is_empty() {
             let mut title_map: HashMap<Uuid, String> = HashMap::new();
             // SQLite limit is 999 variables; chunk to stay safe.
-            for chunk in track_ids_needing_parents.chunks(500) {
+            for chunk in music_ids_needing_parents.chunks(500) {
                 let mut qb = sqlx::QueryBuilder::new("SELECT id, title FROM media WHERE id IN (");
                 let mut sep = qb.separated(", ");
                 for id in chunk {
@@ -1473,7 +1473,7 @@ impl Media {
             }
             if !title_map.is_empty() {
                 for media in &mut records {
-                    if media.kind == MediaKind::Track {
+                    if matches!(media.kind, MediaKind::Track | MediaKind::Album) {
                         media.parent_title =
                             media.parent_id.and_then(|id| title_map.get(&id).cloned());
                         media.series_title =

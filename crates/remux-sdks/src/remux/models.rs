@@ -2497,6 +2497,12 @@ pub enum ItemFields {
     Status,
     ParentBackdropItemId,
     ParentBackdropImageTags,
+    Id,
+    Name,
+    Artists,
+    AlbumId,
+    ArtistItems,
+    PrimaryImageTag,
 }
 
 #[derive(

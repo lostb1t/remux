@@ -313,22 +313,22 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         album_primary_image_tag: (media.kind == db::MediaKind::Track)
             .then(|| media.poster.clone())
             .flatten(),
-        album_artist: (media.kind == db::MediaKind::Track)
+        album_artist: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| media.series_title.clone())
             .flatten(),
-        album_artists: (media.kind == db::MediaKind::Track)
+        album_artists: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
                 media.series_id.zip(media.series_title.clone()).map(|(id, name)| {
                     vec![NameIdPair { id, name }]
                 })
             })
             .flatten(),
-        artists: (media.kind == db::MediaKind::Track)
+        artists: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
                 media.series_title.clone().map(|name| vec![name])
             })
             .flatten(),
-        artist_items: (media.kind == db::MediaKind::Track)
+        artist_items: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
                 media.series_id.zip(media.series_title.clone()).map(|(id, name)| {
                     vec![NameIdPair { id, name }]
