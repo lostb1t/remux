@@ -145,6 +145,9 @@ fn track_to_result(t: DeezerTrack) -> MusicSearchResult {
         poster: t.album.cover_medium,
         runtime: t.duration.map(|s| s as i64),
         description: Some(format!("by {}", t.artist.name)),
+        parent_id: Some(album.id),
+        parent_title: Some(t.album.title),
+        series_title: Some(t.artist.name),
         ..Default::default()
     };
     MusicSearchResult { media: track, album: Some(album), artist: Some(artist) }
@@ -394,6 +397,15 @@ impl SearchService for DeezerTrackSearchService {
             .into_iter()
             .map(track_to_result)
             .map(|r| {
+                // Also cache the album so persist works if the user navigates to it directly.
+                if let Some(ref album) = r.album {
+                    let album_result = MusicSearchResult {
+                        media: album.clone(),
+                        album: None,
+                        artist: r.artist.clone(),
+                    };
+                    ctx.store.insert(album.id.to_string(), album_result, Duration::from_secs(3600));
+                }
                 ctx.store.insert(r.media.id.to_string(), r.clone(), Duration::from_secs(3600));
                 r.media
             })
@@ -473,6 +485,7 @@ fn album_to_result(a: DeezerAlbum) -> MusicSearchResult {
         media_id: Some(a.id.to_string()),
         poster: a.cover_medium,
         description: Some(format!("by {}", a.artist.name)),
+        series_title: Some(a.artist.name),
         ..Default::default()
     };
     MusicSearchResult { media: album, album: None, artist: Some(artist) }
