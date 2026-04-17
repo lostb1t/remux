@@ -58,17 +58,8 @@ impl YtDlpSearchService {
     async fn run_flat_playlist(&self, url_or_query: &str, limit: usize) -> Result<YtDlpPlaylist> {
         let limit_str = limit.to_string();
         let output = Command::new(&self.executable)
-            .args([
-                "--dump-single-json",
-                "--flat-playlist",
-                "--no-warnings",
-                "--quiet",
-                "--impersonate",
-                "chrome",
-                "--playlist-end",
-                &limit_str,
-                url_or_query,
-            ])
+            .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", "--playlist-end", &limit_str, url_or_query])
+            .args(super::ytdlp_extra_args())
             .output()
             .await
             .context("failed to spawn yt-dlp")?;
@@ -163,7 +154,8 @@ impl SearchService for YtDlpAlbumSearchService {
 
         // Step 1: get flat stub list — entries have IDs but no full metadata.
         let output = Command::new(&self.executable)
-            .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", "--impersonate", "chrome", &search_url])
+            .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", &search_url])
+            .args(super::ytdlp_extra_args())
             .output()
             .await
             .context("failed to spawn yt-dlp for album search")?;
@@ -202,7 +194,8 @@ impl SearchService for YtDlpAlbumSearchService {
                 let exe = exe.clone();
                 async move {
                     let output = Command::new(&exe)
-                        .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", "--impersonate", "chrome", &url])
+                        .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", &url])
+                        .args(super::super::ytdlp_extra_args())
                         .output()
                         .await
                         .ok()?;

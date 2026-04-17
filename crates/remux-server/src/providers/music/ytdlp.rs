@@ -82,16 +82,8 @@ impl MusicMetaProvider for YtDlpMusicMetaProvider {
             .ok_or_else(|| anyhow::anyhow!("track has no URL or media_id for metadata fetch"))?;
 
         let output = Command::new(&self.executable)
-            .args([
-                "--dump-json",
-                "--no-playlist",
-                "--skip-download",
-                "--quiet",
-                "--no-warnings",
-                "--impersonate",
-                "chrome",
-                &url,
-            ])
+            .args(["--dump-json", "--no-playlist", "--skip-download", "--quiet", "--no-warnings", &url])
+            .args(super::super::ytdlp_extra_args())
             .output()
             .await
             .context("failed to spawn yt-dlp for metadata")?;
