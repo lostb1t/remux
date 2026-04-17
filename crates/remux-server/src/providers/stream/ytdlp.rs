@@ -141,7 +141,7 @@ impl YtDlpStreamService {
     async fn dump_json(&self, url_or_query: &str) -> Result<YtDlpVideo> {
         let output = Command::new(&self.executable)
             .args(["--dump-json", "--no-playlist", "--quiet", "--no-warnings", url_or_query])
-            .args(super::ytdlp_extra_args())
+            .args(crate::providers::ytdlp_extra_args())
             .output()
             .await
             .context("failed to spawn yt-dlp")?;

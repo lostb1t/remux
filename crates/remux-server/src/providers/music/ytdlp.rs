@@ -83,7 +83,7 @@ impl MusicMetaProvider for YtDlpMusicMetaProvider {
 
         let output = Command::new(&self.executable)
             .args(["--dump-json", "--no-playlist", "--skip-download", "--quiet", "--no-warnings", &url])
-            .args(super::super::ytdlp_extra_args())
+            .args(crate::providers::ytdlp_extra_args())
             .output()
             .await
             .context("failed to spawn yt-dlp for metadata")?;
