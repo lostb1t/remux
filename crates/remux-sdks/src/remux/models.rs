@@ -1681,12 +1681,16 @@ pub struct MediaStream {
     pub is_anamorphic: Option<bool>,
     pub is_avc: Option<bool>,
     pub is_default: Option<bool>,
+    #[serde(default)]
     pub is_external: bool,
     pub is_external_url: Option<bool>,
     #[serde(default)]
     pub is_forced: bool,
+    #[serde(default)]
     pub is_hearing_impaired: bool,
+    #[serde(default)]
     pub is_interlaced: bool,
+    #[serde(default)]
     pub is_text_subtitle_stream: bool,
     pub language: Option<String>,
     pub level: Option<f64>,
