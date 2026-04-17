@@ -145,6 +145,8 @@ impl YtDlpStreamService {
                 "--no-playlist",
                 "--quiet",
                 "--no-warnings",
+                "--impersonate",
+                "chrome",
                 url_or_query,
             ])
             .output()

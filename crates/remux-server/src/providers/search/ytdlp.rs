@@ -63,6 +63,8 @@ impl YtDlpSearchService {
                 "--flat-playlist",
                 "--no-warnings",
                 "--quiet",
+                "--impersonate",
+                "chrome",
                 "--playlist-end",
                 &limit_str,
                 url_or_query,
@@ -161,7 +163,7 @@ impl SearchService for YtDlpAlbumSearchService {
 
         // Step 1: get flat stub list — entries have IDs but no full metadata.
         let output = Command::new(&self.executable)
-            .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", &search_url])
+            .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", "--impersonate", "chrome", &search_url])
             .output()
             .await
             .context("failed to spawn yt-dlp for album search")?;
@@ -200,7 +202,7 @@ impl SearchService for YtDlpAlbumSearchService {
                 let exe = exe.clone();
                 async move {
                     let output = Command::new(&exe)
-                        .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", &url])
+                        .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", "--impersonate", "chrome", &url])
                         .output()
                         .await
                         .ok()?;

@@ -88,6 +88,8 @@ impl MusicMetaProvider for YtDlpMusicMetaProvider {
                 "--skip-download",
                 "--quiet",
                 "--no-warnings",
+                "--impersonate",
+                "chrome",
                 &url,
             ])
             .output()
