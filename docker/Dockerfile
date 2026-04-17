@@ -1,5 +1,7 @@
 FROM debian:trixie-slim
 
+ARG TARGETARCH
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WEB_PATH=/app/jellyfin-web
 ENV ANFITEATRO_WEB_PATH=/app/anfiteatro-web
@@ -12,7 +14,8 @@ ENV FFPROBE_PATH=/app/jellyfin-ffmpeg/ffprobe
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
-    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp \
+    && YTDLP_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "yt-dlp_linux_aarch64" || echo "yt-dlp_linux") \
+    && curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_ARCH}" -o /usr/local/bin/yt-dlp \
     && chmod +x /usr/local/bin/yt-dlp \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
