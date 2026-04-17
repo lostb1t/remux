@@ -164,57 +164,25 @@ async fn items_playbackinfo_inner(
         return Ok(Json(info));
     }
 
-    // Music tracks: served via HLS through the server so the browser never needs
-    // direct access to IP-locked YouTube CDN URLs.
-    if media.kind == db::MediaKind::Track {
-        let play_session_id = utils::get_uuid().as_simple().to_string();
-        let transcoding_url = format!(
-            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=copy&AudioCodec=aac",
-            id, play_session_id, media.id
-        );
-
-        // Load Source child to get real probe data (codec, channels, bitrate).
-        let media_streams: Vec<api::MediaStream> = {
-            let source_id = uuid::Uuid::new_v5(&media.id, b"audio_source");
-            db::Media::get_by_id(&state.ctx.db, &source_id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|s| s.probe_data)
-                .map(|p| p.0.media_streams)
-                .unwrap_or_else(|| vec![api::MediaStream {
-                    index: 0,
-                    type_: Some(api::MediaStreamType::Audio),
-                    codec: Some("aac".to_string()),
-                    channels: Some(2),
-                    is_default: Some(true),
-                    display_title: Some("Audio".to_string()),
-                    ..Default::default()
-                }])
-        };
-
-        let source = api::MediaSourceInfo {
-            id: media.id,
-            name: Some(media.title.clone()),
-            protocol: "Http".to_string(),
-            is_remote: true,
-            supports_direct_play: false,
-            supports_direct_stream: false,
-            supports_transcoding: true,
-            transcoding_url: Some(transcoding_url),
-            transcoding_sub_protocol: "hls".to_string(),
-            transcoding_container: Some("ts".to_string()),
-            run_time_ticks: media.runtime.map(|s| s * 10_000_000),
-            media_streams,
-            ..Default::default()
-        };
-        let info = api::PlaybackInfoResponse {
-            media_sources: vec![source],
-            play_session_id: Some(play_session_id),
-            ..Default::default()
-        };
-        return Ok(Json(info));
-    }
+    // For Track items, resolve a fresh CDN URL once here. It is used both as
+    // source.path (direct play) and as the probe/transcode input URL.
+    let track_stream_url: Option<String> = if media.kind == db::MediaKind::Track {
+        state
+            .ctx
+            .streams
+            .get_streams(&media, &state.ctx)
+            .await
+            .ok()
+            .and_then(|streams| {
+                streams
+                    .iter()
+                    .find(|s| s.is_audio_only)
+                    .or_else(|| streams.first())
+                    .map(|s| s.url.clone())
+            })
+    } else {
+        None
+    };
 
     // Collect all playable sources. A Movie/Episode may have multiple
     // Source children (versions); return every one so the client can
@@ -227,6 +195,14 @@ async fn items_playbackinfo_inner(
                 vec![media]
             } else {
                 sources
+            }
+        } else if media.kind == db::MediaKind::Track {
+            // Use the Source child so the device profile check has real probe data
+            // (codec, container, bitrate). Fall back to the Track itself if not yet cached.
+            let source_id = uuid::Uuid::new_v5(&media.id, b"audio_source");
+            match db::Media::get_by_id(&state.ctx.db, &source_id).await {
+                Ok(Some(source)) => vec![source],
+                _ => vec![media],
             }
         } else {
             vec![media]
@@ -275,10 +251,12 @@ async fn items_playbackinfo_inner(
     let mut sources_with_urls: Vec<SourceWithUrl> =
         Vec::with_capacity(source_medias.len());
     for sm in source_medias {
-        let resolved_url = sm
-            .url
-            .as_deref()
-            .map(|u| remap_internal_aio_url(u, aio_url.as_ref().map(AsRef::as_ref)));
+        // For Track sources use the fresh CDN URL; for everything else remap as usual.
+        let resolved_url = track_stream_url.clone().or_else(|| {
+            sm.url
+                .as_deref()
+                .map(|u| remap_internal_aio_url(u, aio_url.as_ref().map(AsRef::as_ref)))
+        });
         sources_with_urls.push(SourceWithUrl { sm, resolved_url });
     }
 
@@ -372,6 +350,10 @@ async fn items_playbackinfo_inner(
             probe_join.unwrap_or_else(|_| api::MediaSourceInfo::from(sm.clone()));
         source.id = sm.id;
         source.e_tag = sm.id;
+        // Use the AIO-remapped URL so clients can reach it for direct play.
+        if let Some(ref resolved) = swu.resolved_url {
+            source.path = Some(resolved.clone());
+        }
 
         // Only flag bitrate exceeded when the source bitrate is known and
         // actually exceeds the cap. An unknown bitrate is treated as within
@@ -407,68 +389,97 @@ async fn items_playbackinfo_inner(
         );
 
         if needs_transcoding {
-            let trans_profile = device_profile
-                .as_ref()
-                .and_then(|p| p.video_transcoding_profile());
-            let (trans_container, trans_protocol) = trans_profile
-                .map(|p| {
-                    (
-                        p.container.clone().unwrap_or_else(|| "ts".to_string()),
-                        p.protocol.clone().unwrap_or_else(|| "hls".to_string()),
-                    )
-                })
-                .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
+            let is_audio_only = source.video_stream().is_none();
 
-            let needs_video_transcode = transcode_reasons
-                .contains(api::TranscodeReason::VideoCodecNotSupported)
-                || transcode_reasons
-                    .contains(api::TranscodeReason::ContainerBitrateExceedsLimit);
-            let video_codec = if needs_video_transcode {
-                "h264"
+            if is_audio_only {
+                let trans_profile = device_profile
+                    .as_ref()
+                    .and_then(|p| p.audio_transcoding_profile());
+                let trans_container = trans_profile
+                    .and_then(|p| p.container.clone())
+                    .unwrap_or_else(|| "mp3".to_string());
+                let audio_codec = trans_profile
+                    .and_then(|p| p.audio_codec.as_deref())
+                    .and_then(|c| c.split(',').next())
+                    .map(|c| c.trim().to_string())
+                    .unwrap_or_else(|| "aac".to_string());
+
+                let start_time_param = query.start_time_ticks
+                    .map(|t| format!("&StartTimeTicks={}", t))
+                    .unwrap_or_default();
+
+                source.supports_transcoding = true;
+                source.transcoding_url = Some(format!(
+                    "/videos/{}/stream.{}?MediaSourceId={}&AudioCodec={}{}",
+                    id,
+                    trans_container,
+                    source.id,
+                    audio_codec,
+                    start_time_param,
+                ));
+                source.transcoding_container = Some(trans_container);
+                source.transcoding_sub_protocol = "http".to_string();
+                source.supports_direct_play = false;
+                source.supports_direct_stream = false;
             } else {
-                "copy"
+                let trans_profile = device_profile
+                    .as_ref()
+                    .and_then(|p| p.video_transcoding_profile());
+                let (trans_container, trans_protocol) = trans_profile
+                    .map(|p| {
+                        (
+                            p.container.clone().unwrap_or_else(|| "ts".to_string()),
+                            p.protocol.clone().unwrap_or_else(|| "hls".to_string()),
+                        )
+                    })
+                    .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
+
+                let needs_video_transcode = transcode_reasons
+                    .contains(api::TranscodeReason::VideoCodecNotSupported)
+                    || transcode_reasons
+                        .contains(api::TranscodeReason::ContainerBitrateExceedsLimit);
+                let video_codec = if needs_video_transcode { "h264" } else { "copy" }.to_string();
+                let needs_audio_transcode = transcode_reasons
+                    .contains(api::TranscodeReason::AudioCodecNotSupported);
+                let audio_codec =
+                    if needs_audio_transcode { "aac" } else { "copy" }.to_string();
+
+                let bitrate_param = max_bitrate
+                    .map(|b| format!("&MaxStreamingBitrate={}", b))
+                    .unwrap_or_default();
+                let reasons_param = transcode_reasons
+                    .to_query_value()
+                    .map(|v| format!("&TranscodeReasons={}", v))
+                    .unwrap_or_default();
+                let audio_stream_param = query.audio_stream_index.or(source.default_audio_stream_index)
+                    .map(|idx| format!("&AudioStreamIndex={}", idx))
+                    .unwrap_or_default();
+                let subtitle_stream_param = query.subtitle_stream_index.or(source.default_subtitle_stream_index)
+                    .map(|idx| format!("&SubtitleStreamIndex={}", idx))
+                    .unwrap_or_default();
+                let start_time_param = query.start_time_ticks
+                    .map(|t| format!("&StartTimeTicks={}", t))
+                    .unwrap_or_default();
+
+                source.supports_transcoding = true;
+                source.transcoding_url = Some(format!(
+                    "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}",
+                    id,
+                    play_session_id,
+                    source.id,
+                    video_codec,
+                    audio_codec,
+                    bitrate_param,
+                    reasons_param,
+                    audio_stream_param,
+                    subtitle_stream_param,
+                    start_time_param
+                ));
+                source.transcoding_container = Some(trans_container);
+                source.transcoding_sub_protocol = trans_protocol;
+                source.supports_direct_play = false;
+                source.supports_direct_stream = false;
             }
-            .to_string();
-            let needs_audio_transcode = transcode_reasons
-                .contains(api::TranscodeReason::AudioCodecNotSupported);
-            let audio_codec =
-                if needs_audio_transcode { "aac" } else { "copy" }.to_string();
-
-            let bitrate_param = max_bitrate
-                .map(|b| format!("&MaxStreamingBitrate={}", b))
-                .unwrap_or_default();
-            let reasons_param = transcode_reasons
-                .to_query_value()
-                .map(|v| format!("&TranscodeReasons={}", v))
-                .unwrap_or_default();
-            let audio_stream_param = query.audio_stream_index.or(source.default_audio_stream_index)
-                .map(|idx| format!("&AudioStreamIndex={}", idx))
-                .unwrap_or_default();
-            let subtitle_stream_param = query.subtitle_stream_index.or(source.default_subtitle_stream_index)
-                .map(|idx| format!("&SubtitleStreamIndex={}", idx))
-                .unwrap_or_default();
-            let start_time_param = query.start_time_ticks
-                .map(|t| format!("&StartTimeTicks={}", t))
-                .unwrap_or_default();
-
-            source.supports_transcoding = true;
-            source.transcoding_url = Some(format!(
-                "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}",
-                id,
-                play_session_id,
-                source.id,
-                video_codec,
-                audio_codec,
-                bitrate_param,
-                reasons_param,
-                audio_stream_param,
-                subtitle_stream_param,
-                start_time_param
-            ));
-            source.transcoding_container = Some(trans_container);
-            source.transcoding_sub_protocol = trans_protocol;
-            source.supports_direct_play = false;
-            source.supports_direct_stream = false;
         } else {
             source.supports_transcoding = false;
             source.supports_direct_play = true;
@@ -563,6 +574,23 @@ async fn videos_stream_inner(
         }
         .or_else(|| sources.into_iter().next())
         .context_not_found("not found", "no playable source found")?;
+    }
+
+    // Track: resolve a fresh CDN stream URL via yt-dlp (watch URL is not directly playable).
+    if media.kind == db::MediaKind::Track {
+        let streams = state
+            .ctx
+            .streams
+            .get_streams(&media, &state.ctx)
+            .await
+            .map_err(|e| anyhow!("could not resolve track stream: {e:#}"))?;
+        let best = streams
+            .iter()
+            .find(|s| s.is_audio_only)
+            .or_else(|| streams.first())
+            .cloned()
+            .context_not_found("no stream", "no playable stream found for track")?;
+        media.url = Some(best.url);
     }
 
     // Torrent streams: resolve magnet URI to a local HTTP URL.

@@ -840,6 +840,15 @@ impl DeviceProfile {
         })
     }
 
+    pub fn audio_transcoding_profile(&self) -> Option<&TranscodingProfile> {
+        self.transcoding_profiles.iter().find(|p| {
+            p.type_
+                .as_deref()
+                .map(|t| t.eq_ignore_ascii_case("Audio"))
+                .unwrap_or(false)
+        })
+    }
+
     pub fn supports_direct_play(&self, media_source: &MediaSourceInfo) -> bool {
         self.check_direct_play(media_source).is_empty()
     }
@@ -850,12 +859,6 @@ impl DeviceProfile {
     ) -> TranscodeReasons {
         let mut best: Option<TranscodeReasons> = None;
         for profile in &self.direct_play_profiles {
-            // Only consider Video profiles for video sources
-            if let Some(type_) = &profile.type_ {
-                if !type_.eq_ignore_ascii_case("Video") {
-                    continue;
-                }
-            }
             let reasons = profile.check_reasons(media_source);
             if reasons.is_empty() {
                 return reasons; // perfect match
@@ -863,7 +866,6 @@ impl DeviceProfile {
             best = Some(match best {
                 None => reasons,
                 Some(prev) => {
-                    // Prefer the profile with fewer failure bits set
                     if reasons.0.count_ones() < prev.0.count_ones() {
                         reasons
                     } else {
@@ -872,7 +874,6 @@ impl DeviceProfile {
                 }
             });
         }
-        // No Video profiles at all → container not supported
         best.unwrap_or_else(|| {
             let mut r = TranscodeReasons::default();
             r.insert(TranscodeReason::ContainerNotSupported);
@@ -1089,8 +1090,23 @@ impl TranscodeReason {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct TranscodeReasons(pub u32);
+
+impl std::fmt::Debug for TranscodeReasons {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use strum::IntoEnumIterator;
+        let active: Vec<String> = TranscodeReason::iter()
+            .filter(|r| self.contains(*r))
+            .map(|r| r.to_string())
+            .collect();
+        if active.is_empty() {
+            write!(f, "[]")
+        } else {
+            write!(f, "[{}]", active.join(", "))
+        }
+    }
+}
 
 impl serde::Serialize for TranscodeReasons {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
