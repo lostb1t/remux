@@ -308,6 +308,24 @@ pub async fn get_items(
     )
     .await?;
 
+    // If the parent is currently being persisted (first-load race), wait for it then retry.
+    if result.records.is_empty() {
+        if let Some(parent_id) = q.parent_id {
+            if let Some(lock) = persist_locks().get(&parent_id).map(|e| e.clone()) {
+                let _guard = lock.lock().await;
+                result = db::Media::get_by_jellyfin_filter(
+                    &state.ctx.db,
+                    &q,
+                    want_total,
+                    Some(&session.user),
+                    server_config.as_ref(),
+                    None,
+                )
+                .await?;
+            }
+        }
+    }
+
     // handle details request
     if let Some(ids) = &q.ids {
         if ids.len() == 1 {
