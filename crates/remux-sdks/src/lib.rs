@@ -22,6 +22,9 @@ use std::time::Duration;
 static HTTP_CACHE: std::sync::LazyLock<Store> =
     std::sync::LazyLock::new(|| Store::new(50));
 
+static SHARED_HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(reqwest::Client::new);
+
 fn hash_key(key: &str) -> String {
     let result = md5::compute(key.as_bytes());
     format!("{:x}", result)
@@ -172,7 +175,7 @@ pub struct RestClient<A: Auth = NoAuth> {
 impl RestClient<NoAuth> {
     pub fn new(base: &str) -> Result<Self, url::ParseError> {
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: SHARED_HTTP_CLIENT.clone(),
             base: url::Url::parse(format!("{}/", base.trim_end_matches('/')).as_str())?,
             auth: Arc::new(NoAuth),
             map_error: default_error_mapper,
