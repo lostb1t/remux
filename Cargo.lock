@@ -5491,6 +5491,7 @@ dependencies = [
  "axum-anyhow",
  "axum-extra",
  "axum-test",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "config",

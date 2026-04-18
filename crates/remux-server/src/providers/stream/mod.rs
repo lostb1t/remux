@@ -4,8 +4,10 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 mod aio;
+mod squid;
 mod ytdlp;
 pub use aio::AioStreamService;
+pub use squid::SquidStreamService;
 pub use ytdlp::YtDlpStreamService;
 
 /// A resolved stream option returned by a [`StreamService`].
@@ -44,6 +46,7 @@ impl Default for StreamServiceManager {
         Self {
             services: vec![
                 Box::new(AioStreamService),
+                Box::new(SquidStreamService::default()),
                 Box::new(YtDlpStreamService::default()),
             ],
             ytdlp: Some(ytdlp),
@@ -68,7 +71,10 @@ impl StreamServiceManager {
     ) -> Result<Vec<StreamOption>> {
         for svc in &self.services {
             if svc.supported_kinds().contains(&media.kind) {
-                return svc.get_streams(media, ctx).await;
+                let streams = svc.get_streams(media, ctx).await?;
+                if !streams.is_empty() {
+                    return Ok(streams);
+                }
             }
         }
         Ok(vec![])
