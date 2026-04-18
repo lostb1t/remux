@@ -112,10 +112,7 @@ impl StreamServiceManager {
 
         db::Media::upsert(&ctx.db, &sources).await?;
 
-        let now = Utc::now().naive_utc();
-
-        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
-            .bind(now)
+        sqlx::query("UPDATE media SET streams_refreshed_at = CURRENT_TIMESTAMP WHERE id = ?")
             .bind(media.id)
             .execute(&ctx.db)
             .await?;
