@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 static HTTP_CACHE: std::sync::LazyLock<Store> =
-    std::sync::LazyLock::new(|| Store::new(500));
+    std::sync::LazyLock::new(|| Store::new(50));
 
 fn hash_key(key: &str) -> String {
     let result = md5::compute(key.as_bytes());

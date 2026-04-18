@@ -108,7 +108,6 @@ rust_iso3166 = "0.1.14"
 quick-xml = { version = "0.37", features = ["encoding"] }
 
 librqbit = { version = "8", features = ["http-api", "tracing-subscriber-utils"] }
-tikv-jemallocator = "0.6"
 regex = "1"
 log = "0.4"
 env_logger = "0.11"
