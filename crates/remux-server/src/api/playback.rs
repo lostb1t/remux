@@ -254,10 +254,6 @@ async fn items_playbackinfo_inner(
             // processes just to open a details page.
             let skip_probe = probe_only_first && idx > 0;
             tokio::spawn(async move {
-                if skip_probe {
-                    return api::MediaSourceInfo::from(sm);
-                }
-
                 // Cache hit: deserialise stored probe result and skip FFmpeg.
                 if let Some(json) = &sm.probe_data {
                     let mut cached = json.0.clone();
@@ -266,6 +262,10 @@ async fn items_playbackinfo_inner(
                     cached.path = sm.url.clone();
                     tracing::debug!(id = %sm.id, "probe cache hit");
                     return cached;
+                }
+
+                if skip_probe {
+                    return api::MediaSourceInfo::from(sm);
                 }
 
                 match url_opt {
@@ -344,7 +344,7 @@ async fn items_playbackinfo_inner(
                 .map(|profile| profile.check_direct_play(&source))
                 .unwrap_or_default();
             if bitrate_exceeded {
-                reasons.insert(api::TranscodeReason::ContainerBitrateExceedsLimit);
+                reasons.insert(api::TranscodeReason::ContainerBitrateExceedsLimit);  // unit variant, no detail needed
             }
             reasons
         };
@@ -356,11 +356,9 @@ async fn items_playbackinfo_inner(
         let needs_transcoding = transcode_required
             && query.enable_transcoding.unwrap_or(true);
 
-        tracing::debug!(
+        tracing::info!(
             source_id = %sm.id,
             transcode_reasons = ?transcode_reasons,
-            needs_transcoding,
-            bitrate_exceeded,
             "playback decision"
         );
 
@@ -411,12 +409,12 @@ async fn items_playbackinfo_inner(
                     .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
                 let needs_video_transcode = transcode_reasons
-                    .contains(api::TranscodeReason::VideoCodecNotSupported)
+                    .contains(&api::TranscodeReason::VideoCodecNotSupported(String::new()))
                     || transcode_reasons
-                        .contains(api::TranscodeReason::ContainerBitrateExceedsLimit);
+                        .contains(&api::TranscodeReason::ContainerBitrateExceedsLimit);
                 let video_codec = if needs_video_transcode { "h264" } else { "copy" }.to_string();
                 let needs_audio_transcode = transcode_reasons
-                    .contains(api::TranscodeReason::AudioCodecNotSupported);
+                    .contains(&api::TranscodeReason::AudioCodecNotSupported(String::new()));
                 let audio_codec =
                     if needs_audio_transcode { "aac" } else { "copy" }.to_string();
 
@@ -1692,7 +1690,7 @@ pub async fn get_sessions(
                     height,
                     audio_channels,
                     completion_percentage,
-                    transcode_reasons: ts.transcode_reasons,
+                    transcode_reasons: ts.transcode_reasons.clone(),
                     ..Default::default()
                 }
             });

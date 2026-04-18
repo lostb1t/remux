@@ -7,6 +7,7 @@ use tokio::sync::OnceCell;
 
 use super::{StreamOption, StreamService};
 
+
 const INSTANCES_URL: &str = "https://monochrome.tf/instances.json";
 const PRIMARY_INSTANCE: &str = "https://tidal-api.binimum.org";
 const TIDAL_CLIENT: &str = "BiniLossless/v3.4";
@@ -50,6 +51,12 @@ struct TrackInner {
 struct DecodedManifest {
     urls: Vec<String>,
     mime_type: String,
+    #[serde(default)]
+    codecs: Option<String>,
+    #[serde(default)]
+    bit_depth: Option<i64>,
+    #[serde(default)]
+    sample_rate: Option<i64>,
 }
 
 pub struct SquidStreamService {
@@ -181,11 +188,16 @@ impl SquidStreamService {
             "Audio"
         };
 
+        let codec = manifest.codecs.as_deref().map(super::normalize_codec).map(str::to_string);
+
         Ok(Some(StreamOption {
             url,
             label: label.to_string(),
             mime_type: manifest.mime_type,
             is_audio_only: true,
+            codec,
+            sample_rate: manifest.sample_rate,
+            channels: Some(2),
             ..Default::default()
         }))
     }
@@ -211,7 +223,7 @@ impl StreamService for SquidStreamService {
                 }
                 Ok(None) => return Ok(vec![]),
                 Err(e) => {
-                    tracing::warn!(base, error = %e, "squid/tidal: instance failed, trying next");
+                    tracing::debug!(base, error = %e, "squid/tidal: instance failed, trying next");
                 }
             }
         }

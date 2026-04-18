@@ -868,17 +868,13 @@ impl DeviceProfile {
             best = Some(match best {
                 None => reasons,
                 Some(prev) => {
-                    if reasons.0.count_ones() < prev.0.count_ones() {
-                        reasons
-                    } else {
-                        prev
-                    }
+                    if reasons.0.len() < prev.0.len() { reasons } else { prev }
                 }
             });
         }
         best.unwrap_or_else(|| {
             let mut r = TranscodeReasons::default();
-            r.insert(TranscodeReason::ContainerNotSupported);
+            r.insert(TranscodeReason::ContainerNotSupported("no matching profile".into()));
             r
         })
     }
@@ -908,48 +904,56 @@ impl DirectPlayProfile {
             if type_.eq_ignore_ascii_case("Video")
                 && media_source.video_stream().is_none()
             {
-                reasons.insert(TranscodeReason::ContainerNotSupported);
+                reasons.insert(TranscodeReason::ContainerNotSupported("profile=Video source=audio-only".into()));
                 return reasons;
             }
             if type_.eq_ignore_ascii_case("Audio")
                 && media_source.video_stream().is_some()
             {
-                reasons.insert(TranscodeReason::ContainerNotSupported);
+                reasons.insert(TranscodeReason::ContainerNotSupported("profile=Audio source=has-video".into()));
                 return reasons;
             }
         }
 
         // Check container match
         match (&self.container, &media_source.container) {
-            (Some(_), None) => {
-                reasons.insert(TranscodeReason::ContainerNotSupported);
+            (Some(profile_container), None) => {
+                reasons.insert(TranscodeReason::ContainerNotSupported(
+                    format!("profile={profile_container} source=(none)"),
+                ));
             }
-            (Some(_), Some(source_container)) => {
+            (Some(profile_container), Some(source_container)) => {
                 if !self.supports_container(source_container) {
-                    reasons.insert(TranscodeReason::ContainerNotSupported);
+                    reasons.insert(TranscodeReason::ContainerNotSupported(
+                        format!("profile={profile_container} source={source_container}"),
+                    ));
                 }
             }
             _ => {}
         }
 
         // Check video codec match
-        if let (Some(_), Some(video_stream)) =
+        if let (Some(profile_codec), Some(video_stream)) =
             (&self.video_codec, media_source.video_stream())
         {
             if let Some(video_codec) = &video_stream.codec {
                 if !self.supports_video_codec(video_codec) {
-                    reasons.insert(TranscodeReason::VideoCodecNotSupported);
+                    reasons.insert(TranscodeReason::VideoCodecNotSupported(
+                        format!("profile={profile_codec} source={video_codec}"),
+                    ));
                 }
             }
         }
 
         // Check audio codec match
-        if let (Some(_), Some(audio_stream)) =
+        if let (Some(profile_codec), Some(audio_stream)) =
             (&self.audio_codec, media_source.audio_stream())
         {
             if let Some(audio_codec) = &audio_stream.codec {
                 if !self.supports_audio_codec(audio_codec) {
-                    reasons.insert(TranscodeReason::AudioCodecNotSupported);
+                    reasons.insert(TranscodeReason::AudioCodecNotSupported(
+                        format!("profile={profile_codec} source={audio_codec}"),
+                    ));
                 }
             }
         }
@@ -1079,57 +1083,58 @@ pub struct BaseItemDtoQueryResult {
     pub total_record_count: i64,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, strum_macros::Display, strum_macros::EnumIter,
-)]
-#[strum(serialize_all = "PascalCase")]
+#[derive(Clone, PartialEq, Eq)]
 pub enum TranscodeReason {
-    ContainerNotSupported,
-    VideoCodecNotSupported,
-    AudioCodecNotSupported,
+    ContainerNotSupported(String),
+    VideoCodecNotSupported(String),
+    AudioCodecNotSupported(String),
     ContainerBitrateExceedsLimit,
 }
 
 impl TranscodeReason {
-    pub fn bit(self) -> u32 {
+    pub fn name(&self) -> &'static str {
         match self {
-            Self::ContainerNotSupported => 1 << 0,
-            Self::VideoCodecNotSupported => 1 << 1,
-            Self::AudioCodecNotSupported => 1 << 2,
-            Self::ContainerBitrateExceedsLimit => 1 << 18,
+            Self::ContainerNotSupported(_) => "ContainerNotSupported",
+            Self::VideoCodecNotSupported(_) => "VideoCodecNotSupported",
+            Self::AudioCodecNotSupported(_) => "AudioCodecNotSupported",
+            Self::ContainerBitrateExceedsLimit => "ContainerBitrateExceedsLimit",
         }
     }
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub struct TranscodeReasons(pub u32);
+impl std::fmt::Debug for TranscodeReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ContainerNotSupported(d) => write!(f, "ContainerNotSupported({d})"),
+            Self::VideoCodecNotSupported(d) => write!(f, "VideoCodecNotSupported({d})"),
+            Self::AudioCodecNotSupported(d) => write!(f, "AudioCodecNotSupported({d})"),
+            Self::ContainerBitrateExceedsLimit => write!(f, "ContainerBitrateExceedsLimit"),
+        }
+    }
+}
+
+#[derive(Default, Clone, PartialEq, Eq)]
+pub struct TranscodeReasons(pub Vec<TranscodeReason>);
+
+impl<'de> serde::Deserialize<'de> for TranscodeReasons {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let names = Vec::<String>::deserialize(d)?;
+        Ok(Self::from_query_value(&names.join(",")))
+    }
+}
 
 impl std::fmt::Debug for TranscodeReasons {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use strum::IntoEnumIterator;
-        let active: Vec<String> = TranscodeReason::iter()
-            .filter(|r| self.contains(*r))
-            .map(|r| r.to_string())
-            .collect();
-        if active.is_empty() {
-            write!(f, "[]")
-        } else {
-            write!(f, "[{}]", active.join(", "))
-        }
+        write!(f, "{:?}", self.0)
     }
 }
 
 impl serde::Serialize for TranscodeReasons {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
-        use strum::IntoEnumIterator;
-        let reasons: Vec<String> = TranscodeReason::iter()
-            .filter(|r| self.contains(*r))
-            .map(|r| r.to_string())
-            .collect();
-        let mut seq = s.serialize_seq(Some(reasons.len()))?;
-        for r in &reasons {
-            seq.serialize_element(r)?;
+        let mut seq = s.serialize_seq(Some(self.0.len()))?;
+        for r in &self.0 {
+            seq.serialize_element(r.name())?;
         }
         seq.end()
     }
@@ -1137,39 +1142,39 @@ impl serde::Serialize for TranscodeReasons {
 
 impl TranscodeReasons {
     pub fn insert(&mut self, reason: TranscodeReason) {
-        self.0 |= reason.bit();
+        if !self.contains(&reason) {
+            self.0.push(reason);
+        }
     }
 
-    pub fn contains(self, reason: TranscodeReason) -> bool {
-        self.0 & reason.bit() != 0
+    pub fn contains(&self, reason: &TranscodeReason) -> bool {
+        let d = std::mem::discriminant(reason);
+        self.0.iter().any(|r| std::mem::discriminant(r) == d)
     }
 
-    pub fn is_empty(self) -> bool {
-        self.0 == 0
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
-    pub fn to_query_value(self) -> Option<String> {
-        use strum::IntoEnumIterator;
+    pub fn to_query_value(&self) -> Option<String> {
         if self.is_empty() {
             return None;
         }
-        let names: Vec<String> = TranscodeReason::iter()
-            .filter(|r| self.contains(*r))
-            .map(|r| r.to_string())
-            .collect();
-        Some(names.join(","))
+        Some(self.0.iter().map(|r| r.name()).collect::<Vec<_>>().join(","))
     }
 
     pub fn from_query_value(s: &str) -> Self {
-        use strum::IntoEnumIterator;
         let mut out = Self::default();
         for part in s.split(',') {
-            let part = part.trim();
-            for r in TranscodeReason::iter() {
-                if r.to_string().eq_ignore_ascii_case(part) {
-                    out.insert(r);
-                    break;
-                }
+            let reason = match part.trim() {
+                "ContainerNotSupported" => Some(TranscodeReason::ContainerNotSupported(String::new())),
+                "VideoCodecNotSupported" => Some(TranscodeReason::VideoCodecNotSupported(String::new())),
+                "AudioCodecNotSupported" => Some(TranscodeReason::AudioCodecNotSupported(String::new())),
+                "ContainerBitrateExceedsLimit" => Some(TranscodeReason::ContainerBitrateExceedsLimit),
+                _ => None,
+            };
+            if let Some(r) = reason {
+                out.insert(r);
             }
         }
         out

@@ -93,15 +93,7 @@ impl YtDlpFormat {
     /// Normalize raw yt-dlp codec strings to the names Jellyfin clients expect.
     /// e.g. "mp4a.40.2" / "mp4a.40.5" → "aac"
     fn normalized_codec(&self) -> Option<String> {
-        self.acodec.as_deref().filter(|c| *c != "none").map(|c| {
-            if c.starts_with("mp4a") {
-                "aac".to_string()
-            } else if c == "vorbis" {
-                "vorbis".to_string()
-            } else {
-                c.to_string()
-            }
-        })
+        self.acodec.as_deref().filter(|c| *c != "none").map(|c| super::normalize_codec(c).to_string())
     }
 
 }
@@ -200,16 +192,6 @@ impl StreamService for YtDlpStreamService {
 
     async fn get_streams(&self, media: &db::Media, ctx: &AppContext) -> Result<Vec<StreamOption>> {
         let url = self.resolve_watch_url(media).await?;
-
-        // Persist the watch URL so future calls skip the YouTube search.
-        if media.url.is_none() {
-            let _ = sqlx::query("UPDATE media SET url = ? WHERE id = ?")
-                .bind(&url)
-                .bind(media.id)
-                .execute(&ctx.db)
-                .await;
-        }
-
         let video = self.dump_json(&url).await?;
 
         let audio_only: Vec<StreamOption> = video

@@ -218,7 +218,7 @@ async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
                     container: Some("ts".to_string()),
                     is_video_direct: ts.video_codec == "copy",
                     is_audio_direct: ts.audio_codec == "copy",
-                    transcode_reasons: ts.transcode_reasons,
+                    transcode_reasons: ts.transcode_reasons.clone(),
                     ..Default::default()
                 });
 

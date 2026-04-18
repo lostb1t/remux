@@ -51,8 +51,8 @@ impl Default for StreamServiceManager {
         Self {
             services: vec![
                 Box::new(AioStreamService),
-                Box::new(YtDlpStreamService::default()),
                 Box::new(SquidStreamService::default()),
+                Box::new(YtDlpStreamService::default()),
             ],
             ytdlp: Some(ytdlp),
         }
@@ -162,6 +162,7 @@ fn stream_option_to_source(parent: &db::Media, s: StreamOption, idx: usize) -> d
     // Stable deterministic ID so upsert always hits the same row.
     let source_id = uuid::Uuid::new_v5(&parent.id, format!("source_{idx}").as_bytes());
 
+    let now = chrono::Utc::now().naive_utc();
     db::Media {
         id: source_id,
         kind: db::MediaKind::Source,
@@ -171,8 +172,14 @@ fn stream_option_to_source(parent: &db::Media, s: StreamOption, idx: usize) -> d
         runtime: parent.runtime,
         probe_data: Some(sqlx::types::Json(probe_data)),
         idx: Some(idx as i64),
+        created_at: now,
+        updated_at: now,
         ..Default::default()
     }
+}
+
+pub(super) fn normalize_codec(codec: &str) -> &str {
+    if codec.starts_with("mp4a") { "aac" } else { codec }
 }
 
 fn mime_to_container(mime: &str) -> Option<String> {
