@@ -164,45 +164,23 @@ async fn items_playbackinfo_inner(
         return Ok(Json(info));
     }
 
-    // For Track items, resolve a fresh CDN URL once here. It is used both as
-    // source.path (direct play) and as the probe/transcode input URL.
-    let track_stream_url: Option<String> = if media.kind == db::MediaKind::Track {
-        state
-            .ctx
-            .streams
-            .get_streams(&media, &state.ctx)
-            .await
-            .ok()
-            .and_then(|streams| {
-                streams
-                    .iter()
-                    .find(|s| s.is_audio_only)
-                    .or_else(|| streams.first())
-                    .map(|s| s.url.clone())
-            })
-    } else {
-        None
-    };
+    // For Track items, refresh CDN stream URLs if stale. Sources are stored in the DB
+    // (same pattern as Movie/Episode via AIO), so PlaybackInfo just reads from there.
+    let is_track = media.kind == db::MediaKind::Track;
+    if is_track {
+        let _ = state.ctx.streams.refresh_sources(&media, &state.ctx).await;
+    }
 
     // Collect all playable sources. A Movie/Episode may have multiple
     // Source children (versions); return every one so the client can
     // show version selection and per-source stream lists.
     let all_source_medias: Vec<db::Media> =
-        if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
-            let sources = media.sources(&state.ctx.db).await?;
+        if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track) {
+            let sources = media.streams(&state.ctx.db).await?;
             if sources.is_empty() {
-                // No children → treat the parent itself as the single source
                 vec![media]
             } else {
                 sources
-            }
-        } else if media.kind == db::MediaKind::Track {
-            // Use the Source child so the device profile check has real probe data
-            // (codec, container, bitrate). Fall back to the Track itself if not yet cached.
-            let source_id = uuid::Uuid::new_v5(&media.id, b"audio_source");
-            match db::Media::get_by_id(&state.ctx.db, &source_id).await {
-                Ok(Some(source)) => vec![source],
-                _ => vec![media],
             }
         } else {
             vec![media]
@@ -251,12 +229,10 @@ async fn items_playbackinfo_inner(
     let mut sources_with_urls: Vec<SourceWithUrl> =
         Vec::with_capacity(source_medias.len());
     for sm in source_medias {
-        // For Track sources use the fresh CDN URL; for everything else remap as usual.
-        let resolved_url = track_stream_url.clone().or_else(|| {
-            sm.url
-                .as_deref()
-                .map(|u| remap_internal_aio_url(u, aio_url.as_ref().map(AsRef::as_ref)))
-        });
+        let resolved_url = sm
+            .url
+            .as_deref()
+            .map(|u| remap_internal_aio_url(u, aio_url.as_ref().map(AsRef::as_ref)));
         sources_with_urls.push(SourceWithUrl { sm, resolved_url });
     }
 
@@ -483,10 +459,10 @@ async fn items_playbackinfo_inner(
         } else {
             source.supports_transcoding = false;
             source.supports_direct_play = true;
-            // Proxy through the server so clients never need direct CDN access.
-            if track_stream_url.is_some() {
+            // Route track direct play through the server (CDN URLs are IP-restricted).
+            if is_track {
                 source.path = Some(format!(
-                    "/Audio/{}/stream?Static=true&MediaSourceId={}",
+                    "/audio/{}/stream?Static=true&MediaSourceId={}",
                     id, source.id
                 ));
             }
@@ -595,8 +571,16 @@ async fn videos_stream_inner(
             .unwrap());
     }
 
-    if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
-        let sources = media.sources(&state.ctx.db).await?;
+    if media.kind == db::MediaKind::Movie
+        || media.kind == db::MediaKind::Episode
+        || media.kind == db::MediaKind::Track
+    {
+        // For tracks, refresh CDN URLs if stale before loading sources.
+        if media.kind == db::MediaKind::Track {
+            let _ = state.ctx.streams.refresh_sources(&media, &state.ctx).await;
+        }
+
+        let sources = media.streams(&state.ctx.db).await?;
         media = if let Some(wanted) = q.media_source_id {
             sources.iter().find(|s| s.id == wanted).cloned()
         } else {
@@ -604,23 +588,6 @@ async fn videos_stream_inner(
         }
         .or_else(|| sources.into_iter().next())
         .context_not_found("not found", "no playable source found")?;
-    }
-
-    // Track: resolve a fresh CDN stream URL via yt-dlp (watch URL is not directly playable).
-    if media.kind == db::MediaKind::Track {
-        let streams = state
-            .ctx
-            .streams
-            .get_streams(&media, &state.ctx)
-            .await
-            .map_err(|e| anyhow!("could not resolve track stream: {e:#}"))?;
-        let best = streams
-            .iter()
-            .find(|s| s.is_audio_only)
-            .or_else(|| streams.first())
-            .cloned()
-            .context_not_found("no stream", "no playable stream found for track")?;
-        media.url = Some(best.url);
     }
 
     // Torrent streams: resolve magnet URI to a local HTTP URL.
@@ -1655,7 +1622,7 @@ pub async fn get_sessions(
         // or points to the parent item itself without probe data).
         if source_media.as_ref().and_then(|m| m.probe_data.as_ref()).is_none() {
             if let Some(m) = media.as_mut() {
-                if let Ok(sources) = m.sources(&state.ctx.db).await {
+                if let Ok(sources) = m.streams(&state.ctx.db).await {
                     if let Some(s) = sources.into_iter().find(|s| s.probe_data.is_some()) {
                         source_media = Some(s);
                     }
@@ -1891,10 +1858,8 @@ pub async fn master_hls_video(
             .context_not_found("not found", "media not found")?;
 
         let mut resolved_media = media.clone();
-        if resolved_media.kind == db::MediaKind::Movie
-            || resolved_media.kind == db::MediaKind::Episode
-        {
-            let sources = resolved_media.sources(&state.ctx.db).await?;
+        if matches!(resolved_media.kind, db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track) {
+            let sources = resolved_media.streams(&state.ctx.db).await?;
             resolved_media = if let Some(wanted) = q.media_source_id {
                 sources.iter().find(|s| s.id == wanted).cloned()
             } else {
@@ -2475,9 +2440,9 @@ pub async fn subtitles_stream(
         .await?
         .context_not_found("not found", "media source not found")?;
 
-    if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+    if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track) {
         media = media
-            .sources(&state.ctx.db)
+            .streams(&state.ctx.db)
             .await?
             .get(0)
             .context_not_found("not found", "no sources found")?

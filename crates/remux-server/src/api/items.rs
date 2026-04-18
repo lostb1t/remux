@@ -464,20 +464,23 @@ pub async fn refresh_item(
     }
 
     if q.metadata_refresh_mode == MetadataRefreshMode::Default {
-        // Refresh streams: re-fetch sources from AIO.
-        let aio = crate::aio::AioService::from_settings(&state.ctx.db)
+        // Force-refresh streams by clearing the timestamp first.
+        sqlx::query("UPDATE media SET streams_refreshed_at = NULL WHERE id = ?")
+            .bind(media.id)
+            .execute(&state.ctx.db)
             .await
-            .context_bad_request(
-                "AIO not configured",
-                "Complete the setup wizard first",
-            )?;
+            .ok();
 
-        media
-            .refresh_sources(&state.ctx.db, &aio)
+        state
+            .ctx
+            .streams
+            .refresh_sources(&media, &state.ctx)
             .await
             .inspect_err(|e| error!("Could not refresh streams: {e:#}"));
 
-        warm_subtitle_cache(&state.ctx.db, &media);
+        if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
+            warm_subtitle_cache(&state.ctx.db, &media);
+        }
     } else {
         // Refresh metadata via the full provider pipeline.
         let service = crate::providers::MetaProviderService::default();
@@ -791,8 +794,7 @@ pub async fn item(
     let need_refresh = media.refreshed_at.is_none()
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series);
     let needs_sources = want_sources
-        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode);
-    let needs_track_stream = want_sources && media.kind == db::MediaKind::Track;
+        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track);
 
     tokio::join!(
         async {
@@ -808,76 +810,30 @@ pub async fn item(
         },
         async {
             if needs_sources {
-                let db = state.ctx.db.clone();
-                if let Ok(aio) = crate::aio::AioService::from_settings(&db).await {
-                    warm_subtitle_cache(&db, &media);
-                    media
-                        .clone()
-                        .refresh_sources(&db, &aio)
-                        .await
-                        .log_err("failed to refresh sources");
+                if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+                    let db = state.ctx.db.clone();
+                    if let Ok(aio) = crate::aio::AioService::from_settings(&db).await {
+                        warm_subtitle_cache(&db, &media);
+                    }
                 }
+                state
+                    .ctx
+                    .streams
+                    .refresh_sources(&media, &state.ctx)
+                    .await
+                    .log_err("failed to refresh sources");
             }
             Ok::<(), anyhow::Error>(())
         }
     );
 
-    // For tracks: resolve the YouTube watch URL and ensure a Source row with probe_data
-    // exists in DB. This mirrors how Movie/Episode handle stream sources.
-    if needs_track_stream {
-        if let Some(ytdlp) = state.ctx.streams.ytdlp() {
-            // Step 1: resolve + cache the watch URL on the track itself.
-            let watch_url = if let Some(u) = media.url.clone() {
-                Some(u)
-            } else {
-                match ytdlp.resolve_watch_url(&media).await {
-                    Ok(watch_url) => {
-                        let _ = sqlx::query("UPDATE media SET url = ? WHERE id = ?")
-                            .bind(&watch_url)
-                            .bind(media.id)
-                            .execute(&state.ctx.db)
-                            .await;
-                        media.url = Some(watch_url.clone());
-                        Some(watch_url)
-                    }
-                    Err(e) => {
-                        warn!("failed to resolve track watch URL for {}: {e:#}", media.id);
-                        None
-                    }
-                }
-            };
-
-            // Step 2: ensure a Source child row with probe_data exists.
-            if let Some(watch_url) = watch_url {
-                let source_id = uuid::Uuid::new_v5(&media.id, b"audio_source");
-                let has_source = db::Media::get_by_id(&state.ctx.db, &source_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|s| s.probe_data)
-                    .is_some();
-
-                if !has_source {
-                    match ytdlp.get_audio_source_info(&media, &watch_url).await {
-                        Ok(source) => {
-                            let _ = db::Media::upsert(&state.ctx.db, &[source]).await;
-                        }
-                        Err(e) => {
-                            warn!("failed to get audio source info for {}: {e:#}", media.id);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     if media.kind == db::MediaKind::Source {
         media.sources = Some(vec![media.clone()]);
     } else if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-        media.sources(&state.ctx.db).await?;
+        media.streams(&state.ctx.db).await?;
         media.user_state(&state.ctx.db, &session.user).await?;
     } else if media.kind == db::MediaKind::Track {
-        media.sources(&state.ctx.db).await?;
+        media.streams(&state.ctx.db).await?;
         media.user_state(&state.ctx.db, &session.user).await?;
     }
     // info!("Seasons length: {:?}", media.seasons(&state.ctx.db).await?.len());

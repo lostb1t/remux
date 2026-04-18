@@ -46,6 +46,9 @@ struct YtDlpFormat {
     format_id: Option<String>,
     #[serde(default)]
     ext: Option<String>,
+    /// yt-dlp's own container field (e.g. "mp4", "webm") — more reliable than ext.
+    #[serde(default)]
+    container: Option<String>,
 }
 
 impl YtDlpFormat {
@@ -67,9 +70,11 @@ impl YtDlpFormat {
     }
 
     fn container(&self) -> Option<String> {
-        match self.ext.as_deref() {
+        // Prefer yt-dlp's own container field; fall back to ext-based mapping.
+        let raw = self.container.as_deref().or(self.ext.as_deref());
+        match raw {
             Some("mp3") => Some("mp3".to_string()),
-            Some("m4a") => Some("mp4".to_string()),
+            Some("m4a") | Some("mp4") => Some("mp4".to_string()),
             Some("opus") | Some("webm") => Some("webm".to_string()),
             Some(other) => Some(other.to_string()),
             None => None,
@@ -77,46 +82,28 @@ impl YtDlpFormat {
     }
 
     fn mime_type(&self) -> String {
-        match self.ext.as_deref() {
+        match self.container().as_deref() {
+            Some("mp4") => "audio/mp4".to_string(),
             Some("mp3") => "audio/mpeg".to_string(),
-            Some("m4a") => "audio/mp4".to_string(),
-            Some("opus") | Some("webm") => "audio/webm".to_string(),
-            _ => "audio/webm".to_string(),
+            Some("webm") => "audio/webm".to_string(),
+            _ => "audio/mp4".to_string(),
         }
     }
 
-    /// Build a `MediaSourceInfo` probe blob from this format's known fields.
-    fn to_probe_data(&self, runtime: Option<i64>) -> api::MediaSourceInfo {
-        let codec = self.acodec.clone().filter(|c| c != "none");
-        let channels = self.audio_channels.map(|c| c as i64);
-        let sample_rate = self.asr.map(|r| r as i64);
-        let bitrate = self.bitrate();
-        let container = self.container();
-
-        let display_title = match (&codec, channels) {
-            (Some(c), Some(ch)) => format!("{} - {}ch", c.to_uppercase(), ch),
-            (Some(c), None) => c.to_uppercase(),
-            (None, Some(ch)) => format!("Audio {}ch", ch),
-            (None, None) => "Audio".to_string(),
-        };
-
-        api::MediaSourceInfo {
-            container,
-            run_time_ticks: runtime,
-            bitrate,
-            media_streams: vec![api::MediaStream {
-                index: 0,
-                type_: Some(api::MediaStreamType::Audio),
-                codec,
-                channels,
-                sample_rate,
-                is_default: Some(true),
-                display_title: Some(display_title),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }
+    /// Normalize raw yt-dlp codec strings to the names Jellyfin clients expect.
+    /// e.g. "mp4a.40.2" / "mp4a.40.5" → "aac"
+    fn normalized_codec(&self) -> Option<String> {
+        self.acodec.as_deref().filter(|c| *c != "none").map(|c| {
+            if c.starts_with("mp4a") {
+                "aac".to_string()
+            } else if c == "vorbis" {
+                "vorbis".to_string()
+            } else {
+                c.to_string()
+            }
+        })
     }
+
 }
 
 /// Stream backend that shells out to the `yt-dlp` binary — handles music tracks.
@@ -203,74 +190,6 @@ impl YtDlpStreamService {
             .ok_or_else(|| anyhow!("yt-dlp search returned no webpage_url for query"))
     }
 
-    /// Fetch format info for a track from yt-dlp and build a `db::Media` Source row
-    /// with `probe_data` populated from the best audio-only format.
-    ///
-    /// The returned row has `kind = Source`, `parent_id = track.id`, `url = best stream URL`.
-    /// Callers should upsert it to the DB so subsequent calls are cache hits.
-    pub async fn get_audio_source_info(
-        &self,
-        track: &db::Media,
-        watch_url: &str,
-    ) -> Result<db::Media> {
-        let video = self.dump_json(watch_url).await?;
-        let runtime_ticks = track.runtime.map(|s| s * 10_000_000);
-
-        // Pick best audio-only format (highest bitrate).
-        let best = video
-            .formats
-            .iter()
-            .filter(|f| f.url.is_some() && f.is_audio_only())
-            .max_by(|a, b| {
-                a.bitrate()
-                    .unwrap_or(0)
-                    .cmp(&b.bitrate().unwrap_or(0))
-            });
-
-        let (stream_url, probe_data) = match best {
-            Some(f) => {
-                tracing::debug!(
-                    track_id = %track.id,
-                    title = %track.title,
-                    codec = ?f.acodec,
-                    channels = ?f.audio_channels,
-                    sample_rate = ?f.asr,
-                    bitrate_kbps = ?f.abr.or(f.tbr),
-                    ext = ?f.ext,
-                    "audio source info resolved"
-                );
-                (f.url.clone().unwrap(), f.to_probe_data(runtime_ticks))
-            }
-            None => {
-                // No audio-only formats — use first available format, no probe data.
-                let fallback = video
-                    .formats
-                    .iter()
-                    .find(|f| f.url.is_some())
-                    .ok_or_else(|| anyhow!("yt-dlp returned no formats for {}", watch_url))?;
-                (
-                    fallback.url.clone().unwrap(),
-                    fallback.to_probe_data(runtime_ticks),
-                )
-            }
-        };
-
-        // Stable deterministic ID: hash of track id so the same Source row is always
-        // upserted rather than duplicated.
-        let source_id = Uuid::new_v5(&track.id, b"audio_source");
-
-        Ok(db::Media {
-            id: source_id,
-            kind: db::MediaKind::Source,
-            title: track.title.clone(),
-            url: Some(stream_url),
-            parent_id: Some(track.id),
-            runtime: track.runtime,
-            probe_data: Some(Json(probe_data)),
-            idx: Some(0),
-            ..Default::default()
-        })
-    }
 }
 
 #[async_trait]
@@ -279,8 +198,18 @@ impl StreamService for YtDlpStreamService {
         &[db::MediaKind::Track]
     }
 
-    async fn get_streams(&self, media: &db::Media, _ctx: &AppContext) -> Result<Vec<StreamOption>> {
+    async fn get_streams(&self, media: &db::Media, ctx: &AppContext) -> Result<Vec<StreamOption>> {
         let url = self.resolve_watch_url(media).await?;
+
+        // Persist the watch URL so future calls skip the YouTube search.
+        if media.url.is_none() {
+            let _ = sqlx::query("UPDATE media SET url = ? WHERE id = ?")
+                .bind(&url)
+                .bind(media.id)
+                .execute(&ctx.db)
+                .await;
+        }
+
         let video = self.dump_json(&url).await?;
 
         let audio_only: Vec<StreamOption> = video
@@ -293,6 +222,9 @@ impl StreamService for YtDlpStreamService {
                 mime_type: f.mime_type(),
                 is_audio_only: true,
                 bitrate: f.bitrate(),
+                codec: f.normalized_codec(),
+                channels: f.audio_channels.map(|c| c as i64),
+                sample_rate: f.asr.map(|r| r as i64),
             })
             .collect();
 
@@ -312,6 +244,9 @@ impl StreamService for YtDlpStreamService {
                     mime_type: f.mime_type(),
                     is_audio_only: false,
                     bitrate: f.bitrate(),
+                    codec: f.normalized_codec(),
+                    channels: f.audio_channels.map(|c| c as i64),
+                    sample_rate: f.asr.map(|r| r as i64),
                 })
             })
             .collect())

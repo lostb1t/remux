@@ -442,6 +442,7 @@ pub struct Media {
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
     pub refreshed_at: Option<NaiveDateTime>,
+    pub streams_refreshed_at: Option<NaiveDateTime>,
 
     // meta
     pub description: Option<String>,
@@ -1943,35 +1944,6 @@ impl Media {
         Ok(state)
     }
 
-    pub async fn refresh_sources(
-        &self,
-        db: &sqlx::SqlitePool,
-        aio: &aio::AioService,
-    ) -> Result<Vec<Self>> {
-        let kind = media_kind_to_aio(&self.kind);
-        let media_id = self
-            .media_id
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("cannot refresh sources: media has no media_id"))?;
-        let streams = aio.get_streams(kind, media_id).await?;
-
-        let items = streams
-            .clone()
-            .into_iter()
-            .filter(|x| x.is_valid())
-            .enumerate()
-            .map(|(idx, stream)| {
-                let mut item: Self = stream.into();
-                item.parent_id = Some(self.id.clone());
-                item.idx = Some(idx as i64);
-                item
-            })
-            .collect::<Vec<Self>>();
-
-        trace!(streams_len = streams.len(), "refreshing streams");
-        Self::upsert(db, &items).await?;
-        Ok(items)
-    }
 
     /// Fetch AIO subtitles for this Movie or Episode (cached 24 h).
     /// Returns an error for any other `MediaKind` or when the required
@@ -2092,7 +2064,7 @@ impl Media {
         }
     }
 
-    pub async fn sources(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
+    pub async fn streams(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
         if self.sources.is_none() {
             let mut sources = Self::get_by_filter(
                 db,
@@ -2106,6 +2078,13 @@ impl Media {
             .records;
 
             sources.sort_by(|a, b| a.idx.cmp(&b.idx));
+
+            // Exclude Sources that predate the last refresh — they belong to a
+            // previous fetch and may have expired URLs. They stay in the DB so
+            // an ongoing playback session can still reach them by direct ID.
+            if let Some(refreshed) = self.streams_refreshed_at {
+                sources.retain(|s| s.updated_at >= refreshed);
+            }
 
             self.sources = Some(sources);
         };

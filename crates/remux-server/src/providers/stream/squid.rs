@@ -186,7 +186,7 @@ impl SquidStreamService {
             label: label.to_string(),
             mime_type: manifest.mime_type,
             is_audio_only: true,
-            bitrate: None,
+            ..Default::default()
         }))
     }
 }

@@ -40,7 +40,7 @@ impl StreamService for AioStreamService {
                     label,
                     mime_type: "video/mp4".to_string(),
                     is_audio_only: false,
-                    bitrate: None,
+                    ..Default::default()
                 })
             })
             .collect();
