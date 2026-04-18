@@ -348,12 +348,15 @@ async fn save_discography(
 
     for (mut album, mut tracks) in albums_with_tracks {
         album.parent_id = Some(artist_id);
+        album.series_id = Some(artist_id);
+        album.series_title = Some(artist.title.clone());
         album.save(&ctx.db).await.ok();
         let album_id = album.id;
 
         for track in &mut tracks {
             track.parent_id = Some(album_id);
             track.series_id = Some(artist_id);
+            track.series_title = Some(artist.title.clone());
             track.save(&ctx.db).await.ok();
         }
     }
