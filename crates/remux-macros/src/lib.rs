@@ -2,39 +2,64 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, ItemFn, LitStr};
 
-/// Internal: generates a handler function + inventory registration for a given HTTP method.
+struct MultiPath(Vec<LitStr>);
+
+impl syn::parse::Parse for MultiPath {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut paths = vec![input.parse::<LitStr>()?];
+        while input.peek(syn::Token![,]) {
+            input.parse::<syn::Token![,]>()?;
+            if input.is_empty() {
+                break;
+            }
+            // Stop if next token looks like `method = ...` (for #[route])
+            if input.peek(syn::Ident) {
+                break;
+            }
+            paths.push(input.parse::<LitStr>()?);
+        }
+        Ok(MultiPath(paths))
+    }
+}
+
+/// Internal: generates a handler function + inventory registration(s) for a given HTTP method.
+/// Accepts one or more paths: `#[get("/a", "/b")]` registers both.
 fn route_macro(method: &str, args: TokenStream, input: TokenStream) -> TokenStream {
-    let path = parse_macro_input!(args as LitStr);
+    let MultiPath(paths) = parse_macro_input!(args as MultiPath);
     let func = parse_macro_input!(input as ItemFn);
 
     let fn_name = &func.sig.ident;
     let vis = &func.vis;
-    let register_fn = format_ident!("__register_route_{}", fn_name);
     let method_ident = format_ident!("{}", method);
+
+    let registrations = paths.iter().enumerate().map(|(i, path)| {
+        let register_fn = if i == 0 {
+            format_ident!("__register_route_{}", fn_name)
+        } else {
+            format_ident!("__register_route_{}_{}", fn_name, i)
+        };
+        quote! {
+            #[doc(hidden)]
+            #[allow(non_snake_case)]
+            #vis fn #register_fn(router: ::axum::Router<crate::AppState>) -> ::axum::Router<crate::AppState> {
+                router.route(#path, ::axum::routing::#method_ident(#fn_name))
+            }
+
+            ::inventory::submit! {
+                crate::RouteRegistration(#register_fn)
+            }
+        }
+    });
 
     let output = quote! {
         #func
-
-        #[doc(hidden)]
-        #[allow(non_snake_case)]
-        #vis fn #register_fn(router: ::axum::Router<crate::AppState>) -> ::axum::Router<crate::AppState> {
-            router.route(#path, ::axum::routing::#method_ident(#fn_name))
-        }
-
-        ::inventory::submit! {
-            crate::RouteRegistration(#register_fn)
-        }
+        #(#registrations)*
     };
 
     output.into()
 }
 
-/// Register a GET handler.
-///
-/// ```ignore
-/// #[get("/system/ping")]
-/// async fn system_ping() -> impl IntoResponse { "pong" }
-/// ```
+/// Register a GET handler. Accepts multiple paths: `#[get("/a", "/b")]`.
 #[proc_macro_attribute]
 pub fn get(args: TokenStream, input: TokenStream) -> TokenStream {
     route_macro("get", args, input)

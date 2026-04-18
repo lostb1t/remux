@@ -495,6 +495,17 @@ async fn items_playbackinfo_inner(
 /// The `Range` header is forwarded to the upstream server. If no `Range` is provided,
 /// the full video is sent.
 ///
+#[get("/items/{id}/file", "/items/{id}/download")]
+pub async fn items_file(
+    headers: headers::HeaderMap,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(mut q): Query<api::VideoStreamQuery>,
+) -> Result<impl IntoResponse> {
+    q.static_ = Some(true);
+    videos_stream_inner(headers, state, id, q).await
+}
+
 /// # Static
 ///
 /// If the `static_` query parameter is set to `true`, the response will be a static
