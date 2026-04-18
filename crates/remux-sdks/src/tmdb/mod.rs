@@ -70,6 +70,31 @@ pub fn default_append_to_response() -> Vec<String> {
     ]
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ImageEntry {
+    pub file_path: String,
+    pub iso_639_1: Option<String>,
+    pub vote_average: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Images {
+    #[serde(default)]
+    pub logos: Vec<ImageEntry>,
+}
+
+impl Images {
+    /// Best English logo, falling back to any language.
+    pub fn best_logo(&self) -> Option<&str> {
+        self.logos
+            .iter()
+            .filter(|e| e.iso_639_1.as_deref() == Some("en"))
+            .max_by(|a, b| a.vote_average.partial_cmp(&b.vote_average).unwrap_or(std::cmp::Ordering::Equal))
+            .or_else(|| self.logos.iter().next())
+            .map(|e| e.file_path.as_str())
+    }
+}
+
 #[derive(
     strum_macros::Display,
     strum_macros::EnumString,

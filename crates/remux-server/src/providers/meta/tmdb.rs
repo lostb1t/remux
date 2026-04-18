@@ -146,6 +146,9 @@ impl MetaProvider for TmdbMetaProvider {
                         imdb: movie_details.imdb_id.clone().or(ids.imdb.clone()),
                         tvdb: ids.tvdb,
                     };
+                    let logo = movie_details.images.as_ref()
+                        .and_then(|i| i.best_logo())
+                        .and_then(|p| tmdb_image(Some(p)));
                     let mut result_media = db::Media {
                         title: movie_details.title,
                         description: movie_details.overview,
@@ -154,6 +157,7 @@ impl MetaProvider for TmdbMetaProvider {
                         rating_audience: movie_details.vote_average,
                         poster: tmdb_image(movie_details.poster_path.as_deref()),
                         backdrop: tmdb_image(movie_details.backdrop_path.as_deref()),
+                        logo,
                         external_ids: sqlx::types::Json(external_ids),
                         ..Default::default()
                     };
@@ -166,6 +170,7 @@ impl MetaProvider for TmdbMetaProvider {
                     return Ok(Some(MetaResult {
                         media: result_media,
                         relations,
+                        season_posters: std::collections::HashMap::new(),
                     }));
                 }
             }
@@ -182,6 +187,9 @@ impl MetaProvider for TmdbMetaProvider {
                         tvdb: ids.tvdb,
                     };
                     let country = tv_details.origin_country.into_iter().next();
+                    let logo = tv_details.images.as_ref()
+                        .and_then(|i| i.best_logo())
+                        .and_then(|p| tmdb_image(Some(p)));
                     let mut result_media = db::Media {
                         title: tv_details.name,
                         description: tv_details.overview,
@@ -189,6 +197,7 @@ impl MetaProvider for TmdbMetaProvider {
                         rating_audience: tv_details.vote_average,
                         poster: tmdb_image(tv_details.poster_path.as_deref()),
                         backdrop: tmdb_image(tv_details.backdrop_path.as_deref()),
+                        logo,
                         country,
                         external_ids: sqlx::types::Json(external_ids),
                         ..Default::default()
@@ -223,9 +232,17 @@ impl MetaProvider for TmdbMetaProvider {
                         }
                     }
                     
+                    let season_posters: std::collections::HashMap<i64, String> = tv_details.seasons.iter()
+                        .filter_map(|s| {
+                            let poster = tmdb_image(s.poster_path.as_deref())?;
+                            Some((s.season_number, poster))
+                        })
+                        .collect();
+
                     return Ok(Some(MetaResult {
                         media: result_media,
                         relations,
+                        season_posters,
                     }));
                 }
             }
@@ -270,6 +287,7 @@ impl MetaProvider for TmdbMetaProvider {
                     return Ok(Some(MetaResult {
                         media: result_media,
                         relations,
+                        season_posters: std::collections::HashMap::new(),
                     }));
                 }
             }

@@ -3,6 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -22,6 +23,8 @@ pub struct MetaRelation {
 pub struct MetaResult {
     pub media: db::Media,
     pub relations: Vec<MetaRelation>,
+    /// season_number → poster URL, populated by providers that have this data (e.g. TMDB).
+    pub season_posters: HashMap<i64, String>,
 }
 
 /// Enriches metadata fields on a single Media item.
@@ -85,7 +88,9 @@ impl MetaProviderService {
         media: &mut db::Media,
         ctx: &AppContext,
         force_refresh: bool,
-    ) -> Result<()> {
+    ) -> Result<HashMap<i64, String>> {
+        let mut season_posters: HashMap<i64, String> = HashMap::new();
+
         // Only run providers for kinds that have metadata sources.
         if !matches!(
             media.kind,
@@ -94,7 +99,7 @@ impl MetaProviderService {
                 | db::MediaKind::Season
                 | db::MediaKind::Episode
         ) {
-            return Ok(());
+            return Ok(season_posters);
         }
 
         for (i, provider) in self.meta_providers.iter().enumerate() {
@@ -105,6 +110,11 @@ impl MetaProviderService {
                 Ok(Some(result)) => {
                     merge_media(media, &result.media, replace);
                     apply_title_format(media);
+
+                    // Collect season posters — later providers fill gaps left by earlier ones.
+                    for (idx, url) in result.season_posters {
+                        season_posters.entry(idx).or_insert(url);
+                    }
 
                     if matches!(
                         media.kind,
@@ -132,7 +142,7 @@ impl MetaProviderService {
             }
         }
         media.refreshed_at = Some(Utc::now().naive_utc());
-        Ok(())
+        Ok(season_posters)
     }
 
     /// Sync the tree for a series: discover new seasons and episodes.
@@ -241,18 +251,29 @@ impl MetaProviderService {
                 async move {
                     let mut batch = vec![];
                         debug!(id = %m.id, title = %m.title, "processing");
-                    if let Err(e) = self.apply_meta(&mut m, ctx, force_refresh).await {
-                        warn!(id = %m.id, title = %m.title, error = %e, "failed to apply metadata, skipping");
-                        batch.push(m);
-                        return batch;
-                    }
+                    let season_posters = match self.apply_meta(&mut m, ctx, force_refresh).await {
+                        Ok(sp) => sp,
+                        Err(e) => {
+                            warn!(id = %m.id, title = %m.title, error = %e, "failed to apply metadata, skipping");
+                            batch.push(m);
+                            return batch;
+                        }
+                    };
 
                     if m.kind == db::MediaKind::Series {
                         batch.push(m.clone());
                         match self.sync_tree(&mut m, ctx).await {
-                            Ok(children) => {
-                                let i = counter.fetch_add(1, Ordering::Relaxed) + 1;
-                                //info!(title = %m.title, seasons_episodes = children.len(), "[{}/{}] synced series tree", i, total);
+                            Ok(mut children) => {
+                                let _ = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                                for child in children.iter_mut() {
+                                    if child.kind == db::MediaKind::Season && child.poster.is_none() {
+                                        if let Some(idx) = child.idx {
+                                            if let Some(url) = season_posters.get(&idx) {
+                                                child.poster = Some(url.clone());
+                                            }
+                                        }
+                                    }
+                                }
                                 batch.extend(children);
                             }
                             Err(e) => {

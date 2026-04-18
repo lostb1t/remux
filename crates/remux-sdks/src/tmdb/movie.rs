@@ -26,6 +26,7 @@ pub struct Movie {
     pub genres: Option<Vec<super::Genre>>,
     pub external_ids: Option<super::ExternalIds>,
     pub credits: Option<super::Credits>,
+    pub images: Option<super::Images>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

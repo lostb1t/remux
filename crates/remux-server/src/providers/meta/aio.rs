@@ -70,6 +70,7 @@ impl MetaProvider for AioMetaProvider {
             Ok(Some(MetaResult {
                 media: found_media,
                 relations,
+                season_posters: std::collections::HashMap::new(),
             }))
         } else {
             Ok(None)

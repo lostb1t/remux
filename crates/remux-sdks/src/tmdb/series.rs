@@ -46,6 +46,7 @@ pub struct Series {
     pub vote_count: u32,
     pub external_ids: Option<super::ExternalIds>,
     pub credits: Option<super::Credits>,
+    pub images: Option<super::Images>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
