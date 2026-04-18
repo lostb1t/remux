@@ -1856,7 +1856,7 @@ pub async fn master_hls_video(
             .context_not_found("not found", "media not found")?;
 
         let mut resolved_media = media.clone();
-        if matches!(resolved_media.kind, db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track) {
+        if matches!(resolved_media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
             let sources = resolved_media.streams(&state.ctx.db).await?;
             resolved_media = if let Some(wanted) = q.media_source_id {
                 sources.iter().find(|s| s.id == wanted).cloned()
