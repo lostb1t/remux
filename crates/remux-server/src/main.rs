@@ -1,3 +1,6 @@
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use anyhow::Result;
 use remux_server::{Config, FilesystemPaths, serve, setup_logging};
 use serde::Deserialize;

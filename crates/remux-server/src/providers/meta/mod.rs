@@ -233,7 +233,6 @@ impl MetaProviderService {
         force_refresh: bool,
         save: bool,
     ) -> Result<Vec<db::Media>> {
-        let total = media.len();
         let counter = AtomicUsize::new(0);
 
         let results: Vec<Vec<db::Media>> = stream::iter(media)

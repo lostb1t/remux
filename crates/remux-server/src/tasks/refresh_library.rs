@@ -26,7 +26,7 @@ impl Task for RefreshLibraryTask {
         _progress: ProgressReporter,
     ) -> Result<()> {
         let service = MetaProviderService::default();
-        const CHUNK_SIZE: u32 = 500;
+        const CHUNK_SIZE: u32 = 100;
         let mut offset = 0u32;
         loop {
             let batch = db::Media::get_refreshable(&ctx.db, CHUNK_SIZE, offset).await?;
