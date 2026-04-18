@@ -22,6 +22,30 @@ fn persist_locks() -> &'static DashMap<Uuid, Arc<Mutex<()>>> {
     PERSIST_LOCKS.get_or_init(DashMap::new)
 }
 
+/// For each candidate ID: if not in DB, create/acquire its persist lock and persist if still
+/// missing; if in DB but lock is held, wait for it. Returns true if a query retry is warranted.
+async fn wait_for_persist(ids: &[Uuid], ctx: &crate::AppContext) -> anyhow::Result<bool> {
+    for &id in ids {
+        let in_db = db::Media::get_by_id(&ctx.db, &id).await?.is_some();
+        if !in_db {
+            let lock = persist_locks()
+                .entry(id)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone();
+            let _guard = lock.lock().await;
+            if db::Media::get_by_id(&ctx.db, &id).await?.is_none() {
+                ctx.search.persist(id, ctx).await.ok();
+            }
+            persist_locks().remove(&id);
+            return Ok(true);
+        } else if let Some(lock) = persist_locks().get(&id).map(|e| Arc::clone(&e)) {
+            let _guard = lock.lock().await;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 use crate::AppState;
 use crate::db;
 use crate::db::auth;
@@ -325,45 +349,26 @@ pub async fn get_items(
     )
     .await?;
 
-    // If result is empty and a parent was requested, the parent may not be persisted yet.
-    // Acquire its persist lock (creating it if needed) so we either wait for a concurrent
-    // get_item persist to finish, or trigger the persist ourselves, then retry.
+    // If result is empty, a parent/artist tree may still be mid-persist. Collect all candidate
+    // IDs from the query and wait on whichever has (or needs) a persist lock, then retry once.
     if result.records.is_empty() {
-        if let Some(parent_id) = q.parent_id {
-            let parent_in_db = db::Media::get_by_id(&state.ctx.db, &parent_id).await?.is_some();
-            if !parent_in_db {
-                let lock = persist_locks()
-                    .entry(parent_id)
-                    .or_insert_with(|| Arc::new(Mutex::new(())))
-                    .clone();
-                let _guard = lock.lock().await;
-                // Re-check under lock — a concurrent get_item may have just persisted it.
-                if db::Media::get_by_id(&state.ctx.db, &parent_id).await?.is_none() {
-                    state.ctx.search.persist(parent_id, &state.ctx).await.ok();
-                }
-                persist_locks().remove(&parent_id);
-                result = db::Media::get_by_jellyfin_filter(
-                    &state.ctx.db,
-                    &q,
-                    want_total,
-                    Some(&session.user),
-                    server_config.as_ref(),
-                    None,
-                )
-                .await?;
-            } else if let Some(lock) = persist_locks().get(&parent_id).map(|e| Arc::clone(&e)) {
-                // Parent is in DB but children are still being written — wait for the lock.
-                let _guard = lock.lock().await;
-                result = db::Media::get_by_jellyfin_filter(
-                    &state.ctx.db,
-                    &q,
-                    want_total,
-                    Some(&session.user),
-                    server_config.as_ref(),
-                    None,
-                )
-                .await?;
-            }
+        let candidates: Vec<Uuid> = q.parent_id.iter()
+            .chain(q.artist_ids.as_deref().unwrap_or(&[]))
+            .chain(q.album_artist_ids.as_deref().unwrap_or(&[]))
+            .chain(q.contributing_artist_ids.as_deref().unwrap_or(&[]))
+            .copied()
+            .collect();
+
+        if wait_for_persist(&candidates, &state.ctx).await? {
+            result = db::Media::get_by_jellyfin_filter(
+                &state.ctx.db,
+                &q,
+                want_total,
+                Some(&session.user),
+                server_config.as_ref(),
+                None,
+            )
+            .await?;
         }
     }
 

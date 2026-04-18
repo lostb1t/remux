@@ -189,7 +189,7 @@ async fn fetch_full_discography(
     };
 
     let albums_resp: DeezerAlbumList = match client
-        .get(format!("{}/artist/{}/albums?limit=100", BASE, artist_id))
+        .get(format!("{}/artist/{}/albums?limit=1000", BASE, artist_id))
         .send()
         .await
     {
