@@ -305,6 +305,7 @@ fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     fill!(runtime);
     fill!(rating_audience);
     fill!(certification);
+    fill!(country);
     fill!(logo);
     fill!(backdrop);
     fill!(trailers);

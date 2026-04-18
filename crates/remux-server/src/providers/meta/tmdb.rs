@@ -181,6 +181,7 @@ impl MetaProvider for TmdbMetaProvider {
                         imdb: ids.imdb.clone(),
                         tvdb: ids.tvdb,
                     };
+                    let country = tv_details.origin_country.into_iter().next();
                     let mut result_media = db::Media {
                         title: tv_details.name,
                         description: tv_details.overview,
@@ -188,6 +189,7 @@ impl MetaProvider for TmdbMetaProvider {
                         rating_audience: tv_details.vote_average,
                         poster: tmdb_image(tv_details.poster_path.as_deref()),
                         backdrop: tmdb_image(tv_details.backdrop_path.as_deref()),
+                        country,
                         external_ids: sqlx::types::Json(external_ids),
                         ..Default::default()
                     };

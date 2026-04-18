@@ -430,6 +430,25 @@ pub struct MediaFilter {
     pub filter_match: remux_sdks::remux::models::FilterMatchMode,
 }
 
+/// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
+/// Accepts alpha-2 ("US"), alpha-3 ("USA"), or full English name ("United States of America").
+/// Returns the input uppercased if no match is found.
+pub fn normalize_country_alpha2(c: &str) -> String {
+    let upper = c.to_uppercase();
+    if upper.len() == 2 {
+        return upper;
+    }
+    rust_iso3166::from_alpha3(&upper)
+        .or_else(|| {
+            rust_iso3166::ALL
+                .iter()
+                .find(|cc| cc.name.eq_ignore_ascii_case(c))
+                .copied()
+        })
+        .map(|cc| cc.alpha2.to_string())
+        .unwrap_or(upper)
+}
+
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Media {
     // shared
@@ -699,7 +718,7 @@ impl Media {
         .bind(self.refreshed_at)
         .bind(self.series_id)
         .bind(&self.collection_smart_filter)
-        .bind(&self.country)
+        .bind(self.country.as_deref().map(normalize_country_alpha2))
         .execute(db)
         .await?;
 
@@ -776,7 +795,7 @@ impl Media {
                     .push_bind(&item.digital_released_at)
                     .push_bind(&item.status)
                     .push_bind(&item.series_id)
-                    .push_bind(&item.country);
+                    .push_bind(item.country.as_deref().map(normalize_country_alpha2));
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -848,7 +867,7 @@ impl Media {
                     .push_bind(&item.status)
                     .push_bind(&item.refreshed_at)
                     .push_bind(&item.series_id)
-                    .push_bind(&item.country);
+                    .push_bind(item.country.as_deref().map(normalize_country_alpha2));
             });
 
             query_builder.push(
@@ -2297,17 +2316,7 @@ impl TryFrom<sdks::aio::Meta> for Media {
             rating_audience: meta.imdb_rating,
             description: meta.description,
             certification: meta.certification,
-            country: meta.country.and_then(|v| v.into_iter().next()).map(|c| {
-                if c.len() == 2 {
-                    c.to_uppercase()
-                } else {
-                    rust_iso3166::ALL
-                        .iter()
-                        .find(|cc| cc.name.eq_ignore_ascii_case(&c))
-                        .map(|cc| cc.alpha2.to_string())
-                        .unwrap_or_else(|| c.to_uppercase())
-                }
-            }),
+            country: meta.country.and_then(|v| v.into_iter().next()).map(|c| normalize_country_alpha2(&c)),
             poster: meta.poster.or(meta.thumbnail),
             logo: meta.logo,
             backdrop: meta.background,

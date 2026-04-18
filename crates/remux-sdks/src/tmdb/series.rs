@@ -28,7 +28,7 @@ pub struct Series {
     //pub networks: Option<Vec<Network>>,
     //  pub number_of_episodes: u32,
     // pub number_of_seasons: u32,
-    // pub origin_country: Vec<String>,
+    pub origin_country: Vec<String>,
     pub original_language: String,
     pub original_name: String,
     pub overview: Option<String>,
