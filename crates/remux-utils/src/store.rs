@@ -5,7 +5,6 @@ use std::{any::Any, sync::Arc, time::Duration};
 pub struct StoreEntry {
     pub item: Arc<dyn Any + Send + Sync>,
     pub ttl: Duration,
-    pub weight: u32,
 }
 
 impl Clone for StoreEntry {
@@ -13,7 +12,6 @@ impl Clone for StoreEntry {
         StoreEntry {
             item: Arc::clone(&self.item),
             ttl: self.ttl,
-            weight: self.weight,
         }
     }
 }
@@ -32,18 +30,6 @@ impl Store {
         Self { inner }
     }
 
-    /// Create a byte-weighted cache. `max_bytes` is the total byte budget.
-    /// Callers must use `save_weighted` / `insert_weighted` to supply byte sizes;
-    /// plain `save` / `insert` count each entry as 1 byte.
-    pub fn new_bytes(max_bytes: u64) -> Self {
-        let inner = Cache::builder()
-            .max_capacity(max_bytes)
-            .weigher(|_key, value: &Arc<StoreEntry>| value.weight)
-            .expire_after(PerEntryExpiry)
-            .build();
-        Self { inner }
-    }
-
     pub fn with_cache(cache: Cache<String, Arc<StoreEntry>>) -> Self {
         Self { inner: cache }
     }
@@ -54,20 +40,9 @@ impl Store {
         item: T,
         ttl: Duration,
     ) {
-        self.save_weighted(key, item, ttl, 1);
-    }
-
-    pub fn save_weighted<T: Any + Send + Sync + 'static>(
-        &self,
-        key: impl Into<String>,
-        item: T,
-        ttl: Duration,
-        weight: u32,
-    ) {
         let entry = Arc::new(StoreEntry {
             item: Arc::new(item),
             ttl,
-            weight,
         });
         self.inner.insert(key.into(), entry);
     }
@@ -78,16 +53,6 @@ impl Store {
         item: T,
         ttl: Duration,
     ) -> bool {
-        self.insert_weighted(key, item, ttl, 1)
-    }
-
-    pub fn insert_weighted<T: Any + Send + Sync + 'static>(
-        &self,
-        key: impl Into<String>,
-        item: T,
-        ttl: Duration,
-        weight: u32,
-    ) -> bool {
         let key = key.into();
         if self.inner.contains_key(&key) {
             return false;
@@ -95,7 +60,6 @@ impl Store {
         let entry = Arc::new(StoreEntry {
             item: Arc::new(item),
             ttl,
-            weight,
         });
         self.inner.insert(key, entry);
         true

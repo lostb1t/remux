@@ -19,9 +19,8 @@ use std::ops;
 use std::sync::Arc;
 use std::time::Duration;
 
-// 128 MB byte-weighted cap. Each entry is weighted by its raw JSON body length.
 static HTTP_CACHE: std::sync::LazyLock<Store> =
-    std::sync::LazyLock::new(|| Store::new_bytes(128 * 1024 * 1024));
+    std::sync::LazyLock::new(|| Store::new(500));
 
 fn hash_key(key: &str) -> String {
     let result = md5::compute(key.as_bytes());
@@ -271,7 +270,7 @@ impl<A: Auth + Clone> RestClient<A> {
                     });
                 if result.is_ok() {
                     if let Some(ttl) = endpoint.cache_ttl() {
-                        HTTP_CACHE.save_weighted(cache_key, text.clone(), ttl, text.len() as u32);
+                        HTTP_CACHE.save(cache_key, text.clone(), ttl);
                     }
                 }
                 result
