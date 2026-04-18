@@ -525,7 +525,7 @@ async fn items_playbackinfo_inner(
 ///
 /// If the `static_` query parameter is set to `true`, the response will be a static
 /// video stream. Otherwise, a progressive transcode is started.
-#[get("/Audio/{id}/stream")]
+#[get("/audio/{id}/stream")]
 pub async fn audio_stream(
     headers: headers::HeaderMap,
     State(state): State<AppState>,
@@ -535,7 +535,7 @@ pub async fn audio_stream(
     videos_stream_inner(headers, state, id, q).await
 }
 
-#[get("/Audio/{id}/stream.{container}")]
+#[get("/audio/{id}/stream.{container}")]
 pub async fn audio_stream_by_container(
     headers: headers::HeaderMap,
     State(state): State<AppState>,

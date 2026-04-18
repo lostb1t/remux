@@ -7,7 +7,8 @@ use tokio::sync::OnceCell;
 
 use super::{StreamOption, StreamService};
 
-const FALLBACK_INSTANCE: &str = "https://tidal-api.binimum.org";
+const INSTANCES_URL: &str = "https://monochrome.tf/instances.json";
+const PRIMARY_INSTANCE: &str = "https://tidal-api.binimum.org";
 const TIDAL_CLIENT: &str = "BiniLossless/v3.4";
 
 fn build_client() -> reqwest::Client {
@@ -66,8 +67,23 @@ impl SquidStreamService {
     async fn get_instances(&self) -> Vec<String> {
         self.instances
             .get_or_init(|| async {
-                // Binimum first — community instances from monochrome.tf consistently return 400
-                vec![FALLBACK_INSTANCE.to_string()]
+                let mut list = vec![PRIMARY_INSTANCE.to_string()];
+                if let Ok(body) = self.client.get(INSTANCES_URL).send().await {
+                    if let Ok(resp) = body.json::<serde_json::Value>().await {
+                        if let Some(api) = resp.get("api").and_then(|v| v.as_array()) {
+                            for v in api {
+                                if let Some(s) = v.as_str() {
+                                    let url = s.trim_end_matches('/').to_string();
+                                    if url != PRIMARY_INSTANCE {
+                                        list.push(url);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                tracing::debug!(count = list.len(), "squid/tidal: instances loaded");
+                list
             })
             .await
             .clone()
