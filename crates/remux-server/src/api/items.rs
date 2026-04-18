@@ -325,10 +325,34 @@ pub async fn get_items(
     )
     .await?;
 
-    // If the parent is currently being persisted (first-load race), wait for it then retry.
+    // If result is empty and a parent was requested, the parent may not be persisted yet.
+    // Acquire its persist lock (creating it if needed) so we either wait for a concurrent
+    // get_item persist to finish, or trigger the persist ourselves, then retry.
     if result.records.is_empty() {
         if let Some(parent_id) = q.parent_id {
-            if let Some(lock) = persist_locks().get(&parent_id).map(|e| e.clone()) {
+            let parent_in_db = db::Media::get_by_id(&state.ctx.db, &parent_id).await?.is_some();
+            if !parent_in_db {
+                let lock = persist_locks()
+                    .entry(parent_id)
+                    .or_insert_with(|| Arc::new(Mutex::new(())))
+                    .clone();
+                let _guard = lock.lock().await;
+                // Re-check under lock — a concurrent get_item may have just persisted it.
+                if db::Media::get_by_id(&state.ctx.db, &parent_id).await?.is_none() {
+                    state.ctx.search.persist(parent_id, &state.ctx).await.ok();
+                }
+                persist_locks().remove(&parent_id);
+                result = db::Media::get_by_jellyfin_filter(
+                    &state.ctx.db,
+                    &q,
+                    want_total,
+                    Some(&session.user),
+                    server_config.as_ref(),
+                    None,
+                )
+                .await?;
+            } else if let Some(lock) = persist_locks().get(&parent_id).map(|e| Arc::clone(&e)) {
+                // Parent is in DB but children are still being written — wait for the lock.
                 let _guard = lock.lock().await;
                 result = db::Media::get_by_jellyfin_filter(
                     &state.ctx.db,
