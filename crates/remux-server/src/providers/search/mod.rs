@@ -8,7 +8,7 @@ mod deezer;
 mod musicbrainz;
 mod ytdlp;
 pub use aio::AioSearchService;
-pub use deezer::{DeezerAlbumSearchService, DeezerTrackSearchService};
+pub use deezer::{DeezerAlbumSearchService, DeezerArtistSearchService, DeezerTrackSearchService};
 pub use musicbrainz::{MusicBrainzAlbumSearchService, MusicBrainzTrackSearchService};
 pub use ytdlp::{YtDlpAlbumSearchService, YtDlpSearchService};
 
@@ -68,6 +68,7 @@ impl Default for SearchServiceManager {
                 Box::new(AioSearchService),
                 Box::new(DeezerTrackSearchService::default()),
                 Box::new(DeezerAlbumSearchService::default()),
+                Box::new(DeezerArtistSearchService::default()),
             ],
         }
     }

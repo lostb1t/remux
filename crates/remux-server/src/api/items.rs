@@ -92,7 +92,8 @@ pub async fn get_items(
         };
         let wants_tracks = music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::Audio));
         let wants_albums = music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicAlbum));
-        let wants_music = wants_tracks || wants_albums || (music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicArtist)));
+        let wants_artists = music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicArtist));
+        let wants_music = wants_tracks || wants_albums || wants_artists;
         let wants_video = types.iter().any(|t| {
             matches!(t, api::MediaType::Movie | api::MediaType::Series | api::MediaType::Episode)
         });
@@ -139,6 +140,25 @@ pub async fn get_items(
                     }
                     Err(e) => {
                         warn!(error = %e, term = %s, "get_items: album search failed");
+                    }
+                }
+            }
+
+            if wants_artists {
+                let artist_limit = music_limit.min(10);
+                info!(term = %s, "get_items: artist search via SearchServiceManager");
+                match state
+                    .ctx
+                    .search
+                    .search(&db::MediaKind::Artist, &s, artist_limit, &state.ctx)
+                    .await
+                {
+                    Ok(artists) => {
+                        info!(count = artists.len(), "get_items: artist search returned results");
+                        all_items.extend(artists.into_iter().map(api::db_media_to_item));
+                    }
+                    Err(e) => {
+                        warn!(error = %e, term = %s, "get_items: artist search failed");
                     }
                 }
             }

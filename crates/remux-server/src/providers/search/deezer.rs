@@ -27,6 +27,18 @@ struct DeezerArtist {
 }
 
 #[derive(Deserialize)]
+struct ArtistSearch {
+    data: Vec<DeezerArtistSearchItem>,
+}
+
+#[derive(Deserialize)]
+struct DeezerArtistSearchItem {
+    id: u64,
+    name: String,
+    picture_xl: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct DeezerAlbumRef {
     id: u64,
     title: String,
@@ -583,6 +595,107 @@ impl SearchService for DeezerAlbumSearchService {
         save_discography(artist, albums_with_tracks, ctx).await?;
 
         // Return the specific album that was clicked.
+        let media = db::Media::get_by_id(&ctx.db, &target_id).await?;
+        Ok(media)
+    }
+}
+
+/// Search backend backed by the Deezer public API — handles artists.
+pub struct DeezerArtistSearchService {
+    client: reqwest::Client,
+}
+
+impl Default for DeezerArtistSearchService {
+    fn default() -> Self {
+        Self { client: build_client() }
+    }
+}
+
+#[async_trait]
+impl SearchService for DeezerArtistSearchService {
+    fn supported_kinds(&self) -> &[db::MediaKind] {
+        &[db::MediaKind::Artist]
+    }
+
+    async fn search(
+        &self,
+        _kind: &db::MediaKind,
+        query: &str,
+        limit: usize,
+        ctx: &AppContext,
+    ) -> Result<Vec<db::Media>> {
+        let t = std::time::Instant::now();
+        tracing::debug!(query, limit, "Deezer artist search starting");
+
+        let url = format!(
+            "{}/search/artist?q={}&limit={}",
+            BASE,
+            urlencoding::encode(query),
+            limit.min(25)
+        );
+
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            tracing::warn!(query, status = %resp.status(), "Deezer artist search HTTP error");
+            return Ok(vec![]);
+        }
+
+        let data: ArtistSearch = resp.json().await?;
+
+        let results: Vec<_> = data
+            .data
+            .into_iter()
+            .map(|a| {
+                let artist = db::Media {
+                    id: crate::utils::get_stable_uuid(format!("deezer-artist:{}", a.id)),
+                    title: a.name,
+                    kind: db::MediaKind::Artist,
+                    media_id: Some(a.id.to_string()),
+                    poster: a.picture_xl,
+                    ..Default::default()
+                };
+                let result = MusicSearchResult { media: artist, album: None, artist: None };
+                ctx.store.insert(result.media.id.to_string(), result.clone(), Duration::from_secs(3600));
+                result.media
+            })
+            .collect();
+
+        tracing::info!(
+            query,
+            count = results.len(),
+            elapsed_ms = t.elapsed().as_millis(),
+            "Deezer artist search done"
+        );
+
+        Ok(results)
+    }
+
+    async fn persist(&self, id: Uuid, ctx: &AppContext) -> Result<Option<db::Media>> {
+        let result = match ctx.store.get::<MusicSearchResult>(id.to_string()) {
+            Some(r) if r.media.kind == db::MediaKind::Artist => r,
+            _ => return Ok(None),
+        };
+        ctx.store.delete(id.to_string());
+
+        let artist_deezer_id = result
+            .media
+            .media_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Artist has no Deezer ID"))?;
+
+        let t = std::time::Instant::now();
+        tracing::info!(artist_id = %artist_deezer_id, "Fetching full artist discography for artist persist");
+        let (artist, albums_with_tracks) =
+            fetch_full_discography(&self.client, &artist_deezer_id).await?;
+        let target_id = artist.id;
+        tracing::info!(
+            artist_id = %artist_deezer_id,
+            elapsed_ms = t.elapsed().as_millis(),
+            "Discography fetch done, saving to DB"
+        );
+
+        save_discography(artist, albums_with_tracks, ctx).await?;
+
         let media = db::Media::get_by_id(&ctx.db, &target_id).await?;
         Ok(media)
     }
