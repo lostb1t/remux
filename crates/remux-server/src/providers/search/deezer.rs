@@ -290,7 +290,8 @@ async fn fetch_full_discography(
                 .tracks
                 .data
                 .into_iter()
-                .map(|t| {
+                .enumerate()
+                .map(|(i, t)| {
                     let track_artist =
                         if t.artist.name.is_empty() { artist_name.clone() } else { t.artist.name };
                     db::Media {
@@ -302,7 +303,7 @@ async fn fetch_full_discography(
                         runtime: t.duration.map(|s| s as i64),
                         released_at,
                         description: Some(format!("by {}", track_artist)),
-                        idx: t.track_position,
+                        idx: Some(i as i64 + 1),
                         parent_idx: t.disk_number,
                         ..Default::default()
                     }
