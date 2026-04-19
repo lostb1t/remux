@@ -478,6 +478,12 @@ async fn items_playbackinfo_inner(
     apply_user_playback_prefs(&state.ctx.db, &session.user, &id, &mut media_sources)
         .await;
 
+    // Clients expect the first source's ID to equal the parent item's ID.
+    if !media_sources.is_empty() {
+        media_sources[0].id = id;
+        media_sources[0].e_tag = id;
+    }
+
     let info = api::PlaybackInfoResponse {
         media_sources,
         play_session_id: Some(play_session_id),

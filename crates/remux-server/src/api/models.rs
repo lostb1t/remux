@@ -385,7 +385,13 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         item.media_sources = match media.sources.clone() {
             Some(sources) if sources.is_empty() => Some(vec![media.clone().into()]),
             Some(sources) => {
-                Some(sources.into_iter().map(MediaSourceInfo::from).collect())
+                let mut infos: Vec<MediaSourceInfo> = sources.into_iter().map(MediaSourceInfo::from).collect();
+                // Clients expect the first source's ID to equal the parent item's ID.
+                if !infos.is_empty() {
+                    infos[0].id = media.id;
+                    infos[0].e_tag = media.id;
+                }
+                Some(infos)
             }
             None => None,
         };
