@@ -123,7 +123,7 @@ impl From<db::Media> for api::MediaSourceInfo {
         let is_remote = source.is_remote_url();
         let protocol = source.media_source_protocol().to_string();
         let container = source.url.as_deref().and_then(infer_container_from_url);
-        let media_streams = fallback_media_streams(&source);
+        // let media_streams = fallback_media_streams(&source);
 
         let clean_path = source
             .url
@@ -146,7 +146,7 @@ impl From<db::Media> for api::MediaSourceInfo {
             is_remote,
             name: Some(source.title.clone()),
             container,
-            media_streams,
+            // media_streams,
             ..Default::default()
         }
     }
