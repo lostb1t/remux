@@ -66,6 +66,17 @@ impl Auth for BearerAuth {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct JellyfinApiKeyAuth {
+    pub api_key: String,
+}
+
+impl Auth for JellyfinApiKeyAuth {
+    fn apply(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        req.header("X-Emby-Token", &self.api_key)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("unauthorized")]

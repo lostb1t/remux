@@ -3808,7 +3808,8 @@ fn ApiKeysPage(app_state: AppState) -> Element {
 #[component]
 fn SettingsPage(app_state: AppState) -> Element {
     rsx! {
-        ServerSettingsCard { app_state }
+        ServerSettingsCard { app_state: app_state.clone() }
+        JellyfinImportCard { app_state }
     }
 }
 
@@ -4126,6 +4127,158 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     }
 }
 
+
+#[component]
+fn JellyfinImportCard(app_state: AppState) -> Element {
+    let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
+    let mut jellyfin_url = use_signal(String::new);
+    let mut jellyfin_api_key = use_signal(String::new);
+    let mut loading = use_signal(|| true);
+    let mut saving = use_signal(|| false);
+    let mut save_error = use_signal(|| Option::<String>::None);
+    let mut saved = use_signal(|| false);
+    let mut importing = use_signal(|| false);
+    let mut import_error = use_signal(|| Option::<String>::None);
+    let mut import_done = use_signal(|| false);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load.client.clone();
+        spawn(async move {
+            match client.execute(GetSystemConfiguration).await {
+                Ok(cfg) => {
+                    jellyfin_url.set(cfg.jellyfin_url.clone().unwrap_or_default());
+                    jellyfin_api_key.set(cfg.jellyfin_api_key.clone().unwrap_or_default());
+                    base_cfg.set(Some(cfg));
+                }
+                Err(e) => save_error.set(Some(format!("Failed to load settings: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    let app_state_save = app_state.clone();
+    let on_save = move |e: Event<FormData>| {
+        e.prevent_default();
+        let client = app_state_save.client.clone();
+        let url = jellyfin_url.peek().clone();
+        let key = jellyfin_api_key.peek().clone();
+
+        let mut cfg = base_cfg.peek().clone().unwrap_or_default();
+        cfg.jellyfin_url = if url.is_empty() { None } else { Some(url) };
+        cfg.jellyfin_api_key = if key.is_empty() { None } else { Some(key) };
+
+        saving.set(true);
+        save_error.set(None);
+        saved.set(false);
+        spawn(async move {
+            match client.execute(UpdateSystemConfiguration { config: cfg }).await {
+                Ok(_) => saved.set(true),
+                Err(e) => save_error.set(Some(e.user_message())),
+            }
+            saving.set(false);
+        });
+    };
+
+    let on_import = move |_| {
+        let client = app_state.client.clone();
+        importing.set(true);
+        import_error.set(None);
+        import_done.set(false);
+        spawn(async move {
+            match client
+                .execute(StartTask { task_id: "JellyfinImport".into() })
+                .await
+            {
+                Ok(_) => import_done.set(true),
+                Err(e) => import_error.set(Some(e.user_message())),
+            }
+            importing.set(false);
+        });
+    };
+
+    let url_filled = !jellyfin_url.read().is_empty();
+    let key_filled = !jellyfin_api_key.read().is_empty();
+    let can_import = url_filled && key_filled && !*importing.read();
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Jellyfin Import" }
+            }
+            div { class: "card-body",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else {
+                    form {
+                        onsubmit: on_save,
+                        style: "display:flex;flex-direction:column;gap:14px",
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "jf-url", "Jellyfin URL" }
+                            input {
+                                id: "jf-url",
+                                r#type: "url",
+                                class: "field-input",
+                                placeholder: "http://192.168.1.x:8096",
+                                value: "{jellyfin_url}",
+                                oninput: move |e| jellyfin_url.set(e.value()),
+                            }
+                            p { class: "field-hint", "Base URL of the source Jellyfin server." }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "jf-key", "API Key" }
+                            input {
+                                id: "jf-key",
+                                r#type: "password",
+                                class: "field-input",
+                                placeholder: "••••••••••••••••",
+                                value: "{jellyfin_api_key}",
+                                oninput: move |e| jellyfin_api_key.set(e.value()),
+                            }
+                            p { class: "field-hint",
+                                "Found in Jellyfin → Dashboard → API Keys."
+                            }
+                        }
+
+                        if let Some(err) = save_error.read().as_ref() {
+                            div { class: "alert-error", "{err}" }
+                        }
+                        if *saved.read() {
+                            div { class: "alert-success", "Settings saved." }
+                        }
+
+                        div { class: "form-actions", style: "display:flex;gap:8px;align-items:center",
+                            button {
+                                r#type: "submit",
+                                class: "btn btn-primary",
+                                disabled: *saving.read(),
+                                if *saving.read() { "Saving…" } else { "Save" }
+                            }
+                            button {
+                                r#type: "button",
+                                class: "btn btn-secondary",
+                                disabled: !can_import,
+                                onclick: on_import,
+                                if *importing.read() { "Starting…" } else { "Import Users" }
+                            }
+                        }
+
+                        if let Some(err) = import_error.read().as_ref() {
+                            div { class: "alert-error", "{err}" }
+                        }
+                        if *import_done.read() {
+                            div { class: "alert-success",
+                                "Import started. Check the Tasks page for progress."
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[component]
 fn BrandingPage(app_state: AppState) -> Element {

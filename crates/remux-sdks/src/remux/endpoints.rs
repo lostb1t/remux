@@ -52,6 +52,52 @@ impl Endpoint for GetScheduledTasks {
 }
 
 #[derive(Debug, Clone)]
+pub struct GetTask {
+    pub task_id: String,
+}
+
+impl Endpoint for GetTask {
+    type Output = TaskInfo;
+
+    fn path(&self) -> String {
+        format!("/scheduledtasks/{}", self.task_id)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetJellyfinUsers;
+
+impl Endpoint for GetJellyfinUsers {
+    type Output = Vec<JellyfinUserDto>;
+
+    fn path(&self) -> String {
+        "/Users".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GetJellyfinUserItems {
+    pub user_id: String,
+}
+
+impl Endpoint for GetJellyfinUserItems {
+    type Output = QueryResult<JellyfinItem>;
+
+    fn path(&self) -> String {
+        format!("/Users/{}/Items", self.user_id)
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        vec![
+            ("Recursive".into(), "true".into()),
+            ("Fields".into(), "ProviderIds,UserData".into()),
+            ("IncludeItemTypes".into(), "Movie,Episode".into()),
+            ("Limit".into(), "10000".into()),
+        ]
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct StartTask {
     pub task_id: String,
 }

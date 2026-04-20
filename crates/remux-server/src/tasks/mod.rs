@@ -17,6 +17,7 @@ use remux_sdks::remux::models::TaskTriggerInfoType;
 mod catalog_import;
 mod catalog_item_import;
 mod iptv_refresh;
+mod jellyfin_import;
 mod purge_media;
 mod refresh_library;
 mod series_sync;
@@ -24,6 +25,7 @@ mod series_sync;
 use catalog_import::CatalogImportTask;
 pub use catalog_item_import::CatalogItemImportTask;
 use iptv_refresh::IptvRefreshTask;
+use jellyfin_import::JellyfinImportTask;
 use purge_media::PurgeMediaTask;
 use refresh_library::RefreshLibraryTask;
 use series_sync::SeriesSyncTask;
@@ -207,6 +209,7 @@ impl TaskService {
         // service.register_task(Arc::new(SeriesSyncTask)).await?;
         service.register_task(Arc::new(IptvRefreshTask)).await?;
         service.register_task(Arc::new(PurgeMediaTask)).await?;
+        service.register_task(Arc::new(JellyfinImportTask)).await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {

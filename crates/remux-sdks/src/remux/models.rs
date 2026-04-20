@@ -206,6 +206,47 @@ pub struct ServerConfiguration {
     pub enable_subtitles_detail: Option<bool>,
     #[default(Some(true))]
     pub music_enabled: Option<bool>,
+    pub jellyfin_url: Option<String>,
+    pub jellyfin_api_key: Option<String>,
+}
+
+// --- Jellyfin import models (used to consume a remote Jellyfin server) ---
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct JellyfinUserPolicy {
+    pub is_administrator: Option<bool>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct JellyfinUserDto {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub policy: Option<JellyfinUserPolicy>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct JellyfinUserData {
+    pub play_count: Option<i64>,
+    pub playback_position_ticks: Option<i64>,
+    pub last_played_date: Option<DateTime<Utc>>,
+    pub played: Option<bool>,
+    pub is_favorite: Option<bool>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct JellyfinItem {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub provider_ids: Option<HashMap<String, String>>,
+    pub user_data: Option<JellyfinUserData>,
 }
 
 impl ServerConfiguration {
