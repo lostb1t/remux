@@ -190,20 +190,21 @@ async fn items_playbackinfo_inner(
     // When no source is specified (e.g. details page open), return all versions
     // for version selection but only probe the first one — probing every source
     // causes a storm of parallel FFmpeg processes (one per version of the movie).
-    let (source_medias, probe_only_first) = if let Some(sid) = media_source_id {
-        // Check if the source exists first before consuming the vec
-        if all_source_medias.iter().any(|s| s.id == sid) {
-            let filtered: Vec<db::Media> = all_source_medias
-                .into_iter()
-                .filter(|s| s.id == sid)
-                .collect();
-            (filtered, false)
-        } else {
-            // Requested source not found, return all without limiting probing
-            (all_source_medias, false)
-        }
+    //
+    // Android TV always sends media_source_id = item_id (not None) for auto-play.
+    // Treat media_source_id == item_id the same as None — return all sources.
+    let specific_source_requested = media_source_id
+        .map(|sid| sid != id && all_source_medias.iter().any(|s| s.id == sid))
+        .unwrap_or(false);
+    let (source_medias, probe_only_first) = if specific_source_requested {
+        let sid = media_source_id.unwrap();
+        let filtered: Vec<db::Media> = all_source_medias
+            .into_iter()
+            .filter(|s| s.id == sid)
+            .collect();
+        (filtered, false)
     } else {
-        (all_source_medias, true) // probe only first when no source requested
+        (all_source_medias, true) // probe only first when no specific source requested
     };
 
     let max_bitrate: Option<i64> = match (
@@ -486,8 +487,11 @@ async fn items_playbackinfo_inner(
     apply_user_playback_prefs(&state.ctx.db, &session.user, &id, &mut media_sources)
         .await;
 
-    // Clients expect the first source's ID to equal the parent item's ID.
-    if !media_sources.is_empty() {
+    // When no specific source was requested (initial load, or media_source_id == item_id),
+    // override source[0].Id to equal the item ID — clients expect this for auto-play.
+    // When a real specific source was requested, keep its UUID so the client
+    // sends it back and we resolve the right stream.
+    if !specific_source_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
     }
@@ -813,10 +817,25 @@ pub async fn report_playback_start(
         .flatten()
         .map(|m| m.title)
         .unwrap_or_default();
+    let source_title = if let Some(ref sid) = data.media_source_id {
+        if let Ok(source_uuid) = sid.parse::<Uuid>() {
+            db::Media::get_by_id(&state.ctx.db, &source_uuid)
+                .await
+                .ok()
+                .flatten()
+                .map(|m| m.title)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     info!(
         play_session_id,
         %item_id,
+        media_source_id = ?data.media_source_id,
         title = %media_title,
+        source = ?source_title,
         user = %session.user.username,
         "Playback started"
     );
