@@ -13,40 +13,162 @@ fn nonzero<T: Default + PartialOrd>(v: T) -> Option<T> {
     if v > T::default() { Some(v) } else { None }
 }
 
-fn display_title(
-    language: Option<&str>,
-    codec: Option<&str>,
-    codec_type: &str,
-    channels: Option<i32>,
-) -> Option<String> {
-    let mut parts: Vec<String> = vec![];
-
-    if let Some(lang) = language.and_then(|code| Language::from_str(code).ok()) {
-        parts.push(lang.to_name().to_string());
+fn first_to_upper(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
     }
+}
 
-    if let Some(c) = codec {
-        parts.push(c.to_uppercase());
+fn subtitle_codec_display(codec: &str) -> &str {
+    match codec {
+        "hdmv_pgs_subtitle" => "pgssub",
+        "dvd_subtitle" => "dvdsub",
+        other => other,
     }
+}
 
-    if codec_type == "Audio" {
-        if let Some(ch) = channels {
-            let layout = if ch >= 8 {
-                "7.1"
-            } else if ch >= 6 {
-                "5.1"
-            } else {
-                "Stereo"
-            };
-            parts.push(layout.to_string());
+fn audio_codec_friendly(codec: &str) -> &str {
+    match codec {
+        "aac" => "AAC",
+        "ac3" | "a52" => "Dolby Digital",
+        "eac3" => "Dolby Digital Plus",
+        "truehd" => "TrueHD",
+        "dca" | "dts" => "DTS",
+        "flac" => "FLAC",
+        "mp3" => "MP3",
+        "opus" => "Opus",
+        "vorbis" => "Vorbis",
+        "pcm_s16le" | "pcm_s24le" | "pcm_s32le" | "pcm_f32le" => "PCM",
+        "alac" => "ALAC",
+        other => other,
+    }
+}
+
+fn video_resolution_text(width: Option<i64>, height: Option<i64>) -> Option<String> {
+    match (width, height) {
+        (Some(w), _) if w >= 3840 => Some("4K".into()),
+        (_, Some(h)) if h >= 2160 => Some("4K".into()),
+        (Some(w), _) if w >= 1920 => Some("1080p".into()),
+        (_, Some(h)) if h >= 1080 => Some("1080p".into()),
+        (Some(w), _) if w >= 1280 => Some("720p".into()),
+        (_, Some(h)) if h >= 720 => Some("720p".into()),
+        (Some(w), _) if w >= 720 => Some("480p".into()),
+        (_, Some(h)) if h >= 480 => Some("480p".into()),
+        (Some(_), _) | (_, Some(_)) => Some("SD".into()),
+        _ => None,
+    }
+}
+
+fn append_tags_to_title(title: &str, tags: &[String]) -> String {
+    let mut result = title.to_string();
+    for tag in tags {
+        if !title.to_ascii_lowercase().contains(&tag.to_ascii_lowercase()) {
+            result.push_str(" - ");
+            result.push_str(tag);
+        }
+    }
+    result
+}
+
+struct StreamMeta<'a> {
+    language: Option<&'a str>,
+    codec: Option<&'a str>,
+    profile: Option<&'a str>,
+    channels: Option<i64>,
+    channel_layout: Option<&'a str>,
+    width: Option<i64>,
+    height: Option<i64>,
+    video_range: Option<&'a api::VideoRange>,
+    is_default: bool,
+    is_forced: bool,
+    is_external: bool,
+    is_hearing_impaired: bool,
+    title: Option<&'a str>,
+}
+
+fn display_title_audio(m: &StreamMeta) -> Option<String> {
+    let mut attrs: Vec<String> = vec![];
+
+    if let Some(lang) = m.language {
+        let special = ["und", "mis", "zxx", "mul"];
+        if !special.contains(&lang.to_ascii_lowercase().as_str()) {
+            let name = Language::from_str(lang)
+                .ok()
+                .map(|l| l.to_name().to_string())
+                .unwrap_or_else(|| lang.to_string());
+            attrs.push(first_to_upper(&name));
         }
     }
 
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" - "))
+    let profile_lc = m.profile.map(|p| p.to_ascii_lowercase());
+    if let Some(ref p) = profile_lc {
+        if p != "lc" {
+            attrs.push(m.profile.unwrap().to_string());
+        }
+    } else if let Some(codec) = m.codec {
+        attrs.push(audio_codec_friendly(codec).to_string());
     }
+
+    if let Some(layout) = m.channel_layout {
+        attrs.push(first_to_upper(layout));
+    } else if let Some(ch) = m.channels {
+        attrs.push(format!("{} ch", ch));
+    }
+
+    if m.is_default { attrs.push("Default".into()); }
+    if m.is_external { attrs.push("External".into()); }
+
+    if let Some(title) = m.title {
+        return Some(append_tags_to_title(title, &attrs));
+    }
+    if attrs.is_empty() { None } else { Some(attrs.join(" - ")) }
+}
+
+fn display_title_video(m: &StreamMeta) -> Option<String> {
+    let mut attrs: Vec<String> = vec![];
+
+    if let Some(res) = video_resolution_text(m.width, m.height) {
+        attrs.push(res);
+    }
+    if let Some(codec) = m.codec {
+        attrs.push(codec.to_ascii_uppercase());
+    }
+    if let Some(range) = m.video_range {
+        if *range != api::VideoRange::Unknown {
+            attrs.push(format!("{:?}", range));
+        }
+    }
+
+    if let Some(title) = m.title {
+        return Some(append_tags_to_title(title, &attrs));
+    }
+    if attrs.is_empty() { None } else { Some(attrs.join(" ")) }
+}
+
+fn display_title_subtitle(m: &StreamMeta) -> Option<String> {
+    let mut attrs: Vec<String> = vec![];
+
+    if let Some(lang) = m.language {
+        let name = Language::from_str(lang)
+            .ok()
+            .map(|l| l.to_name().to_string())
+            .unwrap_or_else(|| lang.to_string());
+        attrs.push(first_to_upper(&name));
+    } else {
+        attrs.push("Und".into());
+    }
+
+    if m.is_hearing_impaired { attrs.push("Hearing Impaired".into()); }
+    if m.is_default { attrs.push("Default".into()); }
+    if m.is_forced { attrs.push("Forced".into()); }
+    if let Some(codec) = m.codec {
+        attrs.push(subtitle_codec_display(codec).to_ascii_uppercase());
+    }
+    if m.is_external { attrs.push("External".into()); }
+
+    if attrs.is_empty() { None } else { Some(attrs.join(" - ")) }
 }
 
 #[derive(Deserialize)]
@@ -61,6 +183,8 @@ struct FfprobeDisposition {
     default: i64,
     #[serde(default)]
     forced: i64,
+    #[serde(default)]
+    hearing_impaired: i64,
 }
 
 #[derive(Deserialize)]
@@ -68,11 +192,13 @@ struct FfprobeStream {
     index: i64,
     codec_type: Option<String>,
     codec_name: Option<String>,
+    profile: Option<String>,
     width: Option<i64>,
     height: Option<i64>,
     bit_rate: Option<String>,
     avg_frame_rate: Option<String>,
     channels: Option<i64>,
+    channel_layout: Option<String>,
     sample_rate: Option<String>,
     #[serde(default)]
     tags: HashMap<String, String>,
@@ -170,22 +296,40 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
                     .and_then(nonzero);
                 let fps = s.avg_frame_rate.as_deref().and_then(parse_frame_rate);
                 let codec = s.codec_name.clone().unwrap_or_default();
+                let is_default = video_idx == 0;
+                let is_forced = s.disposition.forced != 0;
+
+                let meta = StreamMeta {
+                    language,
+                    codec: Some(&codec),
+                    profile: s.profile.as_deref(),
+                    channels: None,
+                    channel_layout: None,
+                    width: s.width.and_then(nonzero),
+                    height: s.height.and_then(nonzero),
+                    video_range: None,
+                    is_default,
+                    is_forced,
+                    is_external: false,
+                    is_hearing_impaired: false,
+                    title: title.as_deref(),
+                };
 
                 streams.push(api::MediaStream {
                     type_: Some(api::MediaStreamType::Video),
                     index: s.index,
                     codec: Some(codec.clone()),
-                    width: s.width.and_then(nonzero),
-                    height: s.height.and_then(nonzero),
+                    width: meta.width,
+                    height: meta.height,
                     bit_rate: bitrate,
                     average_frame_rate: fps.map(|f| f as f32).and_then(nonzero),
                     real_frame_rate: fps.map(|f| f as f32).and_then(nonzero),
-                    is_default: Some(video_idx == 0),
-                    is_forced: s.disposition.forced != 0,
+                    is_default: Some(is_default),
+                    is_forced,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
                     audio_spatial_format: Some("None".to_string()),
-                    display_title: display_title(language, Some(&codec), "Video", None),
+                    display_title: display_title_video(&meta),
                     language: language.map(str::to_string),
                     title,
                     ..Default::default()
@@ -205,16 +349,36 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
                     .and_then(|sr| sr.parse::<i64>().ok())
                     .and_then(nonzero);
                 let codec = s.codec_name.clone().unwrap_or_default();
+                let is_default = audio_idx == 0;
+                let is_forced = s.disposition.forced != 0;
+                let channel_layout = s.channel_layout.as_deref();
+
+                let meta = StreamMeta {
+                    language,
+                    codec: Some(&codec),
+                    profile: s.profile.as_deref(),
+                    channels,
+                    channel_layout,
+                    width: None,
+                    height: None,
+                    video_range: None,
+                    is_default,
+                    is_forced,
+                    is_external: false,
+                    is_hearing_impaired: false,
+                    title: title.as_deref(),
+                };
 
                 streams.push(api::MediaStream {
                     type_: Some(api::MediaStreamType::Audio),
                     index: s.index,
                     codec: Some(codec.clone()),
                     channels,
+                    channel_layout: channel_layout.map(str::to_string),
                     sample_rate,
                     bit_rate: bitrate,
-                    is_default: Some(audio_idx == 0),
-                    is_forced: s.disposition.forced != 0,
+                    is_default: Some(is_default),
+                    is_forced,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
                     video_range: Some(api::VideoRange::Unknown),
@@ -222,12 +386,7 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
                     audio_spatial_format: Some("None".to_string()),
                     localized_default: Some("Default".to_string()),
                     localized_external: Some("External".to_string()),
-                    display_title: display_title(
-                        language,
-                        Some(&codec),
-                        "Audio",
-                        channels.map(|c| c as i32),
-                    ),
+                    display_title: display_title_audio(&meta),
                     language: language.map(str::to_string),
                     title,
                     ..Default::default()
@@ -249,13 +408,33 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
                 } else {
                     None
                 };
+                let is_default = sub_idx == 0;
+                let is_forced = s.disposition.forced != 0;
+                let is_hearing_impaired = s.disposition.hearing_impaired != 0;
+
+                let meta = StreamMeta {
+                    language,
+                    codec: Some(&codec),
+                    profile: None,
+                    channels: None,
+                    channel_layout: None,
+                    width: None,
+                    height: None,
+                    video_range: None,
+                    is_default,
+                    is_forced,
+                    is_external: false,
+                    is_hearing_impaired,
+                    title: None, // don't use raw stream title; build purely from attributes
+                };
 
                 streams.push(api::MediaStream {
                     type_: Some(api::MediaStreamType::Subtitle),
                     index: s.index,
                     codec: Some(codec.clone()),
-                    is_default: Some(sub_idx == 0),
-                    is_forced: s.disposition.forced != 0,
+                    is_default: Some(is_default),
+                    is_forced,
+                    is_hearing_impaired,
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
                     video_range: Some(api::VideoRange::Unknown),
@@ -266,12 +445,7 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
                     localized_forced: Some("Forced".to_string()),
                     localized_external: Some("External".to_string()),
                     localized_hearing_impaired: Some("Hearing Impaired".to_string()),
-                    display_title: display_title(
-                        language,
-                        Some(&codec),
-                        "Subtitle",
-                        None,
-                    ),
+                    display_title: display_title_subtitle(&meta),
                     language: language.map(str::to_string),
                     title,
                     is_text_subtitle_stream: is_text,
