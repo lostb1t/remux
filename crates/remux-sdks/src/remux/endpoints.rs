@@ -78,6 +78,7 @@ impl Endpoint for GetJellyfinUsers {
 #[derive(Debug, Clone)]
 pub struct GetJellyfinUserItems {
     pub user_id: String,
+    pub filter: &'static str,
 }
 
 impl Endpoint for GetJellyfinUserItems {
@@ -92,7 +93,7 @@ impl Endpoint for GetJellyfinUserItems {
             ("Recursive".into(), "true".into()),
             ("Fields".into(), "ProviderIds,UserData".into()),
             ("IncludeItemTypes".into(), "Movie,Episode".into()),
-            ("Limit".into(), "10000".into()),
+            ("Filters".into(), self.filter.into()),
         ]
     }
 }

@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use futures::future::try_join_all;
+use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::{AppContext, db};
@@ -18,7 +18,7 @@ impl Task for JellyfinImportTask {
     }
 
     fn name(&self) -> &str {
-        "Import from Jellyfin"
+        "Import user history"
     }
 
     fn category(&self) -> &str {
@@ -47,8 +47,17 @@ impl Task for JellyfinImportTask {
 
         let client = RestClient::new(&url)?.with_auth(JellyfinApiKeyAuth { api_key });
 
+        info!("fetching user list from {url}");
         let jf_users = client.execute(GetJellyfinUsers).await?;
-        info!("fetched {} Jellyfin users", jf_users.len());
+        info!("building media index");
+        let index = build_media_index(&ctx.db).await?;
+        info!(
+            imdb = index.by_imdb.len(),
+            tmdb = index.by_tmdb.len(),
+            tvdb = index.by_tvdb.len(),
+            "media index built"
+        );
+        info!("syncing {} Jellyfin users", jf_users.len());
         progress.set(5.0);
 
         // Create/find local users
@@ -88,27 +97,23 @@ impl Task for JellyfinImportTask {
         }
         progress.set(20.0);
 
-        // Fetch all users' items in parallel
-        let fetches: Vec<_> = local_users
-            .iter()
-            .filter_map(|(jf_user, _)| jf_user.id.clone())
-            .map(|jf_id| {
-                let c = client.clone();
-                async move {
-                    c.execute(GetJellyfinUserItems { user_id: jf_id }).await
-                }
-            })
-            .collect();
-
-        let all_items = try_join_all(fetches).await?;
-        progress.set(80.0);
-
-        // Import watch states
+        // Import watch states per user sequentially
         let mut states_imported = 0u32;
         let mut states_unresolved = 0u32;
 
-        for ((_, local_user), result) in local_users.iter().zip(all_items) {
-            for item in result.items {
+        for (i, (jf_user, local_user)) in local_users.iter().enumerate() {
+            let Some(jf_id) = jf_user.id.as_deref() else { continue };
+            let username = jf_user.name.as_deref().unwrap_or("?");
+            info!("fetching items for user '{username}' ({}/{})", i + 1, local_users.len());
+            let (played, resumable) = tokio::join!(
+                client.execute(GetJellyfinUserItems { user_id: jf_id.to_string(), filter: "IsPlayed" }),
+                client.execute(GetJellyfinUserItems { user_id: jf_id.to_string(), filter: "IsResumable" }),
+            );
+            let mut items = played?.items;
+            items.extend(resumable?.items);
+            info!("got {} items for '{username}', importing", items.len());
+
+            for item in items {
                 let Some(ud) = &item.user_data else {
                     continue;
                 };
@@ -131,7 +136,14 @@ impl Task for JellyfinImportTask {
                     .and_then(|p| p.get("Tvdb"))
                     .and_then(|v| v.parse::<i64>().ok());
 
-                let Some(media_key) = resolve_media_key(&ctx.db, imdb, tmdb, tvdb).await? else {
+                let Some(media_key) = resolve_from_index(&index, imdb, tmdb, tvdb) else {
+                    warn!(
+                        name = item.name.as_deref().unwrap_or("?"),
+                        imdb,
+                        tmdb,
+                        tvdb,
+                        "could not resolve item to local media"
+                    );
                     states_unresolved += 1;
                     continue;
                 };
@@ -142,12 +154,14 @@ impl Task for JellyfinImportTask {
                     favorite,
                     play_count,
                     played_at: ud.last_played_date.map(|dt| dt.naive_utc()),
-                    playback_position: position,
+                    playback_position: position / 10_000_000,
                     ..Default::default()
                 };
                 state.save(&ctx.db).await?;
                 states_imported += 1;
             }
+
+            progress.set((i + 1) as f64 / local_users.len() as f64 * 100.0);
         }
 
         progress.set(100.0);
@@ -161,57 +175,72 @@ impl Task for JellyfinImportTask {
     }
 }
 
-async fn resolve_media_key(
-    db: &sqlx::SqlitePool,
+struct MediaIndex {
+    by_imdb: HashMap<String, String>,
+    by_tmdb: HashMap<i64, String>,
+    by_tvdb: HashMap<i64, String>,
+}
+
+async fn build_media_index(db: &sqlx::SqlitePool) -> Result<MediaIndex> {
+    use sqlx::Row as _;
+    let rows = sqlx::query(
+        "SELECT media_id, json_extract(external_ids, '$.imdb') as imdb, \
+         json_extract(external_ids, '$.tmdb') as tmdb, \
+         json_extract(external_ids, '$.tvdb') as tvdb \
+         FROM media WHERE external_ids IS NOT NULL AND external_ids != '{}'",
+    )
+    .fetch_all(db)
+    .await?;
+
+    let mut index = MediaIndex {
+        by_imdb: HashMap::new(),
+        by_tmdb: HashMap::new(),
+        by_tvdb: HashMap::new(),
+    };
+
+    for row in rows {
+        let media_id: Option<String> = row.try_get("media_id").ok().flatten();
+        let imdb: Option<String> = row.try_get("imdb").ok().flatten();
+        let tmdb: Option<i64> = row.try_get("tmdb").ok().flatten();
+        let tvdb: Option<i64> = row.try_get("tvdb").ok().flatten();
+
+        let Some(key) = media_id.or_else(|| imdb.clone()) else {
+            continue;
+        };
+        if let Some(id) = imdb {
+            index.by_imdb.insert(id, key.clone());
+        }
+        if let Some(id) = tmdb {
+            index.by_tmdb.insert(id, key.clone());
+        }
+        if let Some(id) = tvdb {
+            index.by_tvdb.insert(id, key.clone());
+        }
+    }
+
+    Ok(index)
+}
+
+fn resolve_from_index(
+    index: &MediaIndex,
     imdb: Option<&str>,
     tmdb: Option<i64>,
     tvdb: Option<i64>,
-) -> Result<Option<String>> {
+) -> Option<String> {
     if let Some(id) = imdb {
-        let row = sqlx::query(
-            "SELECT media_id FROM media WHERE json_extract(external_ids, '$.imdb') = ? LIMIT 1",
-        )
-        .bind(id)
-        .fetch_optional(db)
-        .await?;
-        if let Some(row) = row {
-            use sqlx::Row as _;
-            let media_id: Option<String> = row.try_get("media_id").ok().flatten();
-            return Ok(Some(media_id.unwrap_or_else(|| id.to_string())));
+        if let Some(key) = index.by_imdb.get(id) {
+            return Some(key.clone());
         }
     }
-
     if let Some(id) = tmdb {
-        let row = sqlx::query(
-            "SELECT media_id FROM media WHERE json_extract(external_ids, '$.tmdb') = ? LIMIT 1",
-        )
-        .bind(id)
-        .fetch_optional(db)
-        .await?;
-        if let Some(row) = row {
-            use sqlx::Row as _;
-            let media_id: Option<String> = row.try_get("media_id").ok().flatten();
-            if let Some(key) = media_id {
-                return Ok(Some(key));
-            }
+        if let Some(key) = index.by_tmdb.get(&id) {
+            return Some(key.clone());
         }
     }
-
     if let Some(id) = tvdb {
-        let row = sqlx::query(
-            "SELECT media_id FROM media WHERE json_extract(external_ids, '$.tvdb') = ? LIMIT 1",
-        )
-        .bind(id)
-        .fetch_optional(db)
-        .await?;
-        if let Some(row) = row {
-            use sqlx::Row as _;
-            let media_id: Option<String> = row.try_get("media_id").ok().flatten();
-            if let Some(key) = media_id {
-                return Ok(Some(key));
-            }
+        if let Some(key) = index.by_tvdb.get(&id) {
+            return Some(key.clone());
         }
     }
-
-    Ok(None)
+    None
 }
