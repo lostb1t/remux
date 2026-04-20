@@ -249,6 +249,7 @@ pub struct JellyfinItem {
     pub item_type: Option<String>,
     pub index_number: Option<i64>,
     pub parent_index_number: Option<i64>,
+    pub series_id: Option<String>,
     pub provider_ids: Option<HashMap<String, String>>,
     pub series_provider_ids: Option<HashMap<String, String>>,
     pub user_data: Option<JellyfinUserData>,

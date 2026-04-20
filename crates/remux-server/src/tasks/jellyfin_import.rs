@@ -7,7 +7,7 @@ use remux_sdks::remux::JellyfinItem;
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::{AppContext, db};
-use remux_sdks::remux::{GetJellyfinUserItems, GetJellyfinUsers, JellyfinUserDto};
+use remux_sdks::remux::{GetJellyfinItemsByIds, GetJellyfinUserItems, GetJellyfinUsers, JellyfinUserDto};
 use remux_sdks::{JellyfinApiKeyAuth, RestClient};
 
 pub struct JellyfinImportTask;
@@ -114,6 +114,30 @@ impl Task for JellyfinImportTask {
             items.extend(resumable?.items);
             info!("got {} items for '{username}', importing", items.len());
 
+            // Collect series IDs for episodes missing series_provider_ids
+            let series_ids: Vec<String> = items.iter()
+                .filter(|it| it.item_type.as_deref() == Some("Episode"))
+                .filter(|it| it.series_provider_ids.as_ref().and_then(|p| p.get("Imdb")).is_none())
+                .filter_map(|it| it.series_id.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            let series_map: HashMap<String, String> = if series_ids.is_empty() {
+                HashMap::new()
+            } else {
+                debug!("fetching {} series for episode resolution", series_ids.len());
+                client.execute(GetJellyfinItemsByIds { ids: series_ids }).await?
+                    .items
+                    .into_iter()
+                    .filter_map(|s| {
+                        let id = s.id?;
+                        let imdb = s.provider_ids?.get("Imdb")?.clone();
+                        Some((id, imdb))
+                    })
+                    .collect()
+            };
+
             for item in items {
                 let Some(ud) = &item.user_data else {
                     continue;
@@ -139,14 +163,22 @@ impl Task for JellyfinImportTask {
 
                 let media_key = match resolve_from_index(&index, imdb, tmdb, tvdb) {
                     Some(k) => k,
-                    None => match stremio_key(&item) {
+                    None => match stremio_key(&item, &series_map) {
                         Some(k) => k,
                         None => {
+                            let item_type = item.item_type.as_deref();
+                            let series_imdb = series_map.get(item.series_id.as_deref().unwrap_or("")).map(String::as_str);
+                            let season = item.parent_index_number;
+                            let episode = item.index_number;
                             warn!(
                                 name = item.name.as_deref().unwrap_or("?"),
+                                item_type,
                                 imdb,
                                 tmdb,
                                 tvdb,
+                                series_imdb,
+                                season,
+                                episode,
                                 "could not resolve item to local media"
                             );
                             states_unresolved += 1;
@@ -228,17 +260,19 @@ async fn build_media_index(db: &sqlx::SqlitePool) -> Result<MediaIndex> {
     Ok(index)
 }
 
-fn stremio_key(item: &JellyfinItem) -> Option<String> {
+fn stremio_key(item: &JellyfinItem, series_map: &HashMap<String, String>) -> Option<String> {
     match item.item_type.as_deref() {
         Some("Movie") => {
             let imdb = item.provider_ids.as_ref()?.get("Imdb")?;
             Some(imdb.clone())
         }
         Some("Episode") => {
-            let imdb = item.series_provider_ids.as_ref()?.get("Imdb")?;
+            let series_imdb = item.series_provider_ids.as_ref()
+                .and_then(|p| p.get("Imdb"))
+                .or_else(|| item.series_id.as_ref().and_then(|id| series_map.get(id)))?;
             let season = item.parent_index_number?;
             let episode = item.index_number?;
-            Some(format!("{imdb}:{season}:{episode}"))
+            Some(format!("{series_imdb}:{season}:{episode}"))
         }
         _ => None,
     }

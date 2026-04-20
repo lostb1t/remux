@@ -64,6 +64,26 @@ impl Endpoint for GetTask {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct GetJellyfinItemsByIds {
+    pub ids: Vec<String>,
+}
+
+impl Endpoint for GetJellyfinItemsByIds {
+    type Output = QueryResult<JellyfinItem>;
+
+    fn path(&self) -> String {
+        "/Items".into()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        vec![
+            ("Ids".into(), self.ids.join(",")),
+            ("Fields".into(), "ProviderIds".into()),
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GetJellyfinUsers;
 
@@ -91,7 +111,7 @@ impl Endpoint for GetJellyfinUserItems {
     fn query(&self) -> Vec<(String, String)> {
         vec![
             ("Recursive".into(), "true".into()),
-            ("Fields".into(), "ProviderIds,UserData".into()),
+            ("Fields".into(), "ProviderIds,UserData,SeriesId".into()),
             ("IncludeItemTypes".into(), "Movie,Episode".into()),
             ("Filters".into(), self.filter.into()),
         ]
