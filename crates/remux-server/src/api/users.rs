@@ -597,6 +597,15 @@ pub async fn useritems_resume(
     resume_items(state, session, q).await
 }
 
+#[post("/users/forgotpassword")]
+pub async fn forgot_password() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "Action": "ContactAdmin",
+        "PinFile": null,
+        "PinExpirationDate": null,
+    }))
+}
+
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
