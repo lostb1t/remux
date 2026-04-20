@@ -859,8 +859,14 @@ impl DeviceProfile {
         &self,
         media_source: &MediaSourceInfo,
     ) -> TranscodeReasons {
+        let source_has_video = media_source.video_stream().is_some();
         let mut best: Option<TranscodeReasons> = None;
         for profile in &self.direct_play_profiles {
+            // Skip profiles whose type is explicitly incompatible with the source.
+            if let Some(t) = &profile.type_ {
+                if t.eq_ignore_ascii_case("Video") && !source_has_video { continue; }
+                if t.eq_ignore_ascii_case("Audio") && source_has_video { continue; }
+            }
             let reasons = profile.check_reasons(media_source);
             if reasons.is_empty() {
                 return reasons; // perfect match
@@ -897,23 +903,6 @@ impl DirectPlayProfile {
 
     pub fn check_reasons(&self, media_source: &MediaSourceInfo) -> TranscodeReasons {
         let mut reasons = TranscodeReasons::default();
-
-        // A "Video" profile only applies to sources that have a video stream;
-        // an "Audio" profile only applies to audio-only sources.
-        if let Some(type_) = &self.type_ {
-            if type_.eq_ignore_ascii_case("Video")
-                && media_source.video_stream().is_none()
-            {
-                reasons.insert(TranscodeReason::ContainerNotSupported("profile=Video source=audio-only".into()));
-                return reasons;
-            }
-            if type_.eq_ignore_ascii_case("Audio")
-                && media_source.video_stream().is_some()
-            {
-                reasons.insert(TranscodeReason::ContainerNotSupported("profile=Audio source=has-video".into()));
-                return reasons;
-            }
-        }
 
         // Check container match
         match (&self.container, &media_source.container) {

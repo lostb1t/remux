@@ -9,6 +9,7 @@ use remux_macros::{delete, get, patch, post};
 use serde::Deserialize;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
+use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
@@ -131,8 +132,14 @@ pub async fn get_items(
             let music_limit = limit.min(50);
             let mut all_items: Vec<api::BaseItemDto> = vec![];
 
+            let search_start = std::time::Instant::now();
+            let mut tracks_count = 0usize;
+            let mut albums_count = 0usize;
+            let mut artists_count = 0usize;
+            let mut movies_count = 0usize;
+            let mut series_count = 0usize;
+
             if wants_tracks {
-                info!(term = %s, "get_items: track search via SearchServiceManager");
                 match state
                     .ctx
                     .search
@@ -140,18 +147,15 @@ pub async fn get_items(
                     .await
                 {
                     Ok(tracks) => {
-                        info!(count = tracks.len(), "get_items: track search returned results");
+                        tracks_count = tracks.len();
                         all_items.extend(tracks.into_iter().map(api::db_media_to_item));
                     }
-                    Err(e) => {
-                        warn!(error = %e, term = %s, "get_items: track search failed");
-                    }
+                    Err(e) => warn!(error = %e, term = %s, "get_items: track search failed"),
                 }
             }
 
             if wants_albums {
                 let album_limit = music_limit.min(10);
-                info!(term = %s, "get_items: album search via SearchServiceManager");
                 match state
                     .ctx
                     .search
@@ -159,18 +163,15 @@ pub async fn get_items(
                     .await
                 {
                     Ok(albums) => {
-                        info!(count = albums.len(), "get_items: album search returned results");
+                        albums_count = albums.len();
                         all_items.extend(albums.into_iter().map(api::db_media_to_item));
                     }
-                    Err(e) => {
-                        warn!(error = %e, term = %s, "get_items: album search failed");
-                    }
+                    Err(e) => warn!(error = %e, term = %s, "get_items: album search failed"),
                 }
             }
 
             if wants_artists {
                 let artist_limit = music_limit.min(10);
-                info!(term = %s, "get_items: artist search via SearchServiceManager");
                 match state
                     .ctx
                     .search
@@ -178,12 +179,10 @@ pub async fn get_items(
                     .await
                 {
                     Ok(artists) => {
-                        info!(count = artists.len(), "get_items: artist search returned results");
+                        artists_count = artists.len();
                         all_items.extend(artists.into_iter().map(api::db_media_to_item));
                     }
-                    Err(e) => {
-                        warn!(error = %e, term = %s, "get_items: artist search failed");
-                    }
+                    Err(e) => warn!(error = %e, term = %s, "get_items: artist search failed"),
                 }
             }
 
@@ -206,12 +205,30 @@ pub async fn get_items(
                                     type_match && media_type_match
                                 })
                                 .collect();
+                            match kind {
+                                db::MediaKind::Movie => movies_count = video_items.len(),
+                                db::MediaKind::Series => series_count = video_items.len(),
+                                _ => {}
+                            }
                             all_items.extend(video_items);
                         }
                         Err(e) => warn!(error = %e, ?kind, "get_items: video search failed"),
                     }
                 }
             }
+
+            let mut counts = vec![];
+            if wants_tracks   { counts.push(format!("tracks={tracks_count}")); }
+            if wants_albums   { counts.push(format!("albums={albums_count}")); }
+            if wants_artists  { counts.push(format!("artists={artists_count}")); }
+            if types.contains(&api::MediaType::Movie)  { counts.push(format!("movies={movies_count}")); }
+            if types.contains(&api::MediaType::Series) { counts.push(format!("series={series_count}")); }
+            debug!(
+                query = %s,
+                counts = %counts.join(" "),
+                elapsed_ms = search_start.elapsed().as_millis(),
+                "search"
+            );
 
             let total_count = all_items.len() as i64;
             let paged_items = all_items

@@ -257,11 +257,15 @@ async fn items_playbackinfo_inner(
                 // Cache hit: deserialise stored probe result and skip FFmpeg.
                 if let Some(json) = &sm.probe_data {
                     let mut cached = json.0.clone();
-                    cached.id = sm.id;
-                    cached.name = Some(sm.title.clone());
-                    cached.path = sm.url.clone();
-                    tracing::debug!(id = %sm.id, "probe cache hit");
-                    return cached;
+                    // Discard cached probe if it has no video stream — it's incomplete.
+                    if cached.video_stream().is_some() {
+                        cached.id = sm.id;
+                        cached.name = Some(sm.title.clone());
+                        cached.path = sm.url.clone();
+                        tracing::debug!(id = %sm.id, "probe cache hit");
+                        return cached;
+                    }
+                    tracing::debug!(id = %sm.id, "probe cache stale (no video stream), re-probing");
                 }
 
                 if skip_probe {
@@ -283,13 +287,17 @@ async fn items_playbackinfo_inner(
                         .await;
 
                         match probe_result {
-                            // probe succeeded — persist result to cache
+                            // probe succeeded — persist result to cache only if it has a video stream
                             Ok(Ok(Ok(mut probed))) => {
                                 probed.id = sm2.id;
                                 probed.name = Some(sm2.title.clone());
                                 probed.path = sm2.url.clone();
-                                sm.probe_data = Some(sqlx::types::Json(probed.clone()));
-                                sm.save(&db).await;
+                                if probed.video_stream().is_some() {
+                                    sm.probe_data = Some(sqlx::types::Json(probed.clone()));
+                                    sm.save(&db).await;
+                                } else {
+                                    tracing::warn!(id = %sm2.id, "probe returned no video stream, not caching");
+                                }
                                 
                                 probed
                             }
@@ -799,7 +807,19 @@ pub async fn report_playback_start(
     };
 
     state.ctx.sessions.insert(ps);
-    info!(play_session_id, %item_id, media_source_id = ?data.media_source_id, "Playback started");
+    let media_title = db::Media::get_by_id(&state.ctx.db, &item_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|m| m.title)
+        .unwrap_or_default();
+    info!(
+        play_session_id,
+        %item_id,
+        title = %media_title,
+        user = %session.user.username,
+        "Playback started"
+    );
 
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -1826,7 +1846,7 @@ pub async fn master_hls_video(
     Path(id): Path<Uuid>,
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
-    info!("master_hls_video: item_id={}, q={:?}", id, q);
+    debug!("master_hls_video: item_id={}, q={:?}", id, q);
 
     // Add debugging info for crash diagnosis
     tracing::debug!(
@@ -2154,7 +2174,7 @@ async fn hls_segment_inner(
         .play_session_id
         .context_not_found("missing", "PlaySessionId is required")?;
 
-    info!(
+    trace!(
         segment_id = %segment_id,
         play_session_id = %play_session_id,
         runtime_ticks = ?q.runtime_ticks,

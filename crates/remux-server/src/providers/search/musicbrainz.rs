@@ -105,7 +105,7 @@ impl SearchService for MusicBrainzAlbumSearchService {
             })
             .collect::<Vec<_>>();
 
-        tracing::info!(
+        tracing::debug!(
             query,
             count = results.len(),
             elapsed_ms = t.elapsed().as_millis(),
@@ -216,7 +216,7 @@ impl SearchService for MusicBrainzTrackSearchService {
             })
             .collect::<Vec<_>>();
 
-        tracing::info!(
+        tracing::debug!(
             query,
             count = results.len(),
             elapsed_ms = t.elapsed().as_millis(),

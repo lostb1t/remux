@@ -320,7 +320,7 @@ async fn fetch_full_discography(
         .collect()
         .await;
 
-    tracing::info!(
+    tracing::debug!(
         artist_id,
         artist = %artist_resp.name,
         albums = albums_with_tracks.len(),
@@ -427,7 +427,7 @@ impl SearchService for DeezerTrackSearchService {
             })
             .collect();
 
-        tracing::info!(
+        tracing::debug!(
             query,
             count = results.len(),
             elapsed_ms = t.elapsed().as_millis(),
@@ -454,10 +454,10 @@ impl SearchService for DeezerTrackSearchService {
             .ok_or_else(|| anyhow::anyhow!("Track has no artist Deezer ID"))?;
 
         let t = std::time::Instant::now();
-        tracing::info!(artist_id = %artist_deezer_id, "Fetching full artist discography for track persist");
+        tracing::debug!(artist_id = %artist_deezer_id, "Fetching full artist discography for track persist");
         let (artist, albums_with_tracks) =
             fetch_full_discography(&self.client, &artist_deezer_id).await?;
-        tracing::info!(
+        tracing::debug!(
             artist_id = %artist_deezer_id,
             elapsed_ms = t.elapsed().as_millis(),
             "Discography fetch done, saving to DB"
@@ -561,7 +561,7 @@ impl SearchService for DeezerAlbumSearchService {
             })
             .collect();
 
-        tracing::info!(
+        tracing::debug!(
             query,
             count = results.len(),
             elapsed_ms = t.elapsed().as_millis(),
@@ -587,10 +587,10 @@ impl SearchService for DeezerAlbumSearchService {
             .ok_or_else(|| anyhow::anyhow!("Album has no artist Deezer ID"))?;
 
         let t = std::time::Instant::now();
-        tracing::info!(artist_id = %artist_deezer_id, "Fetching full artist discography for album persist");
+        tracing::debug!(artist_id = %artist_deezer_id, "Fetching full artist discography for album persist");
         let (artist, albums_with_tracks) =
             fetch_full_discography(&self.client, &artist_deezer_id).await?;
-        tracing::info!(
+        tracing::debug!(
             artist_id = %artist_deezer_id,
             elapsed_ms = t.elapsed().as_millis(),
             "Discography fetch done, saving to DB"
@@ -664,7 +664,7 @@ impl SearchService for DeezerArtistSearchService {
             })
             .collect();
 
-        tracing::info!(
+        tracing::debug!(
             query,
             count = results.len(),
             elapsed_ms = t.elapsed().as_millis(),
@@ -688,11 +688,11 @@ impl SearchService for DeezerArtistSearchService {
             .ok_or_else(|| anyhow::anyhow!("Artist has no Deezer ID"))?;
 
         let t = std::time::Instant::now();
-        tracing::info!(artist_id = %artist_deezer_id, "Fetching full artist discography for artist persist");
+        tracing::debug!(artist_id = %artist_deezer_id, "Fetching full artist discography for artist persist");
         let (artist, albums_with_tracks) =
             fetch_full_discography(&self.client, &artist_deezer_id).await?;
         let target_id = artist.id;
-        tracing::info!(
+        tracing::debug!(
             artist_id = %artist_deezer_id,
             elapsed_ms = t.elapsed().as_millis(),
             "Discography fetch done, saving to DB"

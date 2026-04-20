@@ -118,7 +118,7 @@ impl SearchService for YtDlpSearchService {
             })
             .collect();
 
-        tracing::info!(query, count = results.len(), elapsed_ms = t.elapsed().as_millis(), "yt-dlp track search done");
+        tracing::debug!(query, count = results.len(), elapsed_ms = t.elapsed().as_millis(), "yt-dlp track search done");
 
         Ok(results)
     }
@@ -228,7 +228,7 @@ impl SearchService for YtDlpAlbumSearchService {
             })
             .collect();
 
-        tracing::info!(query, count = results.len(), elapsed_ms = t.elapsed().as_millis(), "yt-dlp album search done");
+        tracing::debug!(query, count = results.len(), elapsed_ms = t.elapsed().as_millis(), "yt-dlp album search done");
 
         Ok(results)
     }

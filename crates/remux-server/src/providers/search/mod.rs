@@ -88,11 +88,11 @@ impl SearchServiceManager {
     ) -> Result<Vec<db::Media>> {
         for svc in &self.services {
             if svc.supported_kinds().contains(kind) {
-                tracing::info!(?kind, query, limit, "SearchServiceManager routing to service");
+                tracing::debug!(?kind, query, limit, "SearchServiceManager routing to service");
                 return svc.search(kind, query, limit, ctx).await;
             }
         }
-        tracing::info!(?kind, query, "SearchServiceManager: no service registered for kind");
+        tracing::debug!(?kind, query, "SearchServiceManager: no service registered for kind");
         Ok(vec![])
     }
 
