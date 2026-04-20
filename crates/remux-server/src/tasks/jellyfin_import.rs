@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+use remux_sdks::remux::JellyfinItem;
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::{AppContext, db};
@@ -136,16 +137,22 @@ impl Task for JellyfinImportTask {
                     .and_then(|p| p.get("Tvdb"))
                     .and_then(|v| v.parse::<i64>().ok());
 
-                let Some(media_key) = resolve_from_index(&index, imdb, tmdb, tvdb) else {
-                    warn!(
-                        name = item.name.as_deref().unwrap_or("?"),
-                        imdb,
-                        tmdb,
-                        tvdb,
-                        "could not resolve item to local media"
-                    );
-                    states_unresolved += 1;
-                    continue;
+                let media_key = match resolve_from_index(&index, imdb, tmdb, tvdb) {
+                    Some(k) => k,
+                    None => match stremio_key(&item) {
+                        Some(k) => k,
+                        None => {
+                            warn!(
+                                name = item.name.as_deref().unwrap_or("?"),
+                                imdb,
+                                tmdb,
+                                tvdb,
+                                "could not resolve item to local media"
+                            );
+                            states_unresolved += 1;
+                            continue;
+                        }
+                    },
                 };
 
                 let state = db::UserMediaState {
@@ -219,6 +226,22 @@ async fn build_media_index(db: &sqlx::SqlitePool) -> Result<MediaIndex> {
     }
 
     Ok(index)
+}
+
+fn stremio_key(item: &JellyfinItem) -> Option<String> {
+    match item.item_type.as_deref() {
+        Some("Movie") => {
+            let imdb = item.provider_ids.as_ref()?.get("Imdb")?;
+            Some(imdb.clone())
+        }
+        Some("Episode") => {
+            let imdb = item.series_provider_ids.as_ref()?.get("Imdb")?;
+            let season = item.parent_index_number?;
+            let episode = item.index_number?;
+            Some(format!("{imdb}:{season}:{episode}"))
+        }
+        _ => None,
+    }
 }
 
 fn resolve_from_index(

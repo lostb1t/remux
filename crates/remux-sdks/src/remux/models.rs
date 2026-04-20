@@ -245,7 +245,12 @@ pub struct JellyfinUserData {
 pub struct JellyfinItem {
     pub id: Option<String>,
     pub name: Option<String>,
+    #[serde(rename = "Type")]
+    pub item_type: Option<String>,
+    pub index_number: Option<i64>,
+    pub parent_index_number: Option<i64>,
     pub provider_ids: Option<HashMap<String, String>>,
+    pub series_provider_ids: Option<HashMap<String, String>>,
     pub user_data: Option<JellyfinUserData>,
 }
 
