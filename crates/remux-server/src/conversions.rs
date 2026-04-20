@@ -208,6 +208,8 @@ pub fn subtitle_to_media_stream(sub: aio::Subtitle) -> api::MediaStream {
         is_forced: false,
         is_external: true,
         is_text_subtitle_stream: true,
+        supports_external_stream: true,
+        delivery_method: Some(api::SubtitleDeliveryMethod::External),
         delivery_url: Some(sub.url.clone()),
         is_external_url: Some(true),
         ..Default::default()

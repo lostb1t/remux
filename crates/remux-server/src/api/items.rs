@@ -986,6 +986,8 @@ pub async fn item(
                     &state.ctx.db,
                     &media,
                     sources,
+                    media.id,
+                    &session.device.access_token,
                 )
                 .await;
             }

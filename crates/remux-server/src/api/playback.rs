@@ -347,16 +347,38 @@ async fn items_playbackinfo_inner(
         let bitrate_exceeded =
             max_bitrate.map_or(false, |max| source.bitrate.map_or(false, |b| b > max));
 
-        let transcode_reasons: api::TranscodeReasons = {
+        let mut transcode_reasons: api::TranscodeReasons = {
             let mut reasons = device_profile
                 .as_ref()
                 .map(|profile| profile.check_direct_play(&source))
                 .unwrap_or_default();
             if bitrate_exceeded {
-                reasons.insert(api::TranscodeReason::ContainerBitrateExceedsLimit);  // unit variant, no detail needed
+                reasons.insert(api::TranscodeReason::ContainerBitrateExceedsLimit);
             }
             reasons
         };
+
+        // Image-based subtitles (PGS/DVD) can't be rendered by web clients — detect
+        // from the explicitly-selected or default subtitle stream and add a transcode reason.
+        let effective_sub_idx = query.subtitle_stream_index
+            .or(source.default_subtitle_stream_index);
+        let needs_pgs_burn = effective_sub_idx.map_or(false, |idx| {
+            source.media_streams.iter().any(|s| {
+                s.index == idx
+                    && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                    && matches!(
+                        s.codec.as_deref().unwrap_or(""),
+                        "pgssub" | "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvdsub"
+                    )
+            })
+        });
+        if needs_pgs_burn {
+            let codec = effective_sub_idx
+                .and_then(|idx| source.media_streams.iter().find(|s| s.index == idx))
+                .and_then(|s| s.codec.clone())
+                .unwrap_or_default();
+            transcode_reasons.insert(api::TranscodeReason::SubtitleCodecNotSupported(codec));
+        }
 
         // `EnableTranscoding=true` means "allowed", not "forced".
         let transcode_required = !transcode_reasons.is_empty()
@@ -421,11 +443,40 @@ async fn items_playbackinfo_inner(
                     .contains(&api::TranscodeReason::VideoCodecNotSupported(String::new()))
                     || transcode_reasons
                         .contains(&api::TranscodeReason::ContainerBitrateExceedsLimit);
-                let video_codec = if needs_video_transcode { "h264" } else { "copy" }.to_string();
+                let mut video_codec = if needs_video_transcode { "h264" } else { "copy" }.to_string();
                 let needs_audio_transcode = transcode_reasons
                     .contains(&api::TranscodeReason::AudioCodecNotSupported(String::new()));
                 let audio_codec =
                     if needs_audio_transcode { "aac" } else { "copy" }.to_string();
+
+                // Detect image-based subtitle streams (PGS, DVD) that cannot be
+                // embedded in HLS — burn them into the video via FFmpeg overlay.
+                let selected_sub_idx = effective_sub_idx;
+                let subtitle_method = selected_sub_idx.and_then(|idx| {
+                    source.media_streams.iter().find(|s| {
+                        s.index == idx
+                            && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                    })
+                }).and_then(|stream| {
+                    let codec = stream.codec.as_deref().unwrap_or("");
+                    let is_image_sub = matches!(
+                        codec,
+                        "pgssub" | "hdmv_pgs_subtitle" | "dvd_subtitle"
+                    );
+                    if !is_image_sub {
+                        return None;
+                    }
+                    Some(
+                        device_profile
+                            .as_ref()
+                            .and_then(|p| p.subtitle_delivery_method(codec))
+                            .unwrap_or(api::SubtitleDeliveryMethod::Encode),
+                    )
+                });
+
+                if subtitle_method == Some(api::SubtitleDeliveryMethod::Encode) {
+                    video_codec = "h264".to_string();
+                }
 
                 let bitrate_param = max_bitrate
                     .map(|b| format!("&MaxStreamingBitrate={}", b))
@@ -437,8 +488,11 @@ async fn items_playbackinfo_inner(
                 let audio_stream_param = query.audio_stream_index.or(source.default_audio_stream_index)
                     .map(|idx| format!("&AudioStreamIndex={}", idx))
                     .unwrap_or_default();
-                let subtitle_stream_param = query.subtitle_stream_index.or(source.default_subtitle_stream_index)
+                let subtitle_stream_param = selected_sub_idx
                     .map(|idx| format!("&SubtitleStreamIndex={}", idx))
+                    .unwrap_or_default();
+                let subtitle_method_param = subtitle_method
+                    .map(|m| format!("&SubtitleMethod={}", m))
                     .unwrap_or_default();
                 let start_time_param = query.start_time_ticks
                     .map(|t| format!("&StartTimeTicks={}", t))
@@ -446,7 +500,7 @@ async fn items_playbackinfo_inner(
 
                 source.supports_transcoding = true;
                 source.transcoding_url = Some(format!(
-                    "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}",
+                    "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}",
                     id,
                     play_session_id,
                     source.id,
@@ -456,6 +510,7 @@ async fn items_playbackinfo_inner(
                     reasons_param,
                     audio_stream_param,
                     subtitle_stream_param,
+                    subtitle_method_param,
                     start_time_param
                 ));
                 source.transcoding_container = Some(trans_container);
@@ -464,7 +519,9 @@ async fn items_playbackinfo_inner(
                 source.supports_direct_stream = false;
             }
         } else {
-            source.supports_transcoding = false;
+            // Keep transcoding available so clients can re-request with a subtitle
+            // index (e.g. PGS burn-in) even when direct-play is otherwise fine.
+            source.supports_transcoding = true;
             source.supports_direct_play = true;
             // Route track direct play through the server (CDN URLs are IP-restricted).
             if is_track {
@@ -475,13 +532,28 @@ async fn items_playbackinfo_inner(
             }
         }
 
+        // Set delivery URL on text subtitle streams so clients can download them.
+        let source_id = source.id;
+        let api_key = &session.device.access_token;
+        for stream in source.media_streams.iter_mut() {
+            if stream.type_ != Some(api::MediaStreamType::Subtitle) {
+                continue;
+            }
+            if !stream.is_text_subtitle_stream {
+                continue;
+            }
+            // Embedded text subs: Embed delivery — MPV reads from container.
+            // No URL needed; External would cause MPV to double-load the track.
+            stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
+        }
+
         media_sources.push(source);
     }
 
     // Inject external subtitles from AIO (cache-backed)
-    //if let Some(ref sm) = subtitle_media {
-    //     inject_external_subtitles(&state.ctx.db, sm, &mut media_sources).await;
-    // }
+    if let Some(ref sm) = subtitle_media {
+        inject_external_subtitles(&state.ctx.db, sm, &mut media_sources, id, &session.device.access_token).await;
+    }
 
     // Apply per-user playback preferences
     apply_user_playback_prefs(&state.ctx.db, &session.user, &id, &mut media_sources)
@@ -712,6 +784,9 @@ async fn videos_stream_inner(
         audio_channels: q.audio_channels.map(|v| v as u32),
         audio_stream_index: q.audio_stream_index.map(|v| v as i32),
         subtitle_stream_index: q.subtitle_stream_index.map(|v| v as i32),
+        burn_subtitle: q.subtitle_method.as_deref() == Some("Encode"),
+        subtitle_width: None,
+        subtitle_height: None,
     };
 
     let stream = crate::transcode::engine::start_progressive_transcode(params)?;
@@ -1997,6 +2072,9 @@ pub async fn master_hls_video(
             output_dir,
             video_codec.clone(),
             audio_codec.clone(),
+            q.audio_stream_index.map(|v| v as i32),
+            q.subtitle_stream_index.map(|v| v as i32),
+            q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode),
             segment_length,
             // Parse reasons from query param (set by playbackinfo on the transcoding URL)
             q.transcode_reasons
@@ -2035,6 +2113,9 @@ pub async fn master_hls_video(
             audio_channels: if audio_codec == "copy" { None } else { Some(2) },
             audio_stream_index: q.audio_stream_index.map(|v| v as i32),
             subtitle_stream_index: q.subtitle_stream_index.map(|v| v as i32),
+            burn_subtitle: q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode),
+            subtitle_width: None,
+            subtitle_height: None,
         };
 
         // Spawn the transcode task with proper error handling
@@ -2272,6 +2353,9 @@ async fn hls_segment_inner(
                 let input_url = s.input_url.clone();
                 let video_codec = s.video_codec.clone();
                 let audio_codec = s.audio_codec.clone();
+                let audio_stream_index = s.audio_stream_index;
+                let subtitle_stream_index = s.subtitle_stream_index;
+                let burn_subtitle = s.burn_subtitle;
                 drop(s);
 
                 // Kill running FFmpeg and clean up stale segments (params
@@ -2311,8 +2395,11 @@ async fn hls_segment_inner(
                         .or_else(|| q.max_streaming_bitrate.map(|b| b as u32)),
                     audio_bitrate: q.audio_bit_rate.map(|v| v as u32),
                     audio_channels: if audio_codec == "copy" { None } else { Some(2) },
-                    audio_stream_index: q.audio_stream_index.map(|v| v as i32),
-                    subtitle_stream_index: q.subtitle_stream_index.map(|v| v as i32),
+                    audio_stream_index,
+                    subtitle_stream_index,
+                    burn_subtitle,
+                    subtitle_width: None,
+                    subtitle_height: None,
                 };
 
                 // Reinitialise the session's state for the new transcode run.
@@ -2477,18 +2564,51 @@ async fn resolve_torrent(mut media: db::Media, state: &AppState) -> Result<db::M
 
 /// Subtitle extraction endpoint - extracts a subtitle stream from a media source
 /// and optionally converts it to the requested format (vtt, srt, ass).
-#[get("/videos/{item_id}/{media_source_id}/subtitles/{stream_index}/stream.{format}")]
+// Jellyfin clients include a start-position-ticks segment in the path.
+#[get("/videos/{item_id}/{media_source_id}/subtitles/{stream_index}/{start_ticks}/stream.{format}")]
 pub async fn subtitles_stream(
     State(state): State<AppState>,
     _session: auth::AuthSession,
-    Path((item_id, media_source_id, stream_index, format)): Path<(
+    Path((item_id, media_source_id, stream_index, _start_ticks, format)): Path<(
         Uuid,
         Uuid,
         i64,
         String,
+        String,
     )>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse> {
-    let _ = item_id; // Jellyfin API includes item_id in the path but we only need media_source_id
+    let _ = item_id;
+
+    // External subtitle proxy: fetch from source URL and convert to requested format.
+    if let Some(source_url) = params.get("SubtitleUrl") {
+        let source_url = urlencoding::decode(source_url)
+            .map(|s| s.into_owned())
+            .unwrap_or_else(|_| source_url.clone());
+        let output_format = format.to_ascii_lowercase();
+        let content_type = match output_format.as_str() {
+            "vtt" | "webvtt" => "text/vtt; charset=utf-8",
+            _ => "text/plain; charset=utf-8",
+        };
+        let body = reqwest::get(&source_url)
+            .await
+            .map_err(|e| anyhow!("failed to fetch external subtitle: {e}"))?
+            .text()
+            .await
+            .map_err(|e| anyhow!("failed to read external subtitle: {e}"))?;
+        let converted = if matches!(output_format.as_str(), "vtt" | "webvtt") {
+            srt_to_vtt(&body)
+        } else {
+            body
+        };
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", content_type)
+            .header("Cache-Control", "public, max-age=3600")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(Body::from(converted))
+            .unwrap());
+    }
 
     let mut media = db::Media::get_by_id(&state.ctx.db, &media_source_id)
         .await?
@@ -2599,15 +2719,50 @@ pub async fn subtitles_stream(
         .unwrap())
 }
 
+/// Convert SRT subtitle text to WebVTT. Already-valid VTT is passed through unchanged.
+fn srt_to_vtt(input: &str) -> String {
+    if input.trim_start().starts_with("WEBVTT") {
+        return input.to_string();
+    }
+    let mut out = String::from("WEBVTT\n\n");
+    for block in input.trim().split("\n\n") {
+        let lines: Vec<&str> = block.lines().collect();
+        if lines.len() < 2 {
+            continue;
+        }
+        // Skip the sequence number line (all digits), keep timecodes + text
+        let rest = if lines[0].trim().chars().all(|c| c.is_ascii_digit()) {
+            &lines[1..]
+        } else {
+            &lines[..]
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        // Convert SRT timestamp separator , → .
+        let timecode = rest[0].replace(',', ".");
+        out.push_str(&timecode);
+        out.push('\n');
+        for line in &rest[1..] {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Inject external subtitles from AIO into a list of `MediaSourceInfo` entries.
 /// Delegates to [`crate::db::Media::inject_subtitles_into_sources`].
 pub(super) async fn inject_external_subtitles(
     db: &sqlx::SqlitePool,
     subtitle_media: &crate::db::Media,
     media_sources: &mut Vec<api::MediaSourceInfo>,
+    item_id: Uuid,
+    api_key: &str,
 ) {
     subtitle_media
-        .inject_subtitles_into_sources(db, media_sources)
+        .inject_subtitles_into_sources(db, media_sources, item_id, api_key)
         .await;
 }
 

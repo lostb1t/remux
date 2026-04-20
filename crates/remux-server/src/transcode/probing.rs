@@ -182,6 +182,9 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
                     real_frame_rate: fps.map(|f| f as f32).and_then(nonzero),
                     is_default: Some(video_idx == 0),
                     is_forced: s.disposition.forced != 0,
+                    is_avc: Some(false),
+                    time_base: Some("1/1000".to_string()),
+                    audio_spatial_format: Some("None".to_string()),
                     display_title: display_title(language, Some(&codec), "Video", None),
                     language: language.map(str::to_string),
                     title,
@@ -212,6 +215,13 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
                     bit_rate: bitrate,
                     is_default: Some(audio_idx == 0),
                     is_forced: s.disposition.forced != 0,
+                    is_avc: Some(false),
+                    time_base: Some("1/1000".to_string()),
+                    video_range: Some(api::VideoRange::Unknown),
+                    video_range_type: Some(api::VideoRangeType::Unknown),
+                    audio_spatial_format: Some("None".to_string()),
+                    localized_default: Some("Default".to_string()),
+                    localized_external: Some("External".to_string()),
                     display_title: display_title(
                         language,
                         Some(&codec),
@@ -226,6 +236,19 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
             }
             "subtitle" => {
                 let codec = s.codec_name.clone().unwrap_or_default();
+                let is_text = matches!(
+                    codec.as_str(),
+                    "ass" | "ssa" | "subrip" | "webvtt" | "mov_text" | "text"
+                );
+                let is_image = matches!(
+                    codec.as_str(),
+                    "pgssub" | "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvdsub"
+                );
+                let delivery_method = if is_image {
+                    Some(api::SubtitleDeliveryMethod::Embed)
+                } else {
+                    None
+                };
 
                 streams.push(api::MediaStream {
                     type_: Some(api::MediaStreamType::Subtitle),
@@ -233,6 +256,16 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
                     codec: Some(codec.clone()),
                     is_default: Some(sub_idx == 0),
                     is_forced: s.disposition.forced != 0,
+                    is_avc: Some(false),
+                    time_base: Some("1/1000".to_string()),
+                    video_range: Some(api::VideoRange::Unknown),
+                    video_range_type: Some(api::VideoRangeType::Unknown),
+                    audio_spatial_format: Some("None".to_string()),
+                    localized_undefined: Some("Undefined".to_string()),
+                    localized_default: Some("Default".to_string()),
+                    localized_forced: Some("Forced".to_string()),
+                    localized_external: Some("External".to_string()),
+                    localized_hearing_impaired: Some("Hearing Impaired".to_string()),
                     display_title: display_title(
                         language,
                         Some(&codec),
@@ -241,6 +274,9 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
                     ),
                     language: language.map(str::to_string),
                     title,
+                    is_text_subtitle_stream: is_text,
+                    supports_external_stream: true,
+                    delivery_method,
                     ..Default::default()
                 });
                 sub_idx += 1;

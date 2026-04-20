@@ -136,6 +136,11 @@ pub struct TranscodeParams {
     pub audio_channels: Option<u32>,
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
+    pub burn_subtitle: bool,
+    /// Native dimensions of the subtitle bitmap (PGS canvas size), used to
+    /// scale the subtitle to match the output video resolution.
+    pub subtitle_width: Option<u32>,
+    pub subtitle_height: Option<u32>,
 }
 
 impl Default for TranscodeParams {
@@ -154,8 +159,16 @@ impl Default for TranscodeParams {
             audio_channels: None,
             audio_stream_index: None,
             subtitle_stream_index: None,
+            burn_subtitle: false,
+            subtitle_width: None,
+            subtitle_height: None,
         }
     }
+}
+
+/// Return the expected output video dimensions based on transcode params.
+fn output_dimensions(params: &TranscodeParams) -> (Option<u32>, Option<u32>) {
+    (params.max_width, params.max_height)
 }
 
 /// Build a scale filter string for FFmpeg, if needed.
@@ -173,11 +186,19 @@ fn build_scale_filter(params: &TranscodeParams) -> Option<String> {
 
 /// Build the ffmpeg CLI args for an HLS transcode.
 fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
-    let ffmpeg_video_codec = match params.video_codec.as_str() {
-        "copy" => "copy",
-        "h264" | "libx264" => "libx264",
-        "hevc" | "libx265" | "h265" => "libx265",
-        other => other,
+    let ffmpeg_video_codec = {
+        let base = match params.video_codec.as_str() {
+            "copy" => "copy",
+            "h264" | "libx264" => "libx264",
+            "hevc" | "libx265" | "h265" => "libx265",
+            other => other,
+        };
+        // Subtitle burn-in requires re-encoding; can't copy video.
+        if params.burn_subtitle && params.subtitle_stream_index.is_some() && base == "copy" {
+            "libx264"
+        } else {
+            base
+        }
     };
     let ffmpeg_audio_codec = match params.audio_codec.as_str() {
         "copy" => "copy",
@@ -207,21 +228,57 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     ]);
 
     // Stream mapping
-    let scale_filter = if ffmpeg_video_codec != "copy" {
-        build_scale_filter(params)
-    } else {
-        None
-    };
+    if params.burn_subtitle {
+        if let Some(sub_idx) = params.subtitle_stream_index {
+            // Scale subtitle bitmap to output dimensions (matching Jellyfin's approach).
+            // When output size is known, scale to that; otherwise pass through as-is.
+            let (out_w, out_h) = output_dimensions(params);
+            let sub_scale = match (out_w, out_h) {
+                (Some(w), Some(h)) => format!("scale={w}:{h}:fast_bilinear"),
+                (Some(w), None)    => format!("scale={w}:-1:fast_bilinear"),
+                (None, Some(h))    => format!("scale=-1:{h}:fast_bilinear"),
+                _ => String::new(),
+            };
 
-    if let Some(ref filter) = scale_filter {
-        args.extend(["-vf".into(), filter.clone()]);
-    } else if let Some(audio_idx) = params.audio_stream_index {
-        args.extend([
-            "-map".into(),
-            "0:v".into(),
-            "-map".into(),
-            format!("0:{}", audio_idx),
-        ]);
+            // PGS bitmaps are BGRA; bare `scale` converts to a pixel format
+            // compatible with overlay before any resize step (mirrors Jellyfin).
+            let sub_preproc = if sub_scale.is_empty() {
+                "scale".to_string()
+            } else {
+                format!("scale,{sub_scale}")
+            };
+            let filter = match build_scale_filter(params) {
+                Some(main_scale) => format!(
+                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale}[main];[main][sub]overlay=eof_action=pass:repeatlast=0[v]"
+                ),
+                None => format!(
+                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]overlay=eof_action=pass:repeatlast=0[v]"
+                ),
+            };
+            args.extend(["-filter_complex".into(), filter]);
+            args.extend(["-map".into(), "[v]".into()]);
+            if let Some(audio_idx) = params.audio_stream_index {
+                args.extend(["-map".into(), format!("0:{}", audio_idx)]);
+            } else {
+                args.extend(["-map".into(), "0:a?".into()]);
+            }
+        }
+    } else {
+        let scale_filter = if ffmpeg_video_codec != "copy" {
+            build_scale_filter(params)
+        } else {
+            None
+        };
+        if let Some(ref filter) = scale_filter {
+            args.extend(["-vf".into(), filter.clone()]);
+        } else if let Some(audio_idx) = params.audio_stream_index {
+            args.extend([
+                "-map".into(),
+                "0:v".into(),
+                "-map".into(),
+                format!("0:{}", audio_idx),
+            ]);
+        }
     }
 
     // Video codec
@@ -295,7 +352,7 @@ pub async fn start_transcode(
         .map_err(|e| anyhow!("Failed to create output dir: {}", e))?;
 
     let args = build_hls_args(&params);
-    debug!("ffmpeg args: {:?}", args);
+    debug!("ffmpeg args: {}", args.join(" "));
 
     let mut child = tokio::process::Command::new(ffmpeg_bin())
         .args(&args)
@@ -415,16 +472,26 @@ pub struct ProgressiveTranscodeParams {
     pub audio_channels: Option<u32>,
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
+    pub burn_subtitle: bool,
+    pub subtitle_width: Option<u32>,
+    pub subtitle_height: Option<u32>,
 }
 
 /// Build the ffmpeg CLI args for a progressive transcode piped to stdout.
 fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
-    let ffmpeg_video_codec = match params.video_codec.as_str() {
-        "copy" => "copy",
-        "libx264" | "h264" => "libx264",
-        "libx265" | "hevc" => "libx265",
-        "libvpx-vp9" | "vp9" => "libvpx-vp9",
-        other => other,
+    let ffmpeg_video_codec = {
+        let base = match params.video_codec.as_str() {
+            "copy" => "copy",
+            "libx264" | "h264" => "libx264",
+            "libx265" | "hevc" => "libx265",
+            "libvpx-vp9" | "vp9" => "libvpx-vp9",
+            other => other,
+        };
+        if params.burn_subtitle && params.subtitle_stream_index.is_some() && base == "copy" {
+            "libx264"
+        } else {
+            base
+        }
     };
     let ffmpeg_audio_codec = match params.audio_codec.as_str() {
         "copy" => "copy",
@@ -486,11 +553,39 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
         None
     };
 
-    if let Some(ref filter) = scale_filter {
+    if params.burn_subtitle {
+        if let Some(sub_idx) = params.subtitle_stream_index {
+            let (out_w, out_h) = (params.max_width, params.max_height);
+            let sub_scale = match (out_w, out_h) {
+                (Some(w), Some(h)) => format!("scale={w}:{h}:fast_bilinear"),
+                (Some(w), None)    => format!("scale={w}:-1:fast_bilinear"),
+                (None, Some(h))    => format!("scale=-1:{h}:fast_bilinear"),
+                _ => String::new(),
+            };
+            let sub_preproc = if sub_scale.is_empty() {
+                "scale".to_string()
+            } else {
+                format!("scale,{sub_scale}")
+            };
+            let filter = match scale_filter {
+                Some(ref main_scale) => format!(
+                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale}[main];[main][sub]overlay=eof_action=pass:repeatlast=0[v]"
+                ),
+                None => format!(
+                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]overlay=eof_action=pass:repeatlast=0[v]"
+                ),
+            };
+            args.extend(["-filter_complex".into(), filter]);
+            args.extend(["-map".into(), "[v]".into()]);
+            if let Some(audio_idx) = params.audio_stream_index {
+                args.extend(["-map".into(), format!("0:{}", audio_idx)]);
+            } else {
+                args.extend(["-map".into(), "0:a?".into()]);
+            }
+        }
+    } else if let Some(ref filter) = scale_filter {
         args.extend(["-vf".into(), filter.clone()]);
-    } else if params.audio_stream_index.is_some()
-        || params.subtitle_stream_index.is_some()
-    {
+    } else if params.audio_stream_index.is_some() || params.subtitle_stream_index.is_some() {
         args.extend(["-map".into(), "0:v".into()]);
         if let Some(audio_idx) = params.audio_stream_index {
             args.extend(["-map".into(), format!("0:{}", audio_idx)]);

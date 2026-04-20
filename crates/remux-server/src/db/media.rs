@@ -2009,6 +2009,8 @@ impl Media {
         &self,
         db: &sqlx::SqlitePool,
         media_sources: &mut Vec<api::MediaSourceInfo>,
+        item_id: uuid::Uuid,
+        api_key: &str,
     ) {
         let Ok(aio) = crate::aio::AioService::from_settings(db).await else {
             return;
@@ -2068,12 +2070,30 @@ impl Media {
                 rank(a).cmp(&rank(b)).then(sb.cmp(sa))
             });
 
+            // Limit to 2 per language to avoid flooding the client.
+            let mut lang_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let scored: Vec<_> = scored
+                .into_iter()
+                .filter(|(_, s)| {
+                    let key = s.lang.clone().unwrap_or_else(|| "und".to_string());
+                    let count = lang_counts.entry(key).or_insert(0);
+                    if *count < 2 { *count += 1; true } else { false }
+                })
+                .collect();
+
             let wants_default =
                 !sub_langs.is_empty() && source.default_subtitle_stream_index.is_none();
             for (i, (_, sub)) in scored.iter().enumerate() {
                 let mut stream =
                     crate::conversions::subtitle_to_media_stream((*sub).clone());
-                stream.index = next_idx + i as i64;
+                let idx = next_idx + i as i64;
+                stream.index = idx;
+                // Proxy through our subtitle endpoint so we can convert formats.
+                let encoded_url = urlencoding::encode(&sub.url);
+                stream.delivery_url = Some(format!(
+                    "/Videos/{item_id}/{source_id}/Subtitles/{idx}/0/Stream.vtt?ApiKey={api_key}&SubtitleUrl={encoded_url}",
+                    source_id = source.id,
+                ));
                 if wants_default && i == 0 {
                     stream.is_default = Some(true);
                     source.default_subtitle_stream_index = Some(next_idx);

@@ -898,6 +898,18 @@ impl DeviceProfile {
         })
     }
 
+    pub fn subtitle_delivery_method(&self, codec: &str) -> Option<SubtitleDeliveryMethod> {
+        self.subtitle_profiles
+            .iter()
+            .find(|p| {
+                p.format
+                    .as_deref()
+                    .map(|f| f.eq_ignore_ascii_case(codec))
+                    .unwrap_or(false)
+            })
+            .and_then(|p| p.method.clone())
+    }
+
     pub fn supports_direct_play(&self, media_source: &MediaSourceInfo) -> bool {
         self.check_direct_play(media_source).is_empty()
     }
@@ -1124,6 +1136,7 @@ pub enum TranscodeReason {
     ContainerNotSupported(String),
     VideoCodecNotSupported(String),
     AudioCodecNotSupported(String),
+    SubtitleCodecNotSupported(String),
     ContainerBitrateExceedsLimit,
 }
 
@@ -1133,6 +1146,7 @@ impl TranscodeReason {
             Self::ContainerNotSupported(_) => "ContainerNotSupported",
             Self::VideoCodecNotSupported(_) => "VideoCodecNotSupported",
             Self::AudioCodecNotSupported(_) => "AudioCodecNotSupported",
+            Self::SubtitleCodecNotSupported(_) => "SubtitleCodecNotSupported",
             Self::ContainerBitrateExceedsLimit => "ContainerBitrateExceedsLimit",
         }
     }
@@ -1144,6 +1158,7 @@ impl std::fmt::Debug for TranscodeReason {
             Self::ContainerNotSupported(d) => write!(f, "ContainerNotSupported({d})"),
             Self::VideoCodecNotSupported(d) => write!(f, "VideoCodecNotSupported({d})"),
             Self::AudioCodecNotSupported(d) => write!(f, "AudioCodecNotSupported({d})"),
+            Self::SubtitleCodecNotSupported(d) => write!(f, "SubtitleCodecNotSupported({d})"),
             Self::ContainerBitrateExceedsLimit => write!(f, "ContainerBitrateExceedsLimit"),
         }
     }
@@ -1206,6 +1221,7 @@ impl TranscodeReasons {
                 "ContainerNotSupported" => Some(TranscodeReason::ContainerNotSupported(String::new())),
                 "VideoCodecNotSupported" => Some(TranscodeReason::VideoCodecNotSupported(String::new())),
                 "AudioCodecNotSupported" => Some(TranscodeReason::AudioCodecNotSupported(String::new())),
+                "SubtitleCodecNotSupported" => Some(TranscodeReason::SubtitleCodecNotSupported(String::new())),
                 "ContainerBitrateExceedsLimit" => Some(TranscodeReason::ContainerBitrateExceedsLimit),
                 _ => None,
             };
@@ -1692,7 +1708,7 @@ pub struct UpdateUserPassword {
 #[serde(rename_all = "PascalCase")]
 pub struct MediaStream {
     pub aspect_ratio: Option<String>,
-    //  pub audio_spatial_format: AudioSpatialFormat,
+    pub audio_spatial_format: Option<String>,
     pub average_frame_rate: Option<f32>,
     pub bit_depth: Option<i64>,
     pub bit_rate: Option<i64>,
@@ -1707,7 +1723,7 @@ pub struct MediaStream {
     pub color_space: Option<String>,
     pub color_transfer: Option<String>,
     pub comment: Option<String>,
-    // pub delivery_method: Option<SubtitleDeliveryMethod>,
+    pub delivery_method: Option<SubtitleDeliveryMethod>,
     pub delivery_url: Option<String>,
     pub display_title: Option<String>,
     pub dv_bl_signal_compatibility_id: Option<i64>,
@@ -2795,6 +2811,7 @@ pub struct HlsVideoQuery {
     pub audio_bit_rate: Option<i32>,
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
+    pub subtitle_method: Option<SubtitleDeliveryMethod>,
     pub max_streaming_bitrate: Option<i64>,
     pub transcode_reasons: Option<String>,
     /// Cumulative runtime ticks up to the start of this segment.
