@@ -220,6 +220,7 @@ pub async fn init_app(
         search: Arc::new(providers::SearchServiceManager::default()),
         streams: Arc::new(providers::StreamServiceManager::default()),
         music_meta: Arc::new(providers::MusicMetaProviderService::default()),
+        lyrics: Arc::new(providers::LyricService::default()),
     };
 
     // Apply saved P2P speed limits on startup.
@@ -304,6 +305,7 @@ pub struct AppContext {
     pub search: Arc<providers::SearchServiceManager>,
     pub streams: Arc<providers::StreamServiceManager>,
     pub music_meta: Arc<providers::MusicMetaProviderService>,
+    pub lyrics: Arc<providers::LyricService>,
 }
 
 #[derive(Clone)]

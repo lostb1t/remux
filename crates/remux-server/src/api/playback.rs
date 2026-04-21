@@ -164,12 +164,19 @@ async fn items_playbackinfo_inner(
         return Ok(Json(info));
     }
 
-    // For Track items, refresh CDN stream URLs if stale. Sources are stored in the DB
-    // (same pattern as Movie/Episode via AIO), so PlaybackInfo just reads from there.
-    let is_track = media.kind == db::MediaKind::Track;
-    if is_track {
-        let _ = state.ctx.streams.refresh_sources(&media, &state.ctx).await;
+    // For Track items, refresh CDN stream URLs if stale.
+    // `media` may be a Source child when media_source_id differs from id — use subtitle_media
+    // (always fetched from `id`) as the authoritative item for kind detection.
+    let track_item = if media.kind == db::MediaKind::Track {
+        Some(media.clone())
+    } else {
+        subtitle_media.clone().filter(|m| m.kind == db::MediaKind::Track)
+    };
+    let is_track = track_item.is_some();
+    if let Some(ref track) = track_item {
+        let _ = state.ctx.streams.refresh_sources(track, &state.ctx).await;
     }
+    let has_lyrics = is_track;
 
     // Collect all playable sources. A Movie/Episode may have multiple
     // Source children (versions); return every one so the client can
@@ -340,6 +347,10 @@ async fn items_playbackinfo_inner(
             source.path = Some(resolved.clone());
         }
 
+        if has_lyrics {
+            api::inject_lyric_stream(&mut source);
+        }
+
         // Only flag bitrate exceeded when the source bitrate is known and
         // actually exceeds the cap. An unknown bitrate is treated as within
         // limits so that clients with a high/unlimited cap aren't forced into
@@ -415,12 +426,13 @@ async fn items_playbackinfo_inner(
 
                 source.supports_transcoding = true;
                 source.transcoding_url = Some(format!(
-                    "/videos/{}/stream.{}?MediaSourceId={}&AudioCodec={}{}",
+                    "/videos/{}/stream.{}?MediaSourceId={}&AudioCodec={}{}&ApiKey={}",
                     id,
                     trans_container,
                     source.id,
                     audio_codec,
                     start_time_param,
+                    session.device.access_token,
                 ));
                 source.transcoding_container = Some(trans_container);
                 source.transcoding_sub_protocol = "http".to_string();
@@ -500,7 +512,7 @@ async fn items_playbackinfo_inner(
 
                 source.supports_transcoding = true;
                 source.transcoding_url = Some(format!(
-                    "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}",
+                    "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
                     id,
                     play_session_id,
                     source.id,
@@ -511,7 +523,8 @@ async fn items_playbackinfo_inner(
                     audio_stream_param,
                     subtitle_stream_param,
                     subtitle_method_param,
-                    start_time_param
+                    start_time_param,
+                    session.device.access_token,
                 ));
                 source.transcoding_container = Some(trans_container);
                 source.transcoding_sub_protocol = trans_protocol;
@@ -2496,7 +2509,7 @@ pub async fn video_additional_parts(
 #[get("/audio/{id}/universal")]
 pub async fn audio_universal(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
@@ -2508,8 +2521,8 @@ pub async fn audio_universal(
         .unwrap_or_else(|| utils::get_uuid().as_simple().to_string());
 
     let transcoding_url = format!(
-        "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=copy&AudioCodec=aac",
-        id, play_session_id, id
+        "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=copy&AudioCodec=aac&ApiKey={}",
+        id, play_session_id, id, session.device.access_token
     );
 
     Ok(axum::response::Redirect::temporary(&transcoding_url).into_response())

@@ -108,99 +108,93 @@ impl SquidStreamService {
             format!("{} {}", media.title, artist)
         }
     }
+}
 
-    async fn try_instance(&self, base: &str, query: &str) -> Result<Option<StreamOption>> {
-        // Combined search — returns tracks.items among other types
-        let search_url = format!("{}/search/?s={}", base, urlencoding::encode(query));
-        let resp = self
-            .client
-            .get(&search_url)
-            .header("x-client", TIDAL_CLIENT)
-            .send()
-            .await?;
+async fn try_instance(client: &reqwest::Client, base: &str, query: &str) -> Result<Option<StreamOption>> {
+    let search_url = format!("{}/search/?s={}", base, urlencoding::encode(query));
+    let resp = client
+        .get(&search_url)
+        .header("x-client", TIDAL_CLIENT)
+        .send()
+        .await?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("search HTTP {} — {}", status, body);
-        }
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("search HTTP {} — {}", status, body);
+    }
 
-        let body: serde_json::Value = resp.json().await?;
+    let body: serde_json::Value = resp.json().await?;
 
-        // ?s= returns { data: { items: [...] } }
-        // ?q= (categorized) returns { data: { tracks: { items: [...] } } }
-        let track_id = body
-            .pointer("/data/items/0/id")
-            .or_else(|| body.pointer("/data/tracks/items/0/id"))
-            .or_else(|| body.pointer("/tracks/items/0/id"))
-            .and_then(|v| v.as_u64())
-            .map(|id| id.to_string());
+    let track_id = body
+        .pointer("/data/items/0/id")
+        .or_else(|| body.pointer("/data/tracks/items/0/id"))
+        .or_else(|| body.pointer("/tracks/items/0/id"))
+        .and_then(|v| v.as_u64())
+        .map(|id| id.to_string());
 
-        let track_id = match track_id {
-            Some(id) => id,
-            None => {
-                tracing::debug!(query, base, "squid/tidal: no tracks in search result");
-                return Ok(None);
-            }
-        };
-
-        tracing::debug!(track_id, "squid/tidal: fetching manifest");
-
-        let manifest_url =
-            format!("{}/track/?id={}&quality=LOSSLESS", base, urlencoding::encode(&track_id));
-        let resp = self
-            .client
-            .get(&manifest_url)
-            .header("x-client", TIDAL_CLIENT)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            anyhow::bail!("manifest HTTP {}", resp.status());
-        }
-
-        let track = resp.json::<TrackOuter>().await?.into_inner();
-
-        let manifest_b64 = match track.manifest {
-            Some(m) => m,
-            None => return Ok(None),
-        };
-
-        // Skip DASH — not supported
-        if track.manifest_mime_type.contains("dash") || manifest_b64.trim_start().starts_with('<') {
-            tracing::debug!(track_id, "squid/tidal: DASH manifest, skipping");
+    let track_id = match track_id {
+        Some(id) => id,
+        None => {
+            tracing::debug!(query, base, "squid/tidal: no tracks in search result");
             return Ok(None);
         }
+    };
 
-        let decoded = base64::engine::general_purpose::STANDARD.decode(manifest_b64.trim())?;
-        let manifest: DecodedManifest = serde_json::from_slice(&decoded)?;
+    tracing::debug!(track_id, "squid/tidal: fetching manifest");
 
-        let url = match manifest.urls.into_iter().next() {
-            Some(u) => u,
-            None => return Ok(None),
-        };
+    let manifest_url =
+        format!("{}/track/?id={}&quality=LOSSLESS", base, urlencoding::encode(&track_id));
+    let resp = client
+        .get(&manifest_url)
+        .header("x-client", TIDAL_CLIENT)
+        .send()
+        .await?;
 
-        let label = if manifest.mime_type.contains("flac") {
-            "FLAC"
-        } else if manifest.mime_type.contains("mp4") {
-            "AAC"
-        } else {
-            "Audio"
-        };
-
-        let codec = manifest.codecs.as_deref().map(super::normalize_codec).map(str::to_string);
-
-        Ok(Some(StreamOption {
-            url,
-            label: label.to_string(),
-            mime_type: manifest.mime_type,
-            is_audio_only: true,
-            codec,
-            sample_rate: manifest.sample_rate,
-            channels: Some(2),
-            ..Default::default()
-        }))
+    if !resp.status().is_success() {
+        anyhow::bail!("manifest HTTP {}", resp.status());
     }
+
+    let track = resp.json::<TrackOuter>().await?.into_inner();
+
+    let manifest_b64 = match track.manifest {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+
+    if track.manifest_mime_type.contains("dash") || manifest_b64.trim_start().starts_with('<') {
+        tracing::debug!(track_id, "squid/tidal: DASH manifest, skipping");
+        return Ok(None);
+    }
+
+    let decoded = base64::engine::general_purpose::STANDARD.decode(manifest_b64.trim())?;
+    let manifest: DecodedManifest = serde_json::from_slice(&decoded)?;
+
+    let url = match manifest.urls.into_iter().next() {
+        Some(u) => u,
+        None => return Ok(None),
+    };
+
+    let label = if manifest.mime_type.contains("flac") {
+        "FLAC"
+    } else if manifest.mime_type.contains("mp4") {
+        "AAC"
+    } else {
+        "Audio"
+    };
+
+    let codec = manifest.codecs.as_deref().map(super::normalize_codec).map(str::to_string);
+
+    Ok(Some(StreamOption {
+        url,
+        label: label.to_string(),
+        mime_type: manifest.mime_type,
+        is_audio_only: true,
+        codec,
+        sample_rate: manifest.sample_rate,
+        channels: Some(2),
+        ..Default::default()
+    }))
 }
 
 #[async_trait]
@@ -215,20 +209,38 @@ impl StreamService for SquidStreamService {
 
         let instances = self.get_instances().await;
 
-        for base in &instances {
-            match self.try_instance(base, &query).await {
-                Ok(Some(stream)) => {
-                    tracing::info!(query, base, label = %stream.label, "squid/tidal: stream resolved");
-                    return Ok(vec![stream]);
+        // Race all instances in parallel — first successful result wins.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(StreamOption, String)>(1);
+        let mut handles = Vec::with_capacity(instances.len());
+
+        for base in instances {
+            let tx = tx.clone();
+            let query = query.clone();
+            let client = self.client.clone();
+            let handle = tokio::spawn(async move {
+                match try_instance(&client, &base, &query).await {
+                    Ok(Some(stream)) => { let _ = tx.send((stream, base)).await; }
+                    Ok(None) => {}
+                    Err(e) => { tracing::debug!(base, error = %e, "squid/tidal: instance failed"); }
                 }
-                Ok(None) => return Ok(vec![]),
-                Err(e) => {
-                    tracing::debug!(base, error = %e, "squid/tidal: instance failed, trying next");
-                }
-            }
+            });
+            handles.push(handle);
+        }
+        drop(tx); // rx.recv() returns None once all tasks finish without sending
+
+        let result = if let Some((stream, base)) = rx.recv().await {
+            tracing::info!(query, base, label = %stream.label, "squid/tidal: stream resolved");
+            Ok(vec![stream])
+        } else {
+            tracing::warn!(query, "squid/tidal: all instances failed");
+            Ok(vec![])
+        };
+
+        // Cancel tasks that are still running.
+        for h in handles {
+            h.abort();
         }
 
-        tracing::warn!(query, "squid/tidal: all instances failed");
-        Ok(vec![])
+        result
     }
 }

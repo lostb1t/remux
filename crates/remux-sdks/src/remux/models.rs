@@ -1996,6 +1996,7 @@ pub struct BaseItemDto {
     #[default(Some(true))]
     pub can_download: Option<bool>,
     pub has_subtitles: Option<bool>,
+    pub has_lyrics: Option<bool>,
     pub preferred_metadata_language: Option<String>,
     pub preferred_metadata_country_code: Option<String>,
     pub supports_sync: Option<bool>,
@@ -2592,6 +2593,8 @@ pub enum ItemFields {
     AlbumId,
     ArtistItems,
     PrimaryImageTag,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(
@@ -3012,4 +3015,40 @@ pub struct IptvChannelsResult {
 pub struct ExternalUrl {
     pub name: Option<String>,
     pub url: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct LyricLine {
+    pub text: String,
+    /// Start time in ticks (100-nanosecond units). None for unsynced lyrics.
+    pub start: Option<i64>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct LyricMetadata {
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub title: Option<String>,
+    /// Song length in ticks.
+    pub length: Option<i64>,
+    pub is_synced: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct LyricDto {
+    pub metadata: LyricMetadata,
+    pub lyrics: Vec<LyricLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RemoteLyricInfoDto {
+    pub id: String,
+    pub provider_name: String,
+    pub lyrics: LyricDto,
 }

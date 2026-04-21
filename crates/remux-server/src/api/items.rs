@@ -79,6 +79,15 @@ impl ItemsQueryResult {
     }
 }
 
+/// `GET /api/danmu/{item_id}/raw` — danmu not supported; return 404 so clients don't get SPA HTML.
+#[get("/api/danmu/{item_id}/raw")]
+pub async fn get_danmu_raw(
+    _session: crate::db::auth::AuthSession,
+    Path(_item_id): Path<String>,
+) -> impl IntoResponse {
+    StatusCode::NOT_FOUND
+}
+
 pub async fn get_items(
     state: AppState,
     session: auth::AuthSession,
@@ -910,11 +919,11 @@ pub async fn item(
     // CDN URLs are IP-locked to the server; the client must go through the HLS pipeline.
     if media.kind == db::MediaKind::Track {
         let transcoding_url = format!(
-            "/videos/{}/master.m3u8?MediaSourceId={}&VideoCodec=copy&AudioCodec=aac",
-            media.id, media.id
+            "/videos/{}/master.m3u8?MediaSourceId={}&VideoCodec=copy&AudioCodec=aac&ApiKey={}",
+            media.id, media.id, session.device.access_token
         );
         let sources = media.sources.as_deref().unwrap_or(&[]);
-        let media_streams: Vec<api::MediaStream> = sources
+        let mut media_streams: Vec<api::MediaStream> = sources
             .first()
             .and_then(|s| s.probe_data.as_ref())
             .map(|p| p.media_streams.clone())
@@ -928,7 +937,7 @@ pub async fn item(
                 ..Default::default()
             }]);
 
-        base_item.media_sources = Some(vec![api::MediaSourceInfo {
+        let mut source = api::MediaSourceInfo {
             id: media.id,
             e_tag: media.id,
             name: Some(media.title.clone()),
@@ -943,7 +952,9 @@ pub async fn item(
             run_time_ticks: media.runtime.map(|s| s * 10_000_000),
             media_streams,
             ..Default::default()
-        }]);
+        };
+        api::inject_lyric_stream(&mut source);
+        base_item.media_sources = Some(vec![source]);
     }
 
     if media.kind == db::MediaKind::Episode {

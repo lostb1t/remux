@@ -4,6 +4,16 @@ use crate::db;
 use crate::utils;
 use anyhow::Result;
 
+pub fn inject_lyric_stream(source: &mut MediaSourceInfo) {
+    let next_idx = source.media_streams.iter().map(|s| s.index).max().unwrap_or(-1) + 1;
+    source.media_streams.push(MediaStream {
+        type_: Some(MediaStreamType::Lyric),
+        index: next_idx,
+        is_external: true,
+        ..Default::default()
+    });
+}
+
 pub trait MediaSourceInfoExt {
     fn probe(&self) -> Result<MediaSourceInfo>;
     fn probe_with_url(&self, url: &str) -> Result<MediaSourceInfo>;
@@ -161,6 +171,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         original_title: Some(media.title.clone()),
         overview: media.description.clone(),
         play_access: Some("Full".to_string()),
+        has_lyrics: (media.kind == db::MediaKind::Track).then_some(true),
 
         type_,
         parent_id: media.parent_id.clone(),
@@ -395,6 +406,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             }
             None => None,
         };
+
     }
 
     if media.kind == db::MediaKind::TvChannel {

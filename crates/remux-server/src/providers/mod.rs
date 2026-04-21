@@ -1,3 +1,4 @@
+pub mod lyrics;
 pub mod meta;
 pub mod music;
 pub mod search;
@@ -12,6 +13,7 @@ pub(crate) fn ytdlp_extra_args() -> Vec<String> {
         .collect()
 }
 
+pub use lyrics::{LyricProvider, LyricSearchRequest, LyricService};
 pub use meta::*;
 pub use music::{MusicMetaProvider, MusicMetaProviderService, MusicMetaResult};
 pub use search::{AioSearchService, SearchService, SearchServiceManager, YtDlpSearchService};
