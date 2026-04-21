@@ -13,6 +13,7 @@ pub struct Movie {
     pub id: i64,
     pub title: String,
     pub overview: Option<String>,
+    #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub release_date: Option<NaiveDate>,
     pub runtime: Option<i64>,
     pub vote_average: Option<f64>,

@@ -4,9 +4,7 @@ use super::{Status, default_append_to_response};
 use crate::Endpoint;
 
 use chrono::NaiveDate;
-use serde_with::{DisplayFromStr, serde_as};
 
-#[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", default)]
 pub struct Series {
@@ -14,7 +12,7 @@ pub struct Series {
     pub backdrop_path: Option<String>,
     pub created_by: Option<Vec<super::Creator>>,
     // pub episode_run_time: Vec<u32>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub first_air_date: Option<NaiveDate>,
     //pub genres: Vec<Genre>,
     pub homepage: Option<String>,
@@ -92,10 +90,9 @@ impl Endpoint for SeriesEndpoint {
     }
 }
 
-#[serde_as]
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Season {
-    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub air_date: Option<NaiveDate>,
     pub episode_count: Option<u32>,
     pub id: i64,
@@ -129,7 +126,6 @@ impl Endpoint for SeasonEndpoint {
     }
 }
 
-#[serde_as]
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Episode {
     pub id: i64,
@@ -137,7 +133,7 @@ pub struct Episode {
     pub overview: Option<String>,
     pub vote_average: Option<f64>,
     pub vote_count: i64,
-    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub air_date: Option<NaiveDate>,
     pub episode_number: i64,
     pub episode_type: Option<String>,

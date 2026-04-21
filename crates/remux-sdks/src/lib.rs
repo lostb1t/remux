@@ -417,6 +417,25 @@ where
     }
 }
 
+/// Deserializes an optional `NaiveDate` from a string, treating empty strings as `None`.
+/// TMDB returns `""` instead of `null` for missing dates, which chrono refuses to parse.
+pub fn deserialize_option_naive_date<'de, D>(
+    deserializer: D,
+) -> Result<Option<chrono::NaiveDate>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(deserializer)?;
+    match s {
+        None => Ok(None),
+        Some(ref v) if v.is_empty() => Ok(None),
+        Some(s) => s
+            .parse::<chrono::NaiveDate>()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
 impl From<aio::MediaType> for remux::MediaType {
     fn from(kind: aio::MediaType) -> Self {
         match kind {
