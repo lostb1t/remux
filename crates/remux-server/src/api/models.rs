@@ -378,6 +378,23 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         item.season_id = Some(item.id);
     }
 
+    if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season) {
+        item.series_name = media.series_title.clone();
+        item.series_primary_image_tag = media.series_poster.clone();
+        // The series item is where backdrop images live.
+        let series_uuid = if media.kind == db::MediaKind::Episode {
+            media.series_id.or(media.parent_id)
+        } else {
+            media.parent_id // season's parent is the series
+        };
+        item.parent_backdrop_item_id = series_uuid.map(|id| id.to_string());
+        item.parent_backdrop_image_tags =
+            media.series_backdrop.clone().map(|b| vec![b]);
+        if media.kind == db::MediaKind::Episode {
+            item.season_name = media.parent_title.clone();
+        }
+    }
+
     // Build external URLs from provider IDs
     let mut external_urls = Vec::new();
     if let Some(ref imdb_id) = media.external_ids.imdb {

@@ -224,9 +224,13 @@ pub async fn shows_nextup(
         return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
     };
 
+    let mut enriched = vec![ep.clone()];
+    db::Media::enrich_parents(&state.ctx.db, &mut enriched).await;
+    let ep = enriched.remove(0);
+
     let mut item = api::db_media_to_item(ep.clone());
-    if let Some(s) = state_for(ep) {
-        item.user_data = Some(api::db_state_to_dto(s.clone(), ep));
+    if let Some(s) = state_for(&ep) {
+        item.user_data = Some(api::db_state_to_dto(s.clone(), &ep));
     }
 
     Ok(Json(api::BaseItemDtoQueryResult {
@@ -330,9 +334,12 @@ async fn shows_nextup_all(
         }
 
         if let Some(ep) = next_ep {
+            let mut enriched = vec![ep.clone()];
+            db::Media::enrich_parents(&state.ctx.db, &mut enriched).await;
+            let ep = enriched.remove(0);
             let mut item = api::db_media_to_item(ep.clone());
-            if let Some(s) = state_for(ep) {
-                item.user_data = Some(api::db_state_to_dto(s.clone(), ep));
+            if let Some(s) = state_for(&ep) {
+                item.user_data = Some(api::db_state_to_dto(s.clone(), &ep));
             }
             items.push(item);
         }

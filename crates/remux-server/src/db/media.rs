@@ -498,12 +498,18 @@ pub struct Media {
     pub album_count: Option<i64>,
     #[sqlx(skip)]
     pub song_count: Option<i64>,
-    /// Album title for tracks (parent item's title), populated post-query.
+    /// Season/album title (parent item's title), populated post-query.
     #[sqlx(skip)]
     pub parent_title: Option<String>,
-    /// Artist title for tracks (series item's title), populated post-query.
+    /// Series/artist title (series item's title), populated post-query.
     #[sqlx(skip)]
     pub series_title: Option<String>,
+    /// Series poster hash for episodes/seasons, populated post-query.
+    #[sqlx(skip)]
+    pub series_poster: Option<String>,
+    /// Series backdrop hash for episodes/seasons, populated post-query.
+    #[sqlx(skip)]
+    pub series_backdrop: Option<String>,
     #[sqlx(skip)]
     pub unplayed_item_count: Option<i64>,
     #[sqlx(skip)]
@@ -546,6 +552,90 @@ pub struct Media {
 }
 
 impl Media {
+    /// Batch-populate parent/series title and image fields for tracks, albums, episodes, seasons.
+    pub async fn enrich_parents(db: &SqlitePool, records: &mut Vec<Self>) {
+        struct ParentRow {
+            title: String,
+            poster: Option<String>,
+            backdrop: Option<String>,
+        }
+
+        let ids_needed: Vec<Uuid> = records
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m.kind,
+                    MediaKind::Track | MediaKind::Album | MediaKind::Episode | MediaKind::Season
+                )
+            })
+            .flat_map(|m| [m.parent_id, m.series_id].into_iter().flatten())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if ids_needed.is_empty() {
+            return;
+        }
+
+        let mut parent_map: HashMap<Uuid, ParentRow> = HashMap::new();
+        for chunk in ids_needed.chunks(500) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT id, title, poster, backdrop FROM media WHERE id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(")");
+            if let Ok(rows) = qb.build().fetch_all(db).await {
+                parent_map.extend(rows.into_iter().filter_map(|r| {
+                    let id: Option<Uuid> = r.get(0);
+                    let title: Option<String> = r.get(1);
+                    let poster: Option<String> = r.get(2);
+                    let backdrop: Option<String> = r.get(3);
+                    id.zip(title)
+                        .map(|(id, title)| (id, ParentRow { title, poster, backdrop }))
+                }));
+            }
+        }
+
+        if parent_map.is_empty() {
+            return;
+        }
+
+        for media in records.iter_mut() {
+            match media.kind {
+                MediaKind::Track => {
+                    media.parent_title =
+                        media.parent_id.and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+                    media.series_title =
+                        media.series_id.and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+                }
+                MediaKind::Album => {
+                    media.series_title =
+                        media.series_id.and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+                }
+                MediaKind::Episode => {
+                    media.parent_title =
+                        media.parent_id.and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+                    if let Some(row) = media.series_id.and_then(|id| parent_map.get(&id)) {
+                        media.series_title = Some(row.title.clone());
+                        media.series_poster = row.poster.clone();
+                        media.series_backdrop = row.backdrop.clone();
+                    }
+                }
+                MediaKind::Season => {
+                    if let Some(row) = media.parent_id.and_then(|id| parent_map.get(&id)) {
+                        media.series_title = Some(row.title.clone());
+                        media.series_poster = row.poster.clone();
+                        media.series_backdrop = row.backdrop.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn parse_smart_filter(&self) -> Option<&remux_sdks::remux::models::CollectionFilter> {
         self.collection_smart_filter.as_ref().map(|j| &j.0)
     }
@@ -1464,44 +1554,7 @@ impl Media {
             }
         }
 
-        // Populate parent_title / series_title for tracks and albums (album name, artist name)
-        let music_ids_needing_parents: Vec<_> = records
-            .iter()
-            .filter(|m| matches!(m.kind, MediaKind::Track | MediaKind::Album))
-            .flat_map(|m| [m.parent_id, m.series_id].into_iter().flatten())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-
-        if !music_ids_needing_parents.is_empty() {
-            let mut title_map: HashMap<Uuid, String> = HashMap::new();
-            // SQLite limit is 999 variables; chunk to stay safe.
-            for chunk in music_ids_needing_parents.chunks(500) {
-                let mut qb = sqlx::QueryBuilder::new("SELECT id, title FROM media WHERE id IN (");
-                let mut sep = qb.separated(", ");
-                for id in chunk {
-                    sep.push_bind(id);
-                }
-                qb.push(")");
-                if let Ok(rows) = qb.build().fetch_all(db).await {
-                    title_map.extend(rows.into_iter().filter_map(|r| {
-                        let id: Option<Uuid> = r.get(0);
-                        let title: Option<String> = r.get(1);
-                        id.zip(title)
-                    }));
-                }
-            }
-            if !title_map.is_empty() {
-                for media in &mut records {
-                    if matches!(media.kind, MediaKind::Track | MediaKind::Album) {
-                        media.parent_title =
-                            media.parent_id.and_then(|id| title_map.get(&id).cloned());
-                        media.series_title =
-                            media.series_id.and_then(|id| title_map.get(&id).cloned());
-                    }
-                }
-            }
-        }
+        Self::enrich_parents(db, &mut records).await;
 
         if filter.include_user_state {
             let uid = filter
