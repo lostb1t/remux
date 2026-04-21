@@ -36,10 +36,7 @@ fn build_config() -> remux_server::Config {
 }
 
 fn server_url() -> String {
-    let port = std::env::var("REMUX_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(3000);
+    let port = build_config().port;
     format!("http://localhost:{port}/admin")
 }
 
@@ -133,8 +130,9 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
         remux_server::WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path)
     };
 
+    let port = config.port;
     let (router, _) = remux_server::init_app(config, None, admin, web_client).await?;
-    remux_server::bind_and_serve(router).await
+    remux_server::bind_and_serve(router, port).await
 }
 
 fn load_icon() -> tray_icon::Icon {

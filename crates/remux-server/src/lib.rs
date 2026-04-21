@@ -156,15 +156,12 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
 pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
     let admin = admin_from_filesystem(&paths.dashboard_path.clone());
     let web_client = WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
+    let port = config.port;
     let (router, _) = init_app(config, Some(paths), admin, web_client).await?;
-    bind_and_serve(router).await
+    bind_and_serve(router, port).await
 }
 
-pub async fn bind_and_serve(router: Router) -> Result<()> {
-    let port = std::env::var("REMUX_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(3000);
+pub async fn bind_and_serve(router: Router, port: u16) -> Result<()> {
     let addr = format!("0.0.0.0:{port}");
     let app = MapRequestLayer::new(rewrite_request_uri).layer(router);
     tracing::info!("starting webserver at {addr}");
@@ -357,6 +354,13 @@ fn default_torrent_data_dir() -> String {
         .unwrap_or_else(|| "/data/torrents".to_string())
 }
 
+fn default_port() -> u16 {
+    std::env::var("REMUX_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3000)
+}
+
 const TORRENT_HTTP_PORT: u16 = 9876;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -367,6 +371,8 @@ pub struct Config {
     pub log_file: String,
     #[serde(default = "default_torrent_data_dir")]
     pub torrent_data_dir: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
 }
 
 impl Default for Config {
@@ -375,6 +381,7 @@ impl Default for Config {
             database_url: default_database_url(),
             log_file: default_log_file(),
             torrent_data_dir: default_torrent_data_dir(),
+            port: default_port(),
         }
     }
 }
