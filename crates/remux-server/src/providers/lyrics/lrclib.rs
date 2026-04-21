@@ -97,7 +97,7 @@ impl LyricProvider for LrcLibProvider {
 
         // Try exact match first (requires duration to be within ~2s of lrclib's value).
         if let Some(dto) = self.fetch_exact(req).await? {
-            tracing::info!(title = %req.title, "lrclib: exact match found");
+            tracing::debug!(title = %req.title, "lrclib: exact match found");
             return Ok(Some(dto));
         }
 

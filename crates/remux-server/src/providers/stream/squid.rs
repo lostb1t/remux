@@ -229,7 +229,7 @@ impl StreamService for SquidStreamService {
         drop(tx); // rx.recv() returns None once all tasks finish without sending
 
         let result = if let Some((stream, base)) = rx.recv().await {
-            tracing::info!(query, base, label = %stream.label, "squid/tidal: stream resolved");
+            tracing::debug!(query, base, label = %stream.label, "squid/tidal: stream resolved");
             Ok(vec![stream])
         } else {
             tracing::warn!(query, "squid/tidal: all instances failed");

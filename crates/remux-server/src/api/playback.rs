@@ -905,25 +905,28 @@ pub async fn report_playback_start(
         .flatten()
         .map(|m| m.title)
         .unwrap_or_default();
-    let source_title = if let Some(ref sid) = data.media_source_id {
+    let (source_title, source_path) = if let Some(ref sid) = data.media_source_id {
         if let Ok(source_uuid) = sid.parse::<Uuid>() {
-            db::Media::get_by_id(&state.ctx.db, &source_uuid)
+            let m = db::Media::get_by_id(&state.ctx.db, &source_uuid)
                 .await
                 .ok()
-                .flatten()
-                .map(|m| m.title)
+                .flatten();
+            (m.as_ref().map(|m| m.title.clone()), m.and_then(|m| m.url))
         } else {
-            None
+            (None, None)
         }
     } else {
-        None
+        (None, None)
     };
+    let log_session_id = play_session_id
+        .trim_start_matches("audio-")
+        .trim_start_matches("video-");
     info!(
-        play_session_id,
+        play_session_id = log_session_id,
         %item_id,
-        media_source_id = ?data.media_source_id,
         title = %media_title,
         source = ?source_title,
+        path = ?source_path,
         user = %session.user.username,
         "Playback started"
     );
