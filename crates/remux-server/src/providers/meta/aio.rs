@@ -30,9 +30,15 @@ impl MetaProvider for AioMetaProvider {
         } else {
             crate::aio::AioService::from_settings(&ctx.db)
                 .await?
-                .get_meta(db::media_kind_to_aio(&media.kind), imdb_id)
+                .get_meta(db::media_kind_to_aio(&media.kind), imdb_id.clone())
                 .await?
         };
+
+        if meta.imdb_id.is_none() {
+            meta.imdb_id = db::ExternalIds::from_aio_id(&meta.id)
+                .imdb
+                .or_else(|| Some(imdb_id));
+        }
 
         let meta_raw = meta.clone();
         let medias: Vec<db::Media> = db::aio_meta_to_medias(meta)?;
@@ -92,10 +98,16 @@ impl TreeSyncProvider for AioTreeSyncProvider {
             None => return Ok(vec![]),
         };
 
-        let meta = crate::aio::AioService::from_settings(&ctx.db)
+        let mut meta = crate::aio::AioService::from_settings(&ctx.db)
             .await?
-            .get_meta(db::media_kind_to_aio(&series.kind), imdb_id)
+            .get_meta(db::media_kind_to_aio(&series.kind), imdb_id.clone())
             .await?;
+
+        if meta.imdb_id.is_none() {
+            meta.imdb_id = db::ExternalIds::from_aio_id(&meta.id)
+                .imdb
+                .or_else(|| Some(imdb_id));
+        }
 
         let meta_clone = meta.clone();
         let medias: Vec<db::Media> = db::aio_meta_to_medias(meta)?;
@@ -127,10 +139,16 @@ impl TreeSyncProvider for AioTreeSyncProvider {
             None => return Ok(vec![]),
         };
 
-        let meta = crate::aio::AioService::from_settings(&ctx.db)
+        let mut meta = crate::aio::AioService::from_settings(&ctx.db)
             .await?
-            .get_meta(db::media_kind_to_aio(&season.kind), imdb_id)
+            .get_meta(db::media_kind_to_aio(&season.kind), imdb_id.clone())
             .await?;
+
+        if meta.imdb_id.is_none() {
+            meta.imdb_id = db::ExternalIds::from_aio_id(&meta.id)
+                .imdb
+                .or_else(|| Some(imdb_id));
+        }
 
         let medias: Vec<db::Media> = db::aio_meta_to_medias(meta)?;
         let episodes = medias
