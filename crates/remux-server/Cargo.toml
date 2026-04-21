@@ -59,13 +59,14 @@ strum_macros = "^0.27"
 strum = "^0.27"
 base64 = "^0.22"
 tokio-stream = { version = "0.1", features = ["io-util", "sync"] }
-#flate2 = "1.1.1"
 futures = "0.3.31"
 async-compression = "0.4.23"
 #backon = "1.5.2"
 itertools = "0.14.0"
 #merge = "0.2.0"
 tempfile = "3.20.0"
+flate2 = "1.1.1"
+tar = "0.4.44"
 #reqwest-middleware = { version = "0.4", default-features = false, features = ["rustls-tls"] }
 remux-sdks = { path = "../remux-sdks", features = ["native"] }
 remux-utils = { path = "../remux-utils" }
