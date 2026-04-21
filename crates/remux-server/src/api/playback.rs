@@ -300,11 +300,11 @@ async fn items_playbackinfo_inner(
                                 probed.id = sm2.id;
                                 probed.name = Some(sm2.title.clone());
                                 probed.path = sm2.url.clone();
-                                if probed.video_stream().is_some() {
+                                if probed.video_stream().is_some() || probed.audio_stream().is_some() {
                                     sm.probe_data = Some(sqlx::types::Json(probed.clone()));
                                     sm.save(&db).await;
                                 } else {
-                                    tracing::warn!(id = %sm2.id, "probe returned no video stream, not caching");
+                                    tracing::warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
                                 }
                                 
                                 probed
