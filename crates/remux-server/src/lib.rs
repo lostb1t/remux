@@ -355,10 +355,7 @@ fn default_torrent_data_dir() -> String {
 }
 
 fn default_port() -> u16 {
-    std::env::var("PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3000)
+    3000
 }
 
 const TORRENT_HTTP_PORT: u16 = 9876;
