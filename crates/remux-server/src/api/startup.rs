@@ -6,12 +6,22 @@ use remux_macros::{get, post};
 
 use crate::AppState;
 use crate::api;
-use axum_anyhow::{ApiResult as Result, ResultExt};
+use axum_anyhow::{ApiResult as Result, IntoApiError, ResultExt};
+
+async fn require_wizard_incomplete(state: &AppState) -> Result<()> {
+    let config = crate::db::Settings::get_config(&state.ctx.db).await?;
+    if config.is_startup_wizard_completed.unwrap_or(false) {
+        return Err(anyhow::anyhow!("forbidden")
+            .context_forbidden("forbidden", "Setup wizard is already completed."));
+    }
+    Ok(())
+}
 
 #[get("/startup/configuration")]
 pub async fn get_startup_configuration(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
+    require_wizard_incomplete(&state).await?;
     let config = crate::db::Settings::get_config(&state.ctx.db).await?;
     Ok(Json(api::StartupConfiguration {
         server_name: config.server_name,
@@ -29,6 +39,7 @@ pub async fn post_startup_configuration(
     State(state): State<AppState>,
     Json(body): Json<api::StartupConfiguration>,
 ) -> Result<impl IntoResponse> {
+    require_wizard_incomplete(&state).await?;
     let api::StartupConfiguration {
         server_name,
         preferred_metadata_language,
@@ -61,7 +72,10 @@ pub async fn post_startup_configuration(
 
 /// GET /Startup/User
 #[get("/startup/user")]
-pub async fn get_startup_user() -> Result<impl IntoResponse> {
+pub async fn get_startup_user(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    require_wizard_incomplete(&state).await?;
     Ok(Json(api::StartupUser::default()))
 }
 
@@ -71,6 +85,7 @@ pub async fn post_startup_user(
     State(state): State<AppState>,
     Json(body): Json<api::StartupUser>,
 ) -> Result<impl IntoResponse> {
+    require_wizard_incomplete(&state).await?;
     if let (Some(name), Some(password)) = (body.name, body.password) {
         let mut user =
             crate::db::User::new_with_password(String::new(), name.into_inner(), &password, None)?;
@@ -82,7 +97,10 @@ pub async fn post_startup_user(
 
 /// POST /Startup/RemoteAccess — no-op, we don't configure remote access during wizard
 #[post("/startup/remoteaccess")]
-pub async fn post_startup_remote_access() -> Result<impl IntoResponse> {
+pub async fn post_startup_remote_access(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse> {
+    require_wizard_incomplete(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -91,6 +109,7 @@ pub async fn post_startup_remote_access() -> Result<impl IntoResponse> {
 pub async fn post_startup_complete(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
+    require_wizard_incomplete(&state).await?;
     let mut config = crate::db::Settings::get_config(&state.ctx.db).await?;
     config.is_startup_wizard_completed = Some(true);
     crate::db::Settings::set_config(&state.ctx.db, &config).await?;
