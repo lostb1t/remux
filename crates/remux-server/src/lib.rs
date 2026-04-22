@@ -152,7 +152,7 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
 }
 
 /// Start the HTTP server with web assets served from the filesystem.
-/// Binds to `0.0.0.0:{port}` (default 3000, or `REMUX_PORT` env var).
+/// Binds to `0.0.0.0:{port}` (default 3000, or `PORT` env var).
 pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
     let admin = admin_from_filesystem(&paths.dashboard_path.clone());
     let web_client = WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
@@ -355,7 +355,7 @@ fn default_torrent_data_dir() -> String {
 }
 
 fn default_port() -> u16 {
-    std::env::var("REMUX_PORT")
+    std::env::var("PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3000)
