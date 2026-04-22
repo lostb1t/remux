@@ -202,7 +202,7 @@ pub struct SpokenLanguage {
     pub name: String,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PaginatedResponse<T> {
     pub page: u32,
@@ -279,6 +279,34 @@ pub enum SortBy {
     OriginalTitleDesc,
     TitleAsc,
     TitleDesc,
+}
+
+/// TMDB person search result entry.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PersonResult {
+    pub id: i64,
+    pub name: String,
+    pub profile_path: Option<String>,
+    pub known_for_department: Option<String>,
+    pub popularity: Option<f64>,
+}
+
+/// `GET /search/person?query=…`
+#[derive(Debug, Clone, Serialize)]
+pub struct PersonSearchEndpoint {
+    pub query: String,
+}
+
+impl Endpoint for PersonSearchEndpoint {
+    type Output = PaginatedResponse<PersonResult>;
+
+    fn path(&self) -> String {
+        "search/person".to_string()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        vec![("query".to_string(), self.query.clone())]
+    }
 }
 
 //https://files.tmdb.org/p/exports/movie_ids_05_15_2024.json.gz

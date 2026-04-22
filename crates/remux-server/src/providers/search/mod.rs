@@ -6,10 +6,12 @@ use uuid::Uuid;
 mod aio;
 mod deezer;
 mod musicbrainz;
+mod tmdb_person;
 mod ytdlp;
 pub use aio::AioSearchService;
 pub use deezer::{DeezerAlbumSearchService, DeezerArtistSearchService, DeezerTrackSearchService};
 pub use musicbrainz::{MusicBrainzAlbumSearchService, MusicBrainzTrackSearchService};
+pub use tmdb_person::TmdbPersonSearchService;
 pub use ytdlp::{YtDlpAlbumSearchService, YtDlpSearchService};
 
 /// Cached music search result — stored in `AppContext::store` keyed by `media.id`.
@@ -69,6 +71,7 @@ impl Default for SearchServiceManager {
                 Box::new(DeezerTrackSearchService::default()),
                 Box::new(DeezerAlbumSearchService::default()),
                 Box::new(DeezerArtistSearchService::default()),
+                Box::new(TmdbPersonSearchService),
             ],
         }
     }

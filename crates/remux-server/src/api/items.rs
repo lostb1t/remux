@@ -120,21 +120,25 @@ pub async fn get_items(
         // Must check q.include_item_types directly because get_requested_item_types()
         // strips music kinds out.
         let raw_types = q.include_item_types.as_deref().unwrap_or(&[]);
-        let music_enabled = {
-            let cfg = db::Settings::get_config(&state.ctx.db).await?;
-            cfg.music_enabled.unwrap_or(true)
-        };
-        let wants_tracks = music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::Audio));
-        let wants_albums = music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicAlbum));
-        let wants_artists = music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicArtist));
+        let cfg = db::Settings::get_config(&state.ctx.db).await?;
+        let music_enabled = cfg.music_enabled.unwrap_or(true);
+        let wants_tracks = music_enabled
+            && cfg.search_tracks_remote.unwrap_or(true)
+            && raw_types.iter().any(|t| matches!(t, api::MediaType::Audio));
+        let wants_albums = music_enabled
+            && cfg.search_albums_remote.unwrap_or(true)
+            && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicAlbum));
+        let wants_artists = music_enabled
+            && cfg.search_artists_remote.unwrap_or(true)
+            && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicArtist));
         let wants_music = wants_tracks || wants_albums || wants_artists;
-        let wants_video = types.iter().any(|t| {
-            matches!(t, api::MediaType::Movie | api::MediaType::Series | api::MediaType::Episode)
-        });
-
-        if !wants_video && !wants_music {
-            return Ok(ItemsQueryResult { items: vec![], total_count: 0 });
-        }
+        let wants_movies = cfg.search_movies_remote.unwrap_or(true)
+            && types.contains(&api::MediaType::Movie);
+        let wants_series = cfg.search_series_remote.unwrap_or(true)
+            && types.contains(&api::MediaType::Series);
+        let wants_video = wants_movies || wants_series;
+        let wants_people = cfg.search_people_remote.unwrap_or(true)
+            && raw_types.iter().any(|t| matches!(t, api::MediaType::Person));
 
         if let Some(s) = search {
             let limit = q.limit.unwrap_or(800) as usize;
@@ -147,91 +151,106 @@ pub async fn get_items(
             let mut artists_count = 0usize;
             let mut movies_count = 0usize;
             let mut series_count = 0usize;
+            let mut people_count = 0usize;
 
-            if wants_tracks {
-                match state
-                    .ctx
-                    .search
-                    .search(&db::MediaKind::Track, &s, music_limit, &state.ctx)
-                    .await
-                {
-                    Ok(tracks) => {
-                        tracks_count = tracks.len();
-                        all_items.extend(tracks.into_iter().map(api::db_media_to_item));
+            // Music: remote search or local DB fallback per type
+            for (wants_remote, kind, api_type, count_ref) in [
+                (wants_tracks,  db::MediaKind::Track,  api::MediaType::Audio,       &mut tracks_count  as &mut usize),
+                (wants_albums,  db::MediaKind::Album,  api::MediaType::MusicAlbum,  &mut albums_count),
+                (wants_artists, db::MediaKind::Artist, api::MediaType::MusicArtist, &mut artists_count),
+            ] {
+                if !music_enabled || !raw_types.iter().any(|t| *t == api_type) {
+                    continue;
+                }
+                let item_limit = if matches!(kind, db::MediaKind::Track) { music_limit } else { music_limit.min(10) };
+                if wants_remote {
+                    match state.ctx.search.search(&kind, &s, item_limit, &state.ctx).await {
+                        Ok(results) => {
+                            *count_ref = results.len();
+                            all_items.extend(results.into_iter().map(api::db_media_to_item));
+                        }
+                        Err(e) => warn!(error = %e, term = %s, ?kind, "get_items: remote music search failed"),
                     }
-                    Err(e) => warn!(error = %e, term = %s, "get_items: track search failed"),
+                } else {
+                    let mut local_q = q.clone();
+                    local_q.search_term = Some(s.clone());
+                    local_q.include_item_types = Some(vec![api_type]);
+                    local_q.parent_id = None;
+                    local_q.start_index = None;
+                    local_q.limit = Some(item_limit as u32);
+                    let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
+                    match db::Media::get_by_jellyfin_filter(&state.ctx.db, &local_q, false, Some(&session.user), server_config.as_ref(), None).await {
+                        Ok(r) => {
+                            *count_ref = r.records.len();
+                            all_items.extend(r.records.into_iter().map(api::db_media_to_item));
+                        }
+                        Err(e) => warn!(error = %e, term = %s, ?kind, "get_items: local music search failed"),
+                    }
                 }
             }
 
-            if wants_albums {
-                let album_limit = music_limit.min(10);
-                match state
-                    .ctx
-                    .search
-                    .search(&db::MediaKind::Album, &s, album_limit, &state.ctx)
-                    .await
-                {
-                    Ok(albums) => {
-                        albums_count = albums.len();
-                        all_items.extend(albums.into_iter().map(api::db_media_to_item));
-                    }
-                    Err(e) => warn!(error = %e, term = %s, "get_items: album search failed"),
-                }
-            }
-
-            if wants_artists {
-                let artist_limit = music_limit.min(10);
-                match state
-                    .ctx
-                    .search
-                    .search(&db::MediaKind::Artist, &s, artist_limit, &state.ctx)
-                    .await
-                {
-                    Ok(artists) => {
-                        artists_count = artists.len();
-                        all_items.extend(artists.into_iter().map(api::db_media_to_item));
-                    }
-                    Err(e) => warn!(error = %e, term = %s, "get_items: artist search failed"),
-                }
-            }
-
-            if wants_video && !matches!(types[0], api::MediaType::Episode) {
-                for kind in &[db::MediaKind::Movie, db::MediaKind::Series] {
-                    let kind_type = api::db_media_kind_to_type(kind.clone());
-                    if !types.contains(&kind_type) {
+            // Video: remote search or local DB fallback per type
+            if !types.iter().all(|t| matches!(t, api::MediaType::Episode)) {
+                for (wants_remote, kind, api_type, count_ref) in [
+                    (wants_movies, db::MediaKind::Movie,  api::MediaType::Movie,  &mut movies_count as &mut usize),
+                    (wants_series, db::MediaKind::Series, api::MediaType::Series, &mut series_count),
+                ] {
+                    if !types.contains(&api_type) {
                         continue;
                     }
-                    match state.ctx.search.search(kind, &s, limit, &state.ctx).await {
-                        Ok(results) => {
-                            let video_items: Vec<_> = results
-                                .into_iter()
-                                .map(api::db_media_to_item)
-                                .filter(|item| {
-                                    let type_match = types.contains(&item.type_);
-                                    let media_type_match = q.media_types.as_ref().map_or(true, |mt| {
-                                        mt.contains(&item.media_type)
-                                    });
-                                    type_match && media_type_match
-                                })
-                                .collect();
-                            match kind {
-                                db::MediaKind::Movie => movies_count = video_items.len(),
-                                db::MediaKind::Series => series_count = video_items.len(),
-                                _ => {}
+                    if wants_remote {
+                        match state.ctx.search.search(&kind, &s, limit, &state.ctx).await {
+                            Ok(results) => {
+                                let items: Vec<_> = results
+                                    .into_iter()
+                                    .map(api::db_media_to_item)
+                                    .filter(|item| {
+                                        types.contains(&item.type_)
+                                            && q.media_types.as_ref().map_or(true, |mt| mt.contains(&item.media_type))
+                                    })
+                                    .collect();
+                                *count_ref = items.len();
+                                all_items.extend(items);
                             }
-                            all_items.extend(video_items);
+                            Err(e) => warn!(error = %e, ?kind, "get_items: remote video search failed"),
                         }
-                        Err(e) => warn!(error = %e, ?kind, "get_items: video search failed"),
+                    } else {
+                        let mut local_q = q.clone();
+                        local_q.search_term = Some(s.clone());
+                        local_q.include_item_types = Some(vec![api_type]);
+                        local_q.parent_id = None;
+                        local_q.start_index = None;
+                        local_q.limit = Some(limit as u32);
+                        let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
+                        match db::Media::get_by_jellyfin_filter(&state.ctx.db, &local_q, false, Some(&session.user), server_config.as_ref(), None).await {
+                            Ok(r) => {
+                                *count_ref = r.records.len();
+                                all_items.extend(r.records.into_iter().map(api::db_media_to_item));
+                            }
+                            Err(e) => warn!(error = %e, ?kind, "get_items: local video search failed"),
+                        }
                     }
+                }
+            }
+
+            // People: remote TMDB search.
+            if wants_people {
+                match state.ctx.search.search(&db::MediaKind::Person, &s, limit.min(20), &state.ctx).await {
+                    Ok(results) => {
+                        people_count = results.len();
+                        all_items.extend(results.into_iter().map(api::db_media_to_item));
+                    }
+                    Err(e) => warn!(error = %e, "get_items: people search failed"),
                 }
             }
 
             let mut counts = vec![];
-            if wants_tracks   { counts.push(format!("tracks={tracks_count}")); }
-            if wants_albums   { counts.push(format!("albums={albums_count}")); }
-            if wants_artists  { counts.push(format!("artists={artists_count}")); }
+            if music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::Audio))       { counts.push(format!("tracks={tracks_count}")); }
+            if music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicAlbum))  { counts.push(format!("albums={albums_count}")); }
+            if music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicArtist)) { counts.push(format!("artists={artists_count}")); }
             if types.contains(&api::MediaType::Movie)  { counts.push(format!("movies={movies_count}")); }
             if types.contains(&api::MediaType::Series) { counts.push(format!("series={series_count}")); }
+            if wants_people { counts.push(format!("people={people_count}")); }
             debug!(
                 query = %s,
                 counts = %counts.join(" "),
@@ -1053,10 +1072,17 @@ pub async fn items_suggestions(
 #[get("/persons")]
 pub async fn persons(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
+    Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    q.include_item_types = Some(vec![api::MediaType::Person]);
+    let items = get_items(state.clone(), session.clone(), q.clone(), true)
+        .await?
+        .with_permissions(&session);
     Ok(Json(api::BaseItemDtoQueryResult {
-        items: vec![],
+        items: items.items,
+        total_record_count: items.total_count as i64,
+        start_index: q.start_index.unwrap_or(0),
         ..Default::default()
     }))
 }

@@ -208,6 +208,18 @@ pub struct ServerConfiguration {
     pub music_enabled: Option<bool>,
     pub jellyfin_url: Option<String>,
     pub jellyfin_api_key: Option<String>,
+    #[default(Some(true))]
+    pub search_movies_remote: Option<bool>,
+    #[default(Some(true))]
+    pub search_series_remote: Option<bool>,
+    #[default(Some(true))]
+    pub search_tracks_remote: Option<bool>,
+    #[default(Some(true))]
+    pub search_albums_remote: Option<bool>,
+    #[default(Some(true))]
+    pub search_artists_remote: Option<bool>,
+    #[default(Some(true))]
+    pub search_people_remote: Option<bool>,
 }
 
 // --- Jellyfin import models (used to consume a remote Jellyfin server) ---

@@ -3809,6 +3809,7 @@ fn ApiKeysPage(app_state: AppState) -> Element {
 fn SettingsPage(app_state: AppState) -> Element {
     rsx! {
         ServerSettingsCard { app_state: app_state.clone() }
+        SearchSettingsCard { app_state: app_state.clone() }
         JellyfinImportCard { app_state }
     }
 }
@@ -4127,6 +4128,157 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     }
 }
 
+
+#[component]
+fn SearchSettingsCard(app_state: AppState) -> Element {
+    let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
+    let mut movies_remote = use_signal(|| true);
+    let mut series_remote = use_signal(|| true);
+    let mut tracks_remote = use_signal(|| true);
+    let mut albums_remote = use_signal(|| true);
+    let mut artists_remote = use_signal(|| true);
+    let mut loading = use_signal(|| true);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut saved = use_signal(|| false);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load.client.clone();
+        spawn(async move {
+            match client.execute(GetSystemConfiguration).await {
+                Ok(cfg) => {
+                    movies_remote.set(cfg.search_movies_remote.unwrap_or(true));
+                    series_remote.set(cfg.search_series_remote.unwrap_or(true));
+                    tracks_remote.set(cfg.search_tracks_remote.unwrap_or(true));
+                    albums_remote.set(cfg.search_albums_remote.unwrap_or(true));
+                    artists_remote.set(cfg.search_artists_remote.unwrap_or(true));
+                    base_cfg.set(Some(cfg));
+                }
+                Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    let on_submit = move |e: Event<FormData>| {
+        e.prevent_default();
+        let client = app_state.client.clone();
+        let mut cfg = base_cfg.peek().clone().unwrap_or_default();
+        cfg.search_movies_remote = Some(*movies_remote.peek());
+        cfg.search_series_remote = Some(*series_remote.peek());
+        cfg.search_tracks_remote = Some(*tracks_remote.peek());
+        cfg.search_albums_remote = Some(*albums_remote.peek());
+        cfg.search_artists_remote = Some(*artists_remote.peek());
+        saving.set(true);
+        error.set(None);
+        saved.set(false);
+        spawn(async move {
+            match client.execute(UpdateSystemConfiguration { config: cfg }).await {
+                Ok(_) => saved.set(true),
+                Err(e) => error.set(Some(e.user_message())),
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Remote Search" }
+            }
+            div { class: "card-body",
+            if *loading.read() {
+                span { class: "loading-text", "Loading…" }
+            } else {
+                form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
+                    div { class: "field",
+                        div { class: "toggle-row",
+                            span { class: "toggle-label", "Movies" }
+                            label { class: "toggle",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *movies_remote.read(),
+                                    oninput: move |e| movies_remote.set(e.checked()),
+                                }
+                                span { class: "toggle-track" }
+                            }
+                        }
+                    }
+                    div { class: "form-field",
+                        div { class: "toggle-row",
+                            span { class: "toggle-label", "Series" }
+                            label { class: "toggle",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *series_remote.read(),
+                                    oninput: move |e| series_remote.set(e.checked()),
+                                }
+                                span { class: "toggle-track" }
+                            }
+                        }
+                    }
+                    div { class: "form-field",
+                        div { class: "toggle-row",
+                            span { class: "toggle-label", "Tracks" }
+                            label { class: "toggle",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *tracks_remote.read(),
+                                    oninput: move |e| tracks_remote.set(e.checked()),
+                                }
+                                span { class: "toggle-track" }
+                            }
+                        }
+                    }
+                    div { class: "form-field",
+                        div { class: "toggle-row",
+                            span { class: "toggle-label", "Albums" }
+                            label { class: "toggle",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *albums_remote.read(),
+                                    oninput: move |e| albums_remote.set(e.checked()),
+                                }
+                                span { class: "toggle-track" }
+                            }
+                        }
+                    }
+                    div { class: "form-field",
+                        div { class: "toggle-row",
+                            span { class: "toggle-label", "Artists" }
+                            label { class: "toggle",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *artists_remote.read(),
+                                    oninput: move |e| artists_remote.set(e.checked()),
+                                }
+                                span { class: "toggle-track" }
+                            }
+                        }
+                    }
+
+                    if let Some(err) = error.read().as_ref() {
+                        div { class: "alert-error", "{err}" }
+                    }
+                    if *saved.read() {
+                        div { class: "alert-success", "Settings saved." }
+                    }
+
+                    div { class: "form-actions",
+                        button {
+                            r#type: "submit",
+                            class: "btn btn-primary",
+                            disabled: *saving.read(),
+                            if *saving.read() { "Saving…" } else { "Save Settings" }
+                        }
+                    }
+                }
+            }
+            }
+        }
+    }
+}
 
 #[component]
 fn JellyfinImportCard(app_state: AppState) -> Element {
