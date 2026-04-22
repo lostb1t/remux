@@ -1633,6 +1633,8 @@ pub struct UserPolicy {
     pub is_disabled: bool,
     pub blocked_tags: Option<Vec<String>>,
     pub allowed_tags: Option<Vec<String>>,
+    /// Per-user filter rules applied on every item query (same engine as smart collections).
+    pub filter_rules: Option<CollectionFilter>,
     #[default(true)]
     pub enable_user_preference_access: bool,
     pub access_schedules: Option<Vec<String>>,

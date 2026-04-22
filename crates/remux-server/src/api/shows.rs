@@ -87,9 +87,18 @@ pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
+    let policy_rules: Vec<remux_sdks::remux::models::FilterRule> = session
+        .user
+        .policy
+        .as_ref()
+        .and_then(|p| p.0.filter_rules.as_ref())
+        .map(|f| f.rules.clone())
+        .unwrap_or_default();
+
     let library_filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
         promoted: Some(true),
+        filter_rules: policy_rules,
         ..Default::default()
     };
     let channel_filter = db::MediaFilter {

@@ -1552,6 +1552,12 @@ fn CollectionForm(
             .map(|sf| sf.rules.clone())
             .unwrap_or_default()
     });
+    let tags: Signal<Vec<String>> = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|f| f.tags.clone())
+            .unwrap_or_default()
+    });
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
 
@@ -1563,6 +1569,7 @@ fn CollectionForm(
         let ct = col_type.peek().clone();
         let ck = col_kind.peek().clone();
         let prm = *promoted.peek();
+        let current_tags = tags.peek().clone();
         let smart_filter_payload = if ck == "smart" {
             Some(CollectionFilter {
                 match_mode: sf_match.peek().clone(),
@@ -1584,7 +1591,7 @@ fn CollectionForm(
                             collection_kind: Some(ck),
                             smart_filter: smart_filter_payload,
                             promoted: Some(prm),
-                            tags: None,
+                            tags: Some(current_tags),
                         },
                     })
                     .await
@@ -1662,6 +1669,11 @@ fn CollectionForm(
                 FilterRuleEditor { match_mode: sf_match, rules: sf_rules }
             }
 
+            div { class: "field",
+                label { class: "field-label", "Tags" }
+                TagChipInput { tags }
+            }
+
             div { class: "toggle-row",
                 span { class: "toggle-label", "Promoted to Library" }
                 label { class: "toggle",
@@ -1690,6 +1702,96 @@ fn CollectionForm(
                     class: "btn btn-primary",
                     disabled: *saving.read(),
                     if *saving.read() { "Saving…" } else { "Save" }
+                }
+            }
+        }
+    }
+}
+
+
+/// Simple chip input for editing a list of tags with autocomplete.
+#[component]
+fn TagChipInput(tags: Signal<Vec<String>>) -> Element {
+    let app_state = use_context::<AppState>();
+    let mut input_text: Signal<String> = use_signal(String::new);
+    let mut suggestions: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut show_dropdown = use_signal(|| false);
+
+    let client_fetch = app_state.client.clone();
+    use_effect(move || {
+        let q = input_text.read().clone();
+        let client = client_fetch.clone();
+        spawn(async move {
+            if q.is_empty() {
+                suggestions.set(vec![]);
+                show_dropdown.set(false);
+                return;
+            }
+            match client.execute(GetTagSuggestions { search_term: q }).await {
+                Ok(v) => {
+                    show_dropdown.set(!v.is_empty());
+                    suggestions.set(v);
+                }
+                Err(_) => {}
+            }
+        });
+    });
+
+    let mut add_tag = move |tag: String| {
+        let tag = tag.trim().to_string();
+        if !tag.is_empty() && !tags.read().contains(&tag) {
+            tags.write().push(tag);
+        }
+        input_text.set(String::new());
+        suggestions.set(vec![]);
+        show_dropdown.set(false);
+    };
+
+    rsx! {
+        div { style: "position:relative",
+            div { class: "chip-input",
+                for (ci, chip) in tags.read().clone().into_iter().enumerate() {
+                    span { class: "chip", key: "{ci}",
+                        "{chip}"
+                        button {
+                            r#type: "button",
+                            class: "chip-remove",
+                            onclick: move |_| { tags.write().remove(ci); },
+                            "×"
+                        }
+                    }
+                }
+                input {
+                    r#type: "text",
+                    class: "chip-text-input",
+                    placeholder: if tags.read().is_empty() { "add tag…" } else { "" },
+                    value: "{input_text}",
+                    oninput: move |e| input_text.set(e.value()),
+                    onkeydown: move |e| {
+                        let key = e.key().to_string();
+                        let text = input_text.read().replace(',', "").trim().to_string();
+                        if (key == "Enter" || key == ",") && !text.is_empty() {
+                            e.prevent_default();
+                            add_tag(text);
+                        } else if key == "Backspace" && input_text.read().is_empty() {
+                            tags.write().pop();
+                        }
+                    },
+                }
+            }
+            if *show_dropdown.read() {
+                div { class: "autocomplete-dropdown",
+                    for (si, suggestion) in suggestions.read().clone().into_iter().enumerate() {
+                        div {
+                            class: "autocomplete-item",
+                            key: "{si}",
+                            onmousedown: move |e| {
+                                e.prevent_default();
+                                add_tag(suggestion.clone());
+                            },
+                            "{suggestion}"
+                        }
+                    }
                 }
             }
         }
@@ -1907,26 +2009,36 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
 fn FilterRuleEditor(
     match_mode: Signal<FilterMatchMode>,
     rules: Signal<Vec<FilterRule>>,
+    /// When true: show all fields. When false (user mode): only Tag + Certification.
+    #[props(default = true)]
+    collection_mode: bool,
 ) -> Element {
+    let default_new_rule = if collection_mode {
+        FilterRule::Genre { op: SetOp::In, values: vec![] }
+    } else {
+        FilterRule::Tag { op: SetOp::In, values: vec![] }
+    };
     rsx! {
         div { class: "field",
             div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px",
                 label { class: "field-label", style: "margin:0", "Filter Rules" }
-                div { style: "display:flex;align-items:center;gap:8px",
-                    span { style: "font-size:0.8rem;color:var(--text-muted)", "Match" }
-                    select {
-                        class: "select-input",
-                        style: "padding:2px 6px;font-size:0.8rem",
-                        value: if *match_mode.read() == FilterMatchMode::All { "all" } else { "any" },
-                        onchange: move |e| {
-                            match_mode.set(if e.value() == "any" {
-                                FilterMatchMode::Any
-                            } else {
-                                FilterMatchMode::All
-                            });
-                        },
-                        option { value: "all", "All (AND)" }
-                        option { value: "any", "Any (OR)" }
+                if collection_mode {
+                    div { style: "display:flex;align-items:center;gap:8px",
+                        span { style: "font-size:0.8rem;color:var(--text-muted)", "Match" }
+                        select {
+                            class: "select-input",
+                            style: "padding:2px 6px;font-size:0.8rem",
+                            value: if *match_mode.read() == FilterMatchMode::All { "all" } else { "any" },
+                            onchange: move |e| {
+                                match_mode.set(if e.value() == "any" {
+                                    FilterMatchMode::Any
+                                } else {
+                                    FilterMatchMode::All
+                                });
+                            },
+                            option { value: "all", "All (AND)" }
+                            option { value: "any", "Any (OR)" }
+                        }
                     }
                 }
             }
@@ -1938,6 +2050,7 @@ fn FilterRuleEditor(
                         idx,
                         rule: rule.clone(),
                         rules,
+                        collection_mode,
                     }
                 }
             }
@@ -1947,7 +2060,7 @@ fn FilterRuleEditor(
                 class: "btn btn-ghost",
                 style: "margin-top:8px;font-size:0.85rem",
                 onclick: move |_| {
-                    rules.write().push(FilterRule::Genre { op: SetOp::In, values: vec![] });
+                    rules.write().push(default_new_rule.clone());
                 },
                 "+ Add Rule"
             }
@@ -2097,6 +2210,8 @@ fn FilterRuleRow(
     idx: usize,
     rule: FilterRule,
     rules: Signal<Vec<FilterRule>>,
+    #[props(default = true)]
+    collection_mode: bool,
 ) -> Element {
     let (field_val, op_val, value_val) = rule_to_raw(&rule);
     let ops = ops_for_field(&field_val);
@@ -2123,17 +2238,35 @@ fn FilterRuleRow(
                         *row = raw_to_rule(&new_field, default_op, "");
                     }
                 },
-                option { value: "genre",           selected: field_val == "genre",           { field_label("genre") } }
-                option { value: "year",            selected: field_val == "year",            { field_label("year") } }
-                option { value: "rating_audience", selected: field_val == "rating_audience", { field_label("rating_audience") } }
-                option { value: "rating_critic",   selected: field_val == "rating_critic",   { field_label("rating_critic") } }
+                if collection_mode {
+                    option { value: "genre",           selected: field_val == "genre",           { field_label("genre") } }
+                }
+                if collection_mode {
+                    option { value: "year",            selected: field_val == "year",            { field_label("year") } }
+                }
+                if collection_mode {
+                    option { value: "rating_audience", selected: field_val == "rating_audience", { field_label("rating_audience") } }
+                }
+                if collection_mode {
+                    option { value: "rating_critic",   selected: field_val == "rating_critic",   { field_label("rating_critic") } }
+                }
                 option { value: "certification",   selected: field_val == "certification",   { field_label("certification") } }
                 option { value: "tag",             selected: field_val == "tag",             { field_label("tag") } }
-                option { value: "studio",          selected: field_val == "studio",          { field_label("studio") } }
-                option { value: "catalog",         selected: field_val == "catalog",         { field_label("catalog") } }
-                option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
-                option { value: "country",         selected: field_val == "country",         { field_label("country") } }
-                option { value: "person",          selected: field_val == "person",          { field_label("person") } }
+                if collection_mode {
+                    option { value: "studio",          selected: field_val == "studio",          { field_label("studio") } }
+                }
+                if collection_mode {
+                    option { value: "catalog",         selected: field_val == "catalog",         { field_label("catalog") } }
+                }
+                if collection_mode {
+                    option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
+                }
+                if collection_mode {
+                    option { value: "country",         selected: field_val == "country",         { field_label("country") } }
+                }
+                if collection_mode {
+                    option { value: "person",          selected: field_val == "person",          { field_label("person") } }
+                }
             }
             // Operator selector (hidden for has_trailer which has no operator)
             if !is_trailer {
@@ -3375,6 +3508,21 @@ fn UserForm(
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
 
+    let fr_match: Signal<FilterMatchMode> = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|u| u.policy.filter_rules.as_ref())
+            .map(|f| f.match_mode.clone())
+            .unwrap_or(FilterMatchMode::All)
+    });
+    let fr_rules: Signal<Vec<FilterRule>> = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|u| u.policy.filter_rules.as_ref())
+            .map(|f| f.rules.clone())
+            .unwrap_or_default()
+    });
+
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let pw = password.peek().clone();
@@ -3392,10 +3540,20 @@ fn UserForm(
         let name = username.peek().clone();
         let admin = *is_admin.peek();
         let user_dto = existing.clone();
+        let rules_snapshot = fr_rules.peek().clone();
+        let match_snapshot = fr_match.peek().clone();
 
         saving.set(true);
         err.set(None);
         spawn(async move {
+            let filter_rules = if rules_snapshot.is_empty() {
+                None
+            } else {
+                Some(CollectionFilter {
+                    match_mode: match_snapshot,
+                    rules: rules_snapshot,
+                })
+            };
             let result: Result<(), remux_sdks::ClientError> = async {
                 if is_edit {
                     let user = user_dto.as_ref().unwrap();
@@ -3408,9 +3566,10 @@ fn UserForm(
                             dto: updated,
                         })
                         .await?;
-                    // Update admin flag
+                    // Update admin flag and filter rules
                     let mut policy = user.policy.clone();
                     policy.is_administrator = admin;
+                    policy.filter_rules = filter_rules;
                     client
                         .execute(UpdateUserPolicy {
                             user_id: user.id,
@@ -3516,6 +3675,12 @@ fn UserForm(
                     }
                     span { class: "toggle-track" }
                 }
+            }
+
+            FilterRuleEditor {
+                match_mode: fr_match,
+                rules: fr_rules,
+                collection_mode: false,
             }
 
             if let Some(e) = err.read().as_ref() {

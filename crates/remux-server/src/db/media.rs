@@ -1912,9 +1912,16 @@ impl Media {
                 digital_released_before,
                 sort_by: filter.sort_by.clone().unwrap_or_default(),
                 sort_order: filter.sort_order.clone().unwrap_or_default(),
-                filter_rules: smart_filter
-                    .map(|sf| sf.rules.clone())
-                    .unwrap_or_default(),
+                filter_rules: {
+                    let mut rules = smart_filter
+                        .map(|sf| sf.rules.clone())
+                        .unwrap_or_default();
+                    // Append user policy filter rules (AND semantics — all must match).
+                    if let Some(policy_filter) = user_policy.and_then(|p| p.filter_rules.as_ref()) {
+                        rules.extend(policy_filter.rules.clone());
+                    }
+                    rules
+                },
                 filter_match: smart_filter
                     .map(|sf| sf.match_mode.clone())
                     .unwrap_or_default(),
