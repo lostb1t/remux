@@ -1357,10 +1357,7 @@ fn CollectionsPage(app_state: AppState) -> Element {
         spawn(async move {
             match client
                 .execute(GetItems {
-                    include_item_types: vec![
-                        "BoxSet".to_string(),
-                        "CollectionFolder".to_string(),
-                    ],
+                    include_item_types: vec!["BoxSet".to_string()],
                     recursive: false,
                 })
                 .await
