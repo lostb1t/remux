@@ -48,6 +48,9 @@ jobs:
       docker_tags: >-
         -t ghcr.io/remuxd/remux:${{ needs.semantic-release.outputs.new_release_version }}
         -t ghcr.io/remuxd/remux:latest
+      public_docker_tags: >-
+        -t ghcr.io/lostb1t/remux:${{ needs.semantic-release.outputs.new_release_version }}
+        -t ghcr.io/lostb1t/remux:latest
       ref: ${{ needs.semantic-release.outputs.new_release_git_tag }}
     secrets: inherit
 

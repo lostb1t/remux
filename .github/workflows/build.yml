@@ -13,6 +13,13 @@ on:
           e.g. "-t ghcr.io/remuxd/remux:1.2.3 -t ghcr.io/remuxd/remux:latest"
         type: string
         required: true
+      public_docker_tags:
+        description: >-
+          Optional space-separated imagetools tag flags for the public GHCR
+          package, e.g. "-t ghcr.io/lostb1t/remux:1.2.3 -t ghcr.io/lostb1t/remux:latest"
+        type: string
+        required: false
+        default: ""
       cargo_version:
         description: >-
           Semver string to inject into all workspace Cargo.toml files before
@@ -29,6 +36,7 @@ on:
 
 env:
   REGISTRY_IMAGE: ghcr.io/remuxd/remux
+  PUBLIC_REGISTRY_IMAGE: ghcr.io/lostb1t/remux
 
 jobs:
   build-jellyfin-web:
@@ -360,7 +368,9 @@ jobs:
           context: .
           file: docker/Dockerfile
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},name-canonical=true,push=true
+          outputs: |
+            type=image,name=${{ env.REGISTRY_IMAGE }},name-canonical=true,push=true
+            type=image,name=${{ env.PUBLIC_REGISTRY_IMAGE }},name-canonical=true,push=true
           cache-from: type=gha,scope=build-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=build-${{ env.PLATFORM_PAIR }}
 
@@ -408,3 +418,8 @@ jobs:
         run: |
           docker buildx imagetools create ${{ inputs.docker_tags }} \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+
+          if [ -n "${{ inputs.public_docker_tags }}" ]; then
+            docker buildx imagetools create ${{ inputs.public_docker_tags }} \
+              $(printf '${{ env.PUBLIC_REGISTRY_IMAGE }}@sha256:%s ' *)
+          fi
