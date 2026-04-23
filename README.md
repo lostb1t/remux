@@ -8,8 +8,9 @@ Main difference compared to jellyfin
 
 - Built in rust, faster and lower resource usage
 - Complete new dashboard.
-- No backend plugins (jelkyfin web ui "plugins" do work)
-
+- Dynamic library and collection system. Create libraries from a custom set of filters.
+- No backend plugins (jelkyfin web ui theming does work so tou can still use your favorite theme)
+- No native local file support tho local filea can be used through stremio addons
 
 Run the image as follows
 
