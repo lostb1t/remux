@@ -1,17 +1,10 @@
-## A Jellyfin server replacement based on stremio addons
+## Remux Server
 
+Remux is a self-hosted media server that exposes a Jellyfin-compatible API while sourcing media from Stremio add-ons instead of a local file library. The goal is to let existing Jellyfin clients browse catalogs, search content, choose streams, and play media through Remux without client-side changes.
 
-Total replacement for the Jellyfin server.
-Instead of local files, everything is routed to stremio addons.
-Aims to be compatible with all jellyfin clients (eventually)
+The project is built in Rust and currently targets a lightweight, add-on-backed streaming workflow. It is still experimental and should be treated as a proof of concept.
 
-Status: Very experimental 🔥 it's a proof of concept
-
-Only supports aiostreams for now https://github.com/Viren070/AIOStreams.
-
-A self-hosted, Jellyfin-compatible media server that acts as a full replacement for Jellyfin.
-It integrates Stremio add-ons directly into the Jellyfin ecosystem by exposing a fully compatible Jellyfin API layer, allowing existing Jellyfin clients to work without modification.
-Built in Rust for high performance, low resource usage, and an optimized streaming experience.
+Only AIOStreams is supported for now: https://github.com/Viren070/AIOStreams.
 
 Run the image as follows
 
