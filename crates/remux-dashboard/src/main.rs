@@ -106,6 +106,22 @@ fn get_origin() -> String {
         .unwrap_or_default()
 }
 
+fn browser_metadata_country_code() -> String {
+    web_sys::window()
+        .and_then(|w| w.navigator().language())
+        .and_then(|language| {
+            language
+                .split(['-', '_'])
+                .skip(1)
+                .filter(|part| {
+                    part.len() == 2 && part.chars().all(|c| c.is_ascii_alphabetic())
+                })
+                .last()
+                .map(|part| part.to_ascii_uppercase())
+        })
+        .unwrap_or_else(|| "US".to_string())
+}
+
 fn get_or_create_device_id() -> String {
     LocalStorage::get::<String>(DEVICE_ID_KEY).unwrap_or_else(|_| {
         let id = Uuid::new_v4().to_string();
@@ -4889,6 +4905,8 @@ fn WizardStep(n: u8, label: &'static str, active: bool, done: bool) -> Element {
 fn Wizard(on_complete: EventHandler) -> Element {
     let mut step = use_signal(|| 0_u8);
     let mut server_name = use_signal(String::new);
+    let mut metadata_country = use_signal(browser_metadata_country_code);
+    let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
     let mut aio_url = use_signal(String::new);
     let mut username = use_signal(String::new);
     let mut password = use_signal(String::new);
@@ -4905,9 +4923,17 @@ fn Wizard(on_complete: EventHandler) -> Element {
                     if let Some(name) = cfg.server_name.filter(|s| !s.is_empty()) {
                         server_name.set(name);
                     }
+                    metadata_country.set(
+                        cfg.metadata_country_code
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(browser_metadata_country_code),
+                    );
                     if let Some(url) = cfg.aio_url {
                         aio_url.set(url.into_inner());
                     }
+                }
+                if let Ok(list) = c.execute(GetCountries).await {
+                    countries.set(list);
                 }
             }
         });
@@ -4949,6 +4975,7 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                     e.prevent_default();
                                     let origin = get_origin();
                                     let name = server_name.peek().clone();
+                                    let country = metadata_country.peek().clone();
                                     let url  = aio_url.peek().clone();
                                     saving.set(true);
                                     error.set(None);
@@ -4957,6 +4984,7 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                             Ok(c) => match c.execute(PostStartupConfiguration {
                                                 payload: StartupConfiguration {
                                                     server_name: Some(name),
+                                                    metadata_country_code: Some(country),
                                                     aio_url: AioUrl::try_new(url).ok(),
                                                     ..Default::default()
                                                 },
@@ -4984,6 +5012,33 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                         placeholder: "My Remux Server",
                                         value: "{server_name}",
                                         oninput: move |e| server_name.set(e.value()),
+                                    }
+                                }
+
+                                div { class: "field",
+                                    label { class: "field-label", r#for: "w-country", "Metadata Country" }
+                                    select {
+                                        id: "w-country",
+                                        class: "select-input",
+                                        value: "{metadata_country}",
+                                        onchange: move |e| metadata_country.set(e.value()),
+                                        if countries.read().is_empty() {
+                                            option {
+                                                value: "{metadata_country}",
+                                                selected: true,
+                                                "{metadata_country}"
+                                            }
+                                        }
+                                        for country in countries.read().iter() {
+                                            option {
+                                                value: "{country.two_letter_iso_region_name}",
+                                                selected: metadata_country.read().as_str() == country.two_letter_iso_region_name,
+                                                "{country.name} ({country.two_letter_iso_region_name})"
+                                            }
+                                        }
+                                    }
+                                    p { class: "field-hint",
+                                        "Used for metadata ratings and regional release details."
                                     }
                                 }
 
