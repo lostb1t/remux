@@ -290,7 +290,6 @@ pub struct StartupConfiguration {
     pub aio_url: Option<AioUrl>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct StartupUser {
@@ -305,6 +304,44 @@ pub struct StartupUser {
 pub struct LocalizationOption {
     pub name: String,
     pub value: String,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ParentalRatingScore {
+    #[serde(alias = "score")]
+    pub score: i32,
+    #[serde(alias = "subScore")]
+    pub sub_score: Option<i32>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ParentalRating {
+    pub name: String,
+    pub value: Option<i32>,
+    pub rating_score: Option<ParentalRatingScore>,
+}
+
+impl ParentalRating {
+    pub fn scored(name: &str, score: i32, sub_score: Option<i32>) -> Self {
+        let rating_score = ParentalRatingScore { score, sub_score };
+        Self {
+            name: name.to_string(),
+            value: Some(score),
+            rating_score: Some(rating_score),
+        }
+    }
+
+    pub fn unrated(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            value: None,
+            rating_score: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -910,7 +947,10 @@ impl DeviceProfile {
         })
     }
 
-    pub fn subtitle_delivery_method(&self, codec: &str) -> Option<SubtitleDeliveryMethod> {
+    pub fn subtitle_delivery_method(
+        &self,
+        codec: &str,
+    ) -> Option<SubtitleDeliveryMethod> {
         self.subtitle_profiles
             .iter()
             .find(|p| {
@@ -935,8 +975,12 @@ impl DeviceProfile {
         for profile in &self.direct_play_profiles {
             // Skip profiles whose type is explicitly incompatible with the source.
             if let Some(t) = &profile.type_ {
-                if t.eq_ignore_ascii_case("Video") && !source_has_video { continue; }
-                if t.eq_ignore_ascii_case("Audio") && source_has_video { continue; }
+                if t.eq_ignore_ascii_case("Video") && !source_has_video {
+                    continue;
+                }
+                if t.eq_ignore_ascii_case("Audio") && source_has_video {
+                    continue;
+                }
             }
             let reasons = profile.check_reasons(media_source);
             if reasons.is_empty() {
@@ -945,13 +989,19 @@ impl DeviceProfile {
             best = Some(match best {
                 None => reasons,
                 Some(prev) => {
-                    if reasons.0.len() < prev.0.len() { reasons } else { prev }
+                    if reasons.0.len() < prev.0.len() {
+                        reasons
+                    } else {
+                        prev
+                    }
                 }
             });
         }
         best.unwrap_or_else(|| {
             let mut r = TranscodeReasons::default();
-            r.insert(TranscodeReason::ContainerNotSupported("no matching profile".into()));
+            r.insert(TranscodeReason::ContainerNotSupported(
+                "no matching profile".into(),
+            ));
             r
         })
     }
@@ -978,15 +1028,15 @@ impl DirectPlayProfile {
         // Check container match
         match (&self.container, &media_source.container) {
             (Some(profile_container), None) => {
-                reasons.insert(TranscodeReason::ContainerNotSupported(
-                    format!("profile={profile_container} source=(none)"),
-                ));
+                reasons.insert(TranscodeReason::ContainerNotSupported(format!(
+                    "profile={profile_container} source=(none)"
+                )));
             }
             (Some(profile_container), Some(source_container)) => {
                 if !self.supports_container(source_container) {
-                    reasons.insert(TranscodeReason::ContainerNotSupported(
-                        format!("profile={profile_container} source={source_container}"),
-                    ));
+                    reasons.insert(TranscodeReason::ContainerNotSupported(format!(
+                        "profile={profile_container} source={source_container}"
+                    )));
                 }
             }
             _ => {}
@@ -998,9 +1048,9 @@ impl DirectPlayProfile {
         {
             if let Some(video_codec) = &video_stream.codec {
                 if !self.supports_video_codec(video_codec) {
-                    reasons.insert(TranscodeReason::VideoCodecNotSupported(
-                        format!("profile={profile_codec} source={video_codec}"),
-                    ));
+                    reasons.insert(TranscodeReason::VideoCodecNotSupported(format!(
+                        "profile={profile_codec} source={video_codec}"
+                    )));
                 }
             }
         }
@@ -1011,9 +1061,9 @@ impl DirectPlayProfile {
         {
             if let Some(audio_codec) = &audio_stream.codec {
                 if !self.supports_audio_codec(audio_codec) {
-                    reasons.insert(TranscodeReason::AudioCodecNotSupported(
-                        format!("profile={profile_codec} source={audio_codec}"),
-                    ));
+                    reasons.insert(TranscodeReason::AudioCodecNotSupported(format!(
+                        "profile={profile_codec} source={audio_codec}"
+                    )));
                 }
             }
         }
@@ -1170,8 +1220,12 @@ impl std::fmt::Debug for TranscodeReason {
             Self::ContainerNotSupported(d) => write!(f, "ContainerNotSupported({d})"),
             Self::VideoCodecNotSupported(d) => write!(f, "VideoCodecNotSupported({d})"),
             Self::AudioCodecNotSupported(d) => write!(f, "AudioCodecNotSupported({d})"),
-            Self::SubtitleCodecNotSupported(d) => write!(f, "SubtitleCodecNotSupported({d})"),
-            Self::ContainerBitrateExceedsLimit => write!(f, "ContainerBitrateExceedsLimit"),
+            Self::SubtitleCodecNotSupported(d) => {
+                write!(f, "SubtitleCodecNotSupported({d})")
+            }
+            Self::ContainerBitrateExceedsLimit => {
+                write!(f, "ContainerBitrateExceedsLimit")
+            }
         }
     }
 }
@@ -1223,18 +1277,34 @@ impl TranscodeReasons {
         if self.is_empty() {
             return None;
         }
-        Some(self.0.iter().map(|r| r.name()).collect::<Vec<_>>().join(","))
+        Some(
+            self.0
+                .iter()
+                .map(|r| r.name())
+                .collect::<Vec<_>>()
+                .join(","),
+        )
     }
 
     pub fn from_query_value(s: &str) -> Self {
         let mut out = Self::default();
         for part in s.split(',') {
             let reason = match part.trim() {
-                "ContainerNotSupported" => Some(TranscodeReason::ContainerNotSupported(String::new())),
-                "VideoCodecNotSupported" => Some(TranscodeReason::VideoCodecNotSupported(String::new())),
-                "AudioCodecNotSupported" => Some(TranscodeReason::AudioCodecNotSupported(String::new())),
-                "SubtitleCodecNotSupported" => Some(TranscodeReason::SubtitleCodecNotSupported(String::new())),
-                "ContainerBitrateExceedsLimit" => Some(TranscodeReason::ContainerBitrateExceedsLimit),
+                "ContainerNotSupported" => {
+                    Some(TranscodeReason::ContainerNotSupported(String::new()))
+                }
+                "VideoCodecNotSupported" => {
+                    Some(TranscodeReason::VideoCodecNotSupported(String::new()))
+                }
+                "AudioCodecNotSupported" => {
+                    Some(TranscodeReason::AudioCodecNotSupported(String::new()))
+                }
+                "SubtitleCodecNotSupported" => {
+                    Some(TranscodeReason::SubtitleCodecNotSupported(String::new()))
+                }
+                "ContainerBitrateExceedsLimit" => {
+                    Some(TranscodeReason::ContainerBitrateExceedsLimit)
+                }
                 _ => None,
             };
             if let Some(r) = reason {
@@ -1631,6 +1701,8 @@ pub struct UserPolicy {
     pub enable_lyric_management: bool,
     #[default(false)]
     pub is_disabled: bool,
+    pub max_parental_rating: Option<i32>,
+    pub max_parental_sub_rating: Option<i32>,
     pub blocked_tags: Option<Vec<String>>,
     pub allowed_tags: Option<Vec<String>>,
     /// Per-user filter rules applied on every item query (same engine as smart collections).
@@ -1942,17 +2014,18 @@ pub enum SetOp {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "field", rename_all = "snake_case")]
 pub enum FilterRule {
-    Genre          { op: SetOp,     values: Vec<String> },
-    Year           { op: NumericOp, value: i64 },
+    Genre { op: SetOp, values: Vec<String> },
+    Year { op: NumericOp, value: i64 },
     RatingAudience { op: NumericOp, value: f64 },
-    RatingCritic   { op: NumericOp, value: f64 },
-    Certification  { op: SetOp,     values: Vec<String> },
-    Tag            { op: SetOp,     values: Vec<String> },
-    Studio         { op: SetOp,     values: Vec<String> },
-    Catalog        { op: SetOp,     values: Vec<String> },
-    HasTrailer     { value: bool },
-    Country        { op: SetOp,     values: Vec<String> },
-    Person         { op: SetOp,     values: Vec<String> },
+    RatingCritic { op: NumericOp, value: f64 },
+    ParentalRating { op: NumericOp, value: i64 },
+    Certification { op: SetOp, values: Vec<String> },
+    Tag { op: SetOp, values: Vec<String> },
+    Studio { op: SetOp, values: Vec<String> },
+    Catalog { op: SetOp, values: Vec<String> },
+    HasTrailer { value: bool },
+    Country { op: SetOp, values: Vec<String> },
+    Person { op: SetOp, values: Vec<String> },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).
@@ -2963,7 +3036,6 @@ pub struct SearchHintsQuery {
     #[serde(deserialize_with = "deserialize_media_types", default)]
     pub include_item_types: Option<Vec<MediaType>>,
 }
-
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -18,6 +18,51 @@ fn tmdb_image(path: Option<&str>) -> Option<String> {
         .map(|p| format!("{}{}", TMDB_IMAGE_BASE, p))
 }
 
+fn select_rating<'a, T, FCountry, FRating>(
+    ratings: &'a [T],
+    metadata_country: &str,
+    country: FCountry,
+    rating: FRating,
+) -> Option<(String, String)>
+where
+    FCountry: Fn(&'a T) -> &'a str,
+    FRating: Fn(&'a T) -> Option<&'a str>,
+{
+    let valid = |item: &'a T| {
+        rating(item)
+            .map(str::trim)
+            .filter(|rating| !rating.is_empty())
+            .map(|rating| (country(item).to_string(), rating.to_string()))
+    };
+
+    ratings
+        .iter()
+        .find(|item| country(item).eq_ignore_ascii_case(metadata_country) && valid(item).is_some())
+        .and_then(valid)
+        .or_else(|| {
+            ratings
+                .iter()
+                .find(|item| country(item).eq_ignore_ascii_case("US") && valid(item).is_some())
+                .and_then(valid)
+        })
+        .or_else(|| ratings.iter().find_map(valid))
+}
+
+fn tmdb_rating_label(country: &str, rating: &str) -> String {
+    if country.eq_ignore_ascii_case("US") {
+        rating.to_string()
+    } else if country.eq_ignore_ascii_case("DE") && !rating.to_uppercase().starts_with("FSK") {
+        format!("FSK-{rating}")
+    } else {
+        format!("{}-{rating}", country.to_uppercase())
+    }
+}
+
+fn rating_age(label: &str, country: &str) -> Option<i32> {
+    crate::localization::ratings::resolve_rating_age(Some(label), Some(country))
+        .or_else(|| crate::localization::ratings::resolve_rating_age(Some(label), None))
+}
+
 fn build_person_relations_tmdb(
     left_media_id: uuid::Uuid,
     credits: &sdks::tmdb::Credits,
@@ -92,6 +137,11 @@ impl MetaProvider for TmdbMetaProvider {
     ) -> Result<Option<MetaResult>> {
         let config = crate::db::Settings::get_config(&ctx.db).await?;
         let api_key = config.get_tmdb_key().to_string();
+        let metadata_country = config
+            .metadata_country_code
+            .as_deref()
+            .map(db::normalize_country_alpha2)
+            .unwrap_or_else(|| "US".to_string());
 
         let ids = &media.external_ids;
         let lookup = if let Some(tmdb_id) = ids.tmdb {
@@ -149,6 +199,33 @@ impl MetaProvider for TmdbMetaProvider {
                     let logo = movie_details.images.as_ref()
                         .and_then(|i| i.best_logo())
                         .and_then(|p| tmdb_image(Some(p)));
+                    let rating = movie_details
+                        .release_dates
+                        .as_ref()
+                        .and_then(|release_dates| {
+                            let releases = release_dates
+                                .results
+                                .iter()
+                                .flat_map(|country| {
+                                    country.release_dates.iter().map(|release| {
+                                        (country.iso_3166_1.as_str(), release.certification.as_deref())
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            select_rating(
+                                &releases,
+                                &metadata_country,
+                                |(country, _)| country,
+                                |(_, certification)| *certification,
+                            )
+                        });
+                    let (certification, certification_age) = rating
+                        .map(|(country, rating)| {
+                            let label = tmdb_rating_label(&country, &rating);
+                            let age = rating_age(&label, &country);
+                            (Some(label), age)
+                        })
+                        .unwrap_or((None, None));
                     let mut result_media = db::Media {
                         title: movie_details.title,
                         description: movie_details.overview,
@@ -158,6 +235,8 @@ impl MetaProvider for TmdbMetaProvider {
                         poster: tmdb_image(movie_details.poster_path.as_deref()),
                         backdrop: tmdb_image(movie_details.backdrop_path.as_deref()),
                         logo,
+                        certification,
+                        certification_age,
                         external_ids: sqlx::types::Json(external_ids),
                         ..Default::default()
                     };
@@ -190,6 +269,21 @@ impl MetaProvider for TmdbMetaProvider {
                     let logo = tv_details.images.as_ref()
                         .and_then(|i| i.best_logo())
                         .and_then(|p| tmdb_image(Some(p)));
+                    let rating = tv_details.content_ratings.as_ref().and_then(|content_ratings| {
+                        select_rating(
+                            &content_ratings.results,
+                            &metadata_country,
+                            |rating| rating.iso_3166_1.as_str(),
+                            |rating| rating.rating.as_deref(),
+                        )
+                    });
+                    let (certification, certification_age) = rating
+                        .map(|(country, rating)| {
+                            let label = tmdb_rating_label(&country, &rating);
+                            let age = rating_age(&label, &country);
+                            (Some(label), age)
+                        })
+                        .unwrap_or((None, None));
                     let mut result_media = db::Media {
                         title: tv_details.name,
                         description: tv_details.overview,
@@ -198,6 +292,8 @@ impl MetaProvider for TmdbMetaProvider {
                         poster: tmdb_image(tv_details.poster_path.as_deref()),
                         backdrop: tmdb_image(tv_details.backdrop_path.as_deref()),
                         logo,
+                        certification,
+                        certification_age,
                         country,
                         external_ids: sqlx::types::Json(external_ids),
                         ..Default::default()

@@ -67,6 +67,8 @@ pub fn default_append_to_response() -> Vec<String> {
         "images".to_string(),
         "external_ids".to_string(),
         "credits".to_string(),
+        "release_dates".to_string(),
+        "content_ratings".to_string(),
     ]
 }
 

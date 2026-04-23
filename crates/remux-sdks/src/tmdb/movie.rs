@@ -28,6 +28,23 @@ pub struct Movie {
     pub external_ids: Option<super::ExternalIds>,
     pub credits: Option<super::Credits>,
     pub images: Option<super::Images>,
+    pub release_dates: Option<MovieReleaseDates>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MovieReleaseDates {
+    pub results: Vec<MovieReleaseCountry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MovieReleaseCountry {
+    pub iso_3166_1: String,
+    pub release_dates: Vec<MovieReleaseDate>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MovieReleaseDate {
+    pub certification: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

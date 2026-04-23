@@ -96,9 +96,14 @@ pub async fn get_cultures(State(_state): State<AppState>) -> Result<impl IntoRes
     Ok(Json(cultures))
 }
 
-#[get("/localization/parentalratings")]
+#[get("/localization/parentalratings", "/Localization/ParentalRatings")]
 pub async fn get_parental_ratings(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(Vec::<serde_json::Value>::new()))
+    let config = crate::db::Settings::get_config(&state.ctx.db).await?;
+    Ok(Json(
+        crate::localization::ratings::parental_ratings_for_country(
+            config.metadata_country_code.as_deref(),
+        ),
+    ))
 }

@@ -171,7 +171,6 @@ impl Endpoint for UpdateTaskTriggers {
     }
 }
 
-
 #[derive(Debug, Clone, Default)]
 pub struct GetAioCatalogs;
 
@@ -226,7 +225,6 @@ impl Endpoint for UpdateCatalogSettings {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
     }
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub struct GetItems {
@@ -334,6 +332,16 @@ impl Endpoint for GetCountries {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct GetParentalRatings;
+
+impl Endpoint for GetParentalRatings {
+    type Output = Vec<ParentalRating>;
+
+    fn path(&self) -> String {
+        "/localization/parentalratings".into()
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct GetVirtualFolders;
@@ -399,7 +407,6 @@ impl Endpoint for DeleteVirtualFolder {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct PatchItem {
     pub item_id: String,
@@ -418,7 +425,6 @@ impl Endpoint for PatchItem {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
     }
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub struct GetSystemConfiguration;
@@ -448,7 +454,6 @@ impl Endpoint for UpdateSystemConfiguration {
     }
 }
 
-
 #[derive(Debug, Clone, Default)]
 pub struct GetBrandingConfiguration;
 
@@ -476,7 +481,6 @@ impl Endpoint for UpdateBrandingConfiguration {
         Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
     }
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub struct GetStartupConfiguration;
@@ -549,7 +553,6 @@ impl Endpoint for PostStartupComplete {
         Method::POST
     }
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub struct GetCurrentUser;
@@ -700,7 +703,6 @@ impl Endpoint for AuthenticateUserByName {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct SetLogLevel {
     pub level: String,
@@ -718,7 +720,6 @@ impl Endpoint for SetLogLevel {
         Body::Json(serde_json::json!({ "level": self.level }))
     }
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub struct GetTunerHosts;
@@ -766,7 +767,6 @@ impl Endpoint for DeleteTunerHost {
     }
 }
 
-
 #[derive(Debug, Clone, Default)]
 pub struct GetEpgSources;
 
@@ -812,7 +812,6 @@ impl Endpoint for DeleteEpgSource {
         vec![("id".into(), self.id.clone())]
     }
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub struct GetIptvChannels {
@@ -895,7 +894,6 @@ impl Endpoint for AuthorizeQuickConnect {
         vec![("Code".into(), self.code.clone())]
     }
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub struct GetApiKeys;

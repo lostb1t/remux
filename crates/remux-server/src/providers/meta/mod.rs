@@ -118,7 +118,9 @@ impl MetaProviderService {
 
                     if matches!(
                         media.kind,
-                        db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
+                        db::MediaKind::Movie
+                            | db::MediaKind::Series
+                            | db::MediaKind::Episode
                     ) && !result.relations.is_empty()
                     {
                         let (rel_media, rels): (Vec<_>, Vec<_>) = result
@@ -203,24 +205,40 @@ impl MetaProviderService {
                 if let Ok(aio) = crate::aio::AioService::from_settings(&ctx.db).await {
                     let media_type = sdks::aio::MediaType::Series; // series.kind to aio
                     if let Some(media_id) = &series.media_id {
-                        if let Ok(series_meta) = aio.get_meta(media_type, media_id.clone()).await {
+                        if let Ok(series_meta) =
+                            aio.get_meta(media_type, media_id.clone()).await
+                        {
                             if let Some(ref episodes) = series_meta.videos {
                                 let mut all_relations = Vec::new();
                                 for media in &children {
                                     if media.kind == db::MediaKind::Episode {
                                         if let Some(ep_id) = &media.media_id {
-                                            if let Some(meta_ep) = episodes.iter().find(|e: &&sdks::aio::Episode| &e.id == ep_id) {
-                                                let rels = aio::build_episode_relations(media, meta_ep);
+                                            if let Some(meta_ep) = episodes.iter().find(
+                                                |e: &&sdks::aio::Episode| {
+                                                    &e.id == ep_id
+                                                },
+                                            ) {
+                                                let rels = aio::build_episode_relations(
+                                                    media, meta_ep,
+                                                );
                                                 all_relations.extend(rels);
                                             }
                                         }
                                     }
                                 }
                                 if !all_relations.is_empty() {
-                                    let persons: Vec<db::Media> = all_relations.iter().map(|r| r.media.clone()).collect();
+                                    let persons: Vec<db::Media> = all_relations
+                                        .iter()
+                                        .map(|r| r.media.clone())
+                                        .collect();
                                     db::Media::upsert(&ctx.db, &persons).await?;
-                                    let relations: Vec<db::MediaRelation> = all_relations.iter().map(|r| r.relation.clone()).collect();
-                                    db::MediaRelation::upsert(&ctx.db, &relations).await?;
+                                    let relations: Vec<db::MediaRelation> =
+                                        all_relations
+                                            .iter()
+                                            .map(|r| r.relation.clone())
+                                            .collect();
+                                    db::MediaRelation::upsert(&ctx.db, &relations)
+                                        .await?;
                                 }
                             }
                         }
@@ -325,6 +343,7 @@ fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     fill!(runtime);
     fill!(rating_audience);
     fill!(certification);
+    fill!(certification_age);
     fill!(country);
     fill!(logo);
     fill!(backdrop);
@@ -347,4 +366,3 @@ fn apply_title_format(media: &mut db::Media) {
         }
     }
 }
-

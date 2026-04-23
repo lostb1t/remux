@@ -5,23 +5,21 @@ use gloo_storage::{LocalStorage, SessionStorage, Storage};
 use remux_sdks::remux::{
     AddTunerHost, AdminSetPassword, AioCatalogInfo, AioUrl, AnfiteatroReleaseStatus,
     AuthenticateUserByName, AuthenticationInfo, BaseItemDto, BrandingOptions,
-    BulkChannelRequest, BulkChannels, ChannelEditorItem, CollectionFilter,
+    BulkChannelRequest, BulkChannels, ChannelEditorItem, CollectionFilter, CountryInfo,
     CreateApiKey, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteApiKey, DeleteEpgSource, DeleteTunerHost, DeleteUser,
-    DeleteVirtualFolder, EpgSourceInfo, FilterMatchMode, FilterRule,
-    GetAioCatalogs, GetAnfiteatroReleaseStatus, GetApiKeys,
-    GetBrandingConfiguration, GetEpgSources, GetIptvChannels, GetItems,
-    GetCertificationSuggestions, GetCountries, GetLocalSuggestions,
-    GetScheduledTasks, GetSessions, GetStartupConfiguration,
-    GetSystemConfiguration, GetTagSuggestions, GetTunerHosts, GetUsers, GetVirtualFolders,
-    InstallLatestAnfiteatroRelease, JellyfinAuth, NumericOp, PatchChannel,
-    PatchChannelRequest, PatchItem, PatchItemPayload, PostStartupComplete,
-    PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
-    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetLogLevel, SetOp,
-    SourceUrl, StartTask, StartupConfiguration, StartupUser, StopTask, TaskInfo,
-    TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo,
-    UpdateBrandingConfiguration, UpdateCatalogSettings,
-    UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
+    DeleteApiKey, DeleteEpgSource, DeleteTunerHost, DeleteUser, DeleteVirtualFolder,
+    EpgSourceInfo, FilterMatchMode, FilterRule, GetAioCatalogs,
+    GetAnfiteatroReleaseStatus, GetApiKeys, GetBrandingConfiguration,
+    GetCertificationSuggestions, GetCountries, GetEpgSources, GetIptvChannels,
+    GetItems, GetLocalSuggestions, GetParentalRatings, GetScheduledTasks, GetSessions,
+    GetStartupConfiguration, GetSystemConfiguration, GetTagSuggestions, GetTunerHosts,
+    GetUsers, GetVirtualFolders, InstallLatestAnfiteatroRelease, JellyfinAuth,
+    NumericOp, ParentalRating, PatchChannel, PatchChannelRequest, PatchItem,
+    PatchItemPayload, PostStartupComplete, PostStartupConfiguration, PostStartupUser,
+    PublicSystemInfo, SaveEpgSource, ServerConfiguration, SessionInfoDto, SetLogLevel,
+    SetOp, SourceUrl, StartTask, StartupConfiguration, StartupUser, StopTask, TaskInfo,
+    TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo, UpdateBrandingConfiguration,
+    UpdateCatalogSettings, UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
     UpdateTaskTriggers, UpdateUser, UpdateUserPolicy, UserDto, Username,
 };
 use remux_sdks::{ClientError, RestClient};
@@ -190,7 +188,6 @@ fn App() -> Element {
     }
 }
 
-
 #[component]
 fn Login(on_login: EventHandler) -> Element {
     // None = probing, Some(url) = found, Some("") = not found / show field
@@ -351,7 +348,6 @@ fn Login(on_login: EventHandler) -> Element {
         }
     }
 }
-
 
 #[component]
 fn ServerInfoCard(app_state: AppState) -> Element {
@@ -1028,10 +1024,8 @@ fn DashboardLayout() -> Element {
     let mut anfiteatro_release: Signal<Option<AnfiteatroReleaseStatus>> =
         use_signal(|| None);
     let mut anfiteatro_installing = use_signal(|| false);
-    let mut anfiteatro_install_error: Signal<Option<String>> =
-        use_signal(|| None);
-    let mut anfiteatro_install_success: Signal<Option<String>> =
-        use_signal(|| None);
+    let mut anfiteatro_install_error: Signal<Option<String>> = use_signal(|| None);
+    let mut anfiteatro_install_success: Signal<Option<String>> = use_signal(|| None);
     let route = use_route::<Route>();
     let release_check_client = app_state.client.clone();
     let install_client = app_state.client.clone();
@@ -1205,8 +1199,8 @@ fn DashboardLayout() -> Element {
                             div { class: "update-banner-copy",
                                 div { class: "update-banner-title", "Anfiteatro update available" }
                                 div { class: "update-banner-meta",
-                                    "Installed: {status.local_version_display.as_deref().unwrap_or(\"unknown\")}" 
-                                    " | Latest commit: {status.latest_commit.as_deref().map(fmt_commit_short).or_else(|| status.latest_version_tag.clone()).unwrap_or_else(|| \"unknown\".to_string())}" 
+                                    "Installed: {status.local_version_display.as_deref().unwrap_or(\"unknown\")}"
+                                    " | Latest commit: {status.latest_commit.as_deref().map(fmt_commit_short).or_else(|| status.latest_version_tag.clone()).unwrap_or_else(|| \"unknown\".to_string())}"
                                 }
                             }
                             button {
@@ -1329,7 +1323,6 @@ fn NotFound(segments: Vec<String>) -> Element {
     navigator().replace(Route::OverviewRoute);
     rsx! {}
 }
-
 
 /// Which collection is currently being edited (None = creating new).
 #[derive(Clone, Debug)]
@@ -1708,7 +1701,6 @@ fn CollectionForm(
     }
 }
 
-
 /// Simple chip input for editing a list of tags with autocomplete.
 #[component]
 fn TagChipInput(tags: Signal<Vec<String>>) -> Element {
@@ -1798,64 +1790,90 @@ fn TagChipInput(tags: Signal<Vec<String>>) -> Element {
     }
 }
 
-
 /// Extract the values vec from a set-type FilterRule without going through the string repr.
 fn rule_values(rule: &FilterRule) -> Vec<String> {
     match rule {
-        FilterRule::Genre         { values, .. }
+        FilterRule::Genre { values, .. }
         | FilterRule::Certification { values, .. }
-        | FilterRule::Tag           { values, .. }
-        | FilterRule::Studio        { values, .. }
-        | FilterRule::Catalog       { values, .. }
-        | FilterRule::Country       { values, .. }
-        | FilterRule::Person        { values, .. } => values.clone(),
+        | FilterRule::Tag { values, .. }
+        | FilterRule::Studio { values, .. }
+        | FilterRule::Catalog { values, .. }
+        | FilterRule::Country { values, .. }
+        | FilterRule::Person { values, .. } => values.clone(),
         _ => vec![],
     }
 }
 
 /// Returns true for fields whose values are a set of strings (use ChipInput).
 fn is_set_field(key: &str) -> bool {
-    matches!(key, "genre" | "certification" | "tag" | "studio" | "catalog" | "country" | "person")
+    matches!(
+        key,
+        "genre" | "certification" | "tag" | "studio" | "catalog" | "country" | "person"
+    )
 }
 
 /// Fetch autocomplete suggestions for a field. Returns `(label, value)` pairs —
 /// label is shown in the dropdown, value is what gets stored in the filter rule.
 /// For most fields label == value; country is the exception (label = "United States", value = "US").
-async fn fetch_suggestions(client: &RestClient<JellyfinAuth>, field: &str, query: &str) -> Vec<(String, String)> {
+async fn fetch_suggestions(
+    client: &RestClient<JellyfinAuth>,
+    field: &str,
+    query: &str,
+) -> Vec<(String, String)> {
     match field {
         "genre" | "studio" | "person" => {
             let kind = match field {
-                "genre"  => "Genre",
+                "genre" => "Genre",
                 "studio" => "Studio",
-                _        => "Person",
+                _ => "Person",
             };
-            match client.execute(GetLocalSuggestions { kind: kind.into(), search_term: query.into() }).await {
-                Ok(r) => r.items.into_iter().filter_map(|i| i.name).map(|n| (n.clone(), n)).collect(),
+            match client
+                .execute(GetLocalSuggestions {
+                    kind: kind.into(),
+                    search_term: query.into(),
+                })
+                .await
+            {
+                Ok(r) => r
+                    .items
+                    .into_iter()
+                    .filter_map(|i| i.name)
+                    .map(|n| (n.clone(), n))
+                    .collect(),
                 Err(_) => vec![],
             }
         }
         "tag" => {
-            match client.execute(GetTagSuggestions { search_term: query.into() }).await {
+            match client
+                .execute(GetTagSuggestions {
+                    search_term: query.into(),
+                })
+                .await
+            {
                 Ok(tags) => tags.into_iter().map(|t| (t.clone(), t)).collect(),
                 Err(_) => vec![],
             }
         }
-        "catalog" => {
-            match client.execute(GetVirtualFolders).await {
-                Ok(folders) => {
-                    let q = query.to_lowercase();
-                    folders.into_iter()
-                        .filter_map(|f| f.name)
-                        .filter(|n| n.to_lowercase().contains(&q))
-                        .take(25)
-                        .map(|n| (n.clone(), n))
-                        .collect()
-                }
-                Err(_) => vec![],
+        "catalog" => match client.execute(GetVirtualFolders).await {
+            Ok(folders) => {
+                let q = query.to_lowercase();
+                folders
+                    .into_iter()
+                    .filter_map(|f| f.name)
+                    .filter(|n| n.to_lowercase().contains(&q))
+                    .take(25)
+                    .map(|n| (n.clone(), n))
+                    .collect()
             }
-        }
+            Err(_) => vec![],
+        },
         "certification" => {
-            match client.execute(GetCertificationSuggestions { search_term: query.into() }).await {
+            match client
+                .execute(GetCertificationSuggestions {
+                    search_term: query.into(),
+                })
+                .await
+            {
                 Ok(v) => v.into_iter().map(|s| (s.clone(), s)).collect(),
                 Err(_) => vec![],
             }
@@ -1864,13 +1882,24 @@ async fn fetch_suggestions(client: &RestClient<JellyfinAuth>, field: &str, query
             match client.execute(GetCountries).await {
                 Ok(countries) => {
                     let q = query.to_lowercase();
-                    countries.into_iter()
+                    countries
+                        .into_iter()
                         .filter(|c| {
                             c.name.to_lowercase().contains(&q)
-                                || c.two_letter_iso_region_name.to_lowercase().contains(&q)
+                                || c.two_letter_iso_region_name
+                                    .to_lowercase()
+                                    .contains(&q)
                         })
                         // label shows full name, value is the alpha-2 code stored in the DB
-                        .map(|c| (format!("{} ({})", c.name, c.two_letter_iso_region_name), c.two_letter_iso_region_name))
+                        .map(|c| {
+                            (
+                                format!(
+                                    "{} ({})",
+                                    c.name, c.two_letter_iso_region_name
+                                ),
+                                c.two_letter_iso_region_name,
+                            )
+                        })
                         .take(25)
                         .collect()
                 }
@@ -1883,45 +1912,41 @@ async fn fetch_suggestions(client: &RestClient<JellyfinAuth>, field: &str, query
 
 fn field_label(key: &str) -> &'static str {
     match key {
-        "genre"          => "Genre",
-        "year"           => "Year",
+        "genre" => "Genre",
+        "year" => "Year",
         "rating_audience" => "Audience Rating",
-        "rating_critic"  => "Critic Rating",
-        "certification"  => "Certification",
-        "tag"            => "Tag",
-        "studio"         => "Studio",
-        "catalog"        => "Catalog",
-        "has_trailer"    => "Has Trailer",
-        "country"        => "Country",
-        "person"         => "Person",
-        _                => "",
+        "rating_critic" => "Critic Rating",
+        "parental_rating" => "Parental Rating",
+        "certification" => "Certification",
+        "tag" => "Tag",
+        "studio" => "Studio",
+        "catalog" => "Catalog",
+        "has_trailer" => "Has Trailer",
+        "country" => "Country",
+        "person" => "Person",
+        _ => "",
     }
 }
 
 /// Returns valid operators for a field key as (value, label) pairs.
 fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
     match field_key {
-        "year" | "rating_audience" | "rating_critic" => vec![
-            ("eq",     "is"),
-            ("not_eq", "is not"),
-            ("gt",     ">"),
-            ("lt",     "<"),
-        ],
+        "year" | "rating_audience" | "rating_critic" | "parental_rating" => {
+            vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
+        }
         "has_trailer" => vec![],
-        _ => vec![
-            ("is",     "is"),
-            ("is_not", "is not"),
-        ],
+        _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
 
 fn value_placeholder(field_key: &str) -> &'static str {
     match field_key {
-        "year"                          => "2020",
+        "year" => "2020",
         "rating_audience" | "rating_critic" => "7.5",
-        "certification"                 => "PG-13",
-        "country"                       => "US",
-        _                               => "Action, Horror",
+        "parental_rating" => "13",
+        "certification" => "PG-13",
+        "country" => "US",
+        _ => "Action, Horror",
     }
 }
 
@@ -1930,47 +1955,73 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
     match rule {
         FilterRule::Year { op, value } => {
             let op_str = match op {
-                NumericOp::Eq    => "eq",
+                NumericOp::Eq => "eq",
                 NumericOp::NotEq => "not_eq",
-                NumericOp::Gt    => "gt",
-                NumericOp::Lt    => "lt",
+                NumericOp::Gt => "gt",
+                NumericOp::Lt => "lt",
             };
             ("year".into(), op_str.into(), value.to_string())
         }
         FilterRule::RatingAudience { op, value } => {
             let op_str = match op {
-                NumericOp::Eq    => "eq",
+                NumericOp::Eq => "eq",
                 NumericOp::NotEq => "not_eq",
-                NumericOp::Gt    => "gt",
-                NumericOp::Lt    => "lt",
+                NumericOp::Gt => "gt",
+                NumericOp::Lt => "lt",
             };
             ("rating_audience".into(), op_str.into(), value.to_string())
         }
         FilterRule::RatingCritic { op, value } => {
             let op_str = match op {
-                NumericOp::Eq    => "eq",
+                NumericOp::Eq => "eq",
                 NumericOp::NotEq => "not_eq",
-                NumericOp::Gt    => "gt",
-                NumericOp::Lt    => "lt",
+                NumericOp::Gt => "gt",
+                NumericOp::Lt => "lt",
             };
             ("rating_critic".into(), op_str.into(), value.to_string())
         }
-        FilterRule::Genre          { op, values } => ("genre".into(),         set_op_str(op), values.join(", ")),
-        FilterRule::Certification  { op, values } => ("certification".into(), set_op_str(op), values.join(", ")),
-        FilterRule::Tag            { op, values } => ("tag".into(),           set_op_str(op), values.join(", ")),
-        FilterRule::Studio         { op, values } => ("studio".into(),        set_op_str(op), values.join(", ")),
-        FilterRule::Catalog        { op, values } => ("catalog".into(),       set_op_str(op), values.join(", ")),
-        FilterRule::Country        { op, values } => ("country".into(),       set_op_str(op), values.join(", ")),
-        FilterRule::Person         { op, values } => ("person".into(),        set_op_str(op), values.join(", ")),
-        FilterRule::HasTrailer     { value }       => ("has_trailer".into(),   String::new(),  value.to_string()),
+        FilterRule::ParentalRating { op, value } => {
+            let op_str = match op {
+                NumericOp::Eq => "eq",
+                NumericOp::NotEq => "not_eq",
+                NumericOp::Gt => "gt",
+                NumericOp::Lt => "lt",
+            };
+            ("parental_rating".into(), op_str.into(), value.to_string())
+        }
+        FilterRule::Genre { op, values } => {
+            ("genre".into(), set_op_str(op), values.join(", "))
+        }
+        FilterRule::Certification { op, values } => {
+            ("certification".into(), set_op_str(op), values.join(", "))
+        }
+        FilterRule::Tag { op, values } => {
+            ("tag".into(), set_op_str(op), values.join(", "))
+        }
+        FilterRule::Studio { op, values } => {
+            ("studio".into(), set_op_str(op), values.join(", "))
+        }
+        FilterRule::Catalog { op, values } => {
+            ("catalog".into(), set_op_str(op), values.join(", "))
+        }
+        FilterRule::Country { op, values } => {
+            ("country".into(), set_op_str(op), values.join(", "))
+        }
+        FilterRule::Person { op, values } => {
+            ("person".into(), set_op_str(op), values.join(", "))
+        }
+        FilterRule::HasTrailer { value } => {
+            ("has_trailer".into(), String::new(), value.to_string())
+        }
     }
 }
 
 fn set_op_str(op: &SetOp) -> String {
     match op {
-        SetOp::Is | SetOp::In       => "is",
+        SetOp::Is | SetOp::In => "is",
         SetOp::IsNot | SetOp::NotIn => "is_not",
-    }.into()
+    }
+    .into()
 }
 
 /// Build a typed `FilterRule` from raw UI strings.
@@ -1978,30 +2029,70 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
     // Set fields always use In/NotIn — single values are just a one-element vec.
     let set_op = match op {
         "is_not" => SetOp::NotIn,
-        _        => SetOp::In,
+        _ => SetOp::In,
     };
     let num_op = match op {
         "not_eq" => NumericOp::NotEq,
-        "gt"     => NumericOp::Gt,
-        "lt"     => NumericOp::Lt,
-        _        => NumericOp::Eq,
+        "gt" => NumericOp::Gt,
+        "lt" => NumericOp::Lt,
+        _ => NumericOp::Eq,
     };
     let set_values = || -> Vec<String> {
-        value_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        value_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     };
 
     match field {
-        "year"            => FilterRule::Year           { op: num_op, value: value_str.parse().unwrap_or(0) },
-        "rating_audience" => FilterRule::RatingAudience { op: num_op, value: value_str.parse().unwrap_or(0.0) },
-        "rating_critic"   => FilterRule::RatingCritic   { op: num_op, value: value_str.parse().unwrap_or(0.0) },
-        "certification"   => FilterRule::Certification  { op: set_op, values: set_values() },
-        "tag"             => FilterRule::Tag             { op: set_op, values: set_values() },
-        "studio"          => FilterRule::Studio          { op: set_op, values: set_values() },
-        "catalog"         => FilterRule::Catalog         { op: set_op, values: set_values() },
-        "country"         => FilterRule::Country         { op: set_op, values: set_values() },
-        "person"          => FilterRule::Person          { op: set_op, values: set_values() },
-        "has_trailer"     => FilterRule::HasTrailer      { value: value_str == "true" },
-        _                 => FilterRule::Genre           { op: set_op, values: set_values() },
+        "year" => FilterRule::Year {
+            op: num_op,
+            value: value_str.parse().unwrap_or(0),
+        },
+        "rating_audience" => FilterRule::RatingAudience {
+            op: num_op,
+            value: value_str.parse().unwrap_or(0.0),
+        },
+        "rating_critic" => FilterRule::RatingCritic {
+            op: num_op,
+            value: value_str.parse().unwrap_or(0.0),
+        },
+        "parental_rating" => FilterRule::ParentalRating {
+            op: num_op,
+            value: value_str.parse().unwrap_or(0),
+        },
+        "certification" => FilterRule::Certification {
+            op: set_op,
+            values: set_values(),
+        },
+        "tag" => FilterRule::Tag {
+            op: set_op,
+            values: set_values(),
+        },
+        "studio" => FilterRule::Studio {
+            op: set_op,
+            values: set_values(),
+        },
+        "catalog" => FilterRule::Catalog {
+            op: set_op,
+            values: set_values(),
+        },
+        "country" => FilterRule::Country {
+            op: set_op,
+            values: set_values(),
+        },
+        "person" => FilterRule::Person {
+            op: set_op,
+            values: set_values(),
+        },
+        "has_trailer" => FilterRule::HasTrailer {
+            value: value_str == "true",
+        },
+        _ => FilterRule::Genre {
+            op: set_op,
+            values: set_values(),
+        },
     }
 }
 
@@ -2014,9 +2105,15 @@ fn FilterRuleEditor(
     collection_mode: bool,
 ) -> Element {
     let default_new_rule = if collection_mode {
-        FilterRule::Genre { op: SetOp::In, values: vec![] }
+        FilterRule::Genre {
+            op: SetOp::In,
+            values: vec![],
+        }
     } else {
-        FilterRule::Tag { op: SetOp::In, values: vec![] }
+        FilterRule::Tag {
+            op: SetOp::In,
+            values: vec![],
+        }
     };
     rsx! {
         div { class: "field",
@@ -2210,8 +2307,7 @@ fn FilterRuleRow(
     idx: usize,
     rule: FilterRule,
     rules: Signal<Vec<FilterRule>>,
-    #[props(default = true)]
-    collection_mode: bool,
+    #[props(default = true)] collection_mode: bool,
 ) -> Element {
     let (field_val, op_val, value_val) = rule_to_raw(&rule);
     let ops = ops_for_field(&field_val);
@@ -2250,6 +2346,7 @@ fn FilterRuleRow(
                 if collection_mode {
                     option { value: "rating_critic",   selected: field_val == "rating_critic",   { field_label("rating_critic") } }
                 }
+                option { value: "parental_rating", selected: field_val == "parental_rating", { field_label("parental_rating") } }
                 option { value: "certification",   selected: field_val == "certification",   { field_label("certification") } }
                 option { value: "tag",             selected: field_val == "tag",             { field_label("tag") } }
                 if collection_mode {
@@ -2337,7 +2434,6 @@ fn FilterRuleRow(
     }
 }
 
-
 #[derive(Clone)]
 enum UserFormMode {
     Create,
@@ -2353,7 +2449,6 @@ impl PartialEq for UserFormMode {
         }
     }
 }
-
 
 #[component]
 fn IptvPage(app_state: AppState) -> Element {
@@ -2383,7 +2478,6 @@ fn IptvPage(app_state: AppState) -> Element {
         }
     }
 }
-
 
 #[component]
 fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
@@ -2852,7 +2946,6 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
     }
 }
 
-
 const PAGE_SIZE: u32 = 50;
 
 #[component]
@@ -3142,7 +3235,6 @@ fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
         }
     }
 }
-
 
 #[component]
 fn ImportsPage(app_state: AppState) -> Element {
@@ -3507,6 +3599,24 @@ fn UserForm(
     let mut password2 = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
+    let mut parental_ratings: Signal<Vec<ParentalRating>> = use_signal(Vec::new);
+    let mut max_parental_rating = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|u| u.policy.max_parental_rating)
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+    });
+
+    let app_state_ratings = app_state.clone();
+    use_effect(move || {
+        let client = app_state_ratings.client.clone();
+        spawn(async move {
+            if let Ok(ratings) = client.execute(GetParentalRatings).await {
+                parental_ratings.set(ratings);
+            }
+        });
+    });
 
     let fr_match: Signal<FilterMatchMode> = use_signal(|| {
         existing
@@ -3542,6 +3652,7 @@ fn UserForm(
         let user_dto = existing.clone();
         let rules_snapshot = fr_rules.peek().clone();
         let match_snapshot = fr_match.peek().clone();
+        let max_parental_snapshot = max_parental_rating.peek().parse::<i32>().ok();
 
         saving.set(true);
         err.set(None);
@@ -3569,7 +3680,9 @@ fn UserForm(
                     // Update admin flag and filter rules
                     let mut policy = user.policy.clone();
                     policy.is_administrator = admin;
-                    policy.filter_rules = filter_rules;
+                    policy.filter_rules = filter_rules.clone();
+                    policy.max_parental_rating = max_parental_snapshot;
+                    policy.max_parental_sub_rating = None;
                     client
                         .execute(UpdateUserPolicy {
                             user_id: user.id,
@@ -3589,10 +3702,15 @@ fn UserForm(
                     // Create user
                     let new_user =
                         client.execute(CreateUser { name, password: pw }).await?;
-                    // Set admin flag if needed
-                    if admin {
+                    if admin
+                        || max_parental_snapshot.is_some()
+                        || filter_rules.is_some()
+                    {
                         let mut policy = new_user.policy.clone();
-                        policy.is_administrator = true;
+                        policy.is_administrator = admin;
+                        policy.filter_rules = filter_rules.clone();
+                        policy.max_parental_rating = max_parental_snapshot;
+                        policy.max_parental_sub_rating = None;
                         client
                             .execute(UpdateUserPolicy {
                                 user_id: new_user.id,
@@ -3677,6 +3795,24 @@ fn UserForm(
                 }
             }
 
+            div { class: "field",
+                label { class: "field-label", r#for: "u-parental", "Maximum Parental Rating" }
+                select {
+                    id: "u-parental",
+                    class: "select-input",
+                    value: "{max_parental_rating}",
+                    onchange: move |e| max_parental_rating.set(e.value()),
+                    option { value: "", selected: max_parental_rating.read().is_empty(), "No limit" }
+                    for rating in parental_ratings.read().iter().filter(|r| r.value.is_some()) {
+                        option {
+                            value: "{rating.value.unwrap_or_default()}",
+                            selected: max_parental_rating.read().as_str() == rating.value.unwrap_or_default().to_string(),
+                            "{rating.name}"
+                        }
+                    }
+                }
+            }
+
             FilterRuleEditor {
                 match_mode: fr_match,
                 rules: fr_rules,
@@ -3704,7 +3840,6 @@ fn UserForm(
         }
     }
 }
-
 
 #[component]
 fn ApiKeysPage(app_state: AppState) -> Element {
@@ -3969,7 +4104,6 @@ fn ApiKeysPage(app_state: AppState) -> Element {
     }
 }
 
-
 #[component]
 fn SettingsPage(app_state: AppState) -> Element {
     rsx! {
@@ -3983,6 +4117,8 @@ fn SettingsPage(app_state: AppState) -> Element {
 fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
     let mut server_name = use_signal(String::new);
+    let mut metadata_country = use_signal(|| "US".to_string());
+    let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
     let mut aio_url = use_signal(String::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
     let mut p2p_enabled = use_signal(|| true);
@@ -4005,7 +4141,17 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
             match client.execute(GetSystemConfiguration).await {
                 Ok(cfg) => {
                     server_name.set(cfg.server_name.clone().unwrap_or_default());
-                    aio_url.set(cfg.aio_url.as_ref().map(|u| u.as_ref().to_string()).unwrap_or_default());
+                    metadata_country.set(
+                        cfg.metadata_country_code
+                            .clone()
+                            .unwrap_or_else(|| "US".to_string()),
+                    );
+                    aio_url.set(
+                        cfg.aio_url
+                            .as_ref()
+                            .map(|u| u.as_ref().to_string())
+                            .unwrap_or_default(),
+                    );
                     catalog_max_items.set(cfg.catalog_max_items.unwrap_or(100));
                     p2p_enabled.set(cfg.p2p_enabled.unwrap_or(true));
                     p2p_upload_speed.set(cfg.p2p_upload_speed_kbps.unwrap_or(0));
@@ -4025,6 +4171,9 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
             }
+            if let Ok(list) = client.execute(GetCountries).await {
+                countries.set(list);
+            }
             loading.set(false);
         });
     });
@@ -4033,6 +4182,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         e.prevent_default();
         let client = app_state.client.clone();
         let name = server_name.peek().clone();
+        let country = metadata_country.peek().clone();
         let url = aio_url.peek().clone();
         let max = *catalog_max_items.peek();
         let p2p_on = *p2p_enabled.peek();
@@ -4046,6 +4196,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
 
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
         cfg.server_name = Some(name);
+        cfg.metadata_country_code = Some(country);
         cfg.quick_connect_available = Some(qc_enabled);
         cfg.music_enabled = Some(music_on);
         cfg.aio_url = AioUrl::try_new(url).ok();
@@ -4099,6 +4250,23 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                                 class: "field-input",
                                 value: "{server_name}",
                                 oninput: move |e| server_name.set(e.value()),
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-country", "Metadata Country" }
+                            select {
+                                id: "s-country",
+                                class: "select-input",
+                                value: "{metadata_country}",
+                                onchange: move |e| metadata_country.set(e.value()),
+                                for country in countries.read().iter() {
+                                    option {
+                                        value: "{country.two_letter_iso_region_name}",
+                                        selected: metadata_country.read().as_str() == country.two_letter_iso_region_name,
+                                        "{country.name} ({country.two_letter_iso_region_name})"
+                                    }
+                                }
                             }
                         }
 
@@ -4293,7 +4461,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     }
 }
 
-
 #[component]
 fn SearchSettingsCard(app_state: AppState) -> Element {
     let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
@@ -4339,7 +4506,10 @@ fn SearchSettingsCard(app_state: AppState) -> Element {
         error.set(None);
         saved.set(false);
         spawn(async move {
-            match client.execute(UpdateSystemConfiguration { config: cfg }).await {
+            match client
+                .execute(UpdateSystemConfiguration { config: cfg })
+                .await
+            {
                 Ok(_) => saved.set(true),
                 Err(e) => error.set(Some(e.user_message())),
             }
@@ -4465,7 +4635,8 @@ fn JellyfinImportCard(app_state: AppState) -> Element {
             match client.execute(GetSystemConfiguration).await {
                 Ok(cfg) => {
                     jellyfin_url.set(cfg.jellyfin_url.clone().unwrap_or_default());
-                    jellyfin_api_key.set(cfg.jellyfin_api_key.clone().unwrap_or_default());
+                    jellyfin_api_key
+                        .set(cfg.jellyfin_api_key.clone().unwrap_or_default());
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => save_error.set(Some(format!("Failed to load settings: {e}"))),
@@ -4489,7 +4660,10 @@ fn JellyfinImportCard(app_state: AppState) -> Element {
         save_error.set(None);
         saved.set(false);
         spawn(async move {
-            match client.execute(UpdateSystemConfiguration { config: cfg }).await {
+            match client
+                .execute(UpdateSystemConfiguration { config: cfg })
+                .await
+            {
                 Ok(_) => saved.set(true),
                 Err(e) => save_error.set(Some(e.user_message())),
             }
@@ -4504,7 +4678,9 @@ fn JellyfinImportCard(app_state: AppState) -> Element {
         import_done.set(false);
         spawn(async move {
             match client
-                .execute(StartTask { task_id: "JellyfinImport".into() })
+                .execute(StartTask {
+                    task_id: "JellyfinImport".into(),
+                })
                 .await
             {
                 Ok(_) => import_done.set(true),
@@ -4707,7 +4883,6 @@ fn BrandingPage(app_state: AppState) -> Element {
         }
     }
 }
-
 
 #[component]
 fn WizardStep(n: u8, label: &'static str, active: bool, done: bool) -> Element {
@@ -4988,7 +5163,6 @@ fn Wizard(on_complete: EventHandler) -> Element {
         }
     }
 }
-
 
 #[derive(Debug, Clone, Deserialize)]
 struct LogLine {

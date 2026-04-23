@@ -68,11 +68,12 @@ pub mod sdks {
     pub use remux_sdks::*;
 }
 mod aio;
+pub mod api;
 pub mod db;
 #[cfg(feature = "desktop")]
 pub mod embedded_static;
 mod iptv;
-pub mod api;
+pub mod localization;
 mod log_capture;
 pub mod playback_session;
 mod providers;
@@ -139,7 +140,8 @@ pub fn collect_routes() -> axum::Router<AppState> {
 pub async fn init_app_with_config(config: Config) -> Result<Router> {
     let paths = FilesystemPaths::default();
     let admin = admin_from_filesystem(&paths.dashboard_path.clone());
-    let web_client = WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
+    let web_client =
+        WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
     let (router, _ctx) = init_app(config, Some(paths), admin, web_client).await?;
     Ok(router)
 }
@@ -147,7 +149,8 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
 pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
     let paths = FilesystemPaths::default();
     let admin = admin_from_filesystem(&paths.dashboard_path.clone());
-    let web_client = WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
+    let web_client =
+        WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
     init_app(config, Some(paths), admin, web_client).await
 }
 
@@ -155,7 +158,8 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
 /// Binds to `0.0.0.0:{port}` (default 3000, or `PORT` env var).
 pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
     let admin = admin_from_filesystem(&paths.dashboard_path.clone());
-    let web_client = WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
+    let web_client =
+        WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
     let port = config.port;
     let (router, _) = init_app(config, Some(paths), admin, web_client).await?;
     bind_and_serve(router, port).await
@@ -418,7 +422,6 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     *req.uri_mut() = new_uri;
     req
 }
-
 
 pub fn setup_logging() {
     let (reload_layer, log_capture, _tx) = log_capture::init();

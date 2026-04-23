@@ -31,6 +31,31 @@ pub async fn connect(url: &str) -> Result<SqlitePool> {
 
 pub async fn migrate(pool: &SqlitePool) -> Result<()> {
     sqlx::migrate!("./migrations").run(pool).await?;
+    backfill_certification_age(pool).await?;
+    Ok(())
+}
+
+async fn backfill_certification_age(pool: &SqlitePool) -> Result<()> {
+    let config = Settings::get_config(pool).await.unwrap_or_default();
+    let rows = sqlx::query_as::<_, (uuid::Uuid, String)>(
+        "SELECT id, certification FROM media WHERE certification IS NOT NULL AND certification_age IS NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for (id, certification) in rows {
+        if let Some(age) = crate::localization::ratings::resolve_rating_age(
+            Some(&certification),
+            config.metadata_country_code.as_deref(),
+        ) {
+            sqlx::query("UPDATE media SET certification_age = ?1 WHERE id = ?2")
+                .bind(age)
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+    }
+
     Ok(())
 }
 

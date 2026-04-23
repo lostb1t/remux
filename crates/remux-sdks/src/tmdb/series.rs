@@ -45,6 +45,18 @@ pub struct Series {
     pub external_ids: Option<super::ExternalIds>,
     pub credits: Option<super::Credits>,
     pub images: Option<super::Images>,
+    pub content_ratings: Option<SeriesContentRatings>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SeriesContentRatings {
+    pub results: Vec<SeriesContentRating>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SeriesContentRating {
+    pub iso_3166_1: String,
+    pub rating: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

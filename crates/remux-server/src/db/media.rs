@@ -175,9 +175,7 @@ impl TryFrom<api::MediaType> for MediaKind {
             | api::MediaType::CollectionFolder
             | api::MediaType::UserView
             | api::MediaType::UserRootFolder => Ok(MediaKind::Folder),
-            api::MediaType::Genre | api::MediaType::MusicGenre => {
-                Ok(MediaKind::Genre)
-            }
+            api::MediaType::Genre | api::MediaType::MusicGenre => Ok(MediaKind::Genre),
             api::MediaType::Person => Ok(MediaKind::Person),
             api::MediaType::Studio => Ok(MediaKind::Studio),
             api::MediaType::Audio => Ok(MediaKind::Track),
@@ -403,6 +401,7 @@ pub struct MediaFilter {
     pub person_ids: Option<Vec<Uuid>>,
     pub years: Option<Vec<i64>>,
     pub official_ratings: Option<Vec<String>>,
+    pub max_parental_rating: Option<i32>,
     pub name_starts_with: Option<String>,
     pub name_starts_with_or_greater: Option<String>,
     pub name_less_than: Option<String>,
@@ -473,6 +472,8 @@ pub struct Media {
     pub rating_critic: Option<f64>,
     pub rating_audience: Option<f64>,
     pub certification: Option<String>,
+    #[sqlx(default)]
+    pub certification_age: Option<i32>,
     /// ISO 3166-1 alpha-2 country code (e.g. "US", "GB").
     pub country: Option<String>,
     pub poster: Option<String>,
@@ -535,7 +536,8 @@ pub struct Media {
     // CollectionMediaKind
     pub collection_media_kind: Option<CollectionMediaKind>,
     pub collection_max_items: Option<i64>,
-    pub collection_smart_filter: Option<sqlx::types::Json<remux_sdks::remux::models::CollectionFilter>>,
+    pub collection_smart_filter:
+        Option<sqlx::types::Json<remux_sdks::remux::models::CollectionFilter>>,
 
     // IPTV / Live TV
     pub live_start: Option<NaiveDateTime>,
@@ -565,7 +567,10 @@ impl Media {
             .filter(|m| {
                 matches!(
                     m.kind,
-                    MediaKind::Track | MediaKind::Album | MediaKind::Episode | MediaKind::Season
+                    MediaKind::Track
+                        | MediaKind::Album
+                        | MediaKind::Episode
+                        | MediaKind::Season
                 )
             })
             .flat_map(|m| [m.parent_id, m.series_id].into_iter().flatten())
@@ -593,8 +598,16 @@ impl Media {
                     let title: Option<String> = r.get(1);
                     let poster: Option<String> = r.get(2);
                     let backdrop: Option<String> = r.get(3);
-                    id.zip(title)
-                        .map(|(id, title)| (id, ParentRow { title, poster, backdrop }))
+                    id.zip(title).map(|(id, title)| {
+                        (
+                            id,
+                            ParentRow {
+                                title,
+                                poster,
+                                backdrop,
+                            },
+                        )
+                    })
                 }));
             }
         }
@@ -606,26 +619,34 @@ impl Media {
         for media in records.iter_mut() {
             match media.kind {
                 MediaKind::Track => {
-                    media.parent_title =
-                        media.parent_id.and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
-                    media.series_title =
-                        media.series_id.and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+                    media.parent_title = media
+                        .parent_id
+                        .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+                    media.series_title = media
+                        .series_id
+                        .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
                 }
                 MediaKind::Album => {
-                    media.series_title =
-                        media.series_id.and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+                    media.series_title = media
+                        .series_id
+                        .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
                 }
                 MediaKind::Episode => {
-                    media.parent_title =
-                        media.parent_id.and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
-                    if let Some(row) = media.series_id.and_then(|id| parent_map.get(&id)) {
+                    media.parent_title = media
+                        .parent_id
+                        .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+                    if let Some(row) =
+                        media.series_id.and_then(|id| parent_map.get(&id))
+                    {
                         media.series_title = Some(row.title.clone());
                         media.series_poster = row.poster.clone();
                         media.series_backdrop = row.backdrop.clone();
                     }
                 }
                 MediaKind::Season => {
-                    if let Some(row) = media.parent_id.and_then(|id| parent_map.get(&id)) {
+                    if let Some(row) =
+                        media.parent_id.and_then(|id| parent_map.get(&id))
+                    {
                         media.series_title = Some(row.title.clone());
                         media.series_poster = row.poster.clone();
                         media.series_backdrop = row.backdrop.clone();
@@ -636,25 +657,21 @@ impl Media {
         }
     }
 
-    pub fn parse_smart_filter(&self) -> Option<&remux_sdks::remux::models::CollectionFilter> {
+    pub fn parse_smart_filter(
+        &self,
+    ) -> Option<&remux_sdks::remux::models::CollectionFilter> {
         self.collection_smart_filter.as_ref().map(|j| &j.0)
     }
 
     pub fn is_remote_url(&self) -> bool {
         self.url
             .as_deref()
-            .map(|url| {
-                url.starts_with("http://") || url.starts_with("https://")
-            })
+            .map(|url| url.starts_with("http://") || url.starts_with("https://"))
             .unwrap_or(false)
     }
 
     pub fn media_source_protocol(&self) -> &'static str {
-        if self.is_remote_url() {
-            "Http"
-        } else {
-            "File"
-        }
+        if self.is_remote_url() { "Http" } else { "File" }
     }
 }
 
@@ -719,11 +736,11 @@ impl Media {
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
-            remote_data, series_media_id, media_id, external_ids, created_at, updated_at, certification, parent_idx,
+            remote_data, series_media_id, media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id,
             collection_smart_filter, country
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -756,6 +773,7 @@ impl Media {
             country = excluded.country,
             updated_at = excluded.updated_at,
             certification = excluded.certification,
+            certification_age = excluded.certification_age,
             parent_idx = excluded.parent_idx,
             live_start = excluded.live_start,
             live_end = excluded.live_end,
@@ -795,6 +813,7 @@ impl Media {
         .bind(self.created_at)
         .bind(updated_at)
         .bind(&self.certification)
+        .bind(self.certification_age)
         .bind(self.parent_idx)
         .bind(self.live_start)
         .bind(self.live_end)
@@ -840,7 +859,7 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
-                remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, parent_idx,
+            remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, series_id, country
             )",
         );
@@ -874,6 +893,7 @@ impl Media {
                     .push_bind(&item.created_at)
                     .push_bind(Utc::now())
                     .push_bind(&item.certification)
+                    .push_bind(&item.certification_age)
                     .push_bind(&item.parent_idx)
                     .push_bind(&item.live_start)
                     .push_bind(&item.live_end)
@@ -913,7 +933,7 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
-                remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, parent_idx,
+                remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id, country
             )",
         );
@@ -945,6 +965,7 @@ impl Media {
                     .push_bind(&item.created_at)
                     .push_bind(Utc::now())
                     .push_bind(&item.certification)
+                    .push_bind(&item.certification_age)
                     .push_bind(&item.parent_idx)
                     .push_bind(&item.live_start)
                     .push_bind(&item.live_end)
@@ -987,6 +1008,7 @@ impl Media {
                 updated_at = excluded.updated_at,
                 promoted = excluded.promoted,
                 certification = excluded.certification,
+                certification_age = excluded.certification_age,
                 parent_id = excluded.parent_id,
                 parent_idx = excluded.parent_idx,
                 live_start = excluded.live_start,
@@ -1243,6 +1265,12 @@ impl Media {
                     }
                     qb.push(")");
                 }
+            }
+
+            if let Some(max_rating) = filter.max_parental_rating {
+                qb.push(" AND (certification_age IS NULL OR certification_age <= ")
+                    .push_bind(max_rating)
+                    .push(")");
             }
 
             if let Some(s) = &filter.name_starts_with {
@@ -1623,9 +1651,16 @@ impl Media {
                                 unplayed_map.insert(sid, cnt);
                             }
                             for media in &mut records {
-                                if matches!(media.kind, MediaKind::Series | MediaKind::Season) {
-                                    media.unplayed_item_count =
-                                        Some(unplayed_map.get(&media.id).copied().unwrap_or(0));
+                                if matches!(
+                                    media.kind,
+                                    MediaKind::Series | MediaKind::Season
+                                ) {
+                                    media.unplayed_item_count = Some(
+                                        unplayed_map
+                                            .get(&media.id)
+                                            .copied()
+                                            .unwrap_or(0),
+                                    );
                                 }
                             }
                         }
@@ -1711,7 +1746,10 @@ impl Media {
             // If types were specified but none map to a known kind (e.g. MusicVideo),
             // return empty rather than falling through to an unbounded query.
             if ikt_kinds.is_empty() {
-                return Ok(FilterResult { records: vec![], total_count: 0 });
+                return Ok(FilterResult {
+                    records: vec![],
+                    total_count: 0,
+                });
             }
             if let Some(mt_kinds) = media_type_kinds {
                 ikt_kinds
@@ -1880,8 +1918,9 @@ impl Media {
                 limit: filter.limit.clone(),
                 id: filter.ids.clone(),
                 // album_ids maps directly to parent_id (tracks are children of albums)
-                parent_id: filter.parent_id.clone()
-                    .or_else(|| filter.album_ids.as_ref().and_then(|v| v.first().cloned())),
+                parent_id: filter.parent_id.clone().or_else(|| {
+                    filter.album_ids.as_ref().and_then(|v| v.first().cloned())
+                }),
                 offset: filter.start_index.clone(),
                 recursive: filter.recursive,
                 include_user_state: filter.enable_user_data.is_none(),
@@ -1898,6 +1937,7 @@ impl Media {
                 person_ids,
                 years: filter.years.clone(),
                 official_ratings: filter.official_ratings.clone(),
+                max_parental_rating: user_policy.and_then(|p| p.max_parental_rating),
                 name_starts_with: filter.name_starts_with.clone(),
                 name_starts_with_or_greater: filter.name_starts_with_or_greater.clone(),
                 name_less_than: filter.name_less_than.clone(),
@@ -1913,11 +1953,12 @@ impl Media {
                 sort_by: filter.sort_by.clone().unwrap_or_default(),
                 sort_order: filter.sort_order.clone().unwrap_or_default(),
                 filter_rules: {
-                    let mut rules = smart_filter
-                        .map(|sf| sf.rules.clone())
-                        .unwrap_or_default();
+                    let mut rules =
+                        smart_filter.map(|sf| sf.rules.clone()).unwrap_or_default();
                     // Append user policy filter rules (AND semantics — all must match).
-                    if let Some(policy_filter) = user_policy.and_then(|p| p.filter_rules.as_ref()) {
+                    if let Some(policy_filter) =
+                        user_policy.and_then(|p| p.filter_rules.as_ref())
+                    {
                         rules.extend(policy_filter.rules.clone());
                     }
                     rules
@@ -2022,7 +2063,6 @@ impl Media {
         state.save(db).await?;
         Ok(state)
     }
-
 
     /// Fetch AIO subtitles for this Movie or Episode (cached 24 h).
     /// Returns an error for any other `MediaKind` or when the required
@@ -2131,13 +2171,19 @@ impl Media {
             });
 
             // Limit to 2 per language to avoid flooding the client.
-            let mut lang_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let mut lang_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
             let scored: Vec<_> = scored
                 .into_iter()
                 .filter(|(_, s)| {
                     let key = s.lang.clone().unwrap_or_else(|| "und".to_string());
                     let count = lang_counts.entry(key).or_insert(0);
-                    if *count < 2 { *count += 1; true } else { false }
+                    if *count < 2 {
+                        *count += 1;
+                        true
+                    } else {
+                        false
+                    }
                 })
                 .collect();
 
@@ -2353,7 +2399,9 @@ impl TryFrom<sdks::aio::Meta> for Media {
         // let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
 
         let mut media_kind = MediaKind::from(meta.media_type.clone());
-        if media_kind == MediaKind::Movie && meta.videos.as_ref().map_or(false, |v| !v.is_empty()) {
+        if media_kind == MediaKind::Movie
+            && meta.videos.as_ref().map_or(false, |v| !v.is_empty())
+        {
             media_kind = MediaKind::Series;
         }
 
@@ -2395,8 +2443,22 @@ impl TryFrom<sdks::aio::Meta> for Media {
             // rating_critic: meta.rating_critic,
             rating_audience: meta.imdb_rating,
             description: meta.description,
-            certification: meta.certification,
-            country: meta.country.and_then(|v| v.into_iter().next()).map(|c| normalize_country_alpha2(&c)),
+            certification: meta.certification.clone(),
+            certification_age: {
+                let country = meta
+                    .country
+                    .as_ref()
+                    .and_then(|v| v.first())
+                    .map(|c| normalize_country_alpha2(c));
+                crate::localization::ratings::resolve_rating_age(
+                    meta.certification.as_deref(),
+                    country.as_deref(),
+                )
+            },
+            country: meta
+                .country
+                .and_then(|v| v.into_iter().next())
+                .map(|c| normalize_country_alpha2(&c)),
             poster: meta.poster.or(meta.thumbnail),
             logo: meta.logo,
             backdrop: meta.background,
@@ -2596,15 +2658,21 @@ fn filter_rule_to_sql(
                 NumericOp::Eq | NumericOp::NotEq => {
                     format!("CAST(strftime('%Y', released_at) AS INTEGER) = {value}")
                 }
-                NumericOp::Gt => format!("CAST(strftime('%Y', released_at) AS INTEGER) > {value}"),
-                NumericOp::Lt => format!("CAST(strftime('%Y', released_at) AS INTEGER) < {value}"),
+                NumericOp::Gt => {
+                    format!("CAST(strftime('%Y', released_at) AS INTEGER) > {value}")
+                }
+                NumericOp::Lt => {
+                    format!("CAST(strftime('%Y', released_at) AS INTEGER) < {value}")
+                }
             };
             Some((sql, negated))
         }
         R::RatingAudience { op, value } => {
             let negated = *op == NumericOp::NotEq;
             let sql = match op {
-                NumericOp::Eq | NumericOp::NotEq => format!("rating_audience = {value}"),
+                NumericOp::Eq | NumericOp::NotEq => {
+                    format!("rating_audience = {value}")
+                }
                 NumericOp::Gt => format!("rating_audience > {value}"),
                 NumericOp::Lt => format!("rating_audience < {value}"),
             };
@@ -2616,6 +2684,17 @@ fn filter_rule_to_sql(
                 NumericOp::Eq | NumericOp::NotEq => format!("rating_critic = {value}"),
                 NumericOp::Gt => format!("rating_critic > {value}"),
                 NumericOp::Lt => format!("rating_critic < {value}"),
+            };
+            Some((sql, negated))
+        }
+        R::ParentalRating { op, value } => {
+            let negated = *op == NumericOp::NotEq;
+            let sql = match op {
+                NumericOp::Eq | NumericOp::NotEq => {
+                    format!("certification_age = {value}")
+                }
+                NumericOp::Gt => format!("certification_age > {value}"),
+                NumericOp::Lt => format!("certification_age < {value}"),
             };
             Some((sql, negated))
         }
@@ -2652,11 +2731,15 @@ fn filter_rule_to_sql(
             let sql = match op {
                 SetOp::Is | SetOp::IsNot => {
                     let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
-                    format!("EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND lower(mt.tag) = lower('{v}'))")
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND lower(mt.tag) = lower('{v}'))"
+                    )
                 }
                 SetOp::In | SetOp::NotIn => {
                     let list = in_list(values)?;
-                    format!("EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND lower(mt.tag) IN ({list}))")
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND lower(mt.tag) IN ({list}))"
+                    )
                 }
             };
             Some((sql, negated))
