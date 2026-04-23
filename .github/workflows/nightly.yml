@@ -84,3 +84,31 @@ jobs:
             --prerelease \
             "remux-server-${VERSION}-linux-amd64" \
             "remux-server-${VERSION}-linux-arm64"
+
+      - name: Checkout source README
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Checkout public repo
+        uses: actions/checkout@v4
+        with:
+          repository: lostb1t/remux
+          token: ${{ secrets.GH_TOKEN }}
+          path: public-repo
+
+      - name: Push README to public repo
+        run: |
+          cp source/README.md public-repo/README.md
+          cd public-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- README.md; then
+            echo "README.md is already up to date"
+            exit 0
+          fi
+
+          git add README.md
+          git commit -m "docs: sync README from nightly"
+          git push
