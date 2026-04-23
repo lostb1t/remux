@@ -1,4 +1,4 @@
-## Remux Server
+## Remux
 
 Remux is a self-hosted media server that exposes a Jellyfin-compatible API while sourcing media from Stremio add-ons instead of a local file library. The goal is to let existing Jellyfin clients browse catalogs, search content, choose streams, and play media through Remux without client-side changes.
 
