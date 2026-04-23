@@ -1195,12 +1195,17 @@ impl Media {
 
             if let Some(artist_ids) = &filter.artist_ids {
                 if !artist_ids.is_empty() {
-                    qb.push(" AND parent_id IN (");
+                    qb.push(" AND (parent_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in artist_ids {
                         sep.push_bind(id);
                     }
-                    qb.push(")");
+                    qb.push(") OR series_id IN (");
+                    let mut sep = qb.separated(", ");
+                    for id in artist_ids {
+                        sep.push_bind(id);
+                    }
+                    qb.push("))");
                 }
             }
 
@@ -1725,6 +1730,7 @@ impl Media {
                         api::MediaType::Video => {
                             vec![MediaKind::Movie, MediaKind::Episode]
                         }
+                        api::MediaType::Audio => vec![MediaKind::Track],
                         _ => vec![],
                     })
                     .collect()
