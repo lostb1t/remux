@@ -25,6 +25,10 @@ const INSTANCES: &[&str] = &[
     "https://tidal.kinoplus.online",
     "https://hifi-one.spotisaver.net",
     "https://hifi-two.spotisaver.net",
+    "https://hifi.geeked.wtf",
+    "https://hfapi.dyamuh.dev",
+    "https://hfapi.aluratech.org",
+    "https://api.studentsneed.help",
 ];
 
 fn build_client() -> reqwest::Client {
