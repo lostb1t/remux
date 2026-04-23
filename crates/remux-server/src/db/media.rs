@@ -1921,6 +1921,7 @@ impl Media {
             db,
             &MediaFilter {
                 kind: Some(kinds),
+                promoted: filter.promoted,
                 limit: filter.limit.clone(),
                 id: filter.ids.clone(),
                 // album_ids maps directly to parent_id (tracks are children of albums)

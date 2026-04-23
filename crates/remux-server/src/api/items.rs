@@ -389,8 +389,10 @@ pub async fn get_items(
     if let Some(parent) = &parent {
         if parent.id == db::collection_uuid() {
             // Virtual collections root — clear parent_id (collections have no parent in DB)
-            // and ensure we only return BoxSet/CollectionFolder items.
+            // and ensure we only return non-promoted collections. Promoted collections
+            // are libraries and should not be listed in the collections view.
             q.parent_id = None;
+            q.promoted = Some(false);
             if q.include_item_types.is_none() {
                 q.include_item_types = Some(vec![api::MediaType::BoxSet]);
             }

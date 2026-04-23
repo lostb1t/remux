@@ -639,6 +639,9 @@ pub struct GetItemsQuery {
     pub search_term: Option<String>,
     pub parent_id: Option<Uuid>,
     pub season_id: Option<Uuid>,
+    /// Internal server-side constraint. This is not a Jellyfin query parameter.
+    #[serde(skip)]
+    pub promoted: Option<bool>,
     // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
     //#[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
     #[serde(deserialize_with = "deserialize_fields", default)]
