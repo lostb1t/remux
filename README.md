@@ -1,18 +1,45 @@
-## Remux
+# Remux
 
-Remux is a self-hosted media server that exposes a Jellyfin-compatible API while sourcing media from Stremio add-ons instead of a local file library. The goal is to let existing Jellyfin clients browse catalogs, search content, choose streams, and play media through Remux without client-side changes.
+Remux is a self-hosted media server that provides a Jellyfin-compatible API, but instead of relying on a local file library, it streams content from online sources.
 
-The project is built in Rust and currently targets a lightweight, add-on-backed streaming workflow. It is still experimental and should be treated as a proof of concept.
+For movies and shows, Remux integrates with Stremio add-ons. Music is handled separately through its own pipeline and can be streamed from dedicated online sources.
 
-Main difference compared to jellyfin
+The idea is simple: use your existing Jellyfin clients exactly as you do now, browse libraries, search, and play content while everything is delivered dynamically. No local media management, no library scans, and no traditional backend setup.
 
-- Built in rust, faster and lower resource usage
-- Complete new dashboard.
-- Dynamic library and collection system. Create libraries from a custom set of filters. No foldersmor scans.
-- Stream music from online sources
-- No backend plugins (jelkyfin web ui theming does work so tou can still use your favorite theme)
-- No native local file support tho local filea can be used through stremio addons
+Built in Rust, Remux focuses on performance and low resource usage, while offering a more flexible and dynamic approach to media libraries.
 
+---
+
+## What makes it different from Jellyfin?
+
+- **No local library required**  
+  Content is streamed from online sources instead of files on disk
+
+- **Stremio-powered video**  
+  Movies and shows come from Stremio add-ons
+
+- **Independent music pipeline**  
+  Music is not tied to Stremio and is streamed from separate sources
+
+- **Dynamic libraries**  
+  Build collections based on filters instead of folders or scans
+
+- **Lightweight & fast**  
+  Written in Rust with a focus on efficiency
+
+- **New dashboard**  
+  A custom-built admin interface tailored for this workflow
+
+- **No backend plugins**  
+  Simpler architecture (Jellyfin web UI theming still works)
+
+- **Local files (indirectly)**  
+  Possible via Stremio add-ons, but not natively supported
+
+
+## ⚠️ Status
+
+Remux is still in an early stage. Expect rough edges, missing features, and breaking changes.
 Run the image as follows
 
 ```yml
