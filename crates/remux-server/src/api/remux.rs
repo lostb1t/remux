@@ -1,8 +1,8 @@
+use anyhow::Result as AnyResult;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use anyhow::Result as AnyResult;
 use chrono::{DateTime, Duration, Utc};
 use remux_macros::{delete, get, post};
 use serde::{Deserialize, Serialize};
@@ -322,7 +322,11 @@ pub async fn remux_registration_enabled(
     State(state): State<AppState>,
 ) -> Result<Response> {
     let enabled = is_registration_enabled(&state.ctx.db).await?;
-    Ok((StatusCode::OK, Json(RegistrationEnabledResponse { enabled })).into_response())
+    Ok((
+        StatusCode::OK,
+        Json(RegistrationEnabledResponse { enabled }),
+    )
+        .into_response())
 }
 
 #[post("/remux/registration/request")]
@@ -362,7 +366,8 @@ pub async fn remux_registration_request(
     .await?;
 
     let mut request_index = if let Some(index_record) =
-        load_cache_record(&state.ctx.db, REGISTRATION_NS, REGISTRATION_INDEX_KEY).await?
+        load_cache_record(&state.ctx.db, REGISTRATION_NS, REGISTRATION_INDEX_KEY)
+            .await?
     {
         serde_json::from_str::<Vec<String>>(&index_record.value).unwrap_or_default()
     } else {

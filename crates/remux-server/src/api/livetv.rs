@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::api;
 use crate::db;
 use crate::db::IptvSourceType;
 use crate::db::auth::{AdminSession, AuthSession};
-use crate::api;
 
 // --------------------------------------------------------------------------
 // GET /livetv/info
@@ -269,7 +269,9 @@ pub async fn livetv_add_tuner_host(
     _session: AdminSession,
     Json(body): Json<TunerHostInfo>,
 ) -> Result<impl IntoResponse> {
-    let source_type = body.type_.as_deref()
+    let source_type = body
+        .type_
+        .as_deref()
         .and_then(|s| s.parse::<IptvSourceType>().ok())
         .unwrap_or(IptvSourceType::M3u);
     let url = body

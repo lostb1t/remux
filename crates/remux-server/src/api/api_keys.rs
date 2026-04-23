@@ -6,9 +6,9 @@ use remux_macros::{delete, get, post};
 use serde::Deserialize;
 
 use crate::AppState;
+use crate::api;
 use crate::db::ApiKey;
 use crate::db::auth;
-use crate::api;
 use axum_anyhow::{ApiResult as Result, IntoApiError};
 
 #[derive(Deserialize)]

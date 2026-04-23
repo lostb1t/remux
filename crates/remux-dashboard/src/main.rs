@@ -4128,7 +4128,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
     let mut quick_connect_enabled = use_signal(|| true);
-    let mut music_enabled = use_signal(|| true);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -4166,7 +4165,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                     );
                     quick_connect_enabled
                         .set(cfg.quick_connect_available.unwrap_or(true));
-                    music_enabled.set(cfg.music_enabled.unwrap_or(true));
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
@@ -4192,13 +4190,11 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages.peek().clone();
         let qc_enabled = *quick_connect_enabled.peek();
-        let music_on = *music_enabled.peek();
 
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
         cfg.server_name = Some(name);
         cfg.metadata_country_code = Some(country);
         cfg.quick_connect_available = Some(qc_enabled);
-        cfg.music_enabled = Some(music_on);
         cfg.aio_url = AioUrl::try_new(url).ok();
         cfg.catalog_max_items = Some(max);
         cfg.p2p_enabled = Some(p2p_on);
@@ -4422,20 +4418,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                             p { class: "field-hint",
                                 "Allow clients to log in by entering a code shown on the login screen."
-                            }
-                        }
-
-                        div { class: "field",
-                            label { class: "field-label",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *music_enabled.read(),
-                                    oninput: move |e| music_enabled.set(e.checked()),
-                                }
-                                " Enable Music"
-                            }
-                            p { class: "field-hint",
-                                "Enable music search and browsing. When disabled, music search returns no results."
                             }
                         }
 

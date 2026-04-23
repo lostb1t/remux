@@ -6,8 +6,8 @@ use axum_extra::extract::Query as ExtraQuery;
 use remux_macros::get;
 
 use crate::api::items::get_items;
-use crate::{AppState, api};
 use crate::db::auth;
+use crate::{AppState, api};
 
 /// `/Artists` — returns all artists in the library.
 ///

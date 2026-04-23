@@ -1,23 +1,24 @@
 use axum::extract::{Path, State};
-use axum::response::IntoResponse;
 use axum::http::header;
+use axum::response::IntoResponse;
 use axum_extra::extract::Query;
 use remux_macros::get;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::db;
 use crate::api;
+use crate::db;
 use crate::providers::search::MusicSearchResult;
 use crate::sdks;
 use axum_anyhow::{ApiResult as Result, OptionExt};
 
-static IMAGE_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
-    reqwest::Client::builder()
-        .user_agent("remux-server/1.0")
-        .build()
-        .expect("failed to build image proxy client")
-});
+static IMAGE_CLIENT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .user_agent("remux-server/1.0")
+            .build()
+            .expect("failed to build image proxy client")
+    });
 
 async fn items_images_inner(
     state: AppState,
@@ -33,22 +34,33 @@ async fn items_images_inner(
             match image_type {
                 api::ImageType::Primary | api::ImageType::Thumb => media.poster,
                 api::ImageType::Backdrop => media.backdrop,
-                api::ImageType::Logo | api::ImageType::LogoImageAspectRatio => media.logo,
+                api::ImageType::Logo | api::ImageType::LogoImageAspectRatio => {
+                    media.logo
+                }
             }
             .unwrap_or_else(|| "https://placehold.co/600x400".to_string())
         } else {
             // Not in DB yet — item is a cached search result. Pull poster from store.
-            let poster = state.ctx.store.get::<MusicSearchResult>(key.clone())
+            let poster = state
+                .ctx
+                .store
+                .get::<MusicSearchResult>(key.clone())
                 .and_then(|r| r.media.poster.clone())
                 .or_else(|| {
-                    state.ctx.store.get::<sdks::aio::Meta>(key)
+                    state
+                        .ctx
+                        .store
+                        .get::<sdks::aio::Meta>(key)
                         .and_then(|m| m.poster.clone())
                 });
             poster.context_not_found("Not Found", "media not found")?
         }
     };
 
-    let upstream = IMAGE_CLIENT.get(&url).send().await
+    let upstream = IMAGE_CLIENT
+        .get(&url)
+        .send()
+        .await
         .map_err(|e| anyhow::anyhow!("image fetch failed: {e}"))?;
 
     let content_type = upstream
@@ -58,13 +70,12 @@ async fn items_images_inner(
         .unwrap_or("image/jpeg")
         .to_string();
 
-    let bytes = upstream.bytes().await
+    let bytes = upstream
+        .bytes()
+        .await
         .map_err(|e| anyhow::anyhow!("image read failed: {e}"))?;
 
-    Ok((
-        [(header::CONTENT_TYPE, content_type)],
-        bytes,
-    ))
+    Ok(([(header::CONTENT_TYPE, content_type)], bytes))
 }
 
 #[get("/items/{id}/images/{image_type}")]

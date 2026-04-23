@@ -194,7 +194,10 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             other => other,
         };
         // Subtitle burn-in requires re-encoding; can't copy video.
-        if params.burn_subtitle && params.subtitle_stream_index.is_some() && base == "copy" {
+        if params.burn_subtitle
+            && params.subtitle_stream_index.is_some()
+            && base == "copy"
+        {
             "libx264"
         } else {
             base
@@ -222,9 +225,12 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     args.extend([
         "-copyts".into(),
-        "-i".into(), params.input_url.clone(),
-        "-avoid_negative_ts".into(), "disabled".into(),
-        "-max_muxing_queue_size".into(), "2048".into(),
+        "-i".into(),
+        params.input_url.clone(),
+        "-avoid_negative_ts".into(),
+        "disabled".into(),
+        "-max_muxing_queue_size".into(),
+        "2048".into(),
     ]);
 
     // Stream mapping
@@ -235,8 +241,8 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             let (out_w, out_h) = output_dimensions(params);
             let sub_scale = match (out_w, out_h) {
                 (Some(w), Some(h)) => format!("scale={w}:{h}:fast_bilinear"),
-                (Some(w), None)    => format!("scale={w}:-1:fast_bilinear"),
-                (None, Some(h))    => format!("scale=-1:{h}:fast_bilinear"),
+                (Some(w), None) => format!("scale={w}:-1:fast_bilinear"),
+                (None, Some(h)) => format!("scale=-1:{h}:fast_bilinear"),
                 _ => String::new(),
             };
 
@@ -286,11 +292,16 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     if ffmpeg_video_codec == "libx264" {
         args.extend([
-            "-profile:v".into(), "high".into(),
-            "-pix_fmt".into(), "yuv420p".into(),
-            "-crf".into(), "23".into(),
-            "-preset".into(), "fast".into(),
-            "-tune".into(), "zerolatency".into(),
+            "-profile:v".into(),
+            "high".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-crf".into(),
+            "23".into(),
+            "-preset".into(),
+            "fast".into(),
+            "-tune".into(),
+            "zerolatency".into(),
         ]);
         // Use client's max bitrate as a ceiling, not a CBR target.
         // This keeps libx264 memory usage low while honouring the cap.
@@ -319,18 +330,27 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     // HLS output
     let playlist = params.output_dir.join("main.m3u8");
     let segment = params.output_dir.join("segment_%05d.ts");
-    
-    let start_number = params.start_time_ticks
-        .map(|t| (t as f64 / 10_000_000.0 / params.segment_length as f64).floor() as u32)
+
+    let start_number = params
+        .start_time_ticks
+        .map(|t| {
+            (t as f64 / 10_000_000.0 / params.segment_length as f64).floor() as u32
+        })
         .unwrap_or(0);
 
     args.extend([
-        "-f".into(), "hls".into(),
-        "-hls_time".into(), params.segment_length.to_string(),
-        "-start_number".into(), start_number.to_string(),
-        "-hls_segment_filename".into(), segment.to_string_lossy().into_owned(),
-        "-hls_playlist_type".into(), "event".into(),
-        "-hls_list_size".into(), "0".into(),
+        "-f".into(),
+        "hls".into(),
+        "-hls_time".into(),
+        params.segment_length.to_string(),
+        "-start_number".into(),
+        start_number.to_string(),
+        "-hls_segment_filename".into(),
+        segment.to_string_lossy().into_owned(),
+        "-hls_playlist_type".into(),
+        "event".into(),
+        "-hls_list_size".into(),
+        "0".into(),
         playlist.to_string_lossy().into_owned(),
     ]);
 
@@ -487,7 +507,10 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
             "libvpx-vp9" | "vp9" => "libvpx-vp9",
             other => other,
         };
-        if params.burn_subtitle && params.subtitle_stream_index.is_some() && base == "copy" {
+        if params.burn_subtitle
+            && params.subtitle_stream_index.is_some()
+            && base == "copy"
+        {
             "libx264"
         } else {
             base
@@ -558,8 +581,8 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
             let (out_w, out_h) = (params.max_width, params.max_height);
             let sub_scale = match (out_w, out_h) {
                 (Some(w), Some(h)) => format!("scale={w}:{h}:fast_bilinear"),
-                (Some(w), None)    => format!("scale={w}:-1:fast_bilinear"),
-                (None, Some(h))    => format!("scale=-1:{h}:fast_bilinear"),
+                (Some(w), None) => format!("scale={w}:-1:fast_bilinear"),
+                (None, Some(h)) => format!("scale=-1:{h}:fast_bilinear"),
                 _ => String::new(),
             };
             let sub_preproc = if sub_scale.is_empty() {
@@ -585,7 +608,9 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
         }
     } else if let Some(ref filter) = scale_filter {
         args.extend(["-vf".into(), filter.clone()]);
-    } else if params.audio_stream_index.is_some() || params.subtitle_stream_index.is_some() {
+    } else if params.audio_stream_index.is_some()
+        || params.subtitle_stream_index.is_some()
+    {
         args.extend(["-map".into(), "0:v".into()]);
         if let Some(audio_idx) = params.audio_stream_index {
             args.extend(["-map".into(), format!("0:{}", audio_idx)]);
@@ -680,7 +705,10 @@ pub fn start_progressive_transcode(
         match child.wait().await {
             Ok(status) if !status.success() => {
                 if status.code() == Some(224) {
-                    debug!("progressive ffmpeg exited after client disconnect: {}", status)
+                    debug!(
+                        "progressive ffmpeg exited after client disconnect: {}",
+                        status
+                    )
                 } else {
                     error!("progressive ffmpeg exited: {}", status)
                 }
@@ -704,7 +732,10 @@ pub fn start_progressive_transcode(
 /// to any position immediately. Each segment URL includes `runtimeTicks` and
 /// `actualSegmentLengthTicks` query params so the segment handler knows the
 /// cumulative position when it needs to restart FFmpeg.
-pub fn generate_variant_playlist(session: &TranscodeSession, query_string: &str) -> String {
+pub fn generate_variant_playlist(
+    session: &TranscodeSession,
+    query_string: &str,
+) -> String {
     let runtime_ticks = session.runtime_ticks;
     let segment_length = session.segment_length;
     let play_session_id = &session.id;
@@ -722,7 +753,11 @@ pub fn generate_variant_playlist(session: &TranscodeSession, query_string: &str)
              #EXT-X-ENDLIST\n",
             seg = segment_length,
             psid = play_session_id,
-            qs = if query_string.is_empty() { String::new() } else { format!("&{}", query_string) },
+            qs = if query_string.is_empty() {
+                String::new()
+            } else {
+                format!("&{}", query_string)
+            },
         );
     }
 

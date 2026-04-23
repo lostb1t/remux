@@ -16,7 +16,10 @@ pub(crate) fn ytdlp_extra_args() -> Vec<String> {
 pub use lyrics::{LyricProvider, LyricSearchRequest, LyricService};
 pub use meta::*;
 pub use music::{MusicMetaProvider, MusicMetaProviderService, MusicMetaResult};
-pub use search::{AioSearchService, SearchService, SearchServiceManager, YtDlpSearchService};
+pub use search::{
+    AioSearchService, SearchService, SearchServiceManager, YtDlpSearchService,
+};
 pub use stream::{
-    AioStreamService, StreamOption, StreamService, StreamServiceManager, YtDlpStreamService,
+    AioStreamService, StreamOption, StreamService, StreamServiceManager,
+    YtDlpStreamService,
 };

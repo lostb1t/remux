@@ -67,7 +67,10 @@ pub async fn get_provider_lyrics(
     Ok(Json(lyrics).into_response())
 }
 
-async fn build_search_request(db: &sqlx::SqlitePool, media: &db::Media) -> LyricSearchRequest {
+async fn build_search_request(
+    db: &sqlx::SqlitePool,
+    media: &db::Media,
+) -> LyricSearchRequest {
     let (artist, album) = resolve_music_titles(db, media).await;
     LyricSearchRequest {
         title: media.title.clone(),

@@ -35,7 +35,10 @@ impl SearchService for AioSearchService {
             _ => return Ok(vec![]),
         };
 
-        let results = aio.search(aio_type, query.to_string()).await.unwrap_or_default();
+        let results = aio
+            .search(aio_type, query.to_string())
+            .await
+            .unwrap_or_default();
 
         let media = results
             .into_iter()
@@ -49,7 +52,8 @@ impl SearchService for AioSearchService {
             .take(limit)
             .filter_map(|meta| {
                 let m = db::Media::try_from(meta.clone()).ok()?;
-                ctx.store.insert(m.id.to_string(), meta, Duration::from_secs(3600));
+                ctx.store
+                    .insert(m.id.to_string(), meta, Duration::from_secs(3600));
                 Some(m)
             })
             .collect();

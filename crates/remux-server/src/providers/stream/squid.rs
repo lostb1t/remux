@@ -7,7 +7,6 @@ use tokio::sync::OnceCell;
 
 use super::{StreamOption, StreamService};
 
-
 const INSTANCES_URL: &str = "https://monochrome.tf/instances.json";
 const PRIMARY_INSTANCE: &str = "https://tidal-api.binimum.org";
 const TIDAL_CLIENT: &str = "BiniLossless/v3.4";
@@ -66,7 +65,10 @@ pub struct SquidStreamService {
 
 impl Default for SquidStreamService {
     fn default() -> Self {
-        Self { client: build_client(), instances: OnceCell::new() }
+        Self {
+            client: build_client(),
+            instances: OnceCell::new(),
+        }
     }
 }
 
@@ -110,7 +112,11 @@ impl SquidStreamService {
     }
 }
 
-async fn try_instance(client: &reqwest::Client, base: &str, query: &str) -> Result<Option<StreamOption>> {
+async fn try_instance(
+    client: &reqwest::Client,
+    base: &str,
+    query: &str,
+) -> Result<Option<StreamOption>> {
     let search_url = format!("{}/search/?s={}", base, urlencoding::encode(query));
     let resp = client
         .get(&search_url)
@@ -143,8 +149,11 @@ async fn try_instance(client: &reqwest::Client, base: &str, query: &str) -> Resu
 
     tracing::debug!(track_id, "squid/tidal: fetching manifest");
 
-    let manifest_url =
-        format!("{}/track/?id={}&quality=LOSSLESS", base, urlencoding::encode(&track_id));
+    let manifest_url = format!(
+        "{}/track/?id={}&quality=LOSSLESS",
+        base,
+        urlencoding::encode(&track_id)
+    );
     let resp = client
         .get(&manifest_url)
         .header("x-client", TIDAL_CLIENT)
@@ -162,12 +171,15 @@ async fn try_instance(client: &reqwest::Client, base: &str, query: &str) -> Resu
         None => return Ok(None),
     };
 
-    if track.manifest_mime_type.contains("dash") || manifest_b64.trim_start().starts_with('<') {
+    if track.manifest_mime_type.contains("dash")
+        || manifest_b64.trim_start().starts_with('<')
+    {
         tracing::debug!(track_id, "squid/tidal: DASH manifest, skipping");
         return Ok(None);
     }
 
-    let decoded = base64::engine::general_purpose::STANDARD.decode(manifest_b64.trim())?;
+    let decoded =
+        base64::engine::general_purpose::STANDARD.decode(manifest_b64.trim())?;
     let manifest: DecodedManifest = serde_json::from_slice(&decoded)?;
 
     let url = match manifest.urls.into_iter().next() {
@@ -183,7 +195,11 @@ async fn try_instance(client: &reqwest::Client, base: &str, query: &str) -> Resu
         "Audio"
     };
 
-    let codec = manifest.codecs.as_deref().map(super::normalize_codec).map(str::to_string);
+    let codec = manifest
+        .codecs
+        .as_deref()
+        .map(super::normalize_codec)
+        .map(str::to_string);
 
     Ok(Some(StreamOption {
         url,
@@ -203,7 +219,11 @@ impl StreamService for SquidStreamService {
         &[db::MediaKind::Track]
     }
 
-    async fn get_streams(&self, media: &db::Media, _ctx: &AppContext) -> Result<Vec<StreamOption>> {
+    async fn get_streams(
+        &self,
+        media: &db::Media,
+        _ctx: &AppContext,
+    ) -> Result<Vec<StreamOption>> {
         let query = Self::build_query(media);
         tracing::debug!(query, title = %media.title, "squid/tidal stream lookup");
 
@@ -219,9 +239,13 @@ impl StreamService for SquidStreamService {
             let client = self.client.clone();
             let handle = tokio::spawn(async move {
                 match try_instance(&client, &base, &query).await {
-                    Ok(Some(stream)) => { let _ = tx.send((stream, base)).await; }
+                    Ok(Some(stream)) => {
+                        let _ = tx.send((stream, base)).await;
+                    }
                     Ok(None) => {}
-                    Err(e) => { tracing::debug!(base, error = %e, "squid/tidal: instance failed"); }
+                    Err(e) => {
+                        tracing::debug!(base, error = %e, "squid/tidal: instance failed");
+                    }
                 }
             });
             handles.push(handle);

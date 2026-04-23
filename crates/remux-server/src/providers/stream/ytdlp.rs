@@ -1,5 +1,5 @@
 use crate::{AppContext, db};
-use anyhow::{Result, anyhow, Context};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
 use sqlx::types::Json;
@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use tokio::process::Command;
 use uuid::Uuid;
 
-use crate::api;
 use super::{StreamOption, StreamService};
+use crate::api;
 
 /// Minimal subset of yt-dlp JSON output we actually need.
 /// All fields are optional so missing/extra fields never cause parse failures.
@@ -54,7 +54,10 @@ struct YtDlpFormat {
 impl YtDlpFormat {
     fn is_audio_only(&self) -> bool {
         let no_video = self.vcodec.as_deref().map_or(false, |v| v == "none");
-        let has_audio = self.acodec.as_deref().map_or(false, |a| a != "none" && !a.is_empty());
+        let has_audio = self
+            .acodec
+            .as_deref()
+            .map_or(false, |a| a != "none" && !a.is_empty());
         no_video && has_audio
     }
 
@@ -93,9 +96,11 @@ impl YtDlpFormat {
     /// Normalize raw yt-dlp codec strings to the names Jellyfin clients expect.
     /// e.g. "mp4a.40.2" / "mp4a.40.5" → "aac"
     fn normalized_codec(&self) -> Option<String> {
-        self.acodec.as_deref().filter(|c| *c != "none").map(|c| super::normalize_codec(c).to_string())
+        self.acodec
+            .as_deref()
+            .filter(|c| *c != "none")
+            .map(|c| super::normalize_codec(c).to_string())
     }
-
 }
 
 /// Stream backend that shells out to the `yt-dlp` binary — handles music tracks.
@@ -119,7 +124,13 @@ impl YtDlpStreamService {
     /// Run `yt-dlp --dump-json <url_or_query>` and parse the first JSON object.
     async fn dump_json(&self, url_or_query: &str) -> Result<YtDlpVideo> {
         let output = Command::new(&self.executable)
-            .args(["--dump-json", "--no-playlist", "--quiet", "--no-warnings", url_or_query])
+            .args([
+                "--dump-json",
+                "--no-playlist",
+                "--quiet",
+                "--no-warnings",
+                url_or_query,
+            ])
             .args(crate::providers::ytdlp_extra_args())
             .output()
             .await
@@ -135,10 +146,13 @@ impl YtDlpStreamService {
         let line = stdout
             .lines()
             .find(|l| !l.trim().is_empty())
-            .ok_or_else(|| anyhow!("yt-dlp produced no output for '{}'", url_or_query))?;
+            .ok_or_else(|| {
+                anyhow!("yt-dlp produced no output for '{}'", url_or_query)
+            })?;
 
-        serde_json::from_str(line)
-            .with_context(|| format!("failed to parse yt-dlp JSON for '{}'", url_or_query))
+        serde_json::from_str(line).with_context(|| {
+            format!("failed to parse yt-dlp JSON for '{}'", url_or_query)
+        })
     }
 
     /// Resolve the stable YouTube watch URL for a track.
@@ -157,7 +171,11 @@ impl YtDlpStreamService {
 
         // 2. If media_id looks like a real YouTube video ID (11 chars), use it.
         if let Some(id) = &media.media_id {
-            if id.len() == 11 && id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            if id.len() == 11
+                && id
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
                 return Ok(format!("https://www.youtube.com/watch?v={}", id));
             }
         }
@@ -181,7 +199,6 @@ impl YtDlpStreamService {
             .webpage_url
             .ok_or_else(|| anyhow!("yt-dlp search returned no webpage_url for query"))
     }
-
 }
 
 #[async_trait]
@@ -190,7 +207,11 @@ impl StreamService for YtDlpStreamService {
         &[db::MediaKind::Track]
     }
 
-    async fn get_streams(&self, media: &db::Media, ctx: &AppContext) -> Result<Vec<StreamOption>> {
+    async fn get_streams(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<StreamOption>> {
         let url = self.resolve_watch_url(media).await?;
         let video = self.dump_json(&url).await?;
 

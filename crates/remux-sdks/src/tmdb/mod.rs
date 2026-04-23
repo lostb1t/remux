@@ -91,7 +91,11 @@ impl Images {
         self.logos
             .iter()
             .filter(|e| e.iso_639_1.as_deref() == Some("en"))
-            .max_by(|a, b| a.vote_average.partial_cmp(&b.vote_average).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| {
+                a.vote_average
+                    .partial_cmp(&b.vote_average)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .or_else(|| self.logos.iter().next())
             .map(|e| e.file_path.as_str())
     }

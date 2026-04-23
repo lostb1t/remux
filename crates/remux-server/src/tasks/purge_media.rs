@@ -7,7 +7,8 @@ use crate::AppContext;
 
 pub struct PurgeMediaTask;
 
-const PURGE_KINDS: &str = "'movie','series','season','episode','source','track','album','artist'";
+const PURGE_KINDS: &str =
+    "'movie','series','season','episode','source','track','album','artist'";
 
 #[async_trait]
 impl Task for PurgeMediaTask {
@@ -50,11 +51,9 @@ impl Task for PurgeMediaTask {
 
         // Now the cascade machinery (parent_id self-ref, series_id check) has
         // almost no child-table work left — this runs fast.
-        sqlx::query(&format!(
-            "DELETE FROM media WHERE kind IN ({PURGE_KINDS})"
-        ))
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query(&format!("DELETE FROM media WHERE kind IN ({PURGE_KINDS})"))
+            .execute(&mut *tx)
+            .await?;
 
         tx.commit().await?;
         Ok(())

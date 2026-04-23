@@ -5,8 +5,8 @@ use remux_macros::{delete, get, post};
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::db::auth;
 use crate::api;
+use crate::db::auth;
 use crate::tasks::{TaskStatus, TaskView};
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::models::TaskTriggerInfoType;
@@ -19,9 +19,7 @@ const TICKS_PER_SECOND: i64 = 10_000_000;
 const TICKS_PER_HOUR: i64 = 3600 * TICKS_PER_SECOND;
 const TICKS_PER_MINUTE: i64 = 60 * TICKS_PER_SECOND;
 
-fn db_trigger_to_jellyfin(
-    trigger: &api::db::TaskTrigger,
-) -> api::TaskTriggerInfo {
+fn db_trigger_to_jellyfin(trigger: &api::db::TaskTrigger) -> api::TaskTriggerInfo {
     let cron = trigger.cron.as_deref();
     let (time_of_day_ticks, interval_ticks, day_of_week) = match trigger.kind {
         TaskTriggerInfoType::StartupTrigger => (None, None, None),

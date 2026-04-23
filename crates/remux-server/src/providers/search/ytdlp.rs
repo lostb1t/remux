@@ -1,5 +1,5 @@
 use crate::{AppContext, db};
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -55,10 +55,22 @@ impl YtDlpSearchService {
         Self { executable }
     }
 
-    async fn run_flat_playlist(&self, url_or_query: &str, limit: usize) -> Result<YtDlpPlaylist> {
+    async fn run_flat_playlist(
+        &self,
+        url_or_query: &str,
+        limit: usize,
+    ) -> Result<YtDlpPlaylist> {
         let limit_str = limit.to_string();
         let output = Command::new(&self.executable)
-            .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", "--playlist-end", &limit_str, url_or_query])
+            .args([
+                "--dump-single-json",
+                "--flat-playlist",
+                "--no-warnings",
+                "--quiet",
+                "--playlist-end",
+                &limit_str,
+                url_or_query,
+            ])
             .args(crate::providers::ytdlp_extra_args())
             .output()
             .await
@@ -69,8 +81,12 @@ impl YtDlpSearchService {
             anyhow::bail!("yt-dlp exited with {}: {}", output.status, stderr.trim());
         }
 
-        serde_json::from_slice(&output.stdout)
-            .with_context(|| format!("failed to parse yt-dlp flat-playlist JSON for '{}'", url_or_query))
+        serde_json::from_slice(&output.stdout).with_context(|| {
+            format!(
+                "failed to parse yt-dlp flat-playlist JSON for '{}'",
+                url_or_query
+            )
+        })
     }
 }
 
@@ -80,7 +96,13 @@ impl SearchService for YtDlpSearchService {
         &[db::MediaKind::Track]
     }
 
-    async fn search(&self, _kind: &db::MediaKind, query: &str, limit: usize, _ctx: &AppContext) -> Result<Vec<db::Media>> {
+    async fn search(
+        &self,
+        _kind: &db::MediaKind,
+        query: &str,
+        limit: usize,
+        _ctx: &AppContext,
+    ) -> Result<Vec<db::Media>> {
         let t = std::time::Instant::now();
         let yt_query = format!("ytsearch{}:{}", limit, query);
 
@@ -96,15 +118,13 @@ impl SearchService for YtDlpSearchService {
             .entries
             .into_iter()
             .map(|entry| {
-                let watch_url = entry.webpage_url
-                    .or(entry.url)
-                    .or_else(|| {
-                        if !entry.id.is_empty() {
-                            Some(format!("https://www.youtube.com/watch?v={}", entry.id))
-                        } else {
-                            None
-                        }
-                    });
+                let watch_url = entry.webpage_url.or(entry.url).or_else(|| {
+                    if !entry.id.is_empty() {
+                        Some(format!("https://www.youtube.com/watch?v={}", entry.id))
+                    } else {
+                        None
+                    }
+                });
                 db::Media {
                     id: crate::utils::get_stable_uuid(format!("ytdlp:{}", entry.id)),
                     title: entry.title,
@@ -118,7 +138,12 @@ impl SearchService for YtDlpSearchService {
             })
             .collect();
 
-        tracing::debug!(query, count = results.len(), elapsed_ms = t.elapsed().as_millis(), "yt-dlp track search done");
+        tracing::debug!(
+            query,
+            count = results.len(),
+            elapsed_ms = t.elapsed().as_millis(),
+            "yt-dlp track search done"
+        );
 
         Ok(results)
     }
@@ -143,7 +168,13 @@ impl SearchService for YtDlpAlbumSearchService {
         &[db::MediaKind::Album]
     }
 
-    async fn search(&self, _kind: &db::MediaKind, query: &str, limit: usize, _ctx: &AppContext) -> Result<Vec<db::Media>> {
+    async fn search(
+        &self,
+        _kind: &db::MediaKind,
+        query: &str,
+        limit: usize,
+        _ctx: &AppContext,
+    ) -> Result<Vec<db::Media>> {
         tracing::debug!(query, limit, "yt-dlp album search starting");
         let t = std::time::Instant::now();
 
@@ -154,7 +185,13 @@ impl SearchService for YtDlpAlbumSearchService {
 
         // Step 1: get flat stub list — entries have IDs but no full metadata.
         let output = Command::new(&self.executable)
-            .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", &search_url])
+            .args([
+                "--dump-single-json",
+                "--flat-playlist",
+                "--no-warnings",
+                "--quiet",
+                &search_url,
+            ])
             .args(crate::providers::ytdlp_extra_args())
             .output()
             .await
@@ -180,7 +217,12 @@ impl SearchService for YtDlpAlbumSearchService {
             })
             .unwrap_or_default();
 
-        tracing::debug!(query, count = album_urls.len(), elapsed_ms = t.elapsed().as_millis(), "yt-dlp album stubs fetched");
+        tracing::debug!(
+            query,
+            count = album_urls.len(),
+            elapsed_ms = t.elapsed().as_millis(),
+            "yt-dlp album stubs fetched"
+        );
 
         if album_urls.is_empty() {
             return Ok(vec![]);
@@ -194,7 +236,13 @@ impl SearchService for YtDlpAlbumSearchService {
                 let exe = exe.clone();
                 async move {
                     let output = Command::new(&exe)
-                        .args(["--dump-single-json", "--flat-playlist", "--no-warnings", "--quiet", &url])
+                        .args([
+                            "--dump-single-json",
+                            "--flat-playlist",
+                            "--no-warnings",
+                            "--quiet",
+                            &url,
+                        ])
                         .args(crate::providers::ytdlp_extra_args())
                         .output()
                         .await
@@ -202,7 +250,8 @@ impl SearchService for YtDlpAlbumSearchService {
                     if !output.status.success() {
                         return None;
                     }
-                    let playlist: YtDlpPlaylist = serde_json::from_slice(&output.stdout).ok()?;
+                    let playlist: YtDlpPlaylist =
+                        serde_json::from_slice(&output.stdout).ok()?;
                     Some((url, playlist))
                 }
             })
@@ -214,10 +263,14 @@ impl SearchService for YtDlpAlbumSearchService {
             .into_iter()
             .flatten()
             .map(|(url, playlist)| {
-                let thumbnail = playlist.thumbnail
-                    .or_else(|| playlist.entries.first().and_then(|e| e.thumbnail.clone()));
+                let thumbnail = playlist.thumbnail.or_else(|| {
+                    playlist.entries.first().and_then(|e| e.thumbnail.clone())
+                });
                 db::Media {
-                    id: crate::utils::get_stable_uuid(format!("ytdlp-album:{}", playlist.id)),
+                    id: crate::utils::get_stable_uuid(format!(
+                        "ytdlp-album:{}",
+                        playlist.id
+                    )),
                     title: playlist.title,
                     kind: db::MediaKind::Album,
                     media_id: Some(playlist.id.clone()),
@@ -228,7 +281,12 @@ impl SearchService for YtDlpAlbumSearchService {
             })
             .collect();
 
-        tracing::debug!(query, count = results.len(), elapsed_ms = t.elapsed().as_millis(), "yt-dlp album search done");
+        tracing::debug!(
+            query,
+            count = results.len(),
+            elapsed_ms = t.elapsed().as_millis(),
+            "yt-dlp album search done"
+        );
 
         Ok(results)
     }

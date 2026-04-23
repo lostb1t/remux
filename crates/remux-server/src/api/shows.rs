@@ -9,9 +9,9 @@ use remux_macros::get;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::api;
 use crate::db;
 use crate::db::auth;
-use crate::api;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
 use super::items::get_items;
@@ -174,10 +174,8 @@ pub async fn shows_nextup(
     }
 
     // Batch-load play states for this user
-    let media_keys: Vec<String> = episodes
-        .iter()
-        .filter_map(|e| e.media_id.clone())
-        .collect();
+    let media_keys: Vec<String> =
+        episodes.iter().filter_map(|e| e.media_id.clone()).collect();
 
     let states: HashMap<String, db::UserMediaState> = if media_keys.is_empty() {
         HashMap::new()
@@ -211,9 +209,9 @@ pub async fn shows_nextup(
 
     // 2. First unplayed episode after the last fully-played episode
     if next_ep.is_none() {
-        let last_played_pos = episodes.iter().rposition(|e| {
-            state_for(e).map_or(false, |s| s.play_count > 0)
-        });
+        let last_played_pos = episodes
+            .iter()
+            .rposition(|e| state_for(e).map_or(false, |s| s.play_count > 0));
 
         next_ep = if let Some(pos) = last_played_pos {
             episodes.get(pos + 1)
@@ -302,7 +300,8 @@ async fn shows_nextup_all(
             continue;
         }
 
-        let media_keys: Vec<String> = episodes.iter().filter_map(|e| e.media_id.clone()).collect();
+        let media_keys: Vec<String> =
+            episodes.iter().filter_map(|e| e.media_id.clone()).collect();
         let states: HashMap<String, db::UserMediaState> = if media_keys.is_empty() {
             HashMap::new()
         } else {
@@ -329,7 +328,8 @@ async fn shows_nextup_all(
         let mut next_ep: Option<&db::Media> = None;
         if enable_resumable {
             next_ep = episodes.iter().find(|e| {
-                state_for(e).map_or(false, |s| s.play_count == 0 && s.playback_position > 0)
+                state_for(e)
+                    .map_or(false, |s| s.play_count == 0 && s.playback_position > 0)
             });
         }
         // Then next after last played

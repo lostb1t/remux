@@ -117,7 +117,11 @@ impl TaskHandler {
     pub fn view(&self) -> TaskView {
         TaskView {
             task: self.task.clone(),
-            status: self.status.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            status: self
+                .status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
             progress: f64::from_bits(self.progress.load(Ordering::Relaxed)),
         }
     }
@@ -178,7 +182,8 @@ impl TaskHandler {
     pub fn stop(&mut self) {
         if let Some(handle) = self.handle.take() {
             handle.abort();
-            *self.status.lock().unwrap_or_else(|e| e.into_inner()) = TaskStatus::Stopped;
+            *self.status.lock().unwrap_or_else(|e| e.into_inner()) =
+                TaskStatus::Stopped;
             info!(task = %self.task.key(), "stopped");
         }
     }

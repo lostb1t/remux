@@ -5,7 +5,13 @@ use crate::utils;
 use anyhow::Result;
 
 pub fn inject_lyric_stream(source: &mut MediaSourceInfo) {
-    let next_idx = source.media_streams.iter().map(|s| s.index).max().unwrap_or(-1) + 1;
+    let next_idx = source
+        .media_streams
+        .iter()
+        .map(|s| s.index)
+        .max()
+        .unwrap_or(-1)
+        + 1;
     source.media_streams.push(MediaStream {
         type_: Some(MediaStreamType::Lyric),
         index: next_idx,
@@ -93,7 +99,9 @@ pub fn db_media_kind_to_type(kind: db::MediaKind) -> MediaType {
     }
 }
 
-pub fn db_media_kind_to_collection_type(kind: db::CollectionMediaKind) -> CollectionType {
+pub fn db_media_kind_to_collection_type(
+    kind: db::CollectionMediaKind,
+) -> CollectionType {
     match kind {
         db::CollectionMediaKind::Movie => CollectionType::Movies,
         db::CollectionMediaKind::Series => CollectionType::Tvshows,
@@ -125,14 +133,20 @@ pub fn db_user_to_dto(user: db::User) -> UserDto {
     }
 }
 
-pub fn db_state_to_dto(state: db::UserMediaState, media: &db::Media) -> UserItemDataDto {
+pub fn db_state_to_dto(
+    state: db::UserMediaState,
+    media: &db::Media,
+) -> UserItemDataDto {
     let played_percentage = media
         .runtime
         .filter(|&r| r > 0)
         .map(|r| (state.playback_position as f32 / r as f32 * 100.0).clamp(0.0, 100.0));
     UserItemDataDto {
         played: state.played_at.is_some(),
-        last_played_date: state.last_played_at.or(state.played_at).map(|x| x.and_utc()),
+        last_played_date: state
+            .last_played_at
+            .or(state.played_at)
+            .map(|x| x.and_utc()),
         playback_position_ticks: state.playback_position * 10_000_000,
         play_count: state.play_count as i32,
         is_favorite: state.favorite,
@@ -283,7 +297,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                     id: m.id,
                     name: m.title.clone(),
                     role: rel.role.as_ref().and_then(|r| match r {
-                        db::RelationRole::Actor => rel.character.clone().or_else(|| Some("Actor".to_string())),
+                        db::RelationRole::Actor => {
+                            rel.character.clone().or_else(|| Some("Actor".to_string()))
+                        }
                         db::RelationRole::Director => Some("Director".to_string()),
                         db::RelationRole::Writer => Some("Writer".to_string()),
                         db::RelationRole::Producer => Some("Producer".to_string()),
@@ -327,23 +343,26 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         album_artist: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| media.series_title.clone())
             .flatten(),
-        album_artists: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            .then(|| {
-                media.series_id.zip(media.series_title.clone()).map(|(id, name)| {
-                    vec![NameIdPair { id, name }]
-                })
-            })
-            .flatten(),
+        album_artists: matches!(
+            media.kind,
+            db::MediaKind::Track | db::MediaKind::Album
+        )
+        .then(|| {
+            media
+                .series_id
+                .zip(media.series_title.clone())
+                .map(|(id, name)| vec![NameIdPair { id, name }])
+        })
+        .flatten(),
         artists: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            .then(|| {
-                media.series_title.clone().map(|name| vec![name])
-            })
+            .then(|| media.series_title.clone().map(|name| vec![name]))
             .flatten(),
         artist_items: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
-                media.series_id.zip(media.series_title.clone()).map(|(id, name)| {
-                    vec![NameIdPair { id, name }]
-                })
+                media
+                    .series_id
+                    .zip(media.series_title.clone())
+                    .map(|(id, name)| vec![NameIdPair { id, name }])
             })
             .flatten(),
         tags: if media.tags.is_empty() {
@@ -407,13 +426,15 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         item.external_urls = Some(external_urls);
     }
 
-    if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode
+    if media.kind == db::MediaKind::Movie
+        || media.kind == db::MediaKind::Episode
         || media.kind == db::MediaKind::Track
     {
         item.media_sources = match media.sources.clone() {
             Some(sources) if sources.is_empty() => Some(vec![media.clone().into()]),
             Some(sources) => {
-                let mut infos: Vec<MediaSourceInfo> = sources.into_iter().map(MediaSourceInfo::from).collect();
+                let mut infos: Vec<MediaSourceInfo> =
+                    sources.into_iter().map(MediaSourceInfo::from).collect();
                 // Clients expect the first source's ID to equal the parent item's ID.
                 if !infos.is_empty() {
                     infos[0].id = media.id;
@@ -423,7 +444,6 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             }
             None => None,
         };
-
     }
 
     if media.kind == db::MediaKind::TvChannel {

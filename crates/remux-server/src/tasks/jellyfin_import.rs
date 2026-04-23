@@ -1,13 +1,15 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use remux_sdks::remux::JellyfinItem;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-use remux_sdks::remux::JellyfinItem;
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::{AppContext, db};
-use remux_sdks::remux::{GetJellyfinItemsByIds, GetJellyfinUserItems, GetJellyfinUsers, JellyfinUserDto};
+use remux_sdks::remux::{
+    GetJellyfinItemsByIds, GetJellyfinUserItems, GetJellyfinUsers, JellyfinUserDto,
+};
 use remux_sdks::{JellyfinApiKeyAuth, RestClient};
 
 pub struct JellyfinImportTask;
@@ -103,21 +105,39 @@ impl Task for JellyfinImportTask {
         let mut states_unresolved = 0u32;
 
         for (i, (jf_user, local_user)) in local_users.iter().enumerate() {
-            let Some(jf_id) = jf_user.id.as_deref() else { continue };
+            let Some(jf_id) = jf_user.id.as_deref() else {
+                continue;
+            };
             let username = jf_user.name.as_deref().unwrap_or("?");
-            info!("fetching items for user '{username}' ({}/{})", i + 1, local_users.len());
+            info!(
+                "fetching items for user '{username}' ({}/{})",
+                i + 1,
+                local_users.len()
+            );
             let (played, resumable) = tokio::join!(
-                client.execute(GetJellyfinUserItems { user_id: jf_id.to_string(), filter: "IsPlayed" }),
-                client.execute(GetJellyfinUserItems { user_id: jf_id.to_string(), filter: "IsResumable" }),
+                client.execute(GetJellyfinUserItems {
+                    user_id: jf_id.to_string(),
+                    filter: "IsPlayed"
+                }),
+                client.execute(GetJellyfinUserItems {
+                    user_id: jf_id.to_string(),
+                    filter: "IsResumable"
+                }),
             );
             let mut items = played?.items;
             items.extend(resumable?.items);
             info!("got {} items for '{username}', importing", items.len());
 
             // Collect series IDs for episodes missing series_provider_ids
-            let series_ids: Vec<String> = items.iter()
+            let series_ids: Vec<String> = items
+                .iter()
                 .filter(|it| it.item_type.as_deref() == Some("Episode"))
-                .filter(|it| it.series_provider_ids.as_ref().and_then(|p| p.get("Imdb")).is_none())
+                .filter(|it| {
+                    it.series_provider_ids
+                        .as_ref()
+                        .and_then(|p| p.get("Imdb"))
+                        .is_none()
+                })
                 .filter_map(|it| it.series_id.clone())
                 .collect::<std::collections::HashSet<_>>()
                 .into_iter()
@@ -126,8 +146,13 @@ impl Task for JellyfinImportTask {
             let series_map: HashMap<String, String> = if series_ids.is_empty() {
                 HashMap::new()
             } else {
-                debug!("fetching {} series for episode resolution", series_ids.len());
-                client.execute(GetJellyfinItemsByIds { ids: series_ids }).await?
+                debug!(
+                    "fetching {} series for episode resolution",
+                    series_ids.len()
+                );
+                client
+                    .execute(GetJellyfinItemsByIds { ids: series_ids })
+                    .await?
                     .items
                     .into_iter()
                     .filter_map(|s| {
@@ -151,9 +176,7 @@ impl Task for JellyfinImportTask {
                 }
 
                 let provider_ids = item.provider_ids.as_ref();
-                let imdb = provider_ids
-                    .and_then(|p| p.get("Imdb"))
-                    .map(String::as_str);
+                let imdb = provider_ids.and_then(|p| p.get("Imdb")).map(String::as_str);
                 let tmdb = provider_ids
                     .and_then(|p| p.get("Tmdb"))
                     .and_then(|v| v.parse::<i64>().ok());
@@ -167,7 +190,9 @@ impl Task for JellyfinImportTask {
                         Some(k) => k,
                         None => {
                             let item_type = item.item_type.as_deref();
-                            let series_imdb = series_map.get(item.series_id.as_deref().unwrap_or("")).map(String::as_str);
+                            let series_imdb = series_map
+                                .get(item.series_id.as_deref().unwrap_or(""))
+                                .map(String::as_str);
                             let season = item.parent_index_number;
                             let episode = item.index_number;
                             warn!(
@@ -206,9 +231,7 @@ impl Task for JellyfinImportTask {
         progress.set(100.0);
         info!(
             users_created,
-            states_imported,
-            states_unresolved,
-            "Jellyfin import complete"
+            states_imported, states_unresolved, "Jellyfin import complete"
         );
         Ok(())
     }
@@ -260,16 +283,23 @@ async fn build_media_index(db: &sqlx::SqlitePool) -> Result<MediaIndex> {
     Ok(index)
 }
 
-fn stremio_key(item: &JellyfinItem, series_map: &HashMap<String, String>) -> Option<String> {
+fn stremio_key(
+    item: &JellyfinItem,
+    series_map: &HashMap<String, String>,
+) -> Option<String> {
     match item.item_type.as_deref() {
         Some("Movie") => {
             let imdb = item.provider_ids.as_ref()?.get("Imdb")?;
             Some(imdb.clone())
         }
         Some("Episode") => {
-            let series_imdb = item.series_provider_ids.as_ref()
+            let series_imdb = item
+                .series_provider_ids
+                .as_ref()
                 .and_then(|p| p.get("Imdb"))
-                .or_else(|| item.series_id.as_ref().and_then(|id| series_map.get(id)))?;
+                .or_else(|| {
+                    item.series_id.as_ref().and_then(|id| series_map.get(id))
+                })?;
             let season = item.parent_index_number?;
             let episode = item.index_number?;
             Some(format!("{series_imdb}:{season}:{episode}"))

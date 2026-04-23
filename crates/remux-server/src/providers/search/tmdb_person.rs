@@ -30,7 +30,9 @@ impl SearchService for TmdbPersonSearchService {
             .with_auth(sdks::BearerAuth { token: api_key });
 
         let resp = client
-            .execute(sdks::tmdb::PersonSearchEndpoint { query: query.to_string() })
+            .execute(sdks::tmdb::PersonSearchEndpoint {
+                query: query.to_string(),
+            })
             .await?;
 
         let media = resp
@@ -40,7 +42,9 @@ impl SearchService for TmdbPersonSearchService {
             .map(|p| {
                 let media_id = format!("person:{}", p.name.to_lowercase());
                 let id = utils::get_stable_uuid(media_id.clone());
-                let poster = p.profile_path.as_deref()
+                let poster = p
+                    .profile_path
+                    .as_deref()
                     .filter(|s| !s.is_empty())
                     .map(|s| format!("{}{}", TMDB_IMAGE_BASE, s));
                 let media = db::Media {
@@ -51,7 +55,11 @@ impl SearchService for TmdbPersonSearchService {
                     media_id: Some(media_id),
                     ..Default::default()
                 };
-                ctx.store.insert(id.to_string(), media.clone(), Duration::from_secs(3600));
+                ctx.store.insert(
+                    id.to_string(),
+                    media.clone(),
+                    Duration::from_secs(3600),
+                );
                 media
             })
             .collect();
@@ -59,7 +67,11 @@ impl SearchService for TmdbPersonSearchService {
         Ok(media)
     }
 
-    async fn persist(&self, id: uuid::Uuid, ctx: &AppContext) -> Result<Option<db::Media>> {
+    async fn persist(
+        &self,
+        id: uuid::Uuid,
+        ctx: &AppContext,
+    ) -> Result<Option<db::Media>> {
         let mut media = match ctx.store.get::<db::Media>(id.to_string()) {
             Some(m) => m,
             None => return Ok(None),

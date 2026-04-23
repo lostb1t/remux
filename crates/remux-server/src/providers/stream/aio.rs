@@ -17,7 +17,11 @@ impl StreamService for AioStreamService {
         ]
     }
 
-    async fn get_streams(&self, media: &db::Media, ctx: &AppContext) -> Result<Vec<StreamOption>> {
+    async fn get_streams(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<StreamOption>> {
         let aio_svc = aio::AioService::from_settings(&ctx.db).await?;
         let media_type = db::media_kind_to_aio(&media.kind);
         let id = media
@@ -25,7 +29,9 @@ impl StreamService for AioStreamService {
             .imdb
             .clone()
             .or_else(|| media.media_id.clone())
-            .ok_or_else(|| anyhow!("media has no identifiable ID for AIO stream lookup"))?;
+            .ok_or_else(|| {
+                anyhow!("media has no identifiable ID for AIO stream lookup")
+            })?;
 
         let streams = aio_svc.get_streams(media_type, id).await?;
 

@@ -8,9 +8,9 @@ use remux_macros::get;
 use std::time::Duration;
 
 use crate::AppState;
+use crate::api;
 use crate::db;
 use crate::db::auth;
-use crate::api;
 use axum_anyhow::{ApiResult as Result, IntoApiError};
 
 #[get("/search/hints")]
@@ -56,10 +56,7 @@ pub async fn search_hints(
             &state.ctx.db,
             &db::MediaFilter {
                 title_contains: Some(term.clone()),
-                kind: Some(vec![
-                    db::MediaKind::Movie,
-                    db::MediaKind::Series,
-                ]),
+                kind: Some(vec![db::MediaKind::Movie, db::MediaKind::Series]),
                 limit: Some(limit as u32),
                 ..Default::default()
             },
@@ -71,9 +68,12 @@ pub async fn search_hints(
 
         // AIO live search if DB returns nothing
         let video_results = if db_results.is_empty() {
-            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await {
-                let movie_fut = aio.search(crate::sdks::aio::MediaType::Movie, term.clone());
-                let series_fut = aio.search(crate::sdks::aio::MediaType::Series, term.clone());
+            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await
+            {
+                let movie_fut =
+                    aio.search(crate::sdks::aio::MediaType::Movie, term.clone());
+                let series_fut =
+                    aio.search(crate::sdks::aio::MediaType::Series, term.clone());
                 let (movie_res, series_res) = tokio::join!(movie_fut, series_fut);
 
                 let mut combined = series_res.unwrap_or_default();
@@ -81,10 +81,15 @@ pub async fn search_hints(
 
                 combined
                     .into_iter()
-                    .unique_by(|meta| meta.imdb_id.clone().unwrap_or_else(|| meta.id.clone()))
+                    .unique_by(|meta| {
+                        meta.imdb_id.clone().unwrap_or_else(|| meta.id.clone())
+                    })
                     .filter_map(|meta| {
                         let m = db::Media::try_from(meta.clone()).ok()?;
-                        state.ctx.store.insert(m.id, meta, Duration::from_secs(3600));
+                        state
+                            .ctx
+                            .store
+                            .insert(m.id, meta, Duration::from_secs(3600));
                         Some(m)
                     })
                     .collect()
@@ -99,7 +104,10 @@ pub async fn search_hints(
     }
 
     if wants_music {
-        tracing::info!(term, "search_hints: querying music via SearchServiceManager");
+        tracing::info!(
+            term,
+            "search_hints: querying music via SearchServiceManager"
+        );
         match state
             .ctx
             .search
@@ -130,7 +138,9 @@ pub async fn search_hints(
                 db::MediaKind::Series | db::MediaKind::Season
             )),
             media_type: match m.kind {
-                db::MediaKind::Movie | db::MediaKind::Episode => Some("Video".to_string()),
+                db::MediaKind::Movie | db::MediaKind::Episode => {
+                    Some("Video".to_string())
+                }
                 db::MediaKind::Track => Some("Audio".to_string()),
                 _ => None,
             },

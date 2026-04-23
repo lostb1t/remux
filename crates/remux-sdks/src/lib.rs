@@ -130,8 +130,8 @@ fn default_error_mapper(status: u16, endpoint: &str, body: &str) -> ClientError 
     if status == 401 {
         ClientError::Unauthorized
     } else {
-        let message = try_extract_error_message(body)
-            .unwrap_or_else(|| "http error".to_string());
+        let message =
+            try_extract_error_message(body).unwrap_or_else(|| "http error".to_string());
         ClientError::Http {
             status,
             message,
@@ -224,11 +224,13 @@ impl<A: Auth + Clone> RestClient<A> {
 
         if endpoint.cache_ttl().is_some() {
             if let Some(body) = HTTP_CACHE.get::<String>(&cache_key) {
-                return Ok(serde_json::from_str(&body).map_err(|e| ClientError::Json {
-                    status: 0,
-                    source: e,
-                    endpoint: Some(url.to_string()),
-                    body: None,
+                return Ok(serde_json::from_str(&body).map_err(|e| {
+                    ClientError::Json {
+                        status: 0,
+                        source: e,
+                        endpoint: Some(url.to_string()),
+                        body: None,
+                    }
                 })?);
             }
         }

@@ -9,8 +9,8 @@ use axum::{body::Body, response::Response};
 use bytes::Bytes;
 use http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use tower::{Layer, Service};
 use tower::util::BoxCloneSyncService;
+use tower::{Layer, Service};
 use tower_http::services::ServeDir;
 
 #[cfg(feature = "desktop")]
@@ -60,8 +60,7 @@ const ANFITEATRO_SW_CLEANUP_JS: &str = r#"(function(){
     } catch (_) {}
 })();"#;
 
-type StaticService =
-    BoxCloneSyncService<Request<Body>, Response<Body>, Infallible>;
+type StaticService = BoxCloneSyncService<Request<Body>, Response<Body>, Infallible>;
 
 fn strip_mount_prefix(path: &str) -> String {
     // Allow remux to run behind a `/anfi` reverse-proxy prefix.
@@ -110,7 +109,11 @@ fn normalize_spa_inner_path(path: &str) -> String {
 }
 
 fn rewrite_request_path(mut req: Request<Body>, new_path: &str) -> Request<Body> {
-    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
     if let Ok(uri) = format!("{new_path}{query}").parse() {
         *req.uri_mut() = uri;
     }
@@ -132,10 +135,7 @@ fn unregistering_service_worker_response() -> Response<Body> {
         .unwrap_or_else(|_| Response::new(Body::from(UNREGISTER_SW_SCRIPT)))
 }
 
-fn redirect_to_trailing_slash(
-    path: &str,
-    query: Option<&str>,
-) -> Response<Body> {
+fn redirect_to_trailing_slash(path: &str, query: Option<&str>) -> Response<Body> {
     let location = match query {
         Some(q) if !q.is_empty() => format!("{path}/?{q}"),
         _ => format!("{path}/"),
@@ -148,9 +148,7 @@ fn redirect_to_trailing_slash(
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
-async fn inject_anfiteatro_runtime_guards(
-    response: Response<Body>,
-) -> Response<Body> {
+async fn inject_anfiteatro_runtime_guards(response: Response<Body>) -> Response<Body> {
     // Only mutate HTML responses; static assets pass through untouched.
     let is_html = response
         .headers()
@@ -179,10 +177,9 @@ async fn inject_anfiteatro_runtime_guards(
 
     let out = Bytes::from(html.into_bytes());
     let mut response = Response::from_parts(parts, Body::from(out.clone()));
-    response.headers_mut().insert(
-        header::CONTENT_LENGTH,
-        http::HeaderValue::from(out.len()),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_LENGTH, http::HeaderValue::from(out.len()));
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         http::HeaderValue::from_static(
@@ -206,7 +203,9 @@ pub struct WebClientService {
 
 impl WebClientService {
     pub fn from_filesystem(web_path: &str, anfiteatro_web_path: &str) -> Self {
-        let jellyfin = BoxCloneSyncService::new(TransformLayer::new().layer(ServeDir::new(web_path)));
+        let jellyfin = BoxCloneSyncService::new(
+            TransformLayer::new().layer(ServeDir::new(web_path)),
+        );
 
         let anfiteatro = if std::path::Path::new(anfiteatro_web_path)
             .join("index.html")
@@ -223,7 +222,10 @@ impl WebClientService {
             None
         };
 
-        Self { jellyfin, anfiteatro }
+        Self {
+            jellyfin,
+            anfiteatro,
+        }
     }
 }
 
@@ -233,18 +235,17 @@ impl WebClientService {
         jellyfin_web: &'static include_dir::Dir<'static>,
         anfiteatro_web: Option<&'static include_dir::Dir<'static>>,
     ) -> Self {
-        let jellyfin = TransformLayer::new()
-            .layer(EmbeddedDir {
-                dir: jellyfin_web,
-                spa_fallback: false,
-            });
+        let jellyfin = TransformLayer::new().layer(EmbeddedDir {
+            dir: jellyfin_web,
+            spa_fallback: false,
+        });
         let jellyfin = BoxCloneSyncService::new(jellyfin);
 
         let anfiteatro = anfiteatro_web.map(|dir| {
             BoxCloneSyncService::new(TransformLayer::new().layer(EmbeddedDir {
-                    dir,
-                    spa_fallback: false,
-                }))
+                dir,
+                spa_fallback: false,
+            }))
         });
 
         if anfiteatro.is_none() {
@@ -266,10 +267,7 @@ impl Service<Request<Body>> for WebClientService {
     type Future =
         Pin<Box<dyn Future<Output = Result<Response<Body>, Infallible>> + Send>>;
 
-    fn poll_ready(
-        &mut self,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Result<(), Infallible>> {
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
         Poll::Ready(Ok(()))
     }
 

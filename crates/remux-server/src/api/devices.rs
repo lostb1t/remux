@@ -7,8 +7,8 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::db::auth;
 use crate::api;
+use crate::db::auth;
 use axum_anyhow::ApiResult as Result;
 
 #[derive(Deserialize)]

@@ -181,8 +181,11 @@ impl PlaybackSessionManager {
             for entry in entries.flatten() {
                 if let Ok(metadata) = entry.metadata() {
                     if metadata.is_dir() {
-                        let modified = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                        if latest_dir.as_ref().map_or(true, |(_, max)| modified > *max) {
+                        let modified = metadata
+                            .modified()
+                            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        if latest_dir.as_ref().map_or(true, |(_, max)| modified > *max)
+                        {
                             latest_dir = Some((entry.path(), modified));
                         }
                     }
@@ -236,4 +239,3 @@ async fn kill_transcode(ts: Arc<tokio::sync::RwLock<TranscodeSession>>) {
     }
     let _ = std::fs::remove_dir_all(&output_dir);
 }
-

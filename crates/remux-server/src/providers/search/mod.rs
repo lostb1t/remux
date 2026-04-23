@@ -9,7 +9,9 @@ mod musicbrainz;
 mod tmdb_person;
 mod ytdlp;
 pub use aio::AioSearchService;
-pub use deezer::{DeezerAlbumSearchService, DeezerArtistSearchService, DeezerTrackSearchService};
+pub use deezer::{
+    DeezerAlbumSearchService, DeezerArtistSearchService, DeezerTrackSearchService,
+};
 pub use musicbrainz::{MusicBrainzAlbumSearchService, MusicBrainzTrackSearchService};
 pub use tmdb_person::TmdbPersonSearchService;
 pub use ytdlp::{YtDlpAlbumSearchService, YtDlpSearchService};
@@ -91,16 +93,29 @@ impl SearchServiceManager {
     ) -> Result<Vec<db::Media>> {
         for svc in &self.services {
             if svc.supported_kinds().contains(kind) {
-                tracing::debug!(?kind, query, limit, "SearchServiceManager routing to service");
+                tracing::debug!(
+                    ?kind,
+                    query,
+                    limit,
+                    "SearchServiceManager routing to service"
+                );
                 return svc.search(kind, query, limit, ctx).await;
             }
         }
-        tracing::debug!(?kind, query, "SearchServiceManager: no service registered for kind");
+        tracing::debug!(
+            ?kind,
+            query,
+            "SearchServiceManager: no service registered for kind"
+        );
         Ok(vec![])
     }
 
     /// Try each provider in order; return the first that claims ownership of `id`.
-    pub async fn persist(&self, id: Uuid, ctx: &AppContext) -> Result<Option<db::Media>> {
+    pub async fn persist(
+        &self,
+        id: Uuid,
+        ctx: &AppContext,
+    ) -> Result<Option<db::Media>> {
         for svc in &self.services {
             if let Some(media) = svc.persist(id, ctx).await? {
                 return Ok(Some(media));

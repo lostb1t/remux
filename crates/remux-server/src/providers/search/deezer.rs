@@ -18,7 +18,6 @@ fn build_client() -> reqwest::Client {
         .expect("failed to build HTTP client")
 }
 
-
 #[derive(Deserialize)]
 struct DeezerArtist {
     id: u64,
@@ -44,7 +43,6 @@ struct DeezerAlbumRef {
     title: String,
     cover_medium: Option<String>,
 }
-
 
 #[derive(Deserialize)]
 struct DeezerArtistDetail {
@@ -115,7 +113,6 @@ enum DeezerDiscographyResponse<T> {
     Err { error: serde_json::Value },
 }
 
-
 #[derive(Deserialize)]
 struct TrackSearch {
     data: Vec<DeezerTrack>,
@@ -162,9 +159,12 @@ fn track_to_result(t: DeezerTrack) -> MusicSearchResult {
         series_title: Some(t.artist.name),
         ..Default::default()
     };
-    MusicSearchResult { media: track, album: Some(album), artist: Some(artist) }
+    MusicSearchResult {
+        media: track,
+        album: Some(album),
+        artist: Some(artist),
+    }
 }
-
 
 /// Fetch the full discography for a Deezer artist.
 ///
@@ -176,8 +176,12 @@ async fn fetch_full_discography(
     client: &reqwest::Client,
     artist_id: &str,
 ) -> Result<(db::Media, Vec<(db::Media, Vec<db::Media>)>)> {
-    let artist_resp: DeezerArtistDetail =
-        client.get(format!("{}/artist/{}", BASE, artist_id)).send().await?.json().await?;
+    let artist_resp: DeezerArtistDetail = client
+        .get(format!("{}/artist/{}", BASE, artist_id))
+        .send()
+        .await?
+        .json()
+        .await?;
 
     let artist = db::Media {
         id: crate::utils::get_stable_uuid(format!("deezer-artist:{}", artist_resp.id)),
@@ -195,7 +199,10 @@ async fn fetch_full_discography(
     {
         Ok(r) if r.status().is_success() => r.json().await.unwrap_or_default(),
         _ => {
-            tracing::warn!(artist_id, "Deezer /artist/albums request failed, returning empty");
+            tracing::warn!(
+                artist_id,
+                "Deezer /artist/albums request failed, returning empty"
+            );
             DeezerAlbumList { data: vec![] }
         }
     };
@@ -373,7 +380,9 @@ pub struct DeezerTrackSearchService {
 
 impl Default for DeezerTrackSearchService {
     fn default() -> Self {
-        Self { client: build_client() }
+        Self {
+            client: build_client(),
+        }
     }
 }
 
@@ -420,9 +429,17 @@ impl SearchService for DeezerTrackSearchService {
                         album: None,
                         artist: r.artist.clone(),
                     };
-                    ctx.store.insert(album.id.to_string(), album_result, Duration::from_secs(3600));
+                    ctx.store.insert(
+                        album.id.to_string(),
+                        album_result,
+                        Duration::from_secs(3600),
+                    );
                 }
-                ctx.store.insert(r.media.id.to_string(), r.clone(), Duration::from_secs(3600));
+                ctx.store.insert(
+                    r.media.id.to_string(),
+                    r.clone(),
+                    Duration::from_secs(3600),
+                );
                 r.media
             })
             .collect();
@@ -471,7 +488,6 @@ impl SearchService for DeezerTrackSearchService {
     }
 }
 
-
 #[derive(Deserialize)]
 struct AlbumSearch {
     data: Vec<DeezerAlbum>,
@@ -504,7 +520,11 @@ fn album_to_result(a: DeezerAlbum) -> MusicSearchResult {
         series_title: Some(a.artist.name),
         ..Default::default()
     };
-    MusicSearchResult { media: album, album: None, artist: Some(artist) }
+    MusicSearchResult {
+        media: album,
+        album: None,
+        artist: Some(artist),
+    }
 }
 
 /// Search backend backed by the Deezer public API — handles albums.
@@ -516,7 +536,9 @@ pub struct DeezerAlbumSearchService {
 
 impl Default for DeezerAlbumSearchService {
     fn default() -> Self {
-        Self { client: build_client() }
+        Self {
+            client: build_client(),
+        }
     }
 }
 
@@ -556,7 +578,11 @@ impl SearchService for DeezerAlbumSearchService {
             .into_iter()
             .map(album_to_result)
             .map(|r| {
-                ctx.store.insert(r.media.id.to_string(), r.clone(), Duration::from_secs(3600));
+                ctx.store.insert(
+                    r.media.id.to_string(),
+                    r.clone(),
+                    Duration::from_secs(3600),
+                );
                 r.media
             })
             .collect();
@@ -611,7 +637,9 @@ pub struct DeezerArtistSearchService {
 
 impl Default for DeezerArtistSearchService {
     fn default() -> Self {
-        Self { client: build_client() }
+        Self {
+            client: build_client(),
+        }
     }
 }
 
@@ -651,15 +679,26 @@ impl SearchService for DeezerArtistSearchService {
             .into_iter()
             .map(|a| {
                 let artist = db::Media {
-                    id: crate::utils::get_stable_uuid(format!("deezer-artist:{}", a.id)),
+                    id: crate::utils::get_stable_uuid(format!(
+                        "deezer-artist:{}",
+                        a.id
+                    )),
                     title: a.name,
                     kind: db::MediaKind::Artist,
                     media_id: Some(a.id.to_string()),
                     poster: a.picture_xl,
                     ..Default::default()
                 };
-                let result = MusicSearchResult { media: artist, album: None, artist: None };
-                ctx.store.insert(result.media.id.to_string(), result.clone(), Duration::from_secs(3600));
+                let result = MusicSearchResult {
+                    media: artist,
+                    album: None,
+                    artist: None,
+                };
+                ctx.store.insert(
+                    result.media.id.to_string(),
+                    result.clone(),
+                    Duration::from_secs(3600),
+                );
                 result.media
             })
             .collect();

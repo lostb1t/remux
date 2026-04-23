@@ -2,7 +2,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use remux_sdks::remux::models::{LyricDto, LyricLine, LyricMetadata, RemoteLyricInfoDto};
+use remux_sdks::remux::models::{
+    LyricDto, LyricLine, LyricMetadata, RemoteLyricInfoDto,
+};
 
 use super::{LyricProvider, LyricSearchRequest};
 
@@ -32,7 +34,10 @@ fn parse_lrc(lrc: &str) -> Vec<LyricLine> {
             let mins: f64 = mins_str.parse().ok()?;
             let secs: f64 = secs_str.parse().ok()?;
             let ticks = ((mins * 60.0 + secs) * TICKS_PER_SECOND) as i64;
-            Some(LyricLine { text, start: Some(ticks) })
+            Some(LyricLine {
+                text,
+                start: Some(ticks),
+            })
         })
         .collect()
 }
@@ -40,7 +45,10 @@ fn parse_lrc(lrc: &str) -> Vec<LyricLine> {
 fn plain_to_lines(plain: &str) -> Vec<LyricLine> {
     plain
         .lines()
-        .map(|l| LyricLine { text: l.to_string(), start: None })
+        .map(|l| LyricLine {
+            text: l.to_string(),
+            start: None,
+        })
         .collect()
 }
 
@@ -114,13 +122,20 @@ impl LyricProvider for LrcLibProvider {
         Ok(first)
     }
 
-    async fn search(&self, req: &LyricSearchRequest) -> Result<Vec<RemoteLyricInfoDto>> {
+    async fn search(
+        &self,
+        req: &LyricSearchRequest,
+    ) -> Result<Vec<RemoteLyricInfoDto>> {
         let mut url = reqwest::Url::parse(&format!("{}/search", BASE))?;
         {
             let mut q = url.query_pairs_mut();
             q.append_pair("track_name", &req.title);
-            if let Some(a) = &req.artist { q.append_pair("artist_name", a); }
-            if let Some(a) = &req.album  { q.append_pair("album_name", a); }
+            if let Some(a) = &req.artist {
+                q.append_pair("artist_name", a);
+            }
+            if let Some(a) = &req.album {
+                q.append_pair("album_name", a);
+            }
         }
         tracing::debug!(url = %url, "lrclib: search request");
         let resp = self.client.get(url).send().await?;
@@ -129,7 +144,11 @@ impl LyricProvider for LrcLibProvider {
             return Ok(vec![]);
         }
         let tracks: Vec<LrcLibTrack> = resp.json().await?;
-        tracing::debug!(count = tracks.len(), "lrclib: search returned {} results", tracks.len());
+        tracing::debug!(
+            count = tracks.len(),
+            "lrclib: search returned {} results",
+            tracks.len()
+        );
         Ok(tracks
             .iter()
             .filter_map(|t| {
@@ -153,7 +172,11 @@ impl LyricProvider for LrcLibProvider {
             tracing::warn!(status = %resp.status(), "lrclib /get/{id} returned error");
             return Ok(None);
         }
-        Ok(resp.json::<LrcLibTrack>().await.ok().and_then(|t| track_to_dto(&t)))
+        Ok(resp
+            .json::<LrcLibTrack>()
+            .await
+            .ok()
+            .and_then(|t| track_to_dto(&t)))
     }
 }
 
@@ -163,9 +186,15 @@ impl LrcLibProvider {
         {
             let mut q = url.query_pairs_mut();
             q.append_pair("track_name", &req.title);
-            if let Some(a) = &req.artist { q.append_pair("artist_name", a); }
-            if let Some(a) = &req.album  { q.append_pair("album_name", a); }
-            if let Some(d) = req.duration_secs { q.append_pair("duration", &format!("{d:.2}")); }
+            if let Some(a) = &req.artist {
+                q.append_pair("artist_name", a);
+            }
+            if let Some(a) = &req.album {
+                q.append_pair("album_name", a);
+            }
+            if let Some(d) = req.duration_secs {
+                q.append_pair("duration", &format!("{d:.2}"));
+            }
         }
         tracing::debug!(url = %url, "lrclib: exact-match request");
         let resp = self.client.get(url).send().await?;
@@ -176,6 +205,10 @@ impl LrcLibProvider {
             tracing::warn!(status = %resp.status(), "lrclib /get returned error");
             return Ok(None);
         }
-        Ok(resp.json::<LrcLibTrack>().await.ok().and_then(|t| track_to_dto(&t)))
+        Ok(resp
+            .json::<LrcLibTrack>()
+            .await
+            .ok()
+            .and_then(|t| track_to_dto(&t)))
     }
 }

@@ -164,10 +164,7 @@ impl Device {
         Ok(result.rows_affected() > 0)
     }
 
-    fn merge_runtime_metadata_from_header(
-        &mut self,
-        header: &JellyfinAuthHeader,
-    ) {
+    fn merge_runtime_metadata_from_header(&mut self, header: &JellyfinAuthHeader) {
         // Only trust metadata updates for this exact device identity.
         if let Some(device_id) = header.device_id.as_deref() {
             if device_id != self.id {
@@ -203,11 +200,7 @@ impl Device {
 
     /// Update last_activity_at to now and refresh runtime-identifying fields
     /// (device name/client/version) when present.
-    pub async fn touch(
-        &self,
-        db: &SqlitePool,
-        remote_ip: Option<&str>,
-    ) -> Result<()> {
+    pub async fn touch(&self, db: &SqlitePool, remote_ip: Option<&str>) -> Result<()> {
         sqlx::query(
             "UPDATE devices SET last_activity_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), \
              remote_ip = COALESCE(?, remote_ip), \
@@ -228,7 +221,11 @@ impl Device {
     }
 
     /// Store client capabilities JSON for this device.
-    pub async fn save_capabilities(db: &SqlitePool, device_id: &str, caps: &crate::api::ClientCapabilitiesDto) -> Result<()> {
+    pub async fn save_capabilities(
+        db: &SqlitePool,
+        device_id: &str,
+        caps: &crate::api::ClientCapabilitiesDto,
+    ) -> Result<()> {
         sqlx::query("UPDATE devices SET capabilities = ? WHERE id = ?")
             .bind(sqlx::types::Json(caps))
             .bind(device_id)
@@ -304,7 +301,9 @@ impl FromRequestParts<AppState> for AuthSession {
             });
 
         // First try the devices table (normal session token).
-        if let Some(mut device) = Device::get_by_access_token(&state.ctx.db, token).await? {
+        if let Some(mut device) =
+            Device::get_by_access_token(&state.ctx.db, token).await?
+        {
             device.merge_runtime_metadata_from_header(&jfauth);
             let _ = device.touch(&state.ctx.db, remote_ip.as_deref()).await;
             let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
@@ -416,18 +415,10 @@ impl JellyfinAuthHeader {
         }
 
         Ok(Self {
-            client: map
-                .get("Client")
-                .map(|v| Self::decode_header_text(v)),
-            device: map
-                .get("Device")
-                .map(|v| Self::decode_header_text(v)),
-            device_id: map
-                .get("DeviceId")
-                .map(|v| Self::decode_header_text(v)),
-            version: map
-                .get("Version")
-                .map(|v| Self::decode_header_text(v)),
+            client: map.get("Client").map(|v| Self::decode_header_text(v)),
+            device: map.get("Device").map(|v| Self::decode_header_text(v)),
+            device_id: map.get("DeviceId").map(|v| Self::decode_header_text(v)),
+            version: map.get("Version").map(|v| Self::decode_header_text(v)),
             token: map.get("Token").cloned(),
             ..Default::default()
         })

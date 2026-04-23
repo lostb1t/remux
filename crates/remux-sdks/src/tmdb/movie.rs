@@ -81,7 +81,10 @@ impl Endpoint for MovieEndpoint {
             params.push(("language".to_string(), lang.clone()));
         }
         if !self.append_to_response.is_empty() {
-            params.push(("append_to_response".to_string(), self.append_to_response.join(",")));
+            params.push((
+                "append_to_response".to_string(),
+                self.append_to_response.join(","),
+            ));
         }
         params
     }

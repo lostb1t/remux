@@ -7,9 +7,9 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::api;
 use crate::db;
 use crate::db::auth::AuthSession;
-use crate::api;
 use crate::utils::get_uuid;
 
 // ---------------------------------------------------------------------------
@@ -252,11 +252,21 @@ async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
                 .map(|d| d.app_version.clone())
                 .filter(|v| !v.is_empty());
 
-            let (playable_media_types, supported_commands, supports_media_control, supports_remote_control) =
-                capabilities.as_ref().map_or(
-                    (vec![], vec![], true, true),
-                    |c| (c.playable_media_types.clone(), c.supported_commands.clone(), c.supports_media_control, c.supports_media_control),
-                );
+            let (
+                playable_media_types,
+                supported_commands,
+                supports_media_control,
+                supports_remote_control,
+            ) = capabilities
+                .as_ref()
+                .map_or((vec![], vec![], true, true), |c| {
+                    (
+                        c.playable_media_types.clone(),
+                        c.supported_commands.clone(),
+                        c.supports_media_control,
+                        c.supports_media_control,
+                    )
+                });
 
             api::SessionInfoDto {
                 id: Some(session.play_session_id.clone()),

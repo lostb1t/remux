@@ -19,7 +19,8 @@ pub trait LyricProvider: Send + Sync {
     /// Exact-match fetch; used by `GET /Audio/{id}/Lyrics`.
     async fn fetch(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>>;
     /// Fuzzy search returning multiple candidates; used by `GET /Audio/{id}/RemoteSearch/Lyrics`.
-    async fn search(&self, req: &LyricSearchRequest) -> Result<Vec<RemoteLyricInfoDto>>;
+    async fn search(&self, req: &LyricSearchRequest)
+    -> Result<Vec<RemoteLyricInfoDto>>;
     /// Fetch a specific result by provider-scoped ID; used by `GET /Providers/Lyrics/{id}`.
     async fn get_by_id(&self, id: &str) -> Result<Option<LyricDto>>;
 }
@@ -51,7 +52,10 @@ impl LyricService {
         Ok(None)
     }
 
-    pub async fn search(&self, req: &LyricSearchRequest) -> Result<Vec<RemoteLyricInfoDto>> {
+    pub async fn search(
+        &self,
+        req: &LyricSearchRequest,
+    ) -> Result<Vec<RemoteLyricInfoDto>> {
         let mut results = Vec::new();
         for provider in &self.providers {
             match provider.search(req).await {
@@ -65,7 +69,10 @@ impl LyricService {
     }
 
     /// `composite_id` is `{providerName}_{id}` (e.g. `lrclib_3396226`).
-    pub async fn get_by_composite_id(&self, composite_id: &str) -> Result<Option<LyricDto>> {
+    pub async fn get_by_composite_id(
+        &self,
+        composite_id: &str,
+    ) -> Result<Option<LyricDto>> {
         for provider in &self.providers {
             let prefix = format!("{}_", provider.name());
             if let Some(inner_id) = composite_id.strip_prefix(&prefix) {

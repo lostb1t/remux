@@ -122,12 +122,16 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
     );
 
     #[cfg(all(dashboard_built, jellyfin_web_built))]
-    let web_client = remux_server::WebClientService::from_embedded(&JELLYFIN_WEB, anfiteatro);
+    let web_client =
+        remux_server::WebClientService::from_embedded(&JELLYFIN_WEB, anfiteatro);
 
     #[cfg(not(all(dashboard_built, jellyfin_web_built)))]
     let web_client = {
         let paths = remux_server::FilesystemPaths::default();
-        remux_server::WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path)
+        remux_server::WebClientService::from_filesystem(
+            &paths.web_path,
+            &paths.anfiteatro_web_path,
+        )
     };
 
     let port = config.port;

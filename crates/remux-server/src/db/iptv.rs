@@ -25,7 +25,6 @@ pub enum IptvSourceType {
     Xtream,
 }
 
-
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct IptvSource {
     #[default(get_uuid())]
@@ -119,7 +118,6 @@ impl IptvSource {
         Ok(result.rows_affected() > 0)
     }
 }
-
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct EpgSource {

@@ -87,8 +87,12 @@ pub async fn post_startup_user(
 ) -> Result<impl IntoResponse> {
     require_wizard_incomplete(&state).await?;
     if let (Some(name), Some(password)) = (body.name, body.password) {
-        let mut user =
-            crate::db::User::new_with_password(String::new(), name.into_inner(), &password, None)?;
+        let mut user = crate::db::User::new_with_password(
+            String::new(),
+            name.into_inner(),
+            &password,
+            None,
+        )?;
         user.is_admin = true;
         user.save_by_username(&state.ctx.db).await?;
     }

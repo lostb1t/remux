@@ -6,11 +6,10 @@ use remux_macros::get;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::api;
 use crate::db;
 use crate::db::auth;
-use crate::api;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt};
-
 
 #[get("/studios")]
 pub async fn studios(
@@ -30,10 +29,7 @@ pub async fn studios(
     .records;
     let total = records.len() as i64;
     Ok(Json(api::BaseItemDtoQueryResult {
-        items: records
-            .into_iter()
-            .map(api::db_media_to_item)
-            .collect(),
+        items: records.into_iter().map(api::db_media_to_item).collect(),
         total_record_count: total,
         start_index: q.start_index.unwrap_or(0),
     }))
@@ -62,7 +58,6 @@ pub async fn studio_by_name(
     Ok(Json(api::db_media_to_item(record)))
 }
 
-
 #[get("/years")]
 pub async fn years(
     State(state): State<AppState>,
@@ -71,9 +66,7 @@ pub async fn years(
 ) -> Result<impl IntoResponse> {
     let kinds: Vec<db::MediaKind> = q
         .include_item_types
-        .unwrap_or_else(|| {
-            vec![api::MediaType::Movie, api::MediaType::Series]
-        })
+        .unwrap_or_else(|| vec![api::MediaType::Movie, api::MediaType::Series])
         .into_iter()
         .filter_map(|t| db::MediaKind::try_from(t).ok())
         .collect();
@@ -118,7 +111,6 @@ pub async fn year_by_value(
     }))
 }
 
-
 #[get("/persons/{name}")]
 pub async fn person_by_name(
     State(state): State<AppState>,
@@ -141,7 +133,6 @@ pub async fn person_by_name(
     .context_not_found("Not Found", "Person not found")?;
     Ok(Json(api::db_media_to_item(record)))
 }
-
 
 #[get("/genres/{name}")]
 pub async fn genre_by_name(

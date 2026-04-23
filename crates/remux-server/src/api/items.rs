@@ -5,6 +5,7 @@ use axum::response::IntoResponse;
 use axum_extra::extract::Query;
 use dashmap::DashMap;
 use http::StatusCode;
+use itertools::Itertools;
 use remux_macros::{delete, get, patch, post};
 use serde::Deserialize;
 use std::sync::{Arc, OnceLock};
@@ -14,7 +15,6 @@ use tracing::error;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
-use itertools::Itertools;
 use uuid::Uuid;
 
 static PERSIST_LOCKS: OnceLock<DashMap<Uuid, Arc<Mutex<()>>>> = OnceLock::new();
@@ -25,7 +25,10 @@ fn persist_locks() -> &'static DashMap<Uuid, Arc<Mutex<()>>> {
 
 /// For each candidate ID: if not in DB, create/acquire its persist lock and persist if still
 /// missing; if in DB but lock is held, wait for it. Returns true if a query retry is warranted.
-async fn wait_for_persist(ids: &[Uuid], ctx: &crate::AppContext) -> anyhow::Result<bool> {
+async fn wait_for_persist(
+    ids: &[Uuid],
+    ctx: &crate::AppContext,
+) -> anyhow::Result<bool> {
     for &id in ids {
         let in_db = db::Media::get_by_id(&ctx.db, &id).await?.is_some();
         if !in_db {
@@ -48,10 +51,10 @@ async fn wait_for_persist(ids: &[Uuid], ctx: &crate::AppContext) -> anyhow::Resu
 }
 
 use crate::AppState;
+use crate::api;
 use crate::db;
 use crate::db::auth;
 use crate::errors::LogErr;
-use crate::api;
 use crate::sdks;
 use crate::utils::IntoVec;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
@@ -121,16 +124,16 @@ pub async fn get_items(
         // strips music kinds out.
         let raw_types = q.include_item_types.as_deref().unwrap_or(&[]);
         let cfg = db::Settings::get_config(&state.ctx.db).await?;
-        let music_enabled = cfg.music_enabled.unwrap_or(true);
-        let wants_tracks = music_enabled
-            && cfg.search_tracks_remote.unwrap_or(true)
+        let wants_tracks = cfg.search_tracks_remote.unwrap_or(true)
             && raw_types.iter().any(|t| matches!(t, api::MediaType::Audio));
-        let wants_albums = music_enabled
-            && cfg.search_albums_remote.unwrap_or(true)
-            && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicAlbum));
-        let wants_artists = music_enabled
-            && cfg.search_artists_remote.unwrap_or(true)
-            && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicArtist));
+        let wants_albums = cfg.search_albums_remote.unwrap_or(true)
+            && raw_types
+                .iter()
+                .any(|t| matches!(t, api::MediaType::MusicAlbum));
+        let wants_artists = cfg.search_artists_remote.unwrap_or(true)
+            && raw_types
+                .iter()
+                .any(|t| matches!(t, api::MediaType::MusicArtist));
         let wants_music = wants_tracks || wants_albums || wants_artists;
         let wants_movies = cfg.search_movies_remote.unwrap_or(true)
             && types.contains(&api::MediaType::Movie);
@@ -138,7 +141,9 @@ pub async fn get_items(
             && types.contains(&api::MediaType::Series);
         let wants_video = wants_movies || wants_series;
         let wants_people = cfg.search_people_remote.unwrap_or(true)
-            && raw_types.iter().any(|t| matches!(t, api::MediaType::Person));
+            && raw_types
+                .iter()
+                .any(|t| matches!(t, api::MediaType::Person));
 
         if let Some(s) = search {
             let limit = q.limit.unwrap_or(800) as usize;
@@ -155,21 +160,48 @@ pub async fn get_items(
 
             // Music: remote search or local DB fallback per type
             for (wants_remote, kind, api_type, count_ref) in [
-                (wants_tracks,  db::MediaKind::Track,  api::MediaType::Audio,       &mut tracks_count  as &mut usize),
-                (wants_albums,  db::MediaKind::Album,  api::MediaType::MusicAlbum,  &mut albums_count),
-                (wants_artists, db::MediaKind::Artist, api::MediaType::MusicArtist, &mut artists_count),
+                (
+                    wants_tracks,
+                    db::MediaKind::Track,
+                    api::MediaType::Audio,
+                    &mut tracks_count as &mut usize,
+                ),
+                (
+                    wants_albums,
+                    db::MediaKind::Album,
+                    api::MediaType::MusicAlbum,
+                    &mut albums_count,
+                ),
+                (
+                    wants_artists,
+                    db::MediaKind::Artist,
+                    api::MediaType::MusicArtist,
+                    &mut artists_count,
+                ),
             ] {
-                if !music_enabled || !raw_types.iter().any(|t| *t == api_type) {
+                if !raw_types.iter().any(|t| *t == api_type) {
                     continue;
                 }
-                let item_limit = if matches!(kind, db::MediaKind::Track) { music_limit } else { music_limit.min(10) };
+                let item_limit = if matches!(kind, db::MediaKind::Track) {
+                    music_limit
+                } else {
+                    music_limit.min(10)
+                };
                 if wants_remote {
-                    match state.ctx.search.search(&kind, &s, item_limit, &state.ctx).await {
+                    match state
+                        .ctx
+                        .search
+                        .search(&kind, &s, item_limit, &state.ctx)
+                        .await
+                    {
                         Ok(results) => {
                             *count_ref = results.len();
-                            all_items.extend(results.into_iter().map(api::db_media_to_item));
+                            all_items
+                                .extend(results.into_iter().map(api::db_media_to_item));
                         }
-                        Err(e) => warn!(error = %e, term = %s, ?kind, "get_items: remote music search failed"),
+                        Err(e) => {
+                            warn!(error = %e, term = %s, ?kind, "get_items: remote music search failed")
+                        }
                     }
                 } else {
                     let mut local_q = q.clone();
@@ -178,13 +210,27 @@ pub async fn get_items(
                     local_q.parent_id = None;
                     local_q.start_index = None;
                     local_q.limit = Some(item_limit as u32);
-                    let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
-                    match db::Media::get_by_jellyfin_filter(&state.ctx.db, &local_q, false, Some(&session.user), server_config.as_ref(), None).await {
+                    let server_config =
+                        crate::db::Settings::get_config(&state.ctx.db).await.ok();
+                    match db::Media::get_by_jellyfin_filter(
+                        &state.ctx.db,
+                        &local_q,
+                        false,
+                        Some(&session.user),
+                        server_config.as_ref(),
+                        None,
+                    )
+                    .await
+                    {
                         Ok(r) => {
                             *count_ref = r.records.len();
-                            all_items.extend(r.records.into_iter().map(api::db_media_to_item));
+                            all_items.extend(
+                                r.records.into_iter().map(api::db_media_to_item),
+                            );
                         }
-                        Err(e) => warn!(error = %e, term = %s, ?kind, "get_items: local music search failed"),
+                        Err(e) => {
+                            warn!(error = %e, term = %s, ?kind, "get_items: local music search failed")
+                        }
                     }
                 }
             }
@@ -192,27 +238,48 @@ pub async fn get_items(
             // Video: remote search or local DB fallback per type
             if !types.iter().all(|t| matches!(t, api::MediaType::Episode)) {
                 for (wants_remote, kind, api_type, count_ref) in [
-                    (wants_movies, db::MediaKind::Movie,  api::MediaType::Movie,  &mut movies_count as &mut usize),
-                    (wants_series, db::MediaKind::Series, api::MediaType::Series, &mut series_count),
+                    (
+                        wants_movies,
+                        db::MediaKind::Movie,
+                        api::MediaType::Movie,
+                        &mut movies_count as &mut usize,
+                    ),
+                    (
+                        wants_series,
+                        db::MediaKind::Series,
+                        api::MediaType::Series,
+                        &mut series_count,
+                    ),
                 ] {
                     if !types.contains(&api_type) {
                         continue;
                     }
                     if wants_remote {
-                        match state.ctx.search.search(&kind, &s, limit, &state.ctx).await {
+                        match state
+                            .ctx
+                            .search
+                            .search(&kind, &s, limit, &state.ctx)
+                            .await
+                        {
                             Ok(results) => {
                                 let items: Vec<_> = results
                                     .into_iter()
                                     .map(api::db_media_to_item)
                                     .filter(|item| {
                                         types.contains(&item.type_)
-                                            && q.media_types.as_ref().map_or(true, |mt| mt.contains(&item.media_type))
+                                            && q.media_types
+                                                .as_ref()
+                                                .map_or(true, |mt| {
+                                                    mt.contains(&item.media_type)
+                                                })
                                     })
                                     .collect();
                                 *count_ref = items.len();
                                 all_items.extend(items);
                             }
-                            Err(e) => warn!(error = %e, ?kind, "get_items: remote video search failed"),
+                            Err(e) => {
+                                warn!(error = %e, ?kind, "get_items: remote video search failed")
+                            }
                         }
                     } else {
                         let mut local_q = q.clone();
@@ -221,13 +288,27 @@ pub async fn get_items(
                         local_q.parent_id = None;
                         local_q.start_index = None;
                         local_q.limit = Some(limit as u32);
-                        let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
-                        match db::Media::get_by_jellyfin_filter(&state.ctx.db, &local_q, false, Some(&session.user), server_config.as_ref(), None).await {
+                        let server_config =
+                            crate::db::Settings::get_config(&state.ctx.db).await.ok();
+                        match db::Media::get_by_jellyfin_filter(
+                            &state.ctx.db,
+                            &local_q,
+                            false,
+                            Some(&session.user),
+                            server_config.as_ref(),
+                            None,
+                        )
+                        .await
+                        {
                             Ok(r) => {
                                 *count_ref = r.records.len();
-                                all_items.extend(r.records.into_iter().map(api::db_media_to_item));
+                                all_items.extend(
+                                    r.records.into_iter().map(api::db_media_to_item),
+                                );
                             }
-                            Err(e) => warn!(error = %e, ?kind, "get_items: local video search failed"),
+                            Err(e) => {
+                                warn!(error = %e, ?kind, "get_items: local video search failed")
+                            }
                         }
                     }
                 }
@@ -235,22 +316,46 @@ pub async fn get_items(
 
             // People: remote TMDB search.
             if wants_people {
-                match state.ctx.search.search(&db::MediaKind::Person, &s, limit.min(20), &state.ctx).await {
+                match state
+                    .ctx
+                    .search
+                    .search(&db::MediaKind::Person, &s, limit.min(20), &state.ctx)
+                    .await
+                {
                     Ok(results) => {
                         people_count = results.len();
-                        all_items.extend(results.into_iter().map(api::db_media_to_item));
+                        all_items
+                            .extend(results.into_iter().map(api::db_media_to_item));
                     }
                     Err(e) => warn!(error = %e, "get_items: people search failed"),
                 }
             }
 
             let mut counts = vec![];
-            if music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::Audio))       { counts.push(format!("tracks={tracks_count}")); }
-            if music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicAlbum))  { counts.push(format!("albums={albums_count}")); }
-            if music_enabled && raw_types.iter().any(|t| matches!(t, api::MediaType::MusicArtist)) { counts.push(format!("artists={artists_count}")); }
-            if types.contains(&api::MediaType::Movie)  { counts.push(format!("movies={movies_count}")); }
-            if types.contains(&api::MediaType::Series) { counts.push(format!("series={series_count}")); }
-            if wants_people { counts.push(format!("people={people_count}")); }
+            if raw_types.iter().any(|t| matches!(t, api::MediaType::Audio)) {
+                counts.push(format!("tracks={tracks_count}"));
+            }
+            if raw_types
+                .iter()
+                .any(|t| matches!(t, api::MediaType::MusicAlbum))
+            {
+                counts.push(format!("albums={albums_count}"));
+            }
+            if raw_types
+                .iter()
+                .any(|t| matches!(t, api::MediaType::MusicArtist))
+            {
+                counts.push(format!("artists={artists_count}"));
+            }
+            if types.contains(&api::MediaType::Movie) {
+                counts.push(format!("movies={movies_count}"));
+            }
+            if types.contains(&api::MediaType::Series) {
+                counts.push(format!("series={series_count}"));
+            }
+            if wants_people {
+                counts.push(format!("people={people_count}"));
+            }
             debug!(
                 query = %s,
                 counts = %counts.join(" "),
@@ -341,11 +446,12 @@ pub async fn get_items(
 
             // Smart collection: extract stored filter rules so they are applied
             // alongside the Jellyfin query (sort, pagination, user-state, etc.).
-            let smart_filter = if parent.collection_kind == Some(db::CollectionKind::Smart) {
-                parent.parse_smart_filter()
-            } else {
-                None
-            };
+            let smart_filter =
+                if parent.collection_kind == Some(db::CollectionKind::Smart) {
+                    parent.parse_smart_filter()
+                } else {
+                    None
+                };
 
             let server_config =
                 crate::db::Settings::get_config(&state.ctx.db).await.ok();
@@ -397,7 +503,9 @@ pub async fn get_items(
     // If result is empty, a parent/artist tree may still be mid-persist. Collect all candidate
     // IDs from the query and wait on whichever has (or needs) a persist lock, then retry once.
     if result.records.is_empty() {
-        let candidates: Vec<Uuid> = q.parent_id.iter()
+        let candidates: Vec<Uuid> = q
+            .parent_id
+            .iter()
             .chain(q.artist_ids.as_deref().unwrap_or(&[]))
             .chain(q.album_artist_ids.as_deref().unwrap_or(&[]))
             .chain(q.contributing_artist_ids.as_deref().unwrap_or(&[]))
@@ -650,17 +758,15 @@ pub async fn items_tags(
             })
             .collect()
         }
-        _ => {
-            sqlx::query("SELECT DISTINCT tag FROM media_tags ORDER BY tag LIMIT 50")
-                .fetch_all(&state.ctx.db)
-                .await?
-                .iter()
-                .map(|r| {
-                    use sqlx::Row;
-                    r.get::<String, _>(0)
-                })
-                .collect()
-        }
+        _ => sqlx::query("SELECT DISTINCT tag FROM media_tags ORDER BY tag LIMIT 50")
+            .fetch_all(&state.ctx.db)
+            .await?
+            .iter()
+            .map(|r| {
+                use sqlx::Row;
+                r.get::<String, _>(0)
+            })
+            .collect(),
     };
     Ok(Json(tags))
 }
@@ -684,24 +790,27 @@ pub async fn items_certifications(
             .fetch_all(&state.ctx.db)
             .await?
             .iter()
-            .map(|r| { use sqlx::Row; r.get::<String, _>(0) })
+            .map(|r| {
+                use sqlx::Row;
+                r.get::<String, _>(0)
+            })
             .collect()
         }
-        _ => {
-            sqlx::query(
-                "SELECT DISTINCT certification FROM media \
+        _ => sqlx::query(
+            "SELECT DISTINCT certification FROM media \
                  WHERE certification IS NOT NULL ORDER BY certification LIMIT 50",
-            )
-            .fetch_all(&state.ctx.db)
-            .await?
-            .iter()
-            .map(|r| { use sqlx::Row; r.get::<String, _>(0) })
-            .collect()
-        }
+        )
+        .fetch_all(&state.ctx.db)
+        .await?
+        .iter()
+        .map(|r| {
+            use sqlx::Row;
+            r.get::<String, _>(0)
+        })
+        .collect(),
     };
     Ok(Json(values))
 }
-
 
 /// Trigger a full library refresh (re-imports all promoted catalogs)
 #[post("/library/refresh")]
@@ -857,7 +966,10 @@ pub async fn item(
         None => {
             // Two concurrent requests for the same id (Jellyfin web UI bug):
             // serialise here so only one triggers the expensive persist.
-            let lock = persist_locks().entry(id).or_insert_with(|| Arc::new(Mutex::new(()))).clone();
+            let lock = persist_locks()
+                .entry(id)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone();
             let _guard = lock.lock().await;
 
             // Re-check under lock — first waiter may have just saved it.
@@ -878,8 +990,14 @@ pub async fn item(
             {
                 Some(m) => m,
                 None => match state.ctx.search.persist(id, &state.ctx).await? {
-                    Some(m) => { persist_locks().remove(&id); m }
-                    None => { persist_locks().remove(&id); return Ok(None); }
+                    Some(m) => {
+                        persist_locks().remove(&id);
+                        m
+                    }
+                    None => {
+                        persist_locks().remove(&id);
+                        return Ok(None);
+                    }
                 },
             }
         }
@@ -888,7 +1006,10 @@ pub async fn item(
     let need_refresh = media.refreshed_at.is_none()
         && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series);
     let needs_sources = want_sources
-        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track);
+        && matches!(
+            media.kind,
+            db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
+        );
 
     tokio::join!(
         async {
@@ -904,7 +1025,9 @@ pub async fn item(
         },
         async {
             if needs_sources {
-                if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+                if media.kind == db::MediaKind::Movie
+                    || media.kind == db::MediaKind::Episode
+                {
                     let db = state.ctx.db.clone();
                     if let Ok(aio) = crate::aio::AioService::from_settings(&db).await {
                         warm_subtitle_cache(&db, &media);
@@ -946,15 +1069,17 @@ pub async fn item(
             .first()
             .and_then(|s| s.probe_data.as_ref())
             .map(|p| p.media_streams.clone())
-            .unwrap_or_else(|| vec![api::MediaStream {
-                index: 0,
-                type_: Some(api::MediaStreamType::Audio),
-                codec: Some("aac".to_string()),
-                channels: Some(2),
-                is_default: Some(true),
-                display_title: Some("Audio".to_string()),
-                ..Default::default()
-            }]);
+            .unwrap_or_else(|| {
+                vec![api::MediaStream {
+                    index: 0,
+                    type_: Some(api::MediaStreamType::Audio),
+                    codec: Some("aac".to_string()),
+                    channels: Some(2),
+                    is_default: Some(true),
+                    display_title: Some("Audio".to_string()),
+                    ..Default::default()
+                }]
+            });
 
         let mut source = api::MediaSourceInfo {
             id: media.id,
@@ -1486,7 +1611,6 @@ pub async fn update_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct PatchItemRequest {
@@ -1522,7 +1646,8 @@ pub async fn patch_item(
         qb.push(", collection_kind = ").push_bind(ck);
     }
     if let Some(sf) = &payload.smart_filter {
-        qb.push(", collection_smart_filter = ").push_bind(sqlx::types::Json(sf));
+        qb.push(", collection_smart_filter = ")
+            .push_bind(sqlx::types::Json(sf));
     }
     if let Some(prm) = payload.promoted {
         qb.push(", promoted = ")
@@ -1544,7 +1669,6 @@ pub async fn patch_item(
 
     Ok(StatusCode::NO_CONTENT)
 }
-
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]

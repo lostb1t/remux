@@ -12,7 +12,6 @@ fn build_client() -> reqwest::Client {
         .expect("failed to build HTTP client")
 }
 
-
 #[derive(Deserialize)]
 struct ArtistCredit {
     name: Option<String>,
@@ -30,7 +29,6 @@ fn year_to_naive(date_str: Option<&str>) -> Option<chrono::NaiveDateTime> {
         .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
 }
 
-
 /// Search backend backed by MusicBrainz — handles albums (release groups).
 ///
 /// Pure HTTP, no subprocess. Typically responds in 50–200 ms.
@@ -40,7 +38,9 @@ pub struct MusicBrainzAlbumSearchService {
 
 impl Default for MusicBrainzAlbumSearchService {
     fn default() -> Self {
-        Self { client: build_client() }
+        Self {
+            client: build_client(),
+        }
     }
 }
 
@@ -66,7 +66,13 @@ impl SearchService for MusicBrainzAlbumSearchService {
         &[db::MediaKind::Album]
     }
 
-    async fn search(&self, _kind: &db::MediaKind, query: &str, limit: usize, _ctx: &AppContext) -> Result<Vec<db::Media>> {
+    async fn search(
+        &self,
+        _kind: &db::MediaKind,
+        query: &str,
+        limit: usize,
+        _ctx: &AppContext,
+    ) -> Result<Vec<db::Media>> {
         let t = std::time::Instant::now();
 
         let url = format!(
@@ -116,7 +122,6 @@ impl SearchService for MusicBrainzAlbumSearchService {
     }
 }
 
-
 /// Search backend backed by MusicBrainz — handles tracks (recordings).
 ///
 /// Pure HTTP, no subprocess. Typically responds in 50–200 ms.
@@ -127,7 +132,9 @@ pub struct MusicBrainzTrackSearchService {
 
 impl Default for MusicBrainzTrackSearchService {
     fn default() -> Self {
-        Self { client: build_client() }
+        Self {
+            client: build_client(),
+        }
     }
 }
 
@@ -166,7 +173,13 @@ impl SearchService for MusicBrainzTrackSearchService {
         &[db::MediaKind::Track]
     }
 
-    async fn search(&self, _kind: &db::MediaKind, query: &str, limit: usize, _ctx: &AppContext) -> Result<Vec<db::Media>> {
+    async fn search(
+        &self,
+        _kind: &db::MediaKind,
+        query: &str,
+        limit: usize,
+        _ctx: &AppContext,
+    ) -> Result<Vec<db::Media>> {
         let t = std::time::Instant::now();
 
         let url = format!(
@@ -193,10 +206,12 @@ impl SearchService for MusicBrainzTrackSearchService {
                     .releases
                     .first()
                     .and_then(|r| r.release_group.as_ref())
-                    .map(|rg| format!(
-                        "https://coverartarchive.org/release-group/{}/front-250",
-                        rg.id
-                    ));
+                    .map(|rg| {
+                        format!(
+                            "https://coverartarchive.org/release-group/{}/front-250",
+                            rg.id
+                        )
+                    });
                 let released_at = rec
                     .releases
                     .first()

@@ -505,12 +505,23 @@ where
     }
 
     Ok(Option::<Repr>::deserialize(de)?.map(|r| match r {
-        Repr::Single(Item::S(s)) => vec![CastMember { name: Some(s), character: None, photo: None }],
+        Repr::Single(Item::S(s)) => vec![CastMember {
+            name: Some(s),
+            character: None,
+            photo: None,
+        }],
         Repr::Single(Item::O(o)) => vec![o],
-        Repr::Array(arr) => arr.into_iter().map(|item| match item {
-            Item::S(s) => CastMember { name: Some(s), character: None, photo: None },
-            Item::O(o) => o,
-        }).collect()
+        Repr::Array(arr) => arr
+            .into_iter()
+            .map(|item| match item {
+                Item::S(s) => CastMember {
+                    name: Some(s),
+                    character: None,
+                    photo: None,
+                },
+                Item::O(o) => o,
+            })
+            .collect(),
     }))
 }
 

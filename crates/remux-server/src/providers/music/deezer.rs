@@ -30,7 +30,6 @@ enum DeezerResponse<T> {
     Err { error: serde_json::Value },
 }
 
-
 #[derive(Deserialize)]
 struct TrackDetail {
     id: u64,
@@ -56,7 +55,6 @@ struct TrackAlbum {
     cover_xl: Option<String>,
     release_date: Option<String>,
 }
-
 
 #[derive(Deserialize)]
 struct AlbumDetail {
@@ -88,7 +86,6 @@ struct AlbumArtist {
     picture_xl: Option<String>,
 }
 
-
 /// Music metadata provider backed by the Deezer public API.
 ///
 /// Fetches full track/album details by Deezer ID (`media.media_id`).
@@ -99,13 +96,19 @@ pub struct DeezerMusicMetaProvider {
 
 impl Default for DeezerMusicMetaProvider {
     fn default() -> Self {
-        Self { client: build_client() }
+        Self {
+            client: build_client(),
+        }
     }
 }
 
 #[async_trait]
 impl MusicMetaProvider for DeezerMusicMetaProvider {
-    async fn fetch(&self, media: &db::Media, _ctx: &AppContext) -> Result<Option<MusicMetaResult>> {
+    async fn fetch(
+        &self,
+        media: &db::Media,
+        _ctx: &AppContext,
+    ) -> Result<Option<MusicMetaResult>> {
         let deezer_id = match &media.media_id {
             Some(id) => id.clone(),
             None => return Ok(None),
@@ -214,7 +217,11 @@ impl DeezerMusicMetaProvider {
             ..Default::default()
         };
 
-        tracing::debug!(deezer_id, nb_tracks = a.nb_tracks, "Deezer album detail fetched");
+        tracing::debug!(
+            deezer_id,
+            nb_tracks = a.nb_tracks,
+            "Deezer album detail fetched"
+        );
         Ok(Some(MusicMetaResult { media }))
     }
 }

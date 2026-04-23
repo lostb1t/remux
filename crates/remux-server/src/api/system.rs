@@ -10,8 +10,8 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::db::{self, auth};
 use crate::api;
+use crate::db::{self, auth};
 use crate::utils::{self, get_uuid, server_id};
 use anyhow;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};

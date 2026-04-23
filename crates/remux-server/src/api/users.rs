@@ -10,11 +10,11 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::api;
+use crate::api::system::QuickConnectEntry;
 use crate::db;
 use crate::db::auth;
 use crate::db::user::User;
-use crate::api;
-use crate::api::system::QuickConnectEntry;
 use crate::utils::{get_uuid, server_id};
 use crate::ws::WsEvent;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
@@ -353,8 +353,12 @@ pub async fn create_user(
     Json(payload): Json<api::CreateUserByName>,
 ) -> Result<impl IntoResponse> {
     let password = payload.password.as_deref().unwrap_or("");
-    let mut user =
-        User::new_with_password(String::new(), payload.name.into_inner(), password, None)?;
+    let mut user = User::new_with_password(
+        String::new(),
+        payload.name.into_inner(),
+        password,
+        None,
+    )?;
     user.save(&state.ctx.db).await?;
     let _ = state.ctx.ws_tx.send(WsEvent::UserUpdated(user.id));
     Ok((StatusCode::OK, Json(api::db_user_to_dto(user))).into_response())

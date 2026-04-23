@@ -5,8 +5,8 @@ use http::StatusCode;
 use remux_macros::{get, post};
 
 use crate::AppState;
-use crate::db::auth;
 use crate::api;
+use crate::db::auth;
 use axum_anyhow::{ApiResult as Result, IntoApiError};
 
 const NETWORK_CONFIG_KEY: &str = "network_configuration";

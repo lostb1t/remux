@@ -146,15 +146,13 @@ impl Task for CatalogItemImportTask {
 
         // Build TMDB client using the configured key, or the built-in default.
         let tmdb_client = {
-            let cfg = crate::db::Settings::get_config(&ctx.db).await.unwrap_or_default();
+            let cfg = crate::db::Settings::get_config(&ctx.db)
+                .await
+                .unwrap_or_default();
             let key = cfg.get_tmdb_key().to_string();
             sdks::RestClient::new("https://api.themoviedb.org/3/")
                 .ok()
-                .map(|c| {
-                    c.with_auth(sdks::BearerAuth {
-                        token: key,
-                    })
-                })
+                .map(|c| c.with_auth(sdks::BearerAuth { token: key }))
         };
 
         let catalog = db::Media::get_by_filter(

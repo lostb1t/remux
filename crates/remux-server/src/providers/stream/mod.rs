@@ -35,7 +35,11 @@ pub struct StreamOption {
 #[async_trait]
 pub trait StreamService: Send + Sync {
     fn supported_kinds(&self) -> &[db::MediaKind];
-    async fn get_streams(&self, media: &db::Media, ctx: &AppContext) -> Result<Vec<StreamOption>>;
+    async fn get_streams(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<StreamOption>>;
 }
 
 /// Routes stream resolution to the appropriate [`StreamService`] by media kind.
@@ -63,7 +67,10 @@ const STREAMS_TTL_SECS: i64 = 3600;
 
 impl StreamServiceManager {
     pub fn new(services: Vec<Box<dyn StreamService>>) -> Self {
-        Self { services, ytdlp: None }
+        Self {
+            services,
+            ytdlp: None,
+        }
     }
 
     /// Returns the yt-dlp service if one is registered.
@@ -89,7 +96,11 @@ impl StreamServiceManager {
 
     /// Resolve streams for `media`, persist them as `Source` children in the DB,
     /// and stamp `streams_refreshed_at`. Skips if the stamp is < `STREAMS_TTL_SECS` old.
-    pub async fn refresh_sources(&self, media: &db::Media, ctx: &AppContext) -> Result<()> {
+    pub async fn refresh_sources(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<()> {
         // Skip if recently refreshed.
         if let Some(refreshed) = media.streams_refreshed_at {
             let age = Utc::now().naive_utc() - refreshed;
@@ -112,10 +123,12 @@ impl StreamServiceManager {
 
         db::Media::upsert(&ctx.db, &sources).await?;
 
-        sqlx::query("UPDATE media SET streams_refreshed_at = CURRENT_TIMESTAMP WHERE id = ?")
-            .bind(media.id)
-            .execute(&ctx.db)
-            .await?;
+        sqlx::query(
+            "UPDATE media SET streams_refreshed_at = CURRENT_TIMESTAMP WHERE id = ?",
+        )
+        .bind(media.id)
+        .execute(&ctx.db)
+        .await?;
 
         // Remove Sources older than 7 days — they're too stale to be reached
         // by any ongoing playback session.
@@ -131,7 +144,11 @@ impl StreamServiceManager {
     }
 }
 
-fn stream_option_to_source(parent: &db::Media, s: StreamOption, idx: usize) -> db::Media {
+fn stream_option_to_source(
+    parent: &db::Media,
+    s: StreamOption,
+    idx: usize,
+) -> db::Media {
     let runtime_ticks = parent.runtime.map(|r| r * 10_000_000);
     let display_title = match (&s.codec, s.channels) {
         (Some(c), Some(ch)) => format!("{} - {}ch", c.to_uppercase(), ch),
@@ -176,7 +193,11 @@ fn stream_option_to_source(parent: &db::Media, s: StreamOption, idx: usize) -> d
 }
 
 pub(super) fn normalize_codec(codec: &str) -> &str {
-    if codec.starts_with("mp4a") { "aac" } else { codec }
+    if codec.starts_with("mp4a") {
+        "aac"
+    } else {
+        codec
+    }
 }
 
 fn mime_to_container(mime: &str) -> Option<String> {

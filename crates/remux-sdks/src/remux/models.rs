@@ -204,8 +204,6 @@ pub struct ServerConfiguration {
     pub subtitle_languages: Option<Vec<String>>,
     #[default(Some(false))]
     pub enable_subtitles_detail: Option<bool>,
-    #[default(Some(true))]
-    pub music_enabled: Option<bool>,
     pub jellyfin_url: Option<String>,
     pub jellyfin_api_key: Option<String>,
     #[default(Some(true))]

@@ -1,5 +1,5 @@
 use crate::{AppContext, db};
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -35,7 +35,9 @@ struct YtDlpThumbnail {
 impl YtDlpMeta {
     fn best_thumbnail(&self) -> Option<&str> {
         // Prefer the highest-preference thumbnail; fall back to widest, then first.
-        if let Some(t) = self.thumbnails.iter()
+        if let Some(t) = self
+            .thumbnails
+            .iter()
             .filter(|t| !t.url.is_empty())
             .max_by_key(|t| (t.preference.unwrap_or(0), t.width.unwrap_or(0) as i64))
         {
@@ -79,10 +81,19 @@ impl MusicMetaProvider for YtDlpMusicMetaProvider {
                     .as_deref()
                     .map(|id| format!("https://www.youtube.com/watch?v={}", id))
             })
-            .ok_or_else(|| anyhow::anyhow!("track has no URL or media_id for metadata fetch"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("track has no URL or media_id for metadata fetch")
+            })?;
 
         let output = Command::new(&self.executable)
-            .args(["--dump-json", "--no-playlist", "--skip-download", "--quiet", "--no-warnings", &url])
+            .args([
+                "--dump-json",
+                "--no-playlist",
+                "--skip-download",
+                "--quiet",
+                "--no-warnings",
+                &url,
+            ])
             .args(crate::providers::ytdlp_extra_args())
             .output()
             .await
@@ -94,15 +105,24 @@ impl MusicMetaProvider for YtDlpMusicMetaProvider {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let line = stdout.lines().find(|l| !l.trim().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("yt-dlp produced no output for '{}'", url))?;
-        let meta: YtDlpMeta = serde_json::from_str(line)
-            .with_context(|| format!("failed to parse yt-dlp metadata JSON for '{}'", url))?;
+        let line = stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("yt-dlp produced no output for '{}'", url)
+            })?;
+        let meta: YtDlpMeta = serde_json::from_str(line).with_context(|| {
+            format!("failed to parse yt-dlp metadata JSON for '{}'", url)
+        })?;
 
         let poster = meta.best_thumbnail().map(|s| s.to_owned());
 
         let enriched = db::Media {
-            title: if meta.title.is_empty() { media.title.clone() } else { meta.title },
+            title: if meta.title.is_empty() {
+                media.title.clone()
+            } else {
+                meta.title
+            },
             poster,
             description: meta.description,
             runtime: meta.duration.map(|d| d as i64),

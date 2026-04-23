@@ -32,14 +32,6 @@ pub async fn music_search(
     _session: auth::AuthSession,
     Query(q): Query<MusicSearchQuery>,
 ) -> Result<impl IntoResponse> {
-    let cfg = db::Settings::get_config(&state.ctx.db).await?;
-    if !cfg.music_enabled.unwrap_or(true) {
-        return Ok(Json(MusicSearchResult {
-            items: vec![],
-            total_record_count: 0,
-        }));
-    }
-
     let term = q.q.unwrap_or_default();
     let limit = q.limit.unwrap_or(20);
 
@@ -100,7 +92,8 @@ pub async fn insert_track(
     // Extract the bare video ID for storage (last path/query component).
     let video_id = if media_id.contains('/') || media_id.contains('?') {
         // parse ?v= from URL
-        url.split("v=").nth(1)
+        url.split("v=")
+            .nth(1)
             .and_then(|s| s.split('&').next())
             .unwrap_or(&media_id)
             .to_owned()
@@ -129,8 +122,7 @@ pub async fn insert_track(
         tracing::warn!(id = %media.id, error = %e, "yt-dlp metadata enrichment failed during track insert");
     }
 
-    db::Media::upsert(&state.ctx.db, &[media.clone()])
-        .await?;
+    db::Media::upsert(&state.ctx.db, &[media.clone()]).await?;
 
     Ok(Json(api::models::db_media_to_item(media)))
 }

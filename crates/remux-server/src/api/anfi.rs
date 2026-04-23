@@ -43,7 +43,11 @@ fn short_sha(sha: &str) -> String {
 }
 
 fn configured_anfiteatro_path(state: &AppState) -> Option<String> {
-    state.ctx.web_paths.as_ref().map(|p| p.anfiteatro_web_path.clone())
+    state
+        .ctx
+        .web_paths
+        .as_ref()
+        .map(|p| p.anfiteatro_web_path.clone())
 }
 
 fn commit_marker_path(path: &Path) -> std::path::PathBuf {
@@ -65,11 +69,15 @@ fn read_local_commit_marker(path: &str) -> Option<String> {
     normalize_commit_sha(&raw)
 }
 
-fn write_local_commit_marker(path: &Path, commit_sha: &str) -> std::result::Result<(), String> {
+fn write_local_commit_marker(
+    path: &Path,
+    commit_sha: &str,
+) -> std::result::Result<(), String> {
     std::fs::create_dir_all(path)
         .map_err(|err| format!("failed to create {}: {err}", path.display()))?;
-    std::fs::write(commit_marker_path(path), format!("{commit_sha}\n"))
-        .map_err(|err| format!("failed to write commit marker in {}: {err}", path.display()))
+    std::fs::write(commit_marker_path(path), format!("{commit_sha}\n")).map_err(|err| {
+        format!("failed to write commit marker in {}: {err}", path.display())
+    })
 }
 
 fn clear_directory_contents(path: &Path) -> std::result::Result<(), String> {
@@ -83,19 +91,22 @@ fn clear_directory_contents(path: &Path) -> std::result::Result<(), String> {
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
 
     for entry in entries {
-        let entry =
-            entry.map_err(|err| format!("failed to read entry in {}: {err}", path.display()))?;
+        let entry = entry.map_err(|err| {
+            format!("failed to read entry in {}: {err}", path.display())
+        })?;
         let entry_path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|err| format!("failed to inspect {}: {err}", entry_path.display()))?;
+        let file_type = entry.file_type().map_err(|err| {
+            format!("failed to inspect {}: {err}", entry_path.display())
+        })?;
 
         if file_type.is_dir() {
-            std::fs::remove_dir_all(&entry_path)
-                .map_err(|err| format!("failed to remove {}: {err}", entry_path.display()))?;
+            std::fs::remove_dir_all(&entry_path).map_err(|err| {
+                format!("failed to remove {}: {err}", entry_path.display())
+            })?;
         } else {
-            std::fs::remove_file(&entry_path)
-                .map_err(|err| format!("failed to remove {}: {err}", entry_path.display()))?;
+            std::fs::remove_file(&entry_path).map_err(|err| {
+                format!("failed to remove {}: {err}", entry_path.display())
+            })?;
         }
     }
 
@@ -106,17 +117,18 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::result::Result<(), String>
     std::fs::create_dir_all(dst)
         .map_err(|err| format!("failed to create {}: {err}", dst.display()))?;
 
-    let entries =
-        std::fs::read_dir(src).map_err(|err| format!("failed to read {}: {err}", src.display()))?;
+    let entries = std::fs::read_dir(src)
+        .map_err(|err| format!("failed to read {}: {err}", src.display()))?;
 
     for entry in entries {
-        let entry =
-            entry.map_err(|err| format!("failed to read entry in {}: {err}", src.display()))?;
+        let entry = entry.map_err(|err| {
+            format!("failed to read entry in {}: {err}", src.display())
+        })?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        let file_type = entry
-            .file_type()
-            .map_err(|err| format!("failed to inspect {}: {err}", src_path.display()))?;
+        let file_type = entry.file_type().map_err(|err| {
+            format!("failed to inspect {}: {err}", src_path.display())
+        })?;
 
         if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
@@ -163,7 +175,8 @@ fn install_archive_to_path(
     archive_bytes: &[u8],
     target_path: &Path,
 ) -> std::result::Result<(), String> {
-    let temp_dir = tempfile::tempdir().map_err(|err| format!("failed to create temp dir: {err}"))?;
+    let temp_dir = tempfile::tempdir()
+        .map_err(|err| format!("failed to create temp dir: {err}"))?;
     let decoder = flate2::read::GzDecoder::new(Cursor::new(archive_bytes));
     let mut archive = tar::Archive::new(decoder);
 
@@ -240,8 +253,9 @@ pub async fn anfiteatro_release_status(
 ) -> Result<impl IntoResponse> {
     let Some(target_path) = configured_anfiteatro_path(&state) else {
         let mut status = api::AnfiteatroReleaseStatus::default();
-        status.check_error =
-            Some("Anfiteatro release checks are unavailable in desktop builds".to_string());
+        status.check_error = Some(
+            "Anfiteatro release checks are unavailable in desktop builds".to_string(),
+        );
         return Ok(Json(status));
     };
 
@@ -254,7 +268,10 @@ pub async fn anfiteatro_release_status(
         ..Default::default()
     };
 
-    let client = match reqwest::Client::builder().timeout(Duration::from_secs(8)).build() {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
         Ok(client) => client,
         Err(err) => {
             status.check_error = Some(format!("failed to build HTTP client: {err}"));
@@ -264,8 +281,11 @@ pub async fn anfiteatro_release_status(
 
     match fetch_latest_anfiteatro_head(&client).await {
         Ok(latest) => {
-            status.latest_version_tag =
-                Some(format!("{}@{}", latest.branch, short_sha(&latest.commit_sha)));
+            status.latest_version_tag = Some(format!(
+                "{}@{}",
+                latest.branch,
+                short_sha(&latest.commit_sha)
+            ));
             status.latest_release_url = Some(latest.commit_url);
             status.latest_commit = Some(latest.commit_sha.clone());
             status.update_available = match local_commit.as_deref() {
@@ -313,7 +333,8 @@ pub async fn install_latest_anfiteatro_release(
         .map_err(anyhow::Error::msg)?;
     install_archive_to_path(&archive_bytes, repo_path).map_err(anyhow::Error::msg)?;
 
-    write_local_commit_marker(repo_path, &latest.commit_sha).map_err(anyhow::Error::msg)?;
+    write_local_commit_marker(repo_path, &latest.commit_sha)
+        .map_err(anyhow::Error::msg)?;
 
     let after_commit = local_anfiteatro_commit(&target_path);
     let changed = before_commit
@@ -322,7 +343,11 @@ pub async fn install_latest_anfiteatro_release(
         .unwrap_or(true);
 
     Ok(Json(api::AnfiteatroInstallResult {
-        installed_tag: Some(format!("{}@{}", latest.branch, short_sha(&latest.commit_sha))),
+        installed_tag: Some(format!(
+            "{}@{}",
+            latest.branch,
+            short_sha(&latest.commit_sha)
+        )),
         installed_commit: after_commit.clone(),
         local_version_display: after_commit
             .as_deref()

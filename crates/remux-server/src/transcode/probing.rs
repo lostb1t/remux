@@ -64,7 +64,10 @@ fn video_resolution_text(width: Option<i64>, height: Option<i64>) -> Option<Stri
 fn append_tags_to_title(title: &str, tags: &[String]) -> String {
     let mut result = title.to_string();
     for tag in tags {
-        if !title.to_ascii_lowercase().contains(&tag.to_ascii_lowercase()) {
+        if !title
+            .to_ascii_lowercase()
+            .contains(&tag.to_ascii_lowercase())
+        {
             result.push_str(" - ");
             result.push_str(tag);
         }
@@ -117,13 +120,21 @@ fn display_title_audio(m: &StreamMeta) -> Option<String> {
         attrs.push(format!("{} ch", ch));
     }
 
-    if m.is_default { attrs.push("Default".into()); }
-    if m.is_external { attrs.push("External".into()); }
+    if m.is_default {
+        attrs.push("Default".into());
+    }
+    if m.is_external {
+        attrs.push("External".into());
+    }
 
     if let Some(title) = m.title {
         return Some(append_tags_to_title(title, &attrs));
     }
-    if attrs.is_empty() { None } else { Some(attrs.join(" - ")) }
+    if attrs.is_empty() {
+        None
+    } else {
+        Some(attrs.join(" - "))
+    }
 }
 
 fn display_title_video(m: &StreamMeta) -> Option<String> {
@@ -144,7 +155,11 @@ fn display_title_video(m: &StreamMeta) -> Option<String> {
     if let Some(title) = m.title {
         return Some(append_tags_to_title(title, &attrs));
     }
-    if attrs.is_empty() { None } else { Some(attrs.join(" ")) }
+    if attrs.is_empty() {
+        None
+    } else {
+        Some(attrs.join(" "))
+    }
 }
 
 fn display_title_subtitle(m: &StreamMeta) -> Option<String> {
@@ -160,15 +175,27 @@ fn display_title_subtitle(m: &StreamMeta) -> Option<String> {
         attrs.push("Und".into());
     }
 
-    if m.is_hearing_impaired { attrs.push("Hearing Impaired".into()); }
-    if m.is_default { attrs.push("Default".into()); }
-    if m.is_forced { attrs.push("Forced".into()); }
+    if m.is_hearing_impaired {
+        attrs.push("Hearing Impaired".into());
+    }
+    if m.is_default {
+        attrs.push("Default".into());
+    }
+    if m.is_forced {
+        attrs.push("Forced".into());
+    }
     if let Some(codec) = m.codec {
         attrs.push(subtitle_codec_display(codec).to_ascii_uppercase());
     }
-    if m.is_external { attrs.push("External".into()); }
+    if m.is_external {
+        attrs.push("External".into());
+    }
 
-    if attrs.is_empty() { None } else { Some(attrs.join(" - ")) }
+    if attrs.is_empty() {
+        None
+    } else {
+        Some(attrs.join(" - "))
+    }
 }
 
 #[derive(Deserialize)]

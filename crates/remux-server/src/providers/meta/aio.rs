@@ -25,7 +25,9 @@ impl MetaProvider for AioMetaProvider {
             None => return Ok(None),
         };
 
-        let mut meta = if let Some(cached_meta) = ctx.store.get::<sdks::aio::Meta>(media.id.to_string()) {
+        let mut meta = if let Some(cached_meta) =
+            ctx.store.get::<sdks::aio::Meta>(media.id.to_string())
+        {
             cached_meta
         } else {
             crate::aio::AioService::from_settings(&ctx.db)
@@ -209,10 +211,10 @@ fn build_relations(media: &db::Media, meta: &sdks::aio::Meta) -> Vec<MetaRelatio
         media.id,
         meta.director.as_ref(), // Option<Vec<String>>
         meta.writer.as_ref(),
-        None,                   // cast_members: Option<Vec<CastMember>>
-        meta.cast.as_ref(),     // cast_names
-        None,                   // director_members
-        None,                   // writer_members
+        None,               // cast_members: Option<Vec<CastMember>>
+        meta.cast.as_ref(), // cast_names
+        None,               // director_members
+        None,               // writer_members
     );
 
     if let Some(extras) = &meta.app_extras {
@@ -266,7 +268,9 @@ fn build_person_relations(
             .collect()
     };
 
-    let mut add_members = |members: Option<&Vec<sdks::aio::CastMember>>, role: db::RelationRole, offset: i64| {
+    let mut add_members = |members: Option<&Vec<sdks::aio::CastMember>>,
+                           role: db::RelationRole,
+                           offset: i64| {
         if let Some(list) = members {
             for (i, member) in list.iter().enumerate() {
                 if let Some(name) = &member.name {
@@ -274,7 +278,10 @@ fn build_person_relations(
                     if name.is_empty() {
                         continue;
                     }
-                    let person_id = utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+                    let person_id = utils::get_stable_uuid(format!(
+                        "person:{}",
+                        name.to_lowercase()
+                    ));
                     relations.push(MetaRelation {
                         media: db::Media {
                             id: person_id,
@@ -339,7 +346,9 @@ fn build_person_relations(
             relation: db::MediaRelation {
                 left_media_id,
                 right_media_id: person_id,
-                weight: Some((i + director_members.map(|c| c.len()).unwrap_or(0)) as i64),
+                weight: Some(
+                    (i + director_members.map(|c| c.len()).unwrap_or(0)) as i64,
+                ),
                 role: Some(db::RelationRole::Director),
                 ..Default::default()
             },
