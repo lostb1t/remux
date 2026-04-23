@@ -368,9 +368,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           platforms: ${{ matrix.platform }}
-          outputs: |
-            type=image,name=${{ env.REGISTRY_IMAGE }},name-canonical=true,push=true
-            type=image,name=${{ env.PUBLIC_REGISTRY_IMAGE }},name-canonical=true,push=true
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},name-canonical=true,push=true
           cache-from: type=gha,scope=build-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=build-${{ env.PLATFORM_PAIR }}
 
@@ -418,8 +416,3 @@ jobs:
         run: |
           docker buildx imagetools create ${{ inputs.docker_tags }} \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
-
-          if [ -n "${{ inputs.public_docker_tags }}" ]; then
-            docker buildx imagetools create ${{ inputs.public_docker_tags }} \
-              $(printf '${{ env.PUBLIC_REGISTRY_IMAGE }}@sha256:%s ' *)
-          fi
