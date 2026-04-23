@@ -80,7 +80,7 @@ jobs:
 
       - name: Upload to GitHub release
         env:
-          GH_TOKEN: ${{ secrets.PUBLIC_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
           TAG="${{ needs.semantic-release.outputs.new_release_git_tag }}"
