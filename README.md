@@ -4,6 +4,13 @@ Remux is a self-hosted media server that exposes a Jellyfin-compatible API while
 
 The project is built in Rust and currently targets a lightweight, add-on-backed streaming workflow. It is still experimental and should be treated as a proof of concept.
 
+Main difference compared to jellyfin
+
+- Built in rust, faster and lower resource usage
+- Complete new dashboard.
+- No backend plugins (jelkyfin web ui "plugins" do work)
+
+
 Run the image as follows
 
 ```yml
