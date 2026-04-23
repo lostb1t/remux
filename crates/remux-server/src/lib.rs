@@ -55,7 +55,7 @@ use tracing::instrument;
 use tracing::warn;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Registry, fmt};
+use tracing_subscriber::{EnvFilter, fmt};
 use url::Url;
 
 use uuid::Uuid;
@@ -74,7 +74,6 @@ pub mod db;
 pub mod embedded_static;
 mod iptv;
 pub mod localization;
-mod log_capture;
 pub mod playback_session;
 mod providers;
 pub mod tasks;
@@ -180,7 +179,6 @@ pub async fn init_app(
     admin: AdminService,
     web_client: WebClientService,
 ) -> Result<(Router, AppContext)> {
-    log_capture::init_file(&config.log_file);
     info!("starting remux {}", env!("CARGO_PKG_VERSION"));
     info!("config: {}", serde_json::to_string_pretty(&config).unwrap());
 
@@ -344,13 +342,6 @@ fn default_database_url() -> String {
     format!("sqlite://{}?mode=rwc", path)
 }
 
-fn default_log_file() -> String {
-    dirs::data_dir()
-        .map(|d| d.join("remux").join("logs").join("remux.jsonl"))
-        .and_then(|p| p.to_str().map(str::to_owned))
-        .unwrap_or_else(|| "/data/logs/remux.jsonl".to_string())
-}
-
 fn default_torrent_data_dir() -> String {
     dirs::data_dir()
         .map(|d| d.join("remux").join("torrents"))
@@ -368,8 +359,6 @@ const TORRENT_HTTP_PORT: u16 = 9876;
 pub struct Config {
     #[serde(default = "default_database_url")]
     pub database_url: String,
-    #[serde(default = "default_log_file")]
-    pub log_file: String,
     #[serde(default = "default_torrent_data_dir")]
     pub torrent_data_dir: String,
     #[serde(default = "default_port")]
@@ -380,7 +369,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             database_url: default_database_url(),
-            log_file: default_log_file(),
             torrent_data_dir: default_torrent_data_dir(),
             port: default_port(),
         }
@@ -424,7 +412,9 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
 }
 
 pub fn setup_logging() {
-    let (reload_layer, log_capture, _tx) = log_capture::init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,librqbit_dht=warn,hyper=warn,sqlx=warn")
+    });
 
     let fmt_layer = fmt::layer()
         .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
@@ -433,10 +423,9 @@ pub fn setup_logging() {
         .with_file(false)
         .compact();
 
-    Registry::default()
-        .with(reload_layer)
+    tracing_subscriber::registry()
+        .with(filter)
         .with(fmt_layer)
-        .with(log_capture)
         .try_init()
         .ok(); // try_init + ok() so tests don't panic on repeated calls
 }
