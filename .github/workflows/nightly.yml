@@ -64,13 +64,16 @@ jobs:
 
       - name: Delete existing nightly release
         env:
-          GH_TOKEN: ${{ secrets.PUBLIC_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          gh release delete nightly \
-            --repo "lostb1t/remux" \
-            --cleanup-tag \
-            --yes \
-          || true
+          if gh release view nightly --repo "lostb1t/remux" >/dev/null 2>&1; then
+            gh release delete nightly \
+              --repo "lostb1t/remux" \
+              --cleanup-tag \
+              --yes
+          else
+            echo "No existing nightly release to delete"
+          fi
 
       - name: Create nightly release
         env:
