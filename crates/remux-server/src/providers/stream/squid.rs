@@ -3,13 +3,29 @@ use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde::Deserialize;
-use tokio::sync::OnceCell;
 
 use super::{StreamOption, StreamService};
 
-const INSTANCES_URL: &str = "https://monochrome.tf/instances.json";
-const PRIMARY_INSTANCE: &str = "https://tidal-api.binimum.org";
 const TIDAL_CLIENT: &str = "BiniLossless/v3.4";
+
+const INSTANCES: &[&str] = &[
+    "https://tidal-api.binimum.org",
+    "https://eu-central.monochrome.tf",
+    "https://frankfurt-2.monochrome.tf",
+    "https://us-west.monochrome.tf",
+    "https://arran.monochrome.tf",
+    "https://api.monochrome.tf",
+    "https://monochrome-api.samidy.com",
+    "https://triton.squid.wtf",
+    "https://vogel.qqdl.site",
+    "https://katze.qqdl.site",
+    "https://hund.qqdl.site",
+    "https://wolf.qqdl.site",
+    "https://maus.qqdl.site",
+    "https://tidal.kinoplus.online",
+    "https://hifi-one.spotisaver.net",
+    "https://hifi-two.spotisaver.net",
+];
 
 fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -60,42 +76,19 @@ struct DecodedManifest {
 
 pub struct SquidStreamService {
     client: reqwest::Client,
-    instances: OnceCell<Vec<String>>,
 }
 
 impl Default for SquidStreamService {
     fn default() -> Self {
         Self {
             client: build_client(),
-            instances: OnceCell::new(),
         }
     }
 }
 
 impl SquidStreamService {
-    async fn get_instances(&self) -> Vec<String> {
-        self.instances
-            .get_or_init(|| async {
-                let mut list = vec![PRIMARY_INSTANCE.to_string()];
-                if let Ok(body) = self.client.get(INSTANCES_URL).send().await {
-                    if let Ok(resp) = body.json::<serde_json::Value>().await {
-                        if let Some(api) = resp.get("api").and_then(|v| v.as_array()) {
-                            for v in api {
-                                if let Some(s) = v.as_str() {
-                                    let url = s.trim_end_matches('/').to_string();
-                                    if url != PRIMARY_INSTANCE {
-                                        list.push(url);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                tracing::debug!(count = list.len(), "squid/tidal: instances loaded");
-                list
-            })
-            .await
-            .clone()
+    fn get_instances(&self) -> Vec<String> {
+        INSTANCES.iter().map(|s| s.to_string()).collect()
     }
 
     fn build_query(media: &db::Media) -> String {
@@ -227,7 +220,7 @@ impl StreamService for SquidStreamService {
         let query = Self::build_query(media);
         tracing::debug!(query, title = %media.title, "squid/tidal stream lookup");
 
-        let instances = self.get_instances().await;
+        let instances = self.get_instances();
 
         // Race all instances in parallel — first successful result wins.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(StreamOption, String)>(1);
