@@ -2451,6 +2451,7 @@ pub enum MediaType {
     BasePluginFolder,
     Book,
     BoxSet,
+    Catalog,
     Channel,
     ChannelFolderItem,
     CollectionFolder,

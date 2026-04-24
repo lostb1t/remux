@@ -181,6 +181,7 @@ impl TryFrom<api::MediaType> for MediaKind {
             api::MediaType::Audio => Ok(MediaKind::Track),
             api::MediaType::MusicAlbum => Ok(MediaKind::Album),
             api::MediaType::MusicArtist => Ok(MediaKind::Artist),
+            api::MediaType::Catalog => Ok(MediaKind::Catalog),
             _ => Err(()),
         }
     }

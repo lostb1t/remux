@@ -1851,19 +1851,23 @@ async fn fetch_suggestions(
                 Err(_) => vec![],
             }
         }
-        "catalog" => match client.execute(GetVirtualFolders).await {
-            Ok(folders) => {
-                let q = query.to_lowercase();
-                folders
+        "catalog" => {
+            match client
+                .execute(GetLocalSuggestions {
+                    kind: "Catalog".into(),
+                    search_term: query.into(),
+                })
+                .await
+            {
+                Ok(r) => r
+                    .items
                     .into_iter()
-                    .filter_map(|f| f.name)
-                    .filter(|n| n.to_lowercase().contains(&q))
-                    .take(25)
+                    .filter_map(|i| i.name)
                     .map(|n| (n.clone(), n))
-                    .collect()
+                    .collect(),
+                Err(_) => vec![],
             }
-            Err(_) => vec![],
-        },
+        }
         "certification" => {
             match client
                 .execute(GetCertificationSuggestions {
