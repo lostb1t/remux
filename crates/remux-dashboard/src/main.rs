@@ -1704,10 +1704,6 @@ fn CollectionForm(
                 TagChipInput { tags }
             }
 
-            if col_kind.read().as_str() == "smart" {
-                FilterRuleEditor { match_mode: sf_match, rules: sf_rules }
-            }
-
             div { class: "toggle-row",
                 span { class: "toggle-label", "Promoted to Library" }
                 label { class: "toggle",
@@ -1718,6 +1714,10 @@ fn CollectionForm(
                     }
                     span { class: "toggle-track" }
                 }
+            }
+
+            if col_kind.read().as_str() == "smart" {
+                FilterRuleEditor { match_mode: sf_match, rules: sf_rules }
             }
 
             if let Some(e) = err.read().as_ref() {
