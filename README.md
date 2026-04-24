@@ -1,12 +1,12 @@
 # Remux
 
-Remux is a self-hosted media server that provides a Jellyfin-compatible API, but instead of relying on a local file library, it streams content from online sources.
+Remux is a self-hosted media server with a Jellyfin-compatible API that streams content from online sources instead of a local library.
 
-For movies and shows, Remux integrates with Stremio add-ons. Music is handled separately through its own pipeline and can be streamed from dedicated online sources.
+Movies and shows come from Stremio add-ons. Music is handled separately through its own streaming pipeline.
 
-The idea is simple: use your existing Jellyfin clients exactly as you do now, browse libraries, search, and play content while everything is delivered dynamically. No local media management, no library scans, and no traditional backend setup.
+Use your existing Jellyfin clients as-is: browse, search, and play. No library scans, no file management, no traditional backend.
 
-Built in Rust, Remux focuses on performance and low resource usage, while offering a more flexible and dynamic approach to media libraries.
+Built in Rust for performance and low resource usage.
 
 ---
 
