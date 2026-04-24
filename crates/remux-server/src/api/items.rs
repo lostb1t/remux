@@ -1717,7 +1717,12 @@ pub async fn update_catalog_settings(
         .execute(&state.ctx.db)
         .await?;
     } else {
-        let title = payload.name.clone().unwrap_or_else(|| aio_id.clone());
+        let title = payload
+            .name
+            .clone()
+            .unwrap_or_else(|| aio_id.clone())
+            .trim()
+            .to_string();
         let mut media = db::Media {
             kind: db::MediaKind::Catalog,
             title,

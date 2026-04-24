@@ -2804,7 +2804,7 @@ fn filter_rule_to_sql(
                     format!(
                         "EXISTS (SELECT 1 FROM media_relations mr \
                          JOIN media c ON c.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND lower(c.title) = lower('{v}'))"
+                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND trim(lower(c.title)) = trim(lower('{v}')))"
                     )
                 }
                 SetOp::In | SetOp::NotIn => {
@@ -2812,7 +2812,7 @@ fn filter_rule_to_sql(
                     format!(
                         "EXISTS (SELECT 1 FROM media_relations mr \
                          JOIN media c ON c.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND lower(c.title) IN ({list}))"
+                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND trim(lower(c.title)) IN ({list}))"
                     )
                 }
             };
