@@ -85,9 +85,10 @@ impl StreamServiceManager {
     ) -> Result<Vec<StreamOption>> {
         for svc in &self.services {
             if svc.supported_kinds().contains(&media.kind) {
-                let streams = svc.get_streams(media, ctx).await?;
-                if !streams.is_empty() {
-                    return Ok(streams);
+                match svc.get_streams(media, ctx).await {
+                    Ok(streams) if !streams.is_empty() => return Ok(streams),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "stream service failed"),
                 }
             }
         }

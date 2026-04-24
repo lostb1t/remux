@@ -176,7 +176,9 @@ async fn items_playbackinfo_inner(
     };
     let is_track = track_item.is_some();
     if let Some(ref track) = track_item {
-        let _ = state.ctx.streams.refresh_sources(track, &state.ctx).await;
+        if let Err(e) = state.ctx.streams.refresh_sources(track, &state.ctx).await {
+            tracing::warn!(error = %e, id = %track.id, "failed to refresh track sources");
+        }
     }
     let has_lyrics = is_track;
 
@@ -717,7 +719,10 @@ async fn videos_stream_inner(
     {
         // For tracks, refresh CDN URLs if stale before loading sources.
         if media.kind == db::MediaKind::Track {
-            let _ = state.ctx.streams.refresh_sources(&media, &state.ctx).await;
+            if let Err(e) = state.ctx.streams.refresh_sources(&media, &state.ctx).await
+            {
+                tracing::warn!(error = %e, id = %media.id, "failed to refresh track sources");
+            }
         }
 
         let sources = media.streams(&state.ctx.db).await?;
