@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::sdks::CachedEndpoint;
-use crate::{AppContext, db, sdks};
+use crate::{AppContext, aio, db, sdks};
 
 pub struct CatalogItemImportTask {
     catalog_id: Uuid,
@@ -89,7 +89,7 @@ async fn resolve_imdb_id<A: sdks::Auth + Clone>(
         }
     }
 
-    // Step 4: TVDB fallback — use TMDB's find-by-external-id endpoint with tvdb_id.
+    // TVDB fallback — use TMDB's find-by-external-id endpoint with tvdb_id.
     if let (Some(client), Some(tvdb)) = (tmdb_client, external_ids.tvdb) {
         let find_resp = client
             .execute(
@@ -142,8 +142,6 @@ impl Task for CatalogItemImportTask {
         tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        let aio = crate::aio::AioService::from_settings(&ctx.db).await?;
-
         // Build TMDB client using the configured key, or the built-in default.
         let tmdb_client = {
             let cfg = crate::db::Settings::get_config(&ctx.db)
@@ -169,21 +167,25 @@ impl Task for CatalogItemImportTask {
         .next()
         .ok_or_else(|| anyhow::anyhow!("Catalog {} not found", self.catalog_id))?;
 
-        let aio_id = catalog
+        let media_id = catalog
             .media_id
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("Catalog has no media_id"))?
             .to_string();
 
-        let manifest = aio.get_manifest().await?;
-        let manifest_cat = manifest
-            .catalogs
-            .iter()
-            .find(|c| format!("{}:{}", c.kind, c.id) == aio_id)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!("Catalog {} not found in AIO manifest", aio_id)
-            })?;
+        let provider =
+            ctx.catalogs
+                .provider_for_media_id(&media_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("No provider found for catalog {}", media_id)
+                })?;
+
+        let provider_catalog_id =
+            ctx.catalogs.strip_prefix(provider, &media_id).to_string();
+
+        // AIO service used for IMDB ID resolution (AIO-specific enrichment step).
+        // Safe to error here — if AIO isn't configured this task can't proceed.
+        let aio_svc = aio::AioService::from_settings(&ctx.db).await?;
 
         let global_max = crate::db::Settings::get_config(&ctx.db)
             .await
@@ -196,10 +198,13 @@ impl Task for CatalogItemImportTask {
             .map(|n| n as usize)
             .unwrap_or(global_max);
 
-        info!("importing catalog {} (max={})", aio_id, max);
+        info!(catalog = %media_id, max, "importing catalog items");
 
         let catalog_id = catalog.id;
-        let mut meta_stream = aio.get_catalog_stream(&manifest_cat).await?.chunks(500);
+        let mut meta_stream = provider
+            .stream_items(&provider_catalog_id, &ctx)
+            .await?
+            .chunks(500);
         let mut count = 0usize;
 
         while let Some(mut metas) = meta_stream.next().await {
@@ -215,7 +220,7 @@ impl Task for CatalogItemImportTask {
                 metas.into_iter().unique_by(|meta| meta.id.clone()),
             )
             .then(|mut meta| {
-                let aio = aio.clone();
+                let aio = aio_svc.clone();
                 let tmdb_client = tmdb_client.as_ref();
                 async move {
                         let resolved = resolve_imdb_id(&mut meta, &aio, tmdb_client).await;
@@ -273,7 +278,7 @@ impl Task for CatalogItemImportTask {
             }
         }
 
-        info!("import complete for catalog {}: {} items", aio_id, count);
+        info!(catalog = %media_id, count, "import complete");
 
         tasks.run_task("RefreshLibrary").await?;
 

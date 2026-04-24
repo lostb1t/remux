@@ -1,7 +1,8 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use itertools::Itertools;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -28,10 +29,79 @@ impl Task for CatalogImportTask {
         tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        let aio = crate::aio::AioService::from_settings(&ctx.db).await?;
+        let all_db_catalogs = db::Media::get_by_filter(
+            &ctx.db,
+            &db::MediaFilter {
+                kind: Some(vec![db::MediaKind::Catalog]),
+                ..Default::default()
+            },
+        )
+        .await?
+        .records;
 
-        // Fetch all enabled catalog media items (kind=catalog, promoted=1)
-        let catalogs = db::Media::get_by_filter(
+        for provider in ctx.catalogs.providers() {
+            let pid = provider.provider_id();
+            let available = match provider.list_catalogs(&ctx).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(provider = pid, error = %e, "failed to list catalogs, skipping provider");
+                    continue;
+                }
+            };
+
+            let prefix = format!("{}:", pid);
+            let provider_db: Vec<_> = all_db_catalogs
+                .iter()
+                .filter(|c| {
+                    c.media_id
+                        .as_deref()
+                        .map(|id| id.starts_with(&prefix))
+                        .unwrap_or(false)
+                })
+                .collect();
+
+            let available_ids: HashSet<String> = available
+                .iter()
+                .map(|c| format!("{}:{}", pid, c.provider_catalog_id))
+                .collect();
+
+            // Delete catalogs that no longer exist in the provider.
+            for stale in provider_db.iter().filter(|c| {
+                !available_ids.contains(c.media_id.as_deref().unwrap_or(""))
+            }) {
+                info!(
+                    catalog = stale.media_id.as_deref().unwrap_or("?"),
+                    "removing stale catalog"
+                );
+                if let Err(e) = db::Media::delete(&ctx.db, &stale.id).await {
+                    error!(catalog = %stale.id, error = %e, "failed to delete stale catalog");
+                }
+            }
+
+            // Insert catalogs not yet in the DB (disabled by default).
+            for cat_info in &available {
+                let full_id = format!("{}:{}", pid, cat_info.provider_catalog_id);
+                if provider_db
+                    .iter()
+                    .any(|d| d.media_id.as_deref() == Some(&full_id))
+                {
+                    continue;
+                }
+                info!(catalog = %full_id, "registering new catalog");
+                let mut media = db::Media {
+                    kind: db::MediaKind::Catalog,
+                    title: cat_info.name.clone(),
+                    media_id: Some(full_id),
+                    promoted: false,
+                    ..Default::default()
+                };
+                if let Err(e) = media.save(&ctx.db).await {
+                    error!(catalog = %cat_info.name, error = %e, "failed to register new catalog");
+                }
+            }
+        }
+
+        let enabled_catalogs = db::Media::get_by_filter(
             &ctx.db,
             &db::MediaFilter {
                 kind: Some(vec![db::MediaKind::Catalog]),
@@ -42,9 +112,10 @@ impl Task for CatalogImportTask {
         .await?
         .records;
 
-        info!("found {} enabled catalogs to import", catalogs.len());
-
-        let manifest = aio.get_manifest().await?;
+        info!(
+            "importing items from {} enabled catalogs",
+            enabled_catalogs.len()
+        );
 
         let global_max = crate::db::Settings::get_config(&ctx.db)
             .await
@@ -52,39 +123,50 @@ impl Task for CatalogImportTask {
             .and_then(|c| c.catalog_max_items)
             .unwrap_or(250) as usize;
 
-        // Pair each enabled catalog with its manifest entry upfront
-        let pairs: Vec<(db::Media, crate::sdks::aio::Catalog)> = catalogs
-            .into_iter()
-            .filter_map(|cat| {
-                let aio_id = cat.media_id.as_deref()?.to_string();
-                let manifest_cat = manifest
-                    .catalogs
-                    .iter()
-                    .find(|c| format!("{}:{}", c.kind, c.id) == aio_id)?
-                    .clone();
-                Some((cat, manifest_cat))
-            })
-            .collect();
+        for (i, catalog) in enabled_catalogs.iter().enumerate() {
+            progress.set(i as f64 / enabled_catalogs.len().max(1) as f64 * 100.0);
 
-        info!("{} catalogs matched in manifest", pairs.len());
+            let media_id = match catalog.media_id.as_deref() {
+                Some(id) => id,
+                None => {
+                    warn!(catalog = %catalog.id, "catalog has no media_id, skipping");
+                    continue;
+                }
+            };
 
-        for (catalog, manifest_cat) in pairs {
-            let aio_id = catalog.media_id.as_deref().unwrap_or("?");
+            let provider = match ctx.catalogs.provider_for_media_id(media_id) {
+                Some(p) => p,
+                None => {
+                    warn!(
+                        catalog = media_id,
+                        "no provider found for catalog, skipping"
+                    );
+                    continue;
+                }
+            };
+
+            let provider_catalog_id = ctx.catalogs.strip_prefix(provider, media_id);
             let max = catalog
                 .collection_max_items
                 .map(|n| n as usize)
                 .unwrap_or(global_max);
 
-            info!("importing catalog {} (max={})", aio_id, max);
+            info!(catalog = media_id, max, "importing catalog items");
 
             let catalog_id = catalog.id;
-            let mut meta_stream =
-                aio.get_catalog_stream(&manifest_cat).await?.chunks(500);
+            let mut meta_stream = match provider
+                .stream_items(provider_catalog_id, &ctx)
+                .await
+            {
+                Ok(s) => s.chunks(500),
+                Err(e) => {
+                    error!(catalog = media_id, error = %e, "failed to open catalog stream");
+                    continue;
+                }
+            };
+
             let mut count = 0usize;
-
             while let Some(mut metas) = meta_stream.next().await {
-                progress.set(count as f64 / max.max(1) as f64 * 100.0);
-
                 let remaining = max.saturating_sub(count);
                 if remaining == 0 {
                     break;
@@ -96,7 +178,6 @@ impl Task for CatalogImportTask {
                     .unique_by(|meta| meta.id.clone())
                     .flat_map(|meta| match db::aio_meta_to_medias(meta) {
                         Ok(mut items) => {
-                            // Top-level item floats freely — no parent_id
                             if let Some(top) = items.first_mut() {
                                 top.parent_id = None;
                             }
@@ -114,11 +195,10 @@ impl Task for CatalogImportTask {
                 }
 
                 if let Err(e) = db::Media::upsert(&ctx.db, &items).await {
-                    error!("failed to import chunk: {}", e);
+                    error!(catalog = media_id, error = %e, "failed to import chunk");
                     continue;
                 }
 
-                // Link each top-level item to this catalog via media_relations
                 let relations: Vec<db::MediaRelation> = items
                     .iter()
                     .filter(|m| m.parent_id.is_none())
@@ -133,21 +213,20 @@ impl Task for CatalogImportTask {
                 if !relations.is_empty() {
                     if let Err(e) = db::MediaRelation::upsert(&ctx.db, &relations).await
                     {
-                        error!("failed to upsert catalog relations: {}", e);
+                        error!(catalog = media_id, error = %e, "failed to upsert catalog relations");
                     }
                 }
 
-                count += items.len();
+                count += items.iter().filter(|m| m.parent_id.is_none()).count();
                 if count >= max {
                     break;
                 }
             }
 
-            info!("import complete for catalog {}: {} items", aio_id, count);
+            info!(catalog = media_id, count, "import complete");
         }
 
         tasks.run_task("RefreshLibrary").await?;
-
         Ok(())
     }
 }

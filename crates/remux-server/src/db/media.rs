@@ -2803,18 +2803,20 @@ fn filter_rule_to_sql(
                     let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
                     format!(
                         "EXISTS (SELECT 1 FROM media_relations mr \
-                         JOIN media c ON c.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND c.media_id = '{v}')"
+                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' \
+                         AND hex(mr.right_media_id) = upper(replace('{v}', '-', '')))"
                     )
                 }
                 SetOp::In | SetOp::NotIn => {
-                    let list: Vec<String> =
-                        values.iter().map(|s| format!("'{}'", esc(s))).collect();
+                    let list: Vec<String> = values
+                        .iter()
+                        .map(|s| format!("upper(replace('{}', '-', ''))", esc(s)))
+                        .collect();
                     let list = list.join(", ");
                     format!(
                         "EXISTS (SELECT 1 FROM media_relations mr \
-                         JOIN media c ON c.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND c.media_id IN ({list}))"
+                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' \
+                         AND hex(mr.right_media_id) IN ({list}))"
                     )
                 }
             };

@@ -1457,9 +1457,10 @@ pub async fn aio_catalogs(
         .filter(|c| !c.id.contains("search"))
         .map(|c| {
             let aio_id = format!("{}:{}", c.kind, c.id);
+            let namespaced_id = format!("aio:{}", aio_id);
             let db_cat = db_catalogs
                 .iter()
-                .find(|d| d.media_id.as_deref() == Some(&aio_id));
+                .find(|d| d.media_id.as_deref() == Some(&namespaced_id));
             api::AioCatalogInfo {
                 aio_id,
                 name: c.name,
@@ -1690,12 +1691,13 @@ pub async fn update_catalog_settings(
 ) -> Result<StatusCode> {
     let promoted = payload.enabled;
     let now = Utc::now().naive_utc();
+    let namespaced_id = format!("aio:{}", aio_id);
 
     let existing = db::Media::get_by_filter(
         &state.ctx.db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Catalog]),
-            media_id: Some(aio_id.clone()),
+            media_id: Some(namespaced_id.clone()),
             ..Default::default()
         },
     )
@@ -1726,7 +1728,7 @@ pub async fn update_catalog_settings(
         let mut media = db::Media {
             kind: db::MediaKind::Catalog,
             title,
-            media_id: Some(aio_id),
+            media_id: Some(namespaced_id),
             promoted,
             collection_max_items: payload.max_items,
             ..Default::default()

@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod lyrics;
 pub mod meta;
 pub mod music;
@@ -13,6 +14,7 @@ pub(crate) fn ytdlp_extra_args() -> Vec<String> {
         .collect()
 }
 
+pub use catalog::{CatalogInfo, CatalogProvider, CatalogProviderManager};
 pub use lyrics::{LyricProvider, LyricSearchRequest, LyricService};
 pub use meta::*;
 pub use music::{MusicMetaProvider, MusicMetaProviderService, MusicMetaResult};

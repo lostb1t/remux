@@ -11,12 +11,12 @@ use remux_sdks::remux::{
     GetCertificationSuggestions, GetCountries, GetEpgSources, GetIptvChannels,
     GetItems, GetLocalSuggestions, GetParentalRatings, GetScheduledTasks, GetSessions,
     GetStartupConfiguration, GetSystemConfiguration, GetTagSuggestions, GetTunerHosts,
-    GetUsers, GetVirtualFolders, InstallLatestAnfiteatroRelease, JellyfinAuth,
-    NumericOp, ParentalRating, PatchChannel, PatchChannelRequest, PatchItem,
-    PatchItemPayload, PostStartupComplete, PostStartupConfiguration, PostStartupUser,
-    PublicSystemInfo, SaveEpgSource, ServerConfiguration, SessionInfoDto, SetOp,
-    SourceUrl, StartTask, StartupConfiguration, StartupUser, StopTask, TaskInfo,
-    TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo, UpdateBrandingConfiguration,
+    GetUsers, InstallLatestAnfiteatroRelease, JellyfinAuth, NumericOp, ParentalRating,
+    PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
+    PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
+    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
+    StartupConfiguration, StartupUser, StopTask, TaskInfo, TaskTriggerInfo,
+    TaskTriggerInfoType, TunerHostInfo, UpdateBrandingConfiguration,
     UpdateCatalogSettings, UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
     UpdateTaskTriggers, UpdateUser, UpdateUserPolicy, UserDto, Username,
 };
@@ -1864,7 +1864,7 @@ async fn fetch_suggestions(
                     .into_iter()
                     .filter_map(|i| {
                         let label = i.name?;
-                        let value = i.provider_ids.as_ref()?.aio.clone()?;
+                        let value = i.id.to_string();
                         Some((label, value))
                     })
                     .collect(),
@@ -2183,6 +2183,34 @@ fn ChipInput(
     // (label, value) — label shown in dropdown, value stored in rule
     let mut suggestions: Signal<Vec<(String, String)>> = use_signal(Vec::new);
     let mut show_dropdown = use_signal(|| false);
+    let mut label_cache: Signal<std::collections::HashMap<String, String>> =
+        use_signal(std::collections::HashMap::new);
+
+    // On mount: for any pre-existing values that lack a label, fetch one suggestion per value.
+    let fk_init = field_key.clone();
+    let client_init = app_state.client.clone();
+    use_effect(move || {
+        if fk_init != "catalog" {
+            return;
+        }
+        let client = client_init.clone();
+        spawn(async move {
+            if let Ok(r) = client
+                .execute(GetItems {
+                    include_item_types: vec!["Catalog".into()],
+                    recursive: false,
+                })
+                .await
+            {
+                let mut cache = label_cache.write();
+                for item in r.items {
+                    if let Some(name) = item.name {
+                        cache.insert(item.id.to_string(), name);
+                    }
+                }
+            }
+        });
+    });
 
     // Re-fetch suggestions whenever the typed text changes.
     let fk_fetch = field_key.clone();
@@ -2208,13 +2236,13 @@ fn ChipInput(
             div { class: "chip-input",
                 for (ci, chip) in values.iter().enumerate() {
                     {
-                        let chip_str = chip.clone();
+                        let chip_display = label_cache.read().get(chip).cloned().unwrap_or(chip.clone());
                         let mut v = values.clone();
                         let fk = field_key.clone();
                         let op = op_val.clone();
                         rsx! {
                             span { class: "chip", key: "{ci}",
-                                "{chip_str}"
+                                "{chip_display}"
                                 button {
                                     r#type: "button",
                                     class: "chip-remove",
@@ -2287,6 +2315,7 @@ fn ChipInput(
                                     class: "chip-dropdown-item",
                                     key: "{value}",
                                     onmousedown: move |_| {
+                                        label_cache.write().insert(value.clone(), label.clone());
                                         if !v.contains(&value) { v.push(value.clone()); }
                                         if let Some(row) = rules.write().get_mut(idx) {
                                             *row = raw_to_rule(&fk, &op, &v.join(", "));
