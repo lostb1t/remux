@@ -416,3 +416,10 @@ jobs:
         run: |
           docker buildx imagetools create ${{ inputs.docker_tags }} \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+
+      - name: Create and push public manifest
+        if: inputs.public_docker_tags != ''
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create ${{ inputs.public_docker_tags }} \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
