@@ -539,7 +539,7 @@ where
             if t.is_empty() {
                 Ok(None)
             } else {
-                let std_duration = duration_str::parse(t).map_err(D::Error::custom)?;
+                let std_duration = parse_duration_lossy(t).map_err(D::Error::custom)?;
 
                 Ok(Some(
                     Duration::from_std(std_duration).map_err(D::Error::custom)?,
@@ -547,6 +547,23 @@ where
             }
         }
     }
+}
+
+fn parse_duration_lossy(input: &str) -> Result<std::time::Duration, String> {
+    if let Ok(duration) = duration_str::parse(input) {
+        return Ok(duration);
+    }
+
+    // Some AIO/Stremio catalogs emit malformed values like "31S min".
+    // Normalize the known bad form and retry so one bad runtime does not
+    // fail the entire page fetch.
+    let normalized = input
+        .replace("S min", " min")
+        .replace("s min", " min")
+        .replace("S mins", " mins")
+        .replace("s mins", " mins");
+
+    duration_str::parse(&normalized).map_err(|e| e.to_string())
 }
 
 impl Meta {
@@ -820,4 +837,26 @@ pub async fn search(
             format: true,
         })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_duration_lossy;
+    use std::time::Duration;
+
+    #[test]
+    fn parses_standard_duration_strings() {
+        assert_eq!(
+            parse_duration_lossy("31 min").unwrap(),
+            Duration::from_secs(31 * 60)
+        );
+    }
+
+    #[test]
+    fn tolerates_stremio_runtime_typo() {
+        assert_eq!(
+            parse_duration_lossy("31S min").unwrap(),
+            Duration::from_secs(31 * 60)
+        );
+    }
 }
