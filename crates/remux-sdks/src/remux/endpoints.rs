@@ -555,6 +555,16 @@ impl Endpoint for PostStartupComplete {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct GetItemCounts;
+
+impl Endpoint for GetItemCounts {
+    type Output = ItemCounts;
+    fn path(&self) -> String {
+        "/items/counts".into()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct GetCurrentUser;
 
 impl Endpoint for GetCurrentUser {

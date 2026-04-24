@@ -552,7 +552,7 @@ pub struct SystemStorageInfo {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct ItemCounts {
     pub movie_count: i32,

@@ -9,12 +9,13 @@ use remux_sdks::remux::{
     EpgSourceInfo, FilterMatchMode, FilterRule, GetAioCatalogs,
     GetAnfiteatroReleaseStatus, GetApiKeys, GetBrandingConfiguration,
     GetCertificationSuggestions, GetCountries, GetEpgSources, GetIptvChannels,
-    GetItems, GetLocalSuggestions, GetParentalRatings, GetScheduledTasks, GetSessions,
-    GetStartupConfiguration, GetSystemConfiguration, GetTagSuggestions, GetTunerHosts,
-    GetUsers, InstallLatestAnfiteatroRelease, JellyfinAuth, NumericOp, ParentalRating,
-    PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
-    PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
-    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
+    GetItemCounts, GetItems, GetLocalSuggestions, GetParentalRatings,
+    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
+    GetTagSuggestions, GetTunerHosts, GetUsers, InstallLatestAnfiteatroRelease,
+    ItemCounts, JellyfinAuth, NumericOp, ParentalRating, PatchChannel,
+    PatchChannelRequest, PatchItem, PatchItemPayload, PostStartupComplete,
+    PostStartupConfiguration, PostStartupUser, PublicSystemInfo, SaveEpgSource,
+    ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
     StartupConfiguration, StartupUser, StopTask, TaskInfo, TaskTriggerInfo,
     TaskTriggerInfoType, TunerHostInfo, UpdateBrandingConfiguration,
     UpdateCatalogSettings, UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
@@ -408,6 +409,48 @@ fn KvRow(label: &'static str, value: String) -> Element {
         div { class: "kv-row",
             span { class: "kv-label", "{label}" }
             span { class: "kv-value", "{value}" }
+        }
+    }
+}
+
+#[component]
+fn MediaStatsCard(app_state: AppState) -> Element {
+    let mut counts: Signal<Option<ItemCounts>> = use_signal(|| None);
+    let mut loading = use_signal(|| true);
+    let mut error = use_signal(|| Option::<String>::None);
+
+    use_effect(move || {
+        let client = app_state.client.clone();
+        spawn(async move {
+            match client.execute(GetItemCounts).await {
+                Ok(c) => {
+                    counts.set(Some(c));
+                    error.set(None);
+                }
+                Err(e) => error.set(Some(format!("Failed to fetch media counts: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Library" }
+            }
+            div { class: "card-body",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else if let Some(err) = error.read().as_ref() {
+                    span { class: "loading-text", style: "color:var(--error)", "{err}" }
+                } else if let Some(c) = counts.read().as_ref() {
+                    KvRow { label: "Movies", value: c.movie_count.to_string() }
+                    KvRow { label: "Series", value: c.series_count.to_string() }
+                    KvRow { label: "Episodes", value: c.episode_count.to_string() }
+                    KvRow { label: "Albums", value: c.album_count.to_string() }
+                    KvRow { label: "Tracks", value: c.song_count.to_string() }
+                }
+            }
         }
     }
 }
@@ -1259,6 +1302,7 @@ fn OverviewRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! {
         ServerInfoCard { app_state: app_state.clone() }
+        MediaStatsCard { app_state: app_state.clone() }
         SessionsCard { app_state: app_state.clone() }
         TasksCard { app_state: app_state.clone(), running_only: true }
     }

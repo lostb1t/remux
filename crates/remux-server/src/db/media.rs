@@ -2340,16 +2340,12 @@ impl Media {
 
     /// Count items by kind
     pub async fn count_by_kind(db: &SqlitePool, kind: &MediaKind) -> Result<i64> {
-        let result = Self::get_by_filter(
-            db,
-            &MediaFilter {
-                kind: Some(vec![kind.clone()]),
-                total_count: true,
-                ..Default::default()
-            },
-        )
-        .await?;
-        Ok(result.total_count as i64)
+        let count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM media WHERE kind = ?1")
+                .bind(kind)
+                .fetch_one(db)
+                .await?;
+        Ok(count)
     }
 }
 

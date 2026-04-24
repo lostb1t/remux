@@ -912,29 +912,49 @@ pub async fn items_counts(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    // Get counts for different media types from the database
-    let movie_count =
-        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Movie).await? as i32;
-    let series_count =
-        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Series).await? as i32;
-    let episode_count =
-        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Episode).await? as i32;
-
-    // For now, return hardcoded values for other types since we don't have them in the database yet
-    // In a real implementation, you would query the actual counts
+    let (
+        movie_count,
+        series_count,
+        episode_count,
+        song_count,
+        album_count,
+        artist_count,
+    ) = tokio::try_join!(
+        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Movie),
+        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Series),
+        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Episode),
+        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Track),
+        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Album),
+        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Artist),
+    )?;
+    let (
+        movie_count,
+        series_count,
+        episode_count,
+        song_count,
+        album_count,
+        artist_count,
+    ) = (
+        movie_count as i32,
+        series_count as i32,
+        episode_count as i32,
+        song_count as i32,
+        album_count as i32,
+        artist_count as i32,
+    );
     let item_counts = api::ItemCounts {
         movie_count,
         series_count,
         episode_count,
-        artist_count: 0,      // TODO: Implement artist counting
-        program_count: 0,     // TODO: Implement program counting
-        trailer_count: 0,     // TODO: Implement trailer counting
-        song_count: 0,        // TODO: Implement song counting
-        album_count: 0,       // TODO: Implement album counting
-        music_video_count: 0, // TODO: Implement music video counting
-        box_set_count: 0,     // TODO: Implement box set counting
-        book_count: 0,        // TODO: Implement book counting
-        item_count: movie_count + series_count + episode_count, // Total of counted items
+        song_count,
+        album_count,
+        artist_count,
+        item_count: movie_count
+            + series_count
+            + episode_count
+            + song_count
+            + album_count,
+        ..Default::default()
     };
 
     Ok(Json(item_counts))
