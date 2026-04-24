@@ -2439,7 +2439,7 @@ impl TryFrom<sdks::aio::Meta> for Media {
         });
 
         let media = Media {
-            title: meta.name.unwrap_or_default(),
+            title: meta.get_name().unwrap_or_default(),
             kind: media_kind.clone(),
             released_at: meta.released.map(|x| x.naive_utc()),
             digital_released_at,

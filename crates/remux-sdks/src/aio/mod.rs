@@ -343,6 +343,7 @@ pub struct Meta {
     )]
     pub imdb_rating: Option<f64>,
     pub name: Option<String>,
+    pub title: Option<String>,
     pub status: Option<Status>,
     pub released: Option<DateTime<Utc>>,
     pub slug: Option<String>,
@@ -406,6 +407,10 @@ impl Meta {
             .await?
             .meta;
         Ok(())
+    }
+
+    pub fn get_name(&self) -> Option<String> {
+        self.name.clone().or_else(|| self.title.clone())
     }
 }
 
@@ -616,6 +621,7 @@ impl Meta {
 pub struct Episode {
     pub id: String,
     pub title: Option<String>,
+    pub name: Option<String>,
     pub released: Option<DateTime<Utc>>,
     pub thumbnail: Option<String>,
     pub episode: Option<i64>,
@@ -633,6 +639,11 @@ pub struct Episode {
     pub directors: Option<Vec<String>>,
     pub writers: Option<Vec<String>>,
     pub cast: Option<Vec<CastMember>>,
+}
+impl Episode {
+    pub fn get_name(&self) -> Option<String> {
+        self.name.clone().or_else(|| self.title.clone())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
