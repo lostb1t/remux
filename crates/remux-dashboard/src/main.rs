@@ -1862,8 +1862,11 @@ async fn fetch_suggestions(
                 Ok(r) => r
                     .items
                     .into_iter()
-                    .filter_map(|i| i.name)
-                    .map(|n| (n.clone(), n))
+                    .filter_map(|i| {
+                        let label = i.name?;
+                        let value = i.provider_ids.as_ref()?.aio.clone()?;
+                        Some((label, value))
+                    })
                     .collect(),
                 Err(_) => vec![],
             }

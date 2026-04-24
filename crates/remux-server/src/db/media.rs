@@ -2804,15 +2804,17 @@ fn filter_rule_to_sql(
                     format!(
                         "EXISTS (SELECT 1 FROM media_relations mr \
                          JOIN media c ON c.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND trim(lower(c.title)) = trim(lower('{v}')))"
+                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND c.media_id = '{v}')"
                     )
                 }
                 SetOp::In | SetOp::NotIn => {
-                    let list = in_list(values)?;
+                    let list: Vec<String> =
+                        values.iter().map(|s| format!("'{}'", esc(s))).collect();
+                    let list = list.join(", ");
                     format!(
                         "EXISTS (SELECT 1 FROM media_relations mr \
                          JOIN media c ON c.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND trim(lower(c.title)) IN ({list}))"
+                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND c.media_id IN ({list}))"
                     )
                 }
             };
