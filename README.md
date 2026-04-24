@@ -46,7 +46,7 @@ Run the image as follows
 version: "3"
 services:
   remux:
-    image: ghcr.io/lostb1t/remux
+    image: ghcr.io/lostb1t/remux:nightly
     ports:
       - "3000:3000"
     volumes:
