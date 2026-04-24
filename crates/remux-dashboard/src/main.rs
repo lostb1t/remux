@@ -1699,13 +1699,13 @@ fn CollectionForm(
                 }
             }
 
-            if col_kind.read().as_str() == "smart" {
-                FilterRuleEditor { match_mode: sf_match, rules: sf_rules }
-            }
-
             div { class: "field",
                 label { class: "field-label", "Tags" }
                 TagChipInput { tags }
+            }
+
+            if col_kind.read().as_str() == "smart" {
+                FilterRuleEditor { match_mode: sf_match, rules: sf_rules }
             }
 
             div { class: "toggle-row",
@@ -2166,7 +2166,7 @@ fn FilterRuleEditor(
     rsx! {
         div { class: "field",
             div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px",
-                label { class: "field-label", style: "margin:0", "Filter Rules" }
+                label { class: "field-label", style: "margin:0", "Filters" }
                 if collection_mode {
                     div { style: "display:flex;align-items:center;gap:8px",
                         span { style: "font-size:0.8rem;color:var(--text-muted)", "Match" }
@@ -2207,7 +2207,7 @@ fn FilterRuleEditor(
                 onclick: move |_| {
                     rules.write().push(default_new_rule.clone());
                 },
-                "+ Add Rule"
+                "+ Add Filter"
             }
         }
     }
