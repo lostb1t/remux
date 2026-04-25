@@ -385,6 +385,8 @@ pub struct MediaFilter {
     pub id: Option<Vec<Uuid>>,
     pub kind: Option<Vec<MediaKind>>,
     pub parent_id: Option<Uuid>,
+    /// Filter by multiple parent IDs (OR). Used for programs by channel.
+    pub parent_ids: Option<Vec<Uuid>>,
     pub media_id: Option<String>,
     pub promoted: Option<bool>,
     pub limit: Option<u32>,
@@ -428,6 +430,8 @@ pub struct MediaFilter {
     pub filter_rules: Vec<remux_sdks::remux::models::FilterRule>,
     /// Whether all rules must match (AND) or any rule (OR). Defaults to All.
     pub filter_match: remux_sdks::remux::models::FilterMatchMode,
+    /// For TvProgram: None = all, Some(true) = live_end < now, Some(false) = live_end >= now
+    pub has_aired: Option<bool>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -844,6 +848,19 @@ impl Media {
         Ok(())
     }
 
+    pub async fn save_probe_data(
+        db: &sqlx::SqlitePool,
+        id: &Uuid,
+        probe: &crate::api::MediaSourceInfo,
+    ) -> Result<()> {
+        sqlx::query("UPDATE media SET probe_data = ?1 WHERE id = ?2")
+            .bind(sqlx::types::Json(probe))
+            .bind(id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
+
     pub async fn insert(db: &sqlx::SqlitePool, items: &[Self]) -> Result<()> {
         if items.is_empty() {
             return Ok(());
@@ -1158,6 +1175,16 @@ impl Media {
                 if let Some(parent_id) = &filter.parent_id {
                     qb.push(" AND parent_id = ").push_bind(parent_id);
                 }
+                if let Some(parent_ids) = &filter.parent_ids {
+                    if !parent_ids.is_empty() {
+                        qb.push(" AND parent_id IN (");
+                        let mut sep = qb.separated(", ");
+                        for id in parent_ids {
+                            sep.push_bind(id);
+                        }
+                        qb.push(")");
+                    }
+                }
             }
             if let Some(media_id) = &filter.media_id {
                 qb.push(" AND media_id = ").push_bind(media_id);
@@ -1372,6 +1399,14 @@ impl Media {
 
             if let Some(enabled) = &filter.enabled {
                 qb.push(" AND enabled = ").push_bind(*enabled);
+            }
+
+            if let Some(has_aired) = filter.has_aired {
+                if has_aired {
+                    qb.push(" AND live_end < datetime('now')");
+                } else {
+                    qb.push(" AND live_end >= datetime('now')");
+                }
             }
 
             if let Some(threshold) = &filter.digital_released_before {

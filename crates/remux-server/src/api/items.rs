@@ -70,7 +70,13 @@ pub struct ItemsQueryResult {
 }
 
 fn apply_permissions(item: &mut api::BaseItemDto, user: &db::User) {
-    item.can_delete = Some(db::Media::can_delete(user));
+    item.can_delete = Some(
+        db::Media::can_delete(user)
+            && !matches!(
+                item.type_,
+                api::MediaType::TvChannel | api::MediaType::Program
+            ),
+    );
 }
 
 impl ItemsQueryResult {
@@ -1144,7 +1150,12 @@ pub async fn item(
             }
         }
     }
-    if media.sources.as_ref().is_none_or(|s| s.is_empty()) {
+    if media.sources.as_ref().is_none_or(|s| s.is_empty())
+        && !matches!(
+            media.kind,
+            db::MediaKind::TvChannel | db::MediaKind::TvProgram
+        )
+    {
         base_item.location_type = Some("Virtual".to_string());
         base_item.path = None;
         base_item.can_download = Some(false);

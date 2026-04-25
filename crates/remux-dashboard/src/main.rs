@@ -2533,8 +2533,12 @@ fn IptvPage(app_state: AppState) -> Element {
     let mut active_tab = use_signal(|| "sources".to_string());
 
     rsx! {
-        IptvSourcesTab { app_state: app_state.clone(), active: active_tab.read().as_str() == "sources" }
-        IptvChannelsTab { app_state: app_state.clone(), active: active_tab.read().as_str() == "channels" }
+        if active_tab.read().as_str() == "sources" {
+            IptvSourcesTab { app_state: app_state.clone() }
+        }
+        if active_tab.read().as_str() == "channels" {
+            IptvChannelsTab { app_state: app_state.clone() }
+        }
         // Tab selector rendered above both panels
         div { class: "card", style: "order:-1",
             div { class: "card-header",
@@ -2557,7 +2561,7 @@ fn IptvPage(app_state: AppState) -> Element {
 }
 
 #[component]
-fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
+fn IptvSourcesTab(app_state: AppState) -> Element {
     let mut ch_sources: Signal<Vec<TunerHostInfo>> = use_signal(Vec::new);
     let mut epg_sources: Signal<Vec<EpgSourceInfo>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
@@ -2606,10 +2610,6 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
             loading.set(false);
         });
     });
-
-    if !active {
-        return rsx! { div { style: "display:none" } };
-    }
 
     let mut reset_ch_form = move || {
         ch_edit_id.set(None);
@@ -3026,7 +3026,7 @@ fn IptvSourcesTab(app_state: AppState, active: bool) -> Element {
 const PAGE_SIZE: u32 = 50;
 
 #[component]
-fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
+fn IptvChannelsTab(app_state: AppState) -> Element {
     let mut channels: Signal<Vec<ChannelEditorItem>> = use_signal(Vec::new);
     let mut total: Signal<usize> = use_signal(|| 0);
     let mut loading = use_signal(|| true);
@@ -3062,10 +3062,6 @@ fn IptvChannelsTab(app_state: AppState, active: bool) -> Element {
             loading.set(false);
         });
     });
-
-    if !active {
-        return rsx! { div { style: "display:none" } };
-    }
 
     let total_v = *total.read();
     let page_v = *page.read();

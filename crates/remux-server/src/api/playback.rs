@@ -138,31 +138,7 @@ async fn items_playbackinfo_inner(
     // Torrent streams: resolve magnet URI to a local HTTP URL first.
     let mut media = resolve_torrent(media, &state).await?;
 
-    // IPTV channels: skip GStreamer probe, return direct-play source.
-    if media.kind == db::MediaKind::TvChannel {
-        let url = media
-            .url
-            .clone()
-            .context_not_found("missing url", "channel has no stream url")?;
-        let source = api::MediaSourceInfo {
-            id: media.id,
-            name: Some(media.title.clone()),
-            path: Some(url),
-            protocol: "Http".to_string(),
-            is_remote: true,
-            supports_direct_play: true,
-            supports_direct_stream: true,
-            supports_transcoding: false,
-            ..Default::default()
-        };
-        let play_session_id = utils::get_uuid().as_simple().to_string();
-        let info = api::PlaybackInfoResponse {
-            media_sources: vec![source],
-            play_session_id: Some(play_session_id),
-            ..Default::default()
-        };
-        return Ok(Json(info));
-    }
+    let is_live = media.kind == db::MediaKind::TvChannel;
 
     // For Track items, refresh CDN stream URLs if stale.
     // `media` may be a Source child when media_source_id differs from id — use subtitle_media
@@ -307,8 +283,9 @@ async fn items_playbackinfo_inner(
                                 probed.name = Some(sm2.title.clone());
                                 probed.path = sm2.url.clone();
                                 if probed.video_stream().is_some() || probed.audio_stream().is_some() {
-                                    sm.probe_data = Some(sqlx::types::Json(probed.clone()));
-                                    sm.save(&db).await;
+                                    if let Err(e) = db::Media::save_probe_data(&db, &sm2.id, &probed).await {
+                                        tracing::warn!(id = %sm2.id, error = %e, "failed to save probe data");
+                                    }
                                 } else {
                                     tracing::warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
                                 }
@@ -609,6 +586,18 @@ async fn items_playbackinfo_inner(
     if !specific_source_requested && !media_sources.is_empty() {
         media_sources[0].id = id;
         media_sources[0].e_tag = id;
+    }
+
+    // Live TV: apply stream flags on top of whatever the probe/transcoding decided.
+    if is_live {
+        for source in &mut media_sources {
+            source.is_infinite_stream = true;
+            source.ignore_dts = true;
+            source.ignore_index = true;
+            source.read_at_native_framerate = true;
+            source.buffer_ms = Some(1500);
+            source.run_time_ticks = None;
+        }
     }
 
     let info = api::PlaybackInfoResponse {
@@ -2126,37 +2115,37 @@ pub async fn master_hls_video(
         // Keep the API stable (no RunId in URLs) by reusing one on-disk path per
         // PlaySessionId and clearing stale segments when a transcode restarts.
         let _ = std::fs::remove_dir_all(&output_dir);
-        // runtime in Jellyfin ticks (100-ns units).
-        // Try: resolved source runtime → parent item runtime → cached probe data → parent item DB lookup.
-        let runtime_ticks = resolved_media
-            .runtime
-            .or(media.runtime)
-            .filter(|&r| r > 0)
-            .map(|r| r * 10_000_000)
-            .or_else(|| {
-                resolved_media
-                    .probe_data
-                    .as_ref()
-                    .and_then(|p| p.run_time_ticks)
-            });
-        let runtime_ticks = match runtime_ticks {
-            Some(t) if t > 0 => t,
-            _ => {
-                // Last resort: look up the parent item by path ID
-                db::Media::get_by_id(&state.ctx.db, &id)
+        let is_live = resolved_media.kind == db::MediaKind::TvChannel;
+
+        // Live streams have no fixed duration — skip all runtime lookups.
+        let runtime_ticks = if is_live {
+            0
+        } else {
+            // Try: resolved source runtime → parent item runtime → cached probe data → parent item DB lookup.
+            let rt = resolved_media
+                .runtime
+                .or(media.runtime)
+                .filter(|&r| r > 0)
+                .map(|r| r * 10_000_000)
+                .or_else(|| {
+                    resolved_media
+                        .probe_data
+                        .as_ref()
+                        .and_then(|p| p.run_time_ticks)
+                });
+            match rt {
+                Some(t) if t > 0 => t,
+                _ => db::Media::get_by_id(&state.ctx.db, &id)
                     .await
                     .ok()
                     .flatten()
                     .and_then(|m| m.runtime)
                     .filter(|&r| r > 0)
                     .map(|r| r * 10_000_000)
-                    .unwrap_or(0)
+                    .unwrap_or(0),
             }
         };
-        debug!(
-            runtime_ticks,
-            segment_length, "VOD playlist: runtime_ticks for transcode session"
-        );
+        debug!(runtime_ticks, is_live, segment_length, "transcode session");
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -2175,6 +2164,7 @@ pub async fn master_hls_video(
                 .map(api::TranscodeReasons::from_query_value)
                 .unwrap_or_default(),
             runtime_ticks,
+            is_live,
         );
 
         state
@@ -2275,10 +2265,49 @@ async fn variant_hls_video_inner(
     // Keep the session alive.
     state.ctx.sessions.ping(&play_session_id);
 
-    // Generate the variant playlist server-side as a complete VOD playlist
-    // so HLS.js can seek to any position immediately. We no longer read
-    // FFmpeg's incrementally-built EVENT playlist.
     let session_read = session.read().await;
+    let is_live = session_read.is_live;
+    let playlist_path = session_read.variant_playlist_path();
+    let psid = session_read.id.clone();
+
+    if is_live {
+        drop(session_read);
+        // For live streams, serve the ffmpeg-written EVENT playlist directly.
+        // Poll until ffmpeg has written at least the header (first segment done).
+        let content = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                if let Ok(text) = tokio::fs::read_to_string(&playlist_path).await {
+                    if text.contains("#EXTINF") {
+                        return text;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        })
+        .await
+        .unwrap_or_default();
+
+        // Inject ?PlaySessionId=... into segment lines so hls_segment_inner can find the session.
+        let content = content
+            .lines()
+            .map(|line| {
+                if !line.starts_with('#') && line.ends_with(".ts") {
+                    format!("{}?PlaySessionId={}", line, psid)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/vnd.apple.mpegurl")
+            .header("Cache-Control", "no-cache, no-store")
+            .body(Body::from(content))
+            .unwrap());
+    }
+
     debug!(
         runtime_ticks = session_read.runtime_ticks,
         segment_length = session_read.segment_length,

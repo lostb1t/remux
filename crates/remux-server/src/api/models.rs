@@ -447,17 +447,34 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         };
     }
 
+    if media.kind == db::MediaKind::TvProgram {
+        item.channel_id = media.parent_id.map(|id| id.to_string());
+        item.location_type = Some("Remote".to_string());
+        item.can_delete = Some(false);
+        item.can_download = Some(false);
+        item.lock_data = false;
+    }
+
     if media.kind == db::MediaKind::TvChannel {
+        item.location_type = Some("Remote".to_string());
+        item.can_delete = Some(false);
+        item.can_download = Some(false);
+        item.lock_data = false;
+        item.is_place_holder = Some(false);
         // Channels use direct-play passthrough — no GStreamer probe needed.
         item.media_sources = Some(vec![MediaSourceInfo {
             id: media.id,
+            e_tag: media.id,
             name: Some(media.title.clone()),
             path: media.url.clone(),
             protocol: "Http".to_string(),
             is_remote: true,
+            is_infinite_stream: true,
             supports_direct_play: true,
             supports_direct_stream: true,
-            supports_transcoding: false,
+            supports_transcoding: true,
+            type_: "Placeholder".to_string(),
+            video_type: "VideoFile".to_string(),
             ..Default::default()
         }]);
     }

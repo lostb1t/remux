@@ -3,6 +3,7 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 use axum_extra::extract::Query;
+use chrono::{Duration, Utc};
 use http::StatusCode;
 use remux_macros::{delete, get, patch, post};
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,37 @@ pub async fn livetv_info(
     Ok(Json(serde_json::json!({
         "IsEnabled": has_channels,
         "EnabledUsers": user_ids,
+    })))
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/guideinfo
+// --------------------------------------------------------------------------
+
+#[get("/livetv/guideinfo")]
+pub async fn livetv_guide_info(
+    State(state): State<AppState>,
+    _session: AuthSession,
+) -> Result<impl IntoResponse> {
+    use sqlx::Row as _;
+    let row = sqlx::query(
+        "SELECT MIN(live_start), MAX(live_end) FROM media WHERE kind = 'tv_program'",
+    )
+    .fetch_one(&state.ctx.db)
+    .await?;
+
+    let now = Utc::now().naive_utc();
+    let start = row
+        .get::<Option<String>, _>(0)
+        .unwrap_or_else(|| now.to_string());
+    let end = row
+        .get::<Option<String>, _>(1)
+        .unwrap_or_else(|| (now + Duration::days(14)).to_string());
+
+    let fmt = |s: String| s.replace(' ', "T") + "Z";
+    Ok(Json(serde_json::json!({
+        "StartDate": fmt(start),
+        "EndDate":   fmt(end),
     })))
 }
 
@@ -123,11 +155,18 @@ pub async fn livetv_programs_recommended(
 // --------------------------------------------------------------------------
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "PascalCase")]
 pub struct GetProgramsQuery {
+    #[serde(rename = "channelIds", alias = "ChannelIds")]
     pub channel_ids: Option<String>,
+    #[serde(rename = "startIndex", alias = "StartIndex")]
     pub start_index: Option<u32>,
+    // Jellyfin sends lowercase "limit" on this endpoint (unlike most others)
+    #[serde(rename = "limit", alias = "Limit")]
     pub limit: Option<u32>,
+    #[serde(rename = "HasAired")]
+    pub has_aired: Option<bool>,
+    #[serde(rename = "EnableTotalRecordCount")]
+    pub enable_total_record_count: Option<bool>,
 }
 
 #[get("/livetv/programs")]
@@ -136,7 +175,7 @@ pub async fn livetv_programs(
     _session: AuthSession,
     Query(q): Query<GetProgramsQuery>,
 ) -> Result<impl IntoResponse> {
-    let parent_ids: Vec<Uuid> = q
+    let channel_ids: Vec<Uuid> = q
         .channel_ids
         .as_deref()
         .unwrap_or("")
@@ -146,14 +185,17 @@ pub async fn livetv_programs(
 
     let mut filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::TvProgram]),
-        limit: q.limit,
+        limit: Some(q.limit.unwrap_or(500)),
         offset: q.start_index,
-        total_count: true,
+        total_count: q.enable_total_record_count.unwrap_or(true),
+        has_aired: q.has_aired,
         ..Default::default()
     };
 
-    if parent_ids.len() == 1 {
-        filter.parent_id = Some(parent_ids[0]);
+    match channel_ids.len() {
+        1 => filter.parent_id = Some(channel_ids[0]),
+        n if n > 1 => filter.parent_ids = Some(channel_ids),
+        _ => {}
     }
 
     let result = db::Media::get_by_filter(&state.ctx.db, &filter).await?;
@@ -180,6 +222,8 @@ pub struct GetProgramsBody {
     pub channel_ids: Option<Vec<Uuid>>,
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
+    pub has_aired: Option<bool>,
+    pub enable_total_record_count: Option<bool>,
 }
 
 #[post("/livetv/programs")]
@@ -190,15 +234,18 @@ pub async fn livetv_programs_post(
 ) -> Result<impl IntoResponse> {
     let mut filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::TvProgram]),
-        limit: body.limit,
+        limit: Some(body.limit.unwrap_or(500)),
         offset: body.start_index,
-        total_count: true,
+        total_count: body.enable_total_record_count.unwrap_or(true),
+        has_aired: body.has_aired,
         ..Default::default()
     };
 
     if let Some(ids) = body.channel_ids {
-        if ids.len() == 1 {
-            filter.parent_id = Some(ids[0]);
+        match ids.len() {
+            1 => filter.parent_id = Some(ids[0]),
+            n if n > 1 => filter.parent_ids = Some(ids),
+            _ => {}
         }
     }
 
@@ -213,6 +260,32 @@ pub async fn livetv_programs_post(
         total_record_count: result.total_count as i64,
         start_index: body.start_index.unwrap_or(0) as i32,
         items: dtos,
+    }))
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/seriestimers
+// --------------------------------------------------------------------------
+
+#[get("/livetv/seriestimers")]
+pub async fn livetv_series_timers(_session: AuthSession) -> Result<impl IntoResponse> {
+    Ok(Json(api::QueryResult::<api::BaseItemDto> {
+        total_record_count: 0,
+        start_index: 0,
+        items: vec![],
+    }))
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/timers
+// --------------------------------------------------------------------------
+
+#[get("/livetv/timers")]
+pub async fn livetv_timers(_session: AuthSession) -> Result<impl IntoResponse> {
+    Ok(Json(api::QueryResult::<api::BaseItemDto> {
+        total_record_count: 0,
+        start_index: 0,
+        items: vec![],
     }))
 }
 
@@ -328,13 +401,26 @@ pub async fn livetv_delete_tuner_host(
     _session: AdminSession,
     Query(q): Query<DeleteTunerQuery>,
 ) -> Result<impl IntoResponse> {
-    let source_aio_id = q.id.simple().to_string();
-    sqlx::query("DELETE FROM media WHERE media_id = $1 AND kind = 'tv_channel'")
-        .bind(&source_aio_id)
+    let source_id = q.id.simple().to_string();
+    sqlx::query(
+        "DELETE FROM media
+         WHERE kind = 'tv_program'
+           AND parent_id IN (
+               SELECT id FROM media
+               WHERE kind = 'tv_channel' AND media_id = $1
+           )",
+    )
+    .bind(&source_id)
+    .execute(&state.ctx.db)
+    .await?;
+
+    sqlx::query("DELETE FROM media WHERE kind = 'tv_channel' AND media_id = $1")
+        .bind(&source_id)
         .execute(&state.ctx.db)
         .await?;
 
     db::IptvSource::delete(&state.ctx.db, &q.id).await?;
+    state.tasks.run_task("RefreshIptv").await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

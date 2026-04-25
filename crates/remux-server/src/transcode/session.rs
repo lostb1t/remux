@@ -42,6 +42,8 @@ pub struct TranscodeSession {
     pub playback_offset_secs: Arc<AtomicU32>,
     /// Total runtime of the media in Jellyfin ticks (100-ns units).
     pub runtime_ticks: i64,
+    /// True for live TV — variant playlist is served from the ffmpeg-written EVENT file.
+    pub is_live: bool,
 }
 
 impl TranscodeSession {
@@ -59,6 +61,7 @@ impl TranscodeSession {
         segment_length: u32,
         transcode_reasons: TranscodeReasons,
         runtime_ticks: i64,
+        is_live: bool,
     ) -> Arc<tokio::sync::RwLock<Self>> {
         let _ = std::fs::create_dir_all(&output_dir);
         let (state_tx, _) = watch::channel(TranscodeState::Starting);
@@ -84,6 +87,7 @@ impl TranscodeSession {
             start_time_secs: 0,
             playback_offset_secs: Arc::new(AtomicU32::new(0)),
             runtime_ticks,
+            is_live,
         }))
     }
 
