@@ -189,6 +189,7 @@ pub async fn livetv_programs(
         offset: q.start_index,
         total_count: q.enable_total_record_count.unwrap_or(true),
         has_aired: q.has_aired,
+        parent_enabled: Some(true),
         ..Default::default()
     };
 
@@ -238,6 +239,7 @@ pub async fn livetv_programs_post(
         offset: body.start_index,
         total_count: body.enable_total_record_count.unwrap_or(true),
         has_aired: body.has_aired,
+        parent_enabled: Some(true),
         ..Default::default()
     };
 

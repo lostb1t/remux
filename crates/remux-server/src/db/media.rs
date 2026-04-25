@@ -419,6 +419,8 @@ pub struct MediaFilter {
     pub allowed_tags: Option<Vec<String>>,
     /// Filter by enabled flag (for TvChannel). None = no filter.
     pub enabled: Option<bool>,
+    /// If set, only return items whose parent has enabled = value (e.g. programs of enabled channels).
+    pub parent_enabled: Option<bool>,
     /// Filter albums/tracks by artist (parent_id IN these IDs).
     pub artist_ids: Option<Vec<Uuid>>,
     /// If set, only return items where COALESCE(digital_released_at, released_at) <= threshold.
@@ -1406,6 +1408,12 @@ impl Media {
                 qb.push(" AND enabled = ").push_bind(*enabled);
             }
 
+            if let Some(parent_enabled) = &filter.parent_enabled {
+                qb.push(" AND parent_id IN (SELECT id FROM media WHERE kind = 'tv_channel' AND enabled = ")
+                    .push_bind(*parent_enabled)
+                    .push(")");
+            }
+
             if let Some(has_aired) = filter.has_aired {
                 if has_aired {
                     qb.push(" AND live_end < datetime('now')");
@@ -1958,10 +1966,12 @@ impl Media {
             None
         };
 
+        let has_tv_channel = kinds.contains(&MediaKind::TvChannel);
         Ok(Self::get_by_filter(
             db,
             &MediaFilter {
                 kind: Some(kinds),
+                enabled: has_tv_channel.then_some(true),
                 promoted: filter.promoted,
                 limit: filter.limit.clone(),
                 id: filter.ids.clone(),
