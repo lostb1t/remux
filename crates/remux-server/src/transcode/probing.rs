@@ -1,6 +1,7 @@
 use crate::api;
 use anyhow::{Result, anyhow};
 use isolang::Language;
+use remux_sdks::remux::models::{MediaSegmentType, MediaSegments, Segment};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -199,9 +200,19 @@ fn display_title_subtitle(m: &StreamMeta) -> Option<String> {
 }
 
 #[derive(Deserialize)]
+struct FfprobeChapter {
+    start_time: String,
+    end_time: String,
+    #[serde(default)]
+    tags: HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
 struct FfprobeOutput {
     streams: Vec<FfprobeStream>,
     format: FfprobeFormat,
+    #[serde(default)]
+    chapters: Vec<FfprobeChapter>,
 }
 
 #[derive(Deserialize, Default)]
@@ -251,8 +262,64 @@ fn parse_frame_rate(s: &str) -> Option<f64> {
     if fps > 0.0 { Some(fps) } else { None }
 }
 
-/// Probe a media URL with ffprobe and return a Jellyfin MediaSourceInfo.
-pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
+fn secs_to_ticks(s: &str) -> Option<i64> {
+    let secs: f64 = s.parse().ok()?;
+    Some((secs * 10_000_000.0) as i64)
+}
+
+fn chapter_title_to_type(title: &str) -> Option<MediaSegmentType> {
+    let t = title.to_ascii_lowercase();
+    if t.contains("intro") {
+        Some(MediaSegmentType::Intro)
+    } else if t.contains("recap") {
+        Some(MediaSegmentType::Recap)
+    } else if t.contains("credits") || t.contains("outro") {
+        Some(MediaSegmentType::Outro)
+    } else if t.contains("preview") {
+        Some(MediaSegmentType::Preview)
+    } else if t.contains("commercial") || t.contains(" ad ") || t.eq("ad") {
+        Some(MediaSegmentType::Commercial)
+    } else {
+        None
+    }
+}
+
+fn chapters_to_segments(chapters: &[FfprobeChapter]) -> MediaSegments {
+    let mut segs = MediaSegments::default();
+    for ch in chapters {
+        let title = ch.tags.get("title").map(|s| s.as_str()).unwrap_or("");
+        let Some(kind) = chapter_title_to_type(title) else {
+            continue;
+        };
+        let Some(start) = secs_to_ticks(&ch.start_time) else {
+            continue;
+        };
+        let Some(end) = secs_to_ticks(&ch.end_time) else {
+            continue;
+        };
+        let seg = Segment {
+            start_ticks: start,
+            end_ticks: end,
+        };
+        match kind {
+            MediaSegmentType::Intro if segs.intro.is_none() => segs.intro = Some(seg),
+            MediaSegmentType::Outro if segs.outro.is_none() => segs.outro = Some(seg),
+            MediaSegmentType::Recap if segs.recap.is_none() => segs.recap = Some(seg),
+            MediaSegmentType::Preview if segs.preview.is_none() => {
+                segs.preview = Some(seg)
+            }
+            MediaSegmentType::Commercial if segs.commercial.is_none() => {
+                segs.commercial = Some(seg)
+            }
+            _ => {}
+        }
+    }
+    segs
+}
+
+/// Probe a media URL with ffprobe and return a Jellyfin `MediaSourceInfo`
+/// alongside any chapter-derived `MediaSegments`.
+pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
     tracing::debug!(url, "probing media");
 
     let output = std::process::Command::new(ffprobe_bin())
@@ -261,6 +328,7 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
             "error",
             "-print_format",
             "json",
+            "-show_chapters",
             "-show_streams",
             "-show_format",
             url,
@@ -495,13 +563,18 @@ pub fn probe_media(url: &str) -> Result<api::MediaSourceInfo> {
         .find(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)))
         .map(|s| s.index);
 
-    Ok(api::MediaSourceInfo {
-        media_streams: streams,
-        container,
-        run_time_ticks,
-        bitrate: overall_bitrate,
-        default_audio_stream_index,
-        default_subtitle_stream_index,
-        ..Default::default()
-    })
+    let segments = chapters_to_segments(&probe.chapters);
+
+    Ok((
+        api::MediaSourceInfo {
+            media_streams: streams,
+            container,
+            run_time_ticks,
+            bitrate: overall_bitrate,
+            default_audio_stream_index,
+            default_subtitle_stream_index,
+            ..Default::default()
+        },
+        segments,
+    ))
 }

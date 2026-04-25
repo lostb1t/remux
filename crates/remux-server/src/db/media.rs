@@ -432,6 +432,8 @@ pub struct MediaFilter {
     pub filter_match: remux_sdks::remux::models::FilterMatchMode,
     /// For TvProgram: None = all, Some(true) = live_end < now, Some(false) = live_end >= now
     pub has_aired: Option<bool>,
+    /// Filter episodes/seasons by their series (top-level show).
+    pub series_id: Option<Uuid>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -1185,6 +1187,9 @@ impl Media {
                         qb.push(")");
                     }
                 }
+            }
+            if let Some(series_id) = &filter.series_id {
+                qb.push(" AND series_id = ").push_bind(series_id);
             }
             if let Some(media_id) = &filter.media_id {
                 qb.push(" AND media_id = ").push_bind(media_id);
@@ -2014,6 +2019,7 @@ impl Media {
                     .clone()
                     .or_else(|| filter.contributing_artist_ids.clone())
                     .or_else(|| filter.album_artist_ids.clone()),
+                series_id: filter.series_id,
                 ..Default::default()
             },
         )
@@ -2105,151 +2111,6 @@ impl Media {
         state.favorite = false;
         state.save(db).await?;
         Ok(state)
-    }
-
-    /// Fetch AIO subtitles for this Movie or Episode (cached 24 h).
-    /// Returns an error for any other `MediaKind` or when the required
-    /// IMDB ID is absent.
-    pub async fn get_subtitles(
-        &self,
-        aio: &aio::AioService,
-    ) -> Result<Vec<sdks::aio::Subtitle>> {
-        trace!(itle = self.title.clone(), "fetching subtitles from aio");
-        let (imdb_id, media_type, season, episode) = match self.kind {
-            MediaKind::Movie => (
-                self.external_ids
-                    .imdb
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("no imdb_id"))?,
-                sdks::aio::MediaType::Movie,
-                None,
-                None,
-            ),
-            MediaKind::Episode => (
-                self.series_media_id
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("no series_media_id"))?,
-                sdks::aio::MediaType::Series,
-                self.parent_idx,
-                self.idx,
-            ),
-            _ => anyhow::bail!("get_subtitles called on {:?}", self.kind),
-        };
-        aio.get_subtitles(media_type, imdb_id, season, episode)
-            .await
-    }
-
-    /// Inject external AIO subtitles into a list of `MediaSourceInfo` entries.
-    ///
-    /// Fetches available subtitles, filters by the server's `subtitle_languages`
-    /// preference (normalising 3-letter codes to ISO 639-1 before comparing),
-    /// scores each subtitle against each source by filename token overlap, and
-    /// appends matching streams. The first subtitle is marked as default when
-    /// language preferences are configured.
-    ///
-    /// No-op if AIO is not configured or no subtitles are found.
-    pub async fn inject_subtitles_into_sources(
-        &self,
-        db: &sqlx::SqlitePool,
-        media_sources: &mut Vec<api::MediaSourceInfo>,
-        item_id: uuid::Uuid,
-        api_key: &str,
-    ) {
-        let Ok(aio) = crate::aio::AioService::from_settings(db).await else {
-            return;
-        };
-        let sub_langs: Vec<String> = crate::db::Settings::get_config(db)
-            .await
-            .ok()
-            .and_then(|c| c.subtitle_languages)
-            .unwrap_or_default();
-
-        let Ok(all_subs) = self.get_subtitles(&aio).await else {
-            return;
-        };
-
-        let filtered: Vec<_> = if sub_langs.is_empty() {
-            all_subs
-        } else {
-            all_subs
-                .into_iter()
-                .filter(|s| {
-                    let two = s.lang.as_deref().and_then(subtitle_lang_to_two_letter);
-                    two.map_or(false, |two| {
-                        sub_langs.iter().any(|p| two.eq_ignore_ascii_case(p.trim()))
-                    })
-                })
-                .collect()
-        };
-
-        if filtered.is_empty() {
-            return;
-        }
-
-        for source in media_sources.iter_mut() {
-            let next_idx = source
-                .media_streams
-                .iter()
-                .map(|s| s.index)
-                .max()
-                .map_or(0, |m| m + 1);
-
-            let mut scored: Vec<_> = filtered
-                .iter()
-                .map(|s| (score_subtitle_url(&s.url, &source.name, &source.path), s))
-                .collect();
-            // Primary sort: preferred language order; secondary: filename score desc
-            scored.sort_by(|(sa, a), (sb, b)| {
-                let rank = |s: &&sdks::aio::Subtitle| {
-                    let two = s.lang.as_deref().and_then(subtitle_lang_to_two_letter);
-                    sub_langs
-                        .iter()
-                        .position(|p| {
-                            two.as_deref()
-                                .map_or(false, |t| t.eq_ignore_ascii_case(p.trim()))
-                        })
-                        .unwrap_or(usize::MAX)
-                };
-                rank(a).cmp(&rank(b)).then(sb.cmp(sa))
-            });
-
-            // Limit to 2 per language to avoid flooding the client.
-            let mut lang_counts: std::collections::HashMap<String, usize> =
-                std::collections::HashMap::new();
-            let scored: Vec<_> = scored
-                .into_iter()
-                .filter(|(_, s)| {
-                    let key = s.lang.clone().unwrap_or_else(|| "und".to_string());
-                    let count = lang_counts.entry(key).or_insert(0);
-                    if *count < 2 {
-                        *count += 1;
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .collect();
-
-            let wants_default =
-                !sub_langs.is_empty() && source.default_subtitle_stream_index.is_none();
-            for (i, (_, sub)) in scored.iter().enumerate() {
-                let mut stream =
-                    crate::conversions::subtitle_to_media_stream((*sub).clone());
-                let idx = next_idx + i as i64;
-                stream.index = idx;
-                // Proxy through our subtitle endpoint so we can convert formats.
-                let encoded_url = urlencoding::encode(&sub.url);
-                stream.delivery_url = Some(format!(
-                    "/Videos/{item_id}/{source_id}/Subtitles/{idx}/0/Stream.vtt?ApiKey={api_key}&SubtitleUrl={encoded_url}",
-                    source_id = source.id,
-                ));
-                if wants_default && i == 0 {
-                    stream.is_default = Some(true);
-                    source.default_subtitle_stream_index = Some(next_idx);
-                }
-                source.media_streams.push(stream);
-            }
-        }
     }
 
     pub async fn streams(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
@@ -2884,41 +2745,6 @@ fn filter_rule_to_sql(
             Some((sql, negated))
         }
     }
-}
-
-pub fn subtitle_lang_to_two_letter(lang: &str) -> Option<String> {
-    let lang = lang.trim().to_lowercase();
-    if lang.is_empty() {
-        return None;
-    }
-    if lang.len() == 2 {
-        return Some(lang);
-    }
-    // Try ISO 639-3 (3-letter), then fall back to from_str which also tries 639-1
-    isolang::Language::from_639_3(&lang)
-        .or_else(|| isolang::Language::from_str(&lang).ok())
-        .and_then(|l| l.to_639_1())
-        .map(|s| s.to_string())
-}
-
-/// Score how well a subtitle URL matches a media source by counting shared
-/// alphanumeric tokens (year, resolution, release group, codec, etc.).
-fn score_subtitle_url(
-    sub_url: &str,
-    source_name: &Option<String>,
-    source_path: &Option<String>,
-) -> i32 {
-    fn tokens(s: &str) -> std::collections::HashSet<String> {
-        s.split(|c: char| !c.is_alphanumeric())
-            .filter(|t| t.len() > 2)
-            .map(|t| t.to_lowercase())
-            .collect()
-    }
-    let sub_file = sub_url.rsplit('/').next().unwrap_or(sub_url);
-    let sub_tok = tokens(sub_file);
-    let mut src_tok = tokens(source_name.as_deref().unwrap_or(""));
-    src_tok.extend(tokens(source_path.as_deref().unwrap_or("")));
-    sub_tok.intersection(&src_tok).count() as i32
 }
 
 pub fn collection_uuid() -> Uuid {

@@ -62,8 +62,7 @@ pub async fn shows_episodes(
     Path(id): Path<Uuid>,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    // q.season_id = Some(id);
-    q.parent_id = q.season_id;
+    q.series_id = Some(id);
     q.include_item_types = Some(vec![api::MediaType::Episode]);
     if q.sort_by.is_none() {
         q.sort_by = Some(vec![api::ItemSortBy::IndexNumber]);

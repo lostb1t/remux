@@ -1405,6 +1405,8 @@ pub struct MediaSourceInfo {
     //  pub video3_d_format: Option<Video3DFormat>,
     #[default("VideoFile".to_string())]
     pub video_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segments: Option<MediaSegments>,
 }
 
 impl MediaSourceInfo {
@@ -3139,4 +3141,98 @@ pub struct RemoteLyricInfoDto {
     pub id: String,
     pub provider_name: String,
     pub lyrics: LyricDto,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    strum_macros::EnumString,
+    strum_macros::Display,
+)]
+#[serde(rename_all = "PascalCase")]
+pub enum MediaSegmentType {
+    Unknown = 0,
+    Commercial = 1,
+    Preview = 2,
+    Recap = 3,
+    Outro = 4,
+    Intro = 5,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Segment {
+    pub start_ticks: i64,
+    pub end_ticks: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MediaSegments {
+    pub intro: Option<Segment>,
+    pub outro: Option<Segment>,
+    pub recap: Option<Segment>,
+    pub preview: Option<Segment>,
+    pub commercial: Option<Segment>,
+}
+
+impl MediaSegments {
+    pub fn is_empty(&self) -> bool {
+        self.intro.is_none()
+            && self.outro.is_none()
+            && self.recap.is_none()
+            && self.preview.is_none()
+            && self.commercial.is_none()
+    }
+
+    /// Fill types that are `None` in `self` from `other`. Existing values are kept.
+    pub fn merge_from(&mut self, other: MediaSegments) {
+        if self.intro.is_none() {
+            self.intro = other.intro;
+        }
+        if self.outro.is_none() {
+            self.outro = other.outro;
+        }
+        if self.recap.is_none() {
+            self.recap = other.recap;
+        }
+        if self.preview.is_none() {
+            self.preview = other.preview;
+        }
+        if self.commercial.is_none() {
+            self.commercial = other.commercial;
+        }
+    }
+
+    /// Expand into a flat list of `(type, segment)` pairs, ordered by start tick.
+    pub fn to_pairs(&self) -> Vec<(MediaSegmentType, &Segment)> {
+        let mut pairs: Vec<(MediaSegmentType, &Segment)> = [
+            self.intro.as_ref().map(|s| (MediaSegmentType::Intro, s)),
+            self.outro.as_ref().map(|s| (MediaSegmentType::Outro, s)),
+            self.recap.as_ref().map(|s| (MediaSegmentType::Recap, s)),
+            self.preview
+                .as_ref()
+                .map(|s| (MediaSegmentType::Preview, s)),
+            self.commercial
+                .as_ref()
+                .map(|s| (MediaSegmentType::Commercial, s)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        pairs.sort_by_key(|(_, s)| s.start_ticks);
+        pairs
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct MediaSegmentDto {
+    pub id: Uuid,
+    pub item_id: Uuid,
+    pub r#type: MediaSegmentType,
+    pub start_ticks: i64,
+    pub end_ticks: i64,
 }

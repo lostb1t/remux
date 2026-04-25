@@ -3,7 +3,9 @@ pub mod lyrics;
 pub mod meta;
 pub mod music;
 pub mod search;
+pub mod segment;
 pub mod stream;
+pub mod subtitle;
 
 /// Extra args from `YTDLP_EXTRA_ARGS` env var, split on whitespace.
 pub(crate) fn ytdlp_extra_args() -> Vec<String> {

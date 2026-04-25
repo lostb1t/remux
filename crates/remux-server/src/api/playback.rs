@@ -278,11 +278,14 @@ async fn items_playbackinfo_inner(
 
                         match probe_result {
                             // probe succeeded — persist result to cache only if it has a video stream
-                            Ok(Ok(Ok(mut probed))) => {
+                            Ok(Ok(Ok((mut probed, segments)))) => {
                                 probed.id = sm2.id;
                                 probed.name = Some(sm2.title.clone());
                                 probed.path = sm2.url.clone();
                                 if probed.video_stream().is_some() || probed.audio_stream().is_some() {
+                                    if !segments.is_empty() {
+                                        probed.segments = Some(segments);
+                                    }
                                     if let Err(e) = db::Media::save_probe_data(&db, &sm2.id, &probed).await {
                                         tracing::warn!(id = %sm2.id, error = %e, "failed to save probe data");
                                     }
@@ -325,6 +328,7 @@ async fn items_playbackinfo_inner(
             probe_join.unwrap_or_else(|_| api::MediaSourceInfo::from(sm.clone()));
         source.id = sm.id;
         source.e_tag = sm.id;
+        source.has_segments = true;
         // Use the AIO-remapped URL so clients can reach it for direct play.
         if let Some(ref resolved) = swu.resolved_url {
             source.path = Some(resolved.clone());
@@ -2897,8 +2901,7 @@ fn srt_to_vtt(input: &str) -> String {
     out
 }
 
-/// Inject external subtitles from AIO into a list of `MediaSourceInfo` entries.
-/// Delegates to [`crate::db::Media::inject_subtitles_into_sources`].
+/// Inject external subtitles into a list of `MediaSourceInfo` entries.
 pub(super) async fn inject_external_subtitles(
     db: &sqlx::SqlitePool,
     subtitle_media: &crate::db::Media,
@@ -2906,9 +2909,14 @@ pub(super) async fn inject_external_subtitles(
     item_id: Uuid,
     api_key: &str,
 ) {
-    subtitle_media
-        .inject_subtitles_into_sources(db, media_sources, item_id, api_key)
-        .await;
+    crate::providers::subtitle::inject_into_sources(
+        subtitle_media,
+        db,
+        media_sources,
+        item_id,
+        api_key,
+    )
+    .await;
 }
 
 /// Apply per-user playback preferences to a list of `MediaSourceInfo` entries:
@@ -3021,13 +3029,15 @@ async fn apply_user_playback_prefs(
         // Only act if no subtitle default is already set
         if source.default_subtitle_stream_index.is_none() {
             if let Some(ref pref) = cfg.subtitle_language_preference {
-                let pref_two = crate::db::subtitle_lang_to_two_letter(pref);
+                let pref_two = crate::providers::subtitle::lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
                     if let Some(stream) = source.media_streams.iter_mut().find(|s| {
                         matches!(s.type_, Some(api::MediaStreamType::Subtitle))
                             && s.language
                                 .as_deref()
-                                .and_then(crate::db::subtitle_lang_to_two_letter)
+                                .and_then(
+                                    crate::providers::subtitle::lang_to_two_letter,
+                                )
                                 .as_deref()
                                 == Some(target.as_str())
                     }) {
@@ -3125,10 +3135,10 @@ fn apply_subtitle_mode(mode: &api::SubtitleMode, source: &mut api::MediaSourceIn
 
                 let audio_two = audio_lang
                     .as_deref()
-                    .and_then(crate::db::subtitle_lang_to_two_letter);
+                    .and_then(crate::providers::subtitle::lang_to_two_letter);
                 let sub_two = sub_lang
                     .as_deref()
-                    .and_then(crate::db::subtitle_lang_to_two_letter);
+                    .and_then(crate::providers::subtitle::lang_to_two_letter);
 
                 if audio_two.is_some() && audio_two == sub_two {
                     // Subtitle language matches audio — no need to display it

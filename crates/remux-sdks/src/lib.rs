@@ -1,6 +1,7 @@
 #![allow(warnings)]
 
 pub mod aio;
+pub mod introdb;
 pub mod remux;
 pub mod tmdb;
 

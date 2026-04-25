@@ -689,7 +689,7 @@ pub async fn refresh_item(
             .inspect_err(|e| error!("Could not refresh streams: {e:#}"));
 
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-            warm_subtitle_cache(&state.ctx.db, &media);
+            warm_providers_cache(&state.ctx.db, &media);
         }
     } else {
         // Refresh metadata via the full provider pipeline.
@@ -1056,10 +1056,7 @@ pub async fn item(
                 if media.kind == db::MediaKind::Movie
                     || media.kind == db::MediaKind::Episode
                 {
-                    let db = state.ctx.db.clone();
-                    if let Ok(aio) = crate::aio::AioService::from_settings(&db).await {
-                        warm_subtitle_cache(&db, &media);
-                    }
+                    warm_providers_cache(&state.ctx.db, &media);
                 }
                 state
                     .ctx
@@ -1535,11 +1532,7 @@ pub async fn gelato_subtitles(
         return Ok(Json(Vec::<sdks::aio::Subtitle>::new()));
     }
 
-    let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await else {
-        return Ok(Json(Vec::<sdks::aio::Subtitle>::new()));
-    };
-
-    let subtitles = media.get_subtitles(&aio).await.unwrap_or_default();
+    let subtitles = crate::providers::subtitle::fetch(&media, &state.ctx.db).await;
     Ok(Json(subtitles))
 }
 
@@ -1786,27 +1779,83 @@ pub async fn update_catalog_settings(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// MediaSegments stub - returns empty result to prevent 404/CORS errors
 /// Fire-and-forget: populate the 24-hour subtitle cache for a movie/episode so
-/// that the subsequent playback-info call can read from cache instead of AIO.
-fn warm_subtitle_cache(db: &SqlitePool, media: &db::Media) {
+/// Fire-and-forget: warm all external provider caches for a movie/episode.
+/// Runs subtitles (AIO) and segment data (IntroDb) in parallel inside a single task.
+fn warm_providers_cache(db: &SqlitePool, media: &db::Media) {
     let media = media.clone();
     let db = db.clone();
     tokio::spawn(async move {
-        if let Ok(aio) = crate::aio::AioService::from_settings(&db).await {
-            let _ = media.get_subtitles(&aio).await;
-        }
+        let _ = crate::providers::subtitle::fetch(&media, &db).await;
+        let _ = crate::providers::segment::fetch(&media, &db).await;
     });
+}
+
+#[derive(Deserialize, Default)]
+pub struct SegmentQuery {
+    #[serde(rename = "includeSegmentTypes", default)]
+    include_segment_types: Vec<remux_sdks::remux::models::MediaSegmentType>,
+}
+
+fn segments_to_dtos(
+    item_id: Uuid,
+    source_id: Uuid,
+    segs: &remux_sdks::remux::models::MediaSegments,
+    type_filter: Option<&[remux_sdks::remux::models::MediaSegmentType]>,
+) -> Vec<remux_sdks::remux::models::MediaSegmentDto> {
+    use remux_sdks::remux::models::MediaSegmentDto;
+    use uuid::Uuid;
+
+    segs.to_pairs()
+        .into_iter()
+        .filter(|(t, _)| type_filter.map_or(true, |f| f.contains(t)))
+        .map(|(t, seg)| {
+            // Derive a stable UUID from (source_id, type discriminant).
+            let mut bytes = [0u8; 16];
+            let src = source_id.as_bytes();
+            for (i, b) in src.iter().enumerate() {
+                bytes[i] ^= b;
+            }
+            bytes[15] ^= t as u8;
+            MediaSegmentDto {
+                id: Uuid::from_bytes(bytes),
+                item_id,
+                r#type: t,
+                start_ticks: seg.start_ticks,
+                end_ticks: seg.end_ticks,
+            }
+        })
+        .collect()
 }
 
 #[get("/mediasegments/{id}")]
 pub async fn media_segments(
     _session: auth::AuthSession,
-    Path(_id): Path<Uuid>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<SegmentQuery>,
+    State(state): State<crate::AppState>,
 ) -> Result<impl IntoResponse> {
+    let type_filter = if q.include_segment_types.is_empty() {
+        None
+    } else {
+        Some(q.include_segment_types)
+    };
+    let filter_ref = type_filter.as_deref();
+
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .unwrap_or_else(|| db::Media {
+            id,
+            ..Default::default()
+        });
+
+    let segs = crate::providers::segment::fetch(&media, &state.ctx.db).await;
+    let dtos = segments_to_dtos(id, id, &segs, filter_ref);
+
+    let count = dtos.len();
     Ok(Json(serde_json::json!({
-        "Items": [],
-        "TotalRecordCount": 0,
+        "Items": dtos,
+        "TotalRecordCount": count,
         "StartIndex": 0,
     })))
 }

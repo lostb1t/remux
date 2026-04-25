@@ -146,6 +146,7 @@ impl From<db::Media> for api::MediaSourceInfo {
             is_remote,
             name: Some(source.title.clone()),
             container,
+            has_segments: true,
             // media_streams,
             ..Default::default()
         }
