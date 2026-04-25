@@ -38,7 +38,7 @@ async fn items_images_inner(
                     media.logo
                 }
             }
-            .unwrap_or_else(|| "https://placehold.co/600x400".to_string())
+            .context_not_found("Not Found", "image not found")?
         } else {
             // Not in DB yet — item is a cached search result. Pull poster from store.
             let poster = state
