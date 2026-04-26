@@ -224,8 +224,26 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             db::MediaKind::Track => MediaType::Audio,
             _ => MediaType::Unknown,
         },
-        is_movie: Some(media.kind == db::MediaKind::Movie),
-        is_series: Some(media.kind == db::MediaKind::Series),
+        is_movie: Some(
+            media.kind == db::MediaKind::Movie
+                || matches!(media.program_kind, Some(db::ProgramKind::Movie)),
+        ),
+        is_series: Some(
+            media.kind == db::MediaKind::Series
+                || matches!(media.program_kind, Some(db::ProgramKind::Series)),
+        ),
+        is_news: media
+            .program_kind
+            .as_ref()
+            .map(|k| matches!(k, db::ProgramKind::News)),
+        is_kids: media
+            .program_kind
+            .as_ref()
+            .map(|k| matches!(k, db::ProgramKind::Kids)),
+        is_sports: media
+            .program_kind
+            .as_ref()
+            .map(|k| matches!(k, db::ProgramKind::Sports)),
         is_place_holder: media.sources.as_ref().map(|sources| sources.is_empty()),
         premiere_date: media.released_at.clone().map(|d| d.and_utc()),
         digital_release_date: media.digital_released_at.map(|d| d.and_utc()),
@@ -449,6 +467,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
 
     if media.kind == db::MediaKind::TvProgram {
         item.channel_id = media.parent_id.map(|id| id.to_string());
+        item.channel_primary_image_tag = media.series_poster.clone();
         item.location_type = Some("Remote".to_string());
         item.can_delete = Some(false);
         item.can_download = Some(false);

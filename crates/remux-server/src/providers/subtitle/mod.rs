@@ -22,6 +22,9 @@ pub trait SubtitleProvider: Send + Sync {
 /// Fetch subtitles for `media` from the first matching provider.
 /// Subsequent calls are cheap because providers use the global HTTP cache.
 pub async fn fetch(media: &db::Media, db: &SqlitePool) -> Vec<sdks::aio::Subtitle> {
+    if !matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
+        return vec![];
+    }
     let providers: &[&dyn SubtitleProvider] = &[&AioSubtitleProvider];
     let mut subs = vec![];
     for p in providers {
@@ -39,7 +42,9 @@ pub async fn fetch(media: &db::Media, db: &SqlitePool) -> Vec<sdks::aio::Subtitl
             }
         }
     }
-    tracing::info!(item = %media.id, count = subs.len(), "subtitles fetched");
+    if !subs.is_empty() {
+        tracing::info!(item = %media.id, count = subs.len(), "subtitles fetched");
+    }
     subs
 }
 

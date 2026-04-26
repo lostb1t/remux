@@ -69,6 +69,27 @@ use url::Url;
 use uuid::{Uuid, uuid};
 
 #[derive(
+    strum_macros::EnumString,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+pub enum ProgramKind {
+    Movie,
+    Series,
+    News,
+    Kids,
+    Sports,
+}
+
+#[derive(
     Default,
     strum_macros::EnumString,
     strum_macros::Display,
@@ -434,6 +455,12 @@ pub struct MediaFilter {
     pub filter_match: remux_sdks::remux::models::FilterMatchMode,
     /// For TvProgram: None = all, Some(true) = live_end < now, Some(false) = live_end >= now
     pub has_aired: Option<bool>,
+    /// EPG window: live_end >= this value (program hasn't ended before window start)
+    pub min_end_date: Option<NaiveDateTime>,
+    /// EPG window: live_start <= this value (program starts before window end)
+    pub max_start_date: Option<NaiveDateTime>,
+    /// Filter TvPrograms by category (movie, series, news, kids, sports).
+    pub program_kinds: Option<Vec<ProgramKind>>,
     /// Filter episodes/seasons by their series (top-level show).
     pub series_id: Option<Uuid>,
 }
@@ -560,6 +587,7 @@ pub struct Media {
     pub sort_order: Option<i64>,
     /// User-defined name override; takes precedence over `title` for display.
     pub custom_name: Option<String>,
+    pub program_kind: Option<ProgramKind>,
 }
 
 impl Media {
@@ -580,6 +608,7 @@ impl Media {
                         | MediaKind::Album
                         | MediaKind::Episode
                         | MediaKind::Season
+                        | MediaKind::TvProgram
                 )
             })
             .flat_map(|m| [m.parent_id, m.series_id].into_iter().flatten())
@@ -659,6 +688,13 @@ impl Media {
                         media.series_title = Some(row.title.clone());
                         media.series_poster = row.poster.clone();
                         media.series_backdrop = row.backdrop.clone();
+                    }
+                }
+                MediaKind::TvProgram => {
+                    if let Some(row) =
+                        media.parent_id.and_then(|id| parent_map.get(&id))
+                    {
+                        media.series_poster = row.poster.clone();
                     }
                 }
                 _ => {}
@@ -747,9 +783,9 @@ impl Media {
             rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
             remote_data, series_media_id, media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id,
-            collection_smart_filter, country
+            collection_smart_filter, country, program_kind
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -792,7 +828,8 @@ impl Media {
             sort_order = excluded.sort_order,
             custom_name = excluded.custom_name,
             status = excluded.status,
-            refreshed_at = COALESCE(excluded.refreshed_at, media.refreshed_at)
+            refreshed_at = COALESCE(excluded.refreshed_at, media.refreshed_at),
+            program_kind = excluded.program_kind
         "#,
         )
         .bind(self.id)
@@ -837,6 +874,7 @@ impl Media {
         .bind(self.series_id)
         .bind(&self.collection_smart_filter)
         .bind(self.country.as_deref().map(normalize_country_alpha2))
+        .bind(&self.program_kind)
         .execute(db)
         .await?;
 
@@ -882,7 +920,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
             remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, series_id, country
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, series_id, country, program_kind
             )",
         );
             for item in chunk {
@@ -927,7 +965,8 @@ impl Media {
                     .push_bind(&item.digital_released_at)
                     .push_bind(&item.status)
                     .push_bind(&item.series_id)
-                    .push_bind(item.country.as_deref().map(normalize_country_alpha2));
+                    .push_bind(item.country.as_deref().map(normalize_country_alpha2))
+                    .push_bind(&item.program_kind);
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -956,7 +995,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
                 remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id, country
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id, country, program_kind
             )",
         );
 
@@ -1000,7 +1039,8 @@ impl Media {
                     .push_bind(&item.status)
                     .push_bind(&item.refreshed_at)
                     .push_bind(&item.series_id)
-                    .push_bind(item.country.as_deref().map(normalize_country_alpha2));
+                    .push_bind(item.country.as_deref().map(normalize_country_alpha2))
+                    .push_bind(&item.program_kind);
             });
 
             query_builder.push(
@@ -1044,7 +1084,8 @@ impl Media {
                 title = CASE WHEN custom_name IS NOT NULL THEN media.title ELSE excluded.title END,
                 enabled = CASE WHEN media.id IS NOT NULL THEN media.enabled ELSE excluded.enabled END,
                 sort_order = CASE WHEN media.id IS NOT NULL THEN media.sort_order ELSE excluded.sort_order END,
-                custom_name = media.custom_name",
+                custom_name = media.custom_name,
+                program_kind = excluded.program_kind",
             );
 
             query_builder.build().execute(&mut *tx).await?;
@@ -1419,6 +1460,20 @@ impl Media {
                     qb.push(" AND live_end < datetime('now')");
                 } else {
                     qb.push(" AND live_end >= datetime('now')");
+                }
+            }
+
+            if let Some(min_end) = &filter.min_end_date {
+                qb.push(" AND live_end >= ").push_bind(min_end);
+            }
+
+            if let Some(max_start) = &filter.max_start_date {
+                qb.push(" AND live_start <= ").push_bind(max_start);
+            }
+
+            if let Some(kinds) = &filter.program_kinds {
+                if !kinds.is_empty() {
+                    qb.push_in("program_kind", kinds);
                 }
             }
 

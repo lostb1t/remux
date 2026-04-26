@@ -1,7 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::NaiveDateTime;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+
+use super::parse_program_kind;
+use crate::db::ProgramKind; // used by EpgProgram
 
 /// A single programme entry from XMLTV.
 #[derive(Debug, Clone, Default)]
@@ -12,6 +15,9 @@ pub struct EpgProgram {
     pub description: Option<String>,
     pub start: Option<NaiveDateTime>,
     pub end: Option<NaiveDateTime>,
+    pub program_kind: Option<ProgramKind>,
+    /// Thumbnail URL from `<icon src="..."/>` inside `<programme>`
+    pub poster: Option<String>,
 }
 
 /// Parse XMLTV content. Returns a list of programs.
@@ -24,6 +30,7 @@ pub fn parse_xmltv(content: &str) -> Result<Vec<EpgProgram>> {
     let mut current: Option<EpgProgram> = None;
     let mut in_title = false;
     let mut in_desc = false;
+    let mut in_category = false;
 
     loop {
         match reader.read_event() {
@@ -52,6 +59,11 @@ pub fn parse_xmltv(content: &str) -> Result<Vec<EpgProgram>> {
                         in_desc = true;
                     }
                 }
+                b"category" => {
+                    if current.is_some() {
+                        in_category = true;
+                    }
+                }
                 _ => {}
             },
             Ok(Event::Text(ref e)) => {
@@ -61,12 +73,17 @@ pub fn parse_xmltv(content: &str) -> Result<Vec<EpgProgram>> {
                         prog.title = text;
                     } else if in_desc {
                         prog.description = Some(text);
+                    } else if in_category && prog.program_kind.is_none() {
+                        let kind = parse_program_kind(&text);
+                        tracing::debug!(category = %text, matched = ?kind, "xmltv category");
+                        prog.program_kind = kind;
                     }
                 }
             }
             Ok(Event::End(ref e)) => match e.name().as_ref() {
                 b"title" => in_title = false,
                 b"desc" => in_desc = false,
+                b"category" => in_category = false,
                 b"programme" => {
                     if let Some(prog) = current.take() {
                         if !prog.channel_id.is_empty() && !prog.title.is_empty() {
@@ -76,11 +93,35 @@ pub fn parse_xmltv(content: &str) -> Result<Vec<EpgProgram>> {
                 }
                 _ => {}
             },
+            Ok(Event::Empty(ref e)) => {
+                if e.name().as_ref() == b"icon" {
+                    if let Some(ref mut prog) = current {
+                        if prog.poster.is_none() {
+                            prog.poster = e.attributes().flatten().find_map(|a| {
+                                if a.key.as_ref() == b"src" {
+                                    let url =
+                                        String::from_utf8_lossy(&a.value).into_owned();
+                                    if !url.is_empty() { Some(url) } else { None }
+                                } else {
+                                    None
+                                }
+                            });
+                        }
+                    }
+                }
+            }
             Ok(Event::Eof) => break,
             Err(e) => return Err(anyhow::anyhow!("XMLTV parse error: {}", e)),
             _ => {}
         }
     }
+
+    let with_kind = programs.iter().filter(|p| p.program_kind.is_some()).count();
+    tracing::debug!(
+        total = programs.len(),
+        with_program_kind = with_kind,
+        "xmltv parse complete"
+    );
 
     Ok(programs)
 }

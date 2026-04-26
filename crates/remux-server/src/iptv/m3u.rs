@@ -1,3 +1,5 @@
+use crate::db::ProgramKind;
+
 /// Parsed channel from an M3U/M3U8 playlist.
 #[derive(Debug, Clone, Default)]
 pub struct M3uChannel {
@@ -13,6 +15,8 @@ pub struct M3uChannel {
     pub channel_number: Option<i64>,
     /// The stream URL (the line following #EXTINF)
     pub url: String,
+    /// Derived from group-title (and Xtream category for Xtream sources)
+    pub program_kind: Option<ProgramKind>,
 }
 
 /// Parse an M3U playlist string into a list of channels.
@@ -46,6 +50,7 @@ pub fn parse_m3u(content: &str) -> Vec<M3uChannel> {
                 .or_else(|| extract_attr(attrs_part, "ch-number"))
                 .and_then(|s| s.parse::<i64>().ok());
 
+            let program_kind = group.as_deref().and_then(super::parse_program_kind);
             pending = Some(M3uChannel {
                 tvg_id,
                 name: tvg_name.unwrap_or(name),
@@ -53,6 +58,7 @@ pub fn parse_m3u(content: &str) -> Vec<M3uChannel> {
                 group,
                 channel_number,
                 url: String::new(),
+                program_kind,
             });
         } else if !line.is_empty() && !line.starts_with('#') {
             // This is a stream URL line.

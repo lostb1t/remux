@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
+use std::time::Instant;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -50,7 +51,7 @@ impl Task for IptvRefreshTask {
 
         for (idx, source) in sources.iter().enumerate() {
             progress.set((idx as f64 / source_count) * 80.0);
-            info!(source = %source.name, kind = %source.source_type, "refreshing IPTV source");
+            let source_start = Instant::now();
 
             let xtream_epg_url = source.xtream_epg_url();
             let m3u_fetch_url = source.m3u_playlist_url().unwrap_or_default();
@@ -58,14 +59,20 @@ impl Task for IptvRefreshTask {
             let channels_parsed = if source.source_type == IptvSourceType::Xtream {
                 let user = source.xtream_username.as_deref().unwrap_or("");
                 let pass = source.xtream_password.as_deref().unwrap_or("");
-                debug!(source = %source.name, server = %source.m3u_url, "fetching Xtream live streams");
-                match iptv::fetch_xtream_channels(&client, &source.m3u_url, user, pass)
-                    .await
+                let category_kinds =
+                    iptv::fetch_xtream_categories(&client, &source.m3u_url, user, pass)
+                        .await;
+                debug!(source = %source.name, categories = category_kinds.len(), "fetched Xtream categories");
+                match iptv::fetch_xtream_channels(
+                    &client,
+                    &source.m3u_url,
+                    user,
+                    pass,
+                    &category_kinds,
+                )
+                .await
                 {
-                    Ok(ch) => {
-                        info!(source = %source.name, count = ch.len(), "fetched Xtream channels");
-                        ch
-                    }
+                    Ok(ch) => ch,
                     Err(e) => {
                         warn!(source = %source.name, error = %e, "failed to fetch Xtream channels");
                         continue;
@@ -74,17 +81,8 @@ impl Task for IptvRefreshTask {
             } else {
                 debug!(source = %source.name, url = %m3u_fetch_url, "fetching M3U");
                 let resp = client.get(&m3u_fetch_url).send().await?;
-                let status = resp.status();
                 let m3u_text = resp.text().await?;
-                debug!(
-                    source = %source.name,
-                    status = %status,
-                    preview = %&m3u_text[..m3u_text.len().min(500)],
-                    "M3U response"
-                );
-                let ch = iptv::parse_m3u(&m3u_text);
-                info!(source = %source.name, count = ch.len(), "parsed M3U channels");
-                ch
+                iptv::parse_m3u(&m3u_text)
             };
 
             let source_uuid = source.id;
@@ -104,6 +102,8 @@ impl Task for IptvRefreshTask {
                         tvg_id: ch.tvg_id.clone(),
                         channel_number: ch.channel_number,
                         media_id: Some(source_id.clone()),
+                        enabled: false,
+                        program_kind: ch.program_kind.clone(),
                         ..Default::default()
                     }
                 })
@@ -114,17 +114,27 @@ impl Task for IptvRefreshTask {
             db::Media::upsert(&ctx.db, &channels).await?;
 
             // For Xtream sources, fetch EPG from auto-derived URL
+            let mut epg_programs = 0usize;
             if let Some(epg_url) = xtream_epg_url {
                 match fetch_epg_programs(&client, &epg_url).await {
                     Ok(programs) => {
+                        epg_programs = programs.len();
                         import_epg_programs(&ctx, &programs, &channels).await?;
-                        info!(source = %source.name, programs = programs.len(), "imported Xtream EPG");
                     }
                     Err(e) => {
                         warn!(source = %source.name, error = %e, "failed to fetch Xtream EPG")
                     }
                 }
             }
+
+            info!(
+                source = %source.name,
+                kind = %source.source_type,
+                channels = channels.len(),
+                programs = epg_programs,
+                elapsed_s = source_start.elapsed().as_secs(),
+                "synced IPTV source"
+            );
 
             all_channels.extend(channels);
         }
@@ -251,11 +261,25 @@ async fn import_epg_programs(
                 description: prog.description.clone(),
                 live_start: prog.start,
                 live_end: prog.end,
+                program_kind: prog.program_kind.clone(),
+                poster: prog.poster.clone(),
                 ..Default::default()
             })
         })
         .collect();
 
     db::Media::upsert(&ctx.db, &media_programs).await?;
+
+    // Inherit program_kind from parent channel for programs that have none
+    // (covers the case where EPG has no <category> tags but channels are categorised)
+    sqlx::query(
+        "UPDATE media SET program_kind = (
+            SELECT c.program_kind FROM media c WHERE c.id = media.parent_id
+        )
+        WHERE kind = 'tv_program' AND program_kind IS NULL",
+    )
+    .execute(&ctx.db)
+    .await?;
+
     Ok(())
 }

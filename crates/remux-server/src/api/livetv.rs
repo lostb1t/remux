@@ -156,8 +156,8 @@ pub async fn livetv_programs_recommended(
 
 #[derive(Debug, Default, Deserialize)]
 pub struct GetProgramsQuery {
-    #[serde(rename = "channelIds", alias = "ChannelIds")]
-    pub channel_ids: Option<String>,
+    #[serde(rename = "channelIds", alias = "ChannelIds", default)]
+    pub channel_ids: Vec<Uuid>,
     #[serde(rename = "startIndex", alias = "StartIndex")]
     pub start_index: Option<u32>,
     // Jellyfin sends lowercase "limit" on this endpoint (unlike most others)
@@ -167,6 +167,20 @@ pub struct GetProgramsQuery {
     pub has_aired: Option<bool>,
     #[serde(rename = "EnableTotalRecordCount")]
     pub enable_total_record_count: Option<bool>,
+    #[serde(rename = "minEndDate", alias = "MinEndDate")]
+    pub min_end_date: Option<String>,
+    #[serde(rename = "maxStartDate", alias = "MaxStartDate")]
+    pub max_start_date: Option<String>,
+    #[serde(rename = "isMovie", alias = "IsMovie")]
+    pub is_movie: Option<bool>,
+    #[serde(rename = "isSeries", alias = "IsSeries")]
+    pub is_series: Option<bool>,
+    #[serde(rename = "isNews", alias = "IsNews")]
+    pub is_news: Option<bool>,
+    #[serde(rename = "isKids", alias = "IsKids")]
+    pub is_kids: Option<bool>,
+    #[serde(rename = "isSports", alias = "IsSports")]
+    pub is_sports: Option<bool>,
 }
 
 #[get("/livetv/programs")]
@@ -175,13 +189,30 @@ pub async fn livetv_programs(
     _session: AuthSession,
     Query(q): Query<GetProgramsQuery>,
 ) -> Result<impl IntoResponse> {
-    let channel_ids: Vec<Uuid> = q
-        .channel_ids
-        .as_deref()
-        .unwrap_or("")
-        .split(',')
-        .filter_map(|s| s.trim().parse::<Uuid>().ok())
-        .collect();
+    let channel_ids = q.channel_ids;
+
+    let parse_dt = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|dt| dt.naive_utc())
+    };
+
+    let mut program_kinds = vec![];
+    if q.is_movie == Some(true) {
+        program_kinds.push(db::ProgramKind::Movie);
+    }
+    if q.is_series == Some(true) {
+        program_kinds.push(db::ProgramKind::Series);
+    }
+    if q.is_news == Some(true) {
+        program_kinds.push(db::ProgramKind::News);
+    }
+    if q.is_kids == Some(true) {
+        program_kinds.push(db::ProgramKind::Kids);
+    }
+    if q.is_sports == Some(true) {
+        program_kinds.push(db::ProgramKind::Sports);
+    }
 
     let mut filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::TvProgram]),
@@ -190,6 +221,13 @@ pub async fn livetv_programs(
         total_count: q.enable_total_record_count.unwrap_or(true),
         has_aired: q.has_aired,
         parent_enabled: Some(true),
+        min_end_date: q.min_end_date.as_deref().and_then(parse_dt),
+        max_start_date: q.max_start_date.as_deref().and_then(parse_dt),
+        program_kinds: if program_kinds.is_empty() {
+            None
+        } else {
+            Some(program_kinds)
+        },
         ..Default::default()
     };
 
