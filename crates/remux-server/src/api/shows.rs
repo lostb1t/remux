@@ -62,7 +62,12 @@ pub async fn shows_episodes(
     Path(id): Path<Uuid>,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    q.series_id = Some(id);
+    // Some Jellyfin clients accidentally pass the season ID as the show ID in the path.
+    // If season_id is given, it's sufficient on its own (maps to parent_id in get_items),
+    // so skip setting series_id to avoid filtering by the wrong ID.
+    if q.season_id.is_none() {
+        q.series_id = Some(id);
+    }
     q.include_item_types = Some(vec![api::MediaType::Episode]);
     if q.sort_by.is_none() {
         q.sort_by = Some(vec![api::ItemSortBy::IndexNumber]);
