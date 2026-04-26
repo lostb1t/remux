@@ -413,6 +413,7 @@ pub struct PublicSystemInfo {
     pub server_name: String,
     pub startup_wizard_completed: bool,
     pub version: String,
+    pub remux_version: String,
 }
 
 #[skip_serializing_none]

@@ -396,7 +396,7 @@ fn ServerInfoCard(app_state: AppState) -> Element {
                     span { class: "loading-text", style: "color:var(--error)", "{err}" }
                 } else if let Some(info) = server_info.read().as_ref() {
                     KvRow { label: "Name", value: info.server_name.clone() }
-                    KvRow { label: "Version", value: info.version.clone() }
+                    KvRow { label: "Version", value: info.remux_version.clone() }
                 }
             }
         }

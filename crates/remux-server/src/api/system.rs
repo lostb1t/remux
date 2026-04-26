@@ -28,7 +28,8 @@ pub async fn system_info_public(
         server_name: config.server_name.unwrap_or_default(),
         product_name: "Jellyfin Server".to_string(),
         startup_wizard_completed: config.is_startup_wizard_completed.unwrap_or(false),
-        version: "10.11.6".to_string(),
+        version: "10.11.6-remux".to_string(),
+        remux_version: env!("CARGO_PKG_VERSION").to_string(),
         id: server_id(),
         ..Default::default()
     }))
@@ -533,7 +534,8 @@ mod test {
             "LocalAddress": "",
             "ServerName": "Remux",
             "ProductName": "Jellyfin Server",
-            "Version": "10.11.6",
+            "Version": "10.11.6-remux",
+            "RemuxVersion": env!("CARGO_PKG_VERSION"),
             "StartupWizardCompleted": true,
         }));
     }
