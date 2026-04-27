@@ -174,7 +174,7 @@ impl AioService {
                     id,
                     format: true,
                 }
-                .with_cache(Duration::from_secs(3600)),
+                .with_cache(Duration::from_secs(360)),
             )
             .await?
             .data
