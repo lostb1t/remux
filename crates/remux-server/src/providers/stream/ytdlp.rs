@@ -1,14 +1,12 @@
-use crate::{AppContext, db};
+use crate::{AppContext, api, db};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
 use sqlx::types::Json;
 use std::path::PathBuf;
 use tokio::process::Command;
-use uuid::Uuid;
 
-use super::{StreamOption, StreamService};
-use crate::api;
+use super::StreamService;
 
 /// Minimal subset of yt-dlp JSON output we actually need.
 /// All fields are optional so missing/extra fields never cause parse failures.
@@ -16,10 +14,6 @@ use crate::api;
 struct YtDlpVideo {
     #[serde(default)]
     webpage_url: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    duration: Option<f64>,
     #[serde(default)]
     formats: Vec<YtDlpFormat>,
 }
@@ -73,7 +67,6 @@ impl YtDlpFormat {
     }
 
     fn container(&self) -> Option<String> {
-        // Prefer yt-dlp's own container field; fall back to ext-based mapping.
         let raw = self.container.as_deref().or(self.ext.as_deref());
         match raw {
             Some("mp3") => Some("mp3".to_string()),
@@ -84,22 +77,19 @@ impl YtDlpFormat {
         }
     }
 
-    fn mime_type(&self) -> String {
-        match self.container().as_deref() {
-            Some("mp4") => "audio/mp4".to_string(),
-            Some("mp3") => "audio/mpeg".to_string(),
-            Some("webm") => "audio/webm".to_string(),
-            _ => "audio/mp4".to_string(),
-        }
-    }
-
-    /// Normalize raw yt-dlp codec strings to the names Jellyfin clients expect.
-    /// e.g. "mp4a.40.2" / "mp4a.40.5" → "aac"
     fn normalized_codec(&self) -> Option<String> {
         self.acodec
             .as_deref()
             .filter(|c| *c != "none")
-            .map(|c| super::normalize_codec(c).to_string())
+            .map(|c| normalize_codec(c).to_string())
+    }
+}
+
+fn normalize_codec(codec: &str) -> &str {
+    if codec.starts_with("mp4a") {
+        "aac"
+    } else {
+        codec
     }
 }
 
@@ -141,7 +131,6 @@ impl YtDlpStreamService {
             anyhow::bail!("yt-dlp exited with {}: {}", output.status, stderr.trim());
         }
 
-        // yt-dlp may print multiple JSON lines for playlists; take the first.
         let stdout = String::from_utf8_lossy(&output.stdout);
         let line = stdout
             .lines()
@@ -164,12 +153,10 @@ impl YtDlpStreamService {
     ///
     /// The watch URL is safe to persist in the DB; CDN stream URLs are not.
     pub async fn resolve_watch_url(&self, media: &db::Media) -> Result<String> {
-        // 1. Use cached URL directly.
         if let Some(url) = &media.url {
             return Ok(url.clone());
         }
 
-        // 2. If media_id looks like a real YouTube video ID (11 chars), use it.
         if let Some(id) = &media.media_id {
             if id.len() == 11
                 && id
@@ -180,8 +167,6 @@ impl YtDlpStreamService {
             }
         }
 
-        // 3. Search YouTube by title + artist name.
-        // description stores "by {artist}" for Deezer tracks.
         let artist_part = media
             .description
             .as_deref()
@@ -210,52 +195,58 @@ impl StreamService for YtDlpStreamService {
     async fn get_streams(
         &self,
         media: &db::Media,
-        ctx: &AppContext,
-    ) -> Result<Vec<StreamOption>> {
+        _ctx: &AppContext,
+    ) -> Result<Vec<db::Media>> {
         let url = self.resolve_watch_url(media).await?;
         let video = self.dump_json(&url).await?;
 
-        let audio_only: Vec<StreamOption> = video
+        let to_source = |f: &YtDlpFormat| -> db::Media {
+            let codec = f.normalized_codec();
+            let display_title = match (codec.as_deref(), f.audio_channels) {
+                (Some(c), Some(ch)) => format!("{} - {}ch", c.to_uppercase(), ch),
+                (Some(c), None) => c.to_uppercase(),
+                _ => f.label(),
+            };
+            db::Media {
+                kind: db::MediaKind::Source,
+                title: f.label(),
+                url: f.url.clone(),
+                probe_data: Some(Json(api::MediaSourceInfo {
+                    container: f.container(),
+                    run_time_ticks: media.runtime.map(|r| r * 10_000_000),
+                    bitrate: f.bitrate(),
+                    media_streams: vec![api::MediaStream {
+                        index: 0,
+                        type_: Some(api::MediaStreamType::Audio),
+                        codec,
+                        channels: f.audio_channels.map(|c| c as i64),
+                        sample_rate: f.asr.map(|r| r as i64),
+                        is_default: Some(true),
+                        display_title: Some(display_title),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }
+        };
+
+        let audio_only: Vec<db::Media> = video
             .formats
             .iter()
             .filter(|f| f.url.is_some() && f.is_audio_only())
-            .map(|f| StreamOption {
-                url: f.url.clone().unwrap(),
-                label: f.label(),
-                mime_type: f.mime_type(),
-                is_audio_only: true,
-                bitrate: f.bitrate(),
-                codec: f.normalized_codec(),
-                channels: f.audio_channels.map(|c| c as i64),
-                sample_rate: f.asr.map(|r| r as i64),
-                binge_group: None,
-                aio_stream: None,
-            })
+            .map(to_source)
             .collect();
 
         if !audio_only.is_empty() {
             return Ok(audio_only);
         }
 
-        // No audio-only formats — fall back to anything with a URL.
         Ok(video
             .formats
-            .into_iter()
-            .filter_map(|f| {
-                let url = f.url.clone()?;
-                Some(StreamOption {
-                    url,
-                    label: f.label(),
-                    mime_type: f.mime_type(),
-                    is_audio_only: false,
-                    bitrate: f.bitrate(),
-                    codec: f.normalized_codec(),
-                    channels: f.audio_channels.map(|c| c as i64),
-                    sample_rate: f.asr.map(|r| r as i64),
-                    binge_group: None,
-                    aio_stream: None,
-                })
-            })
+            .iter()
+            .filter(|f| f.url.is_some())
+            .map(to_source)
             .collect())
     }
 }

@@ -1628,7 +1628,6 @@ pub async fn gelato_subtitles(
     Ok(Json(subtitles))
 }
 
-
 fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
     match s {
         "movies" => Some(db::CollectionMediaKind::Movie),

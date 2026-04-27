@@ -1,8 +1,8 @@
 use crate::{AppContext, db, sdks, utils};
-use tracing::warn;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
+use tracing::warn;
 use uuid::Uuid;
 
 use super::{MetaProvider, MetaRelation, MetaResult, TreeSyncProvider};
@@ -69,7 +69,10 @@ impl MetaProvider for AioMetaProvider {
 
         if let Some(mut found_media) = found {
             // Build relations for movies/series/episodes
-            let relations = if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
+            let relations = if matches!(
+                media.kind,
+                db::MediaKind::Movie | db::MediaKind::Series
+            ) {
                 build_relations(media, &meta_raw)
             } else if media.kind == db::MediaKind::Episode {
                 if let Some(meta_ep) = meta_raw.videos.as_ref().and_then(|v| {
@@ -203,7 +206,10 @@ impl TreeSyncProvider for AioTreeSyncProvider {
 }
 
 /// Build Person/Genre MetaRelation entries from AIO metadata.
-pub(crate) fn build_relations(media: &db::Media, meta: &sdks::aio::Meta) -> Vec<MetaRelation> {
+pub(crate) fn build_relations(
+    media: &db::Media,
+    meta: &sdks::aio::Meta,
+) -> Vec<MetaRelation> {
     let mut relations: Vec<MetaRelation> = Vec::new();
 
     // Genres

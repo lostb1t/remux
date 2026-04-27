@@ -298,21 +298,17 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             // have no IMDB id of their own — fall back to the series's
             // IMDB so reviews / remote-image lookups have something to
             // work with on existing data without forcing a re-import.
-            imdb: media
-                .external_ids
-                .imdb
-                .clone()
-                .or_else(|| {
-                    if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season)
-                    {
-                        media
-                            .series_media_id
-                            .clone()
-                            .filter(|s| s.starts_with("tt"))
-                    } else {
-                        None
-                    }
-                }),
+            imdb: media.external_ids.imdb.clone().or_else(|| {
+                if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season)
+                {
+                    media
+                        .series_media_id
+                        .clone()
+                        .filter(|s| s.starts_with("tt"))
+                } else {
+                    None
+                }
+            }),
             tmdb: media.external_ids.tmdb.map(|id| id.to_string()),
             tvdb: media.external_ids.tvdb.map(|id| id.to_string()),
             aio: media.media_id.clone(),

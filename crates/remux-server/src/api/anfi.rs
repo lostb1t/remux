@@ -113,7 +113,10 @@ fn clear_directory_contents(path: &Path) -> std::result::Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> std::result::Result<(), String> {
+pub(crate) fn copy_dir_recursive(
+    src: &Path,
+    dst: &Path,
+) -> std::result::Result<(), String> {
     std::fs::create_dir_all(dst)
         .map_err(|err| format!("failed to create {}: {err}", dst.display()))?;
 

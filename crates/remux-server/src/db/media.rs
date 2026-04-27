@@ -350,7 +350,10 @@ impl MediaRelation {
         Ok(rows)
     }
 
-    pub async fn delete_by_left_id(db: &SqlitePool, left_media_id: &Uuid) -> Result<()> {
+    pub async fn delete_by_left_id(
+        db: &SqlitePool,
+        left_media_id: &Uuid,
+    ) -> Result<()> {
         sqlx::query("DELETE FROM media_relations WHERE left_media_id = ?")
             .bind(left_media_id)
             .execute(db)
@@ -2700,11 +2703,8 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
                     let rels = crate::providers::meta::aio::build_episode_relations(
                         &episode, &ep,
                     );
-                    episode.relations = Some(
-                        rels.into_iter()
-                            .map(|r| (r.relation, r.media))
-                            .collect(),
-                    );
+                    episode.relations =
+                        Some(rels.into_iter().map(|r| (r.relation, r.media)).collect());
 
                     media_instances.push(episode);
                 }

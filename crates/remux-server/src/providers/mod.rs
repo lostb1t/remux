@@ -24,6 +24,5 @@ pub use search::{
     AioSearchService, SearchService, SearchServiceManager, YtDlpSearchService,
 };
 pub use stream::{
-    AioStreamService, StreamOption, StreamService, StreamServiceManager,
-    YtDlpStreamService,
+    AioStreamService, StreamService, StreamServiceManager, YtDlpStreamService,
 };

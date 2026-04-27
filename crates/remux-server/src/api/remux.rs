@@ -435,7 +435,6 @@ pub struct StreamMetadataDto {
     pub id: Uuid,
     pub name: Option<String>,
     pub description: Option<String>,
-    pub binge_group: Option<String>,
     pub index: i64,
     pub size: Option<i64>,
 }
@@ -449,20 +448,14 @@ pub struct StreamsResponse {
 /// Source-level metadata (binge group, name, description) for an item.
 /// Mirrors the shape Anfiteatro expects from `/gelato/streams/{id}` so the
 /// client can match versions across episodes without re-issuing playback info.
-async fn streams_metadata(
-    state: &AppState,
-    id: Uuid,
-) -> AnyResult<StreamsResponse> {
+async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsResponse> {
     let Some(media) = db::Media::get_by_id(&state.ctx.db, &id).await? else {
         return Ok(StreamsResponse { streams: vec![] });
     };
 
     // Accept both the parent (Movie/Episode) and the Source itself.
     let mut parent = if media.kind == db::MediaKind::Source {
-        media
-            .parent(&state.ctx.db)
-            .await?
-            .unwrap_or(media)
+        media.parent(&state.ctx.db).await?.unwrap_or(media)
     } else {
         media
     };
@@ -480,12 +473,13 @@ async fn streams_metadata(
     let streams = sources
         .into_iter()
         .map(|s| {
-            let remote_data = crate::providers::stream::SourceRemoteData::from_media(&s);
             // Title in the DB carries the merged "name\ndescription" string —
             // split it back so legacy clients that only render `Name` still
             // see something useful and ones that consume both get the pair.
             let (name, description) = match s.title.split_once('\n') {
-                Some((n, d)) => (Some(n.trim().to_string()), Some(d.trim().to_string())),
+                Some((n, d)) => {
+                    (Some(n.trim().to_string()), Some(d.trim().to_string()))
+                }
                 None if !s.title.is_empty() => (Some(s.title.clone()), None),
                 _ => (None, None),
             };
@@ -493,12 +487,8 @@ async fn streams_metadata(
                 id: s.id,
                 name,
                 description,
-                binge_group: remote_data.binge_group,
                 index: s.idx.unwrap_or(0),
-                size: s
-                    .probe_data
-                    .as_ref()
-                    .and_then(|p| p.0.size),
+                size: s.probe_data.as_ref().and_then(|p| p.0.size),
             }
         })
         .collect();

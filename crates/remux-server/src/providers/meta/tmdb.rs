@@ -200,8 +200,8 @@ pub async fn tmdb_remote_images(
                         )
                         .await
                         .ok();
-                    series_tmdb_id =
-                        find.and_then(|f| f.tv_results.into_iter().next().map(|r| r.id));
+                    series_tmdb_id = find
+                        .and_then(|f| f.tv_results.into_iter().next().map(|r| r.id));
                 }
             }
             if let (Some(tmdb_id), Some(s_n), Some(e_n)) =
@@ -531,7 +531,8 @@ impl MetaProvider for TmdbMetaProvider {
                         relations.extend(build_genre_relations_tmdb(media.id, genres));
                     }
                     if let Some(credits) = &movie_details.credits {
-                        relations.extend(build_person_relations_tmdb(media.id, credits));
+                        relations
+                            .extend(build_person_relations_tmdb(media.id, credits));
                     }
 
                     return Ok(Some(MetaResult {
@@ -601,7 +602,8 @@ impl MetaProvider for TmdbMetaProvider {
                         relations.extend(build_genre_relations_tmdb(media.id, genres));
                     }
                     if let Some(credits) = &tv_details.credits {
-                        relations.extend(build_person_relations_tmdb(media.id, credits));
+                        relations
+                            .extend(build_person_relations_tmdb(media.id, credits));
                     }
 
                     if let Some(creators) = &tv_details.created_by {
@@ -678,8 +680,9 @@ impl MetaProvider for TmdbMetaProvider {
                             )
                             .await
                             .ok();
-                        series_tmdb_id =
-                            find.and_then(|f| f.tv_results.into_iter().next().map(|r| r.id));
+                        series_tmdb_id = find.and_then(|f| {
+                            f.tv_results.into_iter().next().map(|r| r.id)
+                        });
                     }
                 }
 
@@ -745,15 +748,20 @@ impl MetaProvider for TmdbMetaProvider {
                     if let Some(guest_stars) = &ep_details.guest_stars {
                         for (i, member) in guest_stars.iter().enumerate() {
                             let name = &member.name;
-                            let person_id =
-                                utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+                            let person_id = utils::get_stable_uuid(format!(
+                                "person:{}",
+                                name.to_lowercase()
+                            ));
                             relations.push(super::MetaRelation {
                                 media: db::Media {
                                     id: person_id,
                                     title: name.clone(),
                                     kind: db::MediaKind::Person,
                                     poster: tmdb_image(member.profile_path.as_deref()),
-                                    media_id: Some(format!("person:{}", name.to_lowercase())),
+                                    media_id: Some(format!(
+                                        "person:{}",
+                                        name.to_lowercase()
+                                    )),
                                     ..Default::default()
                                 },
                                 relation: db::MediaRelation {
@@ -770,7 +778,8 @@ impl MetaProvider for TmdbMetaProvider {
 
                     if let Some(credits) = &ep_details.credits {
                         let base_weight = relations.len() as i64;
-                        let mut ep_relations = build_person_relations_tmdb(media.id, credits);
+                        let mut ep_relations =
+                            build_person_relations_tmdb(media.id, credits);
                         for rel in &mut ep_relations {
                             if let Some(w) = rel.relation.weight {
                                 rel.relation.weight = Some(base_weight + w);

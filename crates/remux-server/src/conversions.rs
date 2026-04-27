@@ -135,10 +135,11 @@ impl From<db::Media> for api::MediaSourceInfo {
             })
             .unwrap_or_else(|| source.title.clone());
 
-        let remote_data = crate::providers::stream::SourceRemoteData::from_media(&source);
         let remux = Some(api::MediaSourceRemuxInfo {
-            binge_group: remote_data.binge_group,
-            source: remote_data.aio_stream,
+            source: source
+                .remote_data
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok()),
         });
 
         api::MediaSourceInfo {

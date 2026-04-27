@@ -53,11 +53,8 @@ impl SearchService for AioSearchService {
             .filter_map(|meta| {
                 let mut m = db::Media::try_from(meta.clone()).ok()?;
                 let rels = crate::providers::meta::aio::build_relations(&m, &meta);
-                m.relations = Some(
-                    rels.into_iter()
-                        .map(|r| (r.relation, r.media))
-                        .collect(),
-                );
+                m.relations =
+                    Some(rels.into_iter().map(|r| (r.relation, r.media)).collect());
                 ctx.store
                     .insert(m.id.to_string(), meta, Duration::from_secs(3600));
                 Some(m)

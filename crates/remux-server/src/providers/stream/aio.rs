@@ -2,7 +2,7 @@ use crate::{AppContext, aio, db};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
-use super::{StreamOption, StreamService};
+use super::StreamService;
 
 /// Stream backend backed by AIO — handles movies, series and episodes.
 pub struct AioStreamService;
@@ -21,7 +21,7 @@ impl StreamService for AioStreamService {
         &self,
         media: &db::Media,
         ctx: &AppContext,
-    ) -> Result<Vec<StreamOption>> {
+    ) -> Result<Vec<db::Media>> {
         let aio_svc = aio::AioService::from_settings(&ctx.db).await?;
         let media_type = db::media_kind_to_aio(&media.kind);
         let id = media
@@ -35,11 +35,10 @@ impl StreamService for AioStreamService {
 
         let streams = aio_svc.get_streams(media_type, id).await?;
 
-        let options = streams
+        Ok(streams
             .into_iter()
             .filter(|s| s.is_valid())
             .filter_map(|s| {
-                let binge_group = None;
                 let url = s.url.clone().or_else(|| s.external_url.clone())?;
                 // Mirror `From<aio::Stream> for db::Media` — keep both the
                 // addon name (provider/quality summary) and the description
@@ -51,18 +50,14 @@ impl StreamService for AioStreamService {
                     (None, Some(d)) => d.to_string(),
                     _ => "AIO".to_string(),
                 };
-                Some(StreamOption {
-                    url,
-                    label,
-                    mime_type: "video/mp4".to_string(),
-                    is_audio_only: false,
-                    binge_group,
-                    aio_stream: Some(s.clone()),
+                Some(db::Media {
+                    kind: db::MediaKind::Source,
+                    title: label,
+                    url: Some(url),
+                    remote_data: serde_json::to_string(&s).ok(),
                     ..Default::default()
                 })
             })
-            .collect();
-
-        Ok(options)
+            .collect())
     }
 }

@@ -45,7 +45,9 @@ impl Task for EnsureAnfiteatroTask {
             progress.set(50.0);
             crate::api::anfi::copy_dir_recursive(bundled_path, Path::new(target_path))
                 .map_err(|e| anyhow::anyhow!("failed to copy bundled client: {e}"))?;
-            tracing::info!("Anfiteatro web client successfully copied to {target_path}");
+            tracing::info!(
+                "Anfiteatro web client successfully copied to {target_path}"
+            );
             progress.set(100.0);
             return Ok(());
         }
@@ -58,21 +60,30 @@ impl Task for EnsureAnfiteatroTask {
             .user_agent("remux-server")
             .build()?;
 
-        let latest = crate::api::anfi::fetch_latest_anfiteatro_head(&client).await
+        let latest = crate::api::anfi::fetch_latest_anfiteatro_head(&client)
+            .await
             .map_err(|e| anyhow::anyhow!("failed to fetch latest head: {e}"))?;
-        
+
         progress.set(30.0);
-        
-        let archive_bytes = crate::api::anfi::download_anfiteatro_archive(&client, &latest.commit_sha).await
-            .map_err(|e| anyhow::anyhow!("failed to download archive: {e}"))?;
-            
+
+        let archive_bytes =
+            crate::api::anfi::download_anfiteatro_archive(&client, &latest.commit_sha)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to download archive: {e}"))?;
+
         progress.set(70.0);
-        
-        crate::api::anfi::install_archive_to_path(&archive_bytes, Path::new(target_path))
-            .map_err(|e| anyhow::anyhow!("failed to install archive: {e}"))?;
-            
-        crate::api::anfi::write_local_commit_marker(Path::new(target_path), &latest.commit_sha)
-            .map_err(|e| anyhow::anyhow!("failed to write commit marker: {e}"))?;
+
+        crate::api::anfi::install_archive_to_path(
+            &archive_bytes,
+            Path::new(target_path),
+        )
+        .map_err(|e| anyhow::anyhow!("failed to install archive: {e}"))?;
+
+        crate::api::anfi::write_local_commit_marker(
+            Path::new(target_path),
+            &latest.commit_sha,
+        )
+        .map_err(|e| anyhow::anyhow!("failed to write commit marker: {e}"))?;
 
         tracing::info!("Anfiteatro web client successfully installed to {target_path}");
         progress.set(100.0);

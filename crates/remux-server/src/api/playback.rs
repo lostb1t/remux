@@ -338,10 +338,11 @@ async fn items_playbackinfo_inner(
         // ffmpeg probing produces a fresh `MediaSourceInfo` and would
         // otherwise drop the `X-Remux-BingeGroup` / `X-Gelato-BingeGroup`
         // hints we stashed alongside the source.
-        let remote_data = crate::providers::stream::SourceRemoteData::from_media(sm);
         source.remux = Some(api::MediaSourceRemuxInfo {
-            binge_group: remote_data.binge_group,
-            source: remote_data.aio_stream,
+            source: sm
+                .remote_data
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok()),
         });
 
         if has_lyrics {
@@ -2102,15 +2103,10 @@ pub async fn master_hls_video(
                 .map_err(|e| {
                     anyhow!("could not resolve track stream for HLS: {e:#}")
                 })?;
-            let best = streams
-                .iter()
-                .find(|s| s.is_audio_only)
-                .or_else(|| streams.first())
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow!("no streams found for track '{}'", resolved_media.title)
-                })?;
-            best.url
+            let best = streams.into_iter().next().ok_or_else(|| {
+                anyhow!("no streams found for track '{}'", resolved_media.title)
+            })?;
+            best.url.context_not_found("no url", "stream has no URL")?
         } else {
             resolved_media
                 .url

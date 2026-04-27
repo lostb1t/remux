@@ -372,19 +372,13 @@ fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     // the client, leaving Anfiteatro with no ProviderIds to drive reviews,
     // remote images, or version matching.
     let mut merged_ids = target.external_ids.0.clone();
-    if source.external_ids.imdb.is_some()
-        && (replace || merged_ids.imdb.is_none())
-    {
+    if source.external_ids.imdb.is_some() && (replace || merged_ids.imdb.is_none()) {
         merged_ids.imdb = source.external_ids.imdb.clone();
     }
-    if source.external_ids.tmdb.is_some()
-        && (replace || merged_ids.tmdb.is_none())
-    {
+    if source.external_ids.tmdb.is_some() && (replace || merged_ids.tmdb.is_none()) {
         merged_ids.tmdb = source.external_ids.tmdb;
     }
-    if source.external_ids.tvdb.is_some()
-        && (replace || merged_ids.tvdb.is_none())
-    {
+    if source.external_ids.tvdb.is_some() && (replace || merged_ids.tvdb.is_none()) {
         merged_ids.tvdb = source.external_ids.tvdb;
     }
     target.external_ids = sqlx::types::Json(merged_ids);

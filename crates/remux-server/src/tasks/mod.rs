@@ -14,6 +14,7 @@ use tracing::{error, info};
 use crate::{AppContext, db, ws};
 use remux_sdks::remux::models::TaskTriggerInfoType;
 
+mod anfiteatro_update;
 mod catalog_import;
 mod catalog_item_import;
 mod iptv_refresh;
@@ -22,8 +23,8 @@ mod purge_media;
 mod refresh_all_meta;
 mod refresh_library;
 mod series_sync;
-mod anfiteatro_update;
 
+pub use anfiteatro_update::EnsureAnfiteatroTask;
 use catalog_import::CatalogImportTask;
 pub use catalog_item_import::CatalogItemImportTask;
 use iptv_refresh::IptvRefreshTask;
@@ -32,7 +33,6 @@ use purge_media::PurgeMediaTask;
 use refresh_all_meta::RefreshAllMetaTask;
 use refresh_library::RefreshLibraryTask;
 use series_sync::SeriesSyncTask;
-pub use anfiteatro_update::EnsureAnfiteatroTask;
 
 // --- Progress reporting ---
 
@@ -220,7 +220,9 @@ impl TaskService {
         service.register_task(Arc::new(IptvRefreshTask)).await?;
         service.register_task(Arc::new(PurgeMediaTask)).await?;
         service.register_task(Arc::new(JellyfinImportTask)).await?;
-        service.register_task(Arc::new(EnsureAnfiteatroTask)).await?;
+        service
+            .register_task(Arc::new(EnsureAnfiteatroTask))
+            .await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {

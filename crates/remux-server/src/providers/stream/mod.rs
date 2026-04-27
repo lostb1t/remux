@@ -1,8 +1,7 @@
-use crate::{AppContext, api, db};
+use crate::{AppContext, db};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
-use std::sync::Arc;
 
 mod aio;
 mod squid;
@@ -10,54 +9,6 @@ mod ytdlp;
 pub use aio::AioStreamService;
 pub use squid::SquidStreamService;
 pub use ytdlp::YtDlpStreamService;
-
-/// A resolved stream option returned by a [`StreamService`].
-#[derive(Debug, Clone, Default)]
-pub struct StreamOption {
-    pub url: String,
-    /// Human-readable label, e.g. "audio-only 128k" or "1080p".
-    pub label: String,
-    pub mime_type: String,
-    pub is_audio_only: bool,
-    /// Bitrate in bits-per-second, if known.
-    pub bitrate: Option<i64>,
-    // Probe fields — populated by services that already have this info (e.g. yt-dlp).
-    pub codec: Option<String>,
-    pub channels: Option<i64>,
-    pub sample_rate: Option<i64>,
-    /// Binge group key (Stremio `behaviorHints.bingeGroup`). Lets clients
-    /// keep the same encoding/release across episodes during a binge.
-    pub binge_group: Option<String>,
-    /// The original AIO stream, if available.
-    pub aio_stream: Option<remux_sdks::aio::Stream>,
-}
-
-/// Source-level metadata we persist on `db::Media.remote_data` as JSON.
-/// Anything that isn't worth a dedicated column lives here.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct SourceRemoteData {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binge_group: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aio_stream: Option<remux_sdks::aio::Stream>,
-}
-
-impl SourceRemoteData {
-    pub fn from_media(media: &db::Media) -> Self {
-        media
-            .remote_data
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<Self>(raw).ok())
-            .unwrap_or_default()
-    }
-
-    pub fn to_json(&self) -> Option<String> {
-        if self.binge_group.is_none() {
-            return None;
-        }
-        serde_json::to_string(self).ok()
-    }
-}
 
 /// A pluggable stream-resolution backend.
 ///
@@ -71,26 +22,22 @@ pub trait StreamService: Send + Sync {
         &self,
         media: &db::Media,
         ctx: &AppContext,
-    ) -> Result<Vec<StreamOption>>;
+    ) -> Result<Vec<db::Media>>;
 }
 
 /// Routes stream resolution to the appropriate [`StreamService`] by media kind.
 pub struct StreamServiceManager {
     services: Vec<Box<dyn StreamService>>,
-    /// Direct reference to the yt-dlp service for URL pre-resolution.
-    ytdlp: Option<Arc<YtDlpStreamService>>,
 }
 
 impl Default for StreamServiceManager {
     fn default() -> Self {
-        let ytdlp = Arc::new(YtDlpStreamService::default());
         Self {
             services: vec![
                 Box::new(AioStreamService),
                 Box::new(SquidStreamService::default()),
                 Box::new(YtDlpStreamService::default()),
             ],
-            ytdlp: Some(ytdlp),
         }
     }
 }
@@ -99,22 +46,14 @@ const STREAMS_TTL_SECS: i64 = 3600;
 
 impl StreamServiceManager {
     pub fn new(services: Vec<Box<dyn StreamService>>) -> Self {
-        Self {
-            services,
-            ytdlp: None,
-        }
-    }
-
-    /// Returns the yt-dlp service if one is registered.
-    pub fn ytdlp(&self) -> Option<&YtDlpStreamService> {
-        self.ytdlp.as_deref()
+        Self { services }
     }
 
     pub async fn get_streams(
         &self,
         media: &db::Media,
         ctx: &AppContext,
-    ) -> Result<Vec<StreamOption>> {
+    ) -> Result<Vec<db::Media>> {
         for svc in &self.services {
             if svc.supported_kinds().contains(&media.kind) {
                 match svc.get_streams(media, ctx).await {
@@ -134,7 +73,6 @@ impl StreamServiceManager {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<()> {
-        // Skip if recently refreshed.
         if let Some(refreshed) = media.streams_refreshed_at {
             let age = Utc::now().naive_utc() - refreshed;
             if age.num_seconds() < STREAMS_TTL_SECS {
@@ -143,15 +81,25 @@ impl StreamServiceManager {
             }
         }
 
-        let streams = self.get_streams(media, ctx).await?;
-        if streams.is_empty() {
+        let raw = self.get_streams(media, ctx).await?;
+        if raw.is_empty() {
             return Ok(());
         }
 
-        let sources: Vec<db::Media> = streams
+        let now = Utc::now().naive_utc();
+        let sources: Vec<db::Media> = raw
             .into_iter()
             .enumerate()
-            .map(|(idx, s)| stream_option_to_source(media, s, idx))
+            .map(|(idx, mut s)| {
+                s.id =
+                    uuid::Uuid::new_v5(&media.id, format!("source_{idx}").as_bytes());
+                s.parent_id = Some(media.id);
+                s.runtime = media.runtime;
+                s.idx = Some(idx as i64);
+                s.created_at = now;
+                s.updated_at = now;
+                s
+            })
             .collect();
 
         db::Media::upsert(&ctx.db, &sources).await?;
@@ -163,8 +111,6 @@ impl StreamServiceManager {
         .execute(&ctx.db)
         .await?;
 
-        // Remove Sources older than 7 days — they're too stale to be reached
-        // by any ongoing playback session.
         sqlx::query(
             "DELETE FROM media WHERE kind = 'source' AND parent_id = ? AND updated_at < datetime('now', '-7 days')",
         )
@@ -174,87 +120,5 @@ impl StreamServiceManager {
 
         tracing::debug!(id = %media.id, count = sources.len(), "streams refreshed");
         Ok(())
-    }
-}
-
-fn stream_option_to_source(
-    parent: &db::Media,
-    s: StreamOption,
-    idx: usize,
-) -> db::Media {
-    let runtime_ticks = parent.runtime.map(|r| r * 10_000_000);
-    let display_title = match (&s.codec, s.channels) {
-        (Some(c), Some(ch)) => format!("{} - {}ch", c.to_uppercase(), ch),
-        (Some(c), None) => c.to_uppercase(),
-        _ => s.label.clone(),
-    };
-
-    let probe_data = api::MediaSourceInfo {
-        container: mime_to_container(&s.mime_type),
-        run_time_ticks: runtime_ticks,
-        bitrate: s.bitrate,
-        media_streams: vec![api::MediaStream {
-            index: 0,
-            type_: Some(api::MediaStreamType::Audio),
-            codec: s.codec,
-            channels: s.channels,
-            sample_rate: s.sample_rate,
-            is_default: Some(true),
-            display_title: Some(display_title),
-            ..Default::default()
-        }],
-        remux: Some(api::MediaSourceRemuxInfo {
-            binge_group: s.binge_group.clone(),
-            source: s.aio_stream.clone(),
-        }),
-        ..Default::default()
-    };
-
-    // Stable deterministic ID so upsert always hits the same row.
-    let source_id = uuid::Uuid::new_v5(&parent.id, format!("source_{idx}").as_bytes());
-
-    let now = chrono::Utc::now().naive_utc();
-    let remote_data = SourceRemoteData {
-        binge_group: s.binge_group,
-        aio_stream: s.aio_stream,
-    }
-    .to_json();
-
-    db::Media {
-        id: source_id,
-        kind: db::MediaKind::Source,
-        title: s.label,
-        url: Some(s.url),
-        parent_id: Some(parent.id),
-        runtime: parent.runtime,
-        probe_data: Some(sqlx::types::Json(probe_data)),
-        remote_data,
-        idx: Some(idx as i64),
-        created_at: now,
-        updated_at: now,
-        ..Default::default()
-    }
-}
-
-
-pub(super) fn normalize_codec(codec: &str) -> &str {
-    if codec.starts_with("mp4a") {
-        "aac"
-    } else {
-        codec
-    }
-}
-
-fn mime_to_container(mime: &str) -> Option<String> {
-    if mime.contains("flac") {
-        Some("flac".to_string())
-    } else if mime.contains("mp4") || mime.contains("m4a") {
-        Some("mp4".to_string())
-    } else if mime.contains("webm") || mime.contains("opus") {
-        Some("webm".to_string())
-    } else if mime.contains("mpeg") || mime.contains("mp3") {
-        Some("mp3".to_string())
-    } else {
-        None
     }
 }

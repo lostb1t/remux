@@ -1,10 +1,11 @@
-use crate::{AppContext, db};
+use crate::{AppContext, api, db};
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde::Deserialize;
+use sqlx::types::Json;
 
-use super::{StreamOption, StreamService};
+use super::StreamService;
 
 const TIDAL_CLIENT: &str = "BiniLossless/v3.4";
 
@@ -73,9 +74,29 @@ struct DecodedManifest {
     #[serde(default)]
     codecs: Option<String>,
     #[serde(default)]
-    bit_depth: Option<i64>,
-    #[serde(default)]
     sample_rate: Option<i64>,
+}
+
+fn normalize_codec(codec: &str) -> &str {
+    if codec.starts_with("mp4a") {
+        "aac"
+    } else {
+        codec
+    }
+}
+
+fn mime_to_container(mime: &str) -> Option<String> {
+    if mime.contains("flac") {
+        Some("flac".to_string())
+    } else if mime.contains("mp4") || mime.contains("m4a") {
+        Some("mp4".to_string())
+    } else if mime.contains("webm") || mime.contains("opus") {
+        Some("webm".to_string())
+    } else if mime.contains("mpeg") || mime.contains("mp3") {
+        Some("mp3".to_string())
+    } else {
+        None
+    }
 }
 
 pub struct SquidStreamService {
@@ -113,7 +134,8 @@ async fn try_instance(
     client: &reqwest::Client,
     base: &str,
     query: &str,
-) -> Result<Option<StreamOption>> {
+    parent: &db::Media,
+) -> Result<Option<db::Media>> {
     let search_url = format!("{}/search/?s={}", base, urlencoding::encode(query));
     let resp = client
         .get(&search_url)
@@ -195,17 +217,34 @@ async fn try_instance(
     let codec = manifest
         .codecs
         .as_deref()
-        .map(super::normalize_codec)
+        .map(normalize_codec)
         .map(str::to_string);
 
-    Ok(Some(StreamOption {
-        url,
-        label: label.to_string(),
-        mime_type: manifest.mime_type,
-        is_audio_only: true,
-        codec,
-        sample_rate: manifest.sample_rate,
-        channels: Some(2),
+    let display_title = match (codec.as_deref(), Some(2i64)) {
+        (Some(c), Some(ch)) => format!("{} - {}ch", c.to_uppercase(), ch),
+        (Some(c), None) => c.to_uppercase(),
+        _ => label.to_string(),
+    };
+
+    Ok(Some(db::Media {
+        kind: db::MediaKind::Source,
+        title: label.to_string(),
+        url: Some(url),
+        probe_data: Some(Json(api::MediaSourceInfo {
+            container: mime_to_container(&manifest.mime_type),
+            run_time_ticks: parent.runtime.map(|r| r * 10_000_000),
+            media_streams: vec![api::MediaStream {
+                index: 0,
+                type_: Some(api::MediaStreamType::Audio),
+                codec,
+                channels: Some(2),
+                sample_rate: manifest.sample_rate,
+                is_default: Some(true),
+                display_title: Some(display_title),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })),
         ..Default::default()
     }))
 }
@@ -220,24 +259,25 @@ impl StreamService for SquidStreamService {
         &self,
         media: &db::Media,
         _ctx: &AppContext,
-    ) -> Result<Vec<StreamOption>> {
+    ) -> Result<Vec<db::Media>> {
         let query = Self::build_query(media);
         tracing::debug!(query, title = %media.title, "squid/tidal stream lookup");
 
         let instances = self.get_instances();
 
         // Race all instances in parallel — first successful result wins.
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<(StreamOption, String)>(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(db::Media, String)>(1);
         let mut handles = Vec::with_capacity(instances.len());
 
         for base in instances {
             let tx = tx.clone();
             let query = query.clone();
             let client = self.client.clone();
+            let parent = media.clone();
             let handle = tokio::spawn(async move {
-                match try_instance(&client, &base, &query).await {
-                    Ok(Some(stream)) => {
-                        let _ = tx.send((stream, base)).await;
+                match try_instance(&client, &base, &query, &parent).await {
+                    Ok(Some(source)) => {
+                        let _ = tx.send((source, base)).await;
                     }
                     Ok(None) => {}
                     Err(e) => {
@@ -247,17 +287,16 @@ impl StreamService for SquidStreamService {
             });
             handles.push(handle);
         }
-        drop(tx); // rx.recv() returns None once all tasks finish without sending
+        drop(tx);
 
-        let result = if let Some((stream, base)) = rx.recv().await {
-            tracing::debug!(query, base, label = %stream.label, "squid/tidal: stream resolved");
-            Ok(vec![stream])
+        let result = if let Some((source, base)) = rx.recv().await {
+            tracing::debug!(query, base, label = %source.title, "squid/tidal: stream resolved");
+            Ok(vec![source])
         } else {
             tracing::warn!(query, "squid/tidal: all instances failed");
             Ok(vec![])
         };
 
-        // Cancel tasks that are still running.
         for h in handles {
             h.abort();
         }

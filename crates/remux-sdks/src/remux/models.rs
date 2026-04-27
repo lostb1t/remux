@@ -1376,9 +1376,6 @@ pub struct MediaSourceInfo {
     pub protocol: String,
     #[default(false)]
     pub read_at_native_framerate: bool,
-    /// Headers that the client should attach when requesting this source.
-    /// Doubles as the transport for binge-group hints (`X-Remux-BingeGroup`,
-    /// `X-Gelato-BingeGroup` for Gelato compatibility).
     pub required_http_headers: Option<HashMap<String, String>>,
     #[default(false)]
     pub requires_closing: bool,
@@ -1419,8 +1416,7 @@ pub struct MediaSourceInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct MediaSourceRemuxInfo {
-    pub binge_group: Option<String>,
-    pub source: Option<crate::aio::Stream>,
+    pub source: Option<serde_json::Value>,
 }
 
 impl MediaSourceInfo {
