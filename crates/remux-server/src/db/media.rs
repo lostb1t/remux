@@ -146,6 +146,7 @@ pub enum MediaKind {
     Track,
     Album,
     Artist,
+    Playlist,
 }
 
 impl TryFrom<String> for MediaKind {
@@ -203,6 +204,7 @@ impl TryFrom<api::MediaType> for MediaKind {
             api::MediaType::MusicAlbum => Ok(MediaKind::Album),
             api::MediaType::MusicArtist => Ok(MediaKind::Artist),
             api::MediaType::Catalog => Ok(MediaKind::Catalog),
+            api::MediaType::Playlist => Ok(MediaKind::Playlist),
             _ => Err(()),
         }
     }
@@ -288,6 +290,7 @@ pub enum RelationRole {
     Producer,
     Creator,
     Catalog,
+    Playlist,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -348,10 +351,100 @@ impl MediaRelation {
     }
 
     pub async fn delete_by_left_id(db: &SqlitePool, left_media_id: &Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM media_relations WHERE left_media_id = $1")
+        sqlx::query("DELETE FROM media_relations WHERE left_media_id = ?")
             .bind(left_media_id)
             .execute(db)
             .await?;
+        Ok(())
+    }
+
+    pub async fn get_playlist_items(
+        db: &SqlitePool,
+        playlist_id: &Uuid,
+    ) -> Result<Vec<Self>> {
+        let rows = sqlx::query_as::<_, Self>(
+            "SELECT * FROM media_relations WHERE left_media_id = ? AND role = 'playlist' ORDER BY weight ASC",
+        )
+        .bind(playlist_id)
+        .fetch_all(db)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn add_playlist_items(
+        db: &SqlitePool,
+        playlist_id: &Uuid,
+        media_ids: &[Uuid],
+    ) -> Result<()> {
+        if media_ids.is_empty() {
+            return Ok(());
+        }
+        let max_weight: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(weight) FROM media_relations WHERE left_media_id = ? AND role = 'playlist'",
+        )
+        .bind(playlist_id)
+        .fetch_one(db)
+        .await?;
+        let mut next_weight = max_weight.map(|w| w + 1).unwrap_or(0);
+        let items: Vec<Self> = media_ids
+            .iter()
+            .map(|&media_id| {
+                let item = Self {
+                    left_media_id: *playlist_id,
+                    right_media_id: media_id,
+                    weight: Some(next_weight),
+                    role: Some(RelationRole::Playlist),
+                    ..Default::default()
+                };
+                next_weight += 1;
+                item
+            })
+            .collect();
+        Self::upsert(db, &items).await
+    }
+
+    pub async fn delete_by_relation_ids(
+        db: &SqlitePool,
+        relation_ids: &[Uuid],
+    ) -> Result<()> {
+        if relation_ids.is_empty() {
+            return Ok(());
+        }
+        let mut qb = sqlx::QueryBuilder::new(
+            "DELETE FROM media_relations WHERE relation_id IN (",
+        );
+        let mut sep = qb.separated(", ");
+        for id in relation_ids {
+            sep.push_bind(id);
+        }
+        qb.push(")");
+        qb.build().execute(db).await?;
+        Ok(())
+    }
+
+    pub async fn move_playlist_item(
+        db: &SqlitePool,
+        playlist_id: &Uuid,
+        relation_id: &Uuid,
+        new_index: usize,
+    ) -> Result<()> {
+        let mut items = Self::get_playlist_items(db, playlist_id).await?;
+        let Some(pos) = items.iter().position(|r| &r.relation_id == relation_id) else {
+            return Ok(());
+        };
+        let item = items.remove(pos);
+        let insert_at = new_index.min(items.len());
+        items.insert(insert_at, item);
+
+        let mut tx = db.begin().await?;
+        for (i, r) in items.iter().enumerate() {
+            sqlx::query("UPDATE media_relations SET weight = ? WHERE relation_id = ?")
+                .bind(i as i64)
+                .bind(r.relation_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 }
@@ -1650,6 +1743,42 @@ impl Media {
                 }
             }
 
+            // For playlists: count items via media_relations
+            let playlist_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| m.kind == MediaKind::Playlist)
+                .map(|m| m.id)
+                .collect();
+            if !playlist_ids.is_empty() {
+                let mut pl_qb = sqlx::QueryBuilder::new(
+                    "SELECT left_media_id, COUNT(*) FROM media_relations WHERE role = 'playlist' AND left_media_id IN (",
+                );
+                let mut sep = pl_qb.separated(", ");
+                for id in &playlist_ids {
+                    sep.push_bind(id);
+                }
+                pl_qb.push(") GROUP BY left_media_id");
+                match pl_qb.build().fetch_all(db).await {
+                    Ok(rows) => {
+                        let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
+                        for row in rows {
+                            let pid: Uuid = row.get(0);
+                            let cnt: i64 = row.get(1);
+                            cc_map.insert(pid, cnt);
+                        }
+                        for media in &mut records {
+                            if media.kind == MediaKind::Playlist {
+                                media.child_count =
+                                    Some(*cc_map.get(&media.id).unwrap_or(&0));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to load playlist child counts: {e}");
+                    }
+                }
+            }
+
             // For artists: populate album_count and song_count
             let artist_ids: Vec<Uuid> = records
                 .iter()
@@ -1870,10 +1999,26 @@ impl Media {
                 });
             }
             if let Some(mt_kinds) = media_type_kinds {
-                ikt_kinds
+                // Container types (Playlist, Collection, etc.) are not content — don't gate
+                // them by mediaTypes, which describes playable content like Audio/Video.
+                let intersection: Vec<MediaKind> = ikt_kinds
                     .into_iter()
-                    .filter(|k| mt_kinds.contains(k))
-                    .collect()
+                    .filter(|k| {
+                        matches!(
+                            k,
+                            MediaKind::Playlist
+                                | MediaKind::Collection
+                                | MediaKind::Folder
+                        ) || mt_kinds.contains(k)
+                    })
+                    .collect();
+                if intersection.is_empty() {
+                    return Ok(FilterResult {
+                        records: vec![],
+                        total_count: 0,
+                    });
+                }
+                intersection
             } else {
                 ikt_kinds
             }
@@ -2030,6 +2175,7 @@ impl Media {
         };
 
         let has_tv_channel = kinds.contains(&MediaKind::TvChannel);
+        let has_playlist = kinds.contains(&MediaKind::Playlist);
         Ok(Self::get_by_filter(
             db,
             &MediaFilter {
@@ -2046,11 +2192,12 @@ impl Media {
                 recursive: filter.recursive,
                 include_user_state: filter.enable_user_data.is_none(),
                 user_id: filter.user_id,
-                include_child_count: filter
-                    .fields
-                    .as_deref()
-                    .map(|f| f.contains(&api::ItemFields::ChildCount))
-                    .unwrap_or(false),
+                include_child_count: has_playlist
+                    || filter
+                        .fields
+                        .as_deref()
+                        .map(|f| f.contains(&api::ItemFields::ChildCount))
+                        .unwrap_or(false),
                 total_count,
                 user_state,
                 genre_ids,

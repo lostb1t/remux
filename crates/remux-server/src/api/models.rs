@@ -96,6 +96,7 @@ pub fn db_media_kind_to_type(kind: db::MediaKind) -> MediaType {
         db::MediaKind::Album => MediaType::MusicAlbum,
         db::MediaKind::Artist => MediaType::MusicArtist,
         db::MediaKind::Catalog => MediaType::Catalog,
+        db::MediaKind::Playlist => MediaType::Playlist,
         _ => MediaType::Unknown,
     }
 }
@@ -179,6 +180,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         db::MediaKind::Track => MediaType::Audio,
         db::MediaKind::Album => MediaType::MusicAlbum,
         db::MediaKind::Artist => MediaType::MusicArtist,
+        db::MediaKind::Playlist => MediaType::Playlist,
         _ => MediaType::Unknown,
     };
 
@@ -348,7 +350,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                         db::RelationRole::Writer => Some("Writer".to_string()),
                         db::RelationRole::Producer => Some("Producer".to_string()),
                         db::RelationRole::Creator => Some("Creator".to_string()),
-                        db::RelationRole::Catalog => None,
+                        db::RelationRole::Catalog | db::RelationRole::Playlist => None,
                     }),
                     type_: rel.role.as_ref().and_then(|r| match r {
                         db::RelationRole::Actor => Some("Actor".to_string()),
@@ -356,7 +358,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                         db::RelationRole::Writer => Some("Writer".to_string()),
                         db::RelationRole::Producer => Some("Producer".to_string()),
                         db::RelationRole::Creator => Some("Creator".to_string()),
-                        db::RelationRole::Catalog => None,
+                        db::RelationRole::Catalog | db::RelationRole::Playlist => None,
                     }),
                     primary_image_tag: image_tag(m.poster.as_deref()),
                 })

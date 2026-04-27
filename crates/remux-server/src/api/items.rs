@@ -404,6 +404,37 @@ pub async fn get_items(
             }
         }
 
+        // playlist browse
+        if parent.kind == db::MediaKind::Playlist {
+            let relations =
+                db::MediaRelation::get_playlist_items(&state.ctx.db, &parent.id)
+                    .await?;
+            let total = relations.len() as i64;
+            let start = q.start_index.unwrap_or(0) as usize;
+            let remaining = relations.len().saturating_sub(start);
+            let slice = match q.limit {
+                Some(limit) => {
+                    &relations[start.min(relations.len())..]
+                        [..(limit as usize).min(remaining)]
+                }
+                None => &relations[start.min(relations.len())..],
+            };
+            let mut items = Vec::with_capacity(slice.len());
+            for rel in slice {
+                if let Some(media) =
+                    db::Media::get_by_id(&state.ctx.db, &rel.right_media_id).await?
+                {
+                    let mut dto = api::db_media_to_item(media);
+                    dto.playlist_item_id = Some(rel.relation_id.to_string());
+                    items.push(dto);
+                }
+            }
+            return Ok(ItemsQueryResult {
+                total_count: total,
+                items,
+            });
+        }
+
         // collection browse
         if parent.kind == db::MediaKind::Collection {
             // All collection types: items float freely (no parent_id constraint).

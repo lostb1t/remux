@@ -1,0 +1,236 @@
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::response::IntoResponse;
+use axum_extra::extract::Query;
+use http::StatusCode;
+use remux_macros::{delete, get, post};
+use remux_sdks::CommaSeparatedList;
+use serde::Deserialize;
+use uuid::Uuid;
+
+use crate::AppState;
+use crate::api;
+use crate::db;
+use crate::db::auth;
+use crate::utils::get_uuid;
+use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CreatePlaylistQuery {
+    pub name: Option<String>,
+    #[serde(default)]
+    pub ids: CommaSeparatedList<Uuid>,
+    pub user_id: Option<Uuid>,
+}
+
+#[post("/playlists")]
+pub async fn create_playlist(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Query(q): Query<CreatePlaylistQuery>,
+    body: Option<Json<api::CreatePlaylistDto>>,
+) -> Result<impl IntoResponse> {
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let name = q
+        .name
+        .or(body.name)
+        .unwrap_or_else(|| "New Playlist".into());
+    let ids: Vec<Uuid> = if !q.ids.is_empty() {
+        q.ids.to_vec()
+    } else {
+        body.ids
+    };
+
+    let mut media = db::Media {
+        id: get_uuid(),
+        title: name,
+        kind: db::MediaKind::Playlist,
+        ..Default::default()
+    };
+    media
+        .save(&state.ctx.db)
+        .await
+        .context_bad_request("CreatePlaylist", "Failed to create playlist")?;
+
+    if !ids.is_empty() {
+        db::MediaRelation::add_playlist_items(&state.ctx.db, &media.id, &ids)
+            .await
+            .ok();
+    }
+
+    Ok(Json(api::PlaylistCreationResult {
+        id: media.id.to_string(),
+    }))
+}
+
+#[get("/playlists/{id}")]
+pub async fn get_playlist(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    let media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await
+        .context_bad_request("GetPlaylist", "DB error")?
+        .filter(|m| m.kind == db::MediaKind::Playlist)
+        .context_not_found("GetPlaylist", "Playlist not found")?;
+
+    let rels = db::MediaRelation::get_playlist_items(&state.ctx.db, &media.id).await?;
+    let item_ids: Vec<Uuid> = rels.iter().map(|r| r.right_media_id).collect();
+
+    Ok(Json(serde_json::json!({
+        "OpenAccess": true,
+        "Shares": [],
+        "ItemIds": item_ids,
+    })))
+}
+
+#[post("/playlists/{id}")]
+pub async fn update_playlist(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Json(body): Json<api::UpdatePlaylistDto>,
+) -> Result<impl IntoResponse> {
+    let mut media = db::Media::get_by_id(&state.ctx.db, &id)
+        .await
+        .context_bad_request("UpdatePlaylist", "DB error")?
+        .filter(|m| m.kind == db::MediaKind::Playlist)
+        .context_not_found("UpdatePlaylist", "Playlist not found")?;
+
+    if let Some(name) = body.name {
+        media.title = name;
+        media.save(&state.ctx.db).await?;
+    }
+
+    if let Some(ids) = body.ids {
+        sqlx::query(
+            "DELETE FROM media_relations WHERE left_media_id = ? AND role = 'playlist'",
+        )
+        .bind(media.id)
+        .execute(&state.ctx.db)
+        .await?;
+        db::MediaRelation::add_playlist_items(&state.ctx.db, &media.id, &ids).await?;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct PlaylistItemsQuery {
+    pub start_index: Option<u32>,
+    pub limit: Option<u32>,
+}
+
+#[get("/playlists/{id}/items")]
+pub async fn get_playlist_items(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Query(q): Query<PlaylistItemsQuery>,
+) -> Result<impl IntoResponse> {
+    db::Media::get_by_id(&state.ctx.db, &id)
+        .await
+        .context_bad_request("GetPlaylistItems", "DB error")?
+        .filter(|m| m.kind == db::MediaKind::Playlist)
+        .context_not_found("GetPlaylistItems", "Playlist not found")?;
+
+    let relations = db::MediaRelation::get_playlist_items(&state.ctx.db, &id).await?;
+    let total = relations.len() as i64;
+
+    let start = q.start_index.unwrap_or(0) as usize;
+    let remaining = relations.len().saturating_sub(start);
+    let slice = match q.limit {
+        Some(limit) => {
+            &relations[start.min(relations.len())..][..(limit as usize).min(remaining)]
+        }
+        None => &relations[start.min(relations.len())..],
+    };
+
+    let mut items = Vec::with_capacity(slice.len());
+    for rel in slice {
+        if let Some(media) =
+            db::Media::get_by_id(&state.ctx.db, &rel.right_media_id).await?
+        {
+            let mut dto = api::db_media_to_item(media);
+            dto.playlist_item_id = Some(rel.relation_id.to_string());
+            items.push(dto);
+        }
+    }
+
+    Ok(Json(api::BaseItemDtoQueryResult {
+        items,
+        total_record_count: total,
+        start_index: q.start_index.unwrap_or(0),
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct AddItemsQuery {
+    #[serde(default)]
+    pub ids: CommaSeparatedList<Uuid>,
+}
+
+#[post("/playlists/{id}/items")]
+pub async fn add_playlist_items(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Query(q): Query<AddItemsQuery>,
+) -> Result<impl IntoResponse> {
+    db::Media::get_by_id(&state.ctx.db, &id)
+        .await
+        .context_bad_request("AddPlaylistItems", "DB error")?
+        .filter(|m| m.kind == db::MediaKind::Playlist)
+        .context_not_found("AddPlaylistItems", "Playlist not found")?;
+
+    db::MediaRelation::add_playlist_items(&state.ctx.db, &id, &q.ids).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RemoveItemsQuery {
+    #[serde(default)]
+    pub entry_ids: CommaSeparatedList<Uuid>,
+}
+
+#[delete("/playlists/{id}/items")]
+pub async fn remove_playlist_items(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Query(q): Query<RemoveItemsQuery>,
+) -> Result<impl IntoResponse> {
+    db::Media::get_by_id(&state.ctx.db, &id)
+        .await
+        .context_bad_request("RemovePlaylistItems", "DB error")?
+        .filter(|m| m.kind == db::MediaKind::Playlist)
+        .context_not_found("RemovePlaylistItems", "Playlist not found")?;
+
+    db::MediaRelation::delete_by_relation_ids(&state.ctx.db, &q.entry_ids).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[post("/playlists/{id}/items/{item_id}/move/{new_index}")]
+pub async fn move_playlist_item(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path((id, item_id, new_index)): Path<(Uuid, Uuid, usize)>,
+) -> Result<impl IntoResponse> {
+    db::Media::get_by_id(&state.ctx.db, &id)
+        .await
+        .context_bad_request("MovePlaylistItem", "DB error")?
+        .filter(|m| m.kind == db::MediaKind::Playlist)
+        .context_not_found("MovePlaylistItem", "Playlist not found")?;
+
+    db::MediaRelation::move_playlist_item(&state.ctx.db, &id, &item_id, new_index)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}

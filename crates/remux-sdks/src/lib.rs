@@ -393,6 +393,21 @@ where
     }
 }
 
+impl<'de, T> Deserialize<'de> for CommaSeparatedList<T>
+where
+    T: std::str::FromStr,
+{
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = Option::<String>::deserialize(d)?.unwrap_or_default();
+        let data = s
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.trim().parse::<T>().ok())
+            .collect();
+        Ok(Self { data })
+    }
+}
+
 pub fn deserialize_option_number_from_string<'de, D>(
     deserializer: D,
 ) -> Result<Option<f64>, D::Error>

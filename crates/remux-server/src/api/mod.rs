@@ -15,6 +15,7 @@ pub mod metadata;
 pub mod music;
 pub mod networking;
 pub mod playback;
+pub mod playlists;
 pub mod remux;
 pub mod search;
 pub mod shows;

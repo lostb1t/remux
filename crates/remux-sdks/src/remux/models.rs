@@ -3252,3 +3252,26 @@ pub struct MediaSegmentDto {
     pub start_ticks: i64,
     pub end_ticks: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct PlaylistCreationResult {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CreatePlaylistDto {
+    pub name: Option<String>,
+    #[serde(default)]
+    pub ids: Vec<Uuid>,
+    pub user_id: Option<Uuid>,
+    pub media_type: Option<MediaType>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UpdatePlaylistDto {
+    pub name: Option<String>,
+    pub ids: Option<Vec<Uuid>>,
+}
