@@ -380,7 +380,6 @@ pub struct Meta {
     pub videos: Option<Vec<Episode>>,
     // pub trailer_streams: Option<Vec<String>>,
     // pub links: Option<Vec<Link>>,
-    // pub behavior_hints: Option<BehaviorHints>,
     #[serde(
         default,
         rename = "app_extras",

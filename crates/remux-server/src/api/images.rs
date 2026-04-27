@@ -26,7 +26,7 @@ async fn items_images_inner(
     image_type: api::ImageType,
     q: api::ImageQuery,
 ) -> Result<impl IntoResponse> {
-    let url = if let Some(tag_url) = q.tag {
+    let url = if let Some(tag_url) = q.tag.filter(|t| t.contains("://")) {
         tag_url
     } else {
         let key = id.to_string();
@@ -40,20 +40,33 @@ async fn items_images_inner(
             }
             .context_not_found("Not Found", "image not found")?
         } else {
-            // Not in DB yet — item is a cached search result. Pull poster from store.
-            let poster = state
+            // Not in DB yet — item is a cached search result.
+            let url = state
                 .ctx
                 .store
                 .get::<MusicSearchResult>(key.clone())
-                .and_then(|r| r.media.poster.clone())
+                .and_then(|r| match image_type {
+                    api::ImageType::Primary | api::ImageType::Thumb => {
+                        r.media.poster.clone()
+                    }
+                    api::ImageType::Backdrop => r.media.backdrop.clone(),
+                    api::ImageType::Logo | api::ImageType::LogoImageAspectRatio => {
+                        r.media.logo.clone()
+                    }
+                })
                 .or_else(|| {
-                    state
-                        .ctx
-                        .store
-                        .get::<sdks::aio::Meta>(key)
-                        .and_then(|m| m.poster.clone())
+                    state.ctx.store.get::<sdks::aio::Meta>(key).and_then(|m| {
+                        match image_type {
+                            api::ImageType::Primary | api::ImageType::Thumb => {
+                                m.poster.clone().or(m.thumbnail.clone())
+                            }
+                            api::ImageType::Backdrop => m.background.clone(),
+                            api::ImageType::Logo
+                            | api::ImageType::LogoImageAspectRatio => m.logo.clone(),
+                        }
+                    })
                 });
-            poster.context_not_found("Not Found", "media not found")?
+            url.context_not_found("Not Found", "media image not found")?
         }
     };
 
@@ -87,8 +100,26 @@ pub async fn items_images(
     items_images_inner(state, id, image_type, q).await
 }
 
+#[get("/Items/{id}/Images/{image_type}")]
+pub async fn items_images_cap(
+    State(state): State<AppState>,
+    Path((id, image_type)): Path<(Uuid, api::ImageType)>,
+    Query(q): Query<api::ImageQuery>,
+) -> Result<impl IntoResponse> {
+    items_images_inner(state, id, image_type, q).await
+}
+
 #[get("/items/{id}/images/{image_type}/{index}")]
 pub async fn items_images_indexed(
+    State(state): State<AppState>,
+    Path((id, image_type, _index)): Path<(Uuid, api::ImageType, usize)>,
+    Query(q): Query<api::ImageQuery>,
+) -> Result<impl IntoResponse> {
+    items_images_inner(state, id, image_type, q).await
+}
+
+#[get("/Items/{id}/Images/{image_type}/{index}")]
+pub async fn items_images_indexed_cap(
     State(state): State<AppState>,
     Path((id, image_type, _index)): Path<(Uuid, api::ImageType, usize)>,
     Query(q): Query<api::ImageQuery>,

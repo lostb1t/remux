@@ -134,6 +134,10 @@ pub fn db_user_to_dto(user: db::User) -> UserDto {
     }
 }
 
+fn image_tag(url: Option<&str>) -> Option<String> {
+    url.map(|u| u.to_string())
+}
+
 pub fn db_state_to_dto(
     state: db::UserMediaState,
     media: &db::Media,
@@ -252,9 +256,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         official_rating: media.certification.clone(),
         parent_index_number: media.parent_idx,
         image_tags: Some(ImageTags {
-            primary: media.poster.clone(),
-            logo: media.logo.clone(),
-            backdrop: media.backdrop.clone(),
+            primary: image_tag(media.poster.as_deref()),
+            logo: image_tag(media.logo.as_deref()),
+            backdrop: image_tag(media.backdrop.as_deref()),
             ..Default::default()
         }),
         index_number: media.idx,
@@ -283,9 +287,30 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         } else {
             None
         },
-        backdrop_image_tags: media.backdrop.clone().map(|url| vec![url]),
+        backdrop_image_tags: media
+            .backdrop
+            .as_ref()
+            .map(|url| vec![image_tag(Some(url)).unwrap()]),
         provider_ids: Some(ProviderIds {
-            imdb: media.external_ids.imdb.clone(),
+            // Episodes ingested before the per-episode external_ids fix
+            // have no IMDB id of their own — fall back to the series's
+            // IMDB so reviews / remote-image lookups have something to
+            // work with on existing data without forcing a re-import.
+            imdb: media
+                .external_ids
+                .imdb
+                .clone()
+                .or_else(|| {
+                    if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season)
+                    {
+                        media
+                            .series_media_id
+                            .clone()
+                            .filter(|s| s.starts_with("tt"))
+                    } else {
+                        None
+                    }
+                }),
             tmdb: media.external_ids.tmdb.map(|id| id.to_string()),
             tvdb: media.external_ids.tvdb.map(|id| id.to_string()),
             aio: media.media_id.clone(),
@@ -333,7 +358,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                         db::RelationRole::Creator => Some("Creator".to_string()),
                         db::RelationRole::Catalog => None,
                     }),
-                    primary_image_tag: m.poster.clone(),
+                    primary_image_tag: image_tag(m.poster.as_deref()),
                 })
                 .collect()
         }),
@@ -357,7 +382,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             .then(|| media.parent_id.map(|id| id.to_string()))
             .flatten(),
         album_primary_image_tag: (media.kind == db::MediaKind::Track)
-            .then(|| media.poster.clone())
+            .then(|| image_tag(media.poster.as_deref()))
             .flatten(),
         album_artist: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| media.series_title.clone())
@@ -418,7 +443,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
 
     if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season) {
         item.series_name = media.series_title.clone();
-        item.series_primary_image_tag = media.series_poster.clone();
+        item.series_primary_image_tag = image_tag(media.series_poster.as_deref());
         // The series item is where backdrop images live.
         let series_uuid = if media.kind == db::MediaKind::Episode {
             media.series_id.or(media.parent_id)
@@ -427,7 +452,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         };
         item.parent_backdrop_item_id = series_uuid.map(|id| id.to_string());
         item.parent_backdrop_image_tags =
-            media.series_backdrop.clone().map(|b| vec![b]);
+            image_tag(media.series_backdrop.as_deref()).map(|b| vec![b]);
         if media.kind == db::MediaKind::Episode {
             item.season_name = media.parent_title.clone();
         }

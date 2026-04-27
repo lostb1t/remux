@@ -346,6 +346,14 @@ impl MediaRelation {
 
         Ok(rows)
     }
+
+    pub async fn delete_by_left_id(db: &SqlitePool, left_media_id: &Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM media_relations WHERE left_media_id = $1")
+            .bind(left_media_id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
 }
 
 #[skip_serializing_none]
@@ -2527,6 +2535,29 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
                     episode.parent_idx = Some(season_idx);
                     episode.released_at = ep.released.map(|x| x.naive_utc());
                     episode.digital_released_at = ep.released.map(|x| x.naive_utc());
+                    // AIO episode ids look like `tt0944947:1:2` (series imdb,
+                    // season, episode). Surface the series IMDB on the episode
+                    // so clients (Anfiteatro reviews, TMDB lookups, etc.) can
+                    // hop to the right metadata without a separate query.
+                    let ep_external_ids = ExternalIds {
+                        imdb: meta
+                            .imdb_id
+                            .clone()
+                            .or_else(|| ep.id.split(':').next().map(|s| s.to_string()))
+                            .filter(|s| s.starts_with("tt")),
+                        ..Default::default()
+                    };
+                    episode.external_ids = sqlx::types::Json(ep_external_ids);
+
+                    // Populate relations (Cast, Directors, Writers) for the episode
+                    let rels = crate::providers::meta::aio::build_episode_relations(
+                        &episode, &ep,
+                    );
+                    episode.relations = Some(
+                        rels.into_iter()
+                            .map(|r| (r.relation, r.media))
+                            .collect(),
+                    );
 
                     media_instances.push(episode);
                 }

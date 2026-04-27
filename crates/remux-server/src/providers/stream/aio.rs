@@ -39,13 +39,25 @@ impl StreamService for AioStreamService {
             .into_iter()
             .filter(|s| s.is_valid())
             .filter_map(|s| {
-                let url = s.url.or(s.external_url)?;
-                let label = s.name.unwrap_or_else(|| "AIO".to_string());
+                let binge_group = None;
+                let url = s.url.clone().or_else(|| s.external_url.clone())?;
+                // Mirror `From<aio::Stream> for db::Media` — keep both the
+                // addon name (provider/quality summary) and the description
+                // (full codec/release breakdown). Clients render them with
+                // the newline as a separator.
+                let label = match (s.name.as_deref(), s.description.as_deref()) {
+                    (Some(n), Some(d)) if !d.is_empty() => format!("{}\n{}", n, d),
+                    (Some(n), _) => n.to_string(),
+                    (None, Some(d)) => d.to_string(),
+                    _ => "AIO".to_string(),
+                };
                 Some(StreamOption {
                     url,
                     label,
                     mime_type: "video/mp4".to_string(),
                     is_audio_only: false,
+                    binge_group,
+                    aio_stream: Some(s.clone()),
                     ..Default::default()
                 })
             })

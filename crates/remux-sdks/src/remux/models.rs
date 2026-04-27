@@ -1376,7 +1376,10 @@ pub struct MediaSourceInfo {
     pub protocol: String,
     #[default(false)]
     pub read_at_native_framerate: bool,
-    //pub required_http_headers: Option<HashMap<String, Option<String>>>,
+    /// Headers that the client should attach when requesting this source.
+    /// Doubles as the transport for binge-group hints (`X-Remux-BingeGroup`,
+    /// `X-Gelato-BingeGroup` for Gelato compatibility).
+    pub required_http_headers: Option<HashMap<String, String>>,
     #[default(false)]
     pub requires_closing: bool,
     #[default(false)]
@@ -1408,6 +1411,16 @@ pub struct MediaSourceInfo {
     pub video_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segments: Option<MediaSegments>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remux: Option<MediaSourceRemuxInfo>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct MediaSourceRemuxInfo {
+    pub binge_group: Option<String>,
+    pub source: Option<crate::aio::Stream>,
 }
 
 impl MediaSourceInfo {
@@ -2676,6 +2689,8 @@ pub enum ItemFields {
     SeriesName,
     ParentIndexNumber,
     IndexNumber,
+    AlbumArtist,
+    AlbumArtists,
     Status,
     ParentBackdropItemId,
     ParentBackdropImageTags,

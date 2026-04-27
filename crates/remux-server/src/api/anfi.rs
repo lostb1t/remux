@@ -32,10 +32,10 @@ struct GitHubBranchCommit {
 }
 
 #[derive(Debug, Clone)]
-struct LatestAnfiteatroHead {
-    branch: String,
-    commit_sha: String,
-    commit_url: String,
+pub(crate) struct LatestAnfiteatroHead {
+    pub(crate) branch: String,
+    pub(crate) commit_sha: String,
+    pub(crate) commit_url: String,
 }
 
 fn short_sha(sha: &str) -> String {
@@ -69,7 +69,7 @@ fn read_local_commit_marker(path: &str) -> Option<String> {
     normalize_commit_sha(&raw)
 }
 
-fn write_local_commit_marker(
+pub(crate) fn write_local_commit_marker(
     path: &Path,
     commit_sha: &str,
 ) -> std::result::Result<(), String> {
@@ -113,7 +113,7 @@ fn clear_directory_contents(path: &Path) -> std::result::Result<(), String> {
     Ok(())
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::result::Result<(), String> {
+pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> std::result::Result<(), String> {
     std::fs::create_dir_all(dst)
         .map_err(|err| format!("failed to create {}: {err}", dst.display()))?;
 
@@ -146,7 +146,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::result::Result<(), String>
     Ok(())
 }
 
-async fn download_anfiteatro_archive(
+pub(crate) async fn download_anfiteatro_archive(
     client: &reqwest::Client,
     commit_sha: &str,
 ) -> std::result::Result<Vec<u8>, String> {
@@ -171,7 +171,7 @@ async fn download_anfiteatro_archive(
     Ok(bytes.to_vec())
 }
 
-fn install_archive_to_path(
+pub(crate) fn install_archive_to_path(
     archive_bytes: &[u8],
     target_path: &Path,
 ) -> std::result::Result<(), String> {
@@ -210,7 +210,7 @@ fn local_anfiteatro_commit(path: &str) -> Option<String> {
     read_local_commit_marker(path)
 }
 
-async fn fetch_latest_anfiteatro_head(
+pub(crate) async fn fetch_latest_anfiteatro_head(
     client: &reqwest::Client,
 ) -> std::result::Result<LatestAnfiteatroHead, String> {
     let branch_url = format!(

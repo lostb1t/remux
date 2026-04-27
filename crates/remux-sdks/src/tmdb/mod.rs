@@ -77,12 +77,25 @@ pub struct ImageEntry {
     pub file_path: String,
     pub iso_639_1: Option<String>,
     pub vote_average: Option<f64>,
+    pub vote_count: Option<i64>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Images {
     #[serde(default)]
     pub logos: Vec<ImageEntry>,
+    /// Posters (movies/series — vertical artwork).
+    #[serde(default)]
+    pub posters: Vec<ImageEntry>,
+    /// Backdrops (movies/series — wide hero artwork).
+    #[serde(default)]
+    pub backdrops: Vec<ImageEntry>,
+    /// Stills (episode-level horizontal frames). TMDB returns these when
+    /// asked under `tv/{id}/season/{s}/episode/{e}/images`.
+    #[serde(default)]
+    pub stills: Vec<ImageEntry>,
 }
 
 impl Images {

@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
-use crate::AppState;
 use crate::db::{self, auth};
+use crate::{AppState, sdks};
 use axum_anyhow::ApiResult as Result;
+use uuid::Uuid;
 
 const CACHE_KEY_PREFIX: &str = "remux:cache:";
 const REGISTRATION_NS: &str = "anfiteatro-registration";
@@ -426,4 +427,122 @@ pub async fn remux_email_send(
         }),
     )
         .into_response())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct StreamMetadataDto {
+    pub id: Uuid,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub binge_group: Option<String>,
+    pub index: i64,
+    pub size: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct StreamsResponse {
+    pub streams: Vec<StreamMetadataDto>,
+}
+
+/// Source-level metadata (binge group, name, description) for an item.
+/// Mirrors the shape Anfiteatro expects from `/gelato/streams/{id}` so the
+/// client can match versions across episodes without re-issuing playback info.
+async fn streams_metadata(
+    state: &AppState,
+    id: Uuid,
+) -> AnyResult<StreamsResponse> {
+    let Some(media) = db::Media::get_by_id(&state.ctx.db, &id).await? else {
+        return Ok(StreamsResponse { streams: vec![] });
+    };
+
+    // Accept both the parent (Movie/Episode) and the Source itself.
+    let mut parent = if media.kind == db::MediaKind::Source {
+        media
+            .parent(&state.ctx.db)
+            .await?
+            .unwrap_or(media)
+    } else {
+        media
+    };
+
+    if !matches!(
+        parent.kind,
+        db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
+    ) {
+        return Ok(StreamsResponse { streams: vec![] });
+    }
+
+    let mut sources = parent.streams(&state.ctx.db).await.unwrap_or_default();
+    sources.sort_by_key(|s| s.idx.unwrap_or(0));
+
+    let streams = sources
+        .into_iter()
+        .map(|s| {
+            let remote_data = crate::providers::stream::SourceRemoteData::from_media(&s);
+            // Title in the DB carries the merged "name\ndescription" string —
+            // split it back so legacy clients that only render `Name` still
+            // see something useful and ones that consume both get the pair.
+            let (name, description) = match s.title.split_once('\n') {
+                Some((n, d)) => (Some(n.trim().to_string()), Some(d.trim().to_string())),
+                None if !s.title.is_empty() => (Some(s.title.clone()), None),
+                _ => (None, None),
+            };
+            StreamMetadataDto {
+                id: s.id,
+                name,
+                description,
+                binge_group: remote_data.binge_group,
+                index: s.idx.unwrap_or(0),
+                size: s
+                    .probe_data
+                    .as_ref()
+                    .and_then(|p| p.0.size),
+            }
+        })
+        .collect();
+
+    Ok(StreamsResponse { streams })
+}
+
+#[get("/remux/streams/{id}", "/gelato/streams/{id}")]
+pub async fn remux_streams(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    let payload = streams_metadata(&state, id)
+        .await
+        .unwrap_or(StreamsResponse { streams: vec![] });
+    Ok(Json(payload))
+}
+
+#[get("/remux/meta/{kind}/{id}", "/gelato/meta/{kind}/{id}")]
+pub async fn remux_meta(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path((kind, id)): Path<(String, String)>,
+) -> Result<impl IntoResponse> {
+    let media_type = match kind.as_str() {
+        "series" => remux_sdks::aio::MediaType::Series,
+        "movie" => remux_sdks::aio::MediaType::Movie,
+        _ => remux_sdks::aio::MediaType::Movie,
+    };
+
+    let aio = match crate::aio::AioService::from_settings(&state.ctx.db).await {
+        Ok(a) => a,
+        Err(_) => {
+            return Ok(
+                (StatusCode::NOT_FOUND, Json(serde_json::Value::Null)).into_response()
+            );
+        }
+    };
+
+    match aio.get_meta(media_type, id).await {
+        Ok(meta) => Ok(Json(meta).into_response()),
+        Err(_) => {
+            Ok((StatusCode::NOT_FOUND, Json(serde_json::Value::Null)).into_response())
+        }
+    }
 }

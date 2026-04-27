@@ -334,6 +334,16 @@ async fn items_playbackinfo_inner(
             source.path = Some(resolved.clone());
         }
 
+        // Re-apply binge-group headers on top of the probed result —
+        // ffmpeg probing produces a fresh `MediaSourceInfo` and would
+        // otherwise drop the `X-Remux-BingeGroup` / `X-Gelato-BingeGroup`
+        // hints we stashed alongside the source.
+        let remote_data = crate::providers::stream::SourceRemoteData::from_media(sm);
+        source.remux = Some(api::MediaSourceRemuxInfo {
+            binge_group: remote_data.binge_group,
+            source: remote_data.aio_stream,
+        });
+
         if has_lyrics {
             api::inject_lyric_stream(&mut source);
         }

@@ -1192,13 +1192,15 @@ fn DashboardLayout() -> Element {
                     a {
                         class: "btn btn-ghost",
                         style: "width:100%;margin-bottom:8px",
-                        href: "/anfiteatro/",
-                        onclick: move |_| {
+                        href: "#",
+                        onclick: move |e| {
+                            e.prevent_default();
                             let payload = AnfiteatroHandoff {
                                 token: anfiteatro_handoff_token.clone(),
                                 user_id: anfiteatro_handoff_user_id.clone(),
                             };
                             let _ = SessionStorage::set(ANFITEATRO_HANDOFF_KEY, payload);
+                            let _ = web_sys::window().unwrap().location().set_href("/anfiteatro/");
                         },
                         "Anfiteatro Web"
                     }

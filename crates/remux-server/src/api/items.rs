@@ -167,10 +167,10 @@ pub async fn get_items(
             // Music: remote search or local DB fallback per type
             for (wants_remote, kind, api_type, count_ref) in [
                 (
-                    wants_tracks,
-                    db::MediaKind::Track,
-                    api::MediaType::Audio,
-                    &mut tracks_count as &mut usize,
+                    wants_artists,
+                    db::MediaKind::Artist,
+                    api::MediaType::MusicArtist,
+                    &mut artists_count as &mut usize,
                 ),
                 (
                     wants_albums,
@@ -179,10 +179,10 @@ pub async fn get_items(
                     &mut albums_count,
                 ),
                 (
-                    wants_artists,
-                    db::MediaKind::Artist,
-                    api::MediaType::MusicArtist,
-                    &mut artists_count,
+                    wants_tracks,
+                    db::MediaKind::Track,
+                    api::MediaType::Audio,
+                    &mut tracks_count,
                 ),
             ] {
                 if !raw_types.iter().any(|t| *t == api_type) {
@@ -890,16 +890,74 @@ pub async fn items_theme_songs(
     Ok(Json(api::BaseItemDtoQueryResult::default()))
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct RemoteImagesQuery {
+    #[serde(rename = "type", alias = "Type")]
+    pub kind: Option<String>,
+    pub include_all_languages: Option<bool>,
+    pub start_index: Option<i64>,
+    pub limit: Option<i64>,
+    pub provider: Option<String>,
+}
+
+/// Resolve high-resolution images from TMDB for any media kind.
+/// Anfiteatro (and the Jellyfin web client) hits this endpoint to upgrade
+/// AIO's hardcoded ~500w thumbnails to original-size posters / backdrops /
+/// stills. Without this, episodes show pixelated banners.
 #[get("/items/{id}/remoteimages")]
 pub async fn items_remote_images(
-    _state: State<AppState>,
+    State(state): State<AppState>,
     _session: auth::AuthSession,
-    _path: Path<Uuid>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<RemoteImagesQuery>,
 ) -> Result<impl IntoResponse> {
+    let media = match db::Media::get_by_id(&state.ctx.db, &id).await? {
+        Some(m) => m,
+        None => {
+            return Ok(Json(api::RemoteImageResult {
+                images: Some(vec![]),
+                total_record_count: 0,
+                providers: Some(vec!["TheMovieDb".to_string()]),
+            }));
+        }
+    };
+
+    let provider = q.provider.as_deref();
+    let mut images = Vec::new();
+    let mut queried_providers = Vec::new();
+
+    if provider.is_none() || provider == Some("TheMovieDb") {
+        queried_providers.push("TheMovieDb".to_string());
+        match crate::providers::meta::tmdb_remote_images(&state.ctx, &media).await {
+            Ok(v) => images.extend(v),
+            Err(e) => warn!(id = %id, error = %e, "tmdb remote images lookup failed"),
+        }
+    }
+
+    // Optional client-side type filter (Backdrop / Primary / etc.).
+    let images: Vec<api::RemoteImageInfo> = if let Some(want) = q.kind.as_deref() {
+        let want = want.to_string();
+        images
+            .into_iter()
+            .filter(|img| img.type_.as_deref() == Some(&want))
+            .collect()
+    } else {
+        images
+    };
+
+    let start = q.start_index.unwrap_or(0).max(0) as usize;
+    let total = images.len() as i64;
+    let limited: Vec<api::RemoteImageInfo> = images
+        .into_iter()
+        .skip(start)
+        .take(q.limit.map(|n| n.max(0) as usize).unwrap_or(usize::MAX))
+        .collect();
+
     Ok(Json(api::RemoteImageResult {
-        images: Some(vec![]),
-        total_record_count: 0,
-        providers: Some(vec![]),
+        images: Some(limited),
+        total_record_count: total,
+        providers: Some(queried_providers),
     }))
 }
 
@@ -909,7 +967,7 @@ pub async fn items_remote_images_providers(
     _session: auth::AuthSession,
     _path: Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(Vec::<String>::new()))
+    Ok(Json(vec!["TheMovieDb".to_string()]))
 }
 
 /// Get item counts
@@ -1032,7 +1090,10 @@ pub async fn item(
     };
 
     let need_refresh = media.refreshed_at.is_none()
-        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series);
+        && matches!(
+            media.kind,
+            db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
+        );
     let needs_sources = want_sources
         && matches!(
             media.kind,
@@ -1535,6 +1596,7 @@ pub async fn gelato_subtitles(
     let subtitles = crate::providers::subtitle::fetch(&media, &state.ctx.db).await;
     Ok(Json(subtitles))
 }
+
 
 fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
     match s {

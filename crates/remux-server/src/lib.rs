@@ -260,6 +260,7 @@ pub async fn init_app(
             .await?;
     }
 
+    let _ = task_service.run_task("EnsureAnfiteatro").await;
     task_service.run_startup_tasks().await?;
 
     let state = AppState {

@@ -228,6 +228,8 @@ impl StreamService for YtDlpStreamService {
                 codec: f.normalized_codec(),
                 channels: f.audio_channels.map(|c| c as i64),
                 sample_rate: f.asr.map(|r| r as i64),
+                binge_group: None,
+                aio_stream: None,
             })
             .collect();
 
@@ -250,6 +252,8 @@ impl StreamService for YtDlpStreamService {
                     codec: f.normalized_codec(),
                     channels: f.audio_channels.map(|c| c as i64),
                     sample_rate: f.asr.map(|r| r as i64),
+                    binge_group: None,
+                    aio_stream: None,
                 })
             })
             .collect())

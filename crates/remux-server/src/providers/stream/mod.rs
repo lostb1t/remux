@@ -25,6 +25,38 @@ pub struct StreamOption {
     pub codec: Option<String>,
     pub channels: Option<i64>,
     pub sample_rate: Option<i64>,
+    /// Binge group key (Stremio `behaviorHints.bingeGroup`). Lets clients
+    /// keep the same encoding/release across episodes during a binge.
+    pub binge_group: Option<String>,
+    /// The original AIO stream, if available.
+    pub aio_stream: Option<remux_sdks::aio::Stream>,
+}
+
+/// Source-level metadata we persist on `db::Media.remote_data` as JSON.
+/// Anything that isn't worth a dedicated column lives here.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SourceRemoteData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binge_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aio_stream: Option<remux_sdks::aio::Stream>,
+}
+
+impl SourceRemoteData {
+    pub fn from_media(media: &db::Media) -> Self {
+        media
+            .remote_data
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Self>(raw).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn to_json(&self) -> Option<String> {
+        if self.binge_group.is_none() {
+            return None;
+        }
+        serde_json::to_string(self).ok()
+    }
 }
 
 /// A pluggable stream-resolution backend.
@@ -171,6 +203,10 @@ fn stream_option_to_source(
             display_title: Some(display_title),
             ..Default::default()
         }],
+        remux: Some(api::MediaSourceRemuxInfo {
+            binge_group: s.binge_group.clone(),
+            source: s.aio_stream.clone(),
+        }),
         ..Default::default()
     };
 
@@ -178,6 +214,12 @@ fn stream_option_to_source(
     let source_id = uuid::Uuid::new_v5(&parent.id, format!("source_{idx}").as_bytes());
 
     let now = chrono::Utc::now().naive_utc();
+    let remote_data = SourceRemoteData {
+        binge_group: s.binge_group,
+        aio_stream: s.aio_stream,
+    }
+    .to_json();
+
     db::Media {
         id: source_id,
         kind: db::MediaKind::Source,
@@ -186,12 +228,14 @@ fn stream_option_to_source(
         parent_id: Some(parent.id),
         runtime: parent.runtime,
         probe_data: Some(sqlx::types::Json(probe_data)),
+        remote_data,
         idx: Some(idx as i64),
         created_at: now,
         updated_at: now,
         ..Default::default()
     }
 }
+
 
 pub(super) fn normalize_codec(codec: &str) -> &str {
     if codec.starts_with("mp4a") {

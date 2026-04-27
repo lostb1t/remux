@@ -135,6 +135,12 @@ impl From<db::Media> for api::MediaSourceInfo {
             })
             .unwrap_or_else(|| source.title.clone());
 
+        let remote_data = crate::providers::stream::SourceRemoteData::from_media(&source);
+        let remux = Some(api::MediaSourceRemuxInfo {
+            binge_group: remote_data.binge_group,
+            source: remote_data.aio_stream,
+        });
+
         api::MediaSourceInfo {
             id: source.id.clone(),
             e_tag: source.id.clone(),
@@ -146,6 +152,7 @@ impl From<db::Media> for api::MediaSourceInfo {
             is_remote,
             name: Some(source.title.clone()),
             container,
+            remux,
             has_segments: true,
             // media_streams,
             ..Default::default()
@@ -176,11 +183,12 @@ impl TryFrom<aio::Episode> for db::Media {
     type Error = anyhow::Error;
     fn try_from(meta: aio::Episode) -> Result<db::Media> {
         Ok(db::Media {
-            title: meta.title.unwrap_or_default(),
+            title: meta.get_name().unwrap_or_default(),
             kind: db::MediaKind::Episode,
             released_at: meta.released.map(|x| x.naive_utc()),
             runtime: meta.runtime.map(|d| d.num_seconds()),
-            description: meta.overview,
+            description: meta.overview.or(meta.description),
+            rating_audience: meta.rating,
             poster: meta.thumbnail,
             ..Default::default()
         })

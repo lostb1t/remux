@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-mod aio;
+pub(crate) mod aio;
 mod tmdb;
 pub use aio::{AioMetaProvider, AioTreeSyncProvider};
-pub use tmdb::TmdbMetaProvider;
+pub use tmdb::{TmdbMetaProvider, tmdb_remote_images};
 
 /// Flat relation entry returned by a provider.
 pub struct MetaRelation {
@@ -128,6 +128,12 @@ impl MetaProviderService {
                             .into_iter()
                             .map(|r| (r.media, r.relation))
                             .unzip();
+                        if replace {
+                            db::MediaRelation::delete_by_left_id(&ctx.db, &media.id)
+                                .await
+                                .ok();
+                        }
+
                         if let Err(e) = db::Media::upsert(&ctx.db, &rel_media)
                             .await
                             .and(db::MediaRelation::upsert(&ctx.db, &rels).await)
@@ -332,12 +338,21 @@ fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
             }
         };
     }
+    macro_rules! fill_image {
+        ($field:ident) => {
+            // Images are always overwritten if the source has a value,
+            // allowing TMDB to provide hi-res versions over AIO's low-res ones.
+            if source.$field.is_some() {
+                target.$field = source.$field.clone();
+            }
+        };
+    }
     if replace || target.title.is_empty() {
         if !source.title.is_empty() {
             target.title = source.title.clone();
         }
     }
-    fill!(poster);
+    fill_image!(poster);
     fill!(description);
     fill!(released_at);
     fill!(runtime);
@@ -345,11 +360,34 @@ fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     fill!(certification);
     fill!(certification_age);
     fill!(country);
-    fill!(logo);
-    fill!(backdrop);
+    fill_image!(logo);
+    fill_image!(backdrop);
     fill!(trailers);
     fill!(digital_released_at);
     fill!(status);
+
+    // External IDs are merged additively — every provider that resolves
+    // a fresh TMDB / IMDB / TVDB id should contribute it without clobbering
+    // the others. Without this the TMDB-resolved episode ids never reach
+    // the client, leaving Anfiteatro with no ProviderIds to drive reviews,
+    // remote images, or version matching.
+    let mut merged_ids = target.external_ids.0.clone();
+    if source.external_ids.imdb.is_some()
+        && (replace || merged_ids.imdb.is_none())
+    {
+        merged_ids.imdb = source.external_ids.imdb.clone();
+    }
+    if source.external_ids.tmdb.is_some()
+        && (replace || merged_ids.tmdb.is_none())
+    {
+        merged_ids.tmdb = source.external_ids.tmdb;
+    }
+    if source.external_ids.tvdb.is_some()
+        && (replace || merged_ids.tvdb.is_none())
+    {
+        merged_ids.tvdb = source.external_ids.tvdb;
+    }
+    target.external_ids = sqlx::types::Json(merged_ids);
 }
 
 /// Reformat title for Season/Episode items based on index metadata.

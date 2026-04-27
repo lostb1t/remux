@@ -1,4 +1,5 @@
 use crate::{AppContext, db, sdks, utils};
+use tracing::warn;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -66,14 +67,29 @@ impl MetaProvider for AioMetaProvider {
             _ => None,
         };
 
-        if let Some(found_media) = found {
-            // Build relations for movies/series
-            let relations =
-                if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
-                    build_relations(media, &meta_raw)
+        if let Some(mut found_media) = found {
+            // Build relations for movies/series/episodes
+            let relations = if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
+                build_relations(media, &meta_raw)
+            } else if media.kind == db::MediaKind::Episode {
+                if let Some(meta_ep) = meta_raw.videos.as_ref().and_then(|v| {
+                    v.iter().find(|e| {
+                        e.episode == media.idx && e.season == media.parent_idx
+                    })
+                }) {
+                    let rels = build_episode_relations(media, meta_ep);
+                    warn!(id = %media.id, count = rels.len(), "aio episode relations");
+                    rels
                 } else {
                     vec![]
-                };
+                }
+            } else {
+                vec![]
+            };
+
+            let mut medias = vec![found_media];
+            db::Media::enrich_parents(&ctx.db, &mut medias).await;
+            found_media = medias.remove(0);
 
             Ok(Some(MetaResult {
                 media: found_media,
@@ -113,7 +129,7 @@ impl TreeSyncProvider for AioTreeSyncProvider {
 
         let meta_clone = meta.clone();
         let medias: Vec<db::Media> = db::aio_meta_to_medias(meta)?;
-        let seasons = medias
+        let mut seasons = medias
             .into_iter()
             .filter_map(|mut x| {
                 if x.kind == db::MediaKind::Season {
@@ -128,6 +144,9 @@ impl TreeSyncProvider for AioTreeSyncProvider {
                 }
             })
             .collect();
+
+        db::Media::enrich_parents(&ctx.db, &mut seasons).await;
+
         Ok(seasons)
     }
 
@@ -153,7 +172,7 @@ impl TreeSyncProvider for AioTreeSyncProvider {
         }
 
         let medias: Vec<db::Media> = db::aio_meta_to_medias(meta)?;
-        let episodes = medias
+        let mut episodes = medias
             .into_iter()
             .filter_map(|mut x| {
                 if x.kind == db::MediaKind::Episode && x.parent_idx == season.idx {
@@ -176,12 +195,15 @@ impl TreeSyncProvider for AioTreeSyncProvider {
                 }
             })
             .collect();
+
+        db::Media::enrich_parents(&ctx.db, &mut episodes).await;
+
         Ok(episodes)
     }
 }
 
 /// Build Person/Genre MetaRelation entries from AIO metadata.
-fn build_relations(media: &db::Media, meta: &sdks::aio::Meta) -> Vec<MetaRelation> {
+pub(crate) fn build_relations(media: &db::Media, meta: &sdks::aio::Meta) -> Vec<MetaRelation> {
     let mut relations: Vec<MetaRelation> = Vec::new();
 
     // Genres
@@ -232,7 +254,7 @@ fn build_relations(media: &db::Media, meta: &sdks::aio::Meta) -> Vec<MetaRelatio
     relations
 }
 
-pub(super) fn build_episode_relations(
+pub(crate) fn build_episode_relations(
     media: &db::Media,
     ep: &sdks::aio::Episode,
 ) -> Vec<MetaRelation> {
@@ -240,7 +262,7 @@ pub(super) fn build_episode_relations(
         media.id,
         ep.directors.as_ref(),
         ep.writers.as_ref(),
-        ep.cast.as_ref(),
+        None, // Skip cast to avoid generic series-level cast poisoning
         None,
         None,
         None,

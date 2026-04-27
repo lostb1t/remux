@@ -144,7 +144,7 @@ pub struct Episode {
     pub name: String,
     pub overview: Option<String>,
     pub vote_average: Option<f64>,
-    pub vote_count: i64,
+    pub vote_count: Option<i64>,
     #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub air_date: Option<NaiveDate>,
     pub episode_number: i64,
@@ -152,10 +152,14 @@ pub struct Episode {
     pub production_code: Option<String>,
     pub runtime: Option<i64>,
     pub season_number: i64,
-    pub show_id: i64,
+    pub show_id: Option<i64>,
     pub still_path: Option<String>,
     pub credits: Option<super::Credits>,
     pub external_ids: Option<super::ExternalIds>,
+    pub guest_stars: Option<Vec<super::CastMember>>,
+    /// Populated when `append_to_response=images` is requested.
+    /// Episodes return `stills` (high-res frames).
+    pub images: Option<super::Images>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,7 +181,7 @@ impl EpisodeEndpoint {
             series_id,
             season_number,
             episode_number,
-            language: Some("en".to_string()),
+            language: None,
             append_to_response: Some(super::default_append_to_response()),
         }
     }

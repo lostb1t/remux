@@ -2,7 +2,7 @@ FROM debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WEB_PATH=/app/jellyfin-web
-ENV ANFITEATRO_WEB_PATH=/app/anfiteatro-web
+ENV ANFITEATRO_WEB_PATH=/data/anfiteatro-web
 ENV DASHBOARD_PATH=/app/dashboard
 ENV DATABASE_URL=sqlite:///data/db.sqlite?mode=rwc
 ENV LOG_FILE=/data/logs/remux.jsonl

@@ -22,6 +22,7 @@ mod purge_media;
 mod refresh_all_meta;
 mod refresh_library;
 mod series_sync;
+mod anfiteatro_update;
 
 use catalog_import::CatalogImportTask;
 pub use catalog_item_import::CatalogItemImportTask;
@@ -31,6 +32,7 @@ use purge_media::PurgeMediaTask;
 use refresh_all_meta::RefreshAllMetaTask;
 use refresh_library::RefreshLibraryTask;
 use series_sync::SeriesSyncTask;
+pub use anfiteatro_update::EnsureAnfiteatroTask;
 
 // --- Progress reporting ---
 
@@ -218,6 +220,7 @@ impl TaskService {
         service.register_task(Arc::new(IptvRefreshTask)).await?;
         service.register_task(Arc::new(PurgeMediaTask)).await?;
         service.register_task(Arc::new(JellyfinImportTask)).await?;
+        service.register_task(Arc::new(EnsureAnfiteatroTask)).await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {

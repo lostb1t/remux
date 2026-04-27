@@ -40,7 +40,7 @@ impl SearchService for AioSearchService {
             .await
             .unwrap_or_default();
 
-        let media = results
+        let mut media = results
             .into_iter()
             .unique_by(|m| {
                 m.imdb_id
@@ -51,12 +51,20 @@ impl SearchService for AioSearchService {
             })
             .take(limit)
             .filter_map(|meta| {
-                let m = db::Media::try_from(meta.clone()).ok()?;
+                let mut m = db::Media::try_from(meta.clone()).ok()?;
+                let rels = crate::providers::meta::aio::build_relations(&m, &meta);
+                m.relations = Some(
+                    rels.into_iter()
+                        .map(|r| (r.relation, r.media))
+                        .collect(),
+                );
                 ctx.store
                     .insert(m.id.to_string(), meta, Duration::from_secs(3600));
                 Some(m)
             })
             .collect();
+
+        db::Media::enrich_parents(&ctx.db, &mut media).await;
 
         Ok(media)
     }
