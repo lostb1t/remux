@@ -2,6 +2,7 @@ use super::{FilterResult, QueryBuilderExt};
 use crate::aio;
 use crate::api;
 use crate::api::MediaSourceInfo;
+use crate::providers::stream::StreamProviderInfo;
 use crate::sdks;
 use crate::utils::IntoVec;
 use crate::utils::get_uuid;
@@ -667,7 +668,7 @@ pub struct Media {
     // stream
     pub url: Option<String>,
     pub probe_data: Option<sqlx::types::Json<MediaSourceInfo>>,
-    pub remote_data: Option<String>,
+    pub provider_info: Option<sqlx::types::Json<StreamProviderInfo>>,
 
     // collection
     pub promoted: bool,
@@ -885,7 +886,7 @@ impl Media {
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
-            remote_data, series_media_id, media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
+            provider_info, series_media_id, media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id,
             collection_smart_filter, country, program_kind
         )
@@ -909,7 +910,7 @@ impl Media {
                 WHEN excluded.url IS NOT media.url THEN NULL
                 ELSE COALESCE(excluded.probe_data, media.probe_data)
             END,
-            remote_data = excluded.remote_data,
+            provider_info = excluded.provider_info,
             series_media_id = excluded.series_media_id,
             series_id = excluded.series_id,
             external_ids = excluded.external_ids,
@@ -956,7 +957,7 @@ impl Media {
         .bind(&self.collection_kind)
         .bind(&self.collection_media_kind)
         .bind(self.collection_max_items)
-        .bind(&self.remote_data)
+        .bind(&self.provider_info)
         .bind(&self.series_media_id)
         .bind(&self.media_id)
         .bind(&self.external_ids)
@@ -1023,7 +1024,7 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
-            remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
+            provider_info, series_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, series_id, country, program_kind
             )",
         );
@@ -1050,7 +1051,7 @@ impl Media {
                     .push_bind(&item.promoted)
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
-                    .push_bind(&item.remote_data)
+                    .push_bind(&item.provider_info)
                     .push_bind(&item.series_media_id)
                     .push_bind(&item.external_ids)
                     .push_bind(&item.media_id)
@@ -1098,7 +1099,7 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
-                remote_data, series_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
+                provider_info, series_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id, country, program_kind
             )",
         );
@@ -1123,7 +1124,7 @@ impl Media {
                     .push_bind(&item.promoted)
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
-                    .push_bind(&item.remote_data)
+                    .push_bind(&item.provider_info)
                     .push_bind(&item.series_media_id)
                     .push_bind(&item.external_ids)
                     .push_bind(&item.media_id)
@@ -1168,7 +1169,7 @@ impl Media {
                 WHEN excluded.url IS NOT media.url THEN NULL
                 ELSE COALESCE(excluded.probe_data, media.probe_data)
             END,
-                remote_data = excluded.remote_data,
+                provider_info = excluded.provider_info,
                 series_media_id = excluded.series_media_id,
                 series_id = excluded.series_id,
                 updated_at = excluded.updated_at,
@@ -1626,7 +1627,7 @@ impl Media {
                             format!("COALESCE(released_at, digital_released_at) {}", dir)
                         }
                         api::ItemSortBy::CommunityRating => {
-                            format!("CAST(json_extract(remote_data, '$.rating') AS REAL) {}", dir)
+                            format!("CAST(json_extract(provider_info, '$.aio.rating') AS REAL) {}", dir)
                         }
                         api::ItemSortBy::IndexNumber => {
                             format!("COALESCE(idx, 999999) {}", dir)

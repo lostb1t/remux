@@ -339,10 +339,10 @@ async fn items_playbackinfo_inner(
         // otherwise drop the `X-Remux-BingeGroup` / `X-Gelato-BingeGroup`
         // hints we stashed alongside the source.
         source.remux = Some(api::MediaSourceRemuxInfo {
-            source: sm
-                .remote_data
-                .as_deref()
-                .and_then(|raw| serde_json::from_str(raw).ok()),
+            provider_info: sm
+                .provider_info
+                .clone()
+                .and_then(|info| serde_json::to_value(info.0).ok()),
         });
 
         if has_lyrics {

@@ -2,7 +2,7 @@ use crate::{AppContext, aio, db};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
-use super::StreamService;
+use super::{StreamProviderInfo, StreamService};
 
 /// Stream backend backed by AIO — handles movies, series and episodes.
 pub struct AioStreamService;
@@ -54,7 +54,7 @@ impl StreamService for AioStreamService {
                     kind: db::MediaKind::Source,
                     title: label,
                     url: Some(url),
-                    remote_data: serde_json::to_string(&s).ok(),
+                    provider_info: Some(sqlx::types::Json(StreamProviderInfo::Aio(s))),
                     ..Default::default()
                 })
             })

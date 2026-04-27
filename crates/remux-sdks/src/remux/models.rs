@@ -1416,7 +1416,7 @@ pub struct MediaSourceInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct MediaSourceRemuxInfo {
-    pub source: Option<serde_json::Value>,
+    pub provider_info: Option<serde_json::Value>,
 }
 
 impl MediaSourceInfo {

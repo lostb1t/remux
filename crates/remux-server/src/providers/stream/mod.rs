@@ -2,6 +2,7 @@ use crate::{AppContext, db};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 mod aio;
 mod squid;
@@ -9,6 +10,12 @@ mod ytdlp;
 pub use aio::AioStreamService;
 pub use squid::SquidStreamService;
 pub use ytdlp::YtDlpStreamService;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamProviderInfo {
+    Aio(crate::sdks::aio::Stream),
+}
 
 /// A pluggable stream-resolution backend.
 ///

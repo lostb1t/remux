@@ -136,10 +136,9 @@ impl From<db::Media> for api::MediaSourceInfo {
             .unwrap_or_else(|| source.title.clone());
 
         let remux = Some(api::MediaSourceRemuxInfo {
-            source: source
-                .remote_data
-                .as_deref()
-                .and_then(|raw| serde_json::from_str(raw).ok()),
+            provider_info: source
+                .provider_info
+                .and_then(|info| serde_json::to_value(info.0).ok()),
         });
 
         api::MediaSourceInfo {
