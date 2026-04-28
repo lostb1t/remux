@@ -3,6 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use remux_sdks::remux::models::MediaSegments;
 use sqlx::SqlitePool;
+use std::time::Instant;
 
 mod introdb;
 mod probe;
@@ -19,6 +20,7 @@ pub trait SegmentProvider: Send + Sync {
 /// Fetch segments for `media` from all matching providers and return the merged set.
 /// Subsequent calls are cheap because providers use the global HTTP cache or read from DB.
 pub async fn fetch(media: &db::Media, db: &SqlitePool) -> MediaSegments {
+    let started_at = Instant::now();
     let providers: &[&dyn SegmentProvider] =
         &[&ProbeSegmentProvider, &IntroDbSegmentProvider];
     let mut merged = MediaSegments::default();
@@ -39,6 +41,11 @@ pub async fn fetch(media: &db::Media, db: &SqlitePool) -> MediaSegments {
             }
         }
     }
-    tracing::info!(item = %media.id, seg_count = merged.to_pairs().len(), "segments fetched");
+    tracing::info!(
+        item = %media.id,
+        seg_count = merged.to_pairs().len(),
+        elapsed = ?started_at.elapsed(),
+        "segments fetched"
+    );
     merged
 }

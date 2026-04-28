@@ -3,6 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 mod aio;
 mod squid;
@@ -80,6 +81,8 @@ impl StreamServiceManager {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<()> {
+        let started_at = Instant::now();
+
         if let Some(refreshed) = media.streams_refreshed_at {
             let age = Utc::now().naive_utc() - refreshed;
             if age.num_seconds() < STREAMS_TTL_SECS {
@@ -125,7 +128,12 @@ impl StreamServiceManager {
         .execute(&ctx.db)
         .await?;
 
-        tracing::debug!(id = %media.id, count = sources.len(), "streams refreshed");
+        tracing::info!(
+            id = %media.id,
+            count = sources.len(),
+            elapsed = ?started_at.elapsed(),
+            "streams refreshed"
+        );
         Ok(())
     }
 }

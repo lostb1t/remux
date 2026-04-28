@@ -3,6 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 use std::str::FromStr;
+use std::time::Instant;
 use uuid::Uuid;
 
 mod aio;
@@ -25,6 +26,7 @@ pub async fn fetch(media: &db::Media, db: &SqlitePool) -> Vec<sdks::aio::Subtitl
     if !matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
         return vec![];
     }
+    let started_at = Instant::now();
     let providers: &[&dyn SubtitleProvider] = &[&AioSubtitleProvider];
     let mut subs = vec![];
     for p in providers {
@@ -43,7 +45,12 @@ pub async fn fetch(media: &db::Media, db: &SqlitePool) -> Vec<sdks::aio::Subtitl
         }
     }
     if !subs.is_empty() {
-        tracing::info!(item = %media.id, count = subs.len(), "subtitles fetched");
+        tracing::info!(
+            item = %media.id,
+            count = subs.len(),
+            elapsed = ?started_at.elapsed(),
+            "subtitles fetched"
+        );
     }
     subs
 }
