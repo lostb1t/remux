@@ -406,6 +406,14 @@ fn build_genre_relations_tmdb(
 
 #[async_trait]
 impl MetaProvider for TmdbMetaProvider {
+    fn supported_kinds(&self) -> &'static [db::MediaKind] {
+        &[
+            db::MediaKind::Movie,
+            db::MediaKind::Series,
+            db::MediaKind::Episode,
+        ]
+    }
+
     async fn fetch(
         &self,
         media: &db::Media,
@@ -538,7 +546,6 @@ impl MetaProvider for TmdbMetaProvider {
                     return Ok(Some(MetaResult {
                         media: result_media,
                         relations,
-                        season_posters: std::collections::HashMap::new(),
                     }));
                 }
             }
@@ -636,20 +643,9 @@ impl MetaProvider for TmdbMetaProvider {
                         }
                     }
 
-                    let season_posters: std::collections::HashMap<i64, String> =
-                        tv_details
-                            .seasons
-                            .iter()
-                            .filter_map(|s| {
-                                let poster = tmdb_image(s.poster_path.as_deref())?;
-                                Some((s.season_number, poster))
-                            })
-                            .collect();
-
                     return Ok(Some(MetaResult {
                         media: result_media,
                         relations,
-                        season_posters,
                     }));
                 }
             }
@@ -817,7 +813,6 @@ impl MetaProvider for TmdbMetaProvider {
                     return Ok(Some(MetaResult {
                         media: result_media,
                         relations,
-                        season_posters: std::collections::HashMap::new(),
                     }));
                 }
             }
@@ -827,5 +822,58 @@ impl MetaProvider for TmdbMetaProvider {
         }
 
         Ok(None)
+    }
+
+    async fn refresh_tree_meta(
+        &self,
+        series: &db::Media,
+        children: &mut [db::Media],
+        ctx: &AppContext,
+    ) -> Result<()> {
+        if series.kind != db::MediaKind::Series
+            || !children.iter().any(|child| {
+                child.kind == db::MediaKind::Season && child.poster.is_none()
+            })
+        {
+            return Ok(());
+        }
+
+        let tmdb_id = match series.external_ids.tmdb {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+
+        let config = crate::db::Settings::get_config(&ctx.db).await?;
+        let api_key = config.get_tmdb_key().to_string();
+        if api_key.is_empty() {
+            return Ok(());
+        }
+
+        let client = sdks::RestClient::new("https://api.themoviedb.org/3/")?
+            .with_auth(sdks::BearerAuth { token: api_key });
+        let tv_details = client
+            .execute(
+                sdks::tmdb::SeriesEndpoint::new(tmdb_id)
+                    .with_cache(Duration::from_secs(3600)),
+            )
+            .await?;
+
+        for child in children.iter_mut() {
+            if child.kind != db::MediaKind::Season || child.poster.is_some() {
+                continue;
+            }
+
+            let Some(idx) = child.idx else {
+                continue;
+            };
+
+            child.poster = tv_details
+                .seasons
+                .iter()
+                .find(|season| season.season_number == idx)
+                .and_then(|season| tmdb_image(season.poster_path.as_deref()));
+        }
+
+        Ok(())
     }
 }

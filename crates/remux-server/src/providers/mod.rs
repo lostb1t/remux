@@ -1,7 +1,6 @@
 pub mod catalog;
 pub mod lyrics;
 pub mod meta;
-pub mod music;
 pub mod search;
 pub mod segment;
 pub mod stream;
@@ -19,7 +18,6 @@ pub(crate) fn ytdlp_extra_args() -> Vec<String> {
 pub use catalog::{CatalogInfo, CatalogProvider, CatalogProviderManager};
 pub use lyrics::{LyricProvider, LyricSearchRequest, LyricService};
 pub use meta::*;
-pub use music::{MusicMetaProvider, MusicMetaProviderService, MusicMetaResult};
 pub use search::{
     AioSearchService, SearchService, SearchServiceManager, YtDlpSearchService,
 };

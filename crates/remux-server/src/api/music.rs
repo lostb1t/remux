@@ -115,8 +115,8 @@ pub async fn insert_track(
     // Enrich with yt-dlp metadata (title, thumbnail, duration, description).
     if let Err(e) = state
         .ctx
-        .music_meta
-        .apply_meta(&mut media, &state.ctx, true)
+        .meta
+        .refresh_meta(&mut media, &state.ctx, true)
         .await
     {
         tracing::warn!(id = %media.id, error = %e, "yt-dlp metadata enrichment failed during track insert");

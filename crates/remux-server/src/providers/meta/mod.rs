@@ -3,15 +3,17 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 pub(crate) mod aio;
+mod deezer;
 mod tmdb;
-pub use aio::{AioMetaProvider, AioTreeSyncProvider};
+mod ytdlp;
+pub use aio::{AioHierarchySyncProvider, AioMetaProvider};
+pub use deezer::{DeezerHierarchySyncProvider, DeezerMusicMetaProvider};
 pub use tmdb::{TmdbMetaProvider, tmdb_remote_images};
+pub use ytdlp::YtDlpMusicMetaProvider;
 
 /// Flat relation entry returned by a provider.
 pub struct MetaRelation {
@@ -23,8 +25,6 @@ pub struct MetaRelation {
 pub struct MetaResult {
     pub media: db::Media,
     pub relations: Vec<MetaRelation>,
-    /// season_number → poster URL, populated by providers that have this data (e.g. TMDB).
-    pub season_posters: HashMap<i64, String>,
 }
 
 /// Enriches metadata fields on a single Media item.
@@ -38,34 +38,71 @@ pub trait MetaProvider: Send + Sync {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Option<MetaResult>>;
+
+    fn supported_kinds(&self) -> &'static [db::MediaKind];
+
+    fn supports(&self, kind: &db::MediaKind) -> bool {
+        self.supported_kinds().contains(kind)
+    }
+
+    fn can_refresh(&self, media: &db::Media) -> bool {
+        self.supports(&media.kind)
+    }
+
+    async fn refresh_tree_meta(
+        &self,
+        _series: &db::Media,
+        _children: &mut [db::Media],
+        _ctx: &AppContext,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
-/// Discovers the tree structure (seasons/episodes) for a series.
+/// Discovers hierarchy children under a root media item.
 #[async_trait]
-pub trait TreeSyncProvider: Send + Sync {
-    async fn get_seasons(
+pub trait HierarchySyncProvider: Send + Sync {
+    fn supported_root_kinds(&self) -> &'static [db::MediaKind];
+
+    fn supports_root(&self, kind: &db::MediaKind) -> bool {
+        self.supported_root_kinds().contains(kind)
+    }
+
+    async fn sync_children(
         &self,
-        series: &db::Media,
+        root: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>>;
-    async fn get_episodes(
+
+    async fn persist_children_metadata(
         &self,
-        season: &db::Media,
-        ctx: &AppContext,
-    ) -> Result<Vec<db::Media>>;
+        _root: &db::Media,
+        _children: &[db::Media],
+        _ctx: &AppContext,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Orchestrates metadata enrichment and tree syncing across multiple providers.
 pub struct MetaProviderService {
     meta_providers: Vec<Box<dyn MetaProvider>>,
-    tree_providers: Vec<Box<dyn TreeSyncProvider>>,
+    hierarchy_providers: Vec<Box<dyn HierarchySyncProvider>>,
 }
 
 impl Default for MetaProviderService {
     fn default() -> Self {
         Self {
-            meta_providers: vec![Box::new(AioMetaProvider), Box::new(TmdbMetaProvider)],
-            tree_providers: vec![Box::new(AioTreeSyncProvider)],
+            meta_providers: vec![
+                Box::new(AioMetaProvider),
+                Box::new(TmdbMetaProvider),
+                Box::new(DeezerMusicMetaProvider::default()),
+                Box::new(YtDlpMusicMetaProvider::default()),
+            ],
+            hierarchy_providers: vec![
+                Box::new(AioHierarchySyncProvider),
+                Box::new(DeezerHierarchySyncProvider::default()),
+            ],
         }
     }
 }
@@ -73,48 +110,44 @@ impl Default for MetaProviderService {
 impl MetaProviderService {
     pub fn new(
         meta_providers: Vec<Box<dyn MetaProvider>>,
-        tree_providers: Vec<Box<dyn TreeSyncProvider>>,
+        hierarchy_providers: Vec<Box<dyn HierarchySyncProvider>>,
     ) -> Self {
         Self {
             meta_providers,
-            tree_providers,
+            hierarchy_providers,
         }
     }
 
-    /// Enrich metadata on a single item using providers in order.
+    /// Refresh metadata on a single item using providers in order.
     /// Primary provider (index 0) replaces when force_refresh=true; all others only fill None fields.
-    pub async fn apply_meta(
+    pub async fn refresh_meta(
         &self,
         media: &mut db::Media,
         ctx: &AppContext,
         force_refresh: bool,
-    ) -> Result<HashMap<i64, String>> {
-        let mut season_posters: HashMap<i64, String> = HashMap::new();
-
-        // Only run providers for kinds that have metadata sources.
-        if !matches!(
-            media.kind,
-            db::MediaKind::Movie
-                | db::MediaKind::Series
-                | db::MediaKind::Season
-                | db::MediaKind::Episode
-        ) {
-            return Ok(season_posters);
+    ) -> Result<()> {
+        if !self
+            .meta_providers
+            .iter()
+            .any(|provider| provider.can_refresh(media))
+        {
+            return Ok(());
         }
 
-        for (i, provider) in self.meta_providers.iter().enumerate() {
-            // Primary provider respects force_refresh; subsequent providers are gap-fillers.
-            let replace = i == 0 && force_refresh;
+        let mut first_applicable = true;
+        for provider in &self.meta_providers {
+            if !provider.can_refresh(media) {
+                continue;
+            }
+
+            // Primary applicable provider respects force_refresh; subsequent providers are gap-fillers.
+            let replace = first_applicable && force_refresh;
+            first_applicable = false;
 
             match provider.fetch(media, ctx).await {
                 Ok(Some(result)) => {
                     merge_media(media, &result.media, replace);
                     apply_title_format(media);
-
-                    // Collect season posters — later providers fill gaps left by earlier ones.
-                    for (idx, url) in result.season_posters {
-                        season_posters.entry(idx).or_insert(url);
-                    }
 
                     if matches!(
                         media.kind,
@@ -150,111 +183,108 @@ impl MetaProviderService {
             }
         }
         media.refreshed_at = Some(Utc::now().naive_utc());
-        Ok(season_posters)
+        Ok(())
     }
 
-    /// Sync the tree for a series: discover new seasons and episodes.
-    /// Returns all child media (seasons + episodes) that should be upserted.
-    pub async fn sync_tree(
+    async fn refresh_tree_meta(
         &self,
-        series: &mut db::Media,
+        series: &db::Media,
+        children: &mut [db::Media],
+        ctx: &AppContext,
+    ) {
+        for provider in &self.meta_providers {
+            if !provider.supports(&series.kind) {
+                continue;
+            }
+            if let Err(e) = provider.refresh_tree_meta(series, children, ctx).await {
+                warn!(id = %series.id, error = %e, "failed to refresh tree metadata");
+            }
+        }
+    }
+
+    /// Sync the hierarchy under a root media item.
+    /// Returns all discovered child media that should be upserted.
+    pub async fn sync_hierarchy(
+        &self,
+        root: &mut db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        if series.kind != db::MediaKind::Series {
+        if !self
+            .hierarchy_providers
+            .iter()
+            .any(|provider| provider.supports_root(&root.kind))
+        {
             return Ok(vec![]);
         }
 
-        let mut children = vec![];
-        let existing_seasons = series.seasons(&ctx.db).await.unwrap_or_default();
-        let existing_season_idxs: Vec<i64> =
-            existing_seasons.iter().filter_map(|s| s.idx).collect();
+        for provider in &self.hierarchy_providers {
+            if !provider.supports_root(&root.kind) {
+                continue;
+            }
 
-        for tree_provider in &self.tree_providers {
-            let new_seasons = match tree_provider.get_seasons(series, ctx).await {
-                Ok(s) => s,
+            let mut children = match provider.sync_children(root, ctx).await {
+                Ok(children) => children,
                 Err(e) => {
-                    warn!(id = %series.id, error = %e, "failed to get seasons");
+                    warn!(id = %root.id, error = %e, "failed to sync hierarchy");
                     continue;
                 }
             };
-            let filtered_seasons: Vec<db::Media> = new_seasons
-                .into_iter()
-                .filter(|s| {
-                    s.idx
-                        .map(|idx| !existing_season_idxs.contains(&idx))
-                        .unwrap_or(false)
-                })
-                .collect();
-
-            let all_seasons: Vec<db::Media> = existing_seasons
-                .iter()
-                .cloned()
-                .chain(filtered_seasons.into_iter())
-                .collect();
-
-            for season in all_seasons {
-                children.push(season.clone());
-
-                match tree_provider.get_episodes(&season, ctx).await {
-                    Ok(eps) => {
-                        children.extend(eps);
-                    }
-                    Err(e) => {
-                        warn!(id = %season.id, error = %e, "failed to get episodes");
-                    }
-                }
-            }
 
             // Use first tree provider that returns data
             if !children.is_empty() {
-                // If we have children (episodes), also build and save their relations (cast/crew)
-                if let Ok(aio) = crate::aio::AioService::from_settings(&ctx.db).await {
-                    let media_type = sdks::aio::MediaType::Series; // series.kind to aio
-                    if let Some(media_id) = &series.media_id {
-                        if let Ok(series_meta) =
-                            aio.get_meta(media_type, media_id.clone()).await
-                        {
-                            if let Some(ref episodes) = series_meta.videos {
-                                let mut all_relations = Vec::new();
-                                for media in &children {
-                                    if media.kind == db::MediaKind::Episode {
-                                        if let Some(ep_id) = &media.media_id {
-                                            if let Some(meta_ep) = episodes.iter().find(
-                                                |e: &&sdks::aio::Episode| {
-                                                    &e.id == ep_id
-                                                },
-                                            ) {
-                                                let rels = aio::build_episode_relations(
-                                                    media, meta_ep,
-                                                );
-                                                all_relations.extend(rels);
-                                            }
-                                        }
-                                    }
-                                }
-                                if !all_relations.is_empty() {
-                                    let persons: Vec<db::Media> = all_relations
-                                        .iter()
-                                        .map(|r| r.media.clone())
-                                        .collect();
-                                    db::Media::upsert(&ctx.db, &persons).await?;
-                                    let relations: Vec<db::MediaRelation> =
-                                        all_relations
-                                            .iter()
-                                            .map(|r| r.relation.clone())
-                                            .collect();
-                                    db::MediaRelation::upsert(&ctx.db, &relations)
-                                        .await?;
-                                }
-                            }
-                        }
-                    }
+                self.refresh_tree_meta(root, &mut children, ctx).await;
+
+                if let Err(e) = provider
+                    .persist_children_metadata(root, &children, ctx)
+                    .await
+                {
+                    warn!(id = %root.id, error = %e, "failed to persist hierarchy metadata");
                 }
-                break;
+
+                return Ok(children);
             }
         }
 
-        Ok(children)
+        Ok(vec![])
+    }
+
+    async fn process_item(
+        &self,
+        mut media: db::Media,
+        ctx: &AppContext,
+        force_refresh: bool,
+    ) -> Vec<db::Media> {
+        let mut batch = vec![];
+        debug!(id = %media.id, title = %media.title, "processing");
+
+        match self.refresh_meta(&mut media, ctx, force_refresh).await {
+            Ok(()) => {}
+            Err(e) => {
+                warn!(id = %media.id, title = %media.title, error = %e, "failed to refresh metadata, skipping");
+                batch.push(media);
+                return batch;
+            }
+        };
+
+        if self
+            .hierarchy_providers
+            .iter()
+            .any(|provider| provider.supports_root(&media.kind))
+        {
+            batch.push(media.clone());
+            match self.sync_hierarchy(&mut media, ctx).await {
+                Ok(children) => {
+                    batch.extend(children);
+                }
+                Err(e) => {
+                    warn!(id = %media.id, title = %media.title, error = %e, "failed to sync hierarchy, skipping");
+                }
+            }
+        } else {
+            batch.push(media);
+        }
+
+        batch
     }
 
     /// Process a batch of media: enrich metadata and sync trees for series.
@@ -267,50 +297,8 @@ impl MetaProviderService {
         force_refresh: bool,
         save: bool,
     ) -> Result<Vec<db::Media>> {
-        let counter = AtomicUsize::new(0);
-
         let results: Vec<Vec<db::Media>> = stream::iter(media)
-            .map(|mut m| {
-                let counter = &counter;
-                async move {
-                    let mut batch = vec![];
-                        debug!(id = %m.id, title = %m.title, "processing");
-                    let season_posters = match self.apply_meta(&mut m, ctx, force_refresh).await {
-                        Ok(sp) => sp,
-                        Err(e) => {
-                            warn!(id = %m.id, title = %m.title, error = %e, "failed to apply metadata, skipping");
-                            batch.push(m);
-                            return batch;
-                        }
-                    };
-
-                    if m.kind == db::MediaKind::Series {
-                        batch.push(m.clone());
-                        match self.sync_tree(&mut m, ctx).await {
-                            Ok(mut children) => {
-                                let _ = counter.fetch_add(1, Ordering::Relaxed) + 1;
-                                for child in children.iter_mut() {
-                                    if child.kind == db::MediaKind::Season && child.poster.is_none() {
-                                        if let Some(idx) = child.idx {
-                                            if let Some(url) = season_posters.get(&idx) {
-                                                child.poster = Some(url.clone());
-                                            }
-                                        }
-                                    }
-                                }
-                                batch.extend(children);
-                            }
-                            Err(e) => {
-                                warn!(id = %m.id, title = %m.title, error = %e, "failed to sync tree, skipping");
-                            }
-                        }
-                    } else {
-                        batch.push(m);
-                    }
-
-                    batch
-                }
-            })
+            .map(|media| self.process_item(media, ctx, force_refresh))
             .buffer_unordered(10)
             .collect()
             .await;
@@ -318,7 +306,6 @@ impl MetaProviderService {
         let batch: Vec<db::Media> = results.into_iter().flatten().collect();
 
         if save && !batch.is_empty() {
-            //info!("Seasons length: {:?}", batch.len());
             db::Media::upsert(&ctx.db, &batch).await?;
         }
 

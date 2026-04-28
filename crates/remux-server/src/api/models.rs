@@ -3,6 +3,7 @@ pub use remux_sdks::remux::models::*;
 use crate::db;
 use crate::utils;
 use anyhow::Result;
+use chrono::Datelike;
 
 pub fn inject_lyric_stream(source: &mut MediaSourceInfo) {
     let next_idx = source
@@ -252,6 +253,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             .map(|k| matches!(k, db::ProgramKind::Sports)),
         is_place_holder: media.sources.as_ref().map(|sources| sources.is_empty()),
         premiere_date: media.released_at.clone().map(|d| d.and_utc()),
+        production_year: media.released_at.map(|d| d.year() as i64),
         digital_release_date: media.digital_released_at.map(|d| d.and_utc()),
         community_rating: media.rating_audience.clone(),
         critic_rating: media.rating_critic.clone(),

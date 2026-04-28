@@ -5,12 +5,21 @@ use chrono::Utc;
 use tracing::warn;
 use uuid::Uuid;
 
-use super::{MetaProvider, MetaRelation, MetaResult, TreeSyncProvider};
+use super::{HierarchySyncProvider, MetaProvider, MetaRelation, MetaResult};
 
 pub struct AioMetaProvider;
 
 #[async_trait]
 impl MetaProvider for AioMetaProvider {
+    fn supported_kinds(&self) -> &'static [db::MediaKind] {
+        &[
+            db::MediaKind::Movie,
+            db::MediaKind::Series,
+            db::MediaKind::Season,
+            db::MediaKind::Episode,
+        ]
+    }
+
     async fn fetch(
         &self,
         media: &db::Media,
@@ -40,7 +49,7 @@ impl MetaProvider for AioMetaProvider {
         if meta.imdb_id.is_none() {
             meta.imdb_id = db::ExternalIds::from_aio_id(&meta.id)
                 .imdb
-                .or_else(|| Some(imdb_id));
+                .or_else(|| Some(imdb_id.clone()));
         }
 
         let meta_raw = meta.clone();
@@ -97,7 +106,6 @@ impl MetaProvider for AioMetaProvider {
             Ok(Some(MetaResult {
                 media: found_media,
                 relations,
-                season_posters: std::collections::HashMap::new(),
             }))
         } else {
             Ok(None)
@@ -105,82 +113,58 @@ impl MetaProvider for AioMetaProvider {
     }
 }
 
-pub struct AioTreeSyncProvider;
+pub struct AioHierarchySyncProvider;
 
 #[async_trait]
-impl TreeSyncProvider for AioTreeSyncProvider {
-    async fn get_seasons(
+impl HierarchySyncProvider for AioHierarchySyncProvider {
+    fn supported_root_kinds(&self) -> &'static [db::MediaKind] {
+        &[db::MediaKind::Series]
+    }
+
+    async fn sync_children(
         &self,
-        series: &db::Media,
+        root: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let imdb_id = match series.external_ids.imdb.clone() {
+        if root.kind != db::MediaKind::Series {
+            return Ok(vec![]);
+        }
+
+        let imdb_id = match root.external_ids.imdb.clone() {
             Some(id) => id,
             None => return Ok(vec![]),
         };
 
         let mut meta = crate::aio::AioService::from_settings(&ctx.db)
             .await?
-            .get_meta(db::media_kind_to_aio(&series.kind), imdb_id.clone())
+            .get_meta(db::media_kind_to_aio(&root.kind), imdb_id.clone())
             .await?;
 
         if meta.imdb_id.is_none() {
             meta.imdb_id = db::ExternalIds::from_aio_id(&meta.id)
                 .imdb
-                .or_else(|| Some(imdb_id));
+                .or_else(|| Some(imdb_id.clone()));
         }
 
         let meta_clone = meta.clone();
         let medias: Vec<db::Media> = db::aio_meta_to_medias(meta)?;
-        let mut seasons = medias
+        let mut children = medias
             .into_iter()
             .filter_map(|mut x| {
                 if x.kind == db::MediaKind::Season {
-                    x.parent_id = Some(series.id);
-                    x.series_id = Some(series.id);
+                    x.parent_id = Some(root.id);
+                    x.series_id = Some(root.id);
                     x.poster = x.idx.and_then(|idx| meta_clone.get_season_poster(idx));
                     x.title = format!("Season {}", x.idx.unwrap_or(1));
                     x.refreshed_at = Some(Utc::now().naive_utc());
                     Some(x)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        db::Media::enrich_parents(&ctx.db, &mut seasons).await;
-
-        Ok(seasons)
-    }
-
-    async fn get_episodes(
-        &self,
-        season: &db::Media,
-        ctx: &AppContext,
-    ) -> Result<Vec<db::Media>> {
-        let imdb_id = match season.series_media_id.clone() {
-            Some(id) => id,
-            None => return Ok(vec![]),
-        };
-
-        let mut meta = crate::aio::AioService::from_settings(&ctx.db)
-            .await?
-            .get_meta(db::media_kind_to_aio(&season.kind), imdb_id.clone())
-            .await?;
-
-        if meta.imdb_id.is_none() {
-            meta.imdb_id = db::ExternalIds::from_aio_id(&meta.id)
-                .imdb
-                .or_else(|| Some(imdb_id));
-        }
-
-        let medias: Vec<db::Media> = db::aio_meta_to_medias(meta)?;
-        let mut episodes = medias
-            .into_iter()
-            .filter_map(|mut x| {
-                if x.kind == db::MediaKind::Episode && x.parent_idx == season.idx {
-                    x.parent_id = Some(season.id);
-                    x.series_id = season.series_id;
+                } else if x.kind == db::MediaKind::Episode {
+                    if let Some(season_idx) = x.parent_idx {
+                        let season_media_id = format!("{}:{}", imdb_id, season_idx);
+                        x.parent_id =
+                            Some(crate::utils::get_stable_uuid(season_media_id));
+                    }
+                    x.series_id = Some(root.id);
                     if let Some(episode_num) = x.idx {
                         if let Some(season_num) = x.parent_idx {
                             x.title = format!(
@@ -199,9 +183,63 @@ impl TreeSyncProvider for AioTreeSyncProvider {
             })
             .collect();
 
-        db::Media::enrich_parents(&ctx.db, &mut episodes).await;
+        db::Media::enrich_parents(&ctx.db, &mut children).await;
 
-        Ok(episodes)
+        Ok(children)
+    }
+
+    async fn persist_children_metadata(
+        &self,
+        root: &db::Media,
+        children: &[db::Media],
+        ctx: &AppContext,
+    ) -> Result<()> {
+        if root.kind != db::MediaKind::Series {
+            return Ok(());
+        }
+
+        let Some(media_id) = &root.media_id else {
+            return Ok(());
+        };
+
+        let aio = crate::aio::AioService::from_settings(&ctx.db).await?;
+        let series_meta = aio
+            .get_meta(sdks::aio::MediaType::Series, media_id.clone())
+            .await?;
+
+        let Some(episodes) = series_meta.videos.as_ref() else {
+            return Ok(());
+        };
+
+        let mut all_relations = Vec::new();
+        for media in children {
+            if media.kind != db::MediaKind::Episode {
+                continue;
+            }
+
+            if let Some(ep_id) = &media.media_id {
+                if let Some(meta_ep) = episodes
+                    .iter()
+                    .find(|e: &&sdks::aio::Episode| &e.id == ep_id)
+                {
+                    let rels = build_episode_relations(media, meta_ep);
+                    all_relations.extend(rels);
+                }
+            }
+        }
+
+        if all_relations.is_empty() {
+            return Ok(());
+        }
+
+        let persons: Vec<db::Media> =
+            all_relations.iter().map(|r| r.media.clone()).collect();
+        db::Media::upsert(&ctx.db, &persons).await?;
+        let relations: Vec<db::MediaRelation> =
+            all_relations.iter().map(|r| r.relation.clone()).collect();
+        db::MediaRelation::upsert(&ctx.db, &relations).await?;
+
+        Ok(())
     }
 }
 

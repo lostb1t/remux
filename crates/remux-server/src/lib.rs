@@ -218,7 +218,7 @@ pub async fn init_app(
         web_paths,
         search: Arc::new(providers::SearchServiceManager::default()),
         streams: Arc::new(providers::StreamServiceManager::default()),
-        music_meta: Arc::new(providers::MusicMetaProviderService::default()),
+        meta: Arc::new(providers::MetaProviderService::default()),
         lyrics: Arc::new(providers::LyricService::default()),
         catalogs: Arc::new(providers::CatalogProviderManager::default()),
     };
@@ -305,7 +305,7 @@ pub struct AppContext {
     pub web_paths: Option<FilesystemPaths>,
     pub search: Arc<providers::SearchServiceManager>,
     pub streams: Arc<providers::StreamServiceManager>,
-    pub music_meta: Arc<providers::MusicMetaProviderService>,
+    pub meta: Arc<providers::MetaProviderService>,
     pub lyrics: Arc<providers::LyricService>,
     pub catalogs: Arc<providers::CatalogProviderManager>,
 }

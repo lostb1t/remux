@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use tokio::process::Command;
 
-use super::{MusicMetaProvider, MusicMetaResult};
+use crate::providers::{MetaProvider, MetaResult};
 
 /// Minimal yt-dlp video JSON fields needed for metadata enrichment.
 #[derive(Debug, Deserialize)]
@@ -61,12 +61,20 @@ impl Default for YtDlpMusicMetaProvider {
 }
 
 #[async_trait]
-impl MusicMetaProvider for YtDlpMusicMetaProvider {
+impl MetaProvider for YtDlpMusicMetaProvider {
+    fn supported_kinds(&self) -> &'static [db::MediaKind] {
+        &[db::MediaKind::Track]
+    }
+
+    fn can_refresh(&self, media: &db::Media) -> bool {
+        media.kind == db::MediaKind::Track && media.url.is_some()
+    }
+
     async fn fetch(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
-    ) -> Result<Option<MusicMetaResult>> {
+    ) -> Result<Option<MetaResult>> {
         if media.kind != db::MediaKind::Track {
             return Ok(None);
         }
@@ -129,6 +137,9 @@ impl MusicMetaProvider for YtDlpMusicMetaProvider {
             ..Default::default()
         };
 
-        Ok(Some(MusicMetaResult { media: enriched }))
+        Ok(Some(MetaResult {
+            media: enriched,
+            relations: vec![],
+        }))
     }
 }
