@@ -1,6 +1,7 @@
 use crate::{AppContext, aio, db};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use tracing::instrument;
 
 use super::{StreamProviderInfo, StreamService};
 
@@ -17,6 +18,7 @@ impl StreamService for AioStreamService {
         ]
     }
 
+    #[instrument(skip(self, media, ctx), fields(media_id = %media.id, media_kind = ?media.kind, media_title = %media.title))]
     async fn get_streams(
         &self,
         media: &db::Media,

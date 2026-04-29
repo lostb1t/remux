@@ -1,4 +1,4 @@
-use crate::{AppContext, db, sdks, utils};
+use crate::{AppContext, common, db, sdks};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -162,7 +162,7 @@ impl HierarchySyncProvider for AioHierarchySyncProvider {
                     if let Some(season_idx) = x.parent_idx {
                         let season_media_id = format!("{}:{}", imdb_id, season_idx);
                         x.parent_id =
-                            Some(crate::utils::get_stable_uuid(season_media_id));
+                            Some(crate::common::get_stable_uuid(season_media_id));
                     }
                     x.series_id = Some(root.id);
                     if let Some(episode_num) = x.idx {
@@ -254,7 +254,7 @@ pub(crate) fn build_relations(
     if let Some(genres) = meta.genre.as_ref().or(meta.genres.as_ref()) {
         for genre_name in genres {
             let genre_id =
-                utils::get_stable_uuid(format!("genre:{}", genre_name.to_lowercase()));
+                common::get_stable_uuid(format!("genre:{}", genre_name.to_lowercase()));
             relations.push(MetaRelation {
                 media: db::Media {
                     id: genre_id,
@@ -344,7 +344,7 @@ fn build_person_relations(
                     if name.is_empty() {
                         continue;
                     }
-                    let person_id = utils::get_stable_uuid(format!(
+                    let person_id = common::get_stable_uuid(format!(
                         "person:{}",
                         name.to_lowercase()
                     ));
@@ -378,7 +378,7 @@ fn build_person_relations(
     // Cast (actors from top-level)
     for (i, name) in split_names(cast_names).into_iter().enumerate() {
         let person_id =
-            utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
         relations.push(MetaRelation {
             media: db::Media {
                 id: person_id,
@@ -400,7 +400,7 @@ fn build_person_relations(
     // Directors
     for (i, name) in split_names(directors).into_iter().enumerate() {
         let person_id =
-            utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
         relations.push(MetaRelation {
             media: db::Media {
                 id: person_id,
@@ -424,7 +424,7 @@ fn build_person_relations(
     // Writers
     for (i, name) in split_names(writers).into_iter().enumerate() {
         let person_id =
-            utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
         relations.push(MetaRelation {
             media: db::Media {
                 id: person_id,

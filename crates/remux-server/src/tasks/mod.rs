@@ -16,6 +16,7 @@ use remux_sdks::remux::models::TaskTriggerInfoType;
 
 mod anfiteatro_update;
 mod catalog_import;
+mod catalog_import_shared;
 mod catalog_item_import;
 mod iptv_refresh;
 mod jellyfin_import;

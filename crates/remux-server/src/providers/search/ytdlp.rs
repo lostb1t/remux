@@ -126,7 +126,7 @@ impl SearchService for YtDlpSearchService {
                     }
                 });
                 db::Media {
-                    id: crate::utils::get_stable_uuid(format!("ytdlp:{}", entry.id)),
+                    id: crate::common::get_stable_uuid(format!("ytdlp:{}", entry.id)),
                     title: entry.title,
                     kind: db::MediaKind::Track,
                     media_id: Some(entry.id.clone()),
@@ -267,7 +267,7 @@ impl SearchService for YtDlpAlbumSearchService {
                     playlist.entries.first().and_then(|e| e.thumbnail.clone())
                 });
                 db::Media {
-                    id: crate::utils::get_stable_uuid(format!(
+                    id: crate::common::get_stable_uuid(format!(
                         "ytdlp-album:{}",
                         playlist.id
                     )),

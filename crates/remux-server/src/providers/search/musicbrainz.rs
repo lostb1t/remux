@@ -99,7 +99,7 @@ impl SearchService for MusicBrainzAlbumSearchService {
                     rg.id
                 ));
                 db::Media {
-                    id: crate::utils::get_stable_uuid(format!("mb-album:{}", rg.id)),
+                    id: crate::common::get_stable_uuid(format!("mb-album:{}", rg.id)),
                     title: rg.title,
                     kind: db::MediaKind::Album,
                     media_id: Some(rg.id),
@@ -217,7 +217,7 @@ impl SearchService for MusicBrainzTrackSearchService {
                     .first()
                     .and_then(|r| year_to_naive(r.date.as_deref()));
                 db::Media {
-                    id: crate::utils::get_stable_uuid(format!("mb-track:{}", rec.id)),
+                    id: crate::common::get_stable_uuid(format!("mb-track:{}", rec.id)),
                     title: rec.title,
                     kind: db::MediaKind::Track,
                     media_id: Some(rec.id),

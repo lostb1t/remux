@@ -414,7 +414,7 @@ impl Meta {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppExtras {
     #[serde(default, deserialize_with = "deserialize_option_cast_members")]

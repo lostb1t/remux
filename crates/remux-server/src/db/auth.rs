@@ -56,8 +56,8 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::common::get_uuid;
 use crate::db;
-use crate::utils::get_uuid;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "PascalCase")]

@@ -130,7 +130,7 @@ struct DeezerTrack {
 
 fn track_to_result(t: DeezerTrack) -> MusicSearchResult {
     let album = db::Media {
-        id: crate::utils::get_stable_uuid(format!("deezer-album:{}", t.album.id)),
+        id: crate::common::get_stable_uuid(format!("deezer-album:{}", t.album.id)),
         title: t.album.title.clone(),
         kind: db::MediaKind::Album,
         media_id: Some(t.album.id.to_string()),
@@ -139,7 +139,7 @@ fn track_to_result(t: DeezerTrack) -> MusicSearchResult {
         ..Default::default()
     };
     let artist = db::Media {
-        id: crate::utils::get_stable_uuid(format!("deezer-artist:{}", t.artist.id)),
+        id: crate::common::get_stable_uuid(format!("deezer-artist:{}", t.artist.id)),
         title: t.artist.name.clone(),
         kind: db::MediaKind::Artist,
         media_id: Some(t.artist.id.to_string()),
@@ -147,7 +147,7 @@ fn track_to_result(t: DeezerTrack) -> MusicSearchResult {
         ..Default::default()
     };
     let track = db::Media {
-        id: crate::utils::get_stable_uuid(format!("deezer-track:{}", t.id)),
+        id: crate::common::get_stable_uuid(format!("deezer-track:{}", t.id)),
         title: t.title,
         kind: db::MediaKind::Track,
         media_id: Some(t.id.to_string()),
@@ -184,7 +184,7 @@ async fn fetch_full_discography(
         .await?;
 
     let artist = db::Media {
-        id: crate::utils::get_stable_uuid(format!("deezer-artist:{}", artist_resp.id)),
+        id: crate::common::get_stable_uuid(format!("deezer-artist:{}", artist_resp.id)),
         title: artist_resp.name.clone(),
         kind: db::MediaKind::Artist,
         media_id: Some(artist_resp.id.to_string()),
@@ -283,7 +283,7 @@ async fn fetch_full_discography(
             }
 
             let album = db::Media {
-                id: crate::utils::get_stable_uuid(format!("deezer-album:{}", detail.id)),
+                id: crate::common::get_stable_uuid(format!("deezer-album:{}", detail.id)),
                 title: detail.title.clone(),
                 kind: db::MediaKind::Album,
                 media_id: Some(detail.id.to_string()),
@@ -302,7 +302,7 @@ async fn fetch_full_discography(
                     let track_artist =
                         if t.artist.name.is_empty() { artist_name.clone() } else { t.artist.name };
                     db::Media {
-                        id: crate::utils::get_stable_uuid(format!("deezer-track:{}", t.id)),
+                        id: crate::common::get_stable_uuid(format!("deezer-track:{}", t.id)),
                         title: t.title,
                         kind: db::MediaKind::Track,
                         media_id: Some(t.id.to_string()),
@@ -503,7 +503,7 @@ struct DeezerAlbum {
 
 fn album_to_result(a: DeezerAlbum) -> MusicSearchResult {
     let artist = db::Media {
-        id: crate::utils::get_stable_uuid(format!("deezer-artist:{}", a.artist.id)),
+        id: crate::common::get_stable_uuid(format!("deezer-artist:{}", a.artist.id)),
         title: a.artist.name.clone(),
         kind: db::MediaKind::Artist,
         media_id: Some(a.artist.id.to_string()),
@@ -511,7 +511,7 @@ fn album_to_result(a: DeezerAlbum) -> MusicSearchResult {
         ..Default::default()
     };
     let album = db::Media {
-        id: crate::utils::get_stable_uuid(format!("deezer-album:{}", a.id)),
+        id: crate::common::get_stable_uuid(format!("deezer-album:{}", a.id)),
         title: a.title,
         kind: db::MediaKind::Album,
         media_id: Some(a.id.to_string()),
@@ -679,7 +679,7 @@ impl SearchService for DeezerArtistSearchService {
             .into_iter()
             .map(|a| {
                 let artist = db::Media {
-                    id: crate::utils::get_stable_uuid(format!(
+                    id: crate::common::get_stable_uuid(format!(
                         "deezer-artist:{}",
                         a.id
                     )),

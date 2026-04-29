@@ -6,7 +6,7 @@ use tracing::warn;
 
 use crate::api;
 use crate::sdks::CachedEndpoint;
-use crate::{AppContext, db, sdks, utils};
+use crate::{AppContext, common, db, sdks};
 
 use super::{MetaProvider, MetaResult};
 
@@ -317,7 +317,7 @@ fn build_person_relations_tmdb(
     for (i, member) in credits.cast.iter().enumerate() {
         let name = &member.name;
         let person_id =
-            utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
         relations.push(super::MetaRelation {
             media: db::Media {
                 id: person_id,
@@ -352,7 +352,7 @@ fn build_person_relations_tmdb(
         if let Some(role) = role {
             let name = &member.name;
             let person_id =
-                utils::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+                common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
             relations.push(super::MetaRelation {
                 media: db::Media {
                     id: person_id,
@@ -385,7 +385,7 @@ fn build_genre_relations_tmdb(
         .map(|genre| {
             let name = &genre.name;
             let genre_id =
-                utils::get_stable_uuid(format!("genre:{}", name.to_lowercase()));
+                common::get_stable_uuid(format!("genre:{}", name.to_lowercase()));
             super::MetaRelation {
                 media: db::Media {
                     id: genre_id,
@@ -616,7 +616,7 @@ impl MetaProvider for TmdbMetaProvider {
                     if let Some(creators) = &tv_details.created_by {
                         for (i, creator) in creators.iter().enumerate() {
                             let name = &creator.name;
-                            let person_id = crate::utils::get_stable_uuid(format!(
+                            let person_id = crate::common::get_stable_uuid(format!(
                                 "person:{}",
                                 name.to_lowercase()
                             ));
@@ -744,7 +744,7 @@ impl MetaProvider for TmdbMetaProvider {
                     if let Some(guest_stars) = &ep_details.guest_stars {
                         for (i, member) in guest_stars.iter().enumerate() {
                             let name = &member.name;
-                            let person_id = utils::get_stable_uuid(format!(
+                            let person_id = common::get_stable_uuid(format!(
                                 "person:{}",
                                 name.to_lowercase()
                             ));

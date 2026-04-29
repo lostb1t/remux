@@ -372,7 +372,7 @@ impl DeezerHierarchySyncProvider {
                     track.artist.name
                 };
                 db::Media {
-                    id: crate::utils::get_stable_uuid(format!(
+                    id: crate::common::get_stable_uuid(format!(
                         "deezer-track:{}",
                         track.id
                     )),
@@ -464,7 +464,7 @@ impl DeezerHierarchySyncProvider {
                 }
 
                 let album_media = db::Media {
-                    id: crate::utils::get_stable_uuid(format!(
+                    id: crate::common::get_stable_uuid(format!(
                         "deezer-album:{}",
                         detail.id
                     )),

@@ -69,6 +69,7 @@ pub mod sdks {
 }
 mod aio;
 pub mod api;
+mod common;
 pub mod db;
 #[cfg(feature = "desktop")]
 pub mod embedded_static;
@@ -79,7 +80,6 @@ mod providers;
 pub mod tasks;
 mod torrent;
 pub mod transcode;
-mod utils;
 mod web_client;
 mod web_patches;
 mod web_transform;
@@ -187,7 +187,7 @@ pub async fn init_app(
     info!("running database migrations…");
     db::migrate(&conn).await?;
     info!("migrations complete");
-    crate::utils::init_server_id(&conn).await?;
+    crate::common::init_server_id(&conn).await?;
     db::ensure_collection_folder(&conn).await?;
 
     let saved_config = db::Settings::get_config(&conn).await?;

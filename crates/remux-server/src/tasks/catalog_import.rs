@@ -1,13 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::stream::StreamExt;
-use itertools::Itertools;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
+use super::catalog_import_shared::import_catalog_items;
 use super::{ProgressReporter, Task, TaskService};
-use crate::{AppContext, db};
+use crate::{AppContext, aio, db};
 
 pub struct CatalogImportTask;
 
@@ -117,11 +116,15 @@ impl Task for CatalogImportTask {
             enabled_catalogs.len()
         );
 
-        let global_max = crate::db::Settings::get_config(&ctx.db)
+        let global_max = db::Settings::get_config(&ctx.db)
             .await
             .ok()
             .and_then(|c| c.catalog_max_items)
             .unwrap_or(250) as usize;
+
+        let tmdb_client = crate::common::tmdb_client(&ctx.db).await;
+
+        let aio_svc = aio::AioService::from_settings(&ctx.db).await.ok();
 
         for (i, catalog) in enabled_catalogs.iter().enumerate() {
             progress.set(i as f64 / enabled_catalogs.len().max(1) as f64 * 100.0);
@@ -153,75 +156,25 @@ impl Task for CatalogImportTask {
 
             info!(catalog = media_id, max, "importing catalog items");
 
-            let catalog_id = catalog.id;
-            let mut meta_stream = match provider
-                .stream_items(provider_catalog_id, &ctx)
-                .await
-            {
-                Ok(s) => s.chunks(500),
+            let stream = match provider.stream_items(provider_catalog_id, &ctx).await {
+                Ok(s) => s,
                 Err(e) => {
                     error!(catalog = media_id, error = %e, "failed to open catalog stream");
                     continue;
                 }
             };
 
-            let mut count = 0usize;
-            while let Some(mut metas) = meta_stream.next().await {
-                let remaining = max.saturating_sub(count);
-                if remaining == 0 {
-                    break;
-                }
-                metas = metas.into_iter().take(remaining).collect();
-
-                let items: Vec<db::Media> = metas
-                    .into_iter()
-                    .unique_by(|meta| meta.id.clone())
-                    .flat_map(|meta| match db::aio_meta_to_medias(meta) {
-                        Ok(mut items) => {
-                            if let Some(top) = items.first_mut() {
-                                top.parent_id = None;
-                            }
-                            items.into_iter()
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "failed to convert metadata, skipping");
-                            Vec::<db::Media>::new().into_iter()
-                        }
-                    })
-                    .collect();
-
-                if items.is_empty() {
-                    break;
-                }
-
-                if let Err(e) = db::Media::upsert(&ctx.db, &items).await {
-                    error!(catalog = media_id, error = %e, "failed to import chunk");
-                    continue;
-                }
-
-                let relations: Vec<db::MediaRelation> = items
-                    .iter()
-                    .filter(|m| m.parent_id.is_none())
-                    .map(|m| db::MediaRelation {
-                        left_media_id: m.id,
-                        right_media_id: catalog_id,
-                        role: Some(db::RelationRole::Catalog),
-                        ..Default::default()
-                    })
-                    .collect();
-
-                if !relations.is_empty() {
-                    if let Err(e) = db::MediaRelation::upsert(&ctx.db, &relations).await
-                    {
-                        error!(catalog = media_id, error = %e, "failed to upsert catalog relations");
-                    }
-                }
-
-                count += items.iter().filter(|m| m.parent_id.is_none()).count();
-                if count >= max {
-                    break;
-                }
-            }
+            let count = import_catalog_items(
+                &ctx.db,
+                catalog.id,
+                media_id,
+                max,
+                stream,
+                aio_svc.as_ref(),
+                tmdb_client.as_ref(),
+                &progress,
+            )
+            .await?;
 
             info!(catalog = media_id, count, "import complete");
         }

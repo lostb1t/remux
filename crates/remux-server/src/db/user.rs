@@ -1,7 +1,7 @@
 use super::{FilterResult, QueryBuilderExt};
 use crate::api::{ScrollDirection, SortOrder};
+use crate::common::get_uuid;
 use crate::sdks;
-use crate::utils::get_uuid;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;

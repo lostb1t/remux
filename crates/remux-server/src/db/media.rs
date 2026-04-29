@@ -2,11 +2,11 @@ use super::{FilterResult, QueryBuilderExt};
 use crate::aio;
 use crate::api;
 use crate::api::MediaSourceInfo;
+use crate::common::IntoVec;
+use crate::common::get_uuid;
+use crate::common::server_id;
 use crate::providers::stream::StreamProviderInfo;
 use crate::sdks;
-use crate::utils::IntoVec;
-use crate::utils::get_uuid;
-use crate::utils::server_id;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -2544,7 +2544,19 @@ impl TryFrom<sdks::aio::Meta> for Media {
                 }
             })
             .flatten()
-            .map(|dt| dt.naive_utc());
+            .map(|dt| dt.naive_utc())
+            // Series/seasons/episodes use their air date as the digital release date
+            // when TMDB release_dates are not available.
+            .or_else(|| {
+                if matches!(
+                    media_kind,
+                    MediaKind::Series | MediaKind::Season | MediaKind::Episode
+                ) {
+                    meta.released.map(|x| x.naive_utc())
+                } else {
+                    None
+                }
+            });
 
         let status = meta.status.as_ref().map(|s| match s {
             sdks::aio::Status::Continuing
@@ -2607,7 +2619,7 @@ impl TryFrom<sdks::aio::Meta> for Media {
             }),
 
             //tmdb_id: Some(imdb_id.clone()),
-            id: crate::utils::get_stable_uuid(meta.id.clone()),
+            id: crate::common::get_stable_uuid(meta.id.clone()),
             ..Default::default()
         };
 
@@ -2626,7 +2638,7 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
     let imdb_id = meta.imdb_id.clone().context("imdb_id is missing")?;
 
     let mut media: Media = meta.clone().try_into()?;
-    media.id = crate::utils::get_stable_uuid(imdb_id.clone());
+    media.id = crate::common::get_stable_uuid(imdb_id.clone());
 
     let mut media_instances = Vec::new();
     media_instances.push(media.clone());
@@ -2650,7 +2662,7 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
                 let season_media_id = format!("{}:{}", imdb_id, season_idx);
 
                 let mut season = Media {
-                    id: crate::utils::get_stable_uuid(season_media_id.clone()),
+                    id: crate::common::get_stable_uuid(season_media_id.clone()),
                     title: format!("Season {}", season_idx),
                     kind: MediaKind::Season,
                     idx: Some(season_idx),
@@ -2677,7 +2689,7 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
                 for ep in episodes {
                     let mut episode: Media = ep.clone().try_into()?;
 
-                    episode.id = crate::utils::get_stable_uuid(ep.id.clone());
+                    episode.id = crate::common::get_stable_uuid(ep.id.clone());
                     episode.idx = ep.episode;
                     episode.media_id = Some(ep.id.clone());
                     episode.series_media_id = media.media_id.clone();

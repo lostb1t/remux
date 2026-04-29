@@ -1,7 +1,7 @@
 pub use remux_sdks::remux::models::*;
 
+use crate::common;
 use crate::db;
-use crate::utils;
 use anyhow::Result;
 use chrono::Datelike;
 
@@ -127,7 +127,7 @@ pub fn db_user_to_dto(user: db::User) -> UserDto {
     default_if_empty!(authentication_provider_id);
     default_if_empty!(password_reset_provider_id);
     UserDto {
-        server_id: utils::server_id(),
+        server_id: common::server_id(),
         name: user.username,
         id: user.id,
         configuration: Some(config),
@@ -166,8 +166,8 @@ pub fn db_state_to_dto(
 }
 
 pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
-    use crate::utils::IntoVec;
-    use crate::utils::ToRunTimeTicks;
+    use crate::common::IntoVec;
+    use crate::common::ToRunTimeTicks;
 
     let type_ = match media.kind.clone() {
         db::MediaKind::Movie => MediaType::Movie,
@@ -188,7 +188,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     let mut item = BaseItemDto {
         id: media.id.clone(),
         etag: Some(media.id),
-        server_id: utils::server_id(),
+        server_id: common::server_id(),
         name: Some(media.title.clone()),
         original_title: Some(media.title.clone()),
         overview: media.description.clone(),
@@ -318,7 +318,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         }),
         run_time_ticks: media
             .runtime
-            .map(|r| r.to_ticks(utils::TickUnit::Seconds).unwrap()),
+            .map(|r| r.to_ticks(common::TickUnit::Seconds).unwrap()),
         genres: media.relations.as_ref().map(|rels| {
             rels.iter()
                 .filter(|(_, m)| m.kind == db::MediaKind::Genre)

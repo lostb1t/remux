@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{AppContext, db, sdks, utils};
+use crate::{AppContext, common, db, sdks};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -41,7 +41,7 @@ impl SearchService for TmdbPersonSearchService {
             .take(limit)
             .map(|p| {
                 let media_id = format!("person:{}", p.name.to_lowercase());
-                let id = utils::get_stable_uuid(media_id.clone());
+                let id = common::get_stable_uuid(media_id.clone());
                 let poster = p
                     .profile_path
                     .as_deref()

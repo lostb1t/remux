@@ -396,7 +396,7 @@ pub async fn livetv_add_tuner_host(
         .id
         .as_deref()
         .and_then(|s| Uuid::parse_str(s).ok())
-        .unwrap_or_else(crate::utils::get_uuid);
+        .unwrap_or_else(crate::common::get_uuid);
 
     // For Xtream updates, preserve existing password if new one is blank.
     let password = if source_type == IptvSourceType::Xtream {
@@ -521,7 +521,7 @@ pub async fn remux_save_epg_source(
         .id
         .as_deref()
         .and_then(|s| Uuid::parse_str(s).ok())
-        .unwrap_or_else(crate::utils::get_uuid);
+        .unwrap_or_else(crate::common::get_uuid);
 
     let source = db::EpgSource {
         id,

@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::api;
+use crate::common::{self, get_uuid, server_id};
 use crate::db::{self, auth};
-use crate::utils::{self, get_uuid, server_id};
 use anyhow;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 

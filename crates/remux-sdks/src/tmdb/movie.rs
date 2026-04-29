@@ -45,6 +45,9 @@ pub struct MovieReleaseCountry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MovieReleaseDate {
     pub certification: Option<String>,
+    pub release_date: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "type", default)]
+    pub release_type: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

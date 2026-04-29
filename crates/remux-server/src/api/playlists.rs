@@ -10,9 +10,9 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::api;
+use crate::common::get_uuid;
 use crate::db;
 use crate::db::auth;
-use crate::utils::get_uuid;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 
 #[derive(Deserialize)]

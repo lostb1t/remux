@@ -26,13 +26,13 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::api;
 use crate::api::MediaSourceInfoExt;
+use crate::common;
 use crate::db;
 use crate::db::auth;
 use crate::playback_session::{PlaybackSession, PlaybackSessionManager};
 use crate::sdks;
 use crate::torrent;
 use crate::transcode::session::{TranscodeSession, TranscodeState};
-use crate::utils;
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
 fn remap_internal_aio_url(raw_url: &str, aio_url: Option<&str>) -> String {
@@ -206,7 +206,7 @@ async fn items_playbackinfo_inner(
         (a, b) => a.or(b),
     };
 
-    let play_session_id = utils::get_uuid().as_simple().to_string();
+    let play_session_id = common::get_uuid().as_simple().to_string();
 
     struct SourceWithUrl {
         sm: db::Media,
@@ -910,7 +910,7 @@ pub async fn report_playback_start(
     let play_session_id = data
         .play_session_id
         .clone()
-        .unwrap_or_else(|| utils::get_uuid().as_simple().to_string());
+        .unwrap_or_else(|| common::get_uuid().as_simple().to_string());
 
     let item_id = data.item_id.unwrap_or_default();
 
@@ -1988,7 +1988,7 @@ pub async fn get_sessions(
             supports_media_control,
             supports_remote_control,
             is_active: true,
-            server_id: crate::utils::server_id(),
+            server_id: crate::common::server_id(),
             ..Default::default()
         });
     }
@@ -2041,7 +2041,7 @@ pub async fn master_hls_video(
 
     let play_session_id = q
         .play_session_id
-        .unwrap_or_else(|| utils::get_uuid().as_simple().to_string());
+        .unwrap_or_else(|| common::get_uuid().as_simple().to_string());
 
     tracing::debug!("Using play session ID: {}", play_session_id);
 
@@ -2658,7 +2658,7 @@ pub async fn audio_universal(
 
     let play_session_id = q
         .play_session_id
-        .unwrap_or_else(|| utils::get_uuid().as_simple().to_string());
+        .unwrap_or_else(|| common::get_uuid().as_simple().to_string());
 
     let transcoding_url = format!(
         "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=copy&AudioCodec=aac&ApiKey={}",

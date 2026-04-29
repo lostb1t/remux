@@ -101,7 +101,7 @@ pub async fn insert_track(
         media_id.clone()
     };
 
-    let stable_id = crate::utils::get_stable_uuid(format!("ytdlp:{}", video_id));
+    let stable_id = crate::common::get_stable_uuid(format!("ytdlp:{}", video_id));
 
     let mut media = db::Media {
         id: stable_id,

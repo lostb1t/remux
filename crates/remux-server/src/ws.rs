@@ -8,9 +8,9 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::api;
+use crate::common::get_uuid;
 use crate::db;
 use crate::db::auth::AuthSession;
-use crate::utils::get_uuid;
 
 // ---------------------------------------------------------------------------
 // Message type constants
@@ -292,7 +292,7 @@ async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
                 playlist_item_id: session.playlist_item_id.clone(),
                 transcoding_info,
                 is_active: true,
-                server_id: crate::utils::server_id(),
+                server_id: crate::common::server_id(),
                 ..Default::default()
             }
         })
