@@ -35,10 +35,11 @@ use crate::torrent;
 use crate::transcode::session::{TranscodeSession, TranscodeState};
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
-fn remap_internal_aio_url(raw_url: &str, aio_url: Option<&str>) -> String {
-    // Some manifests expose `aiostreams` as an internal hostname that is not
-    // resolvable from the Remux process/network namespace. Remap that host to
-    // the configured AIO origin while preserving path/query.
+/// Some Stremio addons expose `aiostreams` as an internal hostname not
+/// resolvable from the Remux process. If the user has at least one
+/// `kind=stremio` addon configured, rewrite that hostname to the addon's
+/// origin. Returns the URL unchanged when no rewrite applies.
+async fn remap_internal_aio_url(state: &AppState, raw_url: &str) -> String {
     let Ok(mut parsed) = Url::parse(raw_url) else {
         return raw_url.to_string();
     };
@@ -50,21 +51,34 @@ fn remap_internal_aio_url(raw_url: &str, aio_url: Option<&str>) -> String {
         return raw_url.to_string();
     }
 
-    let Some(aio_url) = aio_url else {
+    let stremio_url = state
+        .ctx
+        .addons
+        .list()
+        .await
+        .into_iter()
+        .find(|a| a.row().kind == "stremio")
+        .and_then(|a| {
+            a.row()
+                .config
+                .get("manifest_url")
+                .and_then(|v| v.as_str().map(str::to_string))
+        });
+    let Some(stremio_url) = stremio_url else {
         return raw_url.to_string();
     };
-    let Ok(aio_parsed) = Url::parse(aio_url) else {
+    let Ok(addon_parsed) = Url::parse(&stremio_url) else {
         return raw_url.to_string();
     };
-    let Some(aio_host) = aio_parsed.host_str() else {
+    let Some(addon_host) = addon_parsed.host_str() else {
         return raw_url.to_string();
     };
 
-    let _ = parsed.set_scheme(aio_parsed.scheme());
-    if parsed.set_host(Some(aio_host)).is_err() {
+    let _ = parsed.set_scheme(addon_parsed.scheme());
+    if parsed.set_host(Some(addon_host)).is_err() {
         return raw_url.to_string();
     }
-    if parsed.set_port(aio_parsed.port()).is_err() {
+    if parsed.set_port(addon_parsed.port()).is_err() {
         return raw_url.to_string();
     }
 
@@ -152,7 +166,7 @@ async fn items_playbackinfo_inner(
     };
     let is_track = track_item.is_some();
     if let Some(ref track) = track_item {
-        if let Err(e) = state.ctx.streams.refresh_sources(track, &state.ctx).await {
+        if let Err(e) = state.ctx.addons.refresh_sources(track, &state.ctx).await {
             tracing::warn!(error = %e, id = %track.id, "failed to refresh track sources");
         }
     }
@@ -212,17 +226,13 @@ async fn items_playbackinfo_inner(
         sm: db::Media,
         resolved_url: Option<String>,
     }
-    let aio_url = crate::db::Settings::get_config(&state.ctx.db)
-        .await
-        .ok()
-        .and_then(|c| c.aio_url);
     let mut sources_with_urls: Vec<SourceWithUrl> =
         Vec::with_capacity(source_medias.len());
     for sm in source_medias {
-        let resolved_url = sm
-            .url
-            .as_deref()
-            .map(|u| remap_internal_aio_url(u, aio_url.as_ref().map(AsRef::as_ref)));
+        let resolved_url = match sm.url.as_deref() {
+            Some(u) => Some(remap_internal_aio_url(&state, u).await),
+            None => None,
+        };
         sources_with_urls.push(SourceWithUrl { sm, resolved_url });
     }
 
@@ -398,7 +408,7 @@ async fn items_playbackinfo_inner(
         let needs_transcoding =
             transcode_required && query.enable_transcoding.unwrap_or(true);
 
-        tracing::info!(
+        tracing::debug!(
             source_id = %sm.id,
             transcode_reasons = ?transcode_reasons,
             "playback decision"
@@ -575,13 +585,14 @@ async fn items_playbackinfo_inner(
             stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
         }
 
+        source.transcoding_reasons = transcode_reasons;
         media_sources.push(source);
     }
 
     // Inject external subtitles from AIO (cache-backed)
     if let Some(ref sm) = subtitle_media {
         inject_external_subtitles(
-            &state.ctx.db,
+            &state.ctx,
             sm,
             &mut media_sources,
             id,
@@ -621,7 +632,23 @@ async fn items_playbackinfo_inner(
         ..Default::default()
     };
 
-    //trace!(?info, "items_playbackinfo_result");
+    let item_title = subtitle_media
+        .as_ref()
+        .map(|m| m.title.as_str())
+        .unwrap_or_default();
+    let sources_summary: Vec<String> = info
+        .media_sources
+        .iter()
+        .map(|s| format!("{:?}", s.transcoding_reasons))
+        .collect();
+    tracing::info!(
+        item_id = %id,
+        title = %item_title,
+        user = %session.user.username,
+        sources = ?sources_summary,
+        "playback info"
+    );
+    trace!(?info, "items_playbackinfo_result");
     Ok(Json(info))
 }
 
@@ -723,8 +750,7 @@ async fn videos_stream_inner(
     {
         // For tracks, refresh CDN URLs if stale before loading sources.
         if media.kind == db::MediaKind::Track {
-            if let Err(e) = state.ctx.streams.refresh_sources(&media, &state.ctx).await
-            {
+            if let Err(e) = state.ctx.addons.refresh_sources(&media, &state.ctx).await {
                 tracing::warn!(error = %e, id = %media.id, "failed to refresh track sources");
             }
         }
@@ -747,11 +773,7 @@ async fn videos_stream_inner(
         .clone()
         .context_not_found("no url", "media source has no URL")?;
 
-    let aio_url = crate::db::Settings::get_config(&state.ctx.db)
-        .await
-        .ok()
-        .and_then(|c| c.aio_url);
-    let url = remap_internal_aio_url(&raw_url, aio_url.as_ref().map(AsRef::as_ref));
+    let url = remap_internal_aio_url(&state, &raw_url).await;
 
     // Direct play: proxy the original stream with range support.
     // Real Jellyfin always proxies the raw file bytes for Static=true, regardless
@@ -964,7 +986,7 @@ pub async fn report_playback_start(
     let log_session_id = play_session_id
         .trim_start_matches("audio-")
         .trim_start_matches("video-");
-    info!(
+    debug!(
         play_session_id = log_session_id,
         %item_id,
         title = %media_title,
@@ -1700,7 +1722,7 @@ pub async fn report_playback_stopped(
             }
         }
 
-        info!(play_session_id = psid, "Playback stopped");
+        debug!(play_session_id = psid, "Playback stopped");
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -2097,7 +2119,7 @@ pub async fn master_hls_video(
         let raw_input_url = if resolved_media.kind == db::MediaKind::Track {
             let streams = state
                 .ctx
-                .streams
+                .addons
                 .get_streams(&resolved_media, &state.ctx)
                 .await
                 .map_err(|e| {
@@ -2113,12 +2135,7 @@ pub async fn master_hls_video(
                 .context_not_found("no url", "media source has no URL")?
         };
 
-        let aio_url = crate::db::Settings::get_config(&state.ctx.db)
-            .await
-            .ok()
-            .and_then(|c| c.aio_url);
-        let input_url =
-            remap_internal_aio_url(&raw_input_url, aio_url.as_ref().map(AsRef::as_ref));
+        let input_url = remap_internal_aio_url(&state, &raw_input_url).await;
 
         let output_dir =
             std::path::PathBuf::from("transcode_sessions").join(&play_session_id);
@@ -2787,11 +2804,7 @@ pub async fn subtitles_stream(
         .url
         .clone()
         .context_not_found("no url", "media source has no URL")?;
-    let aio_url = crate::db::Settings::get_config(&state.ctx.db)
-        .await
-        .ok()
-        .and_then(|c| c.aio_url);
-    let url = remap_internal_aio_url(&raw_url, aio_url.as_ref().map(AsRef::as_ref));
+    let url = remap_internal_aio_url(&state, &raw_url).await;
 
     let output_format = format.to_ascii_lowercase();
     let (ffmpeg_format, content_type) = match output_format.as_str() {
@@ -2907,22 +2920,137 @@ fn srt_to_vtt(input: &str) -> String {
     out
 }
 
+pub(crate) fn lang_to_two_letter(lang: &str) -> Option<String> {
+    use std::str::FromStr;
+    let lang = lang.trim().to_lowercase();
+    if lang.is_empty() {
+        return None;
+    }
+    if lang.len() == 2 {
+        return Some(lang);
+    }
+    isolang::Language::from_639_3(&lang)
+        .or_else(|| isolang::Language::from_str(&lang).ok())
+        .and_then(|l| l.to_639_1())
+        .map(|s| s.to_string())
+}
+
+fn score_sub_url(
+    sub_url: &str,
+    source_name: &Option<String>,
+    source_path: &Option<String>,
+) -> i32 {
+    fn tokens(s: &str) -> std::collections::HashSet<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|t| t.len() > 2)
+            .map(|t| t.to_lowercase())
+            .collect()
+    }
+    let sub_file = sub_url.rsplit('/').next().unwrap_or(sub_url);
+    let sub_tok = tokens(sub_file);
+    let mut src_tok = tokens(source_name.as_deref().unwrap_or(""));
+    src_tok.extend(tokens(source_path.as_deref().unwrap_or("")));
+    sub_tok.intersection(&src_tok).count() as i32
+}
+
 /// Inject external subtitles into a list of `MediaSourceInfo` entries.
 pub(super) async fn inject_external_subtitles(
-    db: &sqlx::SqlitePool,
+    ctx: &crate::AppContext,
     subtitle_media: &crate::db::Media,
     media_sources: &mut Vec<api::MediaSourceInfo>,
     item_id: Uuid,
     api_key: &str,
 ) {
-    crate::providers::subtitle::inject_into_sources(
-        subtitle_media,
-        db,
-        media_sources,
-        item_id,
-        api_key,
-    )
-    .await;
+    let subs = ctx.addons.fetch_subtitles(subtitle_media, &ctx.db).await;
+    if subs.is_empty() {
+        return;
+    }
+
+    let sub_langs: Vec<String> = crate::db::Settings::get_config(&ctx.db)
+        .await
+        .ok()
+        .and_then(|c| c.subtitle_languages)
+        .unwrap_or_default();
+
+    let filtered: Vec<_> = if sub_langs.is_empty() {
+        subs
+    } else {
+        subs.into_iter()
+            .filter(|s| {
+                let two = s.lang.as_deref().and_then(lang_to_two_letter);
+                two.map_or(false, |two| {
+                    sub_langs.iter().any(|p| two.eq_ignore_ascii_case(p.trim()))
+                })
+            })
+            .collect()
+    };
+
+    if filtered.is_empty() {
+        return;
+    }
+
+    use crate::sdks;
+    for source in media_sources.iter_mut() {
+        let next_idx = source
+            .media_streams
+            .iter()
+            .map(|s| s.index)
+            .max()
+            .map_or(0, |m| m + 1);
+
+        let mut scored: Vec<_> = filtered
+            .iter()
+            .map(|s| (score_sub_url(&s.url, &source.name, &source.path), s))
+            .collect();
+        scored.sort_by(|(sa, a), (sb, b)| {
+            let rank = |s: &&sdks::stremio::Subtitle| {
+                let two = s.lang.as_deref().and_then(lang_to_two_letter);
+                sub_langs
+                    .iter()
+                    .position(|p| {
+                        two.as_deref()
+                            .map_or(false, |t| t.eq_ignore_ascii_case(p.trim()))
+                    })
+                    .unwrap_or(usize::MAX)
+            };
+            rank(a).cmp(&rank(b)).then(sb.cmp(sa))
+        });
+
+        let mut lang_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let scored: Vec<_> = scored
+            .into_iter()
+            .filter(|(_, s)| {
+                let key = s.lang.clone().unwrap_or_else(|| "und".to_string());
+                let count = lang_counts.entry(key).or_insert(0);
+                if *count < 2 {
+                    *count += 1;
+                    true
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        let wants_default =
+            !sub_langs.is_empty() && source.default_subtitle_stream_index.is_none();
+        for (i, (_, sub)) in scored.iter().enumerate() {
+            let mut stream =
+                crate::conversions::subtitle_to_media_stream((*sub).clone());
+            let idx = next_idx + i as i64;
+            stream.index = idx;
+            let encoded_url = urlencoding::encode(&sub.url);
+            stream.delivery_url = Some(format!(
+                "/Videos/{item_id}/{source_id}/Subtitles/{idx}/0/Stream.vtt?ApiKey={api_key}&SubtitleUrl={encoded_url}",
+                source_id = source.id,
+            ));
+            if wants_default && i == 0 {
+                stream.is_default = Some(true);
+                source.default_subtitle_stream_index = Some(next_idx);
+            }
+            source.media_streams.push(stream);
+        }
+    }
 }
 
 /// Apply per-user playback preferences to a list of `MediaSourceInfo` entries:
@@ -3035,15 +3163,13 @@ async fn apply_user_playback_prefs(
         // Only act if no subtitle default is already set
         if source.default_subtitle_stream_index.is_none() {
             if let Some(ref pref) = cfg.subtitle_language_preference {
-                let pref_two = crate::providers::subtitle::lang_to_two_letter(pref);
+                let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
                     if let Some(stream) = source.media_streams.iter_mut().find(|s| {
                         matches!(s.type_, Some(api::MediaStreamType::Subtitle))
                             && s.language
                                 .as_deref()
-                                .and_then(
-                                    crate::providers::subtitle::lang_to_two_letter,
-                                )
+                                .and_then(lang_to_two_letter)
                                 .as_deref()
                                 == Some(target.as_str())
                     }) {
@@ -3139,12 +3265,8 @@ fn apply_subtitle_mode(mode: &api::SubtitleMode, source: &mut api::MediaSourceIn
                     .find(|s| s.index == def_idx)
                     .and_then(|s| s.language.clone());
 
-                let audio_two = audio_lang
-                    .as_deref()
-                    .and_then(crate::providers::subtitle::lang_to_two_letter);
-                let sub_two = sub_lang
-                    .as_deref()
-                    .and_then(crate::providers::subtitle::lang_to_two_letter);
+                let audio_two = audio_lang.as_deref().and_then(lang_to_two_letter);
+                let sub_two = sub_lang.as_deref().and_then(lang_to_two_letter);
 
                 if audio_two.is_some() && audio_two == sub_two {
                     // Subtitle language matches audio — no need to display it

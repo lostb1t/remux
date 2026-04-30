@@ -38,7 +38,7 @@ async fn wait_for_persist(
                 .clone();
             let _guard = lock.lock().await;
             if db::Media::get_by_id(&ctx.db, &id).await?.is_none() {
-                ctx.search.persist(id, ctx).await.ok();
+                ctx.addons.persist_search_result(id, ctx).await.ok();
             }
             persist_locks().remove(&id);
             return Ok(true);
@@ -196,7 +196,7 @@ pub async fn get_items(
                 if wants_remote {
                     match state
                         .ctx
-                        .search
+                        .addons
                         .search(&kind, &s, item_limit, &state.ctx)
                         .await
                     {
@@ -263,7 +263,7 @@ pub async fn get_items(
                     if wants_remote {
                         match state
                             .ctx
-                            .search
+                            .addons
                             .search(&kind, &s, limit, &state.ctx)
                             .await
                         {
@@ -324,7 +324,7 @@ pub async fn get_items(
             if wants_people {
                 match state
                     .ctx
-                    .search
+                    .addons
                     .search(&db::MediaKind::Person, &s, limit.min(20), &state.ctx)
                     .await
                 {
@@ -695,7 +695,7 @@ pub async fn refresh_item(
         .context_not_found("Not Found", "Item not found")?;
 
     // If the requested item is a Source (stream), navigate to its parent.
-    if media.kind == db::MediaKind::Source {
+    if media.kind == db::MediaKind::Stream {
         let parent_id = media
             .parent_id
             .context_not_found("Not Found", "Source has no parent item")?;
@@ -714,20 +714,20 @@ pub async fn refresh_item(
 
         state
             .ctx
-            .streams
+            .addons
             .refresh_sources(&media, &state.ctx)
             .await
             .inspect_err(|e| error!("Could not refresh streams: {e:#}"));
 
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-            warm_providers_cache(&state.ctx.db, &media);
+            warm_providers_cache(&state.ctx, &media);
         }
     } else {
-        // Refresh metadata via the full provider pipeline.
-        let service = crate::providers::MetaProviderService::default();
         let force_refresh = q.replace_all_metadata;
-        service
-            .process(vec![media], &state.ctx, force_refresh, true)
+        state
+            .ctx
+            .addons
+            .process_meta_batch(vec![media], &state.ctx, force_refresh, true)
             .await?;
     }
 
@@ -851,26 +851,13 @@ pub async fn items_certifications(
     Ok(Json(values))
 }
 
-/// Trigger a full library refresh (re-imports all promoted catalogs)
+/// Trigger a full library refresh (re-imports all enabled catalogs)
 #[post("/library/refresh")]
 pub async fn library_refresh(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<StatusCode> {
-    let catalogs = db::Media::get_by_filter(
-        &state.ctx.db,
-        &db::MediaFilter {
-            kind: Some(vec![db::MediaKind::Catalog]),
-            promoted: Some(true),
-            ..Default::default()
-        },
-    )
-    .await?
-    .records;
-    for cat in catalogs {
-        let key = crate::tasks::CatalogItemImportTask::task_key(cat.id);
-        let _ = state.tasks.run_task(&key).await;
-    }
+    let _ = state.tasks.run_task("CatalogImport").await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -960,7 +947,7 @@ pub async fn items_remote_images(
 
     if provider.is_none() || provider == Some("TheMovieDb") {
         queried_providers.push("TheMovieDb".to_string());
-        match crate::providers::meta::tmdb_remote_images(&state.ctx, &media).await {
+        match crate::addons::tmdb::tmdb_remote_images(&state.ctx, &media).await {
             Ok(v) => images.extend(v),
             Err(e) => warn!(id = %id, error = %e, "tmdb remote images lookup failed"),
         }
@@ -1106,7 +1093,12 @@ pub async fn item(
             .next()
             {
                 Some(m) => m,
-                None => match state.ctx.search.persist(id, &state.ctx).await? {
+                None => match state
+                    .ctx
+                    .addons
+                    .persist_search_result(id, &state.ctx)
+                    .await?
+                {
                     Some(m) => {
                         persist_locks().remove(&id);
                         m
@@ -1134,9 +1126,10 @@ pub async fn item(
     tokio::join!(
         async {
             if need_refresh {
-                let service = crate::providers::MetaProviderService::default();
-                service
-                    .process(vec![media.clone()], &state.ctx, false, true)
+                state
+                    .ctx
+                    .addons
+                    .process_meta_batch(vec![media.clone()], &state.ctx, false, true)
                     .await
                     .log_err("failed to refresh metadata")
             } else {
@@ -1148,11 +1141,11 @@ pub async fn item(
                 if media.kind == db::MediaKind::Movie
                     || media.kind == db::MediaKind::Episode
                 {
-                    warm_providers_cache(&state.ctx.db, &media);
+                    warm_providers_cache(&state.ctx, &media);
                 }
                 state
                     .ctx
-                    .streams
+                    .addons
                     .refresh_sources(&media, &state.ctx)
                     .await
                     .log_err("failed to refresh sources");
@@ -1161,7 +1154,7 @@ pub async fn item(
         }
     );
 
-    if media.kind == db::MediaKind::Source {
+    if media.kind == db::MediaKind::Stream {
         media.sources = Some(vec![media.clone()]);
     } else if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
         media.streams(&state.ctx.db).await?;
@@ -1260,7 +1253,7 @@ pub async fn item(
         if let Some(ref mut sources) = base_item.media_sources {
             if !sources.is_empty() {
                 super::playback::inject_external_subtitles(
-                    &state.ctx.db,
+                    &state.ctx,
                     &media,
                     sources,
                     media.id,
@@ -1549,59 +1542,7 @@ pub async fn delete_virtual_folder(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[get("/aio/catalogs")]
-pub async fn aio_catalogs(
-    State(state): State<AppState>,
-    session: auth::AuthSession,
-) -> Result<impl IntoResponse> {
-    let aio = crate::aio::AioService::from_settings(&state.ctx.db)
-        .await
-        .context_bad_request("AIO not configured", "Complete the setup wizard first")?;
-
-    let manifest = aio.get_manifest().await?;
-
-    // Look up existing catalog media items to merge enabled/max_items
-    let db_catalogs = db::Media::get_by_filter(
-        &state.ctx.db,
-        &db::MediaFilter {
-            kind: Some(vec![db::MediaKind::Catalog]),
-            ..Default::default()
-        },
-    )
-    .await?
-    .records;
-
-    let catalogs: Vec<api::AioCatalogInfo> = manifest
-        .catalogs
-        .into_iter()
-        .filter(|c| !c.id.contains("search"))
-        .map(|c| {
-            let aio_id = format!("{}:{}", c.kind, c.id);
-            let namespaced_id = format!("aio:{}", aio_id);
-            let db_cat = db_catalogs
-                .iter()
-                .find(|d| d.media_id.as_deref() == Some(&namespaced_id));
-            api::AioCatalogInfo {
-                aio_id,
-                name: c.name,
-                enabled: Some(db_cat.map(|d| d.is_promoted()).unwrap_or(false)),
-                max_items: db_cat.and_then(|d| d.collection_max_items),
-                media_id: db_cat.map(|d| d.id.to_string()),
-            }
-        })
-        .collect();
-    Ok(Json(catalogs))
-}
-
-// Anfiteatro/Gelato compatibility aliases.
-#[get("/gelato/catalogs")]
-pub async fn gelato_catalogs(
-    State(state): State<AppState>,
-    session: auth::AuthSession,
-) -> Result<impl IntoResponse> {
-    aio_catalogs(State(state), session).await
-}
-
+// `/gelato/subtitles/{id}` is the Anfiteatro compatibility endpoint.
 #[get("/gelato/subtitles/{id}")]
 pub async fn gelato_subtitles(
     State(state): State<AppState>,
@@ -1611,20 +1552,24 @@ pub async fn gelato_subtitles(
     // Source entries can sit under an episode/movie; normalize to the parent
     // media item before resolving subtitles.
     let Some(mut media) = db::Media::get_by_id(&state.ctx.db, &id).await? else {
-        return Ok(Json(Vec::<sdks::aio::Subtitle>::new()));
+        return Ok(Json(Vec::<sdks::stremio::Subtitle>::new()));
     };
 
-    if media.kind == db::MediaKind::Source {
+    if media.kind == db::MediaKind::Stream {
         if let Some(parent) = media.parent(&state.ctx.db).await? {
             media = parent;
         }
     }
 
     if !matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-        return Ok(Json(Vec::<sdks::aio::Subtitle>::new()));
+        return Ok(Json(Vec::<sdks::stremio::Subtitle>::new()));
     }
 
-    let subtitles = crate::providers::subtitle::fetch(&media, &state.ctx.db).await;
+    let subtitles = state
+        .ctx
+        .addons
+        .fetch_subtitles(&media, &state.ctx.db)
+        .await;
     Ok(Json(subtitles))
 }
 
@@ -1789,97 +1734,15 @@ pub async fn patch_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct UpdateCatalogSettingsRequest {
-    enabled: bool,
-    max_items: Option<i64>,
-    /// Used to set the title when creating a new catalog media item
-    name: Option<String>,
-}
-
-#[post("/aio/catalogs/{aio_id}")]
-pub async fn update_catalog_settings(
-    State(state): State<AppState>,
-    session: auth::AdminSession,
-    Path(aio_id): Path<String>,
-    Json(payload): Json<UpdateCatalogSettingsRequest>,
-) -> Result<StatusCode> {
-    let promoted = payload.enabled;
-    let now = Utc::now().naive_utc();
-    let namespaced_id = format!("aio:{}", aio_id);
-
-    let existing = db::Media::get_by_filter(
-        &state.ctx.db,
-        &db::MediaFilter {
-            kind: Some(vec![db::MediaKind::Catalog]),
-            media_id: Some(namespaced_id.clone()),
-            ..Default::default()
-        },
-    )
-    .await?
-    .records
-    .into_iter()
-    .next();
-
-    let catalog_id;
-    if let Some(cat) = existing {
-        catalog_id = cat.id;
-        sqlx::query(
-            "UPDATE media SET promoted = $1, collection_max_items = $2, updated_at = $3 WHERE id = $4",
-        )
-        .bind(promoted)
-        .bind(payload.max_items)
-        .bind(now)
-        .bind(catalog_id)
-        .execute(&state.ctx.db)
-        .await?;
-    } else {
-        let title = payload
-            .name
-            .clone()
-            .unwrap_or_else(|| aio_id.clone())
-            .trim()
-            .to_string();
-        let mut media = db::Media {
-            kind: db::MediaKind::Catalog,
-            title,
-            media_id: Some(namespaced_id),
-            promoted,
-            collection_max_items: payload.max_items,
-            ..Default::default()
-        };
-        media.save(&state.ctx.db).await?;
-        catalog_id = media.id;
-    }
-
-    // Register or deregister the per-catalog import task.
-    use crate::tasks::CatalogItemImportTask;
-    let task_key = CatalogItemImportTask::task_key(catalog_id);
-    if payload.enabled {
-        let name = payload.name.unwrap_or_else(|| task_key.clone());
-        state
-            .tasks
-            .register_task(std::sync::Arc::new(CatalogItemImportTask::new(
-                catalog_id, &name,
-            )))
-            .await?;
-    } else {
-        state.tasks.deregister_task(&task_key).await?;
-    }
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
 /// Fire-and-forget: populate the 24-hour subtitle cache for a movie/episode so
 /// Fire-and-forget: warm all external provider caches for a movie/episode.
-/// Runs subtitles (AIO) and segment data (IntroDb) in parallel inside a single task.
-fn warm_providers_cache(db: &SqlitePool, media: &db::Media) {
+/// Runs subtitles (addons) and segment data (IntroDb) in parallel inside a single task.
+fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
     let media = media.clone();
-    let db = db.clone();
+    let ctx = ctx.clone();
     tokio::spawn(async move {
-        let _ = crate::providers::subtitle::fetch(&media, &db).await;
-        let _ = crate::providers::segment::fetch(&media, &db).await;
+        let _ = ctx.addons.fetch_subtitles(&media, &ctx.db).await;
+        let _ = ctx.addons.get_segments(&media, &ctx).await;
     });
 }
 
@@ -1941,7 +1804,7 @@ pub async fn media_segments(
             ..Default::default()
         });
 
-    let segs = crate::providers::segment::fetch(&media, &state.ctx.db).await;
+    let segs = state.ctx.addons.get_segments(&media, &state.ctx).await;
     let dtos = segments_to_dtos(id, id, &segs, filter_ref);
 
     let count = dtos.len();

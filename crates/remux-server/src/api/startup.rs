@@ -30,7 +30,6 @@ pub async fn get_startup_configuration(
         default_web_client: Some(crate::web_client::normalize_web_client(
             config.default_web_client,
         )),
-        aio_url: config.aio_url,
     }))
 }
 
@@ -45,7 +44,6 @@ pub async fn post_startup_configuration(
         preferred_metadata_language,
         metadata_country_code,
         default_web_client,
-        aio_url,
     } = body;
 
     let mut config = crate::db::Settings::get_config(&state.ctx.db).await?;
@@ -54,14 +52,6 @@ pub async fn post_startup_configuration(
         preferred_metadata_language.or(config.preferred_metadata_language);
     config.metadata_country_code =
         metadata_country_code.or(config.metadata_country_code);
-    if let Some(url) = aio_url {
-        crate::aio::AioService::from_url(url.as_ref())
-            .context_bad_request("Invalid AIO URL", "Could not build AIO client from the provided URL.")?
-            .get_manifest()
-            .await
-            .context_bad_request("Invalid AIO URL", "Could not fetch manifest from the provided AIO URL. Check the URL is correct and the service is reachable.")?;
-        config.aio_url = Some(url);
-    }
     config.default_web_client = Some(crate::web_client::normalize_web_client(
         default_web_client.or(config.default_web_client),
     ));

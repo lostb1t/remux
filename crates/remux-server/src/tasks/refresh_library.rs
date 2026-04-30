@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use super::{ProgressReporter, Task, TaskService};
-use crate::{AppContext, db, providers::MetaProviderService};
+use crate::{AppContext, db};
 
 pub struct RefreshLibraryTask;
 
@@ -25,7 +25,6 @@ impl Task for RefreshLibraryTask {
         _tasks: Arc<TaskService>,
         _progress: ProgressReporter,
     ) -> Result<()> {
-        let service = MetaProviderService::default();
         const CHUNK_SIZE: u32 = 100;
         let mut offset = 0u32;
         loop {
@@ -34,7 +33,9 @@ impl Task for RefreshLibraryTask {
                 break;
             }
             let fetched = batch.len() as u32;
-            service.process(batch, &ctx, false, true).await?;
+            ctx.addons
+                .process_meta_batch(batch, &ctx, false, true)
+                .await?;
             if fetched < CHUNK_SIZE {
                 break;
             }

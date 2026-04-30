@@ -62,13 +62,13 @@ pub async fn authenticated_server() -> (TestServer, AppContext, String) {
     (server, ctx, token)
 }
 
-/// Inserts a `MediaKind::Source` backed by a real public video so that
+/// Inserts a `MediaKind::Stream` backed by a real public video so that
 /// `media.probe()` succeeds in integration tests.
 pub async fn insert_test_source(ctx: &AppContext) -> db::Media {
     let now = Utc::now().naive_utc();
     let mut media = db::Media {
         title: "Test Source".to_string(),
-        kind: db::MediaKind::Source,
+        kind: db::MediaKind::Stream,
         url: Some(
             "https://test-videos.co.uk/vids/bigbuckbunny/mkv/1080/Big_Buck_Bunny_1080_10s_5MB.mkv"
                 .to_string(),

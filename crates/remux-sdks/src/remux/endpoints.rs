@@ -1,3 +1,7 @@
+use super::addons::{
+    AddonCatalogDto, AddonDto, AddonKindMetadata, CreateAddonRequest,
+    UpdateAddonCatalogRequest, UpdateAddonRequest,
+};
 use super::models::*;
 use super::{Body, Endpoint};
 use http::Method;
@@ -172,16 +176,6 @@ impl Endpoint for UpdateTaskTriggers {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct GetAioCatalogs;
-
-impl Endpoint for GetAioCatalogs {
-    type Output = Vec<AioCatalogInfo>;
-    fn path(&self) -> String {
-        "/aio/catalogs".into()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct GetAnfiteatroReleaseStatus;
 
 impl Endpoint for GetAnfiteatroReleaseStatus {
@@ -207,16 +201,91 @@ impl Endpoint for InstallLatestAnfiteatroRelease {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct UpdateCatalogSettings {
-    pub aio_id: String,
-    pub payload: UpdateCatalogSettingsPayload,
+// --- Stremio endpoints ---
+
+#[derive(Debug, Clone, Default)]
+pub struct GetStremioCatalogs;
+
+impl Endpoint for GetStremioCatalogs {
+    type Output = Vec<StremioManifestCatalogInfo>;
+    fn path(&self) -> String {
+        "/stremio/catalogs".into()
+    }
 }
 
-impl Endpoint for UpdateCatalogSettings {
+#[derive(Debug, Clone)]
+pub struct UpdateStremioCatalogSettings {
+    pub payload: UpdateStremioCatalogSettingsPayload,
+}
+
+impl Endpoint for UpdateStremioCatalogSettings {
     type Output = ();
     fn path(&self) -> String {
-        format!("/aio/catalogs/{}", self.aio_id)
+        "/stremio/catalogs".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+// --- Catalog playlist (remote import source) endpoints ---
+
+#[derive(Debug, Clone, Default)]
+pub struct GetCatalogPlaylists;
+
+impl Endpoint for GetCatalogPlaylists {
+    type Output = Vec<PlaylistInfo>;
+    fn path(&self) -> String {
+        "/catalog-playlists".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateCatalogPlaylist {
+    pub payload: CreatePlaylistPayload,
+}
+
+impl Endpoint for CreateCatalogPlaylist {
+    type Output = PlaylistInfo;
+    fn path(&self) -> String {
+        "/catalog-playlists".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteCatalogPlaylist {
+    pub id: String,
+}
+
+impl Endpoint for DeleteCatalogPlaylist {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/catalog-playlists/{}", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateCatalogPlaylistSettings {
+    pub id: String,
+    pub payload: UpdatePlaylistSettingsPayload,
+}
+
+impl Endpoint for UpdateCatalogPlaylistSettings {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/catalog-playlists/{}", self.id)
     }
     fn method(&self) -> Method {
         Method::POST
@@ -927,5 +996,112 @@ impl Endpoint for DeleteApiKey {
     }
     fn method(&self) -> Method {
         Method::DELETE
+    }
+}
+
+// --- Addons ---
+
+#[derive(Debug, Clone, Default)]
+pub struct ListAddonKinds;
+
+impl Endpoint for ListAddonKinds {
+    type Output = Vec<AddonKindMetadata>;
+    fn path(&self) -> String {
+        "/addon-kinds".into()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ListAddons;
+
+impl Endpoint for ListAddons {
+    type Output = Vec<AddonDto>;
+    fn path(&self) -> String {
+        "/addons".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateAddon {
+    pub payload: CreateAddonRequest,
+}
+
+impl Endpoint for CreateAddon {
+    type Output = AddonDto;
+    fn path(&self) -> String {
+        "/addons".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateAddon {
+    pub id: Uuid,
+    pub payload: UpdateAddonRequest,
+}
+
+impl Endpoint for UpdateAddon {
+    type Output = AddonDto;
+    fn path(&self) -> String {
+        format!("/addons/{}", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteAddon {
+    pub id: Uuid,
+}
+
+impl Endpoint for DeleteAddon {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/addons/{}", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+}
+
+/// Fetch catalogs for an addon, auto-registering any new ones in the DB.
+#[derive(Debug, Clone)]
+pub struct GetAddonCatalogs {
+    pub id: Uuid,
+}
+
+impl Endpoint for GetAddonCatalogs {
+    type Output = Vec<AddonCatalogDto>;
+    fn path(&self) -> String {
+        format!("/addons/{}/catalogs", self.id)
+    }
+}
+
+/// Batch-update enabled/max_items for an addon's catalogs.
+#[derive(Debug, Clone)]
+pub struct UpdateAddonCatalogs {
+    pub id: Uuid,
+    pub payload: Vec<UpdateAddonCatalogRequest>,
+}
+
+impl Endpoint for UpdateAddonCatalogs {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/addons/{}/catalogs", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
     }
 }

@@ -7,9 +7,9 @@ use remux_macros::get;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::addons::LyricSearchRequest;
 use crate::db;
 use crate::db::auth;
-use crate::providers::LyricSearchRequest;
 
 /// `GET /Audio/{item_id}/Lyrics` — fetch the best lyric match for a track.
 #[get("/audio/{item_id}/lyrics")]
@@ -27,7 +27,7 @@ pub async fn get_lyrics(
 
     let req = build_search_request(&state.ctx.db, &media).await;
 
-    let Some(lyrics) = state.ctx.lyrics.fetch(&req).await? else {
+    let Some(lyrics) = state.ctx.addons.lyric_fetch(&req).await? else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
 
@@ -49,7 +49,7 @@ pub async fn search_remote_lyrics(
     }
 
     let req = build_search_request(&state.ctx.db, &media).await;
-    let results = state.ctx.lyrics.search(&req).await?;
+    let results = state.ctx.addons.lyric_search(&req).await?;
 
     Ok(Json(results).into_response())
 }
@@ -61,7 +61,12 @@ pub async fn get_provider_lyrics(
     _session: auth::AuthSession,
     Path(lyric_id): Path<String>,
 ) -> Result<Response> {
-    let Some(lyrics) = state.ctx.lyrics.get_by_composite_id(&lyric_id).await? else {
+    let Some(lyrics) = state
+        .ctx
+        .addons
+        .lyric_get_by_composite_id(&lyric_id)
+        .await?
+    else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
     Ok(Json(lyrics).into_response())

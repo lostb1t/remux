@@ -171,11 +171,11 @@
   .static {
     position: static;
   }
-  .m-0 {
-    margin: calc(var(--spacing) * 0);
-  }
   .flex {
     display: flex;
+  }
+  .table {
+    display: table;
   }
   .min-w-0 {
     min-width: calc(var(--spacing) * 0);
@@ -191,9 +191,6 @@
   }
   .gap-2 {
     gap: calc(var(--spacing) * 2);
-  }
-  .gap-3 {
-    gap: calc(var(--spacing) * 3);
   }
   .border-b {
     border-bottom-style: var(--tw-border-style);

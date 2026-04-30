@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use super::{ProgressReporter, Task, TaskService};
-use crate::{AppContext, db, providers::MetaProviderService};
+use crate::{AppContext, db};
 
 pub struct SeriesSyncTask;
 
@@ -25,7 +25,6 @@ impl Task for SeriesSyncTask {
         _tasks: Arc<TaskService>,
         _progress: ProgressReporter,
     ) -> Result<()> {
-        let service = MetaProviderService::default();
         let media_list = db::Media::get_by_filter(
             &ctx.db,
             &db::MediaFilter {
@@ -36,7 +35,9 @@ impl Task for SeriesSyncTask {
         .await?
         .records;
 
-        service.process(media_list, &ctx, false, true).await?;
+        ctx.addons
+            .process_meta_batch(media_list, &ctx, false, true)
+            .await?;
 
         Ok(())
     }

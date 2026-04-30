@@ -1,11 +1,13 @@
-use crate::{AppContext, api, db};
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde::Deserialize;
 use sqlx::types::Json;
 
-use super::StreamService;
+use super::{
+    Addon, AddonKind, AddonKindMetadata, AddonKindRegistration, AddonResource, AddonRow,
+};
+use crate::{AppContext, api, db};
 
 const TIDAL_CLIENT: &str = "BiniLossless/v3.4";
 
@@ -32,15 +34,8 @@ const INSTANCES: &[&str] = &[
     "https://api.studentsneed.help",
 ];
 
-fn build_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent("remux-server/1.0")
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .expect("failed to build HTTP client")
-}
+// --- Deserialization types ---
 
-// Track manifest response — may or may not have a `data` wrapper
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum TrackOuter {
@@ -65,7 +60,6 @@ struct TrackInner {
     manifest_mime_type: String,
 }
 
-// Manifest JSON (after base64 decode) uses lowercase keys
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecodedManifest {
@@ -76,6 +70,8 @@ struct DecodedManifest {
     #[serde(default)]
     sample_rate: Option<i64>,
 }
+
+// --- Helpers ---
 
 fn normalize_codec(codec: &str) -> &str {
     if codec.starts_with("mp4a") {
@@ -99,34 +95,16 @@ fn mime_to_container(mime: &str) -> Option<String> {
     }
 }
 
-pub struct SquidStreamService {
-    client: reqwest::Client,
-}
-
-impl Default for SquidStreamService {
-    fn default() -> Self {
-        Self {
-            client: build_client(),
-        }
-    }
-}
-
-impl SquidStreamService {
-    fn get_instances(&self) -> Vec<String> {
-        INSTANCES.iter().map(|s| s.to_string()).collect()
-    }
-
-    fn build_query(media: &db::Media) -> String {
-        let artist = media
-            .description
-            .as_deref()
-            .and_then(|d| d.strip_prefix("by "))
-            .unwrap_or("");
-        if artist.is_empty() {
-            media.title.clone()
-        } else {
-            format!("{} {}", media.title, artist)
-        }
+fn build_query(media: &db::Media) -> String {
+    let artist = media
+        .description
+        .as_deref()
+        .and_then(|d| d.strip_prefix("by "))
+        .unwrap_or("");
+    if artist.is_empty() {
+        media.title.clone()
+    } else {
+        format!("{} {}", media.title, artist)
     }
 }
 
@@ -150,7 +128,6 @@ async fn try_instance(
     }
 
     let body: serde_json::Value = resp.json().await?;
-
     let track_id = body
         .pointer("/data/items/0/id")
         .or_else(|| body.pointer("/data/tracks/items/0/id"))
@@ -161,12 +138,12 @@ async fn try_instance(
     let track_id = match track_id {
         Some(id) => id,
         None => {
-            tracing::debug!(query, base, "squid/tidal: no tracks in search result");
+            tracing::debug!(query, base, "squid: no tracks in search result");
             return Ok(None);
         }
     };
 
-    tracing::debug!(track_id, "squid/tidal: fetching manifest");
+    tracing::debug!(track_id, "squid: fetching manifest");
 
     let manifest_url = format!(
         "{}/track/?id={}&quality=LOSSLESS",
@@ -184,7 +161,6 @@ async fn try_instance(
     }
 
     let track = resp.json::<TrackOuter>().await?.into_inner();
-
     let manifest_b64 = match track.manifest {
         Some(m) => m,
         None => return Ok(None),
@@ -193,7 +169,7 @@ async fn try_instance(
     if track.manifest_mime_type.contains("dash")
         || manifest_b64.trim_start().starts_with('<')
     {
-        tracing::debug!(track_id, "squid/tidal: DASH manifest, skipping");
+        tracing::debug!(track_id, "squid: DASH manifest, skipping");
         return Ok(None);
     }
 
@@ -219,15 +195,13 @@ async fn try_instance(
         .as_deref()
         .map(normalize_codec)
         .map(str::to_string);
-
-    let display_title = match (codec.as_deref(), Some(2i64)) {
-        (Some(c), Some(ch)) => format!("{} - {}ch", c.to_uppercase(), ch),
-        (Some(c), None) => c.to_uppercase(),
-        _ => label.to_string(),
+    let display_title = match codec.as_deref() {
+        Some(c) => format!("{} - 2ch", c.to_uppercase()),
+        None => label.to_string(),
     };
 
     Ok(Some(db::Media {
-        kind: db::MediaKind::Source,
+        kind: db::MediaKind::Stream,
         title: label.to_string(),
         url: Some(url),
         probe_data: Some(Json(api::MediaSourceInfo {
@@ -249,51 +223,96 @@ async fn try_instance(
     }))
 }
 
-#[async_trait]
-impl StreamService for SquidStreamService {
-    fn supported_kinds(&self) -> &[db::MediaKind] {
-        &[db::MediaKind::Track]
+// --- AddonKind ---
+
+pub struct SquidAddonKind;
+
+impl AddonKind for SquidAddonKind {
+    fn id(&self) -> &'static str {
+        "squid"
     }
 
-    async fn get_streams(
+    fn metadata(&self) -> AddonKindMetadata {
+        AddonKindMetadata {
+            id: "squid".to_string(),
+            display_name: "Squid (Tidal)".to_string(),
+            description: "Lossless music streams via community Tidal proxy instances."
+                .to_string(),
+            icon: None,
+            supported_resources: vec![AddonResource::Streams],
+            supported_types: vec!["track".to_string()],
+            options: vec![],
+        }
+    }
+
+    fn instantiate(&self, row: &AddonRow) -> Result<Box<dyn Addon>> {
+        Ok(Box::new(SquidAddon {
+            row: row.clone(),
+            client: reqwest::Client::builder()
+                .user_agent("remux-server/1.0")
+                .timeout(std::time::Duration::from_secs(8))
+                .build()?,
+        }))
+    }
+}
+
+inventory::submit! {
+    AddonKindRegistration(|| Box::new(SquidAddonKind))
+}
+
+// --- Addon instance ---
+
+pub struct SquidAddon {
+    row: AddonRow,
+    client: reqwest::Client,
+}
+
+#[async_trait]
+impl Addon for SquidAddon {
+    fn row(&self) -> &AddonRow {
+        &self.row
+    }
+
+    fn streams_supports(&self, media: &db::Media) -> bool {
+        media.kind == db::MediaKind::Track
+    }
+
+    async fn streams(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let query = Self::build_query(media);
-        tracing::debug!(query, title = %media.title, "squid/tidal stream lookup");
+        let query = build_query(media);
+        tracing::debug!(query, title = %media.title, "squid stream lookup");
 
-        let instances = self.get_instances();
-
-        // Race all instances in parallel — first successful result wins.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(db::Media, String)>(1);
-        let mut handles = Vec::with_capacity(instances.len());
+        let mut handles = Vec::with_capacity(INSTANCES.len());
 
-        for base in instances {
+        for base in INSTANCES {
             let tx = tx.clone();
             let query = query.clone();
             let client = self.client.clone();
             let parent = media.clone();
-            let handle = tokio::spawn(async move {
+            let base = base.to_string();
+            handles.push(tokio::spawn(async move {
                 match try_instance(&client, &base, &query, &parent).await {
                     Ok(Some(source)) => {
                         let _ = tx.send((source, base)).await;
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        tracing::debug!(base, error = %e, "squid/tidal: instance failed");
+                        tracing::debug!(base, error = %e, "squid: instance failed")
                     }
                 }
-            });
-            handles.push(handle);
+            }));
         }
         drop(tx);
 
         let result = if let Some((source, base)) = rx.recv().await {
-            tracing::debug!(query, base, label = %source.title, "squid/tidal: stream resolved");
+            tracing::debug!(query, base, label = %source.title, "squid: stream resolved");
             Ok(vec![source])
         } else {
-            tracing::warn!(query, "squid/tidal: all instances failed");
+            tracing::warn!(query, "squid: all instances failed");
             Ok(vec![])
         };
 

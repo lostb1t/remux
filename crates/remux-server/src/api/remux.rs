@@ -454,7 +454,7 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
     };
 
     // Accept both the parent (Movie/Episode) and the Source itself.
-    let mut parent = if media.kind == db::MediaKind::Source {
+    let mut parent = if media.kind == db::MediaKind::Stream {
         media.parent(&state.ctx.db).await?.unwrap_or(media)
     } else {
         media
@@ -515,22 +515,39 @@ pub async fn remux_meta(
     Path((kind, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse> {
     let media_type = match kind.as_str() {
-        "series" => remux_sdks::aio::MediaType::Series,
-        "movie" => remux_sdks::aio::MediaType::Movie,
-        _ => remux_sdks::aio::MediaType::Movie,
+        "series" => remux_sdks::stremio::MediaType::Series,
+        "movie" => remux_sdks::stremio::MediaType::Movie,
+        _ => remux_sdks::stremio::MediaType::Movie,
     };
 
-    let aio = match crate::aio::AioService::from_settings(&state.ctx.db).await {
-        Ok(a) => a,
-        Err(_) => {
+    let manifest_url = state
+        .ctx
+        .addons
+        .list()
+        .await
+        .into_iter()
+        .find(|a| a.row().kind == "stremio")
+        .and_then(|a| {
+            a.row()
+                .config
+                .get("manifest_url")
+                .and_then(|v| v.as_str().map(str::to_string))
+        });
+
+    let svc = match manifest_url
+        .as_deref()
+        .and_then(|u| crate::services::stremio::StremioService::from_url(u).ok())
+    {
+        Some(a) => a,
+        None => {
             return Ok(
                 (StatusCode::NOT_FOUND, Json(serde_json::Value::Null)).into_response()
             );
         }
     };
 
-    match aio.get_meta(media_type, id).await {
-        Ok(meta) => Ok(Json(meta).into_response()),
+    match svc.get_meta(media_type, id).await {
+        Ok(meta) => Ok(Json::<remux_sdks::stremio::Meta>(meta).into_response()),
         Err(_) => {
             Ok((StatusCode::NOT_FOUND, Json(serde_json::Value::Null)).into_response())
         }

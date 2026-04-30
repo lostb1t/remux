@@ -1,7 +1,9 @@
 use crate::{Auth, Body, ClientError, Endpoint, RestClient};
 use http::HeaderValue;
 
+pub mod addons;
 pub mod models;
+pub use addons::*;
 pub use models::*;
 pub mod endpoints;
 pub use endpoints::*;

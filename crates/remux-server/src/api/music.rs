@@ -44,7 +44,7 @@ pub async fn music_search(
 
     let results = state
         .ctx
-        .search
+        .addons
         .search(&db::MediaKind::Track, &term, limit, &state.ctx)
         .await?;
 
@@ -115,7 +115,7 @@ pub async fn insert_track(
     // Enrich with yt-dlp metadata (title, thumbnail, duration, description).
     if let Err(e) = state
         .ctx
-        .meta
+        .addons
         .refresh_meta(&mut media, &state.ctx, true)
         .await
     {

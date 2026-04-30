@@ -67,7 +67,7 @@ mod errors;
 pub mod sdks {
     pub use remux_sdks::*;
 }
-mod aio;
+mod addons;
 pub mod api;
 mod common;
 pub mod db;
@@ -76,7 +76,7 @@ pub mod embedded_static;
 mod iptv;
 pub mod localization;
 pub mod playback_session;
-mod providers;
+pub mod services;
 pub mod tasks;
 mod torrent;
 pub mod transcode;
@@ -216,11 +216,7 @@ pub async fn init_app(
         ws_tx,
         default_web_client,
         web_paths,
-        search: Arc::new(providers::SearchServiceManager::default()),
-        streams: Arc::new(providers::StreamServiceManager::default()),
-        meta: Arc::new(providers::MetaProviderService::default()),
-        lyrics: Arc::new(providers::LyricService::default()),
-        catalogs: Arc::new(providers::CatalogProviderManager::default()),
+        addons: addons::AddonRegistry::from_db(&conn).await?,
     };
 
     // Apply saved P2P speed limits on startup.
@@ -241,24 +237,6 @@ pub async fn init_app(
     );
 
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
-
-    // Register per-catalog import tasks for existing enabled catalogs.
-    let enabled_catalogs = db::Media::get_by_filter(
-        &conn,
-        &db::MediaFilter {
-            kind: Some(vec![db::MediaKind::Catalog]),
-            promoted: Some(true),
-            ..Default::default()
-        },
-    )
-    .await?;
-    for cat in enabled_catalogs.records {
-        task_service
-            .register_task(std::sync::Arc::new(tasks::CatalogItemImportTask::new(
-                cat.id, &cat.title,
-            )))
-            .await?;
-    }
 
     let _ = task_service.run_task("EnsureAnfiteatro").await;
     task_service.run_startup_tasks().await?;
@@ -303,11 +281,7 @@ pub struct AppContext {
     pub default_web_client: Arc<tokio::sync::RwLock<String>>,
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
-    pub search: Arc<providers::SearchServiceManager>,
-    pub streams: Arc<providers::StreamServiceManager>,
-    pub meta: Arc<providers::MetaProviderService>,
-    pub lyrics: Arc<providers::LyricService>,
-    pub catalogs: Arc<providers::CatalogProviderManager>,
+    pub addons: addons::AddonRegistry,
 }
 
 #[derive(Clone)]

@@ -96,7 +96,6 @@ pub fn db_media_kind_to_type(kind: db::MediaKind) -> MediaType {
         db::MediaKind::Track => MediaType::Audio,
         db::MediaKind::Album => MediaType::MusicAlbum,
         db::MediaKind::Artist => MediaType::MusicArtist,
-        db::MediaKind::Catalog => MediaType::Catalog,
         db::MediaKind::Playlist => MediaType::Playlist,
         _ => MediaType::Unknown,
     }

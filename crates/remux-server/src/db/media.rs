@@ -1,12 +1,11 @@
 use super::{FilterResult, QueryBuilderExt};
-use crate::aio;
 use crate::api;
 use crate::api::MediaSourceInfo;
 use crate::common::IntoVec;
 use crate::common::get_uuid;
 use crate::common::server_id;
-use crate::providers::stream::StreamProviderInfo;
 use crate::sdks;
+use crate::services::stremio as stremio_service;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -68,6 +67,24 @@ use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
 use uuid::{Uuid, uuid};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamProviderInfo {
+    Aio(crate::sdks::stremio::Stream),
+}
+
+/// A single enrichment relation returned by a metadata fetch.
+pub struct MetaRelation {
+    pub media: Media,
+    pub relation: MediaRelation,
+}
+
+/// Return type for addon metadata fetches.
+pub struct MetaResult {
+    pub media: Media,
+    pub relations: Vec<MetaRelation>,
+}
 
 #[derive(
     strum_macros::EnumString,
@@ -136,11 +153,9 @@ pub enum MediaKind {
     Studio,
     Genre,
     Collection,
-    // AIO import source catalog item
-    Catalog,
     // purely here for jf
     Folder,
-    Source,
+    Stream,
     TvChannel,
     TvProgram,
     // Music
@@ -157,11 +172,11 @@ impl TryFrom<String> for MediaKind {
     }
 }
 
-impl From<sdks::aio::MediaType> for MediaKind {
-    fn from(media_type: sdks::aio::MediaType) -> Self {
+impl From<sdks::stremio::MediaType> for MediaKind {
+    fn from(media_type: sdks::stremio::MediaType) -> Self {
         match media_type {
-            sdks::aio::MediaType::Movie => MediaKind::Movie,
-            sdks::aio::MediaType::Series | sdks::aio::MediaType::Tv => {
+            sdks::stremio::MediaType::Movie => MediaKind::Movie,
+            sdks::stremio::MediaType::Series | sdks::stremio::MediaType::Tv => {
                 MediaKind::Series
             }
             _ => todo!(),
@@ -169,13 +184,13 @@ impl From<sdks::aio::MediaType> for MediaKind {
     }
 }
 
-pub fn media_kind_to_aio(kind: &MediaKind) -> sdks::aio::MediaType {
+pub fn media_kind_to_stremio(kind: &MediaKind) -> sdks::stremio::MediaType {
     match kind {
-        MediaKind::Movie => sdks::aio::MediaType::Movie,
+        MediaKind::Movie => sdks::stremio::MediaType::Movie,
         MediaKind::Series | MediaKind::Season | MediaKind::Episode => {
-            sdks::aio::MediaType::Series
+            sdks::stremio::MediaType::Series
         }
-        _ => sdks::aio::MediaType::Movie,
+        _ => sdks::stremio::MediaType::Movie,
     }
 }
 
@@ -204,7 +219,6 @@ impl TryFrom<api::MediaType> for MediaKind {
             api::MediaType::Audio => Ok(MediaKind::Track),
             api::MediaType::MusicAlbum => Ok(MediaKind::Album),
             api::MediaType::MusicArtist => Ok(MediaKind::Artist),
-            api::MediaType::Catalog => Ok(MediaKind::Catalog),
             api::MediaType::Playlist => Ok(MediaKind::Playlist),
             _ => Err(()),
         }
@@ -464,7 +478,7 @@ pub struct ExternalIds {
 impl ExternalIds {
     /// Parse an AIO `meta.id` string into external provider IDs using the
     /// standard Stremio/Jellyfin prefix conventions.
-    pub fn from_aio_id(id: &str) -> Self {
+    pub fn from_stremio_id(id: &str) -> Self {
         if id.starts_with("tt") {
             return Self {
                 imdb: Some(id.to_string()),
@@ -525,7 +539,6 @@ pub struct MediaFilter {
     pub user_id: Option<Uuid>,
     pub user_state: Option<super::UserMediaStateFilter>,
     pub genre_ids: Option<Vec<Uuid>>,
-    pub catalog_ids: Option<Vec<Uuid>>,
     pub studio_ids: Option<Vec<Uuid>>,
     pub person_ids: Option<Vec<Uuid>>,
     pub years: Option<Vec<i64>>,
@@ -1357,17 +1370,6 @@ impl Media {
                     qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.right_media_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in genre_ids {
-                        sep.push_bind(id);
-                    }
-                    qb.push("))");
-                }
-            }
-
-            if let Some(catalog_ids) = &filter.catalog_ids {
-                if !catalog_ids.is_empty() {
-                    qb.push(" AND EXISTS (SELECT 1 FROM media_relations mr WHERE mr.left_media_id = media.id AND mr.role = 'catalog' AND mr.right_media_id IN (");
-                    let mut sep = qb.separated(", ");
-                    for id in catalog_ids {
                         sep.push_bind(id);
                     }
                     qb.push("))");
@@ -2342,7 +2344,7 @@ impl Media {
             let mut sources = Self::get_by_filter(
                 db,
                 &MediaFilter {
-                    kind: Some(vec![MediaKind::Source]),
+                    kind: Some(vec![MediaKind::Stream]),
                     parent_id: Some(self.id),
                     ..Default::default()
                 },
@@ -2469,8 +2471,8 @@ impl Media {
     }
 }
 
-impl From<sdks::aio::Catalog> for Media {
-    fn from(source: sdks::aio::Catalog) -> Self {
+impl From<sdks::stremio::Catalog> for Media {
+    fn from(source: sdks::stremio::Catalog) -> Self {
         Media {
             title: source.name,
             kind: MediaKind::Collection,
@@ -2480,8 +2482,8 @@ impl From<sdks::aio::Catalog> for Media {
     }
 }
 
-impl From<sdks::aio::Stream> for Media {
-    fn from(source: sdks::aio::Stream) -> Self {
+impl From<sdks::stremio::Stream> for Media {
+    fn from(source: sdks::stremio::Stream) -> Self {
         let url = match (&source.info_hash, &source.url) {
             (Some(hash), None) => {
                 let mut q = url::form_urlencoded::Serializer::new(String::new());
@@ -2508,7 +2510,7 @@ impl From<sdks::aio::Stream> for Media {
 
         Media {
             title,
-            kind: MediaKind::Source,
+            kind: MediaKind::Stream,
             url,
             id: source.get_guid(),
             ..Default::default()
@@ -2516,9 +2518,9 @@ impl From<sdks::aio::Stream> for Media {
     }
 }
 
-impl TryFrom<sdks::aio::Meta> for Media {
+impl TryFrom<sdks::stremio::Meta> for Media {
     type Error = anyhow::Error;
-    fn try_from(meta: sdks::aio::Meta) -> Result<Media> {
+    fn try_from(meta: sdks::stremio::Meta) -> Result<Media> {
         //self.info_hash.is_some()
         // let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
 
@@ -2559,13 +2561,13 @@ impl TryFrom<sdks::aio::Meta> for Media {
             });
 
         let status = meta.status.as_ref().map(|s| match s {
-            sdks::aio::Status::Continuing
-            | sdks::aio::Status::ReturningSeries
-            | sdks::aio::Status::InProduction => MediaStatus::Continuing,
-            sdks::aio::Status::Ended | sdks::aio::Status::Canceled => {
+            sdks::stremio::Status::Continuing
+            | sdks::stremio::Status::ReturningSeries
+            | sdks::stremio::Status::InProduction => MediaStatus::Continuing,
+            sdks::stremio::Status::Ended | sdks::stremio::Status::Canceled => {
                 MediaStatus::Ended
             }
-            sdks::aio::Status::Upcoming | sdks::aio::Status::Planned => {
+            sdks::stremio::Status::Upcoming | sdks::stremio::Status::Planned => {
                 MediaStatus::Unreleased
             }
         });
@@ -2601,7 +2603,7 @@ impl TryFrom<sdks::aio::Meta> for Media {
             media_id: meta.imdb_id.clone(),
             external_ids: sqlx::types::Json({
                 // Start by parsing the AIO id for any provider prefix
-                let mut ids = ExternalIds::from_aio_id(&meta.id);
+                let mut ids = ExternalIds::from_stremio_id(&meta.id);
                 // imdb_id from meta is more authoritative — override if present
                 if let Some(ref imdb) = meta.imdb_id {
                     ids.imdb = Some(imdb.clone());
@@ -2634,7 +2636,7 @@ impl TryFrom<sdks::aio::Meta> for Media {
     }
 }
 
-pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
+pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
     let imdb_id = meta.imdb_id.clone().context("imdb_id is missing")?;
 
     let mut media: Media = meta.clone().try_into()?;
@@ -2646,7 +2648,7 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
     if let MediaKind::Series = media.kind {
         if let Some(ref episodes) = meta.videos {
             //info!("Found {} episodes", episodes.len());
-            let seasons: std::collections::BTreeMap<i64, Vec<sdks::aio::Episode>> =
+            let seasons: std::collections::BTreeMap<i64, Vec<sdks::stremio::Episode>> =
                 episodes
                     .iter()
                     .filter_map(|ep| ep.season.map(|s| (s, ep.clone())))
@@ -2713,9 +2715,7 @@ pub fn aio_meta_to_medias(meta: sdks::aio::Meta) -> Result<Vec<Media>> {
                     episode.external_ids = sqlx::types::Json(ep_external_ids);
 
                     // Populate relations (Cast, Directors, Writers) for the episode
-                    let rels = crate::providers::meta::aio::build_episode_relations(
-                        &episode, &ep,
-                    );
+                    let rels = build_episode_relations_from_ep(&episode, &ep);
                     episode.relations =
                         Some(rels.into_iter().map(|r| (r.relation, r.media)).collect());
 
@@ -2944,32 +2944,6 @@ fn filter_rule_to_sql(
             };
             Some((sql, negated))
         }
-        R::Catalog { op, values } => {
-            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
-            let sql = match op {
-                SetOp::Is | SetOp::IsNot => {
-                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
-                    format!(
-                        "EXISTS (SELECT 1 FROM media_relations mr \
-                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' \
-                         AND hex(mr.right_media_id) = upper(replace('{v}', '-', '')))"
-                    )
-                }
-                SetOp::In | SetOp::NotIn => {
-                    let list: Vec<String> = values
-                        .iter()
-                        .map(|s| format!("upper(replace('{}', '-', ''))", esc(s)))
-                        .collect();
-                    let list = list.join(", ");
-                    format!(
-                        "EXISTS (SELECT 1 FROM media_relations mr \
-                         WHERE mr.left_media_id = media.id AND mr.role = 'catalog' \
-                         AND hex(mr.right_media_id) IN ({list}))"
-                    )
-                }
-            };
-            Some((sql, negated))
-        }
         R::HasTrailer { value } => {
             let sql = if *value {
                 "json_array_length(trailers) > 0".to_string()
@@ -3018,4 +2992,51 @@ pub async fn ensure_collection_folder(db: &SqlitePool) -> Result<()> {
     .save(db)
     .await?;
     Ok(())
+}
+
+fn build_episode_relations_from_ep(
+    media: &Media,
+    ep: &crate::sdks::stremio::Episode,
+) -> Vec<MetaRelation> {
+    let mut relations = Vec::new();
+    let add_names = |relations: &mut Vec<MetaRelation>,
+                     names: Option<&Vec<String>>,
+                     role: RelationRole| {
+        let names: Vec<String> = names
+            .map(|v| v.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|s| s.split(',').map(|n| n.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        for (i, name) in names.into_iter().enumerate() {
+            let person_id = crate::common::get_stable_uuid(format!(
+                "person:{}",
+                name.to_lowercase()
+            ));
+            relations.push(MetaRelation {
+                media: Media {
+                    id: person_id,
+                    title: name.clone(),
+                    kind: MediaKind::Person,
+                    media_id: Some(format!("person:{}", name.to_lowercase())),
+                    ..Default::default()
+                },
+                relation: MediaRelation {
+                    left_media_id: media.id,
+                    right_media_id: person_id,
+                    weight: Some(i as i64),
+                    role: Some(role.clone()),
+                    ..Default::default()
+                },
+            });
+        }
+    };
+    add_names(
+        &mut relations,
+        ep.directors.as_ref(),
+        RelationRole::Director,
+    );
+    add_names(&mut relations, ep.writers.as_ref(), RelationRole::Writer);
+    relations
 }

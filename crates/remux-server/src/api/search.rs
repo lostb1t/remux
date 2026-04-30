@@ -66,36 +66,24 @@ pub async fn search_hints(
 
         tracing::info!(count = db_results.len(), "search_hints DB results");
 
-        // AIO live search if DB returns nothing
+        // Live search via addon registry if DB returns nothing.
         let video_results = if db_results.is_empty() {
-            if let Ok(aio) = crate::aio::AioService::from_settings(&state.ctx.db).await
-            {
-                let movie_fut =
-                    aio.search(crate::sdks::aio::MediaType::Movie, term.clone());
-                let series_fut =
-                    aio.search(crate::sdks::aio::MediaType::Series, term.clone());
-                let (movie_res, series_res) = tokio::join!(movie_fut, series_fut);
-
-                let mut combined = series_res.unwrap_or_default();
-                combined.extend(movie_res.unwrap_or_default());
-
-                combined
-                    .into_iter()
-                    .unique_by(|meta| {
-                        meta.imdb_id.clone().unwrap_or_else(|| meta.id.clone())
-                    })
-                    .filter_map(|meta| {
-                        let m = db::Media::try_from(meta.clone()).ok()?;
-                        state
-                            .ctx
-                            .store
-                            .insert(m.id, meta, Duration::from_secs(3600));
-                        Some(m)
-                    })
-                    .collect()
-            } else {
-                vec![]
-            }
+            let movie_fut = state.ctx.addons.search(
+                &db::MediaKind::Movie,
+                &term,
+                limit,
+                &state.ctx,
+            );
+            let series_fut = state.ctx.addons.search(
+                &db::MediaKind::Series,
+                &term,
+                limit,
+                &state.ctx,
+            );
+            let (movie_res, series_res) = tokio::join!(movie_fut, series_fut);
+            let mut combined = series_res.unwrap_or_default();
+            combined.extend(movie_res.unwrap_or_default());
+            combined
         } else {
             db_results
         };
@@ -104,13 +92,10 @@ pub async fn search_hints(
     }
 
     if wants_music {
-        tracing::info!(
-            term,
-            "search_hints: querying music via SearchServiceManager"
-        );
+        tracing::info!(term, "search_hints: querying music via addon registry");
         match state
             .ctx
-            .search
+            .addons
             .search(&db::MediaKind::Track, &term, limit, &state.ctx)
             .await
         {

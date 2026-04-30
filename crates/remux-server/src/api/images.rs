@@ -6,9 +6,9 @@ use remux_macros::get;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::addons::MusicSearchResult;
 use crate::api;
 use crate::db;
-use crate::providers::search::MusicSearchResult;
 use crate::sdks;
 use axum_anyhow::{ApiResult as Result, OptionExt};
 
@@ -55,16 +55,18 @@ async fn items_images_inner(
                     }
                 })
                 .or_else(|| {
-                    state.ctx.store.get::<sdks::aio::Meta>(key).and_then(|m| {
-                        match image_type {
+                    state
+                        .ctx
+                        .store
+                        .get::<sdks::stremio::Meta>(key)
+                        .and_then(|m| match image_type {
                             api::ImageType::Primary | api::ImageType::Thumb => {
                                 m.poster.clone().or(m.thumbnail.clone())
                             }
                             api::ImageType::Backdrop => m.background.clone(),
                             api::ImageType::Logo
                             | api::ImageType::LogoImageAspectRatio => m.logo.clone(),
-                        }
-                    })
+                        })
                 });
             url.context_not_found("Not Found", "media image not found")?
         }

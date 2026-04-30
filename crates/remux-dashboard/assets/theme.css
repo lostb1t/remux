@@ -1077,6 +1077,320 @@ html, body {
   margin-bottom: 4px;
 }
 
+.modal-header {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  max-height: 60vh;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Addon kind card picker ─────────────────────────────────────── */
+.addon-kind-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.addon-kind-card {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.addon-kind-card:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-elevated);
+}
+
+.addon-kind-card--selected {
+  border-color: var(--primary);
+  background: var(--primary-glow);
+}
+
+.addon-kind-card-name {
+  font-size: .78rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.addon-kind-card-desc {
+  font-size: .7rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.addon-kind-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.addon-kind-card-configure {
+  margin-top: 8px;
+  align-self: flex-start;
+  height: 28px;
+  font-size: .68rem;
+  padding: 0 12px;
+}
+
+.modal--wide {
+  width: 600px;
+}
+
+/* ── Addon list cards ───────────────────────────────────────────── */
+.addon-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  padding: 16px;
+}
+
+.addon-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color var(--transition);
+}
+
+.addon-card:hover {
+  border-color: var(--border-hover);
+}
+
+.addon-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.addon-card-name {
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.addon-card-kind {
+  font-size: .65rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.addon-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+  align-items: center;
+}
+
+.addon-card-sort {
+  display: flex;
+  gap: 2px;
+  margin-right: 4px;
+}
+
+.addon-sort-btn {
+  height: 28px;
+  width: 28px;
+  padding: 0;
+  font-size: .75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.addon-sort-btn:disabled {
+  opacity: .25;
+  cursor: default;
+  pointer-events: none;
+}
+
+.addon-kind-badge {
+  font-size: .6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+  color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+}
+
+.addon-kind-type {
+  font-size: .6rem;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+/* ── Form group (modal / inline forms) ──────────────────────────── */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-label {
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.form-input {
+  width: 100%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: .8rem;
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.form-input:hover { border-color: var(--border-hover); }
+
+.form-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-glow);
+}
+
+.form-input::placeholder { color: var(--text-dim); }
+
+/* ── Checkbox row (resource toggles) ────────────────────────────── */
+.check-row-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: .8rem;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.check-row input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+/* ── Catalog table (horizontally scrollable) ─────────────────────── */
+.catalog-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.catalog-table {
+  width: 100%;
+  min-width: 380px;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: .78rem;
+}
+
+.catalog-table th {
+  text-align: left;
+  padding: 7px 10px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: .65rem;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.catalog-table td {
+  padding: 7px 10px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.catalog-table tr:last-child td { border-bottom: none; }
+
+.catalog-table tr:hover td { background: var(--bg-secondary); }
+
+.catalog-table .catalog-name {
+  min-width: 120px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-table input[type="number"] {
+  width: 90px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 4px 7px;
+  font-family: var(--font-mono);
+  font-size: .75rem;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.catalog-table input[type="number"]:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-glow);
+}
+
+.catalog-table input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
 /* ── Mobile ──────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .sidebar { transform: translateX(-100%); }

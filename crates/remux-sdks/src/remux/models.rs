@@ -139,15 +139,6 @@ pub struct Username(String);
 )]
 pub struct AioUrl(String);
 
-/// Deserialize `Option<AioUrl>`, treating an empty or unsanitizable string as `None`.
-fn deserialize_option_aio_url<'de, D>(de: D) -> Result<Option<AioUrl>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw: Option<String> = Option::deserialize(de)?;
-    Ok(raw.and_then(|s| AioUrl::try_new(s).ok()))
-}
-
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
 #[serde(rename_all = "PascalCase")]
@@ -186,9 +177,6 @@ pub struct ServerConfiguration {
     pub enable_automatic_updates: Option<bool>,
     #[default(Some("/transcodes".to_string()))]
     pub transcoding_temp_path: Option<String>,
-    #[serde(default)]
-    #[serde(deserialize_with = "deserialize_option_aio_url")]
-    pub aio_url: Option<AioUrl>,
     pub catalog_max_items: Option<i64>,
     #[default(Some(true))]
     pub p2p_enabled: Option<bool>,
@@ -283,9 +271,6 @@ pub struct StartupConfiguration {
     pub preferred_metadata_language: Option<String>,
     pub metadata_country_code: Option<String>,
     pub default_web_client: Option<DefaultWebClient>,
-    #[serde(default)]
-    #[serde(deserialize_with = "deserialize_option_aio_url")]
-    pub aio_url: Option<AioUrl>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -475,15 +460,68 @@ pub struct CreateVirtualFolderPayload {
     pub promoted: Option<bool>,
 }
 
+/// A single catalog discovered from a user-configured Stremio manifest.
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct AioCatalogInfo {
-    pub aio_id: String,
+pub struct StremioManifestCatalogInfo {
+    /// `"{manifest_url}||{kind}:{catalog_id}"` — the provider_catalog_id understood by StremioProvider.
+    pub stremio_id: String,
+    pub manifest_url: String,
+    pub manifest_name: String,
     pub name: String,
     pub enabled: Option<bool>,
     pub max_items: Option<i64>,
+    /// UUID of the DB media row if the catalog has been persisted.
     pub media_id: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UpdateStremioManifestUrlsPayload {
+    pub urls: Vec<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UpdateStremioCatalogSettingsPayload {
+    pub stremio_id: String,
+    pub enabled: bool,
+    pub max_items: Option<i64>,
+    pub name: Option<String>,
+}
+
+/// A user-created playlist catalog (e.g. a Deezer playlist).
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct PlaylistInfo {
+    pub id: String,
+    pub title: String,
+    pub provider: String,
+    pub provider_id: String,
+    pub enabled: Option<bool>,
+    pub max_items: Option<i64>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CreatePlaylistPayload {
+    pub title: String,
+    pub provider: String,
+    /// Playlist URL (e.g. `https://www.deezer.com/playlist/12345`) or bare ID.
+    pub url: String,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UpdatePlaylistSettingsPayload {
+    pub enabled: bool,
+    pub max_items: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -507,15 +545,6 @@ pub struct PatchItemPayload {
     pub smart_filter: Option<CollectionFilter>,
     pub promoted: Option<bool>,
     pub tags: Option<Vec<String>>,
-}
-
-#[skip_serializing_none]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct UpdateCatalogSettingsPayload {
-    pub enabled: bool,
-    pub max_items: Option<i64>,
-    pub name: Option<String>,
 }
 
 #[skip_serializing_none]
@@ -1410,6 +1439,8 @@ pub struct MediaSourceInfo {
     pub segments: Option<MediaSegments>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remux: Option<MediaSourceRemuxInfo>,
+    #[serde(default, skip_serializing_if = "TranscodeReasons::is_empty")]
+    pub transcoding_reasons: TranscodeReasons,
 }
 
 #[skip_serializing_none]
@@ -1995,7 +2026,6 @@ pub enum RemuxMediaKind {
     Season,
     Episode,
     Collection,
-    Catalog,
     Folder,
     Genre,
     Person,
@@ -2035,7 +2065,6 @@ pub enum FilterRule {
     Certification { op: SetOp, values: Vec<String> },
     Tag { op: SetOp, values: Vec<String> },
     Studio { op: SetOp, values: Vec<String> },
-    Catalog { op: SetOp, values: Vec<String> },
     HasTrailer { value: bool },
     Country { op: SetOp, values: Vec<String> },
     Person { op: SetOp, values: Vec<String> },
@@ -2463,7 +2492,6 @@ pub enum MediaType {
     BasePluginFolder,
     Book,
     BoxSet,
-    Catalog,
     Channel,
     ChannelFolderItem,
     CollectionFolder,

@@ -2,7 +2,7 @@ use crate::api;
 use crate::common;
 use crate::common::get_uuid;
 use crate::db;
-use crate::sdks::aio;
+use crate::sdks::stremio;
 use anyhow::Result;
 use std::convert::{TryFrom, TryInto};
 
@@ -71,7 +71,7 @@ fn infer_audio_channels(text: &str) -> Option<i64> {
 
 fn fallback_media_streams(source: &db::Media) -> Vec<api::MediaStream> {
     // Only synthesize streams for remote source entries.
-    if source.kind != db::MediaKind::Source {
+    if source.kind != db::MediaKind::Stream {
         return Vec::new();
     }
 
@@ -179,9 +179,9 @@ impl From<api::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
     }
 }
 
-impl TryFrom<aio::Episode> for db::Media {
+impl TryFrom<stremio::Episode> for db::Media {
     type Error = anyhow::Error;
-    fn try_from(meta: aio::Episode) -> Result<db::Media> {
+    fn try_from(meta: stremio::Episode) -> Result<db::Media> {
         Ok(db::Media {
             title: meta.get_name().unwrap_or_default(),
             kind: db::MediaKind::Episode,
@@ -195,7 +195,7 @@ impl TryFrom<aio::Episode> for db::Media {
     }
 }
 
-pub fn subtitle_to_media_stream(sub: aio::Subtitle) -> api::MediaStream {
+pub fn subtitle_to_media_stream(sub: stremio::Subtitle) -> api::MediaStream {
     let lc = sub.url.to_ascii_lowercase();
     let codec = if lc.ends_with(".vtt") {
         "webvtt"
@@ -228,7 +228,7 @@ pub fn subtitle_to_media_stream(sub: aio::Subtitle) -> api::MediaStream {
 pub fn stream_into_media_source_info(
     id: String,
     jellyfin_media_type: api::MediaType,
-    stream: aio::Stream,
+    stream: stremio::Stream,
 ) -> api::MediaSourceInfo {
     let id = get_uuid();
     api::MediaSourceInfo {

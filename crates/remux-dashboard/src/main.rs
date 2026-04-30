@@ -1,25 +1,27 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, SessionStorage, Storage};
 use remux_sdks::remux::{
-    AddTunerHost, AdminSetPassword, AioCatalogInfo, AioUrl, AnfiteatroReleaseStatus,
+    AddTunerHost, AddonCatalogDto, AddonDto, AddonKindMetadata, AddonOption,
+    AddonOptionType, AddonResource, AdminSetPassword, AnfiteatroReleaseStatus,
     AuthenticateUserByName, AuthenticationInfo, BaseItemDto, BrandingOptions,
     BulkChannelRequest, BulkChannels, ChannelEditorItem, CollectionFilter, CountryInfo,
-    CreateApiKey, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteApiKey, DeleteEpgSource, DeleteTunerHost, DeleteUser, DeleteVirtualFolder,
-    EpgSourceInfo, FilterMatchMode, FilterRule, GetAioCatalogs,
-    GetAnfiteatroReleaseStatus, GetApiKeys, GetBrandingConfiguration,
-    GetCertificationSuggestions, GetCountries, GetEpgSources, GetIptvChannels,
-    GetItemCounts, GetItems, GetLocalSuggestions, GetParentalRatings,
+    CreateAddon, CreateAddonRequest, CreateApiKey, CreateUser, CreateVirtualFolder,
+    CreateVirtualFolderPayload, DeleteAddon, DeleteApiKey, DeleteEpgSource,
+    DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EpgSourceInfo, FilterMatchMode,
+    FilterRule, GetAddonCatalogs, GetAnfiteatroReleaseStatus, GetApiKeys,
+    GetBrandingConfiguration, GetCertificationSuggestions, GetCountries, GetEpgSources,
+    GetIptvChannels, GetItemCounts, GetItems, GetLocalSuggestions, GetParentalRatings,
     GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
     GetTagSuggestions, GetTunerHosts, GetUsers, InstallLatestAnfiteatroRelease,
-    ItemCounts, JellyfinAuth, NumericOp, ParentalRating, PatchChannel,
-    PatchChannelRequest, PatchItem, PatchItemPayload, PostStartupComplete,
-    PostStartupConfiguration, PostStartupUser, PublicSystemInfo, SaveEpgSource,
-    ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
+    ItemCounts, JellyfinAuth, ListAddonKinds, ListAddons, NumericOp, ParentalRating,
+    PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
+    PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
+    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
     StartupConfiguration, StartupUser, StopTask, TaskInfo, TaskTriggerInfo,
-    TaskTriggerInfoType, TunerHostInfo, UpdateBrandingConfiguration,
-    UpdateCatalogSettings, UpdateCatalogSettingsPayload, UpdateSystemConfiguration,
-    UpdateTaskTriggers, UpdateUser, UpdateUserPolicy, UserDto, Username,
+    TaskTriggerInfoType, TunerHostInfo, UpdateAddon, UpdateAddonCatalogRequest,
+    UpdateAddonCatalogs, UpdateAddonRequest, UpdateBrandingConfiguration,
+    UpdateSystemConfiguration, UpdateTaskTriggers, UpdateUser, UpdateUserPolicy,
+    UserDto, Username,
 };
 use remux_sdks::{ClientError, RestClient};
 use serde::{Deserialize, Serialize};
@@ -1029,8 +1031,6 @@ enum Route {
     #[layout(DashboardLayout)]
     #[route("/")]
     OverviewRoute,
-    #[route("/imports")]
-    ImportsRoute,
     #[route("/library")]
     CollectionsRoute,
     #[route("/iptv")]
@@ -1043,6 +1043,8 @@ enum Route {
     UsersRoute,
     #[route("/apikeys")]
     ApiKeysRoute,
+    #[route("/addons")]
+    AddonsRoute,
     #[route("/settings")]
     SettingsRoute,
     #[route("/branding")]
@@ -1104,13 +1106,13 @@ fn DashboardLayout() -> Element {
 
     let page_title = match route {
         Route::OverviewRoute => "Overview",
-        Route::ImportsRoute => "Imports",
         Route::CollectionsRoute => "Library",
         Route::IptvRoute => "IPTV",
         Route::DevicesRoute => "Devices",
         Route::TasksRoute => "Scheduled Tasks",
         Route::UsersRoute => "Users",
         Route::ApiKeysRoute => "API Keys",
+        Route::AddonsRoute => "Addons",
         Route::SettingsRoute => "Settings",
         Route::BrandingRoute => "Branding",
         Route::NotFound { .. } => "",
@@ -1152,11 +1154,6 @@ fn DashboardLayout() -> Element {
                         on_click: move |_| { navigator().push(Route::IptvRoute); sidebar_open.set(false); },
                     }
                     NavItem {
-                        label: "Imports",
-                        active: route == Route::ImportsRoute,
-                        on_click: move |_| { navigator().push(Route::ImportsRoute); sidebar_open.set(false); },
-                    }
-                    NavItem {
                         label: "Devices",
                         active: route == Route::DevicesRoute,
                         on_click: move |_| { navigator().push(Route::DevicesRoute); sidebar_open.set(false); },
@@ -1175,6 +1172,11 @@ fn DashboardLayout() -> Element {
                         label: "API Keys",
                         active: route == Route::ApiKeysRoute,
                         on_click: move |_| { navigator().push(Route::ApiKeysRoute); sidebar_open.set(false); },
+                    }
+                    NavItem {
+                        label: "Addons",
+                        active: route == Route::AddonsRoute,
+                        on_click: move |_| { navigator().push(Route::AddonsRoute); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Settings",
@@ -1311,12 +1313,6 @@ fn OverviewRoute() -> Element {
 }
 
 #[component]
-fn ImportsRoute() -> Element {
-    let app_state = use_context::<AppState>();
-    rsx! { ImportsPage { app_state } }
-}
-
-#[component]
 fn CollectionsRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { CollectionsPage { app_state } }
@@ -1350,6 +1346,12 @@ fn UsersRoute() -> Element {
 fn ApiKeysRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { ApiKeysPage { app_state } }
+}
+
+#[component]
+fn AddonsRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { AddonsPage { app_state } }
 }
 
 #[component]
@@ -1840,7 +1842,6 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
         | FilterRule::Certification { values, .. }
         | FilterRule::Tag { values, .. }
         | FilterRule::Studio { values, .. }
-        | FilterRule::Catalog { values, .. }
         | FilterRule::Country { values, .. }
         | FilterRule::Person { values, .. } => values.clone(),
         _ => vec![],
@@ -1851,7 +1852,7 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
 fn is_set_field(key: &str) -> bool {
     matches!(
         key,
-        "genre" | "certification" | "tag" | "studio" | "catalog" | "country" | "person"
+        "genre" | "certification" | "tag" | "studio" | "country" | "person"
     )
 }
 
@@ -1894,26 +1895,6 @@ async fn fetch_suggestions(
                 .await
             {
                 Ok(tags) => tags.into_iter().map(|t| (t.clone(), t)).collect(),
-                Err(_) => vec![],
-            }
-        }
-        "catalog" => {
-            match client
-                .execute(GetLocalSuggestions {
-                    kind: "Catalog".into(),
-                    search_term: query.into(),
-                })
-                .await
-            {
-                Ok(r) => r
-                    .items
-                    .into_iter()
-                    .filter_map(|i| {
-                        let label = i.name?;
-                        let value = i.id.to_string();
-                        Some((label, value))
-                    })
-                    .collect(),
                 Err(_) => vec![],
             }
         }
@@ -1970,7 +1951,6 @@ fn field_label(key: &str) -> &'static str {
         "certification" => "Certification",
         "tag" => "Tag",
         "studio" => "Studio",
-        "catalog" => "Catalog",
         "has_trailer" => "Has Trailer",
         "country" => "Country",
         "person" => "Person",
@@ -2051,9 +2031,6 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
         FilterRule::Studio { op, values } => {
             ("studio".into(), set_op_str(op), values.join(", "))
         }
-        FilterRule::Catalog { op, values } => {
-            ("catalog".into(), set_op_str(op), values.join(", "))
-        }
         FilterRule::Country { op, values } => {
             ("country".into(), set_op_str(op), values.join(", "))
         }
@@ -2121,10 +2098,6 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
             values: set_values(),
         },
         "studio" => FilterRule::Studio {
-            op: set_op,
-            values: set_values(),
-        },
-        "catalog" => FilterRule::Catalog {
             op: set_op,
             values: set_values(),
         },
@@ -2231,32 +2204,6 @@ fn ChipInput(
     let mut show_dropdown = use_signal(|| false);
     let mut label_cache: Signal<std::collections::HashMap<String, String>> =
         use_signal(std::collections::HashMap::new);
-
-    // On mount: for any pre-existing values that lack a label, fetch one suggestion per value.
-    let fk_init = field_key.clone();
-    let client_init = app_state.client.clone();
-    use_effect(move || {
-        if fk_init != "catalog" {
-            return;
-        }
-        let client = client_init.clone();
-        spawn(async move {
-            if let Ok(r) = client
-                .execute(GetItems {
-                    include_item_types: vec!["Catalog".into()],
-                    recursive: false,
-                })
-                .await
-            {
-                let mut cache = label_cache.write();
-                for item in r.items {
-                    if let Some(name) = item.name {
-                        cache.insert(item.id.to_string(), name);
-                    }
-                }
-            }
-        });
-    });
 
     // Re-fetch suggestions whenever the typed text changes.
     let fk_fetch = field_key.clone();
@@ -2430,9 +2377,6 @@ fn FilterRuleRow(
                 option { value: "tag",             selected: field_val == "tag",             { field_label("tag") } }
                 if collection_mode {
                     option { value: "studio",          selected: field_val == "studio",          { field_label("studio") } }
-                }
-                if collection_mode {
-                    option { value: "catalog",         selected: field_val == "catalog",         { field_label("catalog") } }
                 }
                 if collection_mode {
                     option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
@@ -3312,220 +3256,6 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
 }
 
 #[component]
-fn ImportsPage(app_state: AppState) -> Element {
-    let mut catalogs: Signal<Vec<AioCatalogInfo>> = use_signal(Vec::new);
-    let mut loading = use_signal(|| true);
-    let mut error = use_signal(|| Option::<String>::None);
-    let mut tasks_list: Signal<Vec<TaskInfo>> = use_signal(Vec::new);
-
-    let app_state_load = app_state.clone();
-    use_effect(move || {
-        let client = app_state_load.client.clone();
-        spawn(async move {
-            let (cats_result, tasks_result) = futures::join!(
-                client.execute(GetAioCatalogs),
-                client.execute(GetScheduledTasks {
-                    is_hidden: Some(false)
-                }),
-            );
-            match cats_result {
-                Ok(cats) => {
-                    catalogs.set(cats);
-                    error.set(None);
-                }
-                Err(e) => error.set(Some(format!("Failed to load catalogs: {e}"))),
-            }
-            if let Ok(t) = tasks_result {
-                tasks_list.set(t);
-            }
-            loading.set(false);
-        });
-    });
-
-    let import_task = move || {
-        tasks_list
-            .read()
-            .iter()
-            .find(|t| t.key.as_deref() == Some("CatalogImport"))
-            .cloned()
-    };
-
-    let run_import_client = app_state.client.clone();
-
-    rsx! {
-        div { class: "card",
-            div { class: "card-header",
-                span { class: "card-title", "AIO Catalogs" }
-                {
-                    let task = import_task();
-                    let is_running = task.as_ref().and_then(|t| t.state.as_deref()) == Some("Running");
-                    let task_id = task.map(|t| t.id);
-                    rsx! {
-                        button {
-                            class: "btn btn-primary",
-                            style: "height:32px;font-size:.68rem",
-                            disabled: is_running,
-                            onclick: move |_| {
-                                if let Some(id) = task_id.clone() {
-                                    let c = run_import_client.clone();
-                                    spawn(async move {
-                                        let _ = c.execute(StartTask { task_id: id }).await;
-                                    });
-                                }
-                            },
-                            if is_running { "Importing…" } else { "Run Import" }
-                        }
-                    }
-                }
-            }
-            div { class: "card-body tight",
-                if *loading.read() {
-                    span { class: "loading-text", "Loading…" }
-                } else if let Some(e) = error.read().as_ref() {
-                    span { class: "loading-text", style: "color:var(--error)", "{e}" }
-                } else if catalogs.read().is_empty() {
-                    div { class: "empty-state", "No AIO catalogs found. Check your AIO URL in Settings." }
-                } else {
-                    div { class: "data-table-container",
-                        div { class: "row-list",
-                            for cat in catalogs.read().clone() {
-                                {
-                                    let client = app_state.client.clone();
-                                    let cat_aio_id = cat.aio_id.clone();
-                                    let cat_name = cat.name.clone();
-                                    let mut local_enabled = use_signal(|| cat.enabled.unwrap_or(false));
-                                    let max_items_str = cat.max_items.unwrap_or(250).to_string();
-                                    let mut local_max = use_signal(|| max_items_str.clone());
-                                    // Per-catalog task state
-                                    let task_id_opt = cat.media_id.clone()
-                                        .map(|id| format!("catalogimport:{}", id));
-                                    let cat_task = task_id_opt.as_ref().and_then(|tid|
-                                        tasks_list.read().iter().find(|t| &t.id == tid).cloned()
-                                    );
-                                    let is_importing = cat_task.as_ref()
-                                        .and_then(|t| t.state.as_deref()) == Some("Running");
-                                    rsx! {
-                                        div { class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)] even:bg-[rgba(0,0,0,0.02)] even:hover:bg-[rgba(0,0,0,0.03)]", key: "{cat_aio_id}",
-                                            div { class: "flex-1 min-w-0 px-3 py-[10px]",
-                                                div { class: "catalog-name", "{cat_name}" }
-                                                div { class: "catalog-meta",
-                                                    span { class: "session-client-badge", "{cat_aio_id}" }
-                                                }
-                                            }
-                                            div { class: "shrink-0 px-3 py-[10px] flex items-center gap-3",
-                                                input {
-                                                    r#type: "number",
-                                                    class: "field-input",
-                                                    style: "width:90px;height:30px;font-size:.75rem",
-                                                    placeholder: "Max items",
-                                                    value: "{local_max}",
-                                                    oninput: move |e| local_max.set(e.value()),
-                                                    onchange: {
-                                                        let c = client.clone();
-                                                        let aio_id = cat_aio_id.clone();
-                                                        let name = cat_name.clone();
-                                                        move |_| {
-                                                            let enabled = *local_enabled.peek();
-                                                            let max = local_max.peek().parse::<i64>().ok();
-                                                            let c = c.clone();
-                                                            let aio_id = aio_id.clone();
-                                                            let name = name.clone();
-                                                            spawn(async move {
-                                                                let _ = c.execute(UpdateCatalogSettings {
-                                                                    aio_id,
-                                                                    payload: UpdateCatalogSettingsPayload {
-                                                                        enabled,
-                                                                        max_items: max,
-                                                                        name: Some(name),
-                                                                    },
-                                                                }).await;
-                                                            });
-                                                        }
-                                                    },
-                                                }
-                                                if let Some(tid) = task_id_opt.clone() {
-                                                    if *local_enabled.read() {
-                                                        if is_importing {
-                                                            button {
-                                                                class: "btn btn-danger",
-                                                                style: "height:30px;font-size:.68rem",
-                                                                onclick: {
-                                                                    let c = client.clone();
-                                                                    let tid = tid.clone();
-                                                                    move |_| {
-                                                                        let c = c.clone();
-                                                                        let tid = tid.clone();
-                                                                        spawn(async move {
-                                                                            let _ = c.execute(StopTask { task_id: tid }).await;
-                                                                        });
-                                                                    }
-                                                                },
-                                                                "Stop"
-                                                            }
-                                                        } else {
-                                                            button {
-                                                                class: "btn btn-secondary",
-                                                                style: "height:30px;font-size:.68rem",
-                                                                onclick: {
-                                                                    let c = client.clone();
-                                                                    let tid = tid.clone();
-                                                                    move |_| {
-                                                                        let c = c.clone();
-                                                                        let tid = tid.clone();
-                                                                        spawn(async move {
-                                                                            let _ = c.execute(StartTask { task_id: tid }).await;
-                                                                        });
-                                                                    }
-                                                                },
-                                                                "Import"
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                label { class: "toggle m-0",
-                                                    input {
-                                                        r#type: "checkbox",
-                                                        checked: *local_enabled.read(),
-                                                        onchange: {
-                                                            let c = client.clone();
-                                                            let aio_id = cat_aio_id.clone();
-                                                            let name = cat_name.clone();
-                                                            move |e: Event<FormData>| {
-                                                                let new_enabled = e.checked();
-                                                                local_enabled.set(new_enabled);
-                                                                let max = local_max.peek().parse::<i64>().ok();
-                                                                let c = c.clone();
-                                                                let aio_id = aio_id.clone();
-                                                                let name = name.clone();
-                                                                spawn(async move {
-                                                                    let _ = c.execute(UpdateCatalogSettings {
-                                                                        aio_id,
-                                                                        payload: UpdateCatalogSettingsPayload {
-                                                                            enabled: new_enabled,
-                                                                            max_items: max,
-                                                                            name: Some(name),
-                                                                        },
-                                                                    }).await;
-                                                                });
-                                                            }
-                                                        },
-                                                    }
-                                                    span { class: "toggle-track" }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
 fn UsersPage(app_state: AppState) -> Element {
     let mut users: Signal<Vec<UserDto>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
@@ -4194,7 +3924,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut server_name = use_signal(String::new);
     let mut metadata_country = use_signal(|| "US".to_string());
     let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
-    let mut aio_url = use_signal(String::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
     let mut p2p_enabled = use_signal(|| true);
     let mut p2p_upload_speed = use_signal(|| 0_i64);
@@ -4219,12 +3948,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                         cfg.metadata_country_code
                             .clone()
                             .unwrap_or_else(|| "US".to_string()),
-                    );
-                    aio_url.set(
-                        cfg.aio_url
-                            .as_ref()
-                            .map(|u| u.as_ref().to_string())
-                            .unwrap_or_default(),
                     );
                     catalog_max_items.set(cfg.catalog_max_items.unwrap_or(100));
                     p2p_enabled.set(cfg.p2p_enabled.unwrap_or(true));
@@ -4256,7 +3979,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         let client = app_state.client.clone();
         let name = server_name.peek().clone();
         let country = metadata_country.peek().clone();
-        let url = aio_url.peek().clone();
         let max = *catalog_max_items.peek();
         let p2p_on = *p2p_enabled.peek();
         let upload = *p2p_upload_speed.peek();
@@ -4270,7 +3992,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.server_name = Some(name);
         cfg.metadata_country_code = Some(country);
         cfg.quick_connect_available = Some(qc_enabled);
-        cfg.aio_url = AioUrl::try_new(url).ok();
         cfg.catalog_max_items = Some(max);
         cfg.p2p_enabled = Some(p2p_on);
         cfg.p2p_upload_speed_kbps = Some(upload);
@@ -4338,21 +4059,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                                         "{country.name} ({country.two_letter_iso_region_name})"
                                     }
                                 }
-                            }
-                        }
-
-                        div { class: "field",
-                            label { class: "field-label", r#for: "s-aio", "AIO Manifest URL" }
-                            input {
-                                id: "s-aio",
-                                r#type: "url",
-                                class: "field-input",
-                                placeholder: "http://192.168.1.x:5000",
-                                value: "{aio_url}",
-                                oninput: move |e| aio_url.set(e.value()),
-                            }
-                            p { class: "field-hint",
-                                "Base URL of the AIO media backend."
                             }
                         }
 
@@ -4966,7 +4672,6 @@ fn Wizard(on_complete: EventHandler) -> Element {
     let mut server_name = use_signal(String::new);
     let mut metadata_country = use_signal(browser_metadata_country_code);
     let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
-    let mut aio_url = use_signal(String::new);
     let mut username = use_signal(String::new);
     let mut password = use_signal(String::new);
     let mut password2 = use_signal(String::new);
@@ -4987,9 +4692,6 @@ fn Wizard(on_complete: EventHandler) -> Element {
                             .filter(|s| !s.is_empty())
                             .unwrap_or_else(browser_metadata_country_code),
                     );
-                    if let Some(url) = cfg.aio_url {
-                        aio_url.set(url.into_inner());
-                    }
                 }
                 if let Ok(list) = c.execute(GetCountries).await {
                     countries.set(list);
@@ -5035,7 +4737,6 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                     let origin = get_origin();
                                     let name = server_name.peek().clone();
                                     let country = metadata_country.peek().clone();
-                                    let url  = aio_url.peek().clone();
                                     saving.set(true);
                                     error.set(None);
                                     spawn(async move {
@@ -5044,7 +4745,6 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                                 payload: StartupConfiguration {
                                                     server_name: Some(name),
                                                     metadata_country_code: Some(country),
-                                                    aio_url: AioUrl::try_new(url).ok(),
                                                     ..Default::default()
                                                 },
                                             }).await {
@@ -5059,7 +4759,7 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                 style: "display:flex;flex-direction:column;gap:16px",
 
                                 p { class: "wizard-desc",
-                                    "Give your server a name and point it at the AIO backend."
+                                    "Give your server a name. Add media addons (Stremio, Deezer, TMDB, …) on the Addons page after setup."
                                 }
 
                                 div { class: "field",
@@ -5098,22 +4798,6 @@ fn Wizard(on_complete: EventHandler) -> Element {
                                     }
                                     p { class: "field-hint",
                                         "Used for metadata ratings and regional release details."
-                                    }
-                                }
-
-                                div { class: "field",
-                                    label { class: "field-label", r#for: "w-aio", "AIO Manifest URL" }
-                                    input {
-                                        id: "w-aio",
-                                        r#type: "url",
-                                        class: "field-input",
-                                        placeholder: "http://192.168.1.x:5000",
-                                        required: true,
-                                        value: "{aio_url}",
-                                        oninput: move |e| aio_url.set(e.value()),
-                                    }
-                                    p { class: "field-hint",
-                                        "Base URL of the AIO media backend (no trailing slash)."
                                     }
                                 }
 
@@ -5255,6 +4939,755 @@ fn Wizard(on_complete: EventHandler) -> Element {
                         },
                     }}
                 }
+            }
+        }
+    }
+}
+
+#[component]
+fn AddonsPage(app_state: AppState) -> Element {
+    let mut addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
+    let mut kinds: Signal<Vec<AddonKindMetadata>> = use_signal(Vec::new);
+    let mut loading = use_signal(|| true);
+    let mut error: Signal<Option<String>> = use_signal(|| None);
+    let mut refresh = use_signal(|| 0_u32);
+
+    // Add-addon modal state
+    let mut show_create = use_signal(|| false);
+    let mut create_step: Signal<u8> = use_signal(|| 0); // 0 = pick kind, 1 = configure
+    let mut selected_kind: Signal<Option<String>> = use_signal(|| None);
+    let mut name_input = use_signal(String::new);
+    // Form values keyed by option id; stored as serde_json::Value to round-trip cleanly.
+    let mut form_values: Signal<std::collections::HashMap<String, serde_json::Value>> =
+        use_signal(std::collections::HashMap::new);
+    let mut creating = use_signal(|| false);
+
+    // Edit-addon modal state
+    let mut id_to_edit: Signal<Option<Uuid>> = use_signal(|| None);
+    let mut edit_name_input = use_signal(String::new);
+    let mut edit_form_values: Signal<
+        std::collections::HashMap<String, serde_json::Value>,
+    > = use_signal(std::collections::HashMap::new);
+    let mut editing = use_signal(|| false);
+    // Resources checked state for edit form (set of enabled AddonResource display strings)
+    let mut edit_resources: Signal<std::collections::HashSet<String>> =
+        use_signal(std::collections::HashSet::new);
+    // Catalogs loaded for the addon being edited
+    let mut edit_catalogs: Signal<Vec<AddonCatalogDto>> = use_signal(Vec::new);
+    let mut edit_catalogs_loading = use_signal(|| false);
+    // Per-catalog overrides: catalog_id -> (enabled, max_items_str)
+    let mut edit_catalog_settings: Signal<
+        std::collections::HashMap<String, (bool, String)>,
+    > = use_signal(std::collections::HashMap::new);
+
+    // Confirm-delete state
+    let mut id_to_delete: Signal<Option<Uuid>> = use_signal(|| None);
+    let mut deleting = use_signal(|| false);
+
+    let app_state_effect = app_state.clone();
+    use_effect(move || {
+        let _r = *refresh.read();
+        loading.set(true);
+        let client = app_state_effect.client.clone();
+        spawn(async move {
+            let kinds_res = client.execute(ListAddonKinds).await;
+            let addons_res = client.execute(ListAddons).await;
+            match (kinds_res, addons_res) {
+                (Ok(k), Ok(a)) => {
+                    kinds.set(k);
+                    addons.set(a);
+                    error.set(None);
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    error.set(Some(format!("Failed to load addons: {e}")));
+                }
+            }
+            loading.set(false);
+        });
+    });
+
+    let selected_kind_meta = {
+        let sel = selected_kind.read().clone();
+        sel.and_then(|id| kinds.read().iter().find(|k| k.id == id).cloned())
+    };
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Addons" }
+                button {
+                    class: "btn btn-primary",
+                    style: "height:32px;font-size:.68rem",
+                    onclick: move |_| {
+                        name_input.set(String::new());
+                        form_values.set(std::collections::HashMap::new());
+                        selected_kind.set(None);
+                        create_step.set(0);
+                        show_create.set(true);
+                    },
+                    "+ New Addon"
+                }
+            }
+            div { class: "card-body tight",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else if let Some(err) = error.read().as_ref() {
+                    span { class: "loading-text", style: "color:var(--error)", "{err}" }
+                } else if addons.read().is_empty() {
+                    div { class: "empty-state", "No addons configured — add one to get started." }
+                } else {
+                    div { class: "addon-list",
+                        for (addon_idx, addon) in addons.read().clone().into_iter().enumerate() {
+                            {
+                                let id = addon.id;
+                                let addon_count = addons.read().len();
+                                rsx! {
+                                    div { class: "addon-card", key: "{id}",
+                                        div { class: "addon-card-header",
+                                            span { class: "addon-card-name", "{addon.name}" }
+                                            span { class: "addon-card-kind", "{addon.kind}" }
+                                        }
+                                        div { class: "addon-kind-card-badges",
+                                            for res in addon.resources.iter() {
+                                                span { class: "addon-kind-badge", "{res:?}" }
+                                            }
+                                            for t in addon.supported_types.iter() {
+                                                span { class: "addon-kind-type", "{t}" }
+                                            }
+                                        }
+                                        div { class: "addon-card-actions",
+                                            // Up/down reorder buttons
+                                            div { class: "addon-card-sort",
+                                                button {
+                                                    class: "btn btn-ghost addon-sort-btn",
+                                                    disabled: addon_idx == 0,
+                                                    title: "Move up (higher priority)",
+                                                    onclick: {
+                                                        let client = app_state.client.clone();
+                                                        move |_| {
+                                                            let current = addons.read().clone();
+                                                            if addon_idx == 0 { return; }
+                                                            let mut new_order = current.clone();
+                                                            new_order.swap(addon_idx, addon_idx - 1);
+                                                            let updates: Vec<(Uuid, i64)> = new_order.iter().enumerate()
+                                                                .filter_map(|(i, a)| {
+                                                                    let new_prio = i as i64 * 10;
+                                                                    if a.priority != new_prio { Some((a.id, new_prio)) } else { None }
+                                                                })
+                                                                .collect();
+                                                            let c = client.clone();
+                                                            spawn(async move {
+                                                                for (uid, prio) in updates {
+                                                                    let _ = c.execute(UpdateAddon { id: uid, payload: UpdateAddonRequest { priority: Some(prio), ..Default::default() } }).await;
+                                                                }
+                                                                let v = *refresh.peek() + 1;
+                                                                refresh.set(v);
+                                                            });
+                                                        }
+                                                    },
+                                                    "↑"
+                                                }
+                                                button {
+                                                    class: "btn btn-ghost addon-sort-btn",
+                                                    disabled: addon_idx + 1 >= addon_count,
+                                                    title: "Move down (lower priority)",
+                                                    onclick: {
+                                                        let client = app_state.client.clone();
+                                                        move |_| {
+                                                            let current = addons.read().clone();
+                                                            if addon_idx + 1 >= current.len() { return; }
+                                                            let mut new_order = current.clone();
+                                                            new_order.swap(addon_idx, addon_idx + 1);
+                                                            let updates: Vec<(Uuid, i64)> = new_order.iter().enumerate()
+                                                                .filter_map(|(i, a)| {
+                                                                    let new_prio = i as i64 * 10;
+                                                                    if a.priority != new_prio { Some((a.id, new_prio)) } else { None }
+                                                                })
+                                                                .collect();
+                                                            let c = client.clone();
+                                                            spawn(async move {
+                                                                for (uid, prio) in updates {
+                                                                    let _ = c.execute(UpdateAddon { id: uid, payload: UpdateAddonRequest { priority: Some(prio), ..Default::default() } }).await;
+                                                                }
+                                                                let v = *refresh.peek() + 1;
+                                                                refresh.set(v);
+                                                            });
+                                                        }
+                                                    },
+                                                    "↓"
+                                                }
+                                            }
+                                            button {
+                                                class: "btn btn-ghost",
+                                                style: "height:28px;font-size:.68rem;padding:0 10px",
+                                                onclick: {
+                                                    let client = app_state.client.clone();
+                                                    move |_| {
+                                                        if let Some(a) = addons.read().iter().find(|a| a.id == id).cloned() {
+                                                            edit_name_input.set(a.name.clone());
+                                                            let config_map = a.config.as_object()
+                                                                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                                                                .unwrap_or_default();
+                                                            edit_form_values.set(config_map);
+                                                            let res_set: std::collections::HashSet<String> = a.resources
+                                                                .iter()
+                                                                .map(|r| format!("{r}"))
+                                                                .collect();
+                                                            edit_resources.set(res_set);
+                                                            let has_catalog = a.resources.contains(&AddonResource::Catalog);
+                                                            edit_catalogs.set(Vec::new());
+                                                            edit_catalog_settings.set(std::collections::HashMap::new());
+                                                            id_to_edit.set(Some(id));
+                                                            if has_catalog {
+                                                                edit_catalogs_loading.set(true);
+                                                                let c = client.clone();
+                                                                spawn(async move {
+                                                                    match c.execute(GetAddonCatalogs { id }).await {
+                                                                        Ok(cats) => {
+                                                                            let settings: std::collections::HashMap<String, (bool, String)> = cats
+                                                                                .iter()
+                                                                                .map(|cat| (
+                                                                                    cat.catalog_id.clone(),
+                                                                                    (cat.enabled, cat.max_items.map(|n| n.to_string()).unwrap_or_default()),
+                                                                                ))
+                                                                                .collect();
+                                                                            edit_catalog_settings.set(settings);
+                                                                            edit_catalogs.set(cats);
+                                                                        }
+                                                                        Err(e) => {
+                                                                            error.set(Some(format!("Failed to load catalogs: {e}")));
+                                                                        }
+                                                                    }
+                                                                    edit_catalogs_loading.set(false);
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "Edit"
+                                            }
+                                            button {
+                                                class: "btn btn-ghost",
+                                                style: "height:28px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                                onclick: move |_| id_to_delete.set(Some(id)),
+                                                "Delete"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if *show_create.read() {
+            div { class: "modal-backdrop",
+                div { class: "modal modal--wide",
+                    div { class: "modal-header",
+                        span { class: "modal-title",
+                            if *create_step.read() == 0 { "Choose Type" } else { "Configure Addon" }
+                        }
+                    }
+                    div { class: "modal-body",
+                        if *create_step.read() == 0 {
+                            // ── Step 1: kind picker ──
+                            div { class: "addon-kind-list",
+                                for k in kinds.read().clone() {
+                                    {
+                                        let k_id = k.id.clone();
+                                        let k_name = k.display_name.clone();
+                                        let is_selected = selected_kind.read().as_deref() == Some(&k.id);
+                                        rsx! {
+                                            div {
+                                                class: if is_selected { "addon-kind-card addon-kind-card--selected" } else { "addon-kind-card" },
+                                                onclick: move |_| {
+                                                    selected_kind.set(Some(k_id.clone()));
+                                                    form_values.set(std::collections::HashMap::new());
+                                                },
+                                                div { class: "addon-kind-card-name", "{k.display_name}" }
+                                                div { class: "addon-kind-card-desc", "{k.description}" }
+                                                div { class: "addon-kind-card-badges",
+                                                    for res in k.supported_resources.iter() {
+                                                        span { class: "addon-kind-badge", "{res:?}" }
+                                                    }
+                                                    for t in k.supported_types.iter() {
+                                                        span { class: "addon-kind-type", "{t}" }
+                                                    }
+                                                }
+                                                if is_selected {
+                                                    button {
+                                                        class: "btn btn-primary addon-kind-card-configure",
+                                                        onclick: move |e| {
+                                                            e.stop_propagation();
+                                                            name_input.set(k_name.clone());
+                                                            create_step.set(1);
+                                                        },
+                                                        "Configure →"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // ── Step 2: name + options ──
+                            if let Some(meta) = &selected_kind_meta {
+                                div { class: "field-hint", style: "margin-bottom:4px", "{meta.description}" }
+                            }
+                            div { class: "form-group",
+                                label { class: "form-label", "Name" }
+                                input {
+                                    class: "form-input",
+                                    r#type: "text",
+                                    placeholder: "Display name",
+                                    value: "{name_input}",
+                                    oninput: move |e| name_input.set(e.value()),
+                                }
+                            }
+                            if let Some(meta) = &selected_kind_meta {
+                                for opt in meta.options.iter().cloned() {
+                                    AddonOptionField {
+                                        option: opt,
+                                        values: form_values,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "modal-footer",
+                        button {
+                            class: "btn btn-ghost",
+                            onclick: move |_| {
+                                if *create_step.read() == 1 {
+                                    create_step.set(0);
+                                } else {
+                                    show_create.set(false);
+                                }
+                            },
+                            if *create_step.read() == 1 { "← Back" } else { "Cancel" }
+                        }
+                        if *create_step.read() == 1 {
+                            button {
+                                class: "btn btn-primary",
+                                disabled: *creating.read() || name_input.read().trim().is_empty() || selected_kind.read().is_none(),
+                                onclick: {
+                                    let client = app_state.client.clone();
+                                    move |_| {
+                                        let name = name_input.read().trim().to_string();
+                                        let Some(kind) = selected_kind.read().clone() else { return; };
+                                        if name.is_empty() { return; }
+                                        let config: serde_json::Value = serde_json::Value::Object(
+                                            form_values.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                                        );
+                                        creating.set(true);
+                                        let c = client.clone();
+                                        spawn(async move {
+                                            let payload = CreateAddonRequest {
+                                                kind,
+                                                name,
+                                                config,
+                                                resources: Vec::new(),
+                                                priority: 0,
+                                            };
+                                            match c.execute(CreateAddon { payload }).await {
+                                                Ok(_) => {
+                                                    show_create.set(false);
+                                                    let v = *refresh.peek() + 1;
+                                                    refresh.set(v);
+                                                }
+                                                Err(e) => {
+                                                    error.set(Some(format!("Failed to create addon: {e}")));
+                                                }
+                                            }
+                                            creating.set(false);
+                                        });
+                                    }
+                                },
+                                if *creating.read() { "Creating…" } else { "Create" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(edit_id) = *id_to_edit.read() {
+            {
+                let edit_kind = addons.read().iter().find(|a| a.id == edit_id).map(|a| a.kind.clone());
+                let edit_kind_meta = edit_kind.as_ref().and_then(|k| kinds.read().iter().find(|m| m.id == *k).cloned());
+                // Use supported_resources from the addon row (manifest-derived for Stremio,
+                // kind-static for others) as the checkbox option list.
+                let resource_options: Vec<AddonResource> = addons
+                    .read()
+                    .iter()
+                    .find(|a| a.id == edit_id)
+                    .map(|a| a.supported_resources.clone())
+                    .unwrap_or_default();
+                rsx! {
+                    div { class: "modal-backdrop",
+                        div { class: "modal",
+                            div { class: "modal-header",
+                                span { class: "modal-title", "Edit Addon" }
+                            }
+                            div { class: "modal-body",
+                                div { class: "form-group",
+                                    label { class: "form-label", "Name" }
+                                    input {
+                                        class: "form-input",
+                                        r#type: "text",
+                                        placeholder: "Display name",
+                                        value: "{edit_name_input}",
+                                        oninput: move |e| edit_name_input.set(e.value()),
+                                    }
+                                }
+                                if let Some(meta) = &edit_kind_meta {
+                                    for opt in meta.options.iter().cloned() {
+                                        AddonOptionField {
+                                            option: opt,
+                                            values: edit_form_values,
+                                        }
+                                    }
+                                }
+                                // Resources section — options come from the addon row.
+                                if !resource_options.is_empty() {
+                                    div { class: "form-group",
+                                        label { class: "form-label", "Resources" }
+                                        div { class: "check-row-group",
+                                            for res in resource_options.iter().cloned() {
+                                                {
+                                                    let res_str = format!("{res}");
+                                                    let res_str_check = res_str.clone();
+                                                    let checked = edit_resources.read().contains(&res_str);
+                                                    rsx! {
+                                                        label { class: "check-row",
+                                                            input {
+                                                                r#type: "checkbox",
+                                                                checked,
+                                                                onchange: move |e| {
+                                                                    let mut set = edit_resources.write();
+                                                                    if e.checked() {
+                                                                        set.insert(res_str_check.clone());
+                                                                    } else {
+                                                                        set.remove(&res_str_check);
+                                                                    }
+                                                                },
+                                                            }
+                                                            "{res_str}"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // Catalogs section (only shown when catalog resource is active)
+                                if edit_resources.read().contains("catalog") {
+                                    div { class: "form-group",
+                                        label { class: "form-label", "Catalogs" }
+                                        if *edit_catalogs_loading.read() {
+                                            span { class: "field-hint", "Loading catalogs…" }
+                                        } else if edit_catalogs.read().is_empty() {
+                                            span { class: "field-hint", "No catalogs found." }
+                                        } else {
+                                            div { class: "catalog-table-wrap",
+                                                table { class: "catalog-table",
+                                                    thead {
+                                                        tr {
+                                                            th { "Catalog" }
+                                                            th { "Enabled" }
+                                                            th { "Max items" }
+                                                        }
+                                                    }
+                                                    tbody {
+                                                        for cat in edit_catalogs.read().clone() {
+                                                            {
+                                                                let cid = cat.catalog_id.clone();
+                                                                let cid_toggle = cid.clone();
+                                                                let cid_max = cid.clone();
+                                                                let (enabled, max_str) = edit_catalog_settings.read()
+                                                                    .get(&cid)
+                                                                    .cloned()
+                                                                    .unwrap_or((false, String::new()));
+                                                                rsx! {
+                                                                    tr {
+                                                                        td { class: "catalog-name", "{cat.name}" }
+                                                                        td {
+                                                                            input {
+                                                                                r#type: "checkbox",
+                                                                                checked: enabled,
+                                                                                onchange: move |e| {
+                                                                                    let mut map = edit_catalog_settings.write();
+                                                                                    let entry = map.entry(cid_toggle.clone()).or_default();
+                                                                                    entry.0 = e.checked();
+                                                                                },
+                                                                            }
+                                                                        }
+                                                                        td {
+                                                                            input {
+                                                                                r#type: "number",
+                                                                                placeholder: "Max items",
+                                                                                value: "{max_str}",
+                                                                                min: "1",
+                                                                                oninput: move |e| {
+                                                                                    let mut map = edit_catalog_settings.write();
+                                                                                    let entry = map.entry(cid_max.clone()).or_default();
+                                                                                    entry.1 = e.value();
+                                                                                },
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            div { class: "modal-footer",
+                                button {
+                                    class: "btn btn-ghost",
+                                    onclick: move |_| id_to_edit.set(None),
+                                    "Cancel"
+                                }
+                                button {
+                                    class: "btn btn-primary",
+                                    disabled: *editing.read() || edit_name_input.read().trim().is_empty(),
+                                    onclick: {
+                                        let client = app_state.client.clone();
+                                        move |_| {
+                                            let name = edit_name_input.read().trim().to_string();
+                                            if name.is_empty() { return; }
+                                            let config: serde_json::Value = serde_json::Value::Object(
+                                                edit_form_values.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                                            );
+                                            // Build resources list from checkboxes.
+                                            let resources: Vec<AddonResource> = edit_resources
+                                                .read()
+                                                .iter()
+                                                .filter_map(|s| s.parse::<AddonResource>().ok())
+                                                .collect();
+                                            // Build catalog update payload.
+                                            let catalog_updates: Vec<UpdateAddonCatalogRequest> = edit_catalog_settings
+                                                .read()
+                                                .iter()
+                                                .map(|(catalog_id, (enabled, max_str))| UpdateAddonCatalogRequest {
+                                                    catalog_id: catalog_id.clone(),
+                                                    enabled: *enabled,
+                                                    max_items: max_str.trim().parse::<i64>().ok().filter(|&n| n > 0),
+                                                })
+                                                .collect();
+                                            editing.set(true);
+                                            let c = client.clone();
+                                            spawn(async move {
+                                                let payload = UpdateAddonRequest {
+                                                    name: Some(name),
+                                                    config: Some(config),
+                                                    resources: Some(resources),
+                                                    priority: None,
+                                                };
+                                                let addon_res = c.execute(UpdateAddon { id: edit_id, payload }).await;
+                                                let cat_res = if !catalog_updates.is_empty() {
+                                                    c.execute(UpdateAddonCatalogs { id: edit_id, payload: catalog_updates }).await.err()
+                                                } else {
+                                                    None
+                                                };
+                                                match (addon_res, cat_res) {
+                                                    (Ok(_), None) => {
+                                                        id_to_edit.set(None);
+                                                        let v = *refresh.peek() + 1;
+                                                        refresh.set(v);
+                                                    }
+                                                    (Ok(_), Some(e)) => {
+                                                        error.set(Some(format!("Addon saved but catalog update failed: {e}")));
+                                                        id_to_edit.set(None);
+                                                        let v = *refresh.peek() + 1;
+                                                        refresh.set(v);
+                                                    }
+                                                    (Err(e), _) => {
+                                                        error.set(Some(format!("Failed to update addon: {e}")));
+                                                    }
+                                                }
+                                                editing.set(false);
+                                            });
+                                        }
+                                    },
+                                    if *editing.read() { "Saving…" } else { "Save" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(del_id) = *id_to_delete.read() {
+            div { class: "modal-backdrop",
+                div { class: "modal",
+                    div { class: "modal-header",
+                        span { class: "modal-title", "Delete Addon" }
+                    }
+                    div { class: "modal-body",
+                        p { style: "font-size:.85rem", "Are you sure you want to delete this addon? Catalogs from this addon will be removed on the next import." }
+                    }
+                    div { class: "modal-footer",
+                        button {
+                            class: "btn btn-ghost",
+                            onclick: move |_| id_to_delete.set(None),
+                            "Cancel"
+                        }
+                        button {
+                            class: "btn btn-primary",
+                            disabled: *deleting.read(),
+                            style: "background:var(--error);border-color:var(--error)",
+                            onclick: {
+                                let client = app_state.client.clone();
+                                move |_| {
+                                    deleting.set(true);
+                                    let c = client.clone();
+                                    spawn(async move {
+                                        match c.execute(DeleteAddon { id: del_id }).await {
+                                            Ok(_) => {
+                                                id_to_delete.set(None);
+                                                let v = *refresh.peek() + 1;
+                                                refresh.set(v);
+                                            }
+                                            Err(e) => {
+                                                error.set(Some(format!("Failed to delete addon: {e}")));
+                                            }
+                                        }
+                                        deleting.set(false);
+                                    });
+                                }
+                            },
+                            if *deleting.read() { "Deleting…" } else { "Delete" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Generic form-field renderer driven by an [`AddonOption`] descriptor.
+/// Stores the current value back into a shared `values` map keyed by option id.
+#[component]
+fn AddonOptionField(
+    option: AddonOption,
+    values: Signal<std::collections::HashMap<String, serde_json::Value>>,
+) -> Element {
+    let id = option.id.clone();
+    let label = option.name.clone();
+    let desc = option.description.clone();
+    let id_change = id.clone();
+    let id_check = id.clone();
+    let id_num = id.clone();
+    let id_pwd = id.clone();
+    let id_text = id.clone();
+    let id_select = id.clone();
+
+    let current_str = values
+        .read()
+        .get(&id)
+        .and_then(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .or_else(|| Some(v.to_string()))
+        })
+        .unwrap_or_default();
+    let current_bool = values
+        .read()
+        .get(&id)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    rsx! {
+        div { class: "form-group",
+            label { class: "form-label", "{label}" }
+            match &option.kind {
+                AddonOptionType::Url | AddonOptionType::String => rsx! {
+                    input {
+                        class: "form-input",
+                        r#type: "text",
+                        value: "{current_str}",
+                        oninput: move |e| {
+                            let mut map = values.write();
+                            map.insert(id_change.clone(), serde_json::Value::String(e.value()));
+                        },
+                    }
+                },
+                AddonOptionType::Password => rsx! {
+                    input {
+                        class: "form-input",
+                        r#type: "password",
+                        value: "{current_str}",
+                        oninput: move |e| {
+                            let mut map = values.write();
+                            map.insert(id_pwd.clone(), serde_json::Value::String(e.value()));
+                        },
+                    }
+                },
+                AddonOptionType::Textarea => rsx! {
+                    textarea {
+                        class: "form-input",
+                        rows: 4,
+                        oninput: move |e| {
+                            let mut map = values.write();
+                            map.insert(id_text.clone(), serde_json::Value::String(e.value()));
+                        },
+                        "{current_str}"
+                    }
+                },
+                AddonOptionType::Number { .. } => rsx! {
+                    input {
+                        class: "form-input",
+                        r#type: "number",
+                        value: "{current_str}",
+                        oninput: move |e| {
+                            let mut map = values.write();
+                            if let Ok(n) = e.value().parse::<i64>() {
+                                map.insert(id_num.clone(), serde_json::json!(n));
+                            }
+                        },
+                    }
+                },
+                AddonOptionType::Boolean => rsx! {
+                    label { class: "form-toggle",
+                        input {
+                            r#type: "checkbox",
+                            checked: current_bool,
+                            onchange: move |e| {
+                                let mut map = values.write();
+                                map.insert(id_check.clone(), serde_json::Value::Bool(e.value() == "true"));
+                            },
+                        }
+                        span { "Enabled" }
+                    }
+                },
+                AddonOptionType::Select { options } => rsx! {
+                    select {
+                        class: "form-input",
+                        value: "{current_str}",
+                        onchange: move |e| {
+                            let mut map = values.write();
+                            map.insert(id_select.clone(), serde_json::Value::String(e.value()));
+                        },
+                        for so in options.iter().cloned() {
+                            option { value: "{so.value}", "{so.label}" }
+                        }
+                    }
+                },
+                AddonOptionType::MultiSelect { .. } | AddonOptionType::StringList => rsx! {
+                    div { class: "field-hint", "(complex inputs not yet supported in dashboard)" }
+                },
+            }
+            if let Some(d) = &desc {
+                div { class: "field-hint", "{d}" }
             }
         }
     }

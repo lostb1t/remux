@@ -2,11 +2,53 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::{
+    Addon, AddonKind, AddonKindMetadata, AddonKindRegistration, AddonResource,
+    AddonRow, LyricSearchRequest,
+};
 use remux_sdks::remux::models::{
     LyricDto, LyricLine, LyricMetadata, RemoteLyricInfoDto,
 };
 
-use super::{LyricProvider, LyricSearchRequest};
+pub struct LrcLibAddonKind;
+
+impl AddonKind for LrcLibAddonKind {
+    fn id(&self) -> &'static str {
+        "lrclib"
+    }
+
+    fn metadata(&self) -> AddonKindMetadata {
+        AddonKindMetadata {
+            id: "lrclib".to_string(),
+            display_name: "LRCLIB".to_string(),
+            description: "Free lyrics provider — synced and plain lyrics for tracks."
+                .to_string(),
+            icon: None,
+            supported_resources: vec![AddonResource::Lyrics],
+            supported_types: vec!["track".to_string()],
+            options: vec![],
+        }
+    }
+
+    fn instantiate(&self, row: &AddonRow) -> Result<Box<dyn Addon>> {
+        Ok(Box::new(LrcLibAddon {
+            row: row.clone(),
+            client: reqwest::Client::builder()
+                .user_agent("remux-server/1.0")
+                .build()
+                .expect("failed to build HTTP client"),
+        }))
+    }
+}
+
+inventory::submit! {
+    AddonKindRegistration(|| Box::new(LrcLibAddonKind))
+}
+
+pub struct LrcLibAddon {
+    row: AddonRow,
+    client: reqwest::Client,
+}
 
 const BASE: &str = "https://lrclib.net/api";
 const TICKS_PER_SECOND: f64 = 10_000_000.0;
@@ -73,28 +115,46 @@ fn track_to_dto(data: &LrcLibTrack) -> Option<LyricDto> {
     })
 }
 
-pub struct LrcLibProvider {
-    client: reqwest::Client,
-}
-
-impl Default for LrcLibProvider {
-    fn default() -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .user_agent("remux-server/1.0")
-                .build()
-                .expect("failed to build HTTP client"),
+impl LrcLibAddon {
+    async fn fetch_exact(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>> {
+        let mut url = reqwest::Url::parse(&format!("{}/get", BASE))?;
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("track_name", &req.title);
+            if let Some(a) = &req.artist {
+                q.append_pair("artist_name", a);
+            }
+            if let Some(a) = &req.album {
+                q.append_pair("album_name", a);
+            }
+            if let Some(d) = req.duration_secs {
+                q.append_pair("duration", &format!("{d:.2}"));
+            }
         }
+        tracing::debug!(url = %url, "lrclib: exact-match request");
+        let resp = self.client.get(url).send().await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            tracing::warn!(status = %resp.status(), "lrclib /get returned error");
+            return Ok(None);
+        }
+        Ok(resp
+            .json::<LrcLibTrack>()
+            .await
+            .ok()
+            .and_then(|t| track_to_dto(&t)))
     }
 }
 
 #[async_trait]
-impl LyricProvider for LrcLibProvider {
-    fn name(&self) -> &'static str {
-        "lrclib"
+impl Addon for LrcLibAddon {
+    fn row(&self) -> &AddonRow {
+        &self.row
     }
 
-    async fn fetch(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>> {
+    async fn lyric_fetch(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>> {
         tracing::debug!(
             title = %req.title,
             artist = ?req.artist,
@@ -103,16 +163,13 @@ impl LyricProvider for LrcLibProvider {
             "lrclib: fetching lyrics"
         );
 
-        // Try exact match first (requires duration to be within ~2s of lrclib's value).
         if let Some(dto) = self.fetch_exact(req).await? {
             tracing::debug!(title = %req.title, "lrclib: exact match found");
             return Ok(Some(dto));
         }
 
-        // Exact match missed (duration mismatch, missing album, etc.) — fall back to search
-        // and take the first result that has actual lyric content.
         tracing::debug!(title = %req.title, "lrclib: exact match missed, trying search fallback");
-        let results = self.search(req).await?;
+        let results = self.lyric_search(req).await?;
         let first = results.into_iter().next().map(|r| r.lyrics);
         if first.is_some() {
             tracing::info!(title = %req.title, "lrclib: found via search fallback");
@@ -122,7 +179,7 @@ impl LyricProvider for LrcLibProvider {
         Ok(first)
     }
 
-    async fn search(
+    async fn lyric_search(
         &self,
         req: &LyricSearchRequest,
     ) -> Result<Vec<RemoteLyricInfoDto>> {
@@ -161,7 +218,7 @@ impl LyricProvider for LrcLibProvider {
             .collect())
     }
 
-    async fn get_by_id(&self, id: &str) -> Result<Option<LyricDto>> {
+    async fn lyric_get_by_id(&self, id: &str) -> Result<Option<LyricDto>> {
         let url = format!("{}/get/{}", BASE, id);
         tracing::debug!(id, "lrclib: get by id");
         let resp = self.client.get(&url).send().await?;
@@ -178,37 +235,8 @@ impl LyricProvider for LrcLibProvider {
             .ok()
             .and_then(|t| track_to_dto(&t)))
     }
-}
 
-impl LrcLibProvider {
-    async fn fetch_exact(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>> {
-        let mut url = reqwest::Url::parse(&format!("{}/get", BASE))?;
-        {
-            let mut q = url.query_pairs_mut();
-            q.append_pair("track_name", &req.title);
-            if let Some(a) = &req.artist {
-                q.append_pair("artist_name", a);
-            }
-            if let Some(a) = &req.album {
-                q.append_pair("album_name", a);
-            }
-            if let Some(d) = req.duration_secs {
-                q.append_pair("duration", &format!("{d:.2}"));
-            }
-        }
-        tracing::debug!(url = %url, "lrclib: exact-match request");
-        let resp = self.client.get(url).send().await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        if !resp.status().is_success() {
-            tracing::warn!(status = %resp.status(), "lrclib /get returned error");
-            return Ok(None);
-        }
-        Ok(resp
-            .json::<LrcLibTrack>()
-            .await
-            .ok()
-            .and_then(|t| track_to_dto(&t)))
+    fn lyric_provider_id(&self) -> String {
+        "lrclib".to_string()
     }
 }

@@ -1,8 +1,8 @@
 #![allow(warnings)]
 
-pub mod aio;
 pub mod introdb;
 pub mod remux;
+pub mod stremio;
 pub mod tmdb;
 
 use http::{HeaderMap, HeaderValue, Method, header};
@@ -454,23 +454,23 @@ where
     }
 }
 
-impl From<aio::MediaType> for remux::MediaType {
-    fn from(kind: aio::MediaType) -> Self {
+impl From<stremio::MediaType> for remux::MediaType {
+    fn from(kind: stremio::MediaType) -> Self {
         match kind {
-            aio::MediaType::Movie => remux::MediaType::Movie,
-            aio::MediaType::Series => remux::MediaType::Series,
+            stremio::MediaType::Movie => remux::MediaType::Movie,
+            stremio::MediaType::Series => remux::MediaType::Series,
             _ => remux::MediaType::Unknown,
         }
     }
 }
 
-impl From<remux::MediaType> for aio::MediaType {
+impl From<remux::MediaType> for stremio::MediaType {
     fn from(kind: remux::MediaType) -> Self {
         match kind {
-            remux::MediaType::Movie => aio::MediaType::Movie,
-            remux::MediaType::Series => aio::MediaType::Series,
-            remux::MediaType::Episode => aio::MediaType::Series,
-            _ => aio::MediaType::Movie,
+            remux::MediaType::Movie => stremio::MediaType::Movie,
+            remux::MediaType::Series => stremio::MediaType::Series,
+            remux::MediaType::Episode => stremio::MediaType::Series,
+            _ => stremio::MediaType::Movie,
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::{BasicAuth, CachedEndpoint, ClientError, Endpoint, RestClient};
+use crate::{CachedEndpoint, ClientError, Endpoint, RestClient};
 use http::Method;
 
 use anyhow::Result;
@@ -54,6 +54,9 @@ pub enum ResourceType {
     Catalog,
 
     Meta,
+
+    Search,
+
     #[strum(to_string = "addon_catalog")]
     AddonCatalog,
 }
@@ -75,9 +78,10 @@ pub struct Manifest {
     pub id: String,
     pub name: String,
     pub version: String,
-    pub description: String,
+    pub description: Option<String>,
     pub resources: Vec<Resource>,
     pub types: Vec<String>,
+    #[serde(default)]
     pub catalogs: Vec<Catalog>,
     pub id_prefixes: Option<Vec<String>>,
     pub logo: Option<String>,
@@ -645,30 +649,25 @@ impl Episode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchQuery {
-    #[serde(rename = "type")]
+/// Standard Stremio streams endpoint: `GET /stream/{type}/{id}.json`
+#[derive(Debug, Clone)]
+pub struct StreamEndpoint {
     pub kind: MediaType,
     pub id: String,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchResponse {
-    pub success: bool,
-    pub detail: Option<serde_json::Value>,
-    pub data: SearchData,
-    pub error: Option<serde_json::Value>,
+impl Endpoint for StreamEndpoint {
+    type Output = StreamsResponse;
+
+    fn path(&self) -> String {
+        format!("/stream/{}/{}.json", self.kind, self.id)
+    }
 }
 
-#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchData {
-    pub filtered: i64,
-    pub results: Vec<Stream>,
-    pub errors: Vec<serde_json::Value>,
+pub struct StreamsResponse {
+    #[serde(default)]
+    pub streams: Vec<Stream>,
 }
 
 #[skip_serializing_none]
@@ -698,8 +697,8 @@ pub struct Stream {
     #[serde(default)]
     pub library: bool,
     pub addon: Option<String>,
-    #[serde(rename = "type")]
-    pub kind: String,
+    #[serde(rename = "type", default)]
+    pub kind: Option<String>,
     pub indexer: Option<String>,
     pub duration: Option<i64>,
     pub size: Option<i64>,
@@ -792,61 +791,8 @@ pub struct ParsedFile {
     pub season_pack: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Search {
-    #[serde(rename = "type")]
-    pub kind: MediaType,
-    pub id: String,
-    pub format: bool,
-}
-
-impl Endpoint for Search {
-    type Output = SearchResponse;
-
-    fn method(&self) -> Method {
-        Method::GET
-    }
-
-    fn path(&self) -> String {
-        "/search".to_string()
-    }
-
-    fn query(&self) -> Vec<(String, String)> {
-        let mut q = Vec::with_capacity(3);
-        q.push(("type".to_string(), self.kind.clone().to_string()));
-        q.push(("id".to_string(), self.id.clone()));
-        q.push((
-            "format".to_string(),
-            if self.format { "true" } else { "false" }.to_string(),
-        ));
-        q
-    }
-}
-
-pub fn search_client(
-    base: &str,
-    username: String,
-    password: String,
-) -> Result<RestClient<BasicAuth>, url::ParseError> {
-    Ok(RestClient::new(base)?.with_auth(BasicAuth { username, password }))
-}
-
 pub fn client(base: &str) -> Result<RestClient, url::ParseError> {
     Ok(RestClient::new(base)?)
-}
-
-pub async fn search(
-    client: &RestClient<BasicAuth>,
-    kind: impl Into<MediaType>,
-    id: impl Into<String>,
-) -> Result<SearchResponse, ClientError> {
-    client
-        .execute(Search {
-            kind: kind.into(),
-            id: id.into(),
-            format: true,
-        })
-        .await
 }
 
 #[cfg(test)]
