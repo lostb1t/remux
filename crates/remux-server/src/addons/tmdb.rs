@@ -359,7 +359,7 @@ async fn fetch_tmdb_meta(
                 external_id,
                 external_source: external_source.to_string(),
             }
-            .with_cache(Duration::from_secs(3600)),
+            .with_cache(Duration::from_secs(360)),
         )
         .await
     {
@@ -376,7 +376,7 @@ async fn fetch_tmdb_meta(
                 let movie_details = client
                     .execute(
                         sdks::tmdb::MovieEndpoint::new(m.id)
-                            .with_cache(Duration::from_secs(3600)),
+                            .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 let external_ids = db::ExternalIds {
@@ -454,7 +454,7 @@ async fn fetch_tmdb_meta(
                 let tv_details = client
                     .execute(
                         sdks::tmdb::SeriesEndpoint::new(s.id)
-                            .with_cache(Duration::from_secs(3600)),
+                            .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 let external_ids = db::ExternalIds {
@@ -562,7 +562,7 @@ async fn fetch_tmdb_meta(
                                 external_id: series_imdb.clone(),
                                 external_source: "imdb_id".to_string(),
                             }
-                            .with_cache(Duration::from_secs(3600)),
+                            .with_cache(Duration::from_secs(360)),
                         )
                         .await
                         .ok();
@@ -578,7 +578,7 @@ async fn fetch_tmdb_meta(
                 let ep_details = client
                     .execute(
                         sdks::tmdb::EpisodeEndpoint::new(tmdb_id, s_n, e_n)
-                            .with_cache(Duration::from_secs(3600)),
+                            .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 let external_ids = db::ExternalIds {
@@ -735,7 +735,7 @@ async fn search_tmdb_person(
                 ..Default::default()
             };
             ctx.store
-                .insert(id.to_string(), media.clone(), Duration::from_secs(3600));
+                .insert(id.to_string(), media.clone(), Duration::from_secs(360));
             media
         })
         .collect();
@@ -817,7 +817,7 @@ pub async fn tmdb_remote_images(
                             external_id,
                             external_source: external_source.to_string(),
                         }
-                        .with_cache(Duration::from_secs(3600)),
+                        .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 find.movie_results.first().map(|m| m.id)
@@ -828,7 +828,7 @@ pub async fn tmdb_remote_images(
                 let movie = client
                     .execute(
                         sdks::tmdb::MovieEndpoint::new(tmdb_id)
-                            .with_cache(Duration::from_secs(3600)),
+                            .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 if let Some(images) = &movie.images {
@@ -874,7 +874,7 @@ pub async fn tmdb_remote_images(
                             external_id,
                             external_source: external_source.to_string(),
                         }
-                        .with_cache(Duration::from_secs(3600)),
+                        .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 find.tv_results.first().map(|m| m.id)
@@ -885,7 +885,7 @@ pub async fn tmdb_remote_images(
                 let tv = client
                     .execute(
                         sdks::tmdb::SeriesEndpoint::new(tmdb_id)
-                            .with_cache(Duration::from_secs(3600)),
+                            .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 if let Some(images) = &tv.images {
@@ -909,7 +909,7 @@ pub async fn tmdb_remote_images(
                                 external_id: series_imdb.clone(),
                                 external_source: "imdb_id".to_string(),
                             }
-                            .with_cache(Duration::from_secs(3600)),
+                            .with_cache(Duration::from_secs(360)),
                         )
                         .await
                         .ok();
@@ -923,7 +923,7 @@ pub async fn tmdb_remote_images(
                 let ep = client
                     .execute(
                         sdks::tmdb::EpisodeEndpoint::new(tmdb_id, s_n, e_n)
-                            .with_cache(Duration::from_secs(3600)),
+                            .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
                 if let Some(images) = &ep.images {
