@@ -7,13 +7,16 @@ use remux_sdks::stremio::ResourceType;
 use serde::{Deserialize, Deserializer};
 use sqlx::SqlitePool;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 use uuid::Uuid;
 
 use super::{
-    Addon, AddonKind, AddonKindMetadata, AddonKindRegistration, AddonOption,
-    AddonOptionType, AddonResource, AddonRow, CatalogInfo, MusicSearchResult,
+    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
+    AddonOption, AddonOptionType, AddonResource, AddonRow, CatalogAddon, CatalogInfo,
+    HierarchyAddon, MetaAddon, MusicSearchResult, SearchAddon, StreamAddon,
+    SubtitleAddon,
 };
 use crate::db::{MetaRelation, MetaResult};
 use crate::sdks::CachedEndpoint;
@@ -56,7 +59,7 @@ impl AddonKind for StremioAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<Box<dyn Addon>> {
+    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
         let raw_url = row
             .config
             .get("manifest_url")
@@ -65,10 +68,21 @@ impl AddonKind for StremioAddonKind {
             .to_string();
         let manifest_url = StremioManifestUrl::try_new(raw_url)
             .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
-        Ok(Box::new(StremioAddon {
+        let addon = Arc::new(StremioAddon {
             row: row.clone(),
             manifest_url,
-        }))
+        });
+        Ok(AddonInstance {
+            addon: addon.clone(),
+            catalog: Some(addon.clone()),
+            meta: Some(addon.clone()),
+            hierarchy: Some(addon.clone()),
+            search: Some(addon.clone()),
+            subtitle: Some(addon.clone()),
+            stream: Some(addon),
+            segment: None,
+            lyric: None,
+        })
     }
 }
 
@@ -194,22 +208,62 @@ impl Addon for StremioAddon {
         };
         manifest.types.clone()
     }
+}
 
-    async fn meta_supports(&self, media: &db::Media) -> bool {
+#[async_trait]
+impl MetaAddon for StremioAddon {
+    async fn supports(&self, media: &db::Media) -> bool {
         let types = self.supported_types().await;
         stremio_type_for_kind(&media.kind)
             .map(|t| types.iter().any(|s| s == t))
             .unwrap_or(false)
     }
+    async fn fetch(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Option<MetaResult>> {
+        let svc = self.service()?;
+        stremio_meta_fetch(&svc, media, ctx).await
+    }
+}
 
-    async fn search_supports(&self, kind: &db::MediaKind) -> bool {
+#[async_trait]
+impl SearchAddon for StremioAddon {
+    async fn supports(&self, kind: &db::MediaKind) -> bool {
         let types = self.supported_types().await;
         stremio_type_for_kind(kind)
             .map(|t| types.iter().any(|s| s == t))
             .unwrap_or(false)
     }
+    async fn search(
+        &self,
+        kind: &db::MediaKind,
+        query: &str,
+        limit: usize,
+        ctx: &AppContext,
+    ) -> Result<Option<Vec<db::Media>>> {
+        let svc = self.service()?;
+        let results = stremio_search(&svc, kind, query, limit, ctx).await?;
+        Ok(Some(results))
+    }
 
-    async fn list_catalogs(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
+    async fn persist_result(
+        &self,
+        id: Uuid,
+        ctx: &AppContext,
+    ) -> Result<Option<db::Media>> {
+        let svc = match self.service() {
+            Ok(a) => a,
+            Err(_) => return Ok(None),
+        };
+        stremio_persist(&svc, id, ctx).await
+    }
+}
+
+#[async_trait]
+impl CatalogAddon for StremioAddon {
+    async fn list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         let svc = self.service()?;
         let manifest = svc.get_manifest().await?;
         Ok(manifest
@@ -226,7 +280,7 @@ impl Addon for StremioAddon {
             .collect())
     }
 
-    async fn catalog_stream(
+    async fn stream(
         &self,
         ctx: &AppContext,
         local_id: &str,
@@ -281,17 +335,11 @@ impl Addon for StremioAddon {
 
         Ok(Some(Box::pin(stream)))
     }
+}
 
-    async fn meta(
-        &self,
-        media: &db::Media,
-        ctx: &AppContext,
-    ) -> Result<Option<MetaResult>> {
-        let svc = self.service()?;
-        stremio_meta_fetch(&svc, media, ctx).await
-    }
-
-    fn hierarchy_supports(&self, root: &db::Media) -> bool {
+#[async_trait]
+impl HierarchyAddon for StremioAddon {
+    fn supports(&self, root: &db::Media) -> bool {
         root.kind == db::MediaKind::Series
     }
 
@@ -324,36 +372,15 @@ impl Addon for StremioAddon {
         let svc = self.service()?;
         stremio_persist_children_metadata(&svc, root, children, ctx).await
     }
+}
 
-    async fn search(
-        &self,
-        kind: &db::MediaKind,
-        query: &str,
-        limit: usize,
-        ctx: &AppContext,
-    ) -> Result<Option<Vec<db::Media>>> {
-        let svc = self.service()?;
-        let results = stremio_search(&svc, kind, query, limit, ctx).await?;
-        Ok(Some(results))
-    }
-
-    async fn persist_search_result(
-        &self,
-        id: Uuid,
-        ctx: &AppContext,
-    ) -> Result<Option<db::Media>> {
-        let svc = match self.service() {
-            Ok(a) => a,
-            Err(_) => return Ok(None),
-        };
-        stremio_persist(&svc, id, ctx).await
-    }
-
-    fn subtitles_supports(&self, media: &db::Media) -> bool {
+#[async_trait]
+impl SubtitleAddon for StremioAddon {
+    fn supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
     }
 
-    async fn subtitles(
+    async fn fetch(
         &self,
         media: &db::Media,
         _db: &SqlitePool,
@@ -361,8 +388,11 @@ impl Addon for StremioAddon {
         let svc = self.service()?;
         stremio_subtitles(&svc, media).await
     }
+}
 
-    fn streams_supports(&self, media: &db::Media) -> bool {
+#[async_trait]
+impl StreamAddon for StremioAddon {
+    fn supports(&self, media: &db::Media) -> bool {
         matches!(
             media.kind,
             db::MediaKind::Movie
@@ -372,7 +402,7 @@ impl Addon for StremioAddon {
         )
     }
 
-    async fn streams(
+    async fn resolve(
         &self,
         media: &db::Media,
         _ctx: &AppContext,

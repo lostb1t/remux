@@ -3,12 +3,14 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use sqlx::types::Json;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::process::Command;
 use uuid::Uuid;
 
 use super::{
-    Addon, AddonKind, AddonKindMetadata, AddonKindRegistration, AddonOption,
-    AddonOptionType, AddonResource, AddonRow,
+    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
+    AddonOption, AddonOptionType, AddonResource, AddonRow, MetaAddon, SearchAddon,
+    StreamAddon,
 };
 use crate::db::{MetaResult, StreamProviderInfo};
 use crate::{AppContext, api, db};
@@ -46,11 +48,22 @@ impl AddonKind for YtDlpAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<Box<dyn Addon>> {
-        Ok(Box::new(YtDlpAddon {
+    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
+        let addon = Arc::new(YtDlpAddon {
             row: row.clone(),
             executable: PathBuf::from("yt-dlp"),
-        }))
+        });
+        Ok(AddonInstance {
+            addon: addon.clone(),
+            catalog: None,
+            meta: Some(addon.clone()),
+            hierarchy: None,
+            search: Some(addon.clone()),
+            subtitle: None,
+            stream: Some(addon),
+            segment: None,
+            lyric: None,
+        })
     }
 }
 
@@ -643,20 +656,26 @@ impl Addon for YtDlpAddon {
     fn row(&self) -> &AddonRow {
         &self.row
     }
+}
 
-    async fn meta_supports(&self, media: &db::Media) -> bool {
+#[async_trait]
+impl MetaAddon for YtDlpAddon {
+    async fn supports(&self, media: &db::Media) -> bool {
         self.meta_can_refresh(media)
     }
 
-    async fn meta(
+    async fn fetch(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Option<MetaResult>> {
         self.fetch_meta(media).await
     }
+}
 
-    async fn search_supports(&self, kind: &db::MediaKind) -> bool {
+#[async_trait]
+impl SearchAddon for YtDlpAddon {
+    async fn supports(&self, kind: &db::MediaKind) -> bool {
         matches!(kind, db::MediaKind::Track | db::MediaKind::Album)
     }
 
@@ -674,19 +693,22 @@ impl Addon for YtDlpAddon {
         }
     }
 
-    async fn persist_search_result(
+    async fn persist_result(
         &self,
         _id: Uuid,
         _ctx: &AppContext,
     ) -> Result<Option<db::Media>> {
         Ok(None)
     }
+}
 
-    fn streams_supports(&self, media: &db::Media) -> bool {
+#[async_trait]
+impl StreamAddon for YtDlpAddon {
+    fn supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::Track
     }
 
-    async fn streams(
+    async fn resolve(
         &self,
         media: &db::Media,
         _ctx: &AppContext,

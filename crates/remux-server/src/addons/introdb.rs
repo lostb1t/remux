@@ -1,9 +1,11 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use remux_sdks::remux::models::MediaSegments;
+use std::sync::Arc;
 
 use super::{
-    Addon, AddonKind, AddonKindMetadata, AddonKindRegistration, AddonResource, AddonRow,
+    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
+    AddonResource, AddonRow, SegmentAddon,
 };
 use crate::{AppContext, db};
 
@@ -28,8 +30,19 @@ impl AddonKind for IntroDbAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<Box<dyn Addon>> {
-        Ok(Box::new(IntroDbAddon { row: row.clone() }))
+    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
+        let addon = Arc::new(IntroDbAddon { row: row.clone() });
+        Ok(AddonInstance {
+            addon: addon.clone(),
+            catalog: None,
+            meta: None,
+            hierarchy: None,
+            search: None,
+            subtitle: None,
+            stream: None,
+            segment: Some(addon),
+            lyric: None,
+        })
     }
 }
 
@@ -46,15 +59,18 @@ impl Addon for IntroDbAddon {
     fn row(&self) -> &AddonRow {
         &self.row
     }
+}
 
-    fn segments_supports(&self, media: &db::Media) -> bool {
+#[async_trait]
+impl SegmentAddon for IntroDbAddon {
+    fn supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Stream)
             && media.series_media_id.is_some()
             && media.parent_idx.is_some()
             && media.idx.is_some()
     }
 
-    async fn segments(
+    async fn fetch(
         &self,
         media: &db::Media,
         _ctx: &AppContext,

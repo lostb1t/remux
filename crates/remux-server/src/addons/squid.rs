@@ -3,9 +3,11 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use serde::Deserialize;
 use sqlx::types::Json;
+use std::sync::Arc;
 
 use super::{
-    Addon, AddonKind, AddonKindMetadata, AddonKindRegistration, AddonResource, AddonRow,
+    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
+    AddonResource, AddonRow, StreamAddon,
 };
 use crate::{AppContext, api, db};
 
@@ -245,14 +247,25 @@ impl AddonKind for SquidAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<Box<dyn Addon>> {
-        Ok(Box::new(SquidAddon {
+    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
+        let addon = Arc::new(SquidAddon {
             row: row.clone(),
             client: reqwest::Client::builder()
                 .user_agent("remux-server/1.0")
                 .timeout(std::time::Duration::from_secs(8))
                 .build()?,
-        }))
+        });
+        Ok(AddonInstance {
+            addon: addon.clone(),
+            catalog: None,
+            meta: None,
+            hierarchy: None,
+            search: None,
+            subtitle: None,
+            stream: Some(addon),
+            segment: None,
+            lyric: None,
+        })
     }
 }
 
@@ -272,12 +285,15 @@ impl Addon for SquidAddon {
     fn row(&self) -> &AddonRow {
         &self.row
     }
+}
 
-    fn streams_supports(&self, media: &db::Media) -> bool {
+#[async_trait]
+impl StreamAddon for SquidAddon {
+    fn supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::Track
     }
 
-    async fn streams(
+    async fn resolve(
         &self,
         media: &db::Media,
         _ctx: &AppContext,

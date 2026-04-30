@@ -235,13 +235,13 @@ pub async fn get_addon_catalogs(
     let addon = state
         .ctx
         .addons
-        .get(id)
+        .get_catalog(id)
         .await
         .ok_or_else(|| anyhow::anyhow!("addon not instantiated"))
         .context_bad_request("Bad Request", "Addon could not be instantiated")?;
 
     let available = addon
-        .list_catalogs(&state.ctx)
+        .list(&state.ctx)
         .await
         .context_internal("Catalog Error", "Failed to list addon catalogs")?;
 

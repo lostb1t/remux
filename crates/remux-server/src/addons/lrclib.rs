@@ -1,10 +1,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::sync::Arc;
 
 use super::{
-    Addon, AddonKind, AddonKindMetadata, AddonKindRegistration, AddonResource,
-    AddonRow, LyricSearchRequest,
+    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
+    AddonResource, AddonRow, LyricAddon, LyricSearchRequest,
 };
 use remux_sdks::remux::models::{
     LyricDto, LyricLine, LyricMetadata, RemoteLyricInfoDto,
@@ -30,14 +31,25 @@ impl AddonKind for LrcLibAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<Box<dyn Addon>> {
-        Ok(Box::new(LrcLibAddon {
+    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
+        let addon = Arc::new(LrcLibAddon {
             row: row.clone(),
             client: reqwest::Client::builder()
                 .user_agent("remux-server/1.0")
                 .build()
                 .expect("failed to build HTTP client"),
-        }))
+        });
+        Ok(AddonInstance {
+            addon: addon.clone(),
+            catalog: None,
+            meta: None,
+            hierarchy: None,
+            search: None,
+            subtitle: None,
+            stream: None,
+            segment: None,
+            lyric: Some(addon),
+        })
     }
 }
 
@@ -153,8 +165,11 @@ impl Addon for LrcLibAddon {
     fn row(&self) -> &AddonRow {
         &self.row
     }
+}
 
-    async fn lyric_fetch(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>> {
+#[async_trait]
+impl LyricAddon for LrcLibAddon {
+    async fn fetch(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>> {
         tracing::debug!(
             title = %req.title,
             artist = ?req.artist,
@@ -169,7 +184,7 @@ impl Addon for LrcLibAddon {
         }
 
         tracing::debug!(title = %req.title, "lrclib: exact match missed, trying search fallback");
-        let results = self.lyric_search(req).await?;
+        let results = <Self as LyricAddon>::search(self, req).await?;
         let first = results.into_iter().next().map(|r| r.lyrics);
         if first.is_some() {
             tracing::info!(title = %req.title, "lrclib: found via search fallback");
@@ -179,7 +194,7 @@ impl Addon for LrcLibAddon {
         Ok(first)
     }
 
-    async fn lyric_search(
+    async fn search(
         &self,
         req: &LyricSearchRequest,
     ) -> Result<Vec<RemoteLyricInfoDto>> {
@@ -218,7 +233,7 @@ impl Addon for LrcLibAddon {
             .collect())
     }
 
-    async fn lyric_get_by_id(&self, id: &str) -> Result<Option<LyricDto>> {
+    async fn get_by_id(&self, id: &str) -> Result<Option<LyricDto>> {
         let url = format!("{}/get/{}", BASE, id);
         tracing::debug!(id, "lrclib: get by id");
         let resp = self.client.get(&url).send().await?;
@@ -236,7 +251,7 @@ impl Addon for LrcLibAddon {
             .and_then(|t| track_to_dto(&t)))
     }
 
-    fn lyric_provider_id(&self) -> String {
+    fn provider_id(&self) -> String {
         "lrclib".to_string()
     }
 }

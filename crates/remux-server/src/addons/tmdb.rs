@@ -1,11 +1,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 use uuid::Uuid;
 
 use super::{
-    Addon, AddonKind, AddonKindMetadata, AddonKindRegistration, AddonResource, AddonRow,
+    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
+    AddonResource, AddonRow, MetaAddon, SearchAddon,
 };
 use crate::db::{MetaRelation, MetaResult};
 use crate::sdks::CachedEndpoint;
@@ -38,8 +40,19 @@ impl AddonKind for TmdbAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<Box<dyn Addon>> {
-        Ok(Box::new(TmdbAddon { row: row.clone() }))
+    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
+        let addon = Arc::new(TmdbAddon { row: row.clone() });
+        Ok(AddonInstance {
+            addon: addon.clone(),
+            catalog: None,
+            meta: Some(addon.clone()),
+            hierarchy: None,
+            search: Some(addon),
+            subtitle: None,
+            stream: None,
+            segment: None,
+            lyric: None,
+        })
     }
 }
 
@@ -63,15 +76,18 @@ impl Addon for TmdbAddon {
     fn row(&self) -> &AddonRow {
         &self.row
     }
+}
 
-    async fn meta_supports(&self, media: &db::Media) -> bool {
+#[async_trait]
+impl MetaAddon for TmdbAddon {
+    async fn supports(&self, media: &db::Media) -> bool {
         matches!(
             media.kind,
             db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
         )
     }
 
-    async fn meta(
+    async fn fetch(
         &self,
         media: &db::Media,
         ctx: &AppContext,
@@ -79,38 +95,7 @@ impl Addon for TmdbAddon {
         fetch_tmdb_meta(media, ctx).await
     }
 
-    async fn search_supports(&self, kind: &db::MediaKind) -> bool {
-        matches!(kind, db::MediaKind::Person)
-    }
-
-    async fn search(
-        &self,
-        kind: &db::MediaKind,
-        query: &str,
-        limit: usize,
-        ctx: &AppContext,
-    ) -> Result<Option<Vec<db::Media>>> {
-        if !matches!(kind, db::MediaKind::Person) {
-            return Ok(None);
-        }
-        Ok(Some(search_tmdb_person(query, limit, ctx).await?))
-    }
-
-    async fn persist_search_result(
-        &self,
-        id: Uuid,
-        ctx: &AppContext,
-    ) -> Result<Option<db::Media>> {
-        let mut media = match ctx.store.get::<db::Media>(id.to_string()) {
-            Some(m) => m,
-            None => return Ok(None),
-        };
-        media.save(&ctx.db).await.ok();
-        ctx.store.delete(id.to_string());
-        Ok(Some(media))
-    }
-
-    async fn refresh_tree_meta(
+    async fn refresh_tree(
         &self,
         series: &db::Media,
         children: &mut [db::Media],
@@ -152,6 +137,40 @@ impl Addon for TmdbAddon {
                 .and_then(|season| tmdb_image(season.poster_path.as_deref()));
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl SearchAddon for TmdbAddon {
+    async fn supports(&self, kind: &db::MediaKind) -> bool {
+        matches!(kind, db::MediaKind::Person)
+    }
+
+    async fn search(
+        &self,
+        kind: &db::MediaKind,
+        query: &str,
+        limit: usize,
+        ctx: &AppContext,
+    ) -> Result<Option<Vec<db::Media>>> {
+        if !matches!(kind, db::MediaKind::Person) {
+            return Ok(None);
+        }
+        Ok(Some(search_tmdb_person(query, limit, ctx).await?))
+    }
+
+    async fn persist_result(
+        &self,
+        id: Uuid,
+        ctx: &AppContext,
+    ) -> Result<Option<db::Media>> {
+        let mut media = match ctx.store.get::<db::Media>(id.to_string()) {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+        media.save(&ctx.db).await.ok();
+        ctx.store.delete(id.to_string());
+        Ok(Some(media))
     }
 }
 

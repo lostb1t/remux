@@ -5,13 +5,15 @@ use futures::Stream;
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 use uuid::Uuid;
 
 use super::{
-    Addon, AddonKind, AddonKindMetadata, AddonKindRegistration, AddonOption,
-    AddonOptionType, AddonResource, AddonRow, CatalogInfo, MusicSearchResult,
+    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
+    AddonOption, AddonOptionType, AddonResource, AddonRow, CatalogAddon, CatalogInfo,
+    HierarchyAddon, MetaAddon, MusicSearchResult, SearchAddon,
 };
 use crate::db::MetaResult;
 use crate::{AppContext, common, db};
@@ -351,11 +353,22 @@ impl AddonKind for DeezerAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<Box<dyn Addon>> {
-        Ok(Box::new(DeezerAddon {
+    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
+        let addon = Arc::new(DeezerAddon {
             row: row.clone(),
             client: build_client(),
-        }))
+        });
+        Ok(AddonInstance {
+            addon: addon.clone(),
+            catalog: Some(addon.clone()),
+            meta: Some(addon.clone()),
+            hierarchy: Some(addon.clone()),
+            search: Some(addon),
+            subtitle: None,
+            stream: None,
+            segment: None,
+            lyric: None,
+        })
     }
 }
 
@@ -1190,8 +1203,11 @@ impl Addon for DeezerAddon {
     fn row(&self) -> &AddonRow {
         &self.row
     }
+}
 
-    async fn list_catalogs(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
+#[async_trait]
+impl CatalogAddon for DeezerAddon {
+    async fn list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         Ok(self
             .playlists()
             .into_iter()
@@ -1202,7 +1218,7 @@ impl Addon for DeezerAddon {
             .collect())
     }
 
-    async fn catalog_stream(
+    async fn stream(
         &self,
         ctx: &AppContext,
         local_id: &str,
@@ -1212,12 +1228,15 @@ impl Addon for DeezerAddon {
         }
         Ok(Some(self.fetch_playlist_stream(ctx, local_id).await?))
     }
+}
 
-    async fn meta_supports(&self, media: &db::Media) -> bool {
+#[async_trait]
+impl MetaAddon for DeezerAddon {
+    async fn supports(&self, media: &db::Media) -> bool {
         self.meta_can_refresh(media)
     }
 
-    async fn meta(
+    async fn fetch(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
@@ -1232,8 +1251,11 @@ impl Addon for DeezerAddon {
             _ => Ok(None),
         }
     }
+}
 
-    fn hierarchy_supports(&self, root: &db::Media) -> bool {
+#[async_trait]
+impl HierarchyAddon for DeezerAddon {
+    fn supports(&self, root: &db::Media) -> bool {
         matches!(root.kind, db::MediaKind::Artist | db::MediaKind::Album)
     }
 
@@ -1242,7 +1264,7 @@ impl Addon for DeezerAddon {
         root: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
-        if !self.hierarchy_supports(root) {
+        if !<Self as HierarchyAddon>::supports(self, root) {
             return Ok(None);
         }
         let children = match root.kind {
@@ -1256,8 +1278,11 @@ impl Addon for DeezerAddon {
             Ok(Some(children))
         }
     }
+}
 
-    async fn search_supports(&self, kind: &db::MediaKind) -> bool {
+#[async_trait]
+impl SearchAddon for DeezerAddon {
+    async fn supports(&self, kind: &db::MediaKind) -> bool {
         matches!(
             kind,
             db::MediaKind::Track | db::MediaKind::Album | db::MediaKind::Artist
@@ -1285,7 +1310,7 @@ impl Addon for DeezerAddon {
         }
     }
 
-    async fn persist_search_result(
+    async fn persist_result(
         &self,
         id: Uuid,
         ctx: &AppContext,

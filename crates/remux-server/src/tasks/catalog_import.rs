@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 
 use super::catalog_import_shared::{catalog_membership_tag, import_catalog_items};
 use super::{ProgressReporter, Task, TaskService};
-use crate::addons::{AddonResource, make_media_id};
+use crate::addons::make_media_id;
 use crate::{AppContext, db};
 
 pub struct CatalogImportTask;
@@ -36,7 +36,7 @@ impl Task for CatalogImportTask {
             .and_then(|c| c.catalog_max_items)
             .unwrap_or(250) as usize;
 
-        let addons = ctx.addons.for_resource(AddonResource::Catalog).await;
+        let addons = ctx.addons.catalog_addons().await;
         let total_work = addons.len().max(1);
         let mut valid_tags: HashSet<String> = HashSet::new();
         let mut total_counts: HashMap<String, usize> = HashMap::new();
@@ -51,7 +51,7 @@ impl Task for CatalogImportTask {
 
             let prefix = format!("addon:{addon_id}:");
 
-            let available = match addon.list_catalogs(&ctx).await {
+            let available = match addon.list(&ctx).await {
                 Ok(v) => v,
                 Err(e) => {
                     warn!(addon = %addon_id, error = %e, "failed to list addon catalogs, skipping");

@@ -1,9 +1,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use remux_sdks::remux::models::MediaSegments;
+use std::sync::Arc;
 
 use super::{
-    Addon, AddonKind, AddonKindMetadata, AddonKindRegistration, AddonResource, AddonRow,
+    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
+    AddonResource, AddonRow, SegmentAddon,
 };
 use crate::{AppContext, db};
 
@@ -28,8 +30,19 @@ impl AddonKind for ProbeAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<Box<dyn Addon>> {
-        Ok(Box::new(ProbeAddon { row: row.clone() }))
+    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
+        let addon = Arc::new(ProbeAddon { row: row.clone() });
+        Ok(AddonInstance {
+            addon: addon.clone(),
+            catalog: None,
+            meta: None,
+            hierarchy: None,
+            search: None,
+            subtitle: None,
+            stream: None,
+            segment: Some(addon),
+            lyric: None,
+        })
     }
 }
 
@@ -46,12 +59,15 @@ impl Addon for ProbeAddon {
     fn row(&self) -> &AddonRow {
         &self.row
     }
+}
 
-    fn segments_supports(&self, media: &db::Media) -> bool {
+#[async_trait]
+impl SegmentAddon for ProbeAddon {
+    fn supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Movie)
     }
 
-    async fn segments(
+    async fn fetch(
         &self,
         media: &db::Media,
         ctx: &AppContext,
