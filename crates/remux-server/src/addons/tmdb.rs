@@ -122,7 +122,7 @@ impl MetaAddon for TmdbAddon {
         let tv_details = client
             .execute(
                 sdks::tmdb::SeriesEndpoint::new(tmdb_id)
-                    .with_cache(Duration::from_secs(3600)),
+                    .with_cache(Duration::from_secs(360)),
             )
             .await?;
         for child in children.iter_mut() {
