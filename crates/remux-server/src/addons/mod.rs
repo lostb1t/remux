@@ -17,7 +17,9 @@ use futures::Stream;
 use sqlx::SqlitePool;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
+use tracing::info;
 use uuid::Uuid;
 
 pub use crate::db::{MetaRelation, MetaResult};
@@ -300,7 +302,18 @@ impl AddonRegistry {
             segments: vec![],
             lyrics: vec![],
         };
-        for row in rows {
+        for mut row in rows {
+            // For stremio addons, ensure manifest types are cached in config so
+            // the sync supports() checks can filter by type without an HTTP call.
+            if row.kind == "stremio" {
+                if let Some((resources, types)) =
+                    stremio::manifest_info_for_row(&row).await
+                {
+                    row.resources = resources;
+                    row.config["manifest_types"] =
+                        serde_json::to_value(&types).unwrap_or_default();
+                }
+            }
             let Some(kind) = kinds.iter().find(|k| k.id() == row.kind) else {
                 tracing::warn!(addon_id = %row.id, kind = %row.kind, "skipping addon row with unknown kind");
                 continue;
@@ -659,7 +672,7 @@ impl AddonRegistry {
         Ok(all_streams)
     }
 
-    pub async fn refresh_sources(
+    pub async fn refresh_streams(
         &self,
         media: &db::Media,
         ctx: &AppContext,
@@ -671,10 +684,14 @@ impl AddonRegistry {
                 return Ok(());
             }
         }
+
+        let instant = Instant::now();
         let raw = self.get_streams(media, ctx).await?;
+        info!(streams = %raw.len(), elapsed = ?instant.elapsed(), "streams synced");
         if raw.is_empty() {
             return Ok(());
         }
+
         let now = chrono::Utc::now().naive_utc();
         let sources: Vec<db::Media> = raw
             .into_iter()

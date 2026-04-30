@@ -142,8 +142,9 @@ pub async fn manifest_info_for_row(
 }
 
 pub async fn init_resources_from_manifest(db: &sqlx::SqlitePool, row: &mut AddonRow) {
-    if let Some((resources, _)) = manifest_info_for_row(row).await {
+    if let Some((resources, types)) = manifest_info_for_row(row).await {
         row.resources = resources;
+        row.config["manifest_types"] = serde_json::to_value(&types).unwrap_or_default();
         if let Err(e) = row.update(db).await {
             warn!(addon = %row.id, error = %e, "failed to persist initial resources");
         }
@@ -179,6 +180,16 @@ pub struct StremioAddon {
 impl StremioAddon {
     fn service(&self) -> Result<stremio_service::StremioService> {
         stremio_service::StremioService::from_url(&self.manifest_url)
+    }
+
+    /// Returns manifest types from the stored config, falling back to an empty
+    /// list (which means "unknown — treat as permissive" at call sites).
+    fn manifest_types(&self) -> Vec<String> {
+        self.row
+            .config
+            .get("manifest_types")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default()
     }
 }
 
@@ -377,6 +388,9 @@ impl HierarchyAddon for StremioAddon {
 #[async_trait]
 impl SubtitleAddon for StremioAddon {
     fn supports(&self, media: &db::Media) -> bool {
+        if !self.row.resources.contains(&AddonResource::Subtitles) {
+            return false;
+        }
         matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
     }
 
@@ -393,13 +407,27 @@ impl SubtitleAddon for StremioAddon {
 #[async_trait]
 impl StreamAddon for StremioAddon {
     fn supports(&self, media: &db::Media) -> bool {
-        matches!(
+        if !self.row.resources.contains(&AddonResource::Streams) {
+            return false;
+        }
+        let kind_matches = matches!(
             media.kind,
             db::MediaKind::Movie
                 | db::MediaKind::Series
                 | db::MediaKind::Episode
                 | db::MediaKind::Track
-        )
+        );
+        if !kind_matches {
+            return false;
+        }
+        // If manifest types are known, check the media's stremio type is supported.
+        let types = self.manifest_types();
+        if types.is_empty() {
+            return true; // types not yet cached — be permissive
+        }
+        stremio_type_for_kind(&media.kind)
+            .map(|t| types.iter().any(|s| s == t))
+            .unwrap_or(false)
     }
 
     async fn resolve(
@@ -1141,15 +1169,30 @@ async fn stremio_streams(
 ) -> Result<Vec<db::Media>> {
     use crate::db::StreamProviderInfo;
 
-    let media_type = db::media_kind_to_stremio(&media.kind);
-    let id = media
-        .external_ids
-        .imdb
-        .clone()
-        .or_else(|| media.media_id.clone())
-        .ok_or_else(|| {
-            anyhow!("media has no identifiable ID for Stremio stream lookup")
-        })?;
+    let (media_type, id) = match media.kind {
+        db::MediaKind::Episode => {
+            let series_id = media.series_media_id.as_deref().ok_or_else(|| {
+                anyhow!("episode has no series_media_id for stream lookup")
+            })?;
+            let season = media.parent_idx.unwrap_or(1);
+            let episode = media.idx.unwrap_or(1);
+            (
+                sdks::stremio::MediaType::Series,
+                format!("{}:{}:{}", series_id, season, episode),
+            )
+        }
+        _ => {
+            let id = media
+                .external_ids
+                .imdb
+                .clone()
+                .or_else(|| media.media_id.clone())
+                .ok_or_else(|| {
+                    anyhow!("media has no identifiable ID for Stremio stream lookup")
+                })?;
+            (db::media_kind_to_stremio(&media.kind), id)
+        }
+    };
 
     let streams = svc.get_streams(media_type, id).await?;
 

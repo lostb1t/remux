@@ -263,7 +263,11 @@ impl Endpoint for SubtitlesEndpoint {
     type Output = SubtitlesResponse;
 
     fn path(&self) -> String {
-        format!("/subtitles/{}/{}.json", self.media_type, self.imdb_id)
+        let id = match (self.season, self.episode) {
+            (Some(s), Some(e)) => format!("{}:{}:{}", self.imdb_id, s, e),
+            _ => self.imdb_id.clone(),
+        };
+        format!("/subtitles/{}/{}.json", self.media_type, id)
     }
 }
 

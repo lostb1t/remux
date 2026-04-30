@@ -715,7 +715,7 @@ pub async fn refresh_item(
         state
             .ctx
             .addons
-            .refresh_sources(&media, &state.ctx)
+            .refresh_streams(&media, &state.ctx)
             .await
             .inspect_err(|e| error!("Could not refresh streams: {e:#}"));
 
@@ -1048,7 +1048,7 @@ pub async fn item(
     id: Uuid,
     fields: Option<&[api::ItemFields]>,
 ) -> Result<Option<api::BaseItemDto>> {
-    let want_sources = fields
+    let want_streams = fields
         .map(|f| f.contains(&api::ItemFields::MediaSources))
         .unwrap_or(true);
     let mut media = match db::Media::get_by_filter(
@@ -1117,7 +1117,7 @@ pub async fn item(
             media.kind,
             db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
         );
-    let needs_sources = want_sources
+    let needs_streams = want_streams
         && matches!(
             media.kind,
             db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
@@ -1137,7 +1137,7 @@ pub async fn item(
             }
         },
         async {
-            if needs_sources {
+            if needs_streams {
                 if media.kind == db::MediaKind::Movie
                     || media.kind == db::MediaKind::Episode
                 {
@@ -1146,7 +1146,7 @@ pub async fn item(
                 state
                     .ctx
                     .addons
-                    .refresh_sources(&media, &state.ctx)
+                    .refresh_streams(&media, &state.ctx)
                     .await
                     .log_err("failed to refresh sources");
             }
