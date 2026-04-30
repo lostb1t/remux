@@ -23,12 +23,23 @@ impl Task for RefreshLibraryTask {
         &self,
         ctx: AppContext,
         _tasks: Arc<TaskService>,
-        _progress: ProgressReporter,
+        progress: ProgressReporter,
     ) -> Result<()> {
         const CHUNK_SIZE: u32 = 100;
+        let mut total: Option<u32> = None;
+        let mut processed = 0u32;
         let mut offset = 0u32;
         loop {
-            let batch = db::Media::get_refreshable(&ctx.db, CHUNK_SIZE, offset).await?;
+            let (batch, count) = db::Media::get_refreshable(
+                &ctx.db,
+                CHUNK_SIZE,
+                offset,
+                total.is_none(),
+            )
+            .await?;
+            if let Some(c) = count {
+                total = Some(c.max(1));
+            }
             if batch.is_empty() {
                 break;
             }
@@ -36,6 +47,10 @@ impl Task for RefreshLibraryTask {
             ctx.addons
                 .process_meta_batch(batch, &ctx, false, true)
                 .await?;
+            processed += fetched;
+            if let Some(t) = total {
+                progress.set(processed as f64 / t as f64 * 100.0);
+            }
             if fetched < CHUNK_SIZE {
                 break;
             }

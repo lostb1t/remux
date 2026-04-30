@@ -781,10 +781,8 @@ fn TasksCard(
 
     let app_state_effect = app_state.clone();
     use_effect(move || {
-        let _r = *refresh.read(); // re-run effect when refresh increments
-        if tasks.read().is_empty() {
-            loading.set(true);
-        }
+        let _r = *refresh.read(); // only signal read — re-runs on start/stop, not on poll updates
+        loading.set(true);
         let client = app_state_effect.client.clone();
         spawn(async move {
             match client
@@ -828,7 +826,7 @@ fn TasksCard(
                 span { class: "card-title", if running_only { "Running Tasks" } else { "Scheduled Tasks" } }
             }
             div { class: "card-body tight",
-                if *loading.read() {
+                if *loading.read() && tasks.read().is_empty() {
                     span { class: "loading-text", "Loading…" }
                 } else if let Some(err) = error.read().as_ref() {
                     span { class: "loading-text", style: "color:var(--error)", "{err}" }

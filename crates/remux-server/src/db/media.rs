@@ -1934,21 +1934,31 @@ impl Media {
         db: &SqlitePool,
         limit: u32,
         offset: u32,
-    ) -> Result<Vec<Self>> {
-        let rows = sqlx::query_as::<_, Self>(
-            r#"
-        SELECT *
-        FROM media
+        total_count: bool,
+    ) -> Result<(Vec<Self>, Option<u32>)> {
+        const WHERE: &str = r#"
         WHERE kind IN (?, ?)
           AND (
             refreshed_at IS NULL
             OR (kind = 'series' AND (status IS NULL OR status != 'ended'))
             OR digital_released_at IS NULL
-          )
-        ORDER BY id
-        LIMIT ? OFFSET ?
-        "#,
-        )
+          )"#;
+
+        let total = if total_count {
+            let row: (i64,) =
+                sqlx::query_as(&format!("SELECT COUNT(*) FROM media {WHERE}"))
+                    .bind(MediaKind::Movie)
+                    .bind(MediaKind::Series)
+                    .fetch_one(db)
+                    .await?;
+            Some(row.0 as u32)
+        } else {
+            None
+        };
+
+        let rows = sqlx::query_as::<_, Self>(&format!(
+            "SELECT * FROM media {WHERE} ORDER BY id LIMIT ? OFFSET ?"
+        ))
         .bind(MediaKind::Movie)
         .bind(MediaKind::Series)
         .bind(limit)
@@ -1956,7 +1966,7 @@ impl Media {
         .fetch_all(db)
         .await?;
 
-        Ok(rows)
+        Ok((rows, total))
     }
 
     pub async fn get_by_jellyfin_filter(
