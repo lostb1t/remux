@@ -782,7 +782,9 @@ fn TasksCard(
     let app_state_effect = app_state.clone();
     use_effect(move || {
         let _r = *refresh.read(); // re-run effect when refresh increments
-        loading.set(true);
+        if tasks.read().is_empty() {
+            loading.set(true);
+        }
         let client = app_state_effect.client.clone();
         spawn(async move {
             match client
@@ -798,6 +800,25 @@ fn TasksCard(
                 Err(e) => error.set(Some(format!("Failed to fetch tasks: {e}"))),
             }
             loading.set(false);
+        });
+    });
+
+    // Background polling — silently refreshes task list every 3 s
+    let app_state_poll = app_state.clone();
+    use_effect(move || {
+        let client = app_state_poll.client.clone();
+        spawn(async move {
+            loop {
+                gloo_timers::future::sleep(std::time::Duration::from_secs(5)).await;
+                if let Ok(t) = client
+                    .execute(GetScheduledTasks {
+                        is_hidden: Some(false),
+                    })
+                    .await
+                {
+                    tasks.set(t);
+                }
+            }
         });
     });
 
@@ -1083,6 +1104,7 @@ fn DashboardLayout() -> Element {
     let mut anfiteatro_installing = use_signal(|| false);
     let mut anfiteatro_install_error: Signal<Option<String>> = use_signal(|| None);
     let mut anfiteatro_install_success: Signal<Option<String>> = use_signal(|| None);
+    let mut show_update_modal = use_signal(|| false);
     let route = use_route::<Route>();
     let release_check_client = app_state.client.clone();
     let install_client = app_state.client.clone();
@@ -1191,20 +1213,29 @@ fn DashboardLayout() -> Element {
                 }
 
                 div { class: "sidebar-footer",
-                    a {
-                        class: "btn btn-ghost",
-                        style: "width:100%;margin-bottom:8px",
-                        href: "#",
-                        onclick: move |e| {
-                            e.prevent_default();
-                            let payload = AnfiteatroHandoff {
-                                token: anfiteatro_handoff_token.clone(),
-                                user_id: anfiteatro_handoff_user_id.clone(),
-                            };
-                            let _ = SessionStorage::set(ANFITEATRO_HANDOFF_KEY, payload);
-                            let _ = web_sys::window().unwrap().location().set_href("/anfiteatro/");
-                        },
-                        "Anfiteatro Web"
+                    div { class: "sidebar-anfi-row",
+                        a {
+                            class: "btn btn-ghost sidebar-anfi-btn",
+                            href: "#",
+                            onclick: move |e| {
+                                e.prevent_default();
+                                let payload = AnfiteatroHandoff {
+                                    token: anfiteatro_handoff_token.clone(),
+                                    user_id: anfiteatro_handoff_user_id.clone(),
+                                };
+                                let _ = SessionStorage::set(ANFITEATRO_HANDOFF_KEY, payload);
+                                let _ = web_sys::window().unwrap().location().set_href("/anfiteatro/");
+                            },
+                            "Anfiteatro Web"
+                        }
+                        if anfiteatro_release.read().as_ref().map(|s| s.update_available).unwrap_or(false) {
+                            button {
+                                class: "btn btn-ghost sidebar-update-btn",
+                                title: "Anfiteatro update available",
+                                onclick: move |_| show_update_modal.set(true),
+                                "⬆"
+                            }
+                        }
                     }
                     a {
                         class: "btn btn-ghost",
@@ -1238,60 +1269,105 @@ fn DashboardLayout() -> Element {
                     h2 { class: "main-title", "{page_title}" }
                 }
 
-                if let Some(msg) = anfiteatro_install_error.read().as_ref() {
-                    div { class: "inline-alert alert-error", "{msg}" }
-                }
-
                 if let Some(msg) = anfiteatro_install_success.read().as_ref() {
                     div { class: "inline-alert alert-success", "{msg}" }
                 }
 
-                if let Some(status) = anfiteatro_release.read().as_ref() {
-                    if status.update_available {
-                        div { class: "update-banner",
-                            div { class: "update-banner-copy",
-                                div { class: "update-banner-title", "Anfiteatro update available" }
-                                div { class: "update-banner-meta",
-                                    "Installed: {status.local_version_display.as_deref().unwrap_or(\"unknown\")}"
-                                    " | Latest commit: {status.latest_commit.as_deref().map(fmt_commit_short).or_else(|| status.latest_version_tag.clone()).unwrap_or_else(|| \"unknown\".to_string())}"
+                div { class: "shell",
+                    Outlet::<Route> {}
+                }
+            }
+        }
+
+        // Anfiteatro update modal
+        if *show_update_modal.read() {
+            {
+                let status_opt = anfiteatro_release.read().clone();
+                if let Some(status) = status_opt {
+                    let installed = status.local_version_display.as_deref().unwrap_or("unknown").to_string();
+                    let latest = status.latest_commit.as_deref().map(fmt_commit_short)
+                        .or_else(|| status.latest_version_tag.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let release_url = status.latest_release_url.clone();
+                    rsx! {
+                        div {
+                            class: "modal-backdrop",
+                            onclick: move |_| {
+                                show_update_modal.set(false);
+                                anfiteatro_install_error.set(None);
+                            },
+                            div {
+                                class: "modal",
+                                onclick: move |e| e.stop_propagation(),
+                                div { class: "modal-header",
+                                    h2 { class: "modal-title", "Anfiteatro Update Available" }
                                 }
-                            }
-                            button {
-                                class: "btn btn-primary",
-                                disabled: *anfiteatro_installing.read(),
-                                onclick: move |_| {
-                                    if *anfiteatro_installing.read() {
-                                        return;
+                                div { class: "modal-body",
+                                    div { class: "kv-row",
+                                        span { class: "kv-label", "Installed" }
+                                        span { class: "kv-value font-mono", "{installed}" }
                                     }
-
-                                    anfiteatro_installing.set(true);
-                                    anfiteatro_install_error.set(None);
-                                    anfiteatro_install_success.set(None);
-
-                                    let client = install_client.clone();
-                                    spawn(async move {
-                                        match client.execute(InstallLatestAnfiteatroRelease).await {
-                                            Ok(result) => {
-                                                anfiteatro_install_success.set(Some(result.message));
-                                                if let Ok(status) = client.execute(GetAnfiteatroReleaseStatus).await {
-                                                    anfiteatro_release.set(Some(status));
-                                                }
-                                            }
-                                            Err(err) => {
-                                                anfiteatro_install_error.set(Some(format!("Install failed: {err}")));
+                                    div { class: "kv-row",
+                                        span { class: "kv-label", "Latest" }
+                                        span { class: "kv-value font-mono", "{latest}" }
+                                    }
+                                    if let Some(url) = release_url {
+                                        div { class: "kv-row",
+                                            a {
+                                                href: "{url}",
+                                                target: "_blank",
+                                                rel: "noopener noreferrer",
+                                                style: "font-size:.82rem;color:var(--primary)",
+                                                "View release notes ↗"
                                             }
                                         }
-                                        anfiteatro_installing.set(false);
-                                    });
-                                },
-                                if *anfiteatro_installing.read() { "Installing..." } else { "Install update" }
+                                    }
+                                    if let Some(msg) = anfiteatro_install_error.read().as_ref() {
+                                        div { class: "inline-alert alert-error", "{msg}" }
+                                    }
+                                }
+                                div { class: "modal-footer",
+                                    button {
+                                        class: "btn btn-ghost",
+                                        onclick: move |_| {
+                                            show_update_modal.set(false);
+                                            anfiteatro_install_error.set(None);
+                                        },
+                                        "Close"
+                                    }
+                                    button {
+                                        class: "btn btn-primary",
+                                        disabled: *anfiteatro_installing.read(),
+                                        onclick: move |_| {
+                                            if *anfiteatro_installing.read() { return; }
+                                            anfiteatro_installing.set(true);
+                                            anfiteatro_install_error.set(None);
+                                            anfiteatro_install_success.set(None);
+                                            let client = install_client.clone();
+                                            spawn(async move {
+                                                match client.execute(InstallLatestAnfiteatroRelease).await {
+                                                    Ok(result) => {
+                                                        anfiteatro_install_success.set(Some(result.message));
+                                                        if let Ok(s) = client.execute(GetAnfiteatroReleaseStatus).await {
+                                                            anfiteatro_release.set(Some(s));
+                                                        }
+                                                        show_update_modal.set(false);
+                                                    }
+                                                    Err(err) => {
+                                                        anfiteatro_install_error.set(Some(format!("Install failed: {err}")));
+                                                    }
+                                                }
+                                                anfiteatro_installing.set(false);
+                                            });
+                                        },
+                                        if *anfiteatro_installing.read() { "Installing…" } else { "Install Update" }
+                                    }
+                                }
                             }
                         }
                     }
-                }
-
-                div { class: "shell",
-                    Outlet::<Route> {}
+                } else {
+                    rsx! {}
                 }
             }
         }
