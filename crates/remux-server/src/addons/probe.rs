@@ -1,73 +1,60 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use remux_sdks::remux::models::MediaSegments;
+use remux_sdks::stremio::MediaType;
 use std::sync::Arc;
 
 use super::{
-    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
-    AddonResource, AddonRow, SegmentAddon,
+    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, ResourceType,
 };
 use crate::{AppContext, db};
 
-pub struct ProbeAddonKind;
+pub struct ProbePreset;
 
-impl AddonKind for ProbeAddonKind {
+impl AddonPreset for ProbePreset {
     fn id(&self) -> &'static str {
         "probe"
     }
 
-    fn metadata(&self) -> AddonKindMetadata {
-        AddonKindMetadata {
+    fn metadata(&self) -> AddonMetadata {
+        AddonMetadata {
             id: "probe".to_string(),
             display_name: "Probe Segments".to_string(),
             description:
                 "Extracts chapter/segment markers from the media file's probe data."
                     .to_string(),
             icon: None,
-            supported_resources: vec![AddonResource::Segment],
-            supported_types: vec!["movie".to_string(), "episode".to_string()],
+            supported_resources: vec![ResourceType::Segment],
+            supported_types: vec![
+                MediaType::Movie,
+                MediaType::Unknown("episode".to_string()),
+            ],
             options: vec![],
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
-        let addon = Arc::new(ProbeAddon { row: row.clone() });
-        Ok(AddonInstance {
-            addon: addon.clone(),
-            catalog: None,
-            meta: None,
-            hierarchy: None,
-            search: None,
-            subtitle: None,
-            stream: None,
-            segment: Some(addon),
-            lyric: None,
-        })
+    fn from_cfg(&self, _cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+        Ok(Arc::new(ProbeAddon {}))
     }
 }
 
 inventory::submit! {
-    AddonKindRegistration(|| Box::new(ProbeAddonKind))
+    AddonPresetRegistration(|| Box::new(ProbePreset))
 }
 
-pub struct ProbeAddon {
-    row: AddonRow,
-}
+pub struct ProbeAddon {}
 
 #[async_trait]
-impl Addon for ProbeAddon {
-    fn row(&self) -> &AddonRow {
-        &self.row
+impl AddonKind for ProbeAddon {
+    fn id(&self) -> &'static str {
+        "probe"
     }
-}
 
-#[async_trait]
-impl SegmentAddon for ProbeAddon {
-    fn supports(&self, media: &db::Media) -> bool {
+    fn segment_supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Movie)
     }
 
-    async fn fetch(
+    async fn segment_fetch(
         &self,
         media: &db::Media,
         ctx: &AppContext,
@@ -87,7 +74,7 @@ impl SegmentAddon for ProbeAddon {
         let mut merged = MediaSegments::default();
         for source in sources {
             if let Some(probe) = source.probe_data {
-                if let Some(segs) = probe.0.segments {
+                if let Some(segs) = probe.segments {
                     merged.merge_from(segs);
                 }
             }

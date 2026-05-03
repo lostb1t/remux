@@ -193,11 +193,10 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         overview: media.description.clone(),
         play_access: Some("Full".to_string()),
         has_lyrics: (media.kind == db::MediaKind::Track).then_some(true),
-
         type_,
         parent_id: media.parent_id.clone(),
         remote_trailers: media.trailers.clone().map(|j| {
-            j.0.into_iter()
+            j.into_iter()
                 .map(|id| ExternalUrl {
                     name: Some("YouTube".to_string()),
                     url: Some(format!("https://www.youtube.com/watch?v={id}")),

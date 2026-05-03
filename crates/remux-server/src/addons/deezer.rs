@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use chrono::NaiveDateTime;
 use futures::Stream;
 use futures::stream::{self, StreamExt};
+use remux_sdks::stremio::MediaType;
 use serde::Deserialize;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -11,9 +12,8 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::{
-    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
-    AddonOption, AddonOptionType, AddonResource, AddonRow, CatalogAddon, CatalogInfo,
-    HierarchyAddon, MetaAddon, MusicSearchResult, SearchAddon,
+    AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
+    AddonPresetRegistration, CatalogInfo, MusicSearchResult, ResourceType,
 };
 use crate::db::MetaResult;
 use crate::{AppContext, common, db};
@@ -313,15 +313,15 @@ struct PlaylistTrackAlbum {
 // AddonKind registration
 // ---------------------------------------------------------------------------
 
-pub struct DeezerAddonKind;
+pub struct DeezerPreset;
 
-impl AddonKind for DeezerAddonKind {
+impl AddonPreset for DeezerPreset {
     fn id(&self) -> &'static str {
         "deezer"
     }
 
-    fn metadata(&self) -> AddonKindMetadata {
-        AddonKindMetadata {
+    fn metadata(&self) -> AddonMetadata {
+        AddonMetadata {
             id: "deezer".to_string(),
             display_name: "Deezer".to_string(),
             description:
@@ -330,14 +330,14 @@ impl AddonKind for DeezerAddonKind {
                     .to_string(),
             icon: None,
             supported_resources: vec![
-                AddonResource::Catalog,
-                AddonResource::Meta,
-                AddonResource::Search,
+                ResourceType::Catalog,
+                ResourceType::Meta,
+                ResourceType::Search,
             ],
             supported_types: vec![
-                "track".to_string(),
-                "album".to_string(),
-                "artist".to_string(),
+                MediaType::Track,
+                MediaType::Album,
+                MediaType::Artist,
             ],
             options: vec![AddonOption {
                 id: "playlists".to_string(),
@@ -353,43 +353,8 @@ impl AddonKind for DeezerAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
-        let addon = Arc::new(DeezerAddon {
-            row: row.clone(),
-            client: build_client(),
-        });
-        Ok(AddonInstance {
-            addon: addon.clone(),
-            catalog: Some(addon.clone()),
-            meta: Some(addon.clone()),
-            hierarchy: Some(addon.clone()),
-            search: Some(addon),
-            subtitle: None,
-            stream: None,
-            segment: None,
-            lyric: None,
-        })
-    }
-}
-
-inventory::submit! {
-    AddonKindRegistration(|| Box::new(DeezerAddonKind))
-}
-
-// ---------------------------------------------------------------------------
-// Addon struct
-// ---------------------------------------------------------------------------
-
-pub struct DeezerAddon {
-    row: AddonRow,
-    client: reqwest::Client,
-}
-
-impl DeezerAddon {
-    fn playlists(&self) -> Vec<String> {
-        let raw = self
-            .row
-            .config
+    fn from_cfg(&self, cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+        let playlists = cfg
             .get("playlists")
             .and_then(|v| v.as_array())
             .map(|a| {
@@ -397,11 +362,33 @@ impl DeezerAddon {
                     .filter_map(|v| v.as_str().map(str::to_string))
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_default();
-
-        raw.into_iter()
+            .unwrap_or_default()
+            .into_iter()
             .filter_map(|s| extract_playlist_id(&s))
-            .collect()
+            .collect();
+        Ok(Arc::new(DeezerAddon {
+            playlists,
+            client: build_client(),
+        }))
+    }
+}
+
+inventory::submit! {
+    AddonPresetRegistration(|| Box::new(DeezerPreset))
+}
+
+// ---------------------------------------------------------------------------
+// Addon struct
+// ---------------------------------------------------------------------------
+
+pub struct DeezerAddon {
+    playlists: Vec<String>,
+    client: reqwest::Client,
+}
+
+impl DeezerAddon {
+    fn playlists(&self) -> &[String] {
+        &self.playlists
     }
 
     // --- Meta ---
@@ -1195,22 +1182,19 @@ impl DeezerAddon {
 }
 
 // ---------------------------------------------------------------------------
-// Addon impl
+// AddonKind impl
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl Addon for DeezerAddon {
-    fn row(&self) -> &AddonRow {
-        &self.row
+impl AddonKind for DeezerAddon {
+    fn id(&self) -> &'static str {
+        "deezer"
     }
-}
 
-#[async_trait]
-impl CatalogAddon for DeezerAddon {
-    async fn list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
+    async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         Ok(self
             .playlists()
-            .into_iter()
+            .iter()
             .map(|id| CatalogInfo {
                 provider_catalog_id: id.clone(),
                 name: format!("Deezer playlist {id}"),
@@ -1218,7 +1202,7 @@ impl CatalogAddon for DeezerAddon {
             .collect())
     }
 
-    async fn stream(
+    async fn catalog_stream(
         &self,
         ctx: &AppContext,
         local_id: &str,
@@ -1228,15 +1212,12 @@ impl CatalogAddon for DeezerAddon {
         }
         Ok(Some(self.fetch_playlist_stream(ctx, local_id).await?))
     }
-}
 
-#[async_trait]
-impl MetaAddon for DeezerAddon {
-    async fn supports(&self, media: &db::Media) -> bool {
+    async fn meta_supports(&self, media: &db::Media) -> bool {
         self.meta_can_refresh(media)
     }
 
-    async fn fetch(
+    async fn meta_fetch(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
@@ -1251,20 +1232,17 @@ impl MetaAddon for DeezerAddon {
             _ => Ok(None),
         }
     }
-}
 
-#[async_trait]
-impl HierarchyAddon for DeezerAddon {
-    fn supports(&self, root: &db::Media) -> bool {
+    fn hierarchy_supports(&self, root: &db::Media) -> bool {
         matches!(root.kind, db::MediaKind::Artist | db::MediaKind::Album)
     }
 
-    async fn sync_children(
+    async fn hierarchy_sync_children(
         &self,
         root: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
-        if !<Self as HierarchyAddon>::supports(self, root) {
+        if !self.hierarchy_supports(root) {
             return Ok(None);
         }
         let children = match root.kind {
@@ -1278,11 +1256,8 @@ impl HierarchyAddon for DeezerAddon {
             Ok(Some(children))
         }
     }
-}
 
-#[async_trait]
-impl SearchAddon for DeezerAddon {
-    async fn supports(&self, kind: &db::MediaKind) -> bool {
+    async fn search_supports(&self, kind: &db::MediaKind) -> bool {
         matches!(
             kind,
             db::MediaKind::Track | db::MediaKind::Album | db::MediaKind::Artist
@@ -1310,7 +1285,7 @@ impl SearchAddon for DeezerAddon {
         }
     }
 
-    async fn persist_result(
+    async fn search_persist(
         &self,
         id: Uuid,
         ctx: &AppContext,

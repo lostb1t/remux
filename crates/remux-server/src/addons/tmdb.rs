@@ -1,27 +1,27 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use remux_sdks::stremio::MediaType;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 use uuid::Uuid;
 
 use super::{
-    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
-    AddonResource, AddonRow, MetaAddon, SearchAddon,
+    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, ResourceType,
 };
 use crate::db::{MetaRelation, MetaResult};
 use crate::sdks::CachedEndpoint;
 use crate::{AppContext, api, common, db, sdks};
 
-pub struct TmdbAddonKind;
+pub struct TmdbPreset;
 
-impl AddonKind for TmdbAddonKind {
+impl AddonPreset for TmdbPreset {
     fn id(&self) -> &'static str {
         "tmdb"
     }
 
-    fn metadata(&self) -> AddonKindMetadata {
-        AddonKindMetadata {
+    fn metadata(&self) -> AddonMetadata {
+        AddonMetadata {
             id: "tmdb".to_string(),
             display_name: "TMDB".to_string(),
             description:
@@ -29,40 +29,27 @@ impl AddonKind for TmdbAddonKind {
                  and people search."
                     .to_string(),
             icon: None,
-            supported_resources: vec![AddonResource::Meta, AddonResource::Search],
+            supported_resources: vec![ResourceType::Meta, ResourceType::Search],
             supported_types: vec![
-                "movie".to_string(),
-                "series".to_string(),
-                "episode".to_string(),
-                "person".to_string(),
+                MediaType::Movie,
+                MediaType::Series,
+                MediaType::Unknown("episode".to_string()),
+                MediaType::Unknown("person".to_string()),
             ],
             options: vec![],
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
-        let addon = Arc::new(TmdbAddon { row: row.clone() });
-        Ok(AddonInstance {
-            addon: addon.clone(),
-            catalog: None,
-            meta: Some(addon.clone()),
-            hierarchy: None,
-            search: Some(addon),
-            subtitle: None,
-            stream: None,
-            segment: None,
-            lyric: None,
-        })
+    fn from_cfg(&self, _cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+        Ok(Arc::new(TmdbAddon {}))
     }
 }
 
 inventory::submit! {
-    AddonKindRegistration(|| Box::new(TmdbAddonKind))
+    AddonPresetRegistration(|| Box::new(TmdbPreset))
 }
 
-pub struct TmdbAddon {
-    row: AddonRow,
-}
+pub struct TmdbAddon {}
 
 const TMDB_IMAGE_BASE: &str = "https://image.tmdb.org/t/p/original";
 
@@ -72,22 +59,19 @@ fn tmdb_image(path: Option<&str>) -> Option<String> {
 }
 
 #[async_trait]
-impl Addon for TmdbAddon {
-    fn row(&self) -> &AddonRow {
-        &self.row
+impl AddonKind for TmdbAddon {
+    fn id(&self) -> &'static str {
+        "tmdb"
     }
-}
 
-#[async_trait]
-impl MetaAddon for TmdbAddon {
-    async fn supports(&self, media: &db::Media) -> bool {
+    async fn meta_supports(&self, media: &db::Media) -> bool {
         matches!(
             media.kind,
             db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
         )
     }
 
-    async fn fetch(
+    async fn meta_fetch(
         &self,
         media: &db::Media,
         ctx: &AppContext,
@@ -95,7 +79,7 @@ impl MetaAddon for TmdbAddon {
         fetch_tmdb_meta(media, ctx).await
     }
 
-    async fn refresh_tree(
+    async fn meta_refresh_tree(
         &self,
         series: &db::Media,
         children: &mut [db::Media],
@@ -138,11 +122,8 @@ impl MetaAddon for TmdbAddon {
         }
         Ok(())
     }
-}
 
-#[async_trait]
-impl SearchAddon for TmdbAddon {
-    async fn supports(&self, kind: &db::MediaKind) -> bool {
+    async fn search_supports(&self, kind: &db::MediaKind) -> bool {
         matches!(kind, db::MediaKind::Person)
     }
 
@@ -159,7 +140,7 @@ impl SearchAddon for TmdbAddon {
         Ok(Some(search_tmdb_person(query, limit, ctx).await?))
     }
 
-    async fn persist_result(
+    async fn search_persist(
         &self,
         id: Uuid,
         ctx: &AppContext,
@@ -433,7 +414,7 @@ async fn fetch_tmdb_meta(
                     logo,
                     certification,
                     certification_age,
-                    external_ids: sqlx::types::Json(external_ids),
+                    external_ids: external_ids,
                     ..Default::default()
                 };
                 let mut relations = vec![];
@@ -500,7 +481,7 @@ async fn fetch_tmdb_meta(
                     certification,
                     certification_age,
                     country,
-                    external_ids: sqlx::types::Json(external_ids),
+                    external_ids: external_ids,
                     ..Default::default()
                 };
                 let mut relations = vec![];
@@ -614,7 +595,7 @@ async fn fetch_tmdb_meta(
                     rating_audience: ep_details.vote_average,
                     poster: still_url.clone(),
                     backdrop: still_url,
-                    external_ids: sqlx::types::Json(external_ids),
+                    external_ids: external_ids,
                     ..Default::default()
                 };
                 let mut relations = vec![];

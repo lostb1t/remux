@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, SessionStorage, Storage};
 use remux_sdks::remux::{
-    AddTunerHost, AddonCatalogDto, AddonDto, AddonKindMetadata, AddonOption,
-    AddonOptionType, AddonResource, AdminSetPassword, AnfiteatroReleaseStatus,
+    AddTunerHost, AddonCatalogDto, AddonDto, AddonMetadata, AddonOption,
+    AddonOptionType, AddonPresetRef, AdminSetPassword, AnfiteatroReleaseStatus,
     AuthenticateUserByName, AuthenticationInfo, BaseItemDto, BrandingOptions,
     BulkChannelRequest, BulkChannels, ChannelEditorItem, CollectionFilter, CountryInfo,
     CreateAddon, CreateAddonRequest, CreateApiKey, CreateUser, CreateVirtualFolder,
@@ -23,6 +23,7 @@ use remux_sdks::remux::{
     UpdateSystemConfiguration, UpdateTaskTriggers, UpdateUser, UpdateUserPolicy,
     UserDto, Username,
 };
+use remux_sdks::stremio::ResourceType;
 use remux_sdks::{ClientError, RestClient};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -5021,7 +5022,7 @@ fn Wizard(on_complete: EventHandler) -> Element {
 #[component]
 fn AddonsPage(app_state: AppState) -> Element {
     let mut addons: Signal<Vec<AddonDto>> = use_signal(Vec::new);
-    let mut kinds: Signal<Vec<AddonKindMetadata>> = use_signal(Vec::new);
+    let mut kinds: Signal<Vec<AddonMetadata>> = use_signal(Vec::new);
     let mut loading = use_signal(|| true);
     let mut error: Signal<Option<String>> = use_signal(|| None);
     let mut refresh = use_signal(|| 0_u32);
@@ -5043,7 +5044,7 @@ fn AddonsPage(app_state: AppState) -> Element {
         std::collections::HashMap<String, serde_json::Value>,
     > = use_signal(std::collections::HashMap::new);
     let mut editing = use_signal(|| false);
-    // Resources checked state for edit form (set of enabled AddonResource display strings)
+    // Resources checked state for edit form (set of enabled ResourceType display strings)
     let mut edit_resources: Signal<std::collections::HashSet<String>> =
         use_signal(std::collections::HashSet::new);
     // Catalogs loaded for the addon being edited
@@ -5208,7 +5209,7 @@ fn AddonsPage(app_state: AppState) -> Element {
                                                                 .map(|r| format!("{r}"))
                                                                 .collect();
                                                             edit_resources.set(res_set);
-                                                            let has_catalog = a.resources.contains(&AddonResource::Catalog);
+                                                            let has_catalog = a.resources.contains(&ResourceType::Catalog);
                                                             edit_catalogs.set(Vec::new());
                                                             edit_catalog_settings.set(std::collections::HashMap::new());
                                                             id_to_edit.set(Some(id));
@@ -5360,10 +5361,10 @@ fn AddonsPage(app_state: AppState) -> Element {
                                         let c = client.clone();
                                         spawn(async move {
                                             let payload = CreateAddonRequest {
-                                                kind,
+                                                preset: AddonPresetRef { kind, config },
                                                 name,
-                                                config,
                                                 resources: Vec::new(),
+                                                types: Vec::new(),
                                                 priority: 0,
                                             };
                                             match c.execute(CreateAddon { payload }).await {
@@ -5394,7 +5395,7 @@ fn AddonsPage(app_state: AppState) -> Element {
                 let edit_kind_meta = edit_kind.as_ref().and_then(|k| kinds.read().iter().find(|m| m.id == *k).cloned());
                 // Use supported_resources from the addon row (manifest-derived for Stremio,
                 // kind-static for others) as the checkbox option list.
-                let resource_options: Vec<AddonResource> = addons
+                let resource_options: Vec<ResourceType> = addons
                     .read()
                     .iter()
                     .find(|a| a.id == edit_id)
@@ -5541,10 +5542,10 @@ fn AddonsPage(app_state: AppState) -> Element {
                                                 edit_form_values.read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                                             );
                                             // Build resources list from checkboxes.
-                                            let resources: Vec<AddonResource> = edit_resources
+                                            let resources: Vec<ResourceType> = edit_resources
                                                 .read()
                                                 .iter()
-                                                .filter_map(|s| s.parse::<AddonResource>().ok())
+                                                .filter_map(|s| s.parse::<ResourceType>().ok())
                                                 .collect();
                                             // Build catalog update payload.
                                             let catalog_updates: Vec<UpdateAddonCatalogRequest> = edit_catalog_settings
@@ -5563,6 +5564,8 @@ fn AddonsPage(app_state: AppState) -> Element {
                                                     name: Some(name),
                                                     config: Some(config),
                                                     resources: Some(resources),
+                                                    types: None,
+                                                    enabled: None,
                                                     priority: None,
                                                 };
                                                 let addon_res = c.execute(UpdateAddon { id: edit_id, payload }).await;

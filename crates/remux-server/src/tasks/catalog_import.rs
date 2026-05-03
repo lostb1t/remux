@@ -41,17 +41,17 @@ impl Task for CatalogImportTask {
         let mut valid_tags: HashSet<String> = HashSet::new();
         let mut total_counts: HashMap<String, usize> = HashMap::new();
 
-        for (addon_idx, addon) in addons.iter().enumerate() {
-            let addon_id = addon.row().id;
-            let row = crate::addons::AddonRow::get(&ctx.db, addon_id).await;
-            let catalog_states = match row {
+        for (addon_idx, runtime) in addons.iter().enumerate() {
+            let addon_id = runtime.row.id;
+            let stored = crate::addons::Addon::get(&ctx.db, addon_id).await;
+            let catalog_states = match stored {
                 Ok(Some(r)) => r.catalog_states(),
                 _ => Default::default(),
             };
 
             let prefix = format!("addon:{addon_id}:");
 
-            let available = match addon.list(&ctx).await {
+            let available = match runtime.kind.catalog_list(&ctx).await {
                 Ok(v) => v,
                 Err(e) => {
                     warn!(addon = %addon_id, error = %e, "failed to list addon catalogs, skipping");

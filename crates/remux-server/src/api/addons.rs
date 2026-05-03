@@ -3,56 +3,54 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::Utc;
+
 use remux_macros::{delete, get, post};
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::addons::stremio::{init_resources_from_manifest, manifest_info_for_row};
 use crate::addons::{
-    AddonCatalogDto, AddonDto, AddonKindMetadata, AddonRow, CreateAddonRequest,
-    UpdateAddonCatalogRequest, UpdateAddonRequest, make_media_id, registered_kinds,
+    Addon, AddonCatalogDto, AddonDto, AddonMetadata, CreateAddonRequest,
+    UpdateAddonCatalogRequest, UpdateAddonRequest, make_media_id, registered_presets,
 };
-use crate::db::auth;
+use crate::db::{MediaKind, auth, kind_to_stremio_addon_type, stremio_type_to_kind};
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 
-async fn row_to_dto(row: AddonRow) -> AddonDto {
-    let kind_meta = registered_kinds()
+async fn addon_to_dto(addon: Addon) -> AddonDto {
+    let preset = registered_presets()
         .into_iter()
-        .find(|k| k.id() == row.kind)
-        .map(|k| k.metadata());
+        .find(|p| p.id() == addon.preset.kind);
 
-    // For Stremio addons, fetch resources/types directly from the manifest
-    // (the HTTP layer already caches the response). For other kinds, use the
-    // static metadata from the kind definition.
-    let (supported_resources, supported_types) = if row.kind == "stremio" {
-        manifest_info_for_row(&row).await.unwrap_or_else(|| {
-            let meta = kind_meta.as_ref();
-            (
-                meta.map(|m| m.supported_resources.clone())
-                    .unwrap_or_default(),
-                meta.map(|m| m.supported_types.clone()).unwrap_or_default(),
-            )
-        })
+    let (supported_resources, supported_types) = if let Some(ref p) = preset {
+        let meta = p.metadata();
+        match p.from_cfg(&addon.preset.config) {
+            Ok(kind) => {
+                let resources = kind.available_resources().await;
+                let types = kind.available_types().await;
+                if !resources.is_empty() {
+                    (resources, types)
+                } else {
+                    (meta.supported_resources, meta.supported_types)
+                }
+            }
+            Err(_) => (meta.supported_resources, meta.supported_types),
+        }
     } else {
-        let meta = kind_meta.as_ref();
-        (
-            meta.map(|m| m.supported_resources.clone())
-                .unwrap_or_default(),
-            meta.map(|m| m.supported_types.clone()).unwrap_or_default(),
-        )
+        (vec![], vec![])
     };
 
     AddonDto {
-        id: row.id,
-        kind: row.kind,
-        name: row.name,
-        config: row.config,
-        resources: row.resources,
+        id: addon.id,
+        kind: addon.preset.kind,
+        name: addon.name,
+        config: addon.preset.config,
+        resources: addon.resources,
+        types: addon.types.iter().map(kind_to_stremio_addon_type).collect(),
+        enabled: addon.enabled,
         supported_resources,
         supported_types,
-        priority: row.priority,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
+        priority: addon.priority,
+        created_at: addon.created_at,
+        updated_at: addon.updated_at,
     }
 }
 
@@ -62,9 +60,9 @@ async fn row_to_dto(row: AddonRow) -> AddonDto {
 pub async fn list_addon_kinds(
     State(_state): State<AppState>,
     _session: auth::AdminSession,
-) -> Result<Json<Vec<AddonKindMetadata>>> {
+) -> Result<Json<Vec<AddonMetadata>>> {
     Ok(Json(
-        registered_kinds().iter().map(|k| k.metadata()).collect(),
+        registered_presets().iter().map(|p| p.metadata()).collect(),
     ))
 }
 
@@ -74,10 +72,10 @@ pub async fn list_addons(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<Json<Vec<AddonDto>>> {
-    let rows = AddonRow::list(&state.ctx.db).await?;
-    let mut dtos = Vec::with_capacity(rows.len());
-    for row in rows {
-        dtos.push(row_to_dto(row).await);
+    let addons = Addon::list(&state.ctx.db).await?;
+    let mut dtos = Vec::with_capacity(addons.len());
+    for addon in addons {
+        dtos.push(addon_to_dto(addon).await);
     }
     Ok(Json(dtos))
 }
@@ -89,10 +87,10 @@ pub async fn get_addon(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AddonDto>> {
-    let row = AddonRow::get(&state.ctx.db, id)
+    let addon = Addon::get(&state.ctx.db, id)
         .await?
         .context_not_found("Not Found", "Addon not found")?;
-    Ok(Json(row_to_dto(row).await))
+    Ok(Json(addon_to_dto(addon).await))
 }
 
 /// Create a new addon instance.
@@ -102,48 +100,66 @@ pub async fn create_addon(
     _session: auth::AdminSession,
     Json(payload): Json<CreateAddonRequest>,
 ) -> Result<(StatusCode, Json<AddonDto>)> {
-    let kinds = registered_kinds();
-    let kind = kinds
+    let presets = registered_presets();
+    let preset = presets
         .iter()
-        .find(|k| k.id() == payload.kind)
-        .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", payload.kind))
+        .find(|p| p.id() == payload.preset.kind)
+        .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", payload.preset.kind))
         .context_bad_request("Bad Request", "Unknown addon kind")?;
 
-    // Default resources to the full set the kind supports if the caller didn't specify.
-    let metadata = kind.metadata();
+    let kind = preset
+        .from_cfg(&payload.preset.config)
+        .context_bad_request("Bad Request", "Invalid addon configuration")?;
+
+    // Default resources/types to the live available set (e.g. upstream manifest for
+    // Stremio), falling back to the preset's static metadata if unavailable.
+    let metadata = preset.metadata();
+    let avail_resources = kind.available_resources().await;
+    let avail_types = kind.available_types().await;
+
     let resources = if payload.resources.is_empty() {
-        metadata.supported_resources.clone()
+        if !avail_resources.is_empty() {
+            avail_resources
+        } else {
+            metadata.supported_resources
+        }
     } else {
         payload.resources
     };
+    let types: Vec<MediaKind> = if payload.types.is_empty() {
+        let source = if !avail_types.is_empty() {
+            avail_types
+        } else {
+            metadata.supported_types
+        };
+        source
+            .into_iter()
+            .filter_map(|t| stremio_type_to_kind(t))
+            .collect()
+    } else {
+        payload
+            .types
+            .into_iter()
+            .filter_map(stremio_type_to_kind)
+            .collect()
+    };
 
-    let now = Utc::now();
-    let row = AddonRow {
+    let now = Utc::now().naive_utc();
+    let mut addon = Addon {
         id: Uuid::new_v4(),
-        kind: payload.kind,
+        preset: payload.preset,
         name: payload.name,
-        config: payload.config,
         resources,
+        types,
+        enabled: true,
         priority: payload.priority,
         created_at: now,
         updated_at: now,
     };
 
-    // Validate the config by attempting to instantiate before persisting.
-    kind.instantiate(&row)
-        .context_bad_request("Bad Request", "Invalid addon configuration")?;
-
-    let mut row = row;
-    row.insert(&state.ctx.db).await?;
-
-    // For Stremio addons, fetch the manifest and use its resources as the
-    // initial active resource set.
-    if row.kind == "stremio" {
-        init_resources_from_manifest(&state.ctx.db, &mut row).await;
-    }
-
+    addon.insert(&state.ctx.db).await?;
     state.ctx.addons.reload(&state.ctx.db).await?;
-    Ok((StatusCode::CREATED, Json(row_to_dto(row).await)))
+    Ok((StatusCode::CREATED, Json(addon_to_dto(addon).await)))
 }
 
 /// Update an existing addon instance. Any field omitted is left unchanged.
@@ -154,43 +170,43 @@ pub async fn update_addon(
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateAddonRequest>,
 ) -> Result<Json<AddonDto>> {
-    let mut row = AddonRow::get(&state.ctx.db, id)
+    let mut addon = Addon::get(&state.ctx.db, id)
         .await?
         .context_not_found("Not Found", "Addon not found")?;
 
     if let Some(name) = payload.name {
-        row.name = name;
+        addon.name = name;
     }
-    let config_changed = payload.config.is_some();
     if let Some(config) = payload.config {
-        row.config = config;
+        addon.preset.config = config;
     }
     if let Some(resources) = payload.resources {
-        row.resources = resources;
+        addon.resources = resources;
+    }
+    if let Some(types) = payload.types {
+        addon.types = types.into_iter().filter_map(stremio_type_to_kind).collect();
+    }
+    if let Some(enabled) = payload.enabled {
+        addon.enabled = enabled;
     }
     if let Some(priority) = payload.priority {
-        row.priority = priority;
+        addon.priority = priority;
     }
-    row.updated_at = Utc::now();
+    addon.updated_at = Utc::now().naive_utc();
 
-    let kinds = registered_kinds();
-    let kind = kinds
+    let presets = registered_presets();
+    let preset = presets
         .iter()
-        .find(|k| k.id() == row.kind)
-        .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", row.kind))
+        .find(|p| p.id() == addon.preset.kind)
+        .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", addon.preset.kind))
         .context_bad_request("Bad Request", "Unknown addon kind")?;
-    kind.instantiate(&row)
+    preset
+        .from_cfg(&addon.preset.config)
         .context_bad_request("Bad Request", "Invalid addon configuration")?;
 
-    // Re-fetch manifest resources when the config changes (manifest URL may
-    // have changed), so active resources reflect the new manifest.
-    if row.kind == "stremio" && config_changed {
-        init_resources_from_manifest(&state.ctx.db, &mut row).await;
-    } else {
-        row.update(&state.ctx.db).await?;
-    }
+    addon.update(&state.ctx.db).await?;
     state.ctx.addons.reload(&state.ctx.db).await?;
-    Ok(Json(row_to_dto(row).await))
+    Ok(Json(addon_to_dto(addon).await))
 }
 
 /// Delete an addon instance.
@@ -200,10 +216,10 @@ pub async fn delete_addon(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
-    AddonRow::get(&state.ctx.db, id)
+    Addon::get(&state.ctx.db, id)
         .await?
         .context_not_found("Not Found", "Addon not found")?;
-    AddonRow::delete(&state.ctx.db, id).await?;
+    Addon::delete(&state.ctx.db, id).await?;
     state.ctx.addons.reload(&state.ctx.db).await?;
 
     // Remove all catalog membership tags for this addon so items are no longer
@@ -228,11 +244,11 @@ pub async fn get_addon_catalogs(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<AddonCatalogDto>>> {
-    let row = AddonRow::get(&state.ctx.db, id)
+    let addon_row = Addon::get(&state.ctx.db, id)
         .await?
         .context_not_found("Not Found", "Addon not found")?;
 
-    let addon = state
+    let catalog = state
         .ctx
         .addons
         .get_catalog(id)
@@ -240,12 +256,12 @@ pub async fn get_addon_catalogs(
         .ok_or_else(|| anyhow::anyhow!("addon not instantiated"))
         .context_bad_request("Bad Request", "Addon could not be instantiated")?;
 
-    let available = addon
-        .list(&state.ctx)
+    let available = catalog
+        .catalog_list(&state.ctx)
         .await
         .context_internal("Catalog Error", "Failed to list addon catalogs")?;
 
-    let states = row.catalog_states();
+    let states = addon_row.catalog_states();
     let prefix = format!("addon:{id}:");
 
     let result = available
@@ -274,12 +290,12 @@ pub async fn update_addon_catalogs(
     Path(id): Path<Uuid>,
     Json(payload): Json<Vec<UpdateAddonCatalogRequest>>,
 ) -> Result<StatusCode> {
-    let mut row = AddonRow::get(&state.ctx.db, id)
+    let mut addon = Addon::get(&state.ctx.db, id)
         .await?
         .context_not_found("Not Found", "Addon not found")?;
 
     let prefix = format!("addon:{id}:");
-    let mut states = row.catalog_states();
+    let mut states = addon.catalog_states();
 
     for req in &payload {
         let local_id = req
@@ -296,8 +312,8 @@ pub async fn update_addon_catalogs(
         );
     }
 
-    row.set_catalog_states(states);
-    row.update(&state.ctx.db).await?;
+    addon.set_catalog_states(states);
+    addon.update(&state.ctx.db).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -324,7 +340,7 @@ mod test {
         let resp = server.get("/addon-kinds").add_header(h, v).await;
         resp.assert_status_ok();
 
-        let kinds: Vec<AddonKindMetadata> = resp.json();
+        let kinds: Vec<AddonMetadata> = resp.json();
         assert!(
             kinds.iter().any(|k| k.id == "stremio"),
             "stremio kind should be registered"
@@ -343,9 +359,11 @@ mod test {
             .post("/addons")
             .add_header(h.clone(), v.clone())
             .json(&json!({
-                "kind": "stremio",
+                "preset": {
+                    "kind": "stremio",
+                    "config": { "manifest_url": "https://v3-cinemeta.strem.io/manifest.json" }
+                },
                 "name": "Test Cinemeta",
-                "config": { "manifest_url": "https://v3-cinemeta.strem.io/manifest.json" },
                 "resources": ["catalog"],
             }))
             .await;
@@ -394,9 +412,8 @@ mod test {
             .add_header(h, v)
             .expect_failure()
             .json(&json!({
-                "kind": "no-such-kind",
+                "preset": { "kind": "no-such-kind", "config": {} },
                 "name": "Bad",
-                "config": {},
             }))
             .await;
         resp.assert_status(http::StatusCode::BAD_REQUEST);
@@ -408,15 +425,14 @@ mod test {
         let (h, v) = auth(&token);
 
         // Stremio requires manifest_url; omitting it should fail validation
-        // because instantiate() returns Err.
+        // because from_cfg() returns Err.
         let resp = server
             .post("/addons")
             .add_header(h, v)
             .expect_failure()
             .json(&json!({
-                "kind": "stremio",
+                "preset": { "kind": "stremio", "config": {} },
                 "name": "Missing URL",
-                "config": {},
             }))
             .await;
         resp.assert_status(http::StatusCode::BAD_REQUEST);

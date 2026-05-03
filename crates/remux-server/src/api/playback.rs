@@ -51,19 +51,18 @@ async fn remap_internal_aio_url(state: &AppState, raw_url: &str) -> String {
         return raw_url.to_string();
     }
 
-    let stremio_url = state
-        .ctx
-        .addons
-        .list()
-        .await
-        .into_iter()
-        .find(|a| a.row().kind == "stremio")
-        .and_then(|a| {
-            a.row()
-                .config
-                .get("manifest_url")
-                .and_then(|v| v.as_str().map(str::to_string))
-        });
+    let stremio_url = match crate::addons::Addon::list(&state.ctx.db).await {
+        Ok(addons) => addons
+            .into_iter()
+            .filter(|a| a.enabled && a.preset.kind == "stremio")
+            .find_map(|a| {
+                a.preset
+                    .config
+                    .get("manifest_url")
+                    .and_then(|v| v.as_str().map(str::to_string))
+            }),
+        Err(_) => None,
+    };
     let Some(stremio_url) = stremio_url else {
         return raw_url.to_string();
     };
@@ -256,7 +255,7 @@ async fn items_playbackinfo_inner(
             tokio::spawn(async move {
                 // Cache hit: deserialise stored probe result and skip FFmpeg.
                 if let Some(json) = &sm.probe_data {
-                    let mut cached = json.0.clone();
+                    let mut cached = json.clone();
                     // Discard cached probe if it has no video stream — it's incomplete.
                     if cached.video_stream().is_some() {
                         cached.id = sm.id;
@@ -352,7 +351,7 @@ async fn items_playbackinfo_inner(
             provider_info: sm
                 .provider_info
                 .clone()
-                .and_then(|info| serde_json::to_value(info.0).ok()),
+                .and_then(|info| serde_json::to_value(info).ok()),
         });
 
         if has_lyrics {

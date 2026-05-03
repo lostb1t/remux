@@ -31,8 +31,13 @@ pub enum MediaType {
     Series,
     Tv,
     Events,
-    //  #[default]
-    // Unknown,
+
+    // custom
+    Album,
+    Artist,
+    Track,
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 #[derive(
@@ -47,18 +52,21 @@ pub enum MediaType {
 #[serde(rename_all = "camelCase")]
 #[strum(serialize_all = "lowercase")]
 pub enum ResourceType {
+    #[serde(alias = "streams")]
     Stream,
-
     Subtitles,
-
     Catalog,
-
     Meta,
-
-    Search,
-
     #[strum(to_string = "addon_catalog")]
     AddonCatalog,
+
+    // custom
+    Search,
+    Lyrics,
+    Segment,
+
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 #[derive(Debug, Clone)]

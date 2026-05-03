@@ -2,36 +2,13 @@
 //! and dashboard (in `crates/remux-dashboard`). The runtime traits and
 //! registry live in `remux_server::addons`.
 
-use chrono::{DateTime, Utc};
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use uuid::Uuid;
 
-/// Resources an addon can serve. Mirrors Stremio's `ResourceType` plus
-/// our additions (`Search`, `Lyrics`).
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    Serialize,
-    Deserialize,
-    strum_macros::Display,
-    strum_macros::EnumString,
-)]
-#[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase")]
-pub enum AddonResource {
-    Catalog,
-    Meta,
-    Search,
-    Subtitles,
-    Streams,
-    Lyrics,
-    Segment,
-}
+use crate::stremio::MediaType;
+pub use crate::stremio::ResourceType;
 
 /// Form schema for one configurable option on an addon kind. The dashboard
 /// renders the create/edit form generically by reading `Vec<AddonOption>`.
@@ -78,18 +55,26 @@ pub struct AddonSelectOption {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AddonPresetRef {
+    pub kind: String,
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
 /// Static metadata describing one kind of addon. Returned by `GET /addon-kinds`
 /// so the dashboard can populate the kind picker and config form.
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AddonKindMetadata {
+pub struct AddonMetadata {
     pub id: String,
     pub display_name: String,
     pub description: String,
     pub icon: Option<String>,
-    pub supported_resources: Vec<AddonResource>,
-    pub supported_types: Vec<String>,
+    pub supported_resources: Vec<ResourceType>,
+    pub supported_types: Vec<MediaType>,
     pub options: Vec<AddonOption>,
 }
 
@@ -103,32 +88,35 @@ pub struct AddonDto {
     pub name: String,
     pub config: serde_json::Value,
     /// User-enabled resources (subset of `supported_resources`).
-    pub resources: Vec<AddonResource>,
+    pub resources: Vec<ResourceType>,
+    /// User-enabled content types (subset of `supported_types`). Empty = all types enabled.
+    #[serde(default)]
+    pub types: Vec<MediaType>,
+    pub enabled: bool,
     /// All resources the addon actually provides. For Stremio addons this is
     /// populated from the manifest; for other kinds it mirrors the static kind
     /// metadata. Used by the dashboard as the checkbox option list.
     #[serde(default)]
-    pub supported_resources: Vec<AddonResource>,
-    /// Content types the addon supports (e.g. `"movie"`, `"series"`). For
-    /// Stremio addons this comes from the manifest; for others from kind
-    /// metadata.
+    pub supported_resources: Vec<ResourceType>,
+    /// Content types the addon supports. For Stremio addons this comes from
+    /// the manifest; for other kinds from the static preset metadata.
     #[serde(default)]
-    pub supported_types: Vec<String>,
+    pub supported_types: Vec<MediaType>,
     pub priority: i64,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
 }
 
 /// Create payload — `POST /addons`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateAddonRequest {
-    pub kind: String,
+    pub preset: AddonPresetRef,
     pub name: String,
     #[serde(default)]
-    pub config: serde_json::Value,
+    pub resources: Vec<ResourceType>,
     #[serde(default)]
-    pub resources: Vec<AddonResource>,
+    pub types: Vec<MediaType>,
     #[serde(default)]
     pub priority: i64,
 }
@@ -140,7 +128,9 @@ pub struct CreateAddonRequest {
 pub struct UpdateAddonRequest {
     pub name: Option<String>,
     pub config: Option<serde_json::Value>,
-    pub resources: Option<Vec<AddonResource>>,
+    pub resources: Option<Vec<ResourceType>>,
+    pub types: Option<Vec<MediaType>>,
+    pub enabled: Option<bool>,
     pub priority: Option<i64>,
 }
 

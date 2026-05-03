@@ -138,7 +138,7 @@ impl From<db::Media> for api::MediaSourceInfo {
         let remux = Some(api::MediaSourceRemuxInfo {
             provider_info: source
                 .provider_info
-                .and_then(|info| serde_json::to_value(info.0).ok()),
+                .and_then(|info| serde_json::to_value(info).ok()),
         });
 
         api::MediaSourceInfo {

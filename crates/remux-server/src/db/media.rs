@@ -174,13 +174,7 @@ impl TryFrom<String> for MediaKind {
 
 impl From<sdks::stremio::MediaType> for MediaKind {
     fn from(media_type: sdks::stremio::MediaType) -> Self {
-        match media_type {
-            sdks::stremio::MediaType::Movie => MediaKind::Movie,
-            sdks::stremio::MediaType::Series | sdks::stremio::MediaType::Tv => {
-                MediaKind::Series
-            }
-            _ => todo!(),
-        }
+        stremio_type_to_kind(media_type).unwrap_or(MediaKind::Movie)
     }
 }
 
@@ -191,6 +185,53 @@ pub fn media_kind_to_stremio(kind: &MediaKind) -> sdks::stremio::MediaType {
             sdks::stremio::MediaType::Series
         }
         _ => sdks::stremio::MediaType::Movie,
+    }
+}
+
+/// Converts a stremio `MediaType` to the corresponding `MediaKind` for addon
+/// type filtering. Returns `None` for unrecognised custom strings.
+pub fn stremio_type_to_kind(t: sdks::stremio::MediaType) -> Option<MediaKind> {
+    match t {
+        sdks::stremio::MediaType::Movie => Some(MediaKind::Movie),
+        sdks::stremio::MediaType::Series | sdks::stremio::MediaType::Tv => {
+            Some(MediaKind::Series)
+        }
+        sdks::stremio::MediaType::Album => Some(MediaKind::Album),
+        sdks::stremio::MediaType::Artist => Some(MediaKind::Artist),
+        sdks::stremio::MediaType::Track => Some(MediaKind::Track),
+        sdks::stremio::MediaType::Events => Some(MediaKind::TvProgram),
+        sdks::stremio::MediaType::Unknown(s) => match s.as_str() {
+            "episode" => Some(MediaKind::Episode),
+            "season" => Some(MediaKind::Season),
+            "person" => Some(MediaKind::Person),
+            _ => None,
+        },
+    }
+}
+
+/// Faithful `MediaKind` → stremio `MediaType` for addon DTO round-trips.
+pub fn kind_to_stremio_addon_type(kind: &MediaKind) -> sdks::stremio::MediaType {
+    match kind {
+        MediaKind::Movie => sdks::stremio::MediaType::Movie,
+        MediaKind::Series => sdks::stremio::MediaType::Series,
+        MediaKind::Season => sdks::stremio::MediaType::Unknown("season".to_string()),
+        MediaKind::Episode => sdks::stremio::MediaType::Unknown("episode".to_string()),
+        MediaKind::Track => sdks::stremio::MediaType::Track,
+        MediaKind::Album => sdks::stremio::MediaType::Album,
+        MediaKind::Artist => sdks::stremio::MediaType::Artist,
+        MediaKind::TvChannel => sdks::stremio::MediaType::Tv,
+        MediaKind::TvProgram => sdks::stremio::MediaType::Events,
+        MediaKind::Person => sdks::stremio::MediaType::Unknown("person".to_string()),
+        MediaKind::Genre => sdks::stremio::MediaType::Unknown("genre".to_string()),
+        MediaKind::Studio => sdks::stremio::MediaType::Unknown("studio".to_string()),
+        MediaKind::Collection => {
+            sdks::stremio::MediaType::Unknown("collection".to_string())
+        }
+        MediaKind::Folder => sdks::stremio::MediaType::Unknown("folder".to_string()),
+        MediaKind::Stream => sdks::stremio::MediaType::Unknown("stream".to_string()),
+        MediaKind::Playlist => {
+            sdks::stremio::MediaType::Unknown("playlist".to_string())
+        }
     }
 }
 
@@ -620,7 +661,8 @@ pub struct Media {
     pub description: Option<String>,
     pub released_at: Option<NaiveDateTime>,
     pub digital_released_at: Option<NaiveDateTime>,
-    pub trailers: Option<sqlx::types::Json<Vec<String>>>,
+    #[sqlx(json(nullable))]
+    pub trailers: Option<Vec<String>>,
     // in seconds
     pub runtime: Option<i64>,
     pub rating_critic: Option<f64>,
@@ -639,7 +681,8 @@ pub struct Media {
     pub parent_id: Option<Uuid>,
     pub series_media_id: Option<String>,
     #[sqlx(default)]
-    pub external_ids: sqlx::types::Json<ExternalIds>,
+    #[sqlx(json)]
+    pub external_ids: ExternalIds,
     pub media_id: Option<String>,
     //pub media_key: Option<String>,
     pub series_id: Option<Uuid>,
@@ -680,8 +723,10 @@ pub struct Media {
 
     // stream
     pub url: Option<String>,
-    pub probe_data: Option<sqlx::types::Json<MediaSourceInfo>>,
-    pub provider_info: Option<sqlx::types::Json<StreamProviderInfo>>,
+    #[sqlx(json(nullable))]
+    pub probe_data: Option<MediaSourceInfo>,
+    #[sqlx(json(nullable))]
+    pub provider_info: Option<StreamProviderInfo>,
 
     // collection
     pub promoted: bool,
@@ -690,8 +735,8 @@ pub struct Media {
     // CollectionMediaKind
     pub collection_media_kind: Option<CollectionMediaKind>,
     pub collection_max_items: Option<i64>,
-    pub collection_smart_filter:
-        Option<sqlx::types::Json<remux_sdks::remux::models::CollectionFilter>>,
+    #[sqlx(json(nullable))]
+    pub collection_smart_filter: Option<remux_sdks::remux::models::CollectionFilter>,
 
     // IPTV / Live TV
     pub live_start: Option<NaiveDateTime>,
@@ -823,7 +868,7 @@ impl Media {
     pub fn parse_smart_filter(
         &self,
     ) -> Option<&remux_sdks::remux::models::CollectionFilter> {
-        self.collection_smart_filter.as_ref().map(|j| &j.0)
+        self.collection_smart_filter.as_ref()
     }
 
     pub fn is_remote_url(&self) -> bool {
@@ -963,17 +1008,17 @@ impl Media {
         .bind(&self.logo)
         .bind(&self.backdrop)
         .bind(&self.description)
-        .bind(&self.trailers)
+        .bind(sqlx::types::Json(&self.trailers))
         .bind(&self.url)
-        .bind(&self.probe_data)
+        .bind(sqlx::types::Json(&self.probe_data))
         .bind(self.promoted)
         .bind(&self.collection_kind)
         .bind(&self.collection_media_kind)
         .bind(self.collection_max_items)
-        .bind(&self.provider_info)
+        .bind(sqlx::types::Json(&self.provider_info))
         .bind(&self.series_media_id)
         .bind(&self.media_id)
-        .bind(&self.external_ids)
+        .bind(sqlx::types::Json(&self.external_ids))
         .bind(self.created_at)
         .bind(updated_at)
         .bind(&self.certification)
@@ -990,7 +1035,7 @@ impl Media {
         .bind(&self.status)
         .bind(self.refreshed_at)
         .bind(self.series_id)
-        .bind(&self.collection_smart_filter)
+        .bind(sqlx::types::Json(&self.collection_smart_filter))
         .bind(self.country.as_deref().map(normalize_country_alpha2))
         .bind(&self.program_kind)
         .execute(db)
@@ -1058,15 +1103,15 @@ impl Media {
                     .push_bind(&item.logo)
                     .push_bind(&item.backdrop)
                     .push_bind(&item.description)
-                    .push_bind(&item.trailers)
+                    .push_bind(sqlx::types::Json(&item.trailers))
                     .push_bind(&item.url)
-                    .push_bind(&item.probe_data)
+                    .push_bind(sqlx::types::Json(&item.probe_data))
                     .push_bind(&item.promoted)
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
-                    .push_bind(&item.provider_info)
+                    .push_bind(sqlx::types::Json(&item.provider_info))
                     .push_bind(&item.series_media_id)
-                    .push_bind(&item.external_ids)
+                    .push_bind(sqlx::types::Json(&item.external_ids))
                     .push_bind(&item.media_id)
                     .push_bind(&item.created_at)
                     .push_bind(Utc::now())
@@ -1131,15 +1176,15 @@ impl Media {
                     .push_bind(&item.logo)
                     .push_bind(&item.backdrop)
                     .push_bind(&item.description)
-                    .push_bind(&item.trailers)
+                    .push_bind(sqlx::types::Json(&item.trailers))
                     .push_bind(&item.url)
-                    .push_bind(&item.probe_data)
+                    .push_bind(sqlx::types::Json(&item.probe_data))
                     .push_bind(&item.promoted)
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
-                    .push_bind(&item.provider_info)
+                    .push_bind(sqlx::types::Json(&item.provider_info))
                     .push_bind(&item.series_media_id)
-                    .push_bind(&item.external_ids)
+                    .push_bind(sqlx::types::Json(&item.external_ids))
                     .push_bind(&item.media_id)
                     .push_bind(&item.created_at)
                     .push_bind(Utc::now())
@@ -2611,7 +2656,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             logo: meta.logo,
             backdrop: meta.background,
             media_id: meta.imdb_id.clone(),
-            external_ids: sqlx::types::Json({
+            external_ids: {
                 // Start by parsing the AIO id for any provider prefix
                 let mut ids = ExternalIds::from_stremio_id(&meta.id);
                 // imdb_id from meta is more authoritative — override if present
@@ -2619,15 +2664,13 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                     ids.imdb = Some(imdb.clone());
                 }
                 ids
-            }),
+            },
             status,
             trailers: meta.trailers.map(|trailers| {
-                sqlx::types::Json(
-                    trailers
-                        .into_iter()
-                        .map(|t| t.source)
-                        .collect::<Vec<String>>(),
-                )
+                trailers
+                    .into_iter()
+                    .map(|t| t.source)
+                    .collect::<Vec<String>>()
             }),
 
             //tmdb_id: Some(imdb_id.clone()),
@@ -2722,7 +2765,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                             .filter(|s| s.starts_with("tt")),
                         ..Default::default()
                     };
-                    episode.external_ids = sqlx::types::Json(ep_external_ids);
+                    episode.external_ids = ep_external_ids;
 
                     // Populate relations (Cast, Directors, Writers) for the episode
                     let rels = build_episode_relations_from_ep(&episode, &ep);

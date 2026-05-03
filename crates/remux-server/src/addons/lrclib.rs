@@ -1,64 +1,51 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use remux_sdks::stremio::MediaType;
 use serde::Deserialize;
 use std::sync::Arc;
 
 use super::{
-    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
-    AddonResource, AddonRow, LyricAddon, LyricSearchRequest,
+    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, LyricSearchRequest,
+    ResourceType,
 };
 use remux_sdks::remux::models::{
     LyricDto, LyricLine, LyricMetadata, RemoteLyricInfoDto,
 };
 
-pub struct LrcLibAddonKind;
+pub struct LrcLibPreset;
 
-impl AddonKind for LrcLibAddonKind {
+impl AddonPreset for LrcLibPreset {
     fn id(&self) -> &'static str {
         "lrclib"
     }
 
-    fn metadata(&self) -> AddonKindMetadata {
-        AddonKindMetadata {
+    fn metadata(&self) -> AddonMetadata {
+        AddonMetadata {
             id: "lrclib".to_string(),
             display_name: "LRCLIB".to_string(),
             description: "Free lyrics provider — synced and plain lyrics for tracks."
                 .to_string(),
             icon: None,
-            supported_resources: vec![AddonResource::Lyrics],
-            supported_types: vec!["track".to_string()],
+            supported_resources: vec![ResourceType::Lyrics],
+            supported_types: vec![MediaType::Track],
             options: vec![],
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
-        let addon = Arc::new(LrcLibAddon {
-            row: row.clone(),
-            client: reqwest::Client::builder()
-                .user_agent("remux-server/1.0")
-                .build()
-                .expect("failed to build HTTP client"),
-        });
-        Ok(AddonInstance {
-            addon: addon.clone(),
-            catalog: None,
-            meta: None,
-            hierarchy: None,
-            search: None,
-            subtitle: None,
-            stream: None,
-            segment: None,
-            lyric: Some(addon),
-        })
+    fn from_cfg(&self, _cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+        let client = reqwest::Client::builder()
+            .user_agent("remux-server/1.0")
+            .build()
+            .expect("failed to build HTTP client");
+        Ok(Arc::new(LrcLibAddon { client }))
     }
 }
 
 inventory::submit! {
-    AddonKindRegistration(|| Box::new(LrcLibAddonKind))
+    AddonPresetRegistration(|| Box::new(LrcLibPreset))
 }
 
 pub struct LrcLibAddon {
-    row: AddonRow,
     client: reqwest::Client,
 }
 
@@ -161,15 +148,16 @@ impl LrcLibAddon {
 }
 
 #[async_trait]
-impl Addon for LrcLibAddon {
-    fn row(&self) -> &AddonRow {
-        &self.row
+impl AddonKind for LrcLibAddon {
+    fn id(&self) -> &'static str {
+        "lrclib"
     }
-}
 
-#[async_trait]
-impl LyricAddon for LrcLibAddon {
-    async fn fetch(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>> {
+    fn lyric_provider_id(&self) -> Option<String> {
+        Some("lrclib".to_string())
+    }
+
+    async fn lyric_fetch(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>> {
         tracing::debug!(
             title = %req.title,
             artist = ?req.artist,
@@ -184,7 +172,7 @@ impl LyricAddon for LrcLibAddon {
         }
 
         tracing::debug!(title = %req.title, "lrclib: exact match missed, trying search fallback");
-        let results = <Self as LyricAddon>::search(self, req).await?;
+        let results = self.lyric_search(req).await?;
         let first = results.into_iter().next().map(|r| r.lyrics);
         if first.is_some() {
             tracing::info!(title = %req.title, "lrclib: found via search fallback");
@@ -194,7 +182,7 @@ impl LyricAddon for LrcLibAddon {
         Ok(first)
     }
 
-    async fn search(
+    async fn lyric_search(
         &self,
         req: &LyricSearchRequest,
     ) -> Result<Vec<RemoteLyricInfoDto>> {
@@ -233,7 +221,7 @@ impl LyricAddon for LrcLibAddon {
             .collect())
     }
 
-    async fn get_by_id(&self, id: &str) -> Result<Option<LyricDto>> {
+    async fn lyric_get_by_id(&self, id: &str) -> Result<Option<LyricDto>> {
         let url = format!("{}/get/{}", BASE, id);
         tracing::debug!(id, "lrclib: get by id");
         let resp = self.client.get(&url).send().await?;
@@ -249,9 +237,5 @@ impl LyricAddon for LrcLibAddon {
             .await
             .ok()
             .and_then(|t| track_to_dto(&t)))
-    }
-
-    fn provider_id(&self) -> String {
-        "lrclib".to_string()
     }
 }

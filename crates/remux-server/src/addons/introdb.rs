@@ -1,76 +1,60 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use remux_sdks::remux::models::MediaSegments;
+use remux_sdks::stremio::MediaType;
 use std::sync::Arc;
 
 use super::{
-    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
-    AddonResource, AddonRow, SegmentAddon,
+    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, ResourceType,
 };
 use crate::{AppContext, db};
 
-pub struct IntroDbAddonKind;
+pub struct IntroDbPreset;
 
-impl AddonKind for IntroDbAddonKind {
+impl AddonPreset for IntroDbPreset {
     fn id(&self) -> &'static str {
         "introdb"
     }
 
-    fn metadata(&self) -> AddonKindMetadata {
-        AddonKindMetadata {
+    fn metadata(&self) -> AddonMetadata {
+        AddonMetadata {
             id: "introdb".to_string(),
             display_name: "IntroDb".to_string(),
             description:
                 "Fetches intro/credits timestamps from the community IntroDb database."
                     .to_string(),
             icon: None,
-            supported_resources: vec![AddonResource::Segment],
-            supported_types: vec!["episode".to_string()],
+            supported_resources: vec![ResourceType::Segment],
+            supported_types: vec![MediaType::Unknown("episode".to_string())],
             options: vec![],
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
-        let addon = Arc::new(IntroDbAddon { row: row.clone() });
-        Ok(AddonInstance {
-            addon: addon.clone(),
-            catalog: None,
-            meta: None,
-            hierarchy: None,
-            search: None,
-            subtitle: None,
-            stream: None,
-            segment: Some(addon),
-            lyric: None,
-        })
+    fn from_cfg(&self, _cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+        Ok(Arc::new(IntroDbAddon))
     }
 }
 
 inventory::submit! {
-    AddonKindRegistration(|| Box::new(IntroDbAddonKind))
+    AddonPresetRegistration(|| Box::new(IntroDbPreset))
 }
 
-pub struct IntroDbAddon {
-    row: AddonRow,
-}
+pub struct IntroDbAddon;
 
 #[async_trait]
-impl Addon for IntroDbAddon {
-    fn row(&self) -> &AddonRow {
-        &self.row
+impl AddonKind for IntroDbAddon {
+    fn id(&self) -> &'static str {
+        "introdb"
     }
-}
 
-#[async_trait]
-impl SegmentAddon for IntroDbAddon {
-    fn supports(&self, media: &db::Media) -> bool {
+    fn segment_supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Stream)
             && media.series_media_id.is_some()
             && media.parent_idx.is_some()
             && media.idx.is_some()
     }
 
-    async fn fetch(
+    async fn segment_fetch(
         &self,
         media: &db::Media,
         _ctx: &AppContext,

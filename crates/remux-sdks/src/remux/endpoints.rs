@@ -1,5 +1,5 @@
 use super::addons::{
-    AddonCatalogDto, AddonDto, AddonKindMetadata, CreateAddonRequest,
+    AddonCatalogDto, AddonDto, AddonMetadata, CreateAddonRequest,
     UpdateAddonCatalogRequest, UpdateAddonRequest,
 };
 use super::models::*;
@@ -1005,7 +1005,7 @@ impl Endpoint for DeleteApiKey {
 pub struct ListAddonKinds;
 
 impl Endpoint for ListAddonKinds {
-    type Output = Vec<AddonKindMetadata>;
+    type Output = Vec<AddonMetadata>;
     fn path(&self) -> String {
         "/addon-kinds".into()
     }

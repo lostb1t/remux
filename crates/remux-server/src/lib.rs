@@ -216,7 +216,7 @@ pub async fn init_app(
         ws_tx,
         default_web_client,
         web_paths,
-        addons: addons::AddonRegistry::from_db(&conn).await?,
+        addons: addons::AddonService::from_db(&conn).await?,
     };
 
     // Apply saved P2P speed limits on startup.
@@ -281,7 +281,7 @@ pub struct AppContext {
     pub default_web_client: Arc<tokio::sync::RwLock<String>>,
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
-    pub addons: addons::AddonRegistry,
+    pub addons: addons::AddonService,
 }
 
 #[derive(Clone)]

@@ -488,7 +488,7 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
                 name,
                 description,
                 index: s.idx.unwrap_or(0),
-                size: s.probe_data.as_ref().and_then(|p| p.0.size),
+                size: s.probe_data.as_ref().and_then(|p| p.size),
             }
         })
         .collect();
@@ -520,19 +520,18 @@ pub async fn remux_meta(
         _ => remux_sdks::stremio::MediaType::Movie,
     };
 
-    let manifest_url = state
-        .ctx
-        .addons
-        .list()
-        .await
-        .into_iter()
-        .find(|a| a.row().kind == "stremio")
-        .and_then(|a| {
-            a.row()
-                .config
-                .get("manifest_url")
-                .and_then(|v| v.as_str().map(str::to_string))
-        });
+    let manifest_url = match crate::addons::Addon::list(&state.ctx.db).await {
+        Ok(addons) => addons
+            .into_iter()
+            .filter(|a| a.enabled && a.preset.kind == "stremio")
+            .find_map(|a| {
+                a.preset
+                    .config
+                    .get("manifest_url")
+                    .and_then(|v| v.as_str().map(str::to_string))
+            }),
+        Err(_) => None,
+    };
 
     let svc = match manifest_url
         .as_deref()

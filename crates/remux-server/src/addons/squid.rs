@@ -1,13 +1,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
+use remux_sdks::stremio::MediaType;
 use serde::Deserialize;
 use sqlx::types::Json;
 use std::sync::Arc;
 
 use super::{
-    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
-    AddonResource, AddonRow, StreamAddon,
+    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, ResourceType,
 };
 use crate::{AppContext, api, db};
 
@@ -206,7 +206,7 @@ async fn try_instance(
         kind: db::MediaKind::Stream,
         title: label.to_string(),
         url: Some(url),
-        probe_data: Some(Json(api::MediaSourceInfo {
+        probe_data: Some(api::MediaSourceInfo {
             container: mime_to_container(&manifest.mime_type),
             run_time_ticks: parent.runtime.map(|r| r * 10_000_000),
             media_streams: vec![api::MediaStream {
@@ -220,80 +220,63 @@ async fn try_instance(
                 ..Default::default()
             }],
             ..Default::default()
-        })),
+        }),
         ..Default::default()
     }))
 }
 
-// --- AddonKind ---
+// --- AddonPreset ---
 
-pub struct SquidAddonKind;
+pub struct SquidPreset;
 
-impl AddonKind for SquidAddonKind {
+impl AddonPreset for SquidPreset {
     fn id(&self) -> &'static str {
         "squid"
     }
 
-    fn metadata(&self) -> AddonKindMetadata {
-        AddonKindMetadata {
+    fn metadata(&self) -> AddonMetadata {
+        AddonMetadata {
             id: "squid".to_string(),
             display_name: "Squid (Tidal)".to_string(),
             description: "Lossless music streams via community Tidal proxy instances."
                 .to_string(),
             icon: None,
-            supported_resources: vec![AddonResource::Streams],
-            supported_types: vec!["track".to_string()],
+            supported_resources: vec![ResourceType::Stream],
+            supported_types: vec![MediaType::Track],
             options: vec![],
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
-        let addon = Arc::new(SquidAddon {
-            row: row.clone(),
-            client: reqwest::Client::builder()
-                .user_agent("remux-server/1.0")
-                .timeout(std::time::Duration::from_secs(8))
-                .build()?,
-        });
-        Ok(AddonInstance {
-            addon: addon.clone(),
-            catalog: None,
-            meta: None,
-            hierarchy: None,
-            search: None,
-            subtitle: None,
-            stream: Some(addon),
-            segment: None,
-            lyric: None,
-        })
+    fn from_cfg(&self, _cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+        let client = reqwest::Client::builder()
+            .user_agent("remux-server/1.0")
+            .timeout(std::time::Duration::from_secs(8))
+            .build()?;
+        Ok(Arc::new(SquidAddon { client }))
     }
 }
 
 inventory::submit! {
-    AddonKindRegistration(|| Box::new(SquidAddonKind))
+    AddonPresetRegistration(|| Box::new(SquidPreset))
 }
 
 // --- Addon instance ---
 
 pub struct SquidAddon {
-    row: AddonRow,
     client: reqwest::Client,
 }
 
 #[async_trait]
-impl Addon for SquidAddon {
-    fn row(&self) -> &AddonRow {
-        &self.row
+impl AddonKind for SquidAddon {
+    fn id(&self) -> &'static str {
+        "squid"
     }
-}
 
-#[async_trait]
-impl StreamAddon for SquidAddon {
-    fn supports(&self, media: &db::Media) -> bool {
+    fn stream_supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::Track
     }
 
-    async fn resolve(
+    async fn stream_resolve(
         &self,
         media: &db::Media,
         _ctx: &AppContext,

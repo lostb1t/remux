@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
+use remux_sdks::stremio::MediaType;
 use serde::Deserialize;
 use sqlx::types::Json;
 use std::path::PathBuf;
@@ -8,22 +9,21 @@ use tokio::process::Command;
 use uuid::Uuid;
 
 use super::{
-    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
-    AddonOption, AddonOptionType, AddonResource, AddonRow, MetaAddon, SearchAddon,
-    StreamAddon,
+    AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
+    AddonPresetRegistration, ResourceType,
 };
 use crate::db::{MetaResult, StreamProviderInfo};
 use crate::{AppContext, api, db};
 
-pub struct YtDlpAddonKind;
+pub struct YtDlpPreset;
 
-impl AddonKind for YtDlpAddonKind {
+impl AddonPreset for YtDlpPreset {
     fn id(&self) -> &'static str {
         "ytdlp"
     }
 
-    fn metadata(&self) -> AddonKindMetadata {
-        AddonKindMetadata {
+    fn metadata(&self) -> AddonMetadata {
+        AddonMetadata {
             id: "ytdlp".to_string(),
             display_name: "yt-dlp".to_string(),
             description:
@@ -31,8 +31,8 @@ impl AddonKind for YtDlpAddonKind {
                  for music tracks/albums via YouTube Music."
                     .to_string(),
             icon: None,
-            supported_resources: vec![AddonResource::Streams],
-            supported_types: vec!["track".to_string(), "album".to_string()],
+            supported_resources: vec![ResourceType::Stream],
+            supported_types: vec![MediaType::Track, MediaType::Album],
             options: vec![AddonOption {
                 id: "cookies".to_string(),
                 name: "Cookies file".to_string(),
@@ -48,31 +48,25 @@ impl AddonKind for YtDlpAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
-        let addon = Arc::new(YtDlpAddon {
-            row: row.clone(),
+    fn from_cfg(&self, cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+        let cookies = cfg
+            .get("cookies")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        Ok(Arc::new(YtDlpAddon {
+            cookies,
             executable: PathBuf::from("yt-dlp"),
-        });
-        Ok(AddonInstance {
-            addon: addon.clone(),
-            catalog: None,
-            meta: Some(addon.clone()),
-            hierarchy: None,
-            search: Some(addon.clone()),
-            subtitle: None,
-            stream: Some(addon),
-            segment: None,
-            lyric: None,
-        })
+        }))
     }
 }
 
 inventory::submit! {
-    AddonKindRegistration(|| Box::new(YtDlpAddonKind))
+    AddonPresetRegistration(|| Box::new(YtDlpPreset))
 }
 
 pub struct YtDlpAddon {
-    row: AddonRow,
+    cookies: Option<String>,
     executable: PathBuf,
 }
 
@@ -86,11 +80,8 @@ fn ytdlp_extra_args() -> Vec<String> {
 
 impl YtDlpAddon {
     fn cookies_args(&self) -> Vec<String> {
-        self.row
-            .config
-            .get("cookies")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
+        self.cookies
+            .as_deref()
             .map(|path| vec!["--cookies".to_string(), path.to_string()])
             .unwrap_or_default()
     }
@@ -607,7 +598,7 @@ impl YtDlpAddon {
                 kind: db::MediaKind::Stream,
                 title: f.label(),
                 url: f.url.clone(),
-                probe_data: Some(Json(api::MediaSourceInfo {
+                probe_data: Some(api::MediaSourceInfo {
                     container: f.container(),
                     run_time_ticks: media.runtime.map(|r| r * 10_000_000),
                     bitrate: f.bitrate(),
@@ -622,7 +613,7 @@ impl YtDlpAddon {
                         ..Default::default()
                     }],
                     ..Default::default()
-                })),
+                }),
                 ..Default::default()
             }
         };
@@ -648,34 +639,28 @@ impl YtDlpAddon {
 }
 
 // ---------------------------------------------------------------------------
-// Addon impl
+// AddonKind impl
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl Addon for YtDlpAddon {
-    fn row(&self) -> &AddonRow {
-        &self.row
+impl AddonKind for YtDlpAddon {
+    fn id(&self) -> &'static str {
+        "ytdlp"
     }
-}
 
-#[async_trait]
-impl MetaAddon for YtDlpAddon {
-    async fn supports(&self, media: &db::Media) -> bool {
+    async fn meta_supports(&self, media: &db::Media) -> bool {
         self.meta_can_refresh(media)
     }
 
-    async fn fetch(
+    async fn meta_fetch(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Option<MetaResult>> {
         self.fetch_meta(media).await
     }
-}
 
-#[async_trait]
-impl SearchAddon for YtDlpAddon {
-    async fn supports(&self, kind: &db::MediaKind) -> bool {
+    async fn search_supports(&self, kind: &db::MediaKind) -> bool {
         matches!(kind, db::MediaKind::Track | db::MediaKind::Album)
     }
 
@@ -693,22 +678,19 @@ impl SearchAddon for YtDlpAddon {
         }
     }
 
-    async fn persist_result(
+    async fn search_persist(
         &self,
         _id: Uuid,
         _ctx: &AppContext,
     ) -> Result<Option<db::Media>> {
         Ok(None)
     }
-}
 
-#[async_trait]
-impl StreamAddon for YtDlpAddon {
-    fn supports(&self, media: &db::Media) -> bool {
+    fn stream_supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::Track
     }
 
-    async fn resolve(
+    async fn stream_resolve(
         &self,
         media: &db::Media,
         _ctx: &AppContext,

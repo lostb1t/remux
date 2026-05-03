@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::{Stream, StreamExt};
 use nutype::nutype;
-use remux_sdks::stremio::ResourceType;
+
 use serde::{Deserialize, Deserializer};
 use sqlx::SqlitePool;
 use std::pin::Pin;
@@ -13,27 +13,23 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::{
-    Addon, AddonInstance, AddonKind, AddonKindMetadata, AddonKindRegistration,
-    AddonOption, AddonOptionType, AddonResource, AddonRow, CatalogAddon, CatalogInfo,
-    HierarchyAddon, MetaAddon, MusicSearchResult, SearchAddon, StreamAddon,
-    SubtitleAddon,
+    AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
+    AddonPresetRegistration, CatalogInfo, MusicSearchResult, ResourceType, addon,
 };
 use crate::db::{MetaRelation, MetaResult};
 use crate::sdks::CachedEndpoint;
 use crate::services::stremio as stremio_service;
 use crate::{AppContext, common, db, sdks};
 
-const LOCAL_SEP: &str = "||";
+pub struct StremioPreset;
 
-pub struct StremioAddonKind;
-
-impl AddonKind for StremioAddonKind {
+impl AddonPreset for StremioPreset {
     fn id(&self) -> &'static str {
         "stremio"
     }
 
-    fn metadata(&self) -> AddonKindMetadata {
-        AddonKindMetadata {
+    fn metadata(&self) -> AddonMetadata {
+        AddonMetadata {
             id: "stremio".to_string(),
             display_name: "Stremio addon".to_string(),
             description: "Any addon that speaks the Stremio addon protocol \
@@ -41,13 +37,16 @@ impl AddonKind for StremioAddonKind {
                 .to_string(),
             icon: None,
             supported_resources: vec![
-                AddonResource::Catalog,
-                AddonResource::Meta,
-                AddonResource::Search,
-                AddonResource::Subtitles,
-                AddonResource::Streams,
+                ResourceType::Catalog,
+                ResourceType::Meta,
+                ResourceType::Search,
+                ResourceType::Subtitles,
+                ResourceType::Stream,
             ],
-            supported_types: vec!["movie".to_string(), "series".to_string()],
+            supported_types: vec![
+                remux_sdks::stremio::MediaType::Movie,
+                remux_sdks::stremio::MediaType::Series,
+            ],
             options: vec![AddonOption {
                 id: "manifest_url".to_string(),
                 name: "Manifest URL".to_string(),
@@ -59,61 +58,52 @@ impl AddonKind for StremioAddonKind {
         }
     }
 
-    fn instantiate(&self, row: &AddonRow) -> Result<AddonInstance> {
-        let raw_url = row
-            .config
+    fn from_cfg(&self, cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+        let raw_url = cfg
             .get("manifest_url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Stremio addon missing manifest_url in config"))?
             .to_string();
         let manifest_url = StremioManifestUrl::try_new(raw_url)
             .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
-        let addon = Arc::new(StremioAddon {
-            row: row.clone(),
+        let client = reqwest::Client::builder()
+            .user_agent("remux-server/1.0")
+            .build()?;
+        Ok(Arc::new(StremioAddon {
             manifest_url,
-        });
-        Ok(AddonInstance {
-            addon: addon.clone(),
-            catalog: Some(addon.clone()),
-            meta: Some(addon.clone()),
-            hierarchy: Some(addon.clone()),
-            search: Some(addon.clone()),
-            subtitle: Some(addon.clone()),
-            stream: Some(addon),
-            segment: None,
-            lyric: None,
-        })
+            client,
+        }))
     }
 }
 
 inventory::submit! {
-    AddonKindRegistration(|| Box::new(StremioAddonKind))
+    AddonPresetRegistration(|| Box::new(StremioPreset))
 }
 
 fn parse_manifest_info(
     manifest: &remux_sdks::stremio::Manifest,
-) -> (Vec<AddonResource>, Vec<String>) {
+) -> (Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>) {
     let mut resources = Vec::new();
     for res in &manifest.resources {
         match res.resource_type() {
             ResourceType::Catalog => {
-                if !resources.contains(&AddonResource::Catalog) {
-                    resources.push(AddonResource::Catalog);
+                if !resources.contains(&ResourceType::Catalog) {
+                    resources.push(ResourceType::Catalog);
                 }
             }
             ResourceType::Meta => {
-                if !resources.contains(&AddonResource::Meta) {
-                    resources.push(AddonResource::Meta);
+                if !resources.contains(&ResourceType::Meta) {
+                    resources.push(ResourceType::Meta);
                 }
             }
             ResourceType::Subtitles => {
-                if !resources.contains(&AddonResource::Subtitles) {
-                    resources.push(AddonResource::Subtitles);
+                if !resources.contains(&ResourceType::Subtitles) {
+                    resources.push(ResourceType::Subtitles);
                 }
             }
             ResourceType::Stream => {
-                if !resources.contains(&AddonResource::Streams) {
-                    resources.push(AddonResource::Streams);
+                if !resources.contains(&ResourceType::Stream) {
+                    resources.push(ResourceType::Stream);
                 }
             }
             _ => {}
@@ -124,31 +114,19 @@ fn parse_manifest_info(
         .iter()
         .any(|c| c.extra.iter().any(|e| e.name == "search"))
     {
-        if !resources.contains(&AddonResource::Search) {
-            resources.push(AddonResource::Search);
+        if !resources.contains(&ResourceType::Search) {
+            resources.push(ResourceType::Search);
         }
     }
-    (resources, manifest.types.clone())
-}
-
-pub async fn manifest_info_for_row(
-    row: &AddonRow,
-) -> Option<(Vec<AddonResource>, Vec<String>)> {
-    let url = row.config.get("manifest_url").and_then(|v| v.as_str())?;
-    let url = StremioManifestUrl::try_new(url.to_string()).ok()?;
-    let svc = stremio_service::StremioService::from_url(&url).ok()?;
-    let manifest = svc.get_manifest().await.ok()?;
-    Some(parse_manifest_info(&manifest))
-}
-
-pub async fn init_resources_from_manifest(db: &sqlx::SqlitePool, row: &mut AddonRow) {
-    if let Some((resources, types)) = manifest_info_for_row(row).await {
-        row.resources = resources;
-        row.config["manifest_types"] = serde_json::to_value(&types).unwrap_or_default();
-        if let Err(e) = row.update(db).await {
-            warn!(addon = %row.id, error = %e, "failed to persist initial resources");
-        }
-    }
+    let types = manifest
+        .types
+        .iter()
+        .map(|s| {
+            serde_json::from_value(serde_json::Value::String(s.clone()))
+                .unwrap_or(remux_sdks::stremio::MediaType::Unknown(s.clone()))
+        })
+        .collect();
+    (resources, types)
 }
 
 #[nutype(
@@ -173,108 +151,43 @@ where
 }
 
 pub struct StremioAddon {
-    row: AddonRow,
     manifest_url: StremioManifestUrl,
+    client: reqwest::Client,
 }
 
 impl StremioAddon {
     fn service(&self) -> Result<stremio_service::StremioService> {
         stremio_service::StremioService::from_url(&self.manifest_url)
     }
-
-    /// Returns manifest types from the stored config, falling back to an empty
-    /// list (which means "unknown — treat as permissive" at call sites).
-    fn manifest_types(&self) -> Vec<String> {
-        self.row
-            .config
-            .get("manifest_types")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default()
-    }
 }
 
 #[async_trait]
-impl Addon for StremioAddon {
-    fn row(&self) -> &AddonRow {
-        &self.row
+impl AddonKind for StremioAddon {
+    fn id(&self) -> &'static str {
+        "stremio"
     }
 
-    async fn supported_resources(&self) -> Vec<AddonResource> {
+    async fn available_resources(&self) -> Vec<ResourceType> {
         let Ok(svc) = self.service() else {
-            return self.row.resources.clone();
+            return vec![];
         };
         let Ok(manifest) = svc.get_manifest().await else {
-            return self.row.resources.clone();
+            return vec![];
         };
-        let (resources, _) = parse_manifest_info(&manifest);
-        resources
+        parse_manifest_info(&manifest).0
     }
 
-    async fn supported_types(&self) -> Vec<String> {
+    async fn available_types(&self) -> Vec<remux_sdks::stremio::MediaType> {
         let Ok(svc) = self.service() else {
-            return vec!["movie".to_string(), "series".to_string()];
+            return vec![];
         };
         let Ok(manifest) = svc.get_manifest().await else {
-            return vec!["movie".to_string(), "series".to_string()];
+            return vec![];
         };
-        manifest.types.clone()
-    }
-}
-
-#[async_trait]
-impl MetaAddon for StremioAddon {
-    async fn supports(&self, media: &db::Media) -> bool {
-        let types = self.supported_types().await;
-        stremio_type_for_kind(&media.kind)
-            .map(|t| types.iter().any(|s| s == t))
-            .unwrap_or(false)
-    }
-    async fn fetch(
-        &self,
-        media: &db::Media,
-        ctx: &AppContext,
-    ) -> Result<Option<MetaResult>> {
-        let svc = self.service()?;
-        stremio_meta_fetch(&svc, media, ctx).await
-    }
-}
-
-#[async_trait]
-impl SearchAddon for StremioAddon {
-    async fn supports(&self, kind: &db::MediaKind) -> bool {
-        let types = self.supported_types().await;
-        stremio_type_for_kind(kind)
-            .map(|t| types.iter().any(|s| s == t))
-            .unwrap_or(false)
-    }
-    async fn search(
-        &self,
-        kind: &db::MediaKind,
-        query: &str,
-        limit: usize,
-        ctx: &AppContext,
-    ) -> Result<Option<Vec<db::Media>>> {
-        let svc = self.service()?;
-        let results = stremio_search(&svc, kind, query, limit, ctx).await?;
-        Ok(Some(results))
+        parse_manifest_info(&manifest).1
     }
 
-    async fn persist_result(
-        &self,
-        id: Uuid,
-        ctx: &AppContext,
-    ) -> Result<Option<db::Media>> {
-        let svc = match self.service() {
-            Ok(a) => a,
-            Err(_) => return Ok(None),
-        };
-        stremio_persist(&svc, id, ctx).await
-    }
-}
-
-#[async_trait]
-impl CatalogAddon for StremioAddon {
-    async fn list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
+    async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         let svc = self.service()?;
         let manifest = svc.get_manifest().await?;
         Ok(manifest
@@ -282,16 +195,13 @@ impl CatalogAddon for StremioAddon {
             .into_iter()
             .filter(|c| !c.id.contains("search"))
             .map(|c| CatalogInfo {
-                provider_catalog_id: format!(
-                    "{}{}{}:{}",
-                    self.manifest_url, LOCAL_SEP, c.kind, c.id
-                ),
+                provider_catalog_id: format!("{}:{}", c.kind.to_lowercase(), c.id),
                 name: format!("{} — {}", manifest.name.trim(), c.name.trim()),
             })
             .collect())
     }
 
-    async fn stream(
+    async fn catalog_stream(
         &self,
         ctx: &AppContext,
         local_id: &str,
@@ -299,19 +209,14 @@ impl CatalogAddon for StremioAddon {
         let svc = self.service()?;
         let manifest = svc.get_manifest().await?;
 
-        let short_id = local_id
-            .strip_prefix(self.manifest_url.as_str())
-            .and_then(|s| s.strip_prefix(LOCAL_SEP))
-            .unwrap_or(local_id);
-
         let cat = manifest
             .catalogs
             .into_iter()
-            .find(|c| format!("{}:{}", c.kind, c.id) == short_id)
+            .find(|c| format!("{}:{}", c.kind.to_lowercase(), c.id) == local_id)
             .ok_or_else(|| {
                 anyhow!(
                     "catalog '{}' not found in Stremio manifest {}",
-                    short_id,
+                    local_id,
                     self.manifest_url
                 )
             })?;
@@ -346,15 +251,25 @@ impl CatalogAddon for StremioAddon {
 
         Ok(Some(Box::pin(stream)))
     }
-}
 
-#[async_trait]
-impl HierarchyAddon for StremioAddon {
-    fn supports(&self, root: &db::Media) -> bool {
+    async fn meta_supports(&self, media: &db::Media) -> bool {
+        stremio_type_for_kind(&media.kind).is_some()
+    }
+
+    async fn meta_fetch(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Option<MetaResult>> {
+        let svc = self.service()?;
+        stremio_meta_fetch(&svc, media, ctx).await
+    }
+
+    fn hierarchy_supports(&self, root: &db::Media) -> bool {
         root.kind == db::MediaKind::Series
     }
 
-    async fn sync_children(
+    async fn hierarchy_sync_children(
         &self,
         root: &db::Media,
         ctx: &AppContext,
@@ -371,7 +286,7 @@ impl HierarchyAddon for StremioAddon {
         }
     }
 
-    async fn persist_children_metadata(
+    async fn hierarchy_persist_metadata(
         &self,
         root: &db::Media,
         children: &[db::Media],
@@ -383,18 +298,40 @@ impl HierarchyAddon for StremioAddon {
         let svc = self.service()?;
         stremio_persist_children_metadata(&svc, root, children, ctx).await
     }
-}
 
-#[async_trait]
-impl SubtitleAddon for StremioAddon {
-    fn supports(&self, media: &db::Media) -> bool {
-        if !self.row.resources.contains(&AddonResource::Subtitles) {
-            return false;
-        }
+    async fn search_supports(&self, kind: &db::MediaKind) -> bool {
+        stremio_type_for_kind(kind).is_some()
+    }
+
+    async fn search(
+        &self,
+        kind: &db::MediaKind,
+        query: &str,
+        limit: usize,
+        ctx: &AppContext,
+    ) -> Result<Option<Vec<db::Media>>> {
+        let svc = self.service()?;
+        let results = stremio_search(&svc, kind, query, limit, ctx).await?;
+        Ok(Some(results))
+    }
+
+    async fn search_persist(
+        &self,
+        id: Uuid,
+        ctx: &AppContext,
+    ) -> Result<Option<db::Media>> {
+        let svc = match self.service() {
+            Ok(a) => a,
+            Err(_) => return Ok(None),
+        };
+        stremio_persist(&svc, id, ctx).await
+    }
+
+    fn subtitle_supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
     }
 
-    async fn fetch(
+    async fn subtitle_fetch(
         &self,
         media: &db::Media,
         _db: &SqlitePool,
@@ -402,35 +339,12 @@ impl SubtitleAddon for StremioAddon {
         let svc = self.service()?;
         stremio_subtitles(&svc, media).await
     }
-}
 
-#[async_trait]
-impl StreamAddon for StremioAddon {
-    fn supports(&self, media: &db::Media) -> bool {
-        if !self.row.resources.contains(&AddonResource::Streams) {
-            return false;
-        }
-        let kind_matches = matches!(
-            media.kind,
-            db::MediaKind::Movie
-                | db::MediaKind::Series
-                | db::MediaKind::Episode
-                | db::MediaKind::Track
-        );
-        if !kind_matches {
-            return false;
-        }
-        // If manifest types are known, check the media's stremio type is supported.
-        let types = self.manifest_types();
-        if types.is_empty() {
-            return true; // types not yet cached — be permissive
-        }
-        stremio_type_for_kind(&media.kind)
-            .map(|t| types.iter().any(|s| s == t))
-            .unwrap_or(false)
+    fn stream_supports(&self, media: &db::Media) -> bool {
+        stremio_type_for_kind(&media.kind).is_some()
     }
 
-    async fn resolve(
+    async fn stream_resolve(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
@@ -1211,7 +1125,7 @@ async fn stremio_streams(
                 kind: db::MediaKind::Stream,
                 title: label,
                 url: Some(url),
-                provider_info: Some(sqlx::types::Json(StreamProviderInfo::Aio(s))),
+                provider_info: Some(StreamProviderInfo::Aio(s)),
                 ..Default::default()
             })
         })
