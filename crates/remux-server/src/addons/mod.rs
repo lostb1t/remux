@@ -127,6 +127,50 @@ pub(crate) fn apply_title_format(media: &mut db::Media) {
     }
 }
 
+pub(crate) fn episode_meta_complete(media: &db::Media) -> bool {
+    let has_title = !media.title.trim().is_empty();
+    let has_summary = media
+        .description
+        .as_ref()
+        .map(|text| !text.trim().is_empty())
+        .unwrap_or(false);
+    let has_air_date = media.released_at.is_some();
+    has_title && has_summary && has_air_date
+}
+
+async fn apply_meta_result(
+    media: &mut db::Media,
+    result: db::MetaResult,
+    replace: bool,
+    ctx: &AppContext,
+) {
+    merge_media(media, &result.media, replace);
+    apply_title_format(media);
+
+    if matches!(
+        media.kind,
+        db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
+    ) && !result.relations.is_empty()
+    {
+        let (rel_media, rels): (Vec<_>, Vec<_>) = result
+            .relations
+            .into_iter()
+            .map(|r| (r.media, r.relation))
+            .unzip();
+        if replace {
+            db::MediaRelation::delete_by_left_id(&ctx.db, &media.id)
+                .await
+                .ok();
+        }
+        if let Err(e) = db::Media::upsert(&ctx.db, &rel_media)
+            .await
+            .and(db::MediaRelation::upsert(&ctx.db, &rels).await)
+        {
+            tracing::warn!(id = %media.id, error = %e, "failed to persist relations");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Preset registry
 // ---------------------------------------------------------------------------
@@ -460,37 +504,31 @@ impl AddonService {
         if applicable.is_empty() {
             return Ok(());
         }
-        let mut first = true;
+        let mut applied_any = false;
+        let mut fallback_episode: Option<db::MetaResult> = None;
         for (name, addon) in &applicable {
-            let replace = first && force_refresh;
-            first = false;
             match addon.meta_fetch(media, ctx).await {
                 Ok(Some(result)) => {
-                    merge_media(media, &result.media, replace);
-                    apply_title_format(media);
-                    if matches!(
-                        media.kind,
-                        db::MediaKind::Movie
-                            | db::MediaKind::Series
-                            | db::MediaKind::Episode
-                    ) && !result.relations.is_empty()
+                    if media.kind == db::MediaKind::Episode
+                        && !episode_meta_complete(&result.media)
                     {
-                        let (rel_media, rels): (Vec<_>, Vec<_>) = result
-                            .relations
-                            .into_iter()
-                            .map(|r| (r.media, r.relation))
-                            .unzip();
-                        if replace {
-                            db::MediaRelation::delete_by_left_id(&ctx.db, &media.id)
-                                .await
-                                .ok();
+                        if fallback_episode.is_none() {
+                            fallback_episode = Some(result);
                         }
-                        if let Err(e) = db::Media::upsert(&ctx.db, &rel_media)
-                            .await
-                            .and(db::MediaRelation::upsert(&ctx.db, &rels).await)
-                        {
-                            tracing::warn!(id = %media.id, error = %e, "failed to persist relations");
-                        }
+                        continue;
+                    }
+
+                    let replace = if media.kind == db::MediaKind::Episode {
+                        true
+                    } else {
+                        force_refresh && !applied_any
+                    };
+
+                    apply_meta_result(media, result, replace, ctx).await;
+                    applied_any = true;
+
+                    if media.kind == db::MediaKind::Episode {
+                        break;
                     }
                 }
                 Ok(None) => continue,
@@ -498,6 +536,13 @@ impl AddonService {
                     tracing::error!(addon = %name, error = %e, "meta addon error");
                     continue;
                 }
+            }
+        }
+
+        if media.kind == db::MediaKind::Episode && !applied_any {
+            if let Some(result) = fallback_episode {
+                apply_meta_result(media, result, true, ctx).await;
+                applied_any = true;
             }
         }
         media.refreshed_at = Some(chrono::Utc::now().naive_utc());
