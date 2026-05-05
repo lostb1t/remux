@@ -399,6 +399,7 @@ pub struct PublicSystemInfo {
     pub startup_wizard_completed: bool,
     pub version: String,
     pub remux_version: String,
+    pub operating_system: String,
 }
 
 #[skip_serializing_none]
@@ -630,6 +631,7 @@ pub struct LibraryOptions {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct SpecialViewOptionDto {
     pub name: Option<String>,
     pub id: Option<String>,
@@ -1748,14 +1750,18 @@ pub struct UserPolicy {
     pub is_disabled: bool,
     pub max_parental_rating: Option<i32>,
     pub max_parental_sub_rating: Option<i32>,
-    pub blocked_tags: Option<Vec<String>>,
-    pub allowed_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub blocked_tags: Vec<String>,
+    #[serde(default)]
+    pub allowed_tags: Vec<String>,
     /// Per-user filter rules applied on every item query (same engine as smart collections).
     pub filter_rules: Option<CollectionFilter>,
     #[default(true)]
     pub enable_user_preference_access: bool,
-    pub access_schedules: Option<Vec<String>>,
-    pub block_unrated_items: Option<Vec<String>>,
+    #[serde(default)]
+    pub access_schedules: Vec<String>,
+    #[serde(default)]
+    pub block_unrated_items: Vec<String>,
     pub enable_remote_control_of_other_users: bool,
     #[default(true)]
     pub enable_shared_device_control: bool,
@@ -1775,20 +1781,24 @@ pub struct UserPolicy {
     pub enable_playback_remuxing: bool,
     pub force_remote_source_transcoding: bool,
     pub enable_content_deletion: bool,
-    pub enable_content_deletion_from_folders: Option<Vec<String>>,
+    #[serde(default)]
+    pub enable_content_deletion_from_folders: Vec<String>,
     #[default(true)]
     pub enable_content_downloading: bool,
     #[default(true)]
     pub enable_sync_transcoding: bool,
     #[default(true)]
     pub enable_media_conversion: bool,
-    pub enabled_devices: Option<Vec<String>>,
+    #[serde(default)]
+    pub enabled_devices: Vec<String>,
     #[default(true)]
     pub enable_all_devices: bool,
-    pub enabled_channels: Option<Vec<String>>,
+    #[serde(default)]
+    pub enabled_channels: Vec<String>,
     #[default(true)]
     pub enable_all_channels: bool,
-    pub enabled_folders: Option<Vec<String>>,
+    #[serde(default)]
+    pub enabled_folders: Vec<String>,
     #[default(true)]
     pub enable_all_folders: bool,
     pub invalid_login_attempt_count: i64,
@@ -1797,8 +1807,10 @@ pub struct UserPolicy {
     pub max_active_sessions: i64,
     #[default(true)]
     pub enable_public_sharing: bool,
-    pub blocked_media_folders: Option<Vec<String>>,
-    pub blocked_channels: Option<Vec<String>>,
+    #[serde(default)]
+    pub blocked_media_folders: Vec<String>,
+    #[serde(default)]
+    pub blocked_channels: Vec<String>,
     pub remote_client_bitrate_limit: i64,
     #[default("Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider".to_string())]
     #[serde(default = "default_authentication_provider_id")]
@@ -2138,7 +2150,8 @@ pub struct BaseItemDto {
     pub premiere_date: Option<DateTime<Utc>>,
     // Remux: digital/home release date, distinct from theatrical premiere_date
     pub digital_release_date: Option<DateTime<Utc>>,
-    pub external_urls: Option<Vec<ExternalUrl>>,
+    #[serde(default)]
+    pub external_urls: Vec<ExternalUrl>,
     pub media_sources: Option<Vec<MediaSourceInfo>>,
     pub critic_rating: Option<f64>,
     pub production_locations: Option<Vec<String>>,
@@ -2148,8 +2161,10 @@ pub struct BaseItemDto {
     pub channel_id: Option<String>,
     pub channel_name: Option<String>,
     pub overview: Option<String>,
-    pub taglines: Option<Vec<String>>,
-    pub genres: Option<Vec<String>>,
+    #[serde(default)]
+    pub taglines: Vec<String>,
+    #[serde(default)]
+    pub genres: Vec<String>,
     pub community_rating: Option<f64>,
     pub cumulative_run_time_ticks: Option<i64>,
     pub run_time_ticks: Option<i64>,
@@ -2168,26 +2183,33 @@ pub struct BaseItemDto {
     pub parent_id: Option<Uuid>,
     #[default(MediaType::Movie)]
     pub type_: MediaType,
-    pub people: Option<Vec<BaseItemPerson>>,
-    pub studios: Option<Vec<NameIdPair>>,
-    pub genre_items: Option<Vec<NameIdPair>>,
+    #[serde(default)]
+    pub people: Vec<BaseItemPerson>,
+    #[serde(default)]
+    pub studios: Vec<NameIdPair>,
+    #[serde(default)]
+    pub genre_items: Vec<NameIdPair>,
     pub parent_logo_item_id: Option<String>,
     pub parent_backdrop_item_id: Option<String>,
     pub parent_backdrop_image_tags: Option<Vec<String>>,
-    pub local_trailer_count: Option<i64>,
-    pub remote_trailers: Option<Vec<ExternalUrl>>,
+    #[serde(default)]
+    pub local_trailer_count: i64,
+    #[serde(default)]
+    pub remote_trailers: Vec<ExternalUrl>,
     pub user_data: Option<UserItemDataDto>,
     pub recursive_item_count: Option<i64>,
     pub child_count: Option<i64>,
     pub series_name: Option<String>,
     pub series_id: Option<Uuid>,
     pub season_id: Option<Uuid>,
-    pub special_feature_count: Option<i64>,
+    #[serde(default)]
+    pub special_feature_count: i64,
     pub display_preferences_id: Option<String>,
     pub status: Option<Status>,
     pub air_time: Option<String>,
     pub air_days: Option<Vec<String>>,
-    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 
     // this is fucking weird. And its used.
     // anyway we set it to poster format by default
@@ -2213,7 +2235,8 @@ pub struct BaseItemDto {
     pub part_count: Option<i64>,
     pub media_source_count: Option<i64>,
     pub image_tags: Option<ImageTags>,
-    pub backdrop_image_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub backdrop_image_tags: Vec<String>,
     pub image_blur_hashes: Option<ImageBlurHashes>,
     pub screenshot_image_tags: Option<Vec<String>>,
     pub parent_thumb_item_id: Option<String>,
@@ -2226,7 +2249,8 @@ pub struct BaseItemDto {
     #[default(MediaType::Unknown)]
     pub media_type: MediaType,
     pub end_date: Option<String>,
-    //pub locked_fields: Option<Vec<MetadataFields>>,
+    #[serde(default)]
+    pub locked_fields: Vec<String>,
     pub trailer_count: Option<i64>,
     pub movie_count: Option<i64>,
     pub series_count: Option<i64>,
@@ -2236,8 +2260,9 @@ pub struct BaseItemDto {
     pub album_count: Option<i64>,
     pub artist_count: Option<i64>,
     pub music_video_count: Option<i64>,
-    #[default(true)]
     pub lock_data: bool,
+    #[default(true)]
+    pub enable_media_source_display: bool,
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub camera_make: Option<String>,
@@ -2273,15 +2298,6 @@ pub struct BaseItemDto {
     pub has_series_timer: Option<bool>,
     pub has_timer: Option<bool>,
     pub provider_ids: Option<ProviderIds>,
-    // internal stuff
-    // #[serde(skip)]
-    // pub aio_id: Option<String>,
-    // #[serde(skip)]
-    // pub aio_resource_type: Option<aio::ResourceType>,
-    //#[serde(skip)]
-    //pub aio_media_type: Option<aio::MediaType>,
-    // #[serde(skip)]
-    //pub aio_stream: Option<sdks::aio::Stream>,
     pub remux: Option<RemuxInfo>,
 }
 
@@ -2306,7 +2322,7 @@ pub struct NameIdPair {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, default2::Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct PlayerStateInfo {
     pub position_ticks: Option<i64>,
@@ -2318,7 +2334,9 @@ pub struct PlayerStateInfo {
     pub subtitle_stream_index: Option<i32>,
     pub media_source_id: Option<String>,
     pub play_method: Option<String>,
+    #[default("RepeatNone".to_string())]
     pub repeat_mode: String,
+    #[default("Default".to_string())]
     pub playback_order: String,
 }
 
@@ -2360,8 +2378,10 @@ pub struct SessionInfoDto {
     pub is_active: bool,
     pub supports_media_control: bool,
     pub supports_remote_control: bool,
-    pub now_playing_queue: Option<Vec<QueueItem>>,
-    pub now_playing_queue_full_items: Option<Vec<BaseItemDto>>,
+    #[serde(default)]
+    pub now_playing_queue: Vec<QueueItem>,
+    #[serde(default)]
+    pub now_playing_queue_full_items: Vec<BaseItemDto>,
     pub has_custom_device_name: bool,
     pub playlist_item_id: Option<String>,
     pub server_id: String,

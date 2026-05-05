@@ -1668,7 +1668,7 @@ fn CollectionForm(
     let tags: Signal<Vec<String>> = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|f| f.tags.clone())
+            .map(|f| f.tags.clone())
             .unwrap_or_default()
     });
     let mut saving = use_signal(|| false);

@@ -2274,9 +2274,11 @@ impl Media {
                 index_number: filter.index_number,
                 has_trailer: filter.has_trailer,
                 tags: filter.tags.clone(),
-                blocked_tags: user_policy.and_then(|p| p.blocked_tags.clone()),
+                blocked_tags: user_policy
+                    .map(|p| p.blocked_tags.clone())
+                    .filter(|v| !v.is_empty()),
                 allowed_tags: user_policy
-                    .and_then(|p| p.allowed_tags.clone())
+                    .map(|p| p.allowed_tags.clone())
                     .filter(|v| !v.is_empty()),
                 digital_released_before,
                 sort_by: filter.sort_by.clone().unwrap_or_default(),

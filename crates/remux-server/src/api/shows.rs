@@ -117,6 +117,7 @@ pub async fn userviews(
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
         promoted: Some(true),
         filter_rules: policy_rules,
+        include_child_count: true,
         ..Default::default()
     };
     let channel_filter = db::MediaFilter {
@@ -140,8 +141,10 @@ pub async fn userviews(
         items.push(livetv_view_item());
     }
 
+    let count = items.len() as i64;
     Ok(Json(api::BaseItemDtoQueryResult {
         items,
+        total_record_count: count,
         ..Default::default()
     }))
 }
@@ -151,12 +154,31 @@ pub async fn userviews_groupingoptions(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    // Ok(Json(json!(
-    // )))
-    Ok(StatusCode::NO_CONTENT.into_response())
-    // Ok(Json(json!(
-    //     crate::api::get_virtual_folders(&state).await?
-    // )))
+    let policy_rules: Vec<remux_sdks::remux::models::FilterRule> = session
+        .user
+        .policy
+        .as_ref()
+        .and_then(|p| p.0.filter_rules.as_ref())
+        .map(|f| f.rules.clone())
+        .unwrap_or_default();
+
+    let filter = db::MediaFilter {
+        kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
+        promoted: Some(true),
+        filter_rules: policy_rules,
+        ..Default::default()
+    };
+    let items = db::Media::get_by_filter(&state.ctx.db, &filter)
+        .await?
+        .records
+        .into_iter()
+        .map(|m| remux_sdks::remux::models::SpecialViewOptionDto {
+            name: Some(m.title.clone()),
+            id: Some(m.id.to_string()),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(items))
 }
 
 #[get("/shows/nextup")]

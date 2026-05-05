@@ -132,14 +132,24 @@ pub async fn users_authenticatebyname(
         user_name: Some(user.username.clone()),
         server_id: server_id(),
         is_active: true,
+        play_state: Some(api::PlayerStateInfo::default()),
+        capabilities: Some(api::ClientCapabilitiesDto {
+            supports_persistent_identifier: true,
+            ..Default::default()
+        }),
         ..Default::default()
     };
+
+    let now = chrono::Utc::now();
+    let mut user_dto = api::db_user_to_dto(user);
+    user_dto.last_login_date = Some(now);
+    user_dto.last_activity_date = Some(now);
 
     Ok(Json(api::AuthenticationResult {
         access_token: Some(device.access_token),
         server_id: server_id(),
         session_info: Some(session_info),
-        user: Some(api::db_user_to_dto(user)),
+        user: Some(user_dto),
     }))
 }
 
@@ -206,14 +216,24 @@ pub async fn authenticate_with_quickconnect(
         user_name: Some(user.username.clone()),
         server_id: server_id(),
         is_active: true,
+        play_state: Some(api::PlayerStateInfo::default()),
+        capabilities: Some(api::ClientCapabilitiesDto {
+            supports_persistent_identifier: true,
+            ..Default::default()
+        }),
         ..Default::default()
     };
+
+    let now = chrono::Utc::now();
+    let mut user_dto = api::db_user_to_dto(user);
+    user_dto.last_login_date = Some(now);
+    user_dto.last_activity_date = Some(now);
 
     Ok(Json(api::AuthenticationResult {
         access_token: Some(device.access_token),
         server_id: server_id(),
         session_info: Some(session_info),
-        user: Some(api::db_user_to_dto(user)),
+        user: Some(user_dto),
     }))
 }
 

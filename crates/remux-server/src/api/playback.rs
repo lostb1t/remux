@@ -1961,21 +1961,19 @@ pub async fn get_sessions(
             });
 
         let last_paused_date = ps.and_then(|ps| ps.last_paused_at);
-        let now_playing_queue = ps.and_then(|ps| ps.now_playing_queue.clone());
+        let now_playing_queue: Vec<_> = ps
+            .and_then(|ps| ps.now_playing_queue.clone())
+            .unwrap_or_default();
         let playlist_item_id = ps.and_then(|ps| ps.playlist_item_id.clone());
 
         // Populate NowPlayingQueueFullItems from queue item IDs.
-        let now_playing_queue_full_items = if let Some(ref queue) = now_playing_queue {
-            let mut items = Vec::with_capacity(queue.len());
-            for qi in queue {
-                if let Ok(Some(m)) = db::Media::get_by_id(&state.ctx.db, &qi.id).await {
-                    items.push(api::db_media_to_item(m));
-                }
+        let mut now_playing_queue_full_items =
+            Vec::with_capacity(now_playing_queue.len());
+        for qi in &now_playing_queue {
+            if let Ok(Some(m)) = db::Media::get_by_id(&state.ctx.db, &qi.id).await {
+                now_playing_queue_full_items.push(api::db_media_to_item(m));
             }
-            if items.is_empty() { None } else { Some(items) }
-        } else {
-            None
-        };
+        }
 
         let remote_end_point = device.remote_ip.clone();
 

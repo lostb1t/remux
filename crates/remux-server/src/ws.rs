@@ -288,7 +288,10 @@ async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
                     id: session.item_id,
                     ..Default::default()
                 }),
-                now_playing_queue: session.now_playing_queue.clone(),
+                now_playing_queue: session
+                    .now_playing_queue
+                    .clone()
+                    .unwrap_or_default(),
                 playlist_item_id: session.playlist_item_id.clone(),
                 transcoding_info,
                 is_active: true,

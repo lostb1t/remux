@@ -195,14 +195,18 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         has_lyrics: (media.kind == db::MediaKind::Track).then_some(true),
         type_,
         parent_id: media.parent_id.clone(),
-        remote_trailers: media.trailers.clone().map(|j| {
-            j.into_iter()
-                .map(|id| ExternalUrl {
-                    name: Some("YouTube".to_string()),
-                    url: Some(format!("https://www.youtube.com/watch?v={id}")),
-                })
-                .collect()
-        }),
+        remote_trailers: media
+            .trailers
+            .clone()
+            .map(|j| {
+                j.into_iter()
+                    .map(|id| ExternalUrl {
+                        name: Some("YouTube".to_string()),
+                        url: Some(format!("https://www.youtube.com/watch?v={id}")),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         series_id: matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season)
             .then(|| media.series_id.or(media.parent_id))
             .flatten(),
@@ -292,7 +296,8 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         backdrop_image_tags: media
             .backdrop
             .as_ref()
-            .map(|url| vec![image_tag(Some(url)).unwrap()]),
+            .map(|url| vec![image_tag(Some(url)).unwrap()])
+            .unwrap_or_default(),
         provider_ids: Some(ProviderIds {
             // Episodes ingested before the per-episode external_ids fix
             // have no IMDB id of their own — fall back to the series's
@@ -317,58 +322,79 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         run_time_ticks: media
             .runtime
             .map(|r| r.to_ticks(common::TickUnit::Seconds).unwrap()),
-        genres: media.relations.as_ref().map(|rels| {
-            rels.iter()
-                .filter(|(_, m)| m.kind == db::MediaKind::Genre)
-                .map(|(_, m)| m.title.clone())
-                .collect()
-        }),
-        genre_items: media.relations.as_ref().map(|rels| {
-            rels.iter()
-                .filter(|(_, m)| m.kind == db::MediaKind::Genre)
-                .map(|(_, m)| NameIdPair {
-                    id: m.id,
-                    name: m.title.clone(),
-                })
-                .collect()
-        }),
-        people: media.relations.as_ref().map(|rels| {
-            rels.iter()
-                .filter(|(_, m)| m.kind == db::MediaKind::Person)
-                .map(|(rel, m)| BaseItemPerson {
-                    id: m.id,
-                    name: m.title.clone(),
-                    role: rel.role.as_ref().and_then(|r| match r {
-                        db::RelationRole::Actor => {
-                            rel.character.clone().or_else(|| Some("Actor".to_string()))
-                        }
-                        db::RelationRole::Director => Some("Director".to_string()),
-                        db::RelationRole::Writer => Some("Writer".to_string()),
-                        db::RelationRole::Producer => Some("Producer".to_string()),
-                        db::RelationRole::Creator => Some("Creator".to_string()),
-                        db::RelationRole::Catalog | db::RelationRole::Playlist => None,
-                    }),
-                    type_: rel.role.as_ref().and_then(|r| match r {
-                        db::RelationRole::Actor => Some("Actor".to_string()),
-                        db::RelationRole::Director => Some("Director".to_string()),
-                        db::RelationRole::Writer => Some("Writer".to_string()),
-                        db::RelationRole::Producer => Some("Producer".to_string()),
-                        db::RelationRole::Creator => Some("Creator".to_string()),
-                        db::RelationRole::Catalog | db::RelationRole::Playlist => None,
-                    }),
-                    primary_image_tag: image_tag(m.poster.as_deref()),
-                })
-                .collect()
-        }),
-        studios: media.relations.as_ref().map(|rels| {
-            rels.iter()
-                .filter(|(_, m)| m.kind == db::MediaKind::Studio)
-                .map(|(_, m)| NameIdPair {
-                    id: m.id,
-                    name: m.title.clone(),
-                })
-                .collect()
-        }),
+        genres: media
+            .relations
+            .as_ref()
+            .map(|rels| {
+                rels.iter()
+                    .filter(|(_, m)| m.kind == db::MediaKind::Genre)
+                    .map(|(_, m)| m.title.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        genre_items: media
+            .relations
+            .as_ref()
+            .map(|rels| {
+                rels.iter()
+                    .filter(|(_, m)| m.kind == db::MediaKind::Genre)
+                    .map(|(_, m)| NameIdPair {
+                        id: m.id,
+                        name: m.title.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        people: media
+            .relations
+            .as_ref()
+            .map(|rels| {
+                rels.iter()
+                    .filter(|(_, m)| m.kind == db::MediaKind::Person)
+                    .map(|(rel, m)| BaseItemPerson {
+                        id: m.id,
+                        name: m.title.clone(),
+                        role: rel.role.as_ref().and_then(|r| match r {
+                            db::RelationRole::Actor => rel
+                                .character
+                                .clone()
+                                .or_else(|| Some("Actor".to_string())),
+                            db::RelationRole::Director => Some("Director".to_string()),
+                            db::RelationRole::Writer => Some("Writer".to_string()),
+                            db::RelationRole::Producer => Some("Producer".to_string()),
+                            db::RelationRole::Creator => Some("Creator".to_string()),
+                            db::RelationRole::Catalog | db::RelationRole::Playlist => {
+                                None
+                            }
+                        }),
+                        type_: rel.role.as_ref().and_then(|r| match r {
+                            db::RelationRole::Actor => Some("Actor".to_string()),
+                            db::RelationRole::Director => Some("Director".to_string()),
+                            db::RelationRole::Writer => Some("Writer".to_string()),
+                            db::RelationRole::Producer => Some("Producer".to_string()),
+                            db::RelationRole::Creator => Some("Creator".to_string()),
+                            db::RelationRole::Catalog | db::RelationRole::Playlist => {
+                                None
+                            }
+                        }),
+                        primary_image_tag: image_tag(m.poster.as_deref()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        studios: media
+            .relations
+            .as_ref()
+            .map(|rels| {
+                rels.iter()
+                    .filter(|(_, m)| m.kind == db::MediaKind::Studio)
+                    .map(|(_, m)| NameIdPair {
+                        id: m.id,
+                        name: m.title.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         child_count: media.child_count,
         album_count: media.album_count,
         song_count: media.song_count,
@@ -407,17 +433,18 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                     .map(|(id, name)| vec![NameIdPair { id, name }])
             })
             .flatten(),
-        tags: if media.tags.is_empty() {
-            None
-        } else {
-            Some(media.tags.clone())
-        },
+        tags: media.tags.clone(),
         status: media.status.as_ref().map(|s| match s {
             db::MediaStatus::Continuing => Status::Continuing,
             db::MediaStatus::Ended => Status::Ended,
             db::MediaStatus::Unreleased => Status::Unreleased,
             db::MediaStatus::Released | db::MediaStatus::Unknown => Status::Released,
         }),
+        sort_name: Some(media.title.to_ascii_lowercase()),
+        primary_image_aspect_ratio: match media.kind {
+            db::MediaKind::Collection | db::MediaKind::Folder => 16.0 / 9.0,
+            _ => 0.6,
+        },
         remux: Some(RemuxInfo {
             collection_kind: media
                 .collection_kind
@@ -464,9 +491,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             url: Some(format!("https://www.imdb.com/title/{imdb_id}")),
         });
     }
-    if !external_urls.is_empty() {
-        item.external_urls = Some(external_urls);
-    }
+    item.external_urls = external_urls;
 
     if media.kind == db::MediaKind::Movie
         || media.kind == db::MediaKind::Episode
@@ -486,6 +511,13 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             }
             None => None,
         };
+    }
+
+    if matches!(
+        media.kind,
+        db::MediaKind::Collection | db::MediaKind::Folder
+    ) {
+        item.location_type = Some("FileSystem".to_string());
     }
 
     if media.kind == db::MediaKind::TvProgram {
