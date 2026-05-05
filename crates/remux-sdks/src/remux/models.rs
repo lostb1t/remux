@@ -734,6 +734,7 @@ pub struct GetItemsQuery {
     #[serde(default, deserialize_with = "deserialize_bool_from_anything")]
     pub recursive: bool,
     pub series_id: Option<Uuid>,
+    pub start_item_id: Option<Uuid>,
 }
 
 impl GetItemsQuery {

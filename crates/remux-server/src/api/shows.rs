@@ -70,8 +70,22 @@ pub async fn shows_episodes(
     }
     q.include_item_types = Some(vec![api::MediaType::Episode]);
     if q.sort_by.is_none() {
-        q.sort_by = Some(vec![api::ItemSortBy::IndexNumber]);
+        q.sort_by = Some(vec![
+            api::ItemSortBy::ParentIndexNumber,
+            api::ItemSortBy::IndexNumber,
+        ]);
         q.sort_order = Some(vec![api::SortOrder::Ascending]);
+    }
+    if let Some(start_id) = q.start_item_id.take() {
+        if q.start_index.is_none() {
+            let mut all_q = q.clone();
+            all_q.limit = None;
+            all_q.start_index = None;
+            let all = get_items(state.clone(), session.clone(), all_q, false).await?;
+            if let Some(pos) = all.items.iter().position(|i| i.id == start_id) {
+                q.start_index = Some(pos as u32);
+            }
+        }
     }
     let items = get_items(state, session.clone(), q.clone(), true)
         .await?
