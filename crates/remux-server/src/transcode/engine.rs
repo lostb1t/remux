@@ -141,6 +141,7 @@ pub struct TranscodeParams {
     /// scale the subtitle to match the output video resolution.
     pub subtitle_width: Option<u32>,
     pub subtitle_height: Option<u32>,
+    pub encoding_preset: Option<String>,
 }
 
 impl Default for TranscodeParams {
@@ -162,6 +163,7 @@ impl Default for TranscodeParams {
             burn_subtitle: false,
             subtitle_width: None,
             subtitle_height: None,
+            encoding_preset: None,
         }
     }
 }
@@ -291,6 +293,7 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     args.extend(["-c:v".into(), ffmpeg_video_codec.into()]);
 
     if ffmpeg_video_codec == "libx264" {
+        let preset = params.encoding_preset.as_deref().unwrap_or("fast");
         args.extend([
             "-profile:v".into(),
             "high".into(),
@@ -299,7 +302,7 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             "-crf".into(),
             "23".into(),
             "-preset".into(),
-            "fast".into(),
+            preset.to_string(),
             "-tune".into(),
             "zerolatency".into(),
         ]);
@@ -495,6 +498,7 @@ pub struct ProgressiveTranscodeParams {
     pub burn_subtitle: bool,
     pub subtitle_width: Option<u32>,
     pub subtitle_height: Option<u32>,
+    pub encoding_preset: Option<String>,
 }
 
 /// Build the ffmpeg CLI args for a progressive transcode piped to stdout.
@@ -634,7 +638,8 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
         if let Some(bitrate) = params.video_bitrate {
             args.extend(["-b:v".into(), bitrate.to_string()]);
         } else {
-            args.extend(["-preset".into(), "fast".into()]);
+            let preset = params.encoding_preset.as_deref().unwrap_or("fast");
+            args.extend(["-preset".into(), preset.to_string()]);
         }
     }
 

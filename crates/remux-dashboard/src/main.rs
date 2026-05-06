@@ -7,19 +7,20 @@ use remux_sdks::remux::{
     BulkChannelRequest, BulkChannels, ChannelEditorItem, CollectionFilter, CountryInfo,
     CreateAddon, CreateAddonRequest, CreateApiKey, CreateUser, CreateVirtualFolder,
     CreateVirtualFolderPayload, DeleteAddon, DeleteApiKey, DeleteEpgSource,
-    DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EpgSourceInfo, FilterMatchMode,
-    FilterRule, GetAddonCatalogs, GetAnfiteatroReleaseStatus, GetApiKeys,
-    GetBrandingConfiguration, GetCertificationSuggestions, GetCountries, GetEpgSources,
-    GetIptvChannels, GetItemCounts, GetItems, GetLocalSuggestions, GetParentalRatings,
-    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
-    GetTagSuggestions, GetTunerHosts, GetUsers, InstallLatestAnfiteatroRelease,
-    ItemCounts, JellyfinAuth, ListAddonKinds, ListAddons, NumericOp, ParentalRating,
-    PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
-    PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
-    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
-    StartupConfiguration, StartupUser, StopTask, TaskInfo, TaskTriggerInfo,
-    TaskTriggerInfoType, TunerHostInfo, UpdateAddon, UpdateAddonCatalogRequest,
-    UpdateAddonCatalogs, UpdateAddonRequest, UpdateBrandingConfiguration,
+    DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EncodingOptions, EpgSourceInfo,
+    FilterMatchMode, FilterRule, GetAddonCatalogs, GetAnfiteatroReleaseStatus,
+    GetApiKeys, GetBrandingConfiguration, GetCertificationSuggestions, GetCountries,
+    GetEncodingConfiguration, GetEpgSources, GetIptvChannels, GetItemCounts, GetItems,
+    GetLocalSuggestions, GetParentalRatings, GetScheduledTasks, GetSessions,
+    GetStartupConfiguration, GetSystemConfiguration, GetTagSuggestions, GetTunerHosts,
+    GetUsers, InstallLatestAnfiteatroRelease, ItemCounts, JellyfinAuth, ListAddonKinds,
+    ListAddons, NumericOp, ParentalRating, PatchChannel, PatchChannelRequest,
+    PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
+    PostStartupUser, PublicSystemInfo, SaveEpgSource, ServerConfiguration,
+    SessionInfoDto, SetOp, SourceUrl, StartTask, StartupConfiguration, StartupUser,
+    StopTask, TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo,
+    UpdateAddon, UpdateAddonCatalogRequest, UpdateAddonCatalogs, UpdateAddonRequest,
+    UpdateBrandingConfiguration, UpdateEncodingConfiguration,
     UpdateSystemConfiguration, UpdateTaskTriggers, UpdateUser, UpdateUserPolicy,
     UserDto, Username,
 };
@@ -3988,6 +3989,7 @@ fn ApiKeysPage(app_state: AppState) -> Element {
 fn SettingsPage(app_state: AppState) -> Element {
     rsx! {
         ServerSettingsCard { app_state: app_state.clone() }
+        PlaybackSettingsCard { app_state: app_state.clone() }
         SearchSettingsCard { app_state: app_state.clone() }
         JellyfinImportCard { app_state }
     }
@@ -4274,6 +4276,103 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                             p { class: "field-hint",
                                 "Allow clients to log in by entering a code shown on the login screen."
+                            }
+                        }
+
+                        if let Some(err) = error.read().as_ref() {
+                            div { class: "alert-error", "{err}" }
+                        }
+                        if *saved.read() {
+                            div { class: "alert-success", "Settings saved." }
+                        }
+
+                        div { class: "form-actions",
+                            button {
+                                r#type: "submit",
+                                class: "btn btn-primary",
+                                disabled: *saving.read(),
+                                if *saving.read() { "Saving…" } else { "Save Settings" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn PlaybackSettingsCard(app_state: AppState) -> Element {
+    let mut encoding_preset = use_signal(|| "fast".to_string());
+    let mut loading = use_signal(|| true);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut saved = use_signal(|| false);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load.client.clone();
+        spawn(async move {
+            match client.execute(GetEncodingConfiguration).await {
+                Ok(opts) => {
+                    encoding_preset.set(
+                        opts.encoding_preset.unwrap_or_else(|| "fast".to_string()),
+                    );
+                }
+                Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    let on_submit = move |e: Event<FormData>| {
+        e.prevent_default();
+        let client = app_state.client.clone();
+        let opts = EncodingOptions {
+            encoding_preset: Some(encoding_preset.peek().clone()),
+        };
+        saving.set(true);
+        error.set(None);
+        saved.set(false);
+        spawn(async move {
+            match client
+                .execute(UpdateEncodingConfiguration { config: opts })
+                .await
+            {
+                Ok(_) => saved.set(true),
+                Err(e) => error.set(Some(e.user_message())),
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Playback" }
+            }
+            div { class: "card-body",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else {
+                    form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
+                        div { class: "field",
+                            label { class: "field-label", r#for: "encoding-preset", "Encoding Preset" }
+                            div { class: "field-hint", "FFmpeg -preset for transcoding. Faster presets use more CPU; slower presets produce smaller files." }
+                            select {
+                                id: "encoding-preset",
+                                class: "select-input",
+                                value: "{encoding_preset}",
+                                onchange: move |e| encoding_preset.set(e.value()),
+                                option { value: "ultrafast", "Ultra Fast" }
+                                option { value: "superfast", "Super Fast" }
+                                option { value: "veryfast", "Very Fast" }
+                                option { value: "faster", "Faster" }
+                                option { value: "fast", "Fast (default)" }
+                                option { value: "medium", "Medium" }
+                                option { value: "slow", "Slow" }
+                                option { value: "slower", "Slower" }
+                                option { value: "veryslow", "Very Slow" }
                             }
                         }
 

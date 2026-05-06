@@ -208,6 +208,14 @@ pub struct ServerConfiguration {
     pub search_people_remote: Option<bool>,
 }
 
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct EncodingOptions {
+    #[default(Some("fast".to_string()))]
+    pub encoding_preset: Option<String>,
+}
+
 // --- Jellyfin import models (used to consume a remote Jellyfin server) ---
 
 #[skip_serializing_none]

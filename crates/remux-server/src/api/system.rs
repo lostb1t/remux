@@ -175,6 +175,27 @@ pub async fn update_system_configuration(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Get encoding configuration
+#[get("/system/configuration/encoding")]
+pub async fn get_encoding_configuration(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+) -> Result<impl IntoResponse> {
+    let opts = crate::db::Settings::get_encoding_config(&state.ctx.db).await?;
+    Ok(Json(opts))
+}
+
+/// Update encoding configuration
+#[post("/system/configuration/encoding")]
+pub async fn update_encoding_configuration(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Json(opts): Json<api::EncodingOptions>,
+) -> Result<impl IntoResponse> {
+    crate::db::Settings::set_encoding_config(&state.ctx.db, &opts).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[get("/system/endpoint")]
 pub async fn system_endpoint(
     State(state): State<AppState>,

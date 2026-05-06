@@ -842,6 +842,9 @@ async fn videos_stream_inner(
         q.video_bit_rate
     );
 
+    let encoding_opts = crate::db::Settings::get_encoding_config(&state.ctx.db)
+        .await
+        .unwrap_or_default();
     let params = crate::transcode::engine::ProgressiveTranscodeParams {
         input_url: url,
         container: container.clone(),
@@ -858,6 +861,7 @@ async fn videos_stream_inner(
         burn_subtitle: q.subtitle_method.as_deref() == Some("Encode"),
         subtitle_width: None,
         subtitle_height: None,
+        encoding_preset: encoding_opts.encoding_preset,
     };
 
     let stream = crate::transcode::engine::start_progressive_transcode(params)?;
@@ -2198,6 +2202,9 @@ pub async fn master_hls_video(
 
         // Start transcoding in background
         let session_clone = session.clone();
+        let encoding_opts = crate::db::Settings::get_encoding_config(&state.ctx.db)
+            .await
+            .unwrap_or_default();
         let params = crate::transcode::engine::TranscodeParams {
             input_url,
             output_dir: session.read().await.output_dir.clone(),
@@ -2224,6 +2231,7 @@ pub async fn master_hls_video(
                 == Some(api::SubtitleDeliveryMethod::Encode),
             subtitle_width: None,
             subtitle_height: None,
+            encoding_preset: encoding_opts.encoding_preset,
         };
 
         // Spawn the transcode task with proper error handling
@@ -2537,6 +2545,10 @@ async fn hls_segment_inner(
                         requested_idx as i64 * segment_length as i64 * 10_000_000
                     });
 
+                    let encoding_opts =
+                        crate::db::Settings::get_encoding_config(&state.ctx.db)
+                            .await
+                            .unwrap_or_default();
                     let params = crate::transcode::engine::TranscodeParams {
                         input_url,
                         output_dir: output_dir.clone(),
@@ -2561,6 +2573,7 @@ async fn hls_segment_inner(
                         burn_subtitle,
                         subtitle_width: None,
                         subtitle_height: None,
+                        encoding_preset: encoding_opts.encoding_preset,
                     };
 
                     // Reinitialise the session's state for the new transcode run.

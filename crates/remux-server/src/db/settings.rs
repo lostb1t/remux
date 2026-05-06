@@ -1,9 +1,10 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
 
-use crate::api::ServerConfiguration;
+use crate::api::{EncodingOptions, ServerConfiguration};
 
 const SERVER_CONFIG_KEY: &str = "server_configuration";
+const ENCODING_CONFIG_KEY: &str = "encoding_configuration";
 
 pub struct Settings;
 
@@ -21,6 +22,21 @@ impl Settings {
     ) -> Result<()> {
         let json = serde_json::to_string(config)?;
         Self::set(db, SERVER_CONFIG_KEY, &json).await
+    }
+
+    pub async fn get_encoding_config(db: &SqlitePool) -> Result<EncodingOptions> {
+        Ok(match Self::get(db, ENCODING_CONFIG_KEY).await? {
+            Some(json) => serde_json::from_str(&json).unwrap_or_default(),
+            None => EncodingOptions::default(),
+        })
+    }
+
+    pub async fn set_encoding_config(
+        db: &SqlitePool,
+        opts: &EncodingOptions,
+    ) -> Result<()> {
+        let json = serde_json::to_string(opts)?;
+        Self::set(db, ENCODING_CONFIG_KEY, &json).await
     }
 
     pub async fn get(db: &SqlitePool, key: &str) -> Result<Option<String>> {
