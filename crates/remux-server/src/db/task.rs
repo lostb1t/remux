@@ -5,7 +5,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::common::get_uuid;
-use remux_sdks::remux::models::TaskTriggerInfoType;
+use remux_sdks::remux::TaskTriggerInfoType;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TaskTrigger {

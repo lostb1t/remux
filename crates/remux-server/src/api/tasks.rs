@@ -9,7 +9,7 @@ use crate::api;
 use crate::db::auth;
 use crate::tasks::{TaskStatus, TaskView};
 use axum_anyhow::ApiResult as Result;
-use remux_sdks::remux::models::TaskTriggerInfoType;
+use remux_sdks::remux::TaskTriggerInfoType;
 
 #[cfg(test)]
 use crate::integration_test;

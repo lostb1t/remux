@@ -1,4 +1,4 @@
-use crate::remux::models::{MediaSegments, Segment};
+use crate::remux::{MediaSegments, Segment};
 use crate::{CachedEndpoint, ClientError, Endpoint, RestClient};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};

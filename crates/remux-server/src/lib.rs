@@ -64,6 +64,7 @@ use remux_utils::Store;
 
 mod conversions;
 mod errors;
+pub mod profile;
 pub mod sdks {
     pub use remux_sdks::*;
 }

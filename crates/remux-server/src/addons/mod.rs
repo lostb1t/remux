@@ -25,10 +25,10 @@ use uuid::Uuid;
 use crate::sdks;
 use crate::{AppContext, db};
 pub use addon::{Addon, CatalogState};
-pub use remux_sdks::remux::addons::AddonPresetRef;
-use remux_sdks::remux::models::{LyricDto, MediaSegments, RemoteLyricInfoDto};
+pub use remux_sdks::remux::AddonPresetRef;
+use remux_sdks::remux::{LyricDto, MediaSegments, RemoteLyricInfoDto};
 
-pub use remux_sdks::remux::addons::{
+pub use remux_sdks::remux::{
     AddonCatalogDto, AddonDto, AddonMetadata, AddonOption, AddonOptionType,
     AddonSelectOption, CreateAddonRequest, UpdateAddonCatalogRequest,
     UpdateAddonRequest,

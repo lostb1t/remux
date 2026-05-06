@@ -609,9 +609,9 @@ pub struct MediaFilter {
     pub sort_by: Vec<api::ItemSortBy>,
     pub sort_order: Vec<api::SortOrder>,
     /// Structured filter rules (from smart collections). Evaluated with `filter_match`.
-    pub filter_rules: Vec<remux_sdks::remux::models::FilterRule>,
+    pub filter_rules: Vec<remux_sdks::remux::FilterRule>,
     /// Whether all rules must match (AND) or any rule (OR). Defaults to All.
-    pub filter_match: remux_sdks::remux::models::FilterMatchMode,
+    pub filter_match: remux_sdks::remux::FilterMatchMode,
     /// For TvProgram: None = all, Some(true) = live_end < now, Some(false) = live_end >= now
     pub has_aired: Option<bool>,
     /// EPG window: live_end >= this value (program hasn't ended before window start)
@@ -736,7 +736,7 @@ pub struct Media {
     pub collection_media_kind: Option<CollectionMediaKind>,
     pub collection_max_items: Option<i64>,
     #[sqlx(json(nullable))]
-    pub collection_smart_filter: Option<remux_sdks::remux::models::CollectionFilter>,
+    pub collection_smart_filter: Option<remux_sdks::remux::CollectionFilter>,
 
     // IPTV / Live TV
     pub live_start: Option<NaiveDateTime>,
@@ -865,9 +865,7 @@ impl Media {
         }
     }
 
-    pub fn parse_smart_filter(
-        &self,
-    ) -> Option<&remux_sdks::remux::models::CollectionFilter> {
+    pub fn parse_smart_filter(&self) -> Option<&remux_sdks::remux::CollectionFilter> {
         self.collection_smart_filter.as_ref()
     }
 
@@ -2020,7 +2018,7 @@ impl Media {
         total_count: bool,
         user: Option<&super::User>,
         server_config: Option<&api::ServerConfiguration>,
-        smart_filter: Option<&remux_sdks::remux::models::CollectionFilter>,
+        smart_filter: Option<&remux_sdks::remux::CollectionFilter>,
     ) -> Result<FilterResult<Media>> {
         let user_policy = user.and_then(|u| u.policy.as_ref()).map(|p| &p.0);
         // Map media_types (Video, Book, ...) to MediaKind constraints
@@ -2795,10 +2793,10 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
 /// - `has_trailer` — json_array_length check
 pub fn apply_filter_rules(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
-    rules: &[remux_sdks::remux::models::FilterRule],
-    match_mode: &remux_sdks::remux::models::FilterMatchMode,
+    rules: &[remux_sdks::remux::FilterRule],
+    match_mode: &remux_sdks::remux::FilterMatchMode,
 ) {
-    use remux_sdks::remux::models::FilterMatchMode;
+    use remux_sdks::remux::FilterMatchMode;
 
     if rules.is_empty() {
         return;
@@ -2840,10 +2838,8 @@ pub fn apply_filter_rules(
 /// Values are embedded directly — no string parsing needed since the rule carries typed values.
 /// Returns `(sql, negated)` — caller wraps in `NOT(...)` when negated is true.
 /// Returns `None` if the rule should be skipped (e.g. empty values list).
-fn filter_rule_to_sql(
-    rule: &remux_sdks::remux::models::FilterRule,
-) -> Option<(String, bool)> {
-    use remux_sdks::remux::models::{FilterRule as R, NumericOp, SetOp};
+fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, bool)> {
+    use remux_sdks::remux::{FilterRule as R, NumericOp, SetOp};
 
     fn esc(s: &str) -> String {
         s.replace('\'', "''")

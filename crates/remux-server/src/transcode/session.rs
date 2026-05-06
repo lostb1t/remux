@@ -1,4 +1,4 @@
-use remux_sdks::remux::models::TranscodeReasons;
+use remux_sdks::remux::TranscodeReasons;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
@@ -44,6 +44,22 @@ pub struct TranscodeSession {
     pub runtime_ticks: i64,
     /// True for live TV — variant playlist is served from the ffmpeg-written EVENT file.
     pub is_live: bool,
+    /// Codec name of the source video stream (e.g. "hevc", "h264"), used when
+    /// rebuilding `TranscodeParams` on seek-restart.
+    pub source_video_codec: Option<String>,
+    /// Profile of the source video stream (e.g. "Main 10"), used to generate
+    /// the correct HLS CODECS attribute string for HEVC.
+    pub source_video_profile: Option<String>,
+    /// Level of the source video stream (e.g. 150.0 for level 5.0).
+    pub source_video_level: Option<f64>,
+    /// HDR type of the source video (SDR/HDR10/HLG/…), used for VIDEO-RANGE in master playlist.
+    pub source_video_range_type: Option<remux_sdks::remux::VideoRangeType>,
+    /// Source video width in pixels, used for RESOLUTION in master playlist.
+    pub source_video_width: Option<i64>,
+    /// Source video height in pixels, used for RESOLUTION in master playlist.
+    pub source_video_height: Option<i64>,
+    /// Source video frame rate (fps), used for FRAME-RATE in master playlist.
+    pub source_frame_rate: Option<f32>,
 }
 
 impl TranscodeSession {
@@ -62,6 +78,13 @@ impl TranscodeSession {
         transcode_reasons: TranscodeReasons,
         runtime_ticks: i64,
         is_live: bool,
+        source_video_codec: Option<String>,
+        source_video_profile: Option<String>,
+        source_video_level: Option<f64>,
+        source_video_range_type: Option<remux_sdks::remux::VideoRangeType>,
+        source_video_width: Option<i64>,
+        source_video_height: Option<i64>,
+        source_frame_rate: Option<f32>,
     ) -> Arc<tokio::sync::RwLock<Self>> {
         let _ = std::fs::create_dir_all(&output_dir);
         let (state_tx, _) = watch::channel(TranscodeState::Starting);
@@ -88,6 +111,13 @@ impl TranscodeSession {
             playback_offset_secs: Arc::new(AtomicU32::new(0)),
             runtime_ticks,
             is_live,
+            source_video_codec,
+            source_video_profile,
+            source_video_level,
+            source_video_range_type,
+            source_video_width,
+            source_video_height,
+            source_frame_rate,
         }))
     }
 
@@ -99,8 +129,24 @@ impl TranscodeSession {
         self.output_dir.join("main.m3u8")
     }
 
+    /// Returns true if this session should use fragmented MP4 (fMP4) segments
+    /// rather than MPEG-TS. iOS Safari (and the HLS spec) require fMP4 for HEVC.
+    pub fn use_fmp4(&self) -> bool {
+        self.video_codec == "copy"
+            && matches!(
+                self.source_video_codec.as_deref(),
+                Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1")
+            )
+    }
+
     pub fn segment_path(&self, segment_id: &str) -> PathBuf {
-        self.output_dir.join(format!("{}.ts", segment_id))
+        let ext = if self.use_fmp4() { "m4s" } else { "ts" };
+        self.output_dir.join(format!("{}.{}", segment_id, ext))
+    }
+
+    /// Path of the fMP4 initialization segment written by ffmpeg.
+    pub fn init_segment_path(&self) -> PathBuf {
+        self.output_dir.join("init.mp4")
     }
 
     /// Generate a Jellyfin-compatible transcoding URL

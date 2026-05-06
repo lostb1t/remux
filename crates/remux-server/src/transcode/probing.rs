@@ -1,7 +1,7 @@
 use crate::api;
 use anyhow::{Result, anyhow};
 use isolang::Language;
-use remux_sdks::remux::models::{MediaSegmentType, MediaSegments, Segment};
+use remux_sdks::remux::{MediaSegmentType, MediaSegments, Segment};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -230,11 +230,15 @@ struct FfprobeStream {
     index: i64,
     codec_type: Option<String>,
     codec_name: Option<String>,
+    codec_tag_string: Option<String>,
     profile: Option<String>,
+    level: Option<f64>,
     width: Option<i64>,
     height: Option<i64>,
     bit_rate: Option<String>,
     avg_frame_rate: Option<String>,
+    r_frame_rate: Option<String>,
+    color_transfer: Option<String>,
     channels: Option<i64>,
     channel_layout: Option<String>,
     sample_rate: Option<String>,
@@ -389,10 +393,27 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     .as_deref()
                     .and_then(|b| b.parse::<i64>().ok())
                     .and_then(nonzero);
-                let fps = s.avg_frame_rate.as_deref().and_then(parse_frame_rate);
+                // Prefer r_frame_rate (exact) then avg_frame_rate for display/segment math.
+                let fps = s
+                    .r_frame_rate
+                    .as_deref()
+                    .and_then(parse_frame_rate)
+                    .or_else(|| s.avg_frame_rate.as_deref().and_then(parse_frame_rate));
                 let codec = s.codec_name.clone().unwrap_or_default();
                 let is_default = video_idx == 0;
                 let is_forced = s.disposition.forced != 0;
+
+                // Detect HDR type from color_transfer reported by ffprobe.
+                let (video_range, video_range_type) = match s.color_transfer.as_deref()
+                {
+                    Some("smpte2084") => {
+                        (api::VideoRange::Hdr, api::VideoRangeType::Hdr10)
+                    }
+                    Some("arib-std-b67") => {
+                        (api::VideoRange::Hdr, api::VideoRangeType::Hlg)
+                    }
+                    _ => (api::VideoRange::Sdr, api::VideoRangeType::Sdr),
+                };
 
                 let meta = StreamMeta {
                     language,
@@ -402,7 +423,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     channel_layout: None,
                     width: s.width.and_then(nonzero),
                     height: s.height.and_then(nonzero),
-                    video_range: None,
+                    video_range: Some(&video_range),
                     is_default,
                     is_forced,
                     is_external: false,
@@ -414,6 +435,9 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     type_: Some(api::MediaStreamType::Video),
                     index: s.index,
                     codec: Some(codec.clone()),
+                    codec_tag: s.codec_tag_string.clone(),
+                    profile: s.profile.clone(),
+                    level: s.level,
                     width: meta.width,
                     height: meta.height,
                     bit_rate: bitrate,
@@ -424,6 +448,8 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     is_avc: Some(false),
                     time_base: Some("1/1000".to_string()),
                     audio_spatial_format: Some("None".to_string()),
+                    video_range: Some(video_range),
+                    video_range_type: Some(video_range_type),
                     display_title: display_title_video(&meta),
                     language: language.map(str::to_string),
                     title,

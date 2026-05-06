@@ -1749,16 +1749,16 @@ fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
 #[derive(Deserialize, Default)]
 pub struct SegmentQuery {
     #[serde(rename = "includeSegmentTypes", default)]
-    include_segment_types: Vec<remux_sdks::remux::models::MediaSegmentType>,
+    include_segment_types: Vec<remux_sdks::remux::MediaSegmentType>,
 }
 
 fn segments_to_dtos(
     item_id: Uuid,
     source_id: Uuid,
-    segs: &remux_sdks::remux::models::MediaSegments,
-    type_filter: Option<&[remux_sdks::remux::models::MediaSegmentType]>,
-) -> Vec<remux_sdks::remux::models::MediaSegmentDto> {
-    use remux_sdks::remux::models::MediaSegmentDto;
+    segs: &remux_sdks::remux::MediaSegments,
+    type_filter: Option<&[remux_sdks::remux::MediaSegmentType]>,
+) -> Vec<remux_sdks::remux::MediaSegmentDto> {
+    use remux_sdks::remux::MediaSegmentDto;
     use uuid::Uuid;
 
     segs.to_pairs()

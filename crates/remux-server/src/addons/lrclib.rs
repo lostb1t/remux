@@ -8,9 +8,7 @@ use super::{
     AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, LyricSearchRequest,
     ResourceType,
 };
-use remux_sdks::remux::models::{
-    LyricDto, LyricLine, LyricMetadata, RemoteLyricInfoDto,
-};
+use remux_sdks::remux::{LyricDto, LyricLine, LyricMetadata, RemoteLyricInfoDto};
 
 pub struct LrcLibPreset;
 

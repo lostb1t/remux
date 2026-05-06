@@ -18,7 +18,7 @@ use crate::db::auth;
 use crate::db::user::User;
 use crate::ws::WsEvent;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
-use remux_sdks::remux::models::Username;
+use remux_sdks::remux::Username;
 
 use super::items::{item, items, items_flat};
 use super::mock_items;

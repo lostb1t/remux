@@ -142,6 +142,9 @@ pub struct TranscodeParams {
     pub subtitle_width: Option<u32>,
     pub subtitle_height: Option<u32>,
     pub encoding_preset: Option<String>,
+    /// Codec of the source video stream (e.g. "hevc", "h264"), used to apply
+    /// codec-specific output flags such as `-tag:v hvc1` for HEVC in HLS.
+    pub source_video_codec: Option<String>,
 }
 
 impl Default for TranscodeParams {
@@ -164,6 +167,7 @@ impl Default for TranscodeParams {
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: None,
+            source_video_codec: None,
         }
     }
 }
@@ -209,6 +213,14 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "copy" => "copy",
         _ => "aac",
     };
+
+    // fMP4 (fragmented MP4) is required for HEVC on iOS Safari per Apple's HLS
+    // authoring specification.  MPEG-TS cannot carry HEVC correctly in HLS.
+    let is_hevc_copy = ffmpeg_video_codec == "copy"
+        && matches!(
+            params.source_video_codec.as_deref(),
+            Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1")
+        );
 
     let mut args: Vec<String> = vec![
         "-v".into(),
@@ -292,7 +304,15 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     // Video codec
     args.extend(["-c:v".into(), ffmpeg_video_codec.into()]);
 
-    if ffmpeg_video_codec == "libx264" {
+    if ffmpeg_video_codec == "copy" {
+        if is_hevc_copy {
+            args.extend(["-tag:v".into(), "hvc1".into()]);
+            // fMP4 stores HEVC in HVCC format natively — no hevc_mp4toannexb needed.
+            // Strip embedded Dolby Vision RPU NALs so VideoToolbox treats this as
+            // plain HDR10 rather than Dolby Vision (avoids black video on some devices).
+            args.extend(["-bsf:v".into(), "dovi_rpu=strip=1".into()]);
+        }
+    } else if ffmpeg_video_codec == "libx264" {
         let preset = params.encoding_preset.as_deref().unwrap_or("fast");
         args.extend([
             "-profile:v".into(),
@@ -332,7 +352,8 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     // HLS output
     let playlist = params.output_dir.join("main.m3u8");
-    let segment = params.output_dir.join("segment_%05d.ts");
+    let seg_ext = if is_hevc_copy { "m4s" } else { "ts" };
+    let segment = params.output_dir.join(format!("segment_%05d.{}", seg_ext));
 
     let start_number = params
         .start_time_ticks
@@ -354,8 +375,20 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "event".into(),
         "-hls_list_size".into(),
         "0".into(),
-        playlist.to_string_lossy().into_owned(),
     ]);
+
+    if is_hevc_copy {
+        // Apple HLS spec: HEVC must be delivered in fMP4/CMAF segments, not MPEG-TS.
+        // Use just the filename for init; ffmpeg places it alongside the segments.
+        args.extend([
+            "-hls_segment_type".into(),
+            "fmp4".into(),
+            "-hls_fmp4_init_filename".into(),
+            "init.mp4".into(),
+        ]);
+    }
+
+    args.push(playlist.to_string_lossy().into_owned());
 
     args
 }
@@ -499,6 +532,7 @@ pub struct ProgressiveTranscodeParams {
     pub subtitle_width: Option<u32>,
     pub subtitle_height: Option<u32>,
     pub encoding_preset: Option<String>,
+    pub source_video_codec: Option<String>,
 }
 
 /// Build the ffmpeg CLI args for a progressive transcode piped to stdout.
@@ -629,8 +663,13 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
     // Video
     args.extend(["-c:v".into(), ffmpeg_video_codec.into()]);
     if ffmpeg_video_codec == "copy" {
-        // Force hvc1 tag for HEVC Apple compatibility
-        args.extend(["-tag:v".into(), "hvc1".into()]);
+        // Apply hvc1 codec tag for HEVC Apple compatibility
+        if matches!(
+            params.source_video_codec.as_deref(),
+            Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1")
+        ) {
+            args.extend(["-tag:v".into(), "hvc1".into()]);
+        }
     } else {
         if ffmpeg_video_codec == "libx264" {
             args.extend(["-pix_fmt".into(), "yuv420p".into()]);
@@ -744,26 +783,44 @@ pub fn generate_variant_playlist(
     let runtime_ticks = session.runtime_ticks;
     let segment_length = session.segment_length;
     let play_session_id = &session.id;
+    let use_fmp4 = session.use_fmp4();
+    // fMP4 segments require HLS version 7; standard TS segments need version 6.
+    let version = if use_fmp4 { 7u32 } else { 6u32 };
+    let seg_ext = if use_fmp4 { "m4s" } else { "ts" };
+
+    let extra_qs = if query_string.is_empty() {
+        String::new()
+    } else {
+        format!("&{}", query_string)
+    };
 
     if runtime_ticks <= 0 || segment_length == 0 {
         // Fallback: single long segment (shouldn't happen in practice)
-        return format!(
+        let mut buf = format!(
             "#EXTM3U\n\
              #EXT-X-PLAYLIST-TYPE:VOD\n\
-             #EXT-X-VERSION:3\n\
+             #EXT-X-VERSION:{version}\n\
              #EXT-X-TARGETDURATION:{seg}\n\
-             #EXT-X-MEDIA-SEQUENCE:0\n\
-             #EXTINF:{seg}.000000, nodesc\n\
-             segment_00000.ts?PlaySessionId={psid}{qs}\n\
+             #EXT-X-MEDIA-SEQUENCE:0\n",
+            version = version,
+            seg = segment_length,
+        );
+        if use_fmp4 {
+            buf.push_str(&format!(
+                "#EXT-X-MAP:URI=\"init.mp4?PlaySessionId={}\"\n",
+                play_session_id
+            ));
+        }
+        buf.push_str(&format!(
+            "#EXTINF:{seg}.000000, nodesc\n\
+             segment_00000.{ext}?PlaySessionId={psid}{qs}\n\
              #EXT-X-ENDLIST\n",
             seg = segment_length,
+            ext = seg_ext,
             psid = play_session_id,
-            qs = if query_string.is_empty() {
-                String::new()
-            } else {
-                format!("&{}", query_string)
-            },
-        );
+            qs = extra_qs,
+        ));
+        return buf;
     }
 
     let seg_length_ticks = segment_length as i64 * 10_000_000;
@@ -776,9 +833,15 @@ pub fn generate_variant_playlist(
     let mut buf = String::with_capacity(total_segments as usize * 120);
     buf.push_str("#EXTM3U\n");
     buf.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
-    buf.push_str("#EXT-X-VERSION:3\n");
+    buf.push_str(&format!("#EXT-X-VERSION:{}\n", version));
     buf.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", target_duration));
     buf.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
+    if use_fmp4 {
+        buf.push_str(&format!(
+            "#EXT-X-MAP:URI=\"init.mp4?PlaySessionId={}\"\n",
+            play_session_id
+        ));
+    }
 
     let mut cumulative_ticks: i64 = 0;
     for i in 0..total_segments {
@@ -791,12 +854,13 @@ pub fn generate_variant_playlist(
 
         buf.push_str(&format!("#EXTINF:{:.6}, nodesc\n", length_secs));
         buf.push_str(&format!(
-            "segment_{:05}.ts?PlaySessionId={}&runtimeTicks={}&actualSegmentLengthTicks={}{}\n",
+            "segment_{:05}.{}?PlaySessionId={}&runtimeTicks={}&actualSegmentLengthTicks={}{}\n",
             i,
+            seg_ext,
             play_session_id,
             cumulative_ticks,
             length_ticks,
-            if query_string.is_empty() { String::new() } else { format!("&{}", query_string) },
+            extra_qs,
         ));
 
         cumulative_ticks += length_ticks;
@@ -806,15 +870,44 @@ pub fn generate_variant_playlist(
     buf
 }
 
+/// Generate the HEVC codec string for HLS CODECS attribute.
+/// Matches Jellyfin's `HlsCodecStringHelpers.GetH265String()`.
+fn hevc_hls_codec_string(profile: Option<&str>, level: Option<f64>) -> String {
+    let profile_part = match profile {
+        Some(p)
+            if p.eq_ignore_ascii_case("main 10")
+                || p.eq_ignore_ascii_case("main10") =>
+        {
+            "2.4"
+        }
+        _ => "1.4",
+    };
+    let level_val = level.unwrap_or(150.0) as i32;
+    format!("hvc1.{}.L{}.B0", profile_part, level_val)
+}
+
 /// Generate a master HLS playlist that references the variant playlist.
 pub fn generate_master_playlist(session: &TranscodeSession) -> String {
+    use remux_sdks::remux::VideoRangeType;
+
     let play_session_id = &session.id;
 
-    let video_codec_str = match session.video_codec.as_str() {
-        "copy" => "avc1.640028",
-        "h264" | "libx264" => "avc1.640028",
-        "hevc" | "libx265" => "hvc1.1.6.L150.B0",
-        _ => "avc1.640028",
+    let video_codec_str: String = match session.video_codec.as_str() {
+        "copy" => match session.source_video_codec.as_deref() {
+            Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1") => {
+                hevc_hls_codec_string(
+                    session.source_video_profile.as_deref(),
+                    session.source_video_level,
+                )
+            }
+            _ => "avc1.640028".to_string(),
+        },
+        "h264" | "libx264" => "avc1.640028".to_string(),
+        "hevc" | "libx265" => hevc_hls_codec_string(
+            session.source_video_profile.as_deref(),
+            session.source_video_level,
+        ),
+        _ => "avc1.640028".to_string(),
     };
     let audio_codec_str = match session.audio_codec.as_str() {
         "copy" | "aac" => "mp4a.40.2",
@@ -822,11 +915,56 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
     };
     let codecs = format!("{},{}", video_codec_str, audio_codec_str);
 
+    // VIDEO-RANGE: only meaningful for copy-mode (passthrough) video. Transcoded output is SDR.
+    let video_range_attr = if session.video_codec == "copy" {
+        match session.source_video_range_type {
+            Some(VideoRangeType::Hdr10)
+            | Some(VideoRangeType::Hdr10Plus)
+            | Some(VideoRangeType::DoviWithHdr10)
+            | Some(VideoRangeType::Dovi) => ",VIDEO-RANGE=PQ",
+            Some(VideoRangeType::Hlg) | Some(VideoRangeType::DoviWithHlg) => {
+                ",VIDEO-RANGE=HLG"
+            }
+            _ => ",VIDEO-RANGE=SDR",
+        }
+    } else {
+        ",VIDEO-RANGE=SDR"
+    };
+
+    let resolution_attr =
+        match (session.source_video_width, session.source_video_height) {
+            (Some(w), Some(h)) => format!(",RESOLUTION={}x{}", w, h),
+            _ => String::new(),
+        };
+
+    let frame_rate_attr = match session.source_frame_rate {
+        Some(fps) if fps > 0.0 => format!(",FRAME-RATE={:.3}", fps),
+        _ => String::new(),
+    };
+
+    tracing::debug!(
+        source_video_codec = ?session.source_video_codec,
+        source_video_profile = ?session.source_video_profile,
+        source_video_level = ?session.source_video_level,
+        source_video_range_type = ?session.source_video_range_type,
+        source_video_width = session.source_video_width,
+        source_video_height = session.source_video_height,
+        source_frame_rate = session.source_frame_rate,
+        video_codec = session.video_codec.as_str(),
+        codecs = codecs.as_str(),
+        "generating master HLS playlist"
+    );
+
     format!(
         "#EXTM3U\n\
-         #EXT-X-VERSION:3\n\
-         #EXT-X-STREAM-INF:BANDWIDTH=2000000,AVERAGE-BANDWIDTH=2000000,CODECS=\"{}\"\n\
-         main.m3u8?PlaySessionId={}\n",
-        codecs, play_session_id
+         #EXT-X-VERSION:6\n\
+         #EXT-X-INDEPENDENT-SEGMENTS\n\
+         #EXT-X-STREAM-INF:BANDWIDTH=2000000,AVERAGE-BANDWIDTH=2000000,CODECS=\"{codecs}\"{video_range}{resolution}{frame_rate}\n\
+         main.m3u8?PlaySessionId={play_session_id}\n",
+        codecs = codecs,
+        video_range = video_range_attr,
+        resolution = resolution_attr,
+        frame_rate = frame_rate_attr,
+        play_session_id = play_session_id,
     )
 }

@@ -105,7 +105,7 @@ pub async fn userviews(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let policy_rules: Vec<remux_sdks::remux::models::FilterRule> = session
+    let policy_rules: Vec<remux_sdks::remux::FilterRule> = session
         .user
         .policy
         .as_ref()
@@ -154,7 +154,7 @@ pub async fn userviews_groupingoptions(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let policy_rules: Vec<remux_sdks::remux::models::FilterRule> = session
+    let policy_rules: Vec<remux_sdks::remux::FilterRule> = session
         .user
         .policy
         .as_ref()
@@ -172,7 +172,7 @@ pub async fn userviews_groupingoptions(
         .await?
         .records
         .into_iter()
-        .map(|m| remux_sdks::remux::models::SpecialViewOptionDto {
+        .map(|m| remux_sdks::remux::SpecialViewOptionDto {
             name: Some(m.title.clone()),
             id: Some(m.id.to_string()),
         })

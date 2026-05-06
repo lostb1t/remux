@@ -1,4 +1,4 @@
-pub use remux_sdks::remux::models::*;
+pub use remux_sdks::remux::*;
 
 use crate::common;
 use crate::db;

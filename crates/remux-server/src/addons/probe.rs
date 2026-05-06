@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use remux_sdks::remux::models::MediaSegments;
+use remux_sdks::remux::MediaSegments;
 use remux_sdks::stremio::MediaType;
 use std::sync::Arc;
 

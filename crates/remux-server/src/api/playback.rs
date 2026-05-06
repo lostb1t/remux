@@ -30,6 +30,7 @@ use crate::common;
 use crate::db;
 use crate::db::auth;
 use crate::playback_session::{PlaybackSession, PlaybackSessionManager};
+use crate::profile::DeviceProfileExt;
 use crate::sdks;
 use crate::torrent;
 use crate::transcode::session::{TranscodeSession, TranscodeState};
@@ -472,10 +473,16 @@ async fn items_playbackinfo_inner(
                     })
                     .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
 
-                let needs_video_transcode = transcode_reasons.contains(
-                    &api::TranscodeReason::VideoCodecNotSupported(String::new()),
-                ) || transcode_reasons
-                    .contains(&api::TranscodeReason::ContainerBitrateExceedsLimit);
+                let needs_video_transcode =
+                    transcode_reasons.contains(
+                        &api::TranscodeReason::VideoCodecNotSupported(String::new()),
+                    ) || transcode_reasons
+                        .contains(&api::TranscodeReason::ContainerBitrateExceedsLimit)
+                        || transcode_reasons.contains(
+                            &api::TranscodeReason::VideoRangeTypeNotSupported(
+                                String::new(),
+                            ),
+                        );
                 let mut video_codec = if needs_video_transcode {
                     "h264"
                 } else {
@@ -856,6 +863,11 @@ async fn videos_stream_inner(
     let encoding_opts = crate::db::Settings::get_encoding_config(&state.ctx.db)
         .await
         .unwrap_or_default();
+    let source_video_codec = media
+        .probe_data
+        .as_ref()
+        .and_then(|p| p.video_stream())
+        .and_then(|s| s.codec.clone());
     let params = crate::transcode::engine::ProgressiveTranscodeParams {
         input_url: url,
         container: container.clone(),
@@ -873,6 +885,7 @@ async fn videos_stream_inner(
         subtitle_width: None,
         subtitle_height: None,
         encoding_preset: encoding_opts.encoding_preset,
+        source_video_codec,
     };
 
     let stream = crate::transcode::engine::start_progressive_transcode(params)?;
@@ -2185,6 +2198,32 @@ pub async fn master_hls_video(
             }
         };
         debug!(runtime_ticks, is_live, segment_length, "transcode session");
+        let source_video_stream = resolved_media
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.video_stream());
+        let source_video_codec =
+            source_video_stream.as_ref().and_then(|s| s.codec.clone());
+        let source_video_profile =
+            source_video_stream.as_ref().and_then(|s| s.profile.clone());
+        let source_video_level = source_video_stream.as_ref().and_then(|s| s.level);
+        let source_video_range_type = source_video_stream
+            .as_ref()
+            .and_then(|s| s.video_range_type);
+        let source_video_width = source_video_stream.as_ref().and_then(|s| s.width);
+        let source_video_height = source_video_stream.as_ref().and_then(|s| s.height);
+        let source_frame_rate =
+            source_video_stream.as_ref().and_then(|s| s.real_frame_rate);
+        debug!(
+            ?source_video_codec,
+            ?source_video_profile,
+            ?source_video_level,
+            ?source_video_range_type,
+            source_video_width,
+            source_video_height,
+            source_frame_rate,
+            "source video codec for HLS session"
+        );
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -2204,6 +2243,13 @@ pub async fn master_hls_video(
                 .unwrap_or_default(),
             runtime_ticks,
             is_live,
+            source_video_codec,
+            source_video_profile,
+            source_video_level,
+            source_video_range_type,
+            source_video_width,
+            source_video_height,
+            source_frame_rate,
         );
 
         state
@@ -2243,6 +2289,7 @@ pub async fn master_hls_video(
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: encoding_opts.encoding_preset,
+            source_video_codec: session.read().await.source_video_codec.clone(),
         };
 
         // Spawn the transcode task with proper error handling
@@ -2310,13 +2357,20 @@ async fn variant_hls_video_inner(
 
     let session_read = session.read().await;
     let is_live = session_read.is_live;
+    let use_fmp4 = session_read.use_fmp4();
     let playlist_path = session_read.variant_playlist_path();
     let psid = session_read.id.clone();
 
-    if is_live {
+    // For live streams and fMP4 sessions we must serve the ffmpeg-written playlist
+    // because fMP4 segments snap to keyframe boundaries — actual durations differ
+    // from the target, so a synthetic uniform playlist would violate the HLS spec
+    // (#EXT-X-TARGETDURATION and #EXTINF must reflect real segment durations).
+    if is_live || use_fmp4 {
         drop(session_read);
         // For live streams, serve the ffmpeg-written EVENT playlist directly.
-        // Poll until ffmpeg has written at least the header (first segment done).
+        // For fMP4 VOD, also use ffmpeg's playlist because fMP4 segments snap to
+        // keyframe boundaries so actual durations differ from our 6s target.
+        // Poll until ffmpeg has written at least the first segment entry.
         let content = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 if let Ok(text) = tokio::fs::read_to_string(&playlist_path).await {
@@ -2330,12 +2384,23 @@ async fn variant_hls_video_inner(
         .await
         .unwrap_or_default();
 
-        // Inject ?PlaySessionId=... into segment lines so hls_segment_inner can find the session.
+        // Inject ?PlaySessionId=... into segment/map lines so hls_segment_inner can find the session.
         let content = content
             .lines()
             .map(|line| {
-                if !line.starts_with('#') && line.ends_with(".ts") {
+                if !line.starts_with('#')
+                    && (line.ends_with(".ts") || line.ends_with(".m4s"))
+                {
                     format!("{}?PlaySessionId={}", line, psid)
+                } else if line.starts_with("#EXT-X-MAP:")
+                    && !line.contains("PlaySessionId")
+                {
+                    // Inject PlaySessionId into the fMP4 init segment URI.
+                    // e.g. #EXT-X-MAP:URI="init.mp4" → #EXT-X-MAP:URI="init.mp4?PlaySessionId=…"
+                    line.replace(
+                        "\"init.mp4\"",
+                        &format!("\"init.mp4?PlaySessionId={}\"", psid),
+                    )
                 } else {
                     line.to_string()
                 }
@@ -2419,11 +2484,11 @@ fn get_current_transcoding_index(dir: &std::path::Path) -> Option<u32> {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.ends_with(".ts") {
-            continue;
-        }
-        if let Some(idx_str) =
-            name.strip_suffix(".ts").and_then(|s| s.rsplit('_').next())
+        // Accept both MPEG-TS (.ts) and fMP4 (.m4s) segment files.
+        if let Some(idx_str) = name
+            .strip_suffix(".ts")
+            .or_else(|| name.strip_suffix(".m4s"))
+            .and_then(|s| s.rsplit('_').next())
         {
             if let Ok(idx) = idx_str.parse::<u32>() {
                 max_idx = Some(max_idx.map_or(idx, |m: u32| m.max(idx)));
@@ -2450,6 +2515,39 @@ async fn hls_segment_inner(
     );
 
     let session = state.ctx.sessions.get_transcode(&play_session_id);
+
+    // The fMP4 init segment is served at "init.mp4" — strip_segment_extension
+    // reduces that to "init", so we detect it here and serve it directly.
+    if segment_id == "init" {
+        let init_path = match &session {
+            Some(s) => s.read().await.init_segment_path(),
+            None => state
+                .ctx
+                .sessions
+                .segment_path(&play_session_id, "init.mp4")
+                .with_extension("mp4"),
+        };
+        // Wait briefly for ffmpeg to write the init segment.
+        if session.is_some() {
+            let mut attempts = 0;
+            while !init_path.exists() && attempts < 40 {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                attempts += 1;
+            }
+        }
+        if !init_path.exists() {
+            None::<()>.context_not_found("not found", "fMP4 init segment not ready")?;
+        }
+        state.ctx.sessions.ping(&play_session_id);
+        let file = tokio::fs::File::open(&init_path).await?;
+        let stream = ReaderStream::new(file);
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "video/mp4")
+            .header("Cache-Control", "public, max-age=86400")
+            .body(Body::from_stream(stream))
+            .unwrap());
+    }
 
     // Derive the segment path — either from the live session or from the base
     // dir directly (handles server restart where session is gone but files remain).
@@ -2585,6 +2683,11 @@ async fn hls_segment_inner(
                         subtitle_width: None,
                         subtitle_height: None,
                         encoding_preset: encoding_opts.encoding_preset,
+                        source_video_codec: session
+                            .read()
+                            .await
+                            .source_video_codec
+                            .clone(),
                     };
 
                     // Reinitialise the session's state for the new transcode run.
@@ -2648,9 +2751,17 @@ async fn hls_segment_inner(
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
+    // fMP4 segments (.m4s) use video/mp4; MPEG-TS segments use video/mp2t.
+    let content_type =
+        if segment_path.extension().and_then(|e| e.to_str()) == Some("m4s") {
+            "video/mp4"
+        } else {
+            "video/mp2t"
+        };
+
     Ok(Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", "video/mp2t")
+        .header("Content-Type", content_type)
         .header("Cache-Control", "public, max-age=86400")
         .body(body)
         .unwrap())
