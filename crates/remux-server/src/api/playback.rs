@@ -194,19 +194,30 @@ async fn items_playbackinfo_inner(
     // causes a storm of parallel FFmpeg processes (one per version of the movie).
     //
     // Android TV always sends media_source_id = item_id (not None) for auto-play.
-    // Treat media_source_id == item_id the same as None — return all sources.
+    // Treat that the same as "return first source only" — no need to send all versions.
     let specific_source_requested = media_source_id
         .map(|sid| sid != id && all_source_medias.iter().any(|s| s.id == sid))
         .unwrap_or(false);
     let (source_medias, probe_only_first) = if specific_source_requested {
+        // Specific stream requested: return only that stream.
         let sid = media_source_id.unwrap();
         let filtered: Vec<db::Media> = all_source_medias
             .into_iter()
             .filter(|s| s.id == sid)
             .collect();
         (filtered, false)
+    } else if media_source_id.is_some() {
+        // media_source_id provided but equals item_id (Android TV auto-play) or
+        // stream not found: return only the first (best) source.
+        // specific_source_requested stays false so source[0].id is overridden to
+        // item_id below — required for Android TV routing.
+        let mut v = all_source_medias;
+        v.truncate(1);
+        (v, false)
     } else {
-        (all_source_medias, true) // probe only first when no specific source requested
+        // No source ID: return all versions for the selection UI,
+        // probe only the first to avoid spawning N FFmpeg processes.
+        (all_source_medias, true)
     };
 
     let max_bitrate: Option<i64> = match (
