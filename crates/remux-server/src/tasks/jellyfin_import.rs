@@ -114,7 +114,7 @@ impl Task for JellyfinImportTask {
                 i + 1,
                 local_users.len()
             );
-            let (played, resumable) = tokio::join!(
+            let (played, resumable, favorited) = tokio::join!(
                 client.execute(GetJellyfinUserItems {
                     user_id: jf_id.to_string(),
                     filter: "IsPlayed"
@@ -123,9 +123,19 @@ impl Task for JellyfinImportTask {
                     user_id: jf_id.to_string(),
                     filter: "IsResumable"
                 }),
+                client.execute(GetJellyfinUserItems {
+                    user_id: jf_id.to_string(),
+                    filter: "IsFavorite"
+                }),
             );
-            let mut items = played?.items;
-            items.extend(resumable?.items);
+            let mut seen = std::collections::HashSet::new();
+            let mut items: Vec<_> = played?
+                .items
+                .into_iter()
+                .chain(resumable?.items)
+                .chain(favorited?.items)
+                .filter(|it| seen.insert(it.id.clone()))
+                .collect();
             info!("got {} items for '{username}', importing", items.len());
 
             // Collect series IDs for episodes missing series_provider_ids
