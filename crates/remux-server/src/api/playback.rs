@@ -2117,6 +2117,12 @@ pub async fn master_hls_video(
             }
             .or_else(|| sources.into_iter().next())
             .context_not_found("not found", "no playable source found")?;
+        } else if resolved_media.kind == db::MediaKind::Track {
+            let sources = resolved_media.streams(&state.ctx.db).await?;
+            resolved_media = sources
+                .into_iter()
+                .next()
+                .context_not_found("not found", "no stream found for track")?;
         }
 
         let raw_input_url = resolved_media
