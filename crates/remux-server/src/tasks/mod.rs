@@ -17,6 +17,7 @@ use remux_sdks::remux::TaskTriggerInfoType;
 mod anfiteatro_update;
 mod catalog_import;
 mod catalog_import_shared;
+mod clean_transcode_folder;
 mod iptv_refresh;
 mod jellyfin_import;
 mod purge_media;
@@ -26,6 +27,7 @@ mod series_sync;
 
 pub use anfiteatro_update::EnsureAnfiteatroTask;
 use catalog_import::CatalogImportTask;
+use clean_transcode_folder::CleanTranscodeFolderTask;
 use iptv_refresh::IptvRefreshTask;
 use jellyfin_import::JellyfinImportTask;
 use purge_media::PurgeMediaTask;
@@ -212,6 +214,9 @@ impl TaskService {
             ctx: ctx.clone(),
         };
 
+        service
+            .register_task(Arc::new(CleanTranscodeFolderTask))
+            .await?;
         service.register_task(Arc::new(RefreshLibraryTask)).await?;
         service.register_task(Arc::new(RefreshAllMetaTask)).await?;
         service.register_task(Arc::new(CatalogImportTask)).await?;

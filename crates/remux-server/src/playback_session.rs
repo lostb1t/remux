@@ -199,6 +199,14 @@ impl PlaybackSessionManager {
         session_dir.join(format!("{}.ts", segment_id))
     }
 
+    pub fn base_dir(&self) -> &std::path::Path {
+        &self.base_dir
+    }
+
+    pub fn active_session_ids(&self) -> Vec<String> {
+        self.sessions.iter().map(|e| e.key().clone()).collect()
+    }
+
     /// Spawn a background task that reaps sessions idle longer than `max_age`.
     pub fn spawn_cleanup_task(
         self,

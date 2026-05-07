@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use librqbit::api::Api;
+use librqbit::api::{Api, TorrentIdOrHash};
 use librqbit::http_api::HttpApi;
 use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, Session};
 use tracing::debug;
@@ -87,6 +87,40 @@ impl TorrentManager {
             "http://127.0.0.1:{}/torrents/{}/stream/{}",
             self.http_port, torrent_id, file_idx
         ))
+    }
+
+    /// Delete managed torrents and their files, skipping any whose ID is in `active`.
+    pub async fn delete_unused_with_files(
+        &self,
+        active: &std::collections::HashSet<usize>,
+    ) -> Result<usize> {
+        let api = Api::new(self.session.clone(), None, None);
+        let ids: Vec<_> = api
+            .api_torrent_list()
+            .torrents
+            .into_iter()
+            .filter_map(|t| t.id)
+            .filter(|id| !active.contains(id))
+            .collect();
+        let count = ids.len();
+        for id in ids {
+            if let Err(e) = api.api_torrent_action_delete(TorrentIdOrHash::Id(id)).await
+            {
+                tracing::warn!(id, "failed to delete torrent: {e:#}");
+            }
+        }
+        Ok(count)
+    }
+
+    /// Parse the torrent ID out of a librqbit stream URL.
+    /// Format: `http://127.0.0.1:{port}/torrents/{id}/stream/{file_idx}`
+    pub fn torrent_id_from_url(url: &str) -> Option<usize> {
+        let after_host = url.split_once("//")?.1.split_once('/')?.1;
+        let mut parts = after_host.splitn(3, '/');
+        if parts.next()? != "torrents" {
+            return None;
+        }
+        parts.next()?.parse().ok()
     }
 
     /// Apply upload/download speed limits.  0 = no limit (for download) or
