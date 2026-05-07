@@ -14,7 +14,8 @@ use uuid::Uuid;
 
 use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, CatalogInfo, MusicSearchResult, ResourceType, addon,
+    AddonPresetRegistration, CatalogInfo, MediaKind, MusicSearchResult, ResourceType,
+    addon,
 };
 use crate::db::{MetaRelation, MetaResult};
 use crate::sdks::CachedEndpoint;
@@ -43,10 +44,7 @@ impl AddonPreset for StremioPreset {
                 ResourceType::Subtitles,
                 ResourceType::Stream,
             ],
-            supported_types: vec![
-                remux_sdks::stremio::MediaType::Movie,
-                remux_sdks::stremio::MediaType::Series,
-            ],
+            supported_types: vec![MediaKind::Movie, MediaKind::Series],
             options: vec![AddonOption {
                 id: "manifest_url".to_string(),
                 name: "Manifest URL".to_string(),

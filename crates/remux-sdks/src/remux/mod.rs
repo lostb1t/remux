@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::stremio::MediaType as AioMediaType;
+use crate::stremio;
 pub use crate::stremio::ResourceType;
 use crate::{Auth, Body, Endpoint, RestClient};
 
@@ -134,7 +134,7 @@ pub struct AddonMetadata {
     pub description: String,
     pub icon: Option<String>,
     pub supported_resources: Vec<ResourceType>,
-    pub supported_types: Vec<AioMediaType>,
+    pub supported_types: Vec<MediaKind>,
     pub options: Vec<AddonOption>,
 }
 
@@ -151,7 +151,7 @@ pub struct AddonDto {
     pub resources: Vec<ResourceType>,
     /// User-enabled content types (subset of `supported_types`). Empty = all types enabled.
     #[serde(default)]
-    pub types: Vec<AioMediaType>,
+    pub types: Vec<MediaKind>,
     pub enabled: bool,
     /// All resources the addon actually provides. For Stremio addons this is
     /// populated from the manifest; for other kinds it mirrors the static kind
@@ -161,7 +161,7 @@ pub struct AddonDto {
     /// Content types the addon supports. For Stremio addons this comes from
     /// the manifest; for other kinds from the static preset metadata.
     #[serde(default)]
-    pub supported_types: Vec<AioMediaType>,
+    pub supported_types: Vec<MediaKind>,
     pub priority: i64,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
@@ -176,7 +176,7 @@ pub struct CreateAddonRequest {
     #[serde(default)]
     pub resources: Vec<ResourceType>,
     #[serde(default)]
-    pub types: Vec<AioMediaType>,
+    pub types: Vec<MediaKind>,
     #[serde(default)]
     pub priority: i64,
 }
@@ -189,7 +189,7 @@ pub struct UpdateAddonRequest {
     pub name: Option<String>,
     pub config: Option<serde_json::Value>,
     pub resources: Option<Vec<ResourceType>>,
-    pub types: Option<Vec<AioMediaType>>,
+    pub types: Option<Vec<MediaKind>>,
     pub enabled: Option<bool>,
     pub priority: Option<i64>,
 }
@@ -2093,7 +2093,7 @@ pub enum RemuxCollectionKind {
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
-pub enum RemuxMediaKind {
+pub enum MediaKind {
     #[default]
     Movie,
     Series,
@@ -2104,6 +2104,38 @@ pub enum RemuxMediaKind {
     Genre,
     Person,
     Studio,
+    Stream,
+    TvChannel,
+    TvProgram,
+    Track,
+    Album,
+    Artist,
+    Playlist,
+}
+
+impl From<stremio::MediaType> for MediaKind {
+    fn from(t: stremio::MediaType) -> Self {
+        match t {
+            stremio::MediaType::Movie => Self::Movie,
+            stremio::MediaType::Series | stremio::MediaType::Tv => Self::Series,
+            stremio::MediaType::Album => Self::Album,
+            stremio::MediaType::Artist => Self::Artist,
+            stremio::MediaType::Track => Self::Track,
+            stremio::MediaType::Events => Self::TvProgram,
+            stremio::MediaType::Unknown(s) => match s.as_str() {
+                "episode" => Self::Episode,
+                "season" => Self::Season,
+                "person" => Self::Person,
+                "genre" => Self::Genre,
+                "studio" => Self::Studio,
+                "collection" => Self::Collection,
+                "folder" => Self::Folder,
+                "stream" => Self::Stream,
+                "playlist" => Self::Playlist,
+                _ => Self::Movie,
+            },
+        }
+    }
 }
 
 /// Operators for numeric fields (Year, Rating).
@@ -2169,7 +2201,7 @@ pub struct CollectionFilter {
 #[serde(rename_all = "PascalCase")]
 pub struct RemuxInfo {
     pub collection_kind: Option<RemuxCollectionKind>,
-    pub collection_media_kind: Option<RemuxMediaKind>,
+    pub collection_media_kind: Option<MediaKind>,
     pub collection_max_items: Option<i64>,
     pub smart_filter: Option<CollectionFilter>,
     pub promoted: Option<bool>,

@@ -3,7 +3,6 @@ use async_trait::async_trait;
 use chrono::NaiveDateTime;
 use futures::Stream;
 use futures::stream::{self, StreamExt};
-use remux_sdks::stremio::MediaType;
 use serde::Deserialize;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -13,7 +12,7 @@ use uuid::Uuid;
 
 use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, CatalogInfo, MusicSearchResult, ResourceType,
+    AddonPresetRegistration, CatalogInfo, MediaKind, MusicSearchResult, ResourceType,
 };
 use crate::db::MetaResult;
 use crate::{AppContext, common, db};
@@ -335,9 +334,9 @@ impl AddonPreset for DeezerPreset {
                 ResourceType::Search,
             ],
             supported_types: vec![
-                MediaType::Track,
-                MediaType::Album,
-                MediaType::Artist,
+                MediaKind::Track,
+                MediaKind::Album,
+                MediaKind::Artist,
             ],
             options: vec![AddonOption {
                 id: "playlists".to_string(),

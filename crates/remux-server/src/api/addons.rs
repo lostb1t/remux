@@ -12,8 +12,9 @@ use crate::addons::{
     Addon, AddonCatalogDto, AddonDto, AddonMetadata, CreateAddonRequest,
     UpdateAddonCatalogRequest, UpdateAddonRequest, make_media_id, registered_presets,
 };
-use crate::db::{MediaKind, auth, kind_to_stremio_addon_type, stremio_type_to_kind};
+use crate::db::{MediaKind as DbMediaKind, auth, stremio_type_to_kind};
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
+use remux_sdks::remux::MediaKind;
 
 async fn addon_to_dto(addon: Addon) -> AddonDto {
     let preset = registered_presets()
@@ -25,7 +26,12 @@ async fn addon_to_dto(addon: Addon) -> AddonDto {
         match p.from_cfg(&addon.preset.config) {
             Ok(kind) => {
                 let resources = kind.available_resources().await;
-                let types = kind.available_types().await;
+                let types: Vec<MediaKind> = kind
+                    .available_types()
+                    .await
+                    .into_iter()
+                    .map(MediaKind::from)
+                    .collect();
                 if !resources.is_empty() {
                     (resources, types)
                 } else {
@@ -44,7 +50,7 @@ async fn addon_to_dto(addon: Addon) -> AddonDto {
         name: addon.name,
         config: addon.preset.config,
         resources: addon.resources,
-        types: addon.types.iter().map(kind_to_stremio_addon_type).collect(),
+        types: addon.types.iter().cloned().map(Into::into).collect(),
         enabled: addon.enabled,
         supported_resources,
         supported_types,
@@ -126,22 +132,21 @@ pub async fn create_addon(
     } else {
         payload.resources
     };
-    let types: Vec<MediaKind> = if payload.types.is_empty() {
-        let source = if !avail_types.is_empty() {
+    let types: Vec<DbMediaKind> = if payload.types.is_empty() {
+        if !avail_types.is_empty() {
             avail_types
+                .into_iter()
+                .filter_map(stremio_type_to_kind)
+                .collect()
         } else {
-            metadata.supported_types
-        };
-        source
-            .into_iter()
-            .filter_map(|t| stremio_type_to_kind(t))
-            .collect()
+            metadata
+                .supported_types
+                .into_iter()
+                .map(DbMediaKind::from)
+                .collect()
+        }
     } else {
-        payload
-            .types
-            .into_iter()
-            .filter_map(stremio_type_to_kind)
-            .collect()
+        payload.types.into_iter().map(DbMediaKind::from).collect()
     };
 
     let now = Utc::now().naive_utc();
@@ -184,7 +189,7 @@ pub async fn update_addon(
         addon.resources = resources;
     }
     if let Some(types) = payload.types {
-        addon.types = types.into_iter().filter_map(stremio_type_to_kind).collect();
+        addon.types = types.into_iter().map(DbMediaKind::from).collect();
     }
     if let Some(enabled) = payload.enabled {
         addon.enabled = enabled;

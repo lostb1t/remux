@@ -1,13 +1,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use remux_sdks::stremio::MediaType;
 use serde::Deserialize;
 use std::sync::Arc;
 
 use super::{
     AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, LyricSearchRequest,
-    ResourceType,
+    MediaKind, ResourceType,
 };
+use crate::db;
 use remux_sdks::remux::{LyricDto, LyricLine, LyricMetadata, RemoteLyricInfoDto};
 
 pub struct LrcLibPreset;
@@ -25,7 +25,7 @@ impl AddonPreset for LrcLibPreset {
                 .to_string(),
             icon: None,
             supported_resources: vec![ResourceType::Lyrics],
-            supported_types: vec![MediaType::Track],
+            supported_types: vec![MediaKind::Track],
             options: vec![],
         }
     }

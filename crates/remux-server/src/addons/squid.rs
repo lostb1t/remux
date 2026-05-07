@@ -1,13 +1,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
-use remux_sdks::stremio::MediaType;
 use serde::Deserialize;
 use sqlx::types::Json;
 use std::sync::Arc;
 
 use super::{
-    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, ResourceType,
+    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, MediaKind,
+    ResourceType,
 };
 use crate::{AppContext, api, db};
 
@@ -242,7 +242,7 @@ impl AddonPreset for SquidPreset {
                 .to_string(),
             icon: None,
             supported_resources: vec![ResourceType::Stream],
-            supported_types: vec![MediaType::Track],
+            supported_types: vec![MediaKind::Track],
             options: vec![],
         }
     }

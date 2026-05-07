@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use remux_sdks::stremio::MediaType;
 use serde::Deserialize;
 use sqlx::types::Json;
 use std::path::PathBuf;
@@ -10,7 +9,7 @@ use uuid::Uuid;
 
 use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, ResourceType,
+    AddonPresetRegistration, MediaKind, ResourceType,
 };
 use crate::db::{MetaResult, StreamProviderInfo};
 use crate::{AppContext, api, db};
@@ -32,7 +31,7 @@ impl AddonPreset for YtDlpPreset {
                     .to_string(),
             icon: None,
             supported_resources: vec![ResourceType::Stream],
-            supported_types: vec![MediaType::Track, MediaType::Album],
+            supported_types: vec![MediaKind::Track, MediaKind::Album],
             options: vec![AddonOption {
                 id: "cookies".to_string(),
                 name: "Cookies file".to_string(),

@@ -1,13 +1,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use remux_sdks::stremio::MediaType;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, ResourceType,
+    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, MediaKind,
+    ResourceType,
 };
 use crate::db::{MetaRelation, MetaResult};
 use crate::sdks::CachedEndpoint;
@@ -31,10 +31,10 @@ impl AddonPreset for TmdbPreset {
             icon: None,
             supported_resources: vec![ResourceType::Meta, ResourceType::Search],
             supported_types: vec![
-                MediaType::Movie,
-                MediaType::Series,
-                MediaType::Unknown("episode".to_string()),
-                MediaType::Unknown("person".to_string()),
+                MediaKind::Movie,
+                MediaKind::Series,
+                MediaKind::Episode,
+                MediaKind::Person,
             ],
             options: vec![],
         }

@@ -1,11 +1,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use remux_sdks::remux::MediaSegments;
-use remux_sdks::stremio::MediaType;
 use std::sync::Arc;
 
 use super::{
-    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, ResourceType,
+    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, MediaKind,
+    ResourceType,
 };
 use crate::{AppContext, db};
 
@@ -25,10 +25,7 @@ impl AddonPreset for ProbePreset {
                     .to_string(),
             icon: None,
             supported_resources: vec![ResourceType::Segment],
-            supported_types: vec![
-                MediaType::Movie,
-                MediaType::Unknown("episode".to_string()),
-            ],
+            supported_types: vec![MediaKind::Movie, MediaKind::Episode],
             options: vec![],
         }
     }

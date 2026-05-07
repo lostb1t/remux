@@ -30,7 +30,7 @@ use remux_sdks::remux::{LyricDto, MediaSegments, RemoteLyricInfoDto};
 
 pub use remux_sdks::remux::{
     AddonCatalogDto, AddonDto, AddonMetadata, AddonOption, AddonOptionType,
-    AddonSelectOption, CreateAddonRequest, UpdateAddonCatalogRequest,
+    AddonSelectOption, CreateAddonRequest, MediaKind, UpdateAddonCatalogRequest,
     UpdateAddonRequest,
 };
 pub use remux_sdks::stremio::ResourceType;

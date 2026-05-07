@@ -209,28 +209,49 @@ pub fn stremio_type_to_kind(t: sdks::stremio::MediaType) -> Option<MediaKind> {
     }
 }
 
-/// Faithful `MediaKind` → stremio `MediaType` for addon DTO round-trips.
-pub fn kind_to_stremio_addon_type(kind: &MediaKind) -> sdks::stremio::MediaType {
-    match kind {
-        MediaKind::Movie => sdks::stremio::MediaType::Movie,
-        MediaKind::Series => sdks::stremio::MediaType::Series,
-        MediaKind::Season => sdks::stremio::MediaType::Unknown("season".to_string()),
-        MediaKind::Episode => sdks::stremio::MediaType::Unknown("episode".to_string()),
-        MediaKind::Track => sdks::stremio::MediaType::Track,
-        MediaKind::Album => sdks::stremio::MediaType::Album,
-        MediaKind::Artist => sdks::stremio::MediaType::Artist,
-        MediaKind::TvChannel => sdks::stremio::MediaType::Tv,
-        MediaKind::TvProgram => sdks::stremio::MediaType::Events,
-        MediaKind::Person => sdks::stremio::MediaType::Unknown("person".to_string()),
-        MediaKind::Genre => sdks::stremio::MediaType::Unknown("genre".to_string()),
-        MediaKind::Studio => sdks::stremio::MediaType::Unknown("studio".to_string()),
-        MediaKind::Collection => {
-            sdks::stremio::MediaType::Unknown("collection".to_string())
+#[allow(clippy::from_over_into)]
+impl Into<sdks::remux::MediaKind> for MediaKind {
+    fn into(self) -> sdks::remux::MediaKind {
+        match self {
+            MediaKind::Movie => sdks::remux::MediaKind::Movie,
+            MediaKind::Series => sdks::remux::MediaKind::Series,
+            MediaKind::Season => sdks::remux::MediaKind::Season,
+            MediaKind::Episode => sdks::remux::MediaKind::Episode,
+            MediaKind::Collection => sdks::remux::MediaKind::Collection,
+            MediaKind::Folder => sdks::remux::MediaKind::Folder,
+            MediaKind::Genre => sdks::remux::MediaKind::Genre,
+            MediaKind::Person => sdks::remux::MediaKind::Person,
+            MediaKind::Studio => sdks::remux::MediaKind::Studio,
+            MediaKind::Stream => sdks::remux::MediaKind::Stream,
+            MediaKind::TvChannel => sdks::remux::MediaKind::TvChannel,
+            MediaKind::TvProgram => sdks::remux::MediaKind::TvProgram,
+            MediaKind::Track => sdks::remux::MediaKind::Track,
+            MediaKind::Album => sdks::remux::MediaKind::Album,
+            MediaKind::Artist => sdks::remux::MediaKind::Artist,
+            MediaKind::Playlist => sdks::remux::MediaKind::Playlist,
         }
-        MediaKind::Folder => sdks::stremio::MediaType::Unknown("folder".to_string()),
-        MediaKind::Stream => sdks::stremio::MediaType::Unknown("stream".to_string()),
-        MediaKind::Playlist => {
-            sdks::stremio::MediaType::Unknown("playlist".to_string())
+    }
+}
+
+impl From<sdks::remux::MediaKind> for MediaKind {
+    fn from(k: sdks::remux::MediaKind) -> Self {
+        match k {
+            sdks::remux::MediaKind::Movie => MediaKind::Movie,
+            sdks::remux::MediaKind::Series => MediaKind::Series,
+            sdks::remux::MediaKind::Season => MediaKind::Season,
+            sdks::remux::MediaKind::Episode => MediaKind::Episode,
+            sdks::remux::MediaKind::Collection => MediaKind::Collection,
+            sdks::remux::MediaKind::Folder => MediaKind::Folder,
+            sdks::remux::MediaKind::Genre => MediaKind::Genre,
+            sdks::remux::MediaKind::Person => MediaKind::Person,
+            sdks::remux::MediaKind::Studio => MediaKind::Studio,
+            sdks::remux::MediaKind::Stream => MediaKind::Stream,
+            sdks::remux::MediaKind::TvChannel => MediaKind::TvChannel,
+            sdks::remux::MediaKind::TvProgram => MediaKind::TvProgram,
+            sdks::remux::MediaKind::Track => MediaKind::Track,
+            sdks::remux::MediaKind::Album => MediaKind::Album,
+            sdks::remux::MediaKind::Artist => MediaKind::Artist,
+            sdks::remux::MediaKind::Playlist => MediaKind::Playlist,
         }
     }
 }
