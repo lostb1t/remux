@@ -405,7 +405,7 @@ impl AddonService {
             };
             match preset.from_cfg(&addon.preset.config) {
                 Ok(kind) => {
-                    let raw_types = kind.available_types().await;
+                    let (_, raw_types) = kind.available_info().await;
                     let manifest_types = if raw_types.is_empty() {
                         None
                     } else {
