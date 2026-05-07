@@ -43,11 +43,7 @@ impl Task for CatalogImportTask {
 
         for (addon_idx, runtime) in addons.iter().enumerate() {
             let addon_id = runtime.row.id;
-            let stored = crate::addons::Addon::get(&ctx.db, addon_id).await;
-            let catalog_states = match stored {
-                Ok(Some(r)) => r.catalog_states(),
-                _ => Default::default(),
-            };
+            let catalog_states = runtime.row.catalog_states();
 
             let prefix = format!("addon:{addon_id}:");
 

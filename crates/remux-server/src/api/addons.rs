@@ -314,6 +314,7 @@ pub async fn update_addon_catalogs(
 
     addon.set_catalog_states(states);
     addon.update(&state.ctx.db).await?;
+    state.ctx.addons.reload(&state.ctx.db).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
