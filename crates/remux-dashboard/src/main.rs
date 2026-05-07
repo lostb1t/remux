@@ -2116,6 +2116,9 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
         FilterRule::HasTrailer { value } => {
             ("has_trailer".into(), String::new(), value.to_string())
         }
+        FilterRule::Collection { op, values } => {
+            ("collection".into(), set_op_str(op), values.join(", "))
+        }
     }
 }
 

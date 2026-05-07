@@ -172,40 +172,38 @@ impl TryFrom<String> for MediaKind {
     }
 }
 
-impl From<sdks::stremio::MediaType> for MediaKind {
-    fn from(media_type: sdks::stremio::MediaType) -> Self {
-        stremio_type_to_kind(media_type).unwrap_or(MediaKind::Movie)
+impl TryFrom<sdks::stremio::MediaType> for MediaKind {
+    type Error = ();
+
+    fn try_from(t: sdks::stremio::MediaType) -> Result<Self, Self::Error> {
+        match t {
+            sdks::stremio::MediaType::Movie => Ok(MediaKind::Movie),
+            sdks::stremio::MediaType::Series | sdks::stremio::MediaType::Tv => {
+                Ok(MediaKind::Series)
+            }
+            sdks::stremio::MediaType::Album => Ok(MediaKind::Album),
+            sdks::stremio::MediaType::Artist => Ok(MediaKind::Artist),
+            sdks::stremio::MediaType::Track => Ok(MediaKind::Track),
+            sdks::stremio::MediaType::Events => Ok(MediaKind::TvProgram),
+            sdks::stremio::MediaType::Unknown(s) => match s.as_str() {
+                "episode" => Ok(MediaKind::Episode),
+                "season" => Ok(MediaKind::Season),
+                "person" => Ok(MediaKind::Person),
+                _ => Err(()),
+            },
+        }
     }
 }
 
-pub fn media_kind_to_stremio(kind: &MediaKind) -> sdks::stremio::MediaType {
-    match kind {
-        MediaKind::Movie => sdks::stremio::MediaType::Movie,
-        MediaKind::Series | MediaKind::Season | MediaKind::Episode => {
-            sdks::stremio::MediaType::Series
+impl From<&MediaKind> for sdks::stremio::MediaType {
+    fn from(kind: &MediaKind) -> Self {
+        match kind {
+            MediaKind::Movie => sdks::stremio::MediaType::Movie,
+            MediaKind::Series | MediaKind::Season | MediaKind::Episode => {
+                sdks::stremio::MediaType::Series
+            }
+            _ => sdks::stremio::MediaType::Movie,
         }
-        _ => sdks::stremio::MediaType::Movie,
-    }
-}
-
-/// Converts a stremio `MediaType` to the corresponding `MediaKind` for addon
-/// type filtering. Returns `None` for unrecognised custom strings.
-pub fn stremio_type_to_kind(t: sdks::stremio::MediaType) -> Option<MediaKind> {
-    match t {
-        sdks::stremio::MediaType::Movie => Some(MediaKind::Movie),
-        sdks::stremio::MediaType::Series | sdks::stremio::MediaType::Tv => {
-            Some(MediaKind::Series)
-        }
-        sdks::stremio::MediaType::Album => Some(MediaKind::Album),
-        sdks::stremio::MediaType::Artist => Some(MediaKind::Artist),
-        sdks::stremio::MediaType::Track => Some(MediaKind::Track),
-        sdks::stremio::MediaType::Events => Some(MediaKind::TvProgram),
-        sdks::stremio::MediaType::Unknown(s) => match s.as_str() {
-            "episode" => Some(MediaKind::Episode),
-            "season" => Some(MediaKind::Season),
-            "person" => Some(MediaKind::Person),
-            _ => None,
-        },
     }
 }
 
@@ -2600,7 +2598,8 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         //self.info_hash.is_some()
         // let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
 
-        let mut media_kind = MediaKind::from(meta.media_type.clone());
+        let mut media_kind =
+            MediaKind::try_from(meta.media_type.clone()).unwrap_or(MediaKind::Movie);
         if media_kind == MediaKind::Movie
             && meta.videos.as_ref().map_or(false, |v| !v.is_empty())
         {
@@ -3024,6 +3023,7 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             };
             Some((sql, false))
         }
+        R::Collection { .. } => None,
         R::Person { op, values } => {
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             let sql = match op {

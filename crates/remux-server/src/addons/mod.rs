@@ -282,6 +282,15 @@ pub trait AddonKind: Send + Sync {
     async fn available_types(&self) -> Vec<remux_sdks::stremio::MediaType> {
         vec![]
     }
+    /// Returns (resources, types) in a single call. Override to avoid double fetches.
+    async fn available_info(
+        &self,
+    ) -> (Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>) {
+        (
+            self.available_resources().await,
+            self.available_types().await,
+        )
+    }
 
     // subtitle
     fn subtitle_supports(&self, _media: &db::Media) -> bool {
@@ -403,7 +412,7 @@ impl AddonService {
                         Some(
                             raw_types
                                 .into_iter()
-                                .filter_map(|t| db::stremio_type_to_kind(t))
+                                .filter_map(|t| db::MediaKind::try_from(t).ok())
                                 .collect(),
                         )
                     };

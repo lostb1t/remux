@@ -2163,17 +2163,55 @@ pub enum SetOp {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "field", rename_all = "snake_case")]
 pub enum FilterRule {
-    Genre { op: SetOp, values: Vec<String> },
-    Year { op: NumericOp, value: i64 },
-    RatingAudience { op: NumericOp, value: f64 },
-    RatingCritic { op: NumericOp, value: f64 },
-    ParentalRating { op: NumericOp, value: i64 },
-    Certification { op: SetOp, values: Vec<String> },
-    Tag { op: SetOp, values: Vec<String> },
-    Studio { op: SetOp, values: Vec<String> },
-    HasTrailer { value: bool },
-    Country { op: SetOp, values: Vec<String> },
-    Person { op: SetOp, values: Vec<String> },
+    Genre {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    Year {
+        op: NumericOp,
+        value: i64,
+    },
+    RatingAudience {
+        op: NumericOp,
+        value: f64,
+    },
+    RatingCritic {
+        op: NumericOp,
+        value: f64,
+    },
+    ParentalRating {
+        op: NumericOp,
+        value: i64,
+    },
+    Certification {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    Tag {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    Studio {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    HasTrailer {
+        value: bool,
+    },
+    Country {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    Person {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    /// Kept for backward compatibility with rows stored before the catalog→collection rename.
+    #[serde(alias = "catalog")]
+    Collection {
+        op: SetOp,
+        values: Vec<String>,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).
@@ -2192,8 +2230,21 @@ pub enum FilterMatchMode {
 pub struct CollectionFilter {
     #[serde(default)]
     pub match_mode: FilterMatchMode,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_filter_rules")]
     pub rules: Vec<FilterRule>,
+}
+
+fn deserialize_filter_rules<'de, D>(
+    deserializer: D,
+) -> Result<Vec<FilterRule>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<FilterRule>(v).ok())
+        .collect())
 }
 
 #[skip_serializing_none]

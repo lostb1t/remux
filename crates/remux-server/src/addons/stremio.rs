@@ -165,24 +165,16 @@ impl AddonKind for StremioAddon {
         "stremio"
     }
 
-    async fn available_resources(&self) -> Vec<ResourceType> {
+    async fn available_info(
+        &self,
+    ) -> (Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>) {
         let Ok(svc) = self.service() else {
-            return vec![];
+            return (vec![], vec![]);
         };
         let Ok(manifest) = svc.get_manifest().await else {
-            return vec![];
+            return (vec![], vec![]);
         };
-        parse_manifest_info(&manifest).0
-    }
-
-    async fn available_types(&self) -> Vec<remux_sdks::stremio::MediaType> {
-        let Ok(svc) = self.service() else {
-            return vec![];
-        };
-        let Ok(manifest) = svc.get_manifest().await else {
-            return vec![];
-        };
-        parse_manifest_info(&manifest).1
+        parse_manifest_info(&manifest)
     }
 
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
@@ -565,7 +557,7 @@ async fn stremio_meta_fetch(
     {
         cached_meta
     } else {
-        svc.get_meta(db::media_kind_to_stremio(&media.kind), imdb_id.clone())
+        svc.get_meta(sdks::stremio::MediaType::from(&media.kind), imdb_id.clone())
             .await?
     };
 
@@ -648,7 +640,7 @@ async fn stremio_sync_children(
     };
 
     let mut meta = svc
-        .get_meta(db::media_kind_to_stremio(&root.kind), imdb_id.clone())
+        .get_meta(sdks::stremio::MediaType::from(&root.kind), imdb_id.clone())
         .await?;
 
     if meta.imdb_id.is_none() {
@@ -1106,7 +1098,7 @@ async fn stremio_streams(
                 .ok_or_else(|| {
                     anyhow!("media has no identifiable ID for Stremio stream lookup")
                 })?;
-            (db::media_kind_to_stremio(&media.kind), id)
+            (sdks::stremio::MediaType::from(&media.kind), id)
         }
     };
 

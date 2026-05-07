@@ -12,7 +12,7 @@ use crate::addons::{
     Addon, AddonCatalogDto, AddonDto, AddonMetadata, CreateAddonRequest,
     UpdateAddonCatalogRequest, UpdateAddonRequest, make_media_id, registered_presets,
 };
-use crate::db::{MediaKind as DbMediaKind, auth, stremio_type_to_kind};
+use crate::db::{MediaKind as DbMediaKind, auth};
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 use remux_sdks::remux::MediaKind;
 
@@ -25,12 +25,10 @@ async fn addon_to_dto(addon: Addon) -> AddonDto {
         let meta = p.metadata();
         match p.from_cfg(&addon.preset.config) {
             Ok(kind) => {
-                let resources = kind.available_resources().await;
-                let types: Vec<MediaKind> = kind
-                    .available_types()
-                    .await
+                let (resources, raw_types) = kind.available_info().await;
+                let types: Vec<MediaKind> = raw_types
                     .into_iter()
-                    .map(MediaKind::from)
+                    .filter_map(|t| DbMediaKind::try_from(t).ok().map(Into::into))
                     .collect();
                 if !resources.is_empty() {
                     (resources, types)
@@ -79,10 +77,7 @@ pub async fn list_addons(
     _session: auth::AdminSession,
 ) -> Result<Json<Vec<AddonDto>>> {
     let addons = Addon::list(&state.ctx.db).await?;
-    let mut dtos = Vec::with_capacity(addons.len());
-    for addon in addons {
-        dtos.push(addon_to_dto(addon).await);
-    }
+    let dtos = futures::future::join_all(addons.into_iter().map(addon_to_dto)).await;
     Ok(Json(dtos))
 }
 
@@ -136,7 +131,7 @@ pub async fn create_addon(
         if !avail_types.is_empty() {
             avail_types
                 .into_iter()
-                .filter_map(stremio_type_to_kind)
+                .filter_map(|t| DbMediaKind::try_from(t).ok())
                 .collect()
         } else {
             metadata
