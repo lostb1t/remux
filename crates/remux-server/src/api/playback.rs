@@ -154,22 +154,10 @@ async fn items_playbackinfo_inner(
 
     let is_live = media.kind == db::MediaKind::TvChannel;
 
-    // For Track items, refresh CDN stream URLs if stale.
-    // `media` may be a Source child when media_source_id differs from id — use subtitle_media
-    // (always fetched from `id`) as the authoritative item for kind detection.
-    let track_item = if media.kind == db::MediaKind::Track {
-        Some(media.clone())
-    } else {
-        subtitle_media
-            .clone()
-            .filter(|m| m.kind == db::MediaKind::Track)
-    };
-    let is_track = track_item.is_some();
-    if let Some(ref track) = track_item {
-        if let Err(e) = state.ctx.addons.refresh_streams(track, &state.ctx).await {
-            tracing::warn!(error = %e, id = %track.id, "failed to refresh track sources");
-        }
-    }
+    let is_track = media.kind == db::MediaKind::Track
+        || subtitle_media
+            .as_ref()
+            .map_or(false, |m| m.kind == db::MediaKind::Track);
     let has_lyrics = is_track;
 
     // Collect all playable sources. A Movie/Episode may have multiple
@@ -765,13 +753,6 @@ async fn videos_stream_inner(
         || media.kind == db::MediaKind::Episode
         || media.kind == db::MediaKind::Track
     {
-        // For tracks, refresh CDN URLs if stale before loading sources.
-        if media.kind == db::MediaKind::Track {
-            if let Err(e) = state.ctx.addons.refresh_streams(&media, &state.ctx).await {
-                tracing::warn!(error = %e, id = %media.id, "failed to refresh track sources");
-            }
-        }
-
         let sources = media.streams(&state.ctx.db).await?;
         media = if let Some(wanted) = q.media_source_id {
             sources.iter().find(|s| s.id == wanted).cloned()
@@ -2138,27 +2119,9 @@ pub async fn master_hls_video(
             .context_not_found("not found", "no playable source found")?;
         }
 
-        // For audio tracks, resolve a fresh CDN stream URL via yt-dlp.
-        // The URL stored in media.url is the stable YouTube watch URL, which
-        // FFmpeg cannot open directly — we need the actual CDN stream URL.
-        let raw_input_url = if resolved_media.kind == db::MediaKind::Track {
-            let streams = state
-                .ctx
-                .addons
-                .get_streams(&resolved_media, &state.ctx)
-                .await
-                .map_err(|e| {
-                    anyhow!("could not resolve track stream for HLS: {e:#}")
-                })?;
-            let best = streams.into_iter().next().ok_or_else(|| {
-                anyhow!("no streams found for track '{}'", resolved_media.title)
-            })?;
-            best.url.context_not_found("no url", "stream has no URL")?
-        } else {
-            resolved_media
-                .url
-                .context_not_found("no url", "media source has no URL")?
-        };
+        let raw_input_url = resolved_media
+            .url
+            .context_not_found("no url", "media source has no URL")?;
 
         let input_url = remap_internal_aio_url(&state, &raw_input_url).await;
 
