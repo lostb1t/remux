@@ -851,7 +851,16 @@ impl AddonService {
         let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
             .iter()
             .filter(|r| {
-                r.supports(ResourceType::Segment) && r.kind.segment_supports(media)
+                let has_resource = r.supports(ResourceType::Segment);
+                let kind_supports = r.kind.segment_supports(media);
+                tracing::debug!(
+                    addon = %r.row.name,
+                    media_kind = ?media.kind,
+                    has_resource,
+                    kind_supports,
+                    "segment addon filter"
+                );
+                has_resource && kind_supports
             })
             .map(|r| (r.row.name.clone(), r.kind.clone()))
             .collect();
