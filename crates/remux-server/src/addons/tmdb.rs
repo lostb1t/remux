@@ -40,7 +40,11 @@ impl AddonPreset for TmdbPreset {
         }
     }
 
-    fn from_cfg(&self, _cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+    fn from_cfg(
+        &self,
+        _addon_id: Uuid,
+        _cfg: &serde_json::Value,
+    ) -> Result<Arc<dyn AddonKind>> {
         Ok(Arc::new(TmdbAddon {}))
     }
 }

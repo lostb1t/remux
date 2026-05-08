@@ -5,6 +5,7 @@ pub mod addon;
 pub mod deezer;
 pub mod introdb;
 pub mod lrclib;
+pub mod opendal;
 pub mod probe;
 pub mod squid;
 pub mod stremio;
@@ -192,7 +193,11 @@ pub fn registered_presets() -> Vec<Box<dyn AddonPreset>> {
 pub trait AddonPreset: Send + Sync {
     fn id(&self) -> &'static str;
     fn metadata(&self) -> AddonMetadata;
-    fn from_cfg(&self, cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>>;
+    fn from_cfg(
+        &self,
+        addon_id: Uuid,
+        cfg: &serde_json::Value,
+    ) -> Result<Arc<dyn AddonKind>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +408,7 @@ impl AddonService {
                 tracing::warn!(addon_id = %addon.id, kind = %addon.preset.kind, "skipping addon with unknown preset kind");
                 continue;
             };
-            match preset.from_cfg(&addon.preset.config) {
+            match preset.from_cfg(addon.id, &addon.preset.config) {
                 Ok(kind) => {
                     let (_, raw_types) = kind.available_info().await;
                     let manifest_types = if raw_types.is_empty() {

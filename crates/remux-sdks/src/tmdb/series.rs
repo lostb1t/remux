@@ -210,3 +210,33 @@ impl Endpoint for EpisodeEndpoint {
         params
     }
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SeriesSearchResult {
+    pub id: i64,
+    pub name: String,
+    #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
+    pub first_air_date: Option<NaiveDate>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SeriesSearchResponse {
+    pub results: Vec<SeriesSearchResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchTvEndpoint {
+    pub query: String,
+}
+
+impl Endpoint for SearchTvEndpoint {
+    type Output = SeriesSearchResponse;
+
+    fn path(&self) -> String {
+        "search/tv".to_string()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        vec![("query".to_string(), self.query.clone())]
+    }
+}

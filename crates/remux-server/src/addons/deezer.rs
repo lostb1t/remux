@@ -352,7 +352,11 @@ impl AddonPreset for DeezerPreset {
         }
     }
 
-    fn from_cfg(&self, cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+    fn from_cfg(
+        &self,
+        _addon_id: Uuid,
+        cfg: &serde_json::Value,
+    ) -> Result<Arc<dyn AddonKind>> {
         let playlists = cfg
             .get("playlists")
             .and_then(|v| v.as_array())

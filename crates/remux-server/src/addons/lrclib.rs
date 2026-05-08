@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use super::{
     AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, LyricSearchRequest,
@@ -30,7 +31,11 @@ impl AddonPreset for LrcLibPreset {
         }
     }
 
-    fn from_cfg(&self, _cfg: &serde_json::Value) -> Result<Arc<dyn AddonKind>> {
+    fn from_cfg(
+        &self,
+        _addon_id: Uuid,
+        _cfg: &serde_json::Value,
+    ) -> Result<Arc<dyn AddonKind>> {
         let client = reqwest::Client::builder()
             .user_agent("remux-server/1.0")
             .build()

@@ -92,3 +92,38 @@ impl Endpoint for MovieEndpoint {
         params
     }
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MovieSearchResult {
+    pub id: i64,
+    pub title: String,
+    #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
+    pub release_date: Option<NaiveDate>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MovieSearchResponse {
+    pub results: Vec<MovieSearchResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchMovieEndpoint {
+    pub query: String,
+    pub year: Option<i64>,
+}
+
+impl Endpoint for SearchMovieEndpoint {
+    type Output = MovieSearchResponse;
+
+    fn path(&self) -> String {
+        "search/movie".to_string()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        let mut params = vec![("query".to_string(), self.query.clone())];
+        if let Some(y) = self.year {
+            params.push(("year".to_string(), y.to_string()));
+        }
+        params
+    }
+}

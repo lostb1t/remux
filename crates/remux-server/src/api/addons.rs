@@ -23,7 +23,7 @@ async fn addon_to_dto(addon: Addon) -> AddonDto {
 
     let (supported_resources, supported_types) = if let Some(ref p) = preset {
         let meta = p.metadata();
-        match p.from_cfg(&addon.preset.config) {
+        match p.from_cfg(addon.id, &addon.preset.config) {
             Ok(kind) => {
                 let (resources, raw_types) = kind.available_info().await;
                 let types: Vec<MediaKind> = raw_types
@@ -108,8 +108,9 @@ pub async fn create_addon(
         .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", payload.preset.kind))
         .context_bad_request("Bad Request", "Unknown addon kind")?;
 
+    let addon_id = Uuid::new_v4();
     let kind = preset
-        .from_cfg(&payload.preset.config)
+        .from_cfg(addon_id, &payload.preset.config)
         .context_bad_request("Bad Request", "Invalid addon configuration")?;
 
     // Default resources/types to the live available set (e.g. upstream manifest for
@@ -146,7 +147,7 @@ pub async fn create_addon(
 
     let now = Utc::now().naive_utc();
     let mut addon = Addon {
-        id: Uuid::new_v4(),
+        id: addon_id,
         preset: payload.preset,
         name: payload.name,
         resources,
@@ -201,7 +202,7 @@ pub async fn update_addon(
         .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", addon.preset.kind))
         .context_bad_request("Bad Request", "Unknown addon kind")?;
     preset
-        .from_cfg(&addon.preset.config)
+        .from_cfg(addon.id, &addon.preset.config)
         .context_bad_request("Bad Request", "Invalid addon configuration")?;
 
     addon.update(&state.ctx.db).await?;

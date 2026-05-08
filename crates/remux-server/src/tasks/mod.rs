@@ -20,6 +20,7 @@ mod catalog_import_shared;
 mod clean_transcode_folder;
 mod iptv_refresh;
 mod jellyfin_import;
+mod opendal_scan;
 mod purge_media;
 mod refresh_all_meta;
 mod refresh_library;
@@ -30,6 +31,7 @@ use catalog_import::CatalogImportTask;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use iptv_refresh::IptvRefreshTask;
 use jellyfin_import::JellyfinImportTask;
+use opendal_scan::OpendalScanTask;
 use purge_media::PurgeMediaTask;
 use refresh_all_meta::RefreshAllMetaTask;
 use refresh_library::RefreshLibraryTask;
@@ -227,6 +229,7 @@ impl TaskService {
         service
             .register_task(Arc::new(EnsureAnfiteatroTask))
             .await?;
+        service.register_task(Arc::new(OpendalScanTask)).await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {
