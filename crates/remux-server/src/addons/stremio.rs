@@ -215,7 +215,7 @@ impl AddonKind for StremioAddon {
         let tmdb_client = crate::common::tmdb_client(&ctx.db).await;
 
         let stream = stream
-            .then(move |mut meta| {
+            .map(move |mut meta| {
                 let svc = svc.clone();
                 let tmdb = tmdb_client.clone();
                 async move {
@@ -237,6 +237,7 @@ impl AddonKind for StremioAddon {
                     }
                 }
             })
+            .buffer_unordered(10)
             .flat_map(futures::stream::iter);
 
         Ok(Some(Box::pin(stream)))
