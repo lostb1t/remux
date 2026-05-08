@@ -1,13 +1,15 @@
 use anyhow::{Result, bail};
 use async_trait::async_trait;
+use std::pin::Pin;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use futures::Stream;
 use remux_sdks::stremio::MediaType as StremioMediaType;
 
 use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, AddonSelectOption, MediaKind, ResourceType,
+    AddonPresetRegistration, AddonSelectOption, CatalogInfo, MediaKind, ResourceType,
 };
 use crate::{AppContext, common, db};
 
@@ -255,7 +257,95 @@ impl AddonKind for OpendalAddon {
             "track" => StremioMediaType::Track,
             _ => StremioMediaType::Movie,
         };
-        (vec![ResourceType::Stream], vec![media_type])
+        (
+            vec![ResourceType::Stream, ResourceType::Catalog],
+            vec![media_type],
+        )
+    }
+
+    async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
+        Ok(vec![CatalogInfo {
+            provider_catalog_id: "files".to_string(),
+            name: "Files".to_string(),
+        }])
+    }
+
+    async fn catalog_stream(
+        &self,
+        ctx: &AppContext,
+        local_id: &str,
+    ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>> {
+        if local_id != "files" {
+            return Ok(None);
+        }
+
+        let items: Vec<db::Media> = match self.media_kind.as_str() {
+            "episode" => {
+                sqlx::query_as::<_, (String, Option<String>)>(
+                    "SELECT DISTINCT imdb_id, title FROM opendal_files \
+                     WHERE addon_id = ? AND media_kind = 'episode' AND imdb_id IS NOT NULL",
+                )
+                .bind(self.addon_id)
+                .fetch_all(&ctx.db)
+                .await?
+                .into_iter()
+                .map(|(imdb_id, title)| db::Media {
+                    id: common::get_stable_uuid(format!("series:{}", imdb_id)),
+                    title: title.unwrap_or_default(),
+                    kind: db::MediaKind::Series,
+                    external_ids: db::ExternalIds {
+                        imdb: Some(imdb_id),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .collect()
+            }
+            "track" => {
+                sqlx::query_as::<_, (Option<String>,)>(
+                    "SELECT title FROM opendal_files \
+                     WHERE addon_id = ? AND media_kind = 'track'",
+                )
+                .bind(self.addon_id)
+                .fetch_all(&ctx.db)
+                .await?
+                .into_iter()
+                .filter_map(|(title,)| title)
+                .map(|title| db::Media {
+                    id: common::get_stable_uuid(format!(
+                        "{}:track:{}",
+                        self.addon_id, title
+                    )),
+                    title: title.clone(),
+                    kind: db::MediaKind::Track,
+                    ..Default::default()
+                })
+                .collect()
+            }
+            _ => {
+                sqlx::query_as::<_, (String, Option<String>)>(
+                    "SELECT DISTINCT imdb_id, title FROM opendal_files \
+                     WHERE addon_id = ? AND media_kind = 'movie' AND imdb_id IS NOT NULL",
+                )
+                .bind(self.addon_id)
+                .fetch_all(&ctx.db)
+                .await?
+                .into_iter()
+                .map(|(imdb_id, title)| db::Media {
+                    id: common::get_stable_uuid(format!("movie:{}", imdb_id)),
+                    title: title.unwrap_or_default(),
+                    kind: db::MediaKind::Movie,
+                    external_ids: db::ExternalIds {
+                        imdb: Some(imdb_id),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .collect()
+            }
+        };
+
+        Ok(Some(Box::pin(futures::stream::iter(items))))
     }
 
     fn stream_supports(&self, media: &db::Media) -> bool {
