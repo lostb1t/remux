@@ -1,6 +1,16 @@
-# Remux
+<div align="center">
+   <img width="200" height="200" src="logo.png" alt="Logo">
+</div>
 
-Remux is a self-hosted media server with a Jellyfin-compatible API. Stream content from Stremio add-ons, local files, or WebDAV sources all through your existing Jellyfin clients.
+<div align="center">
+  <h1><b>Remux</b></h1>
+  <p><i>self-hosted media server with a Jellyfin-compatible API</i></p>
+<a href="https://discord.gg/rEbhk4RBhs">
+    <img src="https://img.shields.io/badge/Talk%20on-Discord-brightgreen">
+</a>
+</div>
+
+Stream content from Stremio add-ons, local files, or WebDAV sources all through your existing Jellyfin clients.
 
 Movies and shows come from Stremio add-ons or your own files. Music is handled separately through its own streaming pipeline.
 
@@ -8,9 +18,7 @@ Use your existing Jellyfin clients as-is: browse, search, and play. No library s
 
 Built in Rust for performance and low resource usage.
 
-<a href="https://discord.gg/rEbhk4RBhs">
-    <img src="https://img.shields.io/badge/Talk%20on-Discord-brightgreen">
-</a>
+
 
 ---
 
