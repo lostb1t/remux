@@ -193,7 +193,7 @@ pub async fn shows_nextup(
             .await
             .map(IntoResponse::into_response);
     }
-    let series_id = q.series_id.unwrap();
+    let grandparent_id = q.series_id.unwrap();
 
     let disable_first = q.disable_first_episode.unwrap_or(false);
     let enable_resumable = q.enable_resumable.unwrap_or(true);
@@ -202,10 +202,10 @@ pub async fn shows_nextup(
     // All episodes for the series in watch order (season asc, episode asc)
     let episodes: Vec<db::Media> = sqlx::query_as(
         "SELECT * FROM media \
-         WHERE series_id = ? AND kind = 'episode' \
+         WHERE grandparent_id = ? AND kind = 'episode' \
          ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
     )
-    .bind(series_id)
+    .bind(grandparent_id)
     .fetch_all(&state.ctx.db)
     .await?;
 
@@ -304,13 +304,13 @@ async fn shows_nextup_all(
     // For each such series, find the next episode to watch (same logic as per-series nextup).
     // We do this in SQL: for each series, find the first episode after the last played one.
     //
-    // Step 1: Get distinct series_ids where user has play state
+    // Step 1: Get distinct grandparent_ids where user has play state
     let active_series: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT DISTINCT e.series_id \
+        "SELECT DISTINCT e.grandparent_id \
          FROM media e \
          JOIN user_media_state ums ON ums.media_key = e.media_id \
          WHERE e.kind = 'episode' \
-           AND e.series_id IS NOT NULL \
+           AND e.grandparent_id IS NOT NULL \
            AND ums.user_id = ? \
            AND (ums.play_count > 0 OR ums.playback_position > 0) \
          LIMIT ?",
@@ -326,13 +326,13 @@ async fn shows_nextup_all(
 
     let mut items: Vec<api::BaseItemDto> = Vec::new();
 
-    for (series_id,) in active_series {
+    for (grandparent_id,) in active_series {
         let episodes: Vec<db::Media> = sqlx::query_as(
             "SELECT * FROM media \
-             WHERE series_id = ? AND kind = 'episode' \
+             WHERE grandparent_id = ? AND kind = 'episode' \
              ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
         )
-        .bind(series_id)
+        .bind(grandparent_id)
         .fetch_all(&state.ctx.db)
         .await?;
 

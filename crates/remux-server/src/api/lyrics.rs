@@ -89,7 +89,7 @@ pub(crate) async fn resolve_music_titles(
     db: &sqlx::SqlitePool,
     media: &db::Media,
 ) -> (Option<String>, Option<String>) {
-    let ids: Vec<Uuid> = [media.series_id, media.parent_id]
+    let ids: Vec<Uuid> = [media.grandparent_id, media.parent_id]
         .into_iter()
         .flatten()
         .collect::<std::collections::HashSet<_>>()
@@ -121,7 +121,7 @@ pub(crate) async fn resolve_music_titles(
         })
         .collect();
 
-    let artist = media.series_id.and_then(|id| map.get(&id).cloned());
+    let artist = media.grandparent_id.and_then(|id| map.get(&id).cloned());
     let album = media.parent_id.and_then(|id| map.get(&id).cloned());
     (artist, album)
 }

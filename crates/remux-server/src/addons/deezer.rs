@@ -556,7 +556,7 @@ impl DeezerAddon {
                     idx: track.track_position,
                     parent_idx: track.disk_number,
                     parent_id: Some(album_id),
-                    series_id: artist_id,
+                    grandparent_id: artist_id,
                     parent_title: Some(album_title.clone()),
                     series_title: Some(artist_title.clone()),
                     ..Default::default()
@@ -642,7 +642,7 @@ impl DeezerAddon {
                     released_at,
                     description: Some(desc_parts.join(" · ")),
                     parent_id: Some(root_id),
-                    series_id: Some(root_id),
+                    grandparent_id: Some(root_id),
                     series_title: Some(artist_title.clone()),
                     ..Default::default()
                 };
@@ -703,7 +703,7 @@ impl DeezerAddon {
             detail,
             root.id,
             album_title,
-            root.series_id.or(root.parent_id),
+            root.grandparent_id.or(root.parent_id),
             artist_title,
         ))
     }
@@ -1232,16 +1232,16 @@ impl AddonKind for DeezerAddon {
         }
     }
 
-    fn hierarchy_supports(&self, root: &db::Media) -> bool {
+    fn tree_supports(&self, root: &db::Media) -> bool {
         matches!(root.kind, db::MediaKind::Artist | db::MediaKind::Album)
     }
 
-    async fn hierarchy_sync_children(
+    async fn tree_sync_children(
         &self,
         root: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
-        if !self.hierarchy_supports(root) {
+        if !self.tree_supports(root) {
             return Ok(None);
         }
         let children = match root.kind {
@@ -1393,13 +1393,13 @@ async fn save_discography(
     let artist_id = artist.id;
     for (mut album, mut tracks) in albums_with_tracks {
         album.parent_id = Some(artist_id);
-        album.series_id = Some(artist_id);
+        album.grandparent_id = Some(artist_id);
         album.series_title = Some(artist.title.clone());
         album.save(&ctx.db).await.ok();
         let album_id = album.id;
         for track in &mut tracks {
             track.parent_id = Some(album_id);
-            track.series_id = Some(artist_id);
+            track.grandparent_id = Some(artist_id);
             track.series_title = Some(artist.title.clone());
             track.save(&ctx.db).await.ok();
         }

@@ -64,24 +64,6 @@ where
                     error!(catalog = media_id, error = %e, "failed to tag item");
                 }
             }
-        } else {
-            // Legacy catalogs (non-addon) — use media_relations.
-            let relations: Vec<db::MediaRelation> = items
-                .iter()
-                .filter(|m| m.parent_id.is_none())
-                .map(|m| db::MediaRelation {
-                    left_media_id: m.id,
-                    right_media_id: catalog_id,
-                    role: Some(db::RelationRole::Catalog),
-                    ..Default::default()
-                })
-                .collect();
-
-            if !relations.is_empty() {
-                if let Err(e) = db::MediaRelation::upsert(db, &relations).await {
-                    error!(catalog = media_id, error = %e, "failed to upsert catalog relations");
-                }
-            }
         }
 
         for item in items.iter().filter(|m| m.parent_id.is_none()) {

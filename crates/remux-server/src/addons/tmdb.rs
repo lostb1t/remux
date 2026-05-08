@@ -318,8 +318,8 @@ async fn fetch_tmdb_meta(
         Some((tmdb_id.to_string(), "tmdb_id"))
     } else if let Some(ref imdb) = ids.imdb {
         Some((imdb.clone(), "imdb_id"))
-    } else if let Some(ref series_id) = media.series_media_id {
-        Some((series_id.clone(), "imdb_id"))
+    } else if let Some(ref gp_media_id) = media.grandparent_media_id {
+        Some((gp_media_id.clone(), "imdb_id"))
     } else if let Some(tvdb_id) = ids.tvdb {
         Some((tvdb_id.to_string(), "tvdb_id"))
     } else {
@@ -527,7 +527,7 @@ async fn fetch_tmdb_meta(
             }
         }
         db::MediaKind::Episode => {
-            let mut series_tmdb_id = if let Some(sid) = media.series_id {
+            let mut series_tmdb_id = if let Some(sid) = media.grandparent_id {
                 db::Media::get_by_id(&ctx.db, &sid)
                     .await?
                     .filter(|m| m.kind == db::MediaKind::Series)
@@ -536,7 +536,7 @@ async fn fetch_tmdb_meta(
                 None
             };
             if series_tmdb_id.is_none() {
-                if let Some(ref series_imdb) = media.series_media_id {
+                if let Some(ref series_imdb) = media.grandparent_media_id {
                     let find = client
                         .execute(
                             sdks::tmdb::FindByIdEndpoint {
@@ -641,13 +641,13 @@ async fn fetch_tmdb_meta(
                     }
                     relations.extend(ep_relations);
                 }
-                if let Some(series_id) = media.series_id {
+                if let Some(grandparent_id) = media.grandparent_id {
                     let series_genres = sqlx::query_as::<_, db::Media>(
                         "SELECT m.* FROM media m
                          JOIN media_relations r ON m.id = r.right_media_id
                          WHERE r.left_media_id = ? AND m.kind = 'genre'",
                     )
-                    .bind(series_id)
+                    .bind(grandparent_id)
                     .fetch_all(&ctx.db)
                     .await
                     .unwrap_or_default();
@@ -748,8 +748,8 @@ pub async fn tmdb_remote_images(
         if let Some(ref imdb) = ids.imdb {
             return Some((imdb.clone(), "imdb_id"));
         }
-        if let Some(ref series_id) = media.series_media_id {
-            return Some((series_id.clone(), "imdb_id"));
+        if let Some(ref gp_media_id) = media.grandparent_media_id {
+            return Some((gp_media_id.clone(), "imdb_id"));
         }
         if let Some(tvdb_id) = ids.tvdb {
             return Some((tvdb_id.to_string(), "tvdb_id"));
@@ -875,7 +875,7 @@ pub async fn tmdb_remote_images(
             }
         }
         db::MediaKind::Episode => {
-            let mut series_tmdb_id = if let Some(sid) = media.series_id {
+            let mut series_tmdb_id = if let Some(sid) = media.grandparent_id {
                 db::Media::get_by_id(&ctx.db, &sid)
                     .await?
                     .and_then(|m| m.external_ids.tmdb)
@@ -883,7 +883,7 @@ pub async fn tmdb_remote_images(
                 None
             };
             if series_tmdb_id.is_none() {
-                if let Some(ref series_imdb) = media.series_media_id {
+                if let Some(ref series_imdb) = media.grandparent_media_id {
                     let find = client
                         .execute(
                             sdks::tmdb::FindByIdEndpoint {

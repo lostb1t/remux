@@ -639,8 +639,8 @@ pub struct MediaFilter {
     pub max_start_date: Option<NaiveDateTime>,
     /// Filter TvPrograms by category (movie, series, news, kids, sports).
     pub program_kinds: Option<Vec<ProgramKind>>,
-    /// Filter episodes/seasons by their series (top-level show).
-    pub series_id: Option<Uuid>,
+    /// Filter episodes/seasons/tracks by their grandparent (series, artist, etc.).
+    pub grandparent_id: Option<Uuid>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -698,13 +698,13 @@ pub struct Media {
     pub idx: Option<i64>,
     pub parent_idx: Option<i64>,
     pub parent_id: Option<Uuid>,
-    pub series_media_id: Option<String>,
+    pub grandparent_media_id: Option<String>,
     #[sqlx(default)]
     #[sqlx(json)]
     pub external_ids: ExternalIds,
     pub media_id: Option<String>,
     //pub media_key: Option<String>,
-    pub series_id: Option<Uuid>,
+    pub grandparent_id: Option<Uuid>,
     //pub season_id: Option<Uuid>,
     //pub description: Option<String>,
     #[sqlx(skip)]
@@ -793,7 +793,7 @@ impl Media {
                         | MediaKind::TvProgram
                 )
             })
-            .flat_map(|m| [m.parent_id, m.series_id].into_iter().flatten())
+            .flat_map(|m| [m.parent_id, m.grandparent_id].into_iter().flatten())
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
@@ -843,12 +843,12 @@ impl Media {
                         .parent_id
                         .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
                     media.series_title = media
-                        .series_id
+                        .grandparent_id
                         .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
                 }
                 MediaKind::Album => {
                     media.series_title = media
-                        .series_id
+                        .grandparent_id
                         .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
                 }
                 MediaKind::Episode => {
@@ -856,7 +856,7 @@ impl Media {
                         .parent_id
                         .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
                     if let Some(row) =
-                        media.series_id.and_then(|id| parent_map.get(&id))
+                        media.grandparent_id.and_then(|id| parent_map.get(&id))
                     {
                         media.series_title = Some(row.title.clone());
                         media.series_poster = row.poster.clone();
@@ -961,8 +961,8 @@ impl Media {
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
-            provider_info, series_media_id, media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
-            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id,
+            provider_info, grandparent_media_id, media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
+            live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
@@ -986,8 +986,8 @@ impl Media {
                 ELSE COALESCE(excluded.probe_data, media.probe_data)
             END,
             provider_info = excluded.provider_info,
-            series_media_id = excluded.series_media_id,
-            series_id = excluded.series_id,
+            grandparent_media_id = excluded.grandparent_media_id,
+            grandparent_id = excluded.grandparent_id,
             external_ids = excluded.external_ids,
             media_id = excluded.media_id,
             promoted = excluded.promoted,
@@ -1033,7 +1033,7 @@ impl Media {
         .bind(&self.collection_media_kind)
         .bind(self.collection_max_items)
         .bind(sqlx::types::Json(&self.provider_info))
-        .bind(&self.series_media_id)
+        .bind(&self.grandparent_media_id)
         .bind(&self.media_id)
         .bind(sqlx::types::Json(&self.external_ids))
         .bind(self.created_at)
@@ -1051,7 +1051,7 @@ impl Media {
         .bind(self.digital_released_at)
         .bind(&self.status)
         .bind(self.refreshed_at)
-        .bind(self.series_id)
+        .bind(self.grandparent_id)
         .bind(sqlx::types::Json(&self.collection_smart_filter))
         .bind(self.country.as_deref().map(normalize_country_alpha2))
         .bind(&self.program_kind)
@@ -1099,8 +1099,8 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
-            provider_info, series_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, series_id, country, program_kind
+            provider_info, grandparent_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind
             )",
         );
             for item in chunk {
@@ -1127,7 +1127,7 @@ impl Media {
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
                     .push_bind(sqlx::types::Json(&item.provider_info))
-                    .push_bind(&item.series_media_id)
+                    .push_bind(&item.grandparent_media_id)
                     .push_bind(sqlx::types::Json(&item.external_ids))
                     .push_bind(&item.media_id)
                     .push_bind(&item.created_at)
@@ -1144,7 +1144,7 @@ impl Media {
                     .push_bind(&item.custom_name)
                     .push_bind(&item.digital_released_at)
                     .push_bind(&item.status)
-                    .push_bind(&item.series_id)
+                    .push_bind(&item.grandparent_id)
                     .push_bind(item.country.as_deref().map(normalize_country_alpha2))
                     .push_bind(&item.program_kind);
             });
@@ -1174,8 +1174,8 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
-                provider_info, series_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, series_id, country, program_kind
+                provider_info, grandparent_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind
             )",
         );
 
@@ -1200,7 +1200,7 @@ impl Media {
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
                     .push_bind(sqlx::types::Json(&item.provider_info))
-                    .push_bind(&item.series_media_id)
+                    .push_bind(&item.grandparent_media_id)
                     .push_bind(sqlx::types::Json(&item.external_ids))
                     .push_bind(&item.media_id)
                     .push_bind(&item.created_at)
@@ -1218,7 +1218,7 @@ impl Media {
                     .push_bind(&item.digital_released_at)
                     .push_bind(&item.status)
                     .push_bind(&item.refreshed_at)
-                    .push_bind(&item.series_id)
+                    .push_bind(&item.grandparent_id)
                     .push_bind(item.country.as_deref().map(normalize_country_alpha2))
                     .push_bind(&item.program_kind);
             });
@@ -1245,8 +1245,8 @@ impl Media {
                 ELSE COALESCE(excluded.probe_data, media.probe_data)
             END,
                 provider_info = excluded.provider_info,
-                series_media_id = excluded.series_media_id,
-                series_id = excluded.series_id,
+                grandparent_media_id = excluded.grandparent_media_id,
+                grandparent_id = excluded.grandparent_id,
                 updated_at = excluded.updated_at,
                 promoted = excluded.promoted,
                 certification = excluded.certification,
@@ -1411,8 +1411,8 @@ impl Media {
                     }
                 }
             }
-            if let Some(series_id) = &filter.series_id {
-                qb.push(" AND series_id = ").push_bind(series_id);
+            if let Some(grandparent_id) = &filter.grandparent_id {
+                qb.push(" AND grandparent_id = ").push_bind(grandparent_id);
             }
             if let Some(media_id) = &filter.media_id {
                 qb.push(" AND media_id = ").push_bind(media_id);
@@ -1445,7 +1445,7 @@ impl Media {
                     for id in artist_ids {
                         sep.push_bind(id);
                     }
-                    qb.push(") OR series_id IN (");
+                    qb.push(") OR grandparent_id IN (");
                     let mut sep = qb.separated(", ");
                     for id in artist_ids {
                         sep.push_bind(id);
@@ -1875,13 +1875,13 @@ impl Media {
                 }
 
                 let mut song_qb = sqlx::QueryBuilder::new(
-                    "SELECT series_id, COUNT(*) as cnt FROM media WHERE kind = 'track' AND series_id IN (",
+                    "SELECT grandparent_id, COUNT(*) as cnt FROM media WHERE kind = 'track' AND grandparent_id IN (",
                 );
                 let mut sep = song_qb.separated(", ");
                 for id in &artist_ids {
                     sep.push_bind(id);
                 }
-                song_qb.push(") GROUP BY series_id");
+                song_qb.push(") GROUP BY grandparent_id");
                 if let Ok(rows) = song_qb.build().fetch_all(db).await {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
@@ -1931,20 +1931,20 @@ impl Media {
                 }
 
                 // Compute unplayed episode count for series/seasons
-                let series_ids: Vec<Uuid> = records
+                let grandparent_ids: Vec<Uuid> = records
                     .iter()
                     .filter(|m| matches!(m.kind, MediaKind::Series | MediaKind::Season))
                     .map(|m| m.id)
                     .collect();
 
-                if !series_ids.is_empty() {
-                    // Count episodes per series_id that have NOT been played by this user
+                if !grandparent_ids.is_empty() {
+                    // Count episodes per grandparent_id that have NOT been played by this user
                     let mut qb = sqlx::QueryBuilder::new(
-                        "SELECT e.series_id, COUNT(*) as cnt FROM media e \
-                         WHERE e.kind = 'episode' AND e.series_id IN (",
+                        "SELECT e.grandparent_id, COUNT(*) as cnt FROM media e \
+                         WHERE e.kind = 'episode' AND e.grandparent_id IN (",
                     );
                     let mut sep = qb.separated(", ");
-                    for id in &series_ids {
+                    for id in &grandparent_ids {
                         sep.push_bind(id);
                     }
                     qb.push(
@@ -1954,7 +1954,7 @@ impl Media {
                            AND ums.user_id = ",
                     );
                     qb.push_bind(user_id);
-                    qb.push(" AND ums.play_count > 0) GROUP BY e.series_id");
+                    qb.push(" AND ums.play_count > 0) GROUP BY e.grandparent_id");
 
                     match qb.build().fetch_all(db).await {
                         Ok(rows) => {
@@ -2319,7 +2319,7 @@ impl Media {
                     .clone()
                     .or_else(|| filter.contributing_artist_ids.clone())
                     .or_else(|| filter.album_artist_ids.clone()),
-                series_id: filter.series_id,
+                grandparent_id: filter.series_id,
                 ..Default::default()
             },
         )
@@ -2741,8 +2741,8 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     title: format!("Season {}", season_idx),
                     kind: MediaKind::Season,
                     idx: Some(season_idx),
-                    series_media_id: media.media_id.clone(),
-                    series_id: Some(media.id),
+                    grandparent_media_id: media.media_id.clone(),
+                    grandparent_id: Some(media.id),
                     media_id: Some(season_media_id.clone()),
                     poster: meta.get_season_poster(season_idx),
                     parent_id: Some(media.id),
@@ -2767,8 +2767,8 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     episode.id = crate::common::get_stable_uuid(ep.id.clone());
                     episode.idx = ep.episode;
                     episode.media_id = Some(ep.id.clone());
-                    episode.series_media_id = media.media_id.clone();
-                    episode.series_id = Some(media.id);
+                    episode.grandparent_media_id = media.media_id.clone();
+                    episode.grandparent_id = Some(media.id);
                     episode.parent_id = Some(season.id);
                     episode.parent_idx = Some(season_idx);
                     episode.released_at = ep.released.map(|x| x.naive_utc());

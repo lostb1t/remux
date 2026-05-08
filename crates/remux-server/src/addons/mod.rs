@@ -235,18 +235,18 @@ pub trait AddonKind: Send + Sync {
         Ok(())
     }
 
-    // hierarchy
-    fn hierarchy_supports(&self, _root: &db::Media) -> bool {
+    // tree
+    fn tree_supports(&self, _root: &db::Media) -> bool {
         false
     }
-    async fn hierarchy_sync_children(
+    async fn tree_sync_children(
         &self,
         _root: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
         Ok(None)
     }
-    async fn hierarchy_persist_metadata(
+    async fn tree_persist_metadata(
         &self,
         _root: &db::Media,
         _children: &[db::Media],
@@ -558,7 +558,7 @@ impl AddonService {
         Ok(())
     }
 
-    pub async fn sync_hierarchy(
+    pub async fn sync_tree(
         &self,
         root: &mut db::Media,
         ctx: &AppContext,
@@ -566,17 +566,17 @@ impl AddonService {
         let guard = self.inner.read().await;
         let applicable: Vec<Arc<dyn AddonKind>> = guard
             .iter()
-            .filter(|r| r.kind.hierarchy_supports(root))
+            .filter(|r| r.kind.tree_supports(root))
             .map(|r| r.kind.clone())
             .collect();
         drop(guard);
 
         for addon in &applicable {
-            let mut children = match addon.hierarchy_sync_children(root, ctx).await {
+            let mut children = match addon.tree_sync_children(root, ctx).await {
                 Ok(Some(c)) => c,
                 Ok(None) => continue,
                 Err(e) => {
-                    tracing::warn!(id = %root.id, error = %e, "failed to sync hierarchy");
+                    tracing::warn!(id = %root.id, error = %e, "failed to sync tree");
                     continue;
                 }
             };
@@ -584,9 +584,8 @@ impl AddonService {
                 continue;
             }
             self.refresh_tree_meta(root, &mut children, ctx).await;
-            if let Err(e) = addon.hierarchy_persist_metadata(root, &children, ctx).await
-            {
-                tracing::warn!(id = %root.id, error = %e, "failed to persist hierarchy metadata");
+            if let Err(e) = addon.tree_persist_metadata(root, &children, ctx).await {
+                tracing::warn!(id = %root.id, error = %e, "failed to persist tree metadata");
             }
             return Ok(children);
         }
@@ -649,14 +648,14 @@ impl AddonService {
             return batch;
         }
         let guard = self.inner.read().await;
-        let any_hierarchy = guard.iter().any(|r| r.kind.hierarchy_supports(&media));
+        let any_tree = guard.iter().any(|r| r.kind.tree_supports(&media));
         drop(guard);
-        if any_hierarchy {
+        if any_tree {
             batch.push(media.clone());
-            match self.sync_hierarchy(&mut media, ctx).await {
+            match self.sync_tree(&mut media, ctx).await {
                 Ok(children) => batch.extend(children),
                 Err(e) => {
-                    tracing::warn!(id = %media.id, error = %e, "failed to sync hierarchy")
+                    tracing::warn!(id = %media.id, error = %e, "failed to sync tree")
                 }
             }
         } else {

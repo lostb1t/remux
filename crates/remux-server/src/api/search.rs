@@ -129,7 +129,7 @@ pub async fn search_hints(
                 db::MediaKind::Track => Some("Audio".to_string()),
                 _ => None,
             },
-            series_id: m.series_id,
+            series_id: m.grandparent_id,
             ..Default::default()
         })
         .collect::<Vec<_>>();

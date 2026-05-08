@@ -208,7 +208,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             })
             .unwrap_or_default(),
         series_id: matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season)
-            .then(|| media.series_id.or(media.parent_id))
+            .then(|| media.grandparent_id.or(media.parent_id))
             .flatten(),
         season_id: (media.kind == db::MediaKind::Episode)
             .then(|| media.parent_id)
@@ -307,7 +307,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season)
                 {
                     media
-                        .series_media_id
+                        .grandparent_media_id
                         .clone()
                         .filter(|s| s.starts_with("tt"))
                 } else {
@@ -417,7 +417,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         )
         .then(|| {
             media
-                .series_id
+                .grandparent_id
                 .zip(media.series_title.clone())
                 .map(|(id, name)| vec![NameIdPair { id, name }])
         })
@@ -428,7 +428,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         artist_items: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
                 media
-                    .series_id
+                    .grandparent_id
                     .zip(media.series_title.clone())
                     .map(|(id, name)| vec![NameIdPair { id, name }])
             })
@@ -471,7 +471,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         item.series_primary_image_tag = image_tag(media.series_poster.as_deref());
         // The series item is where backdrop images live.
         let series_uuid = if media.kind == db::MediaKind::Episode {
-            media.series_id.or(media.parent_id)
+            media.grandparent_id.or(media.parent_id)
         } else {
             media.parent_id // season's parent is the series
         };

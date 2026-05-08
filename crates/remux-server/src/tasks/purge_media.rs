@@ -49,7 +49,7 @@ impl Task for PurgeMediaTask {
         .execute(&mut *tx)
         .await?;
 
-        // Now the cascade machinery (parent_id self-ref, series_id check) has
+        // Now the cascade machinery (parent_id self-ref, grandparent_id check) has
         // almost no child-table work left — this runs fast.
         sqlx::query(&format!("DELETE FROM media WHERE kind IN ({PURGE_KINDS})"))
             .execute(&mut *tx)

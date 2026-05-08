@@ -1212,7 +1212,7 @@ pub async fn item(
     }
 
     if media.kind == db::MediaKind::Episode {
-        if let Some(sid) = media.series_id {
+        if let Some(sid) = media.grandparent_id {
             if let Ok(Some(s)) = db::Media::get_by_id(&state.ctx.db, &sid).await {
                 base_item.series_name = Some(s.title);
                 base_item.series_id = Some(s.id);

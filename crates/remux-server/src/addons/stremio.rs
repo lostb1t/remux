@@ -255,11 +255,11 @@ impl AddonKind for StremioAddon {
         stremio_meta_fetch(&svc, media, ctx).await
     }
 
-    fn hierarchy_supports(&self, root: &db::Media) -> bool {
+    fn tree_supports(&self, root: &db::Media) -> bool {
         root.kind == db::MediaKind::Series
     }
 
-    async fn hierarchy_sync_children(
+    async fn tree_sync_children(
         &self,
         root: &db::Media,
         ctx: &AppContext,
@@ -276,7 +276,7 @@ impl AddonKind for StremioAddon {
         }
     }
 
-    async fn hierarchy_persist_metadata(
+    async fn tree_persist_metadata(
         &self,
         root: &db::Media,
         children: &[db::Media],
@@ -543,7 +543,7 @@ async fn stremio_meta_fetch(
     ctx: &AppContext,
 ) -> Result<Option<MetaResult>> {
     let imdb_id = media
-        .series_media_id
+        .grandparent_media_id
         .clone()
         .or(media.external_ids.imdb.clone());
 
@@ -656,7 +656,7 @@ async fn stremio_sync_children(
         .filter_map(|mut x| {
             if x.kind == db::MediaKind::Season {
                 x.parent_id = Some(root.id);
-                x.series_id = Some(root.id);
+                x.grandparent_id = Some(root.id);
                 x.poster = x.idx.and_then(|idx| meta_clone.get_season_poster(idx));
                 x.title = format!("Season {}", x.idx.unwrap_or(1));
                 x.refreshed_at = Some(Utc::now().naive_utc());
@@ -666,7 +666,7 @@ async fn stremio_sync_children(
                     let season_media_id = format!("{}:{}", imdb_id, season_idx);
                     x.parent_id = Some(crate::common::get_stable_uuid(season_media_id));
                 }
-                x.series_id = Some(root.id);
+                x.grandparent_id = Some(root.id);
                 if let Some(episode_num) = x.idx {
                     if let Some(season_num) = x.parent_idx {
                         x.title =
@@ -1053,9 +1053,9 @@ async fn stremio_subtitles(
         ),
         db::MediaKind::Episode => (
             media
-                .series_media_id
+                .grandparent_media_id
                 .as_deref()
-                .ok_or_else(|| anyhow!("no series_media_id"))?,
+                .ok_or_else(|| anyhow!("no grandparent_media_id"))?,
             sdks::stremio::MediaType::Series,
             media.parent_idx,
             media.idx,
@@ -1079,8 +1079,8 @@ async fn stremio_streams(
 
     let (media_type, id) = match media.kind {
         db::MediaKind::Episode => {
-            let series_id = media.series_media_id.as_deref().ok_or_else(|| {
-                anyhow!("episode has no series_media_id for stream lookup")
+            let series_id = media.grandparent_media_id.as_deref().ok_or_else(|| {
+                anyhow!("episode has no grandparent_media_id for stream lookup")
             })?;
             let season = media.parent_idx.unwrap_or(1);
             let episode = media.idx.unwrap_or(1);
