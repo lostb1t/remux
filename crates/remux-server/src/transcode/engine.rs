@@ -294,7 +294,7 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         } else if let Some(audio_idx) = params.audio_stream_index {
             args.extend([
                 "-map".into(),
-                "0:v".into(),
+                "0:v:0".into(),
                 "-map".into(),
                 format!("0:{}", audio_idx),
             ]);
@@ -649,7 +649,7 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
     } else if params.audio_stream_index.is_some()
         || params.subtitle_stream_index.is_some()
     {
-        args.extend(["-map".into(), "0:v".into()]);
+        args.extend(["-map".into(), "0:v:0".into()]);
         if let Some(audio_idx) = params.audio_stream_index {
             args.extend(["-map".into(), format!("0:{}", audio_idx)]);
         } else {
