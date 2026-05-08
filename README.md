@@ -10,6 +10,7 @@
 </a>
 </div>
 
+
 Stream content from Stremio add-ons, local files, or WebDAV sources all through your existing Jellyfin clients.
 
 Movies and shows come from Stremio add-ons or your own files. Music is handled separately through its own streaming pipeline.
