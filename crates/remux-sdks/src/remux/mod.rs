@@ -2793,9 +2793,8 @@ pub enum Status {
     Deserialize,
     Hash,
     strum_macros::Display,
-    strum_macros::EnumString,
 )]
-#[strum(ascii_case_insensitive, serialize_all = "PascalCase")]
+#[strum(serialize_all = "PascalCase")]
 #[serde(rename_all = "PascalCase")]
 pub enum ItemFields {
     AirTime,
@@ -2891,6 +2890,17 @@ pub enum ItemFields {
     PrimaryImageTag,
     #[serde(other)]
     Unknown,
+}
+
+impl std::str::FromStr for ItemFields {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use serde::de::IntoDeserializer;
+        let d: serde::de::value::StrDeserializer<serde::de::value::Error> =
+            s.into_deserializer();
+        Ok(ItemFields::deserialize(d).unwrap_or(ItemFields::Unknown))
+    }
 }
 
 #[derive(

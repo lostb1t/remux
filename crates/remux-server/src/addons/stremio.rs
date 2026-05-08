@@ -429,33 +429,51 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
         if let (Some(client), Some(tid)) = (tmdb_client, tmdb_id) {
             match meta.media_type {
                 sdks::stremio::MediaType::Movie => {
-                    if let Ok(movie) = client
+                    match client
                         .execute(
                             sdks::tmdb::MovieEndpoint::new(tid)
                                 .with_cache(Duration::from_secs(3600)),
                         )
                         .await
                     {
-                        if needs_release_dates(meta) {
-                            if let Some(rd) = movie.release_dates {
-                                inject_tmdb_release_dates(meta, rd);
+                        Ok(movie) => {
+                            if needs_release_dates(meta) {
+                                if let Some(rd) = movie.release_dates {
+                                    inject_tmdb_release_dates(meta, rd);
+                                }
                             }
+                            if movie.imdb_id.is_none() {
+                                warn!(id = %meta.id, tmdb_id = tid, "TMDB movie has no imdb_id");
+                            }
+                            meta.imdb_id = movie.imdb_id;
                         }
-                        meta.imdb_id = movie.imdb_id;
+                        Err(e) => {
+                            warn!(id = %meta.id, tmdb_id = tid, error = %e, "TMDB movie lookup failed");
+                        }
                     }
                 }
                 sdks::stremio::MediaType::Series => {
-                    meta.imdb_id = client
+                    match client
                         .execute(
                             sdks::tmdb::SeriesEndpoint::new(tid)
                                 .with_cache(Duration::from_secs(3600)),
                         )
                         .await
-                        .ok()
-                        .and_then(|s| s.external_ids)
-                        .and_then(|e| e.imdb_id);
+                    {
+                        Ok(series) => {
+                            meta.imdb_id = series.external_ids.and_then(|e| e.imdb_id);
+                            if meta.imdb_id.is_none() {
+                                warn!(id = %meta.id, tmdb_id = tid, "TMDB series has no imdb_id in external_ids");
+                            }
+                        }
+                        Err(e) => {
+                            warn!(id = %meta.id, tmdb_id = tid, error = %e, "TMDB series lookup failed");
+                        }
+                    }
                 }
-                _ => {}
+                _ => {
+                    warn!(id = %meta.id, tmdb_id = tid, media_type = ?meta.media_type, "TMDB lookup skipped: unsupported media_type");
+                }
             }
         }
 
