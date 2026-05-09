@@ -176,7 +176,18 @@ pub struct ExtraProp {
     pub name: String,
     #[serde(default)]
     pub is_required: bool,
+    #[serde(default, deserialize_with = "deserialize_options_skip_nulls")]
     pub options: Option<Vec<String>>,
+}
+
+fn deserialize_options_skip_nulls<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<Vec<Option<String>>> = Option::deserialize(deserializer)?;
+    Ok(opt.map(|v| v.into_iter().flatten().collect()))
 }
 
 #[skip_serializing_none]
