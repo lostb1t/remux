@@ -52,12 +52,25 @@ where
 
         if let Some(tag) = catalog_tag.as_deref() {
             // Addon-sourced catalogs use tags to track membership.
+            //
+            // Note: after upsert the stored `id` may differ from `item.id` when
+            // the row was matched by the (kind, media_id) unique index instead of
+            // the primary key.  We resolve the real id via a subquery so the FK
+            // on media_tags is never violated.
             for item in items.iter().filter(|m| m.parent_id.is_none()) {
                 if let Err(e) = sqlx::query(
-                    "INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO media_tags (media_id, tag) \
+                     SELECT id, ?1 FROM media \
+                     WHERE CASE WHEN ?2 IS NOT NULL \
+                                THEN (kind = ?3 AND media_id = ?2) \
+                                ELSE id = ?4 \
+                           END \
+                     LIMIT 1",
                 )
-                .bind(item.id)
                 .bind(tag)
+                .bind(&item.media_id)
+                .bind(&item.kind)
+                .bind(item.id)
                 .execute(db)
                 .await
                 {
