@@ -2638,7 +2638,8 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         let status = meta.status.as_ref().map(|s| match s {
             sdks::stremio::Status::Continuing
             | sdks::stremio::Status::ReturningSeries
-            | sdks::stremio::Status::InProduction => MediaStatus::Continuing,
+            | sdks::stremio::Status::InProduction
+            | sdks::stremio::Status::Running => MediaStatus::Continuing,
             sdks::stremio::Status::Ended | sdks::stremio::Status::Canceled => {
                 MediaStatus::Ended
             }
