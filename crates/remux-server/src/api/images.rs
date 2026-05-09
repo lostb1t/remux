@@ -16,6 +16,7 @@ static IMAGE_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(|| {
         reqwest::Client::builder()
             .user_agent("remux-server/1.0")
+            .timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("failed to build image proxy client")
     });
@@ -72,11 +73,11 @@ async fn items_images_inner(
         }
     };
 
-    let upstream = IMAGE_CLIENT
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!("image fetch failed: {e}"))?;
+    let upstream = remux_utils::retry! {
+        attempts: 3,
+        delay: 500,
+        { IMAGE_CLIENT.get(&url).send().await.map_err(|e| anyhow::anyhow!("image fetch failed: {e}")) }
+    }?;
 
     let content_type = upstream
         .headers()

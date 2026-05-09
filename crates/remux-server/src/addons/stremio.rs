@@ -9,7 +9,7 @@ use sqlx::SqlitePool;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::{
@@ -224,7 +224,7 @@ impl AddonKind for StremioAddon {
                 let tmdb = tmdb_client.clone();
                 async move {
                     if !resolve_imdb_id(&mut meta, Some(&svc), tmdb.as_ref()).await {
-                        warn!(id = %meta.id, "could not resolve imdb_id, skipping");
+                        debug!(id = %meta.id, "could not resolve imdb_id, skipping");
                         return vec![];
                     }
                     match db::stremio_meta_to_medias(meta) {
@@ -443,7 +443,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                                 }
                             }
                             if movie.imdb_id.is_none() {
-                                warn!(id = %meta.id, tmdb_id = tid, "TMDB movie has no imdb_id");
+                                debug!(id = %meta.id, tmdb_id = tid, "TMDB movie has no imdb_id");
                             }
                             meta.imdb_id = movie.imdb_id;
                         }
@@ -463,7 +463,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                         Ok(series) => {
                             meta.imdb_id = series.external_ids.and_then(|e| e.imdb_id);
                             if meta.imdb_id.is_none() {
-                                warn!(id = %meta.id, tmdb_id = tid, "TMDB series has no imdb_id in external_ids");
+                                debug!(id = %meta.id, tmdb_id = tid, "TMDB series has no imdb_id in external_ids");
                             }
                         }
                         Err(e) => {
@@ -472,7 +472,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                     }
                 }
                 _ => {
-                    warn!(id = %meta.id, tmdb_id = tid, media_type = ?meta.media_type, "TMDB lookup skipped: unsupported media_type");
+                    debug!(id = %meta.id, tmdb_id = tid, media_type = ?meta.media_type, "TMDB lookup skipped: unsupported media_type");
                 }
             }
         }
