@@ -150,12 +150,18 @@ pub async fn get_items(
                 }
             }
 
-            // Requested kinds: explicit from the client, or default to Movie + Series.
+            // Requested kinds: explicit from the client, or fall back to the computed
+            // defaults (Movie + Series + Episode with exclude_item_types already applied).
             let requested_kinds: Vec<db::MediaKind> = if raw_types.is_empty() {
-                vec![db::MediaKind::Movie, db::MediaKind::Series]
+                types
+                    .iter()
+                    .filter_map(|t| db::MediaKind::try_from(t.clone()).ok())
+                    .collect()
             } else {
+                let exclude = q.exclude_item_types.as_deref().unwrap_or(&[]);
                 raw_types
                     .iter()
+                    .filter(|t| !exclude.contains(t))
                     .filter_map(|t| db::MediaKind::try_from(t.clone()).ok())
                     .collect()
             };
