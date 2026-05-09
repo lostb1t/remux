@@ -33,9 +33,13 @@ Built in Rust for performance and low resource usage.
 - **Independent music pipeline**  
   Music is not tied to Stremio and is streamed from separate sources
 
+- **IPTV Support**  
+  
 - **Dynamic libraries**  
   Build collections based on filters instead of folders or scans
 
+- **User management**
+  
 - **Lightweight & fast**  
   Written in Rust with a focus on efficiency
 
