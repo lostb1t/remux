@@ -4420,11 +4420,14 @@ fn SearchSettingsCard(app_state: AppState) -> Element {
         spawn(async move {
             match client.execute(GetSystemConfiguration).await {
                 Ok(cfg) => {
-                    movies_remote.set(cfg.search_movies_remote.unwrap_or(true));
-                    series_remote.set(cfg.search_series_remote.unwrap_or(true));
-                    tracks_remote.set(cfg.search_tracks_remote.unwrap_or(true));
-                    albums_remote.set(cfg.search_albums_remote.unwrap_or(true));
-                    artists_remote.set(cfg.search_artists_remote.unwrap_or(true));
+                    let enabled = &cfg.search_remote_enabled;
+                    let all = enabled.is_none();
+                    let list = enabled.as_deref().unwrap_or(&[]);
+                    movies_remote.set(all || list.contains(&"movie".to_string()));
+                    series_remote.set(all || list.contains(&"series".to_string()));
+                    tracks_remote.set(all || list.contains(&"track".to_string()));
+                    albums_remote.set(all || list.contains(&"album".to_string()));
+                    artists_remote.set(all || list.contains(&"artist".to_string()));
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
@@ -4437,11 +4440,23 @@ fn SearchSettingsCard(app_state: AppState) -> Element {
         e.prevent_default();
         let client = app_state.client.clone();
         let mut cfg = base_cfg.peek().clone().unwrap_or_default();
-        cfg.search_movies_remote = Some(*movies_remote.peek());
-        cfg.search_series_remote = Some(*series_remote.peek());
-        cfg.search_tracks_remote = Some(*tracks_remote.peek());
-        cfg.search_albums_remote = Some(*albums_remote.peek());
-        cfg.search_artists_remote = Some(*artists_remote.peek());
+        let mut remote_enabled: Vec<String> = vec!["person".to_string()];
+        if *movies_remote.peek() {
+            remote_enabled.push("movie".to_string());
+        }
+        if *series_remote.peek() {
+            remote_enabled.push("series".to_string());
+        }
+        if *tracks_remote.peek() {
+            remote_enabled.push("track".to_string());
+        }
+        if *albums_remote.peek() {
+            remote_enabled.push("album".to_string());
+        }
+        if *artists_remote.peek() {
+            remote_enabled.push("artist".to_string());
+        }
+        cfg.search_remote_enabled = Some(remote_enabled);
         saving.set(true);
         error.set(None);
         saved.set(false);

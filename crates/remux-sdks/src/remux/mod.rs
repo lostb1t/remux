@@ -403,18 +403,9 @@ pub struct ServerConfiguration {
     pub enable_subtitles_detail: Option<bool>,
     pub jellyfin_url: Option<String>,
     pub jellyfin_api_key: Option<String>,
-    #[default(Some(true))]
-    pub search_movies_remote: Option<bool>,
-    #[default(Some(true))]
-    pub search_series_remote: Option<bool>,
-    #[default(Some(true))]
-    pub search_tracks_remote: Option<bool>,
-    #[default(Some(true))]
-    pub search_albums_remote: Option<bool>,
-    #[default(Some(true))]
-    pub search_artists_remote: Option<bool>,
-    #[default(Some(true))]
-    pub search_people_remote: Option<bool>,
+    /// Kinds that use remote (addon) search. None = all remote-capable kinds enabled.
+    /// Values are snake_case MediaKind strings: "movie", "series", "track", "album", "artist", "person".
+    pub search_remote_enabled: Option<Vec<String>>,
 }
 
 #[skip_serializing_none]

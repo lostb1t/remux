@@ -10,6 +10,7 @@ pub mod probe;
 pub mod squid;
 pub mod stremio;
 pub mod tmdb;
+pub mod torznab;
 pub mod ytdlp;
 
 use anyhow::{Result, anyhow};
