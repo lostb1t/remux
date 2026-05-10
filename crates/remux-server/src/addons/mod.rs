@@ -237,6 +237,10 @@ pub trait AddonKind: Send + Sync {
         Ok(())
     }
 
+    async fn purge_index(&self, _ctx: &AppContext, _addon: &Addon) -> Result<()> {
+        Ok(())
+    }
+
     // catalog
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         Ok(vec![])
@@ -508,6 +512,16 @@ impl AddonService {
             .filter(|r| r.supports(ResourceType::Catalog))
             .cloned()
             .collect()
+    }
+
+    pub async fn purge_indexes(&self, ctx: &AppContext) -> Result<()> {
+        let addons: Vec<AddonRuntime> = self.inner.read().await.clone();
+        for runtime in &addons {
+            if let Err(e) = runtime.kind.purge_index(ctx, &runtime.row).await {
+                tracing::warn!(addon = %runtime.row.name, error = %e, "purge_index failed");
+            }
+        }
+        Ok(())
     }
 
     pub async fn refresh_indexes(

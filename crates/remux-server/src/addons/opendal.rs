@@ -273,6 +273,14 @@ impl AddonKind for OpendalAddon {
         Ok(())
     }
 
+    async fn purge_index(&self, ctx: &AppContext, addon: &Addon) -> Result<()> {
+        sqlx::query("DELETE FROM opendal_files WHERE addon_id = ?")
+            .bind(addon.id)
+            .execute(&ctx.db)
+            .await?;
+        Ok(())
+    }
+
     async fn catalog_stream(
         &self,
         ctx: &AppContext,

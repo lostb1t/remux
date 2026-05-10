@@ -56,6 +56,9 @@ impl Task for PurgeMediaTask {
             .await?;
 
         tx.commit().await?;
+
+        ctx.addons.purge_indexes(&ctx).await?;
+
         Ok(())
     }
 }
