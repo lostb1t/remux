@@ -16,7 +16,6 @@ use crate::embedded_static::EmbeddedDir;
 use crate::web_transform::TransformLayer;
 
 const JELLYFIN_ALIAS_PREFIX: &str = "/jellyfin";
-const MOUNT_PREFIX: &str = "/anfi";
 
 const UNREGISTER_SW_SCRIPT: &str = r#"self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => {
@@ -38,21 +37,6 @@ self.addEventListener('fetch', () => {});
 "#;
 
 type StaticService = BoxCloneSyncService<Request<Body>, Response<Body>, Infallible>;
-
-fn strip_mount_prefix(path: &str) -> String {
-    // Allow remux to run behind a `/anfi` reverse-proxy prefix.
-    let lower = path.to_ascii_lowercase();
-    if lower == MOUNT_PREFIX || lower == format!("{MOUNT_PREFIX}/") {
-        return "/".to_string();
-    }
-
-    let prefix_with_slash = format!("{MOUNT_PREFIX}/");
-    if lower.starts_with(&prefix_with_slash) {
-        return path[MOUNT_PREFIX.len()..].to_string();
-    }
-
-    path.to_string()
-}
 
 fn strip_prefixed_path(path: &str, prefix: &str) -> Option<String> {
     // Convert `/prefix/*` routes back to a root path for static services.
@@ -168,8 +152,7 @@ impl Service<Request<Body>> for WebClientService {
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let raw_path = req.uri().path().to_string();
-        let path = strip_mount_prefix(&raw_path);
+        let path = req.uri().path().to_string();
         let query = req.uri().query().map(str::to_owned);
 
         let is_service_worker_path = path.eq_ignore_ascii_case("/serviceworker.js");

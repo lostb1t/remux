@@ -18,6 +18,9 @@ impl Task for IptvRefreshTask {
     fn name(&self) -> &str {
         "Refresh IPTV"
     }
+    fn description(&self) -> &str {
+        "Reloads IPTV channel lists from all configured M3U sources."
+    }
     fn category(&self) -> &str {
         "Live TV"
     }

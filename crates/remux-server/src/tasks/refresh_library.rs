@@ -15,6 +15,9 @@ impl Task for RefreshLibraryTask {
     fn name(&self) -> &str {
         "Refresh Library"
     }
+    fn description(&self) -> &str {
+        "Scans addon sources and updates the media library index."
+    }
     fn category(&self) -> &str {
         "Library"
     }

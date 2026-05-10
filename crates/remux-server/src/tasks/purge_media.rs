@@ -18,6 +18,9 @@ impl Task for PurgeMediaTask {
     fn name(&self) -> &str {
         "Purge Virtual Media"
     }
+    fn description(&self) -> &str {
+        "Removes media items that are no longer available from any source."
+    }
     fn category(&self) -> &str {
         "Library"
     }

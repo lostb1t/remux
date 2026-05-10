@@ -601,17 +601,6 @@ html, body {
   gap: 6px;
 }
 
-.sidebar-anfi-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sidebar-anfi-btn {
-  flex: 1;
-  min-width: 0;
-}
-
 .sidebar-update-btn {
   flex-shrink: 0;
   width: 32px;

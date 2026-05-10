@@ -50,6 +50,9 @@ pub enum TaskStatus {
 pub trait Task: Send + Sync + 'static {
     fn key(&self) -> &str;
     fn name(&self) -> &str;
+    fn description(&self) -> &str {
+        ""
+    }
     fn category(&self) -> &str {
         "System"
     }

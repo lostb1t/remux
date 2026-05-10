@@ -20,6 +20,9 @@ impl Task for CatalogImportTask {
     fn name(&self) -> &str {
         "Import Catalogs"
     }
+    fn description(&self) -> &str {
+        "Imports items from all configured addon catalogs into the library."
+    }
     fn category(&self) -> &str {
         "Import"
     }

@@ -577,7 +577,9 @@ fn TaskTriggersModal(
 
     rsx! {
         h2 { class: "modal-title", "Triggers — {task_name}" }
-
+        if let Some(desc) = task.description.as_deref().filter(|d| !d.is_empty()) {
+            p { class: "text-muted", style: "margin-top: 0.25rem; margin-bottom: 1rem;", "{desc}" }
+        }
         // Current triggers list
         for (i, trigger) in triggers.read().clone().into_iter().enumerate() {
             div {

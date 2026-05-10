@@ -24,6 +24,10 @@ impl Task for JellyfinImportTask {
         "Import user history"
     }
 
+    fn description(&self) -> &str {
+        "Imports the media library from a connected Jellyfin server."
+    }
+
     fn category(&self) -> &str {
         "Import"
     }
