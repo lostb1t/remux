@@ -79,23 +79,6 @@ jobs:
           path: dist/
           retention-days: 90
 
-  build-anfiteatro-web:
-    name: Prepare anfiteatro-web
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout anfiteatro-web
-        uses: actions/checkout@v4
-        with:
-          repository: j4ckgrey/Anfiteatro_web
-          ref: main
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: anfiteatro-web-dist
-          path: .
-          retention-days: 90
-
   build-dashboard:
     name: Build dashboard
     runs-on: ubuntu-latest
@@ -288,7 +271,7 @@ jobs:
 
   build-docker:
     name: Build Docker (${{ matrix.platform }})
-    needs: [build-dashboard, build-server, build-jellyfin-web, build-anfiteatro-web]
+    needs: [build-dashboard, build-server, build-jellyfin-web]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -326,12 +309,6 @@ jobs:
         with:
           name: jellyfin-web-dist
           path: jellyfin-web/
-
-      - name: Download anfiteatro-web artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: anfiteatro-web-dist
-          path: anfiteatro-web/
 
       - name: Download jellyfin-ffmpeg
         run: |
