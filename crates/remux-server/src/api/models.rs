@@ -438,7 +438,12 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                     .map(|(id, name)| vec![NameIdPair { id, name }])
             })
             .flatten(),
-        tags: media.tags.clone(),
+        tags: media
+            .tags
+            .iter()
+            .filter(|t| !t.starts_with("catalog:"))
+            .cloned()
+            .collect(),
         status: media.status.as_ref().map(|s| match s {
             db::MediaStatus::Continuing => Status::Continuing,
             db::MediaStatus::Ended => Status::Ended,
