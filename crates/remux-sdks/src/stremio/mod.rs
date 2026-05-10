@@ -741,6 +741,10 @@ pub struct Stream {
 }
 
 impl Stream {
+    pub fn is_torrent(&self) -> bool {
+        self.info_hash.is_some()
+    }
+
     pub fn is_valid(&self) -> bool {
         if self.info_hash.is_some() {
             return true;

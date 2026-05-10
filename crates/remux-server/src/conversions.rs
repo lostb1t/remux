@@ -122,12 +122,16 @@ impl From<db::Media> for api::MediaSourceInfo {
     fn from(source: db::Media) -> Self {
         let is_remote = source.is_remote_url();
         let protocol = source.media_source_protocol().to_string();
-        let container = source.url.as_deref().and_then(infer_container_from_url);
-        // let media_streams = fallback_media_streams(&source);
+        let container = source
+            .url
+            .as_ref()
+            .and_then(|d| d.as_http_url())
+            .and_then(infer_container_from_url);
 
         let clean_path = source
             .url
             .as_ref()
+            .and_then(|d| d.as_http_url())
             .and_then(|u| {
                 url::Url::parse(u).ok().and_then(|parsed| {
                     parsed.path_segments()?.last().map(|s| s.to_string())
@@ -144,7 +148,10 @@ impl From<db::Media> for api::MediaSourceInfo {
         api::MediaSourceInfo {
             id: source.id.clone(),
             e_tag: source.id.clone(),
-            path: source.url.clone(),
+            path: source
+                .url
+                .as_ref()
+                .and_then(|d| d.as_http_url().map(str::to_owned)),
             protocol,
             supports_transcoding: false,
             supports_direct_stream: true,

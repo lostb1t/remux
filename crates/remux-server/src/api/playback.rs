@@ -40,50 +40,6 @@ use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 /// resolvable from the Remux process. If the user has at least one
 /// `kind=stremio` addon configured, rewrite that hostname to the addon's
 /// origin. Returns the URL unchanged when no rewrite applies.
-async fn remap_internal_aio_url(state: &AppState, raw_url: &str) -> String {
-    let Ok(mut parsed) = Url::parse(raw_url) else {
-        return raw_url.to_string();
-    };
-
-    let Some(host) = parsed.host_str() else {
-        return raw_url.to_string();
-    };
-    if !host.eq_ignore_ascii_case("aiostreams") {
-        return raw_url.to_string();
-    }
-
-    let stremio_url = match crate::addons::Addon::list(&state.ctx.db).await {
-        Ok(addons) => addons
-            .into_iter()
-            .filter(|a| a.enabled && a.preset.kind == "stremio")
-            .find_map(|a| {
-                a.preset
-                    .config
-                    .get("manifest_url")
-                    .and_then(|v| v.as_str().map(str::to_string))
-            }),
-        Err(_) => None,
-    };
-    let Some(stremio_url) = stremio_url else {
-        return raw_url.to_string();
-    };
-    let Ok(addon_parsed) = Url::parse(&stremio_url) else {
-        return raw_url.to_string();
-    };
-    let Some(addon_host) = addon_parsed.host_str() else {
-        return raw_url.to_string();
-    };
-
-    let _ = parsed.set_scheme(addon_parsed.scheme());
-    if parsed.set_host(Some(addon_host)).is_err() {
-        return raw_url.to_string();
-    }
-    if parsed.set_port(addon_parsed.port()).is_err() {
-        return raw_url.to_string();
-    }
-
-    parsed.to_string()
-}
 
 #[post("/items/{id}/playbackinfo")]
 pub async fn items_playbackinfo(
@@ -148,9 +104,6 @@ async fn items_playbackinfo_inner(
         .await
         .ok()
         .flatten();
-
-    // Torrent streams: resolve magnet URI to a local HTTP URL first.
-    let mut media = resolve_torrent(media, &state).await?;
 
     let is_live = media.kind == db::MediaKind::TvChannel;
 
@@ -227,11 +180,9 @@ async fn items_playbackinfo_inner(
     }
     let mut sources_with_urls: Vec<SourceWithUrl> =
         Vec::with_capacity(source_medias.len());
+    let port = state.ctx.config.port;
     for sm in source_medias {
-        let resolved_url = match sm.url.as_deref() {
-            Some(u) => Some(remap_internal_aio_url(&state, u).await),
-            None => None,
-        };
+        let resolved_url = sm.url.as_ref().map(|d| d.server_input(sm.id, port));
         sources_with_urls.push(SourceWithUrl { sm, resolved_url });
     }
 
@@ -260,7 +211,7 @@ async fn items_playbackinfo_inner(
                     if cached.video_stream().is_some() {
                         cached.id = sm.id;
                         cached.name = Some(sm.title.clone());
-                        cached.path = sm.url.clone();
+                        cached.path = sm.url.as_ref().and_then(|d| d.as_http_url().map(str::to_owned));
                         tracing::debug!(id = %sm.id, "probe cache hit");
                         return cached;
                     }
@@ -290,7 +241,7 @@ async fn items_playbackinfo_inner(
                             Ok(Ok(Ok((mut probed, segments)))) => {
                                 probed.id = sm2.id;
                                 probed.name = Some(sm2.title.clone());
-                                probed.path = sm2.url.clone();
+                                probed.path = sm2.url.as_ref().and_then(|d| d.as_http_url().map(str::to_owned));
                                 if probed.video_stream().is_some() || probed.audio_stream().is_some() {
                                     if !segments.is_empty() {
                                         probed.segments = Some(segments);
@@ -740,7 +691,8 @@ async fn videos_stream_inner(
     if media.kind == db::MediaKind::TvChannel {
         let url = media
             .url
-            .clone()
+            .as_ref()
+            .and_then(|d| d.as_http_url().map(str::to_owned))
             .context_not_found("missing url", "channel has no stream url")?;
         return Ok(Response::builder()
             .status(StatusCode::FOUND)
@@ -763,64 +715,34 @@ async fn videos_stream_inner(
         .context_not_found("not found", "no playable source found")?;
     }
 
-    // Torrent streams: resolve magnet URI to a local HTTP URL.
-    let media = resolve_torrent(media, &state).await?;
-
-    let raw_url = media
+    let descriptor = media
         .url
         .clone()
         .context_not_found("no url", "media source has no URL")?;
 
-    let url = remap_internal_aio_url(&state, &raw_url).await;
-
-    // Direct play: proxy the original stream with range support.
-    // Real Jellyfin always proxies the raw file bytes for Static=true, regardless
-    // of stream selection parameters — the player selects tracks natively from the
-    // embedded streams in the file (ExoPlayer handles HEVC/MKV natively).
-    // Previously this fell into progressive transcode when AudioStreamIndex was set,
-    // which broke seeking because live transcodes can't serve HTTP range requests.
+    // Direct play: serve bytes directly through the StreamSource trait.
+    // This handles HTTP, local files, torrents, and opendal without going through
+    // our own HTTP proxy — TorrentSource resolves and streams inline.
     if q.static_.unwrap_or(false) {
-        let mut req = reqwest::Client::new().get(&url);
-        if let Some(v) = headers.get(http::header::RANGE) {
-            req = req.header(http::header::RANGE, v.clone());
-        }
-
-        let upstream = req.send().await?;
-
-        let status = upstream.status();
-        let headers_in = upstream.headers().clone();
-        let upstream_stream = upstream.bytes_stream();
-        let body = Body::from_stream(upstream_stream.map_err(io::Error::other));
-
-        trace!(?status, ?headers_in, "videos_stream");
-
-        let mut resp_out = axum::response::Response::builder()
-            .status(status)
-            .body(body)
-            .unwrap();
-
-        {
-            use axum::http::header;
-            let out_headers = resp_out.headers_mut();
-            for (k, v) in headers_in.iter() {
-                match k.as_str().to_ascii_lowercase().as_str() {
-                    "content-length" | "content-type" | "accept-ranges"
-                    | "content-range" | "last-modified" => {}
-                    _ => continue,
-                }
-                out_headers.insert(k, v.clone());
-            }
-
-            if !out_headers.contains_key(header::CONTENT_TYPE) {
-                out_headers.insert(
-                    header::CONTENT_TYPE,
-                    header::HeaderValue::from_static("video/mp4"),
-                );
-            }
-        }
-
-        return Ok(resp_out);
+        let resp = if let Some(addon_id) = descriptor.addon_id() {
+            let addon = state
+                .ctx
+                .addons
+                .get(addon_id)
+                .await
+                .context_not_found("stream", "addon not found")?;
+            addon.kind.serve_stream(&descriptor, &headers).await?
+        } else {
+            descriptor
+                .clone()
+                .into_source()
+                .serve(&state, &headers)
+                .await?
+        };
+        return Ok(resp);
     }
+
+    let url = descriptor.server_input(media.id, state.ctx.config.port);
 
     // Progressive transcode/remux: only reached when Static=false.
     let wants_stream_selection =
@@ -2125,11 +2047,11 @@ pub async fn master_hls_video(
                 .context_not_found("not found", "no stream found for track")?;
         }
 
-        let raw_input_url = resolved_media
+        let input_url = resolved_media
             .url
+            .as_ref()
+            .map(|d| d.server_input(resolved_media.id, state.ctx.config.port))
             .context_not_found("no url", "media source has no URL")?;
-
-        let input_url = remap_internal_aio_url(&state, &raw_input_url).await;
 
         let output_dir =
             std::path::PathBuf::from("transcode_sessions").join(&play_session_id);
@@ -2810,28 +2732,6 @@ pub struct BitrateTestQuery {
 /// If `media.url` is a magnet URI, resolve it via the torrent manager to a local
 /// HTTP URL and return a clone with the resolved URL.  For all other URLs this is
 /// a no-op that returns the original `media` unchanged.
-async fn resolve_torrent(mut media: db::Media, state: &AppState) -> Result<db::Media> {
-    let url = match media.url.as_deref() {
-        Some(u) if u.starts_with("magnet:") => u.to_owned(),
-        _ => return Ok(media),
-    };
-    // Check whether P2P is enabled in server config.
-    let cfg = crate::db::Settings::get_config(&state.ctx.db).await?;
-    if !cfg.p2p_enabled.unwrap_or(true) {
-        return Err(anyhow::anyhow!("P2P streams are disabled")).context_bad_request(
-            "torrent",
-            "P2P streams are disabled by the server administrator",
-        );
-    }
-    let resolved = state
-        .ctx
-        .torrent
-        .resolve_url(&url)
-        .await
-        .context_bad_request("torrent", "failed to resolve torrent stream")?;
-    media.url = Some(resolved);
-    Ok(media)
-}
 
 /// Subtitle extraction endpoint - extracts a subtitle stream from a media source
 /// and optionally converts it to the requested format (vtt, srt, ass).
@@ -2901,11 +2801,11 @@ pub async fn subtitles_stream(
             .clone();
     }
 
-    let raw_url = media
+    let url = media
         .url
-        .clone()
+        .as_ref()
+        .map(|d| d.server_input(media.id, state.ctx.config.port))
         .context_not_found("no url", "media source has no URL")?;
-    let url = remap_internal_aio_url(&state, &raw_url).await;
 
     let output_format = format.to_ascii_lowercase();
     let (ffmpeg_format, content_type) = match output_format.as_str() {

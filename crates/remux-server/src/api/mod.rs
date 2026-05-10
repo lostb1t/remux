@@ -21,6 +21,7 @@ pub mod remux;
 pub mod search;
 pub mod shows;
 pub mod startup;
+pub mod stream;
 pub mod system;
 pub mod tasks;
 pub mod users;

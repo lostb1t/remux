@@ -14,9 +14,9 @@ use crate::{AppContext, api, db};
 const MAX_RESULTS: usize = 10;
 const MAX_CANDIDATES: usize = 100;
 
-//inventory::submit! {
-//    AddonPresetRegistration(|| Box::new(TorznabPreset))
-//}
+inventory::submit! {
+    AddonPresetRegistration(|| Box::new(TorznabPreset))
+}
 
 pub struct TorznabPreset;
 
@@ -160,13 +160,14 @@ impl TorznabAddon {
             .into_iter()
             .take(MAX_RESULTS)
             .filter_map(|item| {
-                let url = append_file_hint(&item.url()?, &search.title);
                 let fmt = infer_audio_format(&item.title);
                 let codec = fmt.map(|f| f.codec().to_string());
+                let descriptor =
+                    magnet_to_descriptor(&item.url()?, Some(search.title.clone()))?;
                 Some(db::Media {
                     kind: db::MediaKind::Stream,
                     title: item.label(&self.name),
-                    url: Some(url),
+                    url: Some(descriptor),
                     probe_data: Some(api::MediaSourceInfo {
                         media_streams: vec![api::MediaStream {
                             index: 0,
@@ -222,7 +223,7 @@ impl TorznabAddon {
                 Some(db::Media {
                     kind: db::MediaKind::Stream,
                     title: item.label(&self.name),
-                    url: Some(item.url()?),
+                    url: magnet_to_descriptor(&item.url()?, None),
                     ..Default::default()
                 })
             })
@@ -266,7 +267,7 @@ impl TorznabAddon {
                 Some(db::Media {
                     kind: db::MediaKind::Stream,
                     title: item.label(&self.name),
-                    url: Some(item.url()?),
+                    url: magnet_to_descriptor(&item.url()?, None),
                     ..Default::default()
                 })
             })
@@ -691,14 +692,21 @@ fn contains_all_tokens(haystack: &str, tokens: &[String]) -> bool {
     !tokens.is_empty() && tokens.iter().all(|t| haystack.contains(t.as_str()))
 }
 
-fn append_file_hint(url: &str, title: &str) -> String {
-    if title.trim().is_empty()
-        || url.contains("&file_hint=")
-        || url.contains("?file_hint=")
-    {
-        return url.to_string();
-    }
-    format!("{}&file_hint={}", url, urlencoding::encode(title))
+fn magnet_to_descriptor(
+    magnet: &str,
+    file_hint: Option<String>,
+) -> Option<crate::stream::StreamDescriptor> {
+    let info_hash = url::Url::parse(magnet)
+        .ok()?
+        .query_pairs()
+        .find(|(k, _)| k == "xt")
+        .and_then(|(_, v)| {
+            v.strip_prefix("urn:btih:").map(|h| h.to_ascii_lowercase())
+        })?;
+    Some(crate::stream::StreamDescriptor::Torrent {
+        info_hash,
+        file_hint,
+    })
 }
 
 fn format_size(bytes: i64) -> String {
@@ -783,10 +791,17 @@ mod tests {
         assert!(item_matches_title(&track, &search));
         assert!(!item_matches_title(&album, &search));
         assert!(score_item(&track, &search) > score_item(&album, &search));
-        assert_eq!(
-            append_file_hint("magnet:?xt=urn:btih:abc&dn=2Pac", "Hit Em Up"),
-            "magnet:?xt=urn:btih:abc&dn=2Pac&file_hint=Hit%20Em%20Up"
+        let descriptor = magnet_to_descriptor(
+            "magnet:?xt=urn:btih:abc&dn=2Pac",
+            Some("Hit Em Up".to_string()),
         );
+        assert!(matches!(
+            descriptor,
+            Some(crate::stream::StreamDescriptor::Torrent {
+                ref info_hash,
+                file_hint: Some(ref hint)
+            }) if info_hash == "abc" && hint == "Hit Em Up"
+        ));
     }
 
     #[test]

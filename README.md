@@ -39,6 +39,7 @@ Built in Rust for performance and low resource usage.
   Build collections based on filters instead of folders or scans
 
 - **User management**
+  Including user data import from jellyfin servers to get you started
   
 - **Lightweight & fast**  
   Written in Rust with a focus on efficiency

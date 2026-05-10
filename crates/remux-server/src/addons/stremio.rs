@@ -347,7 +347,7 @@ impl AddonKind for StremioAddon {
         _ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
         let svc = self.service()?;
-        stremio_streams(&svc, media).await
+        stremio_streams(&svc, &self.manifest_url, media).await
     }
 }
 
@@ -1096,8 +1096,32 @@ async fn stremio_subtitles(
 // Stream helpers
 // ---------------------------------------------------------------------------
 
+/// Rewrite a URL whose host is `aiostreams` to use the stremio addon's origin.
+/// AIO running in Docker uses this internal hostname; we remap it at descriptor
+/// construction time so callers never see the unresolvable internal address.
+fn rewrite_aio_url(url: &str, manifest_url: &StremioManifestUrl) -> String {
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return url.to_string();
+    };
+    if !parsed
+        .host_str()
+        .map(|h| h.eq_ignore_ascii_case("aiostreams"))
+        .unwrap_or(false)
+    {
+        return url.to_string();
+    }
+    let Ok(origin) = url::Url::parse(manifest_url.as_str()) else {
+        return url.to_string();
+    };
+    let _ = parsed.set_scheme(origin.scheme());
+    let _ = parsed.set_host(origin.host_str());
+    let _ = parsed.set_port(origin.port());
+    parsed.to_string()
+}
+
 async fn stremio_streams(
     svc: &stremio_service::StremioService,
+    manifest_url: &StremioManifestUrl,
     media: &db::Media,
 ) -> Result<Vec<db::Media>> {
     use crate::db::StreamProviderInfo;
@@ -1133,7 +1157,18 @@ async fn stremio_streams(
         .into_iter()
         .filter(|s| s.is_valid())
         .filter_map(|s| {
-            let url = s.url.clone().or_else(|| s.external_url.clone())?;
+            let descriptor = if s.is_torrent() {
+                crate::stream::StreamDescriptor::Torrent {
+                    info_hash: s.info_hash.clone()?.to_ascii_lowercase(),
+                    file_hint: s.filename.clone(),
+                }
+            } else {
+                let url = s.url.clone().or_else(|| s.external_url.clone())?;
+                crate::stream::StreamDescriptor::Http(rewrite_aio_url(
+                    &url,
+                    manifest_url,
+                ))
+            };
             let label = match (s.name.as_deref(), s.description.as_deref()) {
                 (Some(n), Some(d)) if !d.is_empty() => format!("{}\n{}", n, d),
                 (Some(n), _) => n.to_string(),
@@ -1143,7 +1178,7 @@ async fn stremio_streams(
             Some(db::Media {
                 kind: db::MediaKind::Stream,
                 title: label,
-                url: Some(url),
+                url: Some(descriptor),
                 provider_info: Some(StreamProviderInfo::Aio(s)),
                 ..Default::default()
             })

@@ -28,11 +28,13 @@ pub trait MediaSourceInfoExt {
 
 impl MediaSourceInfoExt for db::Media {
     fn probe(&self) -> Result<MediaSourceInfo> {
-        let url = self
-            .url
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("missing url"))?;
-        self.probe_with_url(url)
+        use crate::stream::StreamDescriptor;
+        let url = match self.url.as_ref() {
+            Some(StreamDescriptor::Http(u)) => u.clone(),
+            Some(StreamDescriptor::Local(p)) => p.to_string_lossy().into_owned(),
+            _ => return Err(anyhow::anyhow!("cannot probe this stream type directly")),
+        };
+        self.probe_with_url(&url)
     }
 
     fn probe_with_url(&self, url: &str) -> Result<MediaSourceInfo> {
@@ -40,7 +42,10 @@ impl MediaSourceInfoExt for db::Media {
 
         probed.id = self.id.clone();
         probed.name = Some(self.title.clone());
-        probed.path = self.url.clone();
+        probed.path = self
+            .url
+            .as_ref()
+            .and_then(|d| d.as_http_url().map(str::to_owned));
 
         Ok(probed)
     }
@@ -540,7 +545,10 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             id: media.id,
             e_tag: media.id,
             name: Some(media.title.clone()),
-            path: media.url.clone(),
+            path: media
+                .url
+                .as_ref()
+                .and_then(|d| d.as_http_url().map(str::to_owned)),
             protocol: "Http".to_string(),
             is_remote: true,
             is_infinite_stream: true,

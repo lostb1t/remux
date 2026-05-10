@@ -78,6 +78,7 @@ mod iptv;
 pub mod localization;
 pub mod playback_session;
 pub mod services;
+pub mod stream;
 pub mod tasks;
 mod torrent;
 pub mod transcode;

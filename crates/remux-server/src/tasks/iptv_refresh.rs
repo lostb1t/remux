@@ -97,7 +97,9 @@ impl Task for IptvRefreshTask {
                         id: channel_id,
                         title: ch.name.clone(),
                         kind: db::MediaKind::TvChannel,
-                        url: Some(ch.url.clone()),
+                        url: Some(crate::stream::StreamDescriptor::Http(
+                            ch.url.clone(),
+                        )),
                         poster: ch.logo.clone(),
                         tvg_id: ch.tvg_id.clone(),
                         channel_number: ch.channel_number,

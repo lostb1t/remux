@@ -340,6 +340,20 @@ pub trait AddonKind: Send + Sync {
         Ok(vec![])
     }
 
+    /// Serve bytes for a stream that requires this addon's config (e.g. credentials).
+    /// Only called when `StreamDescriptor::addon_id()` points to this addon.
+    async fn serve_stream(
+        &self,
+        _descriptor: &crate::stream::StreamDescriptor,
+        _headers: &axum::http::HeaderMap,
+    ) -> axum_anyhow::ApiResult<axum::response::Response> {
+        Err(axum_anyhow::ApiError::builder()
+            .status(axum::http::StatusCode::BAD_REQUEST)
+            .title("stream")
+            .detail("serve_stream not implemented for this addon")
+            .build())
+    }
+
     // segment
     fn segment_supports(&self, _media: &db::Media) -> bool {
         false
@@ -800,19 +814,42 @@ impl AddonService {
             "resolving streams"
         );
 
-        let mut all = Vec::new();
-        for (name, addon) in addons {
-            match addon.stream_resolve(media, ctx).await {
-                Ok(streams) => {
-                    tracing::debug!(addon = %name, count = streams.len(), "addon returned streams");
-                    all.extend(streams);
+        let tasks: Vec<_> = addons
+            .into_iter()
+            .map(|(name, addon)| async move {
+                match addon.stream_resolve(media, ctx).await {
+                    Ok(streams) => {
+                        tracing::debug!(addon = %name, count = streams.len(), "addon returned streams");
+                        streams
+                    }
+                    Err(e) => {
+                        tracing::warn!(addon = %name, error = %e, "stream addon failed");
+                        vec![]
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(addon = %name, error = %e, "stream addon failed")
-                }
+            })
+            .collect();
+        let all: Vec<db::Media> = futures::future::join_all(tasks)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+        Ok(all)
+    }
+
+    fn stream_dedup_key(s: &db::Media) -> Option<String> {
+        match s.url.as_ref()? {
+            crate::stream::StreamDescriptor::Torrent { info_hash, .. } => {
+                Some(format!("torrent:{}", info_hash.to_lowercase()))
+            }
+            crate::stream::StreamDescriptor::Http(url) => Some(format!("http:{url}")),
+            crate::stream::StreamDescriptor::Local(path) => {
+                Some(format!("local:{}", path.display()))
+            }
+            crate::stream::StreamDescriptor::Opendal { addon_id, path } => {
+                Some(format!("opendal:{addon_id}:{path}"))
             }
         }
-        Ok(all)
     }
 
     pub async fn refresh_streams(
@@ -830,17 +867,33 @@ impl AddonService {
 
         let instant = Instant::now();
         let raw = self.get_streams(media, ctx).await?;
-        info!(streams = %raw.len(), elapsed = ?instant.elapsed(), "streams synced");
-        if raw.is_empty() {
+        tracing::debug!(raw_count = raw.len(), "raw streams fetched");
+
+        // Dedup by descriptor content; order preserves addon priority (DB load order).
+        // First occurrence wins, so higher-priority addons' streams survive.
+        let mut seen = std::collections::HashSet::new();
+        let deduped: Vec<db::Media> = raw
+            .into_iter()
+            .filter(|s| match Self::stream_dedup_key(s) {
+                Some(key) => seen.insert(key),
+                None => true,
+            })
+            .collect();
+        info!(streams = deduped.len(), elapsed = ?instant.elapsed(), "streams synced");
+        if deduped.is_empty() {
             return Ok(());
         }
 
         let now = chrono::Utc::now().naive_utc();
-        let sources: Vec<db::Media> = raw
+        let sources: Vec<db::Media> = deduped
             .into_iter()
             .enumerate()
             .map(|(idx, mut s)| {
-                s.id = Uuid::new_v5(&media.id, format!("source_{idx}").as_bytes());
+                // Stable ID derived from content so the same stream always maps to
+                // the same UUID across refreshes, enabling safe upsert semantics.
+                let id_key = Self::stream_dedup_key(&s)
+                    .unwrap_or_else(|| format!("source_{idx}"));
+                s.id = Uuid::new_v5(&media.id, id_key.as_bytes());
                 s.parent_id = Some(media.id);
                 s.runtime = media.runtime;
                 s.idx = Some(idx as i64);

@@ -108,7 +108,7 @@ pub async fn insert_track(
         title: body.title.unwrap_or_else(|| video_id.clone()),
         kind: db::MediaKind::Track,
         media_id: Some(video_id.clone()),
-        url: Some(url),
+        url: Some(crate::stream::StreamDescriptor::Http(url.clone())),
         ..Default::default()
     };
 

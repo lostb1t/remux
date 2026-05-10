@@ -207,7 +207,7 @@ async fn try_instance(
     Ok(Some(db::Media {
         kind: db::MediaKind::Stream,
         title: label.to_string(),
-        url: Some(url),
+        url: Some(crate::stream::StreamDescriptor::Http(url)),
         probe_data: Some(api::MediaSourceInfo {
             container: mime_to_container(&manifest.mime_type),
             run_time_ticks: parent.runtime.map(|r| r * 10_000_000),

@@ -5164,6 +5164,9 @@ fn AddonsPage(app_state: AppState) -> Element {
     // Resources checked state for edit form (set of enabled ResourceType display strings)
     let mut edit_resources: Signal<std::collections::HashSet<String>> =
         use_signal(std::collections::HashSet::new);
+    // Types checked state for edit form (set of enabled MediaKind display strings)
+    let mut edit_types: Signal<std::collections::HashSet<String>> =
+        use_signal(std::collections::HashSet::new);
     // Catalogs loaded for the addon being edited
     let mut edit_catalogs: Signal<Vec<AddonCatalogDto>> = use_signal(Vec::new);
     let mut edit_catalogs_loading = use_signal(|| false);
@@ -5243,8 +5246,13 @@ fn AddonsPage(app_state: AppState) -> Element {
                                             for res in addon.resources.iter() {
                                                 span { class: "addon-kind-badge", "{res:?}" }
                                             }
-                                            for t in addon.supported_types.iter() {
-                                                span { class: "addon-kind-type", "{t}" }
+                                            {
+                                                let display_types = if addon.types.is_empty() { &addon.supported_types } else { &addon.types };
+                                                rsx! {
+                                                    for t in display_types.iter() {
+                                                        span { class: "addon-kind-type", "{t}" }
+                                                    }
+                                                }
                                             }
                                         }
                                         div { class: "addon-card-actions",
@@ -5326,6 +5334,13 @@ fn AddonsPage(app_state: AppState) -> Element {
                                                                 .map(|r| format!("{r}"))
                                                                 .collect();
                                                             edit_resources.set(res_set);
+                                                            // Empty types = all enabled — pre-check every supported type.
+                                                            let type_set: std::collections::HashSet<String> = if a.types.is_empty() {
+                                                                a.supported_types.iter().map(|t| format!("{t}")).collect()
+                                                            } else {
+                                                                a.types.iter().map(|t| format!("{t}")).collect()
+                                                            };
+                                                            edit_types.set(type_set);
                                                             let has_catalog = a.resources.contains(&ResourceType::Catalog);
                                                             edit_catalogs.set(Vec::new());
                                                             edit_catalog_settings.set(std::collections::HashMap::new());
@@ -5575,6 +5590,50 @@ fn AddonsPage(app_state: AppState) -> Element {
                                         }
                                     }
                                 }
+                                // Types section
+                                {
+                                    let type_options: Vec<remux_sdks::remux::MediaKind> = addons
+                                        .read()
+                                        .iter()
+                                        .find(|a| a.id == edit_id)
+                                        .map(|a| a.supported_types.clone())
+                                        .unwrap_or_default();
+                                    if !type_options.is_empty() {
+                                        rsx! {
+                                            div { class: "form-group",
+                                                label { class: "form-label", "Content Types" }
+                                                div { class: "check-row-group",
+                                                    for t in type_options.into_iter() {
+                                                        {
+                                                            let t_str = format!("{t}");
+                                                            let t_str_check = t_str.clone();
+                                                            let checked = edit_types.read().contains(&t_str);
+                                                            rsx! {
+                                                                label { class: "check-row",
+                                                                    input {
+                                                                        r#type: "checkbox",
+                                                                        checked,
+                                                                        onchange: move |e| {
+                                                                            let mut set = edit_types.write();
+                                                                            if e.checked() {
+                                                                                set.insert(t_str_check.clone());
+                                                                            } else {
+                                                                                set.remove(&t_str_check);
+                                                                            }
+                                                                        },
+                                                                    }
+                                                                    "{t_str}"
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        rsx! {}
+                                    }
+                                }
                                 // Catalogs section (only shown when catalog resource is active)
                                 if edit_resources.read().contains("catalog") {
                                     div { class: "form-group",
@@ -5664,6 +5723,11 @@ fn AddonsPage(app_state: AppState) -> Element {
                                                 .iter()
                                                 .filter_map(|s| s.parse::<ResourceType>().ok())
                                                 .collect();
+                                            let types: Vec<remux_sdks::remux::MediaKind> = edit_types
+                                                .read()
+                                                .iter()
+                                                .filter_map(|s| s.parse::<remux_sdks::remux::MediaKind>().ok())
+                                                .collect();
                                             // Build catalog update payload.
                                             let catalog_updates: Vec<UpdateAddonCatalogRequest> = edit_catalog_settings
                                                 .read()
@@ -5681,7 +5745,7 @@ fn AddonsPage(app_state: AppState) -> Element {
                                                     name: Some(name),
                                                     config: Some(config),
                                                     resources: Some(resources),
-                                                    types: None,
+                                                    types: Some(types),
                                                     enabled: None,
                                                     priority: None,
                                                 };

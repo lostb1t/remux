@@ -6,6 +6,7 @@ use crate::common::get_uuid;
 use crate::common::server_id;
 use crate::sdks;
 use crate::services::stremio as stremio_service;
+use crate::stream::StreamDescriptor;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -741,7 +742,7 @@ pub struct Media {
     pub relations: Option<Vec<(MediaRelation, Media)>>,
 
     // stream
-    pub url: Option<String>,
+    pub url: Option<StreamDescriptor>,
     #[sqlx(json(nullable))]
     pub probe_data: Option<MediaSourceInfo>,
     #[sqlx(json(nullable))]
@@ -889,10 +890,7 @@ impl Media {
     }
 
     pub fn is_remote_url(&self) -> bool {
-        self.url
-            .as_deref()
-            .map(|url| url.starts_with("http://") || url.starts_with("https://"))
-            .unwrap_or(false)
+        matches!(&self.url, Some(StreamDescriptor::Http(_)))
     }
 
     pub fn media_source_protocol(&self) -> &'static str {
@@ -2558,19 +2556,13 @@ impl From<sdks::stremio::Catalog> for Media {
 
 impl From<sdks::stremio::Stream> for Media {
     fn from(source: sdks::stremio::Stream) -> Self {
-        let url = match (&source.info_hash, &source.url) {
-            (Some(hash), None) => {
-                let mut q = url::form_urlencoded::Serializer::new(String::new());
-                q.append_pair("xt", &format!("urn:btih:{}", hash));
-                if let Some(name) = &source.name {
-                    q.append_pair("dn", name);
-                }
-                if let Some(filename) = &source.filename {
-                    q.append_pair("file", filename);
-                }
-                Some(format!("magnet:?{}", q.finish()))
-            }
-            (_, url) => url.clone(),
+        let url = if let Some(hash) = &source.info_hash {
+            Some(StreamDescriptor::Torrent {
+                info_hash: hash.to_ascii_lowercase(),
+                file_hint: source.filename.clone(),
+            })
+        } else {
+            source.url.clone().map(StreamDescriptor::Http)
         };
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`
