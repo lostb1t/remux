@@ -46,11 +46,11 @@ impl Task for IptvRefreshTask {
         }
 
         let client = reqwest::Client::new();
-        let source_count = sources.len() as f64;
+        let sources_progress = progress.scaled(0.0, 80.0);
         let mut all_channels: Vec<db::Media> = Vec::new();
 
         for (idx, source) in sources.iter().enumerate() {
-            progress.set((idx as f64 / source_count) * 80.0);
+            sources_progress.report(idx, sources.len());
             let source_start = Instant::now();
 
             let xtream_epg_url = source.xtream_epg_url();

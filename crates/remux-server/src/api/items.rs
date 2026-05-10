@@ -798,7 +798,7 @@ pub struct RemoteImagesQuery {
 }
 
 /// Resolve high-resolution images from TMDB for any media kind.
-/// Anfiteatro (and the Jellyfin web client) hits this endpoint to upgrade
+/// The Jellyfin web client hits this endpoint to upgrade
 /// AIO's hardcoded ~500w thumbnails to original-size posters / backdrops /
 /// stills. Without this, episodes show pixelated banners.
 #[get("/items/{id}/remoteimages")]
@@ -1420,7 +1420,7 @@ pub async fn delete_virtual_folder(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// `/gelato/subtitles/{id}` is the Anfiteatro compatibility endpoint.
+// `/gelato/subtitles/{id}` subtitle endpoint.
 #[get("/gelato/subtitles/{id}")]
 pub async fn gelato_subtitles(
     State(state): State<AppState>,

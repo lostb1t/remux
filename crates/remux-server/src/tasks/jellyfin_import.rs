@@ -235,7 +235,7 @@ impl Task for JellyfinImportTask {
                 states_imported += 1;
             }
 
-            progress.set((i + 1) as f64 / local_users.len() as f64 * 100.0);
+            progress.report(i + 1, local_users.len());
         }
 
         progress.set(100.0);

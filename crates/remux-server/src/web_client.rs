@@ -6,9 +6,7 @@ use std::{
 };
 
 use axum::{body::Body, response::Response};
-use bytes::Bytes;
 use http::{Request, StatusCode, header};
-use http_body_util::BodyExt;
 use tower::util::BoxCloneSyncService;
 use tower::{Layer, Service};
 use tower_http::services::ServeDir;
@@ -17,10 +15,6 @@ use tower_http::services::ServeDir;
 use crate::embedded_static::EmbeddedDir;
 use crate::web_transform::TransformLayer;
 
-pub const WEB_CLIENT_JELLYFIN: &str = "jellyfin";
-pub const WEB_CLIENT_ANFITEATRO: &str = "anfiteatro";
-
-const ANFITEATRO_PREFIX: &str = "/anfiteatro";
 const JELLYFIN_ALIAS_PREFIX: &str = "/jellyfin";
 const MOUNT_PREFIX: &str = "/anfi";
 
@@ -42,23 +36,6 @@ self.addEventListener('activate', (event) => {
 });
 self.addEventListener('fetch', () => {});
 "#;
-
-// Best-effort runtime cleanup injected into Anfiteatro HTML to remove stale
-// service workers/caches that may still control localhost scope.
-const ANFITEATRO_SW_CLEANUP_JS: &str = r#"(function(){
-    try {
-        if (!('serviceWorker' in navigator)) return;
-        navigator.serviceWorker.getRegistrations()
-            .then(function(regs){ return Promise.all(regs.map(function(r){ return r.unregister(); })); })
-            .catch(function(){});
-    } catch (_) {}
-    try {
-        if (!('caches' in window)) return;
-        caches.keys()
-            .then(function(keys){ return Promise.all(keys.map(function(k){ return caches.delete(k); })); })
-            .catch(function(){});
-    } catch (_) {}
-})();"#;
 
 type StaticService = BoxCloneSyncService<Request<Body>, Response<Body>, Infallible>;
 
@@ -148,47 +125,6 @@ fn redirect_to_trailing_slash(path: &str, query: Option<&str>) -> Response<Body>
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
-async fn inject_anfiteatro_runtime_guards(response: Response<Body>) -> Response<Body> {
-    // Only mutate HTML responses; static assets pass through untouched.
-    let is_html = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|ct| ct.contains("html"))
-        .unwrap_or(false);
-    if !is_html {
-        return response;
-    }
-
-    let (parts, body) = response.into_parts();
-    let bytes = body
-        .collect()
-        .await
-        .map(|c| c.to_bytes())
-        .unwrap_or_default();
-    let mut html = String::from_utf8_lossy(&bytes).into_owned();
-
-    if !html.contains("data-remux-sw-cleanup") {
-        let tag = format!(
-            "<script data-remux-sw-cleanup>{ANFITEATRO_SW_CLEANUP_JS}</script></body>"
-        );
-        html = html.replace("</body>", &tag);
-    }
-
-    let out = Bytes::from(html.into_bytes());
-    let mut response = Response::from_parts(parts, Body::from(out.clone()));
-    response
-        .headers_mut()
-        .insert(header::CONTENT_LENGTH, http::HeaderValue::from(out.len()));
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        http::HeaderValue::from_static(
-            "no-store, no-cache, must-revalidate, max-age=0",
-        ),
-    );
-    response
-}
-
 pub fn normalize_web_client(
     value: Option<crate::api::DefaultWebClient>,
 ) -> crate::api::DefaultWebClient {
@@ -198,66 +134,26 @@ pub fn normalize_web_client(
 #[derive(Clone)]
 pub struct WebClientService {
     jellyfin: StaticService,
-    anfiteatro: Option<StaticService>,
 }
 
 impl WebClientService {
-    pub fn from_filesystem(web_path: &str, anfiteatro_web_path: &str) -> Self {
+    pub fn from_filesystem(web_path: &str) -> Self {
         let jellyfin = BoxCloneSyncService::new(
             TransformLayer::new().layer(ServeDir::new(web_path)),
         );
-
-        let anfiteatro = if std::path::Path::new(anfiteatro_web_path)
-            .join("index.html")
-            .exists()
-        {
-            Some(BoxCloneSyncService::new(
-                TransformLayer::new().layer(ServeDir::new(anfiteatro_web_path)),
-            ))
-        } else {
-            tracing::warn!(
-                path = %anfiteatro_web_path,
-                "anfiteatro web client not found; using jellyfin web client"
-            );
-            None
-        };
-
-        Self {
-            jellyfin,
-            anfiteatro,
-        }
+        Self { jellyfin }
     }
 }
 
 #[cfg(feature = "desktop")]
 impl WebClientService {
-    pub fn from_embedded(
-        jellyfin_web: &'static include_dir::Dir<'static>,
-        anfiteatro_web: Option<&'static include_dir::Dir<'static>>,
-    ) -> Self {
-        let jellyfin = TransformLayer::new().layer(EmbeddedDir {
-            dir: jellyfin_web,
-            spa_fallback: false,
-        });
-        let jellyfin = BoxCloneSyncService::new(jellyfin);
-
-        let anfiteatro = anfiteatro_web.map(|dir| {
+    pub fn from_embedded(jellyfin_web: &'static include_dir::Dir<'static>) -> Self {
+        let jellyfin =
             BoxCloneSyncService::new(TransformLayer::new().layer(EmbeddedDir {
-                dir,
+                dir: jellyfin_web,
                 spa_fallback: false,
-            }))
-        });
-
-        if anfiteatro.is_none() {
-            tracing::warn!(
-                "embedded anfiteatro web client not found; using jellyfin web client"
-            );
-        }
-
-        Self {
-            jellyfin,
-            anfiteatro,
-        }
+            }));
+        Self { jellyfin }
     }
 }
 
@@ -273,55 +169,16 @@ impl Service<Request<Body>> for WebClientService {
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         let raw_path = req.uri().path().to_string();
-        let query = req.uri().query().map(str::to_owned);
         let path = strip_mount_prefix(&raw_path);
-        if path.eq_ignore_ascii_case(ANFITEATRO_PREFIX) && !raw_path.ends_with('/') {
-            let response = redirect_to_trailing_slash(&raw_path, query.as_deref());
-            return Box::pin(async move { Ok(response) });
-        }
+        let query = req.uri().query().map(str::to_owned);
 
-        let anfiteatro_inner = strip_prefixed_path(&path, ANFITEATRO_PREFIX);
+        let is_service_worker_path = path.eq_ignore_ascii_case("/serviceworker.js");
         let jellyfin_inner = strip_prefixed_path(&path, JELLYFIN_ALIAS_PREFIX);
-        let is_anfiteatro_root_asset = {
-            let lower = path.to_ascii_lowercase();
-            lower == "/_expo" || lower.starts_with("/_expo/")
-        };
-        let is_service_worker_path = {
-            let root_sw = path.eq_ignore_ascii_case("/serviceworker.js");
-            let anfiteatro_sw = anfiteatro_inner
-                .as_deref()
-                .is_some_and(|p| p.eq_ignore_ascii_case("/serviceworker.js"));
-            root_sw || anfiteatro_sw
-        };
         let mut jellyfin = self.jellyfin.clone();
-        let mut anfiteatro = self.anfiteatro.clone();
 
         Box::pin(async move {
             if is_service_worker_path {
                 return Ok(unregistering_service_worker_response());
-            }
-
-            if is_anfiteatro_root_asset {
-                if let Some(mut service) = anfiteatro.take() {
-                    let anfiteatro_path = normalize_spa_inner_path(&path);
-                    let req = rewrite_request_path(req, &anfiteatro_path);
-                    let response = service.call(req).await?;
-                    return Ok(inject_anfiteatro_runtime_guards(response).await);
-                }
-            }
-
-            if let Some(inner_path) = anfiteatro_inner {
-                if let Some(mut service) = anfiteatro.take() {
-                    let anfiteatro_path = normalize_spa_inner_path(&inner_path);
-                    let req = rewrite_request_path(req, &anfiteatro_path);
-                    let response = service.call(req).await?;
-                    return Ok(inject_anfiteatro_runtime_guards(response).await);
-                }
-
-                tracing::warn!(
-                    requested_path = %path,
-                    "anfiteatro route requested but web client not available; falling back to jellyfin"
-                );
             }
 
             let jellyfin_path = jellyfin_inner

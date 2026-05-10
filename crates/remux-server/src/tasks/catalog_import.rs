@@ -42,6 +42,7 @@ impl Task for CatalogImportTask {
         let mut total_counts: HashMap<String, usize> = HashMap::new();
 
         for (addon_idx, runtime) in addons.iter().enumerate() {
+            let addon_progress = progress.step(addon_idx, total_work);
             let addon_id = runtime.row.id;
             let catalog_states = runtime.row.catalog_states();
 
@@ -74,10 +75,7 @@ impl Task for CatalogImportTask {
             );
 
             for (cat_idx, cat_info) in enabled.iter().enumerate() {
-                let pct = (addon_idx * 100 + cat_idx * 100 / enabled.len().max(1))
-                    as f64
-                    / total_work as f64;
-                progress.set(pct);
+                addon_progress.report(cat_idx, enabled.len());
 
                 let full_id = make_media_id(addon_id, &cat_info.provider_catalog_id);
                 let local_id = full_id.strip_prefix(&prefix).unwrap_or(&full_id);

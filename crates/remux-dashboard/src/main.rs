@@ -1,28 +1,27 @@
 use dioxus::prelude::*;
-use gloo_storage::{LocalStorage, SessionStorage, Storage};
+use gloo_storage::{LocalStorage, Storage};
 use remux_sdks::remux::{
     AddTunerHost, AddonCatalogDto, AddonDto, AddonMetadata, AddonOption,
-    AddonOptionType, AddonPresetRef, AdminSetPassword, AnfiteatroReleaseStatus,
-    AuthenticateUserByName, AuthenticationInfo, BaseItemDto, BrandingOptions,
-    BulkChannelRequest, BulkChannels, ChannelEditorItem, CollectionFilter, CountryInfo,
-    CreateAddon, CreateAddonRequest, CreateApiKey, CreateUser, CreateVirtualFolder,
-    CreateVirtualFolderPayload, DeleteAddon, DeleteApiKey, DeleteEpgSource,
-    DeleteTunerHost, DeleteUser, DeleteVirtualFolder, EncodingOptions, EpgSourceInfo,
-    FilterMatchMode, FilterRule, GetAddonCatalogs, GetAnfiteatroReleaseStatus,
-    GetApiKeys, GetBrandingConfiguration, GetCertificationSuggestions, GetCountries,
-    GetEncodingConfiguration, GetEpgSources, GetIptvChannels, GetItemCounts, GetItems,
-    GetLocalSuggestions, GetParentalRatings, GetScheduledTasks, GetSessions,
-    GetStartupConfiguration, GetSystemConfiguration, GetTagSuggestions, GetTunerHosts,
-    GetUsers, InstallLatestAnfiteatroRelease, ItemCounts, JellyfinAuth, ListAddonKinds,
-    ListAddons, NumericOp, ParentalRating, PatchChannel, PatchChannelRequest,
-    PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
-    PostStartupUser, PublicSystemInfo, SaveEpgSource, ServerConfiguration,
-    SessionInfoDto, SetOp, SourceUrl, StartTask, StartupConfiguration, StartupUser,
-    StopTask, TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo,
-    UpdateAddon, UpdateAddonCatalogRequest, UpdateAddonCatalogs, UpdateAddonRequest,
-    UpdateBrandingConfiguration, UpdateEncodingConfiguration,
-    UpdateSystemConfiguration, UpdateTaskTriggers, UpdateUser, UpdateUserPolicy,
-    UserDto, Username,
+    AddonOptionType, AddonPresetRef, AdminSetPassword, AuthenticateUserByName,
+    AuthenticationInfo, BaseItemDto, BrandingOptions, BulkChannelRequest, BulkChannels,
+    ChannelEditorItem, CollectionFilter, CountryInfo, CreateAddon, CreateAddonRequest,
+    CreateApiKey, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload,
+    DeleteAddon, DeleteApiKey, DeleteEpgSource, DeleteTunerHost, DeleteUser,
+    DeleteVirtualFolder, EncodingOptions, EpgSourceInfo, FilterMatchMode, FilterRule,
+    GetAddonCatalogs, GetApiKeys, GetBrandingConfiguration,
+    GetCertificationSuggestions, GetCountries, GetEncodingConfiguration, GetEpgSources,
+    GetIptvChannels, GetItemCounts, GetItems, GetLocalSuggestions, GetParentalRatings,
+    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
+    GetTagSuggestions, GetTunerHosts, GetUsers, ItemCounts, JellyfinAuth,
+    ListAddonKinds, ListAddons, NumericOp, ParentalRating, PatchChannel,
+    PatchChannelRequest, PatchItem, PatchItemPayload, PostStartupComplete,
+    PostStartupConfiguration, PostStartupUser, PublicSystemInfo, SaveEpgSource,
+    ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
+    StartupConfiguration, StartupUser, StopTask, TaskInfo, TaskTriggerInfo,
+    TaskTriggerInfoType, TunerHostInfo, UpdateAddon, UpdateAddonCatalogRequest,
+    UpdateAddonCatalogs, UpdateAddonRequest, UpdateBrandingConfiguration,
+    UpdateEncodingConfiguration, UpdateSystemConfiguration, UpdateTaskTriggers,
+    UpdateUser, UpdateUserPolicy, UserDto, Username,
 };
 use remux_sdks::stremio::ResourceType;
 use remux_sdks::{ClientError, RestClient};
@@ -34,7 +33,6 @@ const THEME_CSS: Asset = asset!("/assets/theme.css");
 
 const CREDENTIALS_KEY: &str = "jellyfin_credentials";
 const DEVICE_ID_KEY: &str = "remux_device_id";
-const ANFITEATRO_HANDOFF_KEY: &str = "remux_anfiteatro_handoff";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -51,13 +49,6 @@ struct StoredServer {
 #[serde(rename_all = "PascalCase")]
 struct StoredCredentials {
     servers: Vec<StoredServer>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AnfiteatroHandoff {
-    token: String,
-    user_id: String,
 }
 
 #[derive(Clone)]
@@ -97,10 +88,6 @@ impl AppState {
 fn fmt_time(dt: impl std::fmt::Display) -> String {
     let s = dt.to_string();
     s.chars().skip(11).take(5).collect()
-}
-
-fn fmt_commit_short(commit: &str) -> String {
-    commit.chars().take(7).collect()
 }
 
 fn get_origin() -> String {
@@ -1098,33 +1085,7 @@ fn DashboardLayout() -> Element {
 
     let mut logged_in = use_context::<Signal<bool>>();
     let mut sidebar_open = use_signal(|| false);
-    let mut checked_anfiteatro_release = use_signal(|| false);
-    let mut anfiteatro_release: Signal<Option<AnfiteatroReleaseStatus>> =
-        use_signal(|| None);
-    let mut anfiteatro_installing = use_signal(|| false);
-    let mut anfiteatro_install_error: Signal<Option<String>> = use_signal(|| None);
-    let mut anfiteatro_install_success: Signal<Option<String>> = use_signal(|| None);
-    let mut show_update_modal = use_signal(|| false);
     let route = use_route::<Route>();
-    let release_check_client = app_state.client.clone();
-    let install_client = app_state.client.clone();
-    let anfiteatro_handoff_token = app_state.server.access_token.clone();
-    let anfiteatro_handoff_user_id = app_state.server.user_id.clone();
-
-    use_effect(move || {
-        if *checked_anfiteatro_release.read() {
-            return;
-        }
-
-        checked_anfiteatro_release.set(true);
-
-        let client = release_check_client.clone();
-        spawn(async move {
-            if let Ok(status) = client.execute(GetAnfiteatroReleaseStatus).await {
-                anfiteatro_release.set(Some(status));
-            }
-        });
-    });
 
     let page_title = match route {
         Route::OverviewRoute => "Overview",
@@ -1213,30 +1174,6 @@ fn DashboardLayout() -> Element {
                 }
 
                 div { class: "sidebar-footer",
-                    div { class: "sidebar-anfi-row",
-                        a {
-                            class: "btn btn-ghost sidebar-anfi-btn",
-                            href: "#",
-                            onclick: move |e| {
-                                e.prevent_default();
-                                let payload = AnfiteatroHandoff {
-                                    token: anfiteatro_handoff_token.clone(),
-                                    user_id: anfiteatro_handoff_user_id.clone(),
-                                };
-                                let _ = SessionStorage::set(ANFITEATRO_HANDOFF_KEY, payload);
-                                let _ = web_sys::window().unwrap().location().set_href("/anfiteatro/");
-                            },
-                            "Anfiteatro Web"
-                        }
-                        if anfiteatro_release.read().as_ref().map(|s| s.update_available).unwrap_or(false) {
-                            button {
-                                class: "btn btn-ghost sidebar-update-btn",
-                                title: "Anfiteatro update available",
-                                onclick: move |_| show_update_modal.set(true),
-                                "⬆"
-                            }
-                        }
-                    }
                     a {
                         class: "btn btn-ghost",
                         style: "width:100%;margin-bottom:8px",
@@ -1269,105 +1206,8 @@ fn DashboardLayout() -> Element {
                     h2 { class: "main-title", "{page_title}" }
                 }
 
-                if let Some(msg) = anfiteatro_install_success.read().as_ref() {
-                    div { class: "inline-alert alert-success", "{msg}" }
-                }
-
                 div { class: "shell",
                     Outlet::<Route> {}
-                }
-            }
-        }
-
-        // Anfiteatro update modal
-        if *show_update_modal.read() {
-            {
-                let status_opt = anfiteatro_release.read().clone();
-                if let Some(status) = status_opt {
-                    let installed = status.local_version_display.as_deref().unwrap_or("unknown").to_string();
-                    let latest = status.latest_commit.as_deref().map(fmt_commit_short)
-                        .or_else(|| status.latest_version_tag.clone())
-                        .unwrap_or_else(|| "unknown".to_string());
-                    let release_url = status.latest_release_url.clone();
-                    rsx! {
-                        div {
-                            class: "modal-backdrop",
-                            onclick: move |_| {
-                                show_update_modal.set(false);
-                                anfiteatro_install_error.set(None);
-                            },
-                            div {
-                                class: "modal",
-                                onclick: move |e| e.stop_propagation(),
-                                div { class: "modal-header",
-                                    h2 { class: "modal-title", "Anfiteatro Update Available" }
-                                }
-                                div { class: "modal-body",
-                                    div { class: "kv-row",
-                                        span { class: "kv-label", "Installed" }
-                                        span { class: "kv-value font-mono", "{installed}" }
-                                    }
-                                    div { class: "kv-row",
-                                        span { class: "kv-label", "Latest" }
-                                        span { class: "kv-value font-mono", "{latest}" }
-                                    }
-                                    if let Some(url) = release_url {
-                                        div { class: "kv-row",
-                                            a {
-                                                href: "{url}",
-                                                target: "_blank",
-                                                rel: "noopener noreferrer",
-                                                style: "font-size:.82rem;color:var(--primary)",
-                                                "View release notes ↗"
-                                            }
-                                        }
-                                    }
-                                    if let Some(msg) = anfiteatro_install_error.read().as_ref() {
-                                        div { class: "inline-alert alert-error", "{msg}" }
-                                    }
-                                }
-                                div { class: "modal-footer",
-                                    button {
-                                        class: "btn btn-ghost",
-                                        onclick: move |_| {
-                                            show_update_modal.set(false);
-                                            anfiteatro_install_error.set(None);
-                                        },
-                                        "Close"
-                                    }
-                                    button {
-                                        class: "btn btn-primary",
-                                        disabled: *anfiteatro_installing.read(),
-                                        onclick: move |_| {
-                                            if *anfiteatro_installing.read() { return; }
-                                            anfiteatro_installing.set(true);
-                                            anfiteatro_install_error.set(None);
-                                            anfiteatro_install_success.set(None);
-                                            let client = install_client.clone();
-                                            spawn(async move {
-                                                match client.execute(InstallLatestAnfiteatroRelease).await {
-                                                    Ok(result) => {
-                                                        anfiteatro_install_success.set(Some(result.message));
-                                                        if let Ok(s) = client.execute(GetAnfiteatroReleaseStatus).await {
-                                                            anfiteatro_release.set(Some(s));
-                                                        }
-                                                        show_update_modal.set(false);
-                                                    }
-                                                    Err(err) => {
-                                                        anfiteatro_install_error.set(Some(format!("Install failed: {err}")));
-                                                    }
-                                                }
-                                                anfiteatro_installing.set(false);
-                                            });
-                                        },
-                                        if *anfiteatro_installing.read() { "Installing…" } else { "Install Update" }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    rsx! {}
                 }
             }
         }

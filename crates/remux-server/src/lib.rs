@@ -92,8 +92,6 @@ mod ws;
 pub struct FilesystemPaths {
     #[serde(default = "default_web_path")]
     pub web_path: String,
-    #[serde(default = "default_anfiteatro_web_path")]
-    pub anfiteatro_web_path: String,
     #[serde(default = "default_dashboard_path")]
     pub dashboard_path: String,
 }
@@ -102,7 +100,6 @@ impl Default for FilesystemPaths {
     fn default() -> Self {
         Self {
             web_path: default_web_path(),
-            anfiteatro_web_path: default_anfiteatro_web_path(),
             dashboard_path: default_dashboard_path(),
         }
     }
@@ -141,8 +138,7 @@ pub fn collect_routes() -> axum::Router<AppState> {
 pub async fn init_app_with_config(config: Config) -> Result<Router> {
     let paths = FilesystemPaths::default();
     let admin = admin_from_filesystem(&paths.dashboard_path.clone());
-    let web_client =
-        WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
+    let web_client = WebClientService::from_filesystem(&paths.web_path);
     let (router, _ctx) = init_app(config, Some(paths), admin, web_client).await?;
     Ok(router)
 }
@@ -150,8 +146,7 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
 pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
     let paths = FilesystemPaths::default();
     let admin = admin_from_filesystem(&paths.dashboard_path.clone());
-    let web_client =
-        WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
+    let web_client = WebClientService::from_filesystem(&paths.web_path);
     init_app(config, Some(paths), admin, web_client).await
 }
 
@@ -159,8 +154,7 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
 /// Binds to `0.0.0.0:{port}` (default 3000, or `PORT` env var).
 pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
     let admin = admin_from_filesystem(&paths.dashboard_path.clone());
-    let web_client =
-        WebClientService::from_filesystem(&paths.web_path, &paths.anfiteatro_web_path);
+    let web_client = WebClientService::from_filesystem(&paths.web_path);
     let port = config.port;
     let (router, _) = init_app(config, Some(paths), admin, web_client).await?;
     bind_and_serve(router, port).await
@@ -240,7 +234,6 @@ pub async fn init_app(
 
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
 
-    let _ = task_service.run_task("EnsureAnfiteatro").await;
     task_service.run_startup_tasks().await?;
 
     let state = AppState {
@@ -297,13 +290,6 @@ fn default_web_path() -> String {
         .map(|d| d.join("remux").join("jellyfin-web"))
         .and_then(|p| p.to_str().map(str::to_owned))
         .unwrap_or_else(|| "/data/jellyfin-web".to_string())
-}
-
-fn default_anfiteatro_web_path() -> String {
-    dirs::data_dir()
-        .map(|d| d.join("remux").join("anfiteatro-web"))
-        .and_then(|p| p.to_str().map(str::to_owned))
-        .unwrap_or_else(|| "/data/anfiteatro-web".to_string())
 }
 
 fn default_dashboard_path() -> String {

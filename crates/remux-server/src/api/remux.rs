@@ -15,7 +15,7 @@ use axum_anyhow::ApiResult as Result;
 use uuid::Uuid;
 
 const CACHE_KEY_PREFIX: &str = "remux:cache:";
-const REGISTRATION_NS: &str = "anfiteatro-registration";
+const REGISTRATION_NS: &str = "registration";
 const REGISTRATION_ENABLED_KEY: &str = "registration-enabled";
 const REGISTRATION_INDEX_KEY: &str = "requests-index";
 
@@ -446,7 +446,7 @@ pub struct StreamsResponse {
 }
 
 /// Source-level metadata (binge group, name, description) for an item.
-/// Mirrors the shape Anfiteatro expects from `/gelato/streams/{id}` so the
+/// Returns stream metadata from `/gelato/streams/{id}` so the
 /// client can match versions across episodes without re-issuing playback info.
 async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsResponse> {
     let Some(media) = db::Media::get_by_id(&state.ctx.db, &id).await? else {

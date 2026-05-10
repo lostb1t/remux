@@ -25,10 +25,17 @@ impl Task for RefreshLibraryTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
+        // Phase 1 (0-50%): refresh addon file indexes
+        ctx.addons
+            .refresh_indexes(&ctx, progress.scaled(0.0, 50.0))
+            .await?;
+
+        // Phase 2 (50-100%): refresh metadata for all stale media
         const CHUNK_SIZE: u32 = 100;
         let mut total: Option<u32> = None;
         let mut processed = 0u32;
         let mut offset = 0u32;
+        let meta_progress = progress.scaled(50.0, 100.0);
         loop {
             let (batch, count) = db::Media::get_refreshable(
                 &ctx.db,
@@ -49,7 +56,7 @@ impl Task for RefreshLibraryTask {
                 .await?;
             processed += fetched;
             if let Some(t) = total {
-                progress.set(processed as f64 / t as f64 * 100.0);
+                meta_progress.report(processed as usize, t as usize);
             }
             if fetched < CHUNK_SIZE {
                 break;

@@ -290,6 +290,54 @@ pub async fn tmdb_client(
         .map(|c| c.with_auth(sdks::BearerAuth { token: key }))
 }
 
+// --- Progress reporting ---
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[derive(Clone)]
+pub struct ProgressReporter(Arc<dyn Fn(f64) + Send + Sync>);
+
+impl ProgressReporter {
+    pub fn new(inner: Arc<AtomicU64>) -> Self {
+        Self(Arc::new(move |pct: f64| {
+            let rounded = (pct.clamp(0.0, 100.0) * 10.0).round() / 10.0;
+            inner.store(rounded.to_bits(), Ordering::Relaxed);
+        }))
+    }
+
+    pub fn set(&self, pct: f64) {
+        (self.0)(pct.clamp(0.0, 100.0));
+    }
+
+    pub fn scaled(&self, start: f64, end: f64) -> ProgressReporter {
+        let parent = self.clone();
+        ProgressReporter(Arc::new(move |pct: f64| {
+            let mapped = start + (end - start) * pct.clamp(0.0, 100.0) / 100.0;
+            parent.set(mapped);
+        }))
+    }
+
+    /// Report `n` items done out of `total`. Computes the percentage automatically.
+    /// When `total` is 0, reports 100%.
+    pub fn report(&self, n: usize, total: usize) {
+        let pct = if total == 0 {
+            100.0
+        } else {
+            n as f64 / total as f64 * 100.0
+        };
+        self.set(pct);
+    }
+
+    /// Returns a sub-reporter covering slot `idx` of `total` equal partitions.
+    /// Equivalent to `scaled(idx/total*100, (idx+1)/total*100)`.
+    pub fn step(&self, idx: usize, total: usize) -> ProgressReporter {
+        let total = total.max(1) as f64;
+        let start = idx as f64 / total * 100.0;
+        let end = (idx + 1) as f64 / total * 100.0;
+        self.scaled(start, end)
+    }
+}
+
 pub trait IntoVec<T> {
     fn into_vec<U>(self) -> Vec<U>
     where

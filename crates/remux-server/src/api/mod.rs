@@ -3,7 +3,6 @@ pub mod models;
 pub use models::*;
 
 pub mod addons;
-pub mod anfi;
 pub mod api_keys;
 pub mod artists;
 pub mod devices;

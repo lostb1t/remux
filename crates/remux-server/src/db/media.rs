@@ -2768,7 +2768,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     episode.digital_released_at = ep.released.map(|x| x.naive_utc());
                     // AIO episode ids look like `tt0944947:1:2` (series imdb,
                     // season, episode). Surface the series IMDB on the episode
-                    // so clients (Anfiteatro reviews, TMDB lookups, etc.) can
+                    // so clients (TMDB lookups, etc.) can
                     // hop to the right metadata without a separate query.
                     let ep_external_ids = ExternalIds {
                         imdb: meta

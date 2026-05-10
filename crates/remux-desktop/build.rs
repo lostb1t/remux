@@ -4,7 +4,6 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(dashboard_built)");
     println!("cargo:rustc-check-cfg=cfg(jellyfin_web_built)");
-    println!("cargo:rustc-check-cfg=cfg(anfiteatro_web_built)");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_root = manifest_dir.join("..").join("..");
@@ -40,22 +39,6 @@ fn main() {
     } else {
         println!(
             "cargo:warning=jellyfin-web not built — run `cargo make jellyfin-web` first"
-        );
-    }
-
-    let anfiteatro_web_dir = workspace_root.join("anfiteatro-web");
-    if anfiteatro_web_dir.join("index.html").exists() {
-        let path = anfiteatro_web_dir.canonicalize().unwrap();
-        let path_str = path.to_str().unwrap().replace('\\', "/");
-        std::fs::write(
-            out_dir.join("anfiteatro_web_embed.rs"),
-            format!(r#"static ANFITEATRO_WEB: include_dir::Dir<'static> = include_dir::include_dir!("{path_str}");"#),
-        ).unwrap();
-        println!("cargo:rustc-cfg=anfiteatro_web_built");
-        println!("cargo:rerun-if-changed={path_str}");
-    } else {
-        println!(
-            "cargo:warning=Anfiteatro web client not found — run `cargo make anfiteatro-web` first"
         );
     }
 }

@@ -25,7 +25,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::sdks;
-use crate::{AppContext, db};
+use crate::{AppContext, common::ProgressReporter, db};
 pub use addon::{Addon, CatalogState};
 pub use remux_sdks::remux::AddonPresetRef;
 use remux_sdks::remux::{LyricDto, MediaSegments, RemoteLyricInfoDto};
@@ -226,6 +226,16 @@ pub trait AddonPreset: Send + Sync {
 #[async_trait]
 pub trait AddonKind: Send + Sync {
     fn id(&self) -> &'static str;
+
+    // index
+    async fn refresh_index(
+        &self,
+        _ctx: &AppContext,
+        _addon: &Addon,
+        _progress: ProgressReporter,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     // catalog
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
@@ -498,6 +508,26 @@ impl AddonService {
             .filter(|r| r.supports(ResourceType::Catalog))
             .cloned()
             .collect()
+    }
+
+    pub async fn refresh_indexes(
+        &self,
+        ctx: &AppContext,
+        progress: ProgressReporter,
+    ) -> Result<()> {
+        let addons: Vec<AddonRuntime> = {
+            let guard = self.inner.read().await;
+            guard.iter().filter(|r| r.row.enabled).cloned().collect()
+        };
+        let total = addons.len();
+        for (idx, runtime) in addons.iter().enumerate() {
+            let sub = progress.step(idx, total);
+            if let Err(e) = runtime.kind.refresh_index(ctx, &runtime.row, sub).await {
+                tracing::warn!(addon = %runtime.row.name, error = %e, "refresh_index failed");
+            }
+        }
+        progress.set(100.0);
+        Ok(())
     }
 
     pub async fn get_catalog(&self, id: Uuid) -> Option<Arc<dyn AddonKind>> {

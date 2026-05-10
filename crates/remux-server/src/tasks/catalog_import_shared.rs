@@ -33,7 +33,7 @@ where
     let catalog_tag = catalog_membership_tag(media_id);
 
     while let Some(items) = chunks.next().await {
-        progress.set(total as f64 / max.max(1) as f64 * 100.0);
+        progress.report(total, max.max(1));
 
         let remaining = max.saturating_sub(total);
         if remaining == 0 {

@@ -243,23 +243,17 @@ where
 pub enum DefaultWebClient {
     #[default]
     Jellyfin,
-    Anfiteatro,
 }
 
 impl DefaultWebClient {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Jellyfin => "jellyfin",
-            Self::Anfiteatro => "anfiteatro",
         }
     }
 
-    pub fn from_str_lossy(value: &str) -> Self {
-        if value.eq_ignore_ascii_case("anfiteatro") {
-            Self::Anfiteatro
-        } else {
-            Self::Jellyfin
-        }
+    pub fn from_str_lossy(_value: &str) -> Self {
+        Self::Jellyfin
     }
 }
 
@@ -2004,30 +1998,6 @@ pub struct ProviderIds {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
-pub struct AnfiteatroReleaseStatus {
-    pub local_commit: Option<String>,
-    pub local_version_display: Option<String>,
-    pub latest_version_tag: Option<String>,
-    pub latest_commit: Option<String>,
-    pub latest_release_url: Option<String>,
-    pub update_available: bool,
-    pub check_error: Option<String>,
-}
-
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
-pub struct AnfiteatroInstallResult {
-    pub installed_tag: Option<String>,
-    pub installed_commit: Option<String>,
-    pub local_version_display: Option<String>,
-    pub changed: bool,
-    pub message: String,
-}
-
-#[skip_serializing_none]
 #[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct UserItemDataDto {
@@ -3647,32 +3617,6 @@ impl Endpoint for UpdateTaskTriggers {
     }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.triggers).unwrap_or_default())
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct GetAnfiteatroReleaseStatus;
-
-impl Endpoint for GetAnfiteatroReleaseStatus {
-    type Output = AnfiteatroReleaseStatus;
-
-    fn path(&self) -> String {
-        "/admin/clients/anfiteatro/release".into()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct InstallLatestAnfiteatroRelease;
-
-impl Endpoint for InstallLatestAnfiteatroRelease {
-    type Output = AnfiteatroInstallResult;
-
-    fn path(&self) -> String {
-        "/admin/clients/anfiteatro/release/install".into()
-    }
-
-    fn method(&self) -> Method {
-        Method::POST
     }
 }
 

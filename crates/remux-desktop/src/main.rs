@@ -11,9 +11,6 @@ include!(concat!(env!("OUT_DIR"), "/dashboard_embed.rs"));
 #[cfg(jellyfin_web_built)]
 include!(concat!(env!("OUT_DIR"), "/jellyfin_web_embed.rs"));
 
-#[cfg(anfiteatro_web_built)]
-include!(concat!(env!("OUT_DIR"), "/anfiteatro_web_embed.rs"));
-
 fn data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -96,11 +93,6 @@ fn main() -> Result<()> {
 }
 
 async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
-    #[cfg(anfiteatro_web_built)]
-    let anfiteatro = Some(&ANFITEATRO_WEB);
-    #[cfg(not(anfiteatro_web_built))]
-    let anfiteatro: Option<&'static include_dir::Dir<'static>> = None;
-
     #[cfg(all(dashboard_built, jellyfin_web_built))]
     let admin = remux_server::embedded_static::EmbeddedDir {
         dir: &DASHBOARD,
@@ -114,16 +106,12 @@ async fn serve(config: remux_server::Config) -> anyhow::Result<()> {
     );
 
     #[cfg(all(dashboard_built, jellyfin_web_built))]
-    let web_client =
-        remux_server::WebClientService::from_embedded(&JELLYFIN_WEB, anfiteatro);
+    let web_client = remux_server::WebClientService::from_embedded(&JELLYFIN_WEB);
 
     #[cfg(not(all(dashboard_built, jellyfin_web_built)))]
     let web_client = {
         let paths = remux_server::FilesystemPaths::default();
-        remux_server::WebClientService::from_filesystem(
-            &paths.web_path,
-            &paths.anfiteatro_web_path,
-        )
+        remux_server::WebClientService::from_filesystem(&paths.web_path)
     };
 
     let port = config.port;

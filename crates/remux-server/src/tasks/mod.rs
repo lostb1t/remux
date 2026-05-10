@@ -14,44 +14,25 @@ use tracing::{error, info};
 use crate::{AppContext, db, ws};
 use remux_sdks::remux::TaskTriggerInfoType;
 
-mod anfiteatro_update;
 mod catalog_import;
 mod catalog_import_shared;
 mod clean_transcode_folder;
 mod iptv_refresh;
 mod jellyfin_import;
-mod opendal_scan;
 mod purge_media;
 mod refresh_all_meta;
 mod refresh_library;
 mod series_sync;
 
-pub use anfiteatro_update::EnsureAnfiteatroTask;
+pub use crate::common::ProgressReporter;
 use catalog_import::CatalogImportTask;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use iptv_refresh::IptvRefreshTask;
 use jellyfin_import::JellyfinImportTask;
-use opendal_scan::OpendalScanTask;
 use purge_media::PurgeMediaTask;
 use refresh_all_meta::RefreshAllMetaTask;
 use refresh_library::RefreshLibraryTask;
 use series_sync::SeriesSyncTask;
-
-// --- Progress reporting ---
-
-#[derive(Clone)]
-pub struct ProgressReporter(Arc<AtomicU64>);
-
-impl ProgressReporter {
-    fn new(inner: Arc<AtomicU64>) -> Self {
-        Self(inner)
-    }
-
-    pub fn set(&self, pct: f64) {
-        let rounded = (pct.clamp(0.0, 100.0) * 10.0).round() / 10.0;
-        self.0.store(rounded.to_bits(), Ordering::Relaxed);
-    }
-}
 
 // --- Task status ---
 
@@ -226,10 +207,6 @@ impl TaskService {
         service.register_task(Arc::new(IptvRefreshTask)).await?;
         service.register_task(Arc::new(PurgeMediaTask)).await?;
         service.register_task(Arc::new(JellyfinImportTask)).await?;
-        service
-            .register_task(Arc::new(EnsureAnfiteatroTask))
-            .await?;
-        service.register_task(Arc::new(OpendalScanTask)).await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
         for trigger in triggers {
