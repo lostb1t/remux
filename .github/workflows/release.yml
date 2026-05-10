@@ -89,7 +89,7 @@ jobs:
         run: |
           VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
           # Extract the section between the first and second version headings
-          awk "/^## \[?${VERSION}\]?/{found=1; next} found && /^## /{exit} found{print}" \
+          awk "/^# \[?${VERSION}\]?/{found=1; next} found && /^# /{exit} found{print}" \
             source/CHANGELOG.md > release-notes.md
           if [ ! -s release-notes.md ]; then
             echo "Release ${VERSION}" > release-notes.md
