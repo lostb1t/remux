@@ -1,8 +1,8 @@
 name: Nightly
 
 on:
-  #schedule:
-  #  - cron: "0 2 * * *"
+  schedule:
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -13,8 +13,34 @@ env:
   REGISTRY_IMAGE: ghcr.io/lostb1t/remux-server
 
 jobs:
+  check-changes:
+    name: Check for changes since last nightly
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare HEAD with last nightly
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          CURRENT_SHA=$(git rev-parse --short HEAD)
+          LAST_TITLE=$(gh release view nightly --repo "lostb1t/remux" --json name --jq '.name' 2>/dev/null || echo "")
+
+          if echo "$LAST_TITLE" | grep -qF "$CURRENT_SHA"; then
+            echo "No changes since last nightly (${CURRENT_SHA}), skipping."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changes detected (${CURRENT_SHA}), building."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
   version:
     name: Compute version
+    needs: check-changes
+    if: needs.check-changes.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
