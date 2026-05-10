@@ -16,7 +16,7 @@ impl Task for PurgeMediaTask {
         "PurgeMedia"
     }
     fn name(&self) -> &str {
-        "Purge Media"
+        "Purge Virtual Media"
     }
     fn category(&self) -> &str {
         "Library"
