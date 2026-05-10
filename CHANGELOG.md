@@ -1,3 +1,12 @@
+# [0.2.0](https://github.com/lostb1t/remux-server/compare/v0.1.0...v0.2.0) (2026-05-10)
+
+
+### Features
+
+* add descriptions to tasks ([2f4f655](https://github.com/lostb1t/remux-server/commit/2f4f655bb10d41d96b431c40de4c29f533647431))
+* clear addon indexes on purge ([1985249](https://github.com/lostb1t/remux-server/commit/19852492b120c0ded851bc4f8340c3a2a9f158ca))
+* use proper parsing library for local files and support external id markers ([b24162f](https://github.com/lostb1t/remux-server/commit/b24162f5c5d4d591dadee0bac6ec2dc71e76f3f1))
+
 # [0.1.0](https://github.com/lostb1t/remux-server/compare/v0.0.0...v0.1.0) (2026-05-10)
 
 
