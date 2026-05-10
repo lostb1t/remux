@@ -61,7 +61,7 @@ impl AddonPreset for OpendalLocalPreset {
             description: "Index and stream video or audio files from a local path."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream],
+            supported_resources: vec![ResourceType::Stream, ResourceType::Catalog],
             supported_types: vec![
                 MediaKind::Movie,
                 MediaKind::Episode,
@@ -130,7 +130,7 @@ impl AddonPreset for OpendalWebdavPreset {
             description: "Index and stream video or audio files from a WebDAV server."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream],
+            supported_resources: vec![ResourceType::Stream, ResourceType::Catalog],
             supported_types: vec![
                 MediaKind::Movie,
                 MediaKind::Episode,
@@ -266,7 +266,9 @@ impl AddonKind for OpendalAddon {
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         Ok(vec![CatalogInfo {
             provider_catalog_id: "files".to_string(),
-            name: "Files".to_string(),
+            name: "files".to_string(),
+            default_enabled: true,
+            default_max_items: Some(999999999),
         }])
     }
 

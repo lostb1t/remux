@@ -62,7 +62,7 @@ impl Task for CatalogImportTask {
                     catalog_states
                         .get(local_id.as_str())
                         .map(|s| s.enabled)
-                        .unwrap_or(false)
+                        .unwrap_or(cat_info.default_enabled)
                 })
                 .collect();
 
@@ -84,6 +84,7 @@ impl Task for CatalogImportTask {
                 let max = catalog_states
                     .get(local_id)
                     .and_then(|s| s.max_items)
+                    .or(cat_info.default_max_items)
                     .map(|n| n as usize)
                     .unwrap_or(global_max);
 

@@ -41,6 +41,24 @@ pub use remux_sdks::stremio::ResourceType;
 pub struct CatalogInfo {
     pub provider_catalog_id: String,
     pub name: String,
+    /// Whether this catalog should be enabled by default (before the user changes it).
+    pub default_enabled: bool,
+    /// Default per-catalog item limit (before the user changes it).
+    pub default_max_items: Option<i64>,
+}
+
+impl CatalogInfo {
+    pub fn new(
+        provider_catalog_id: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider_catalog_id: provider_catalog_id.into(),
+            name: name.into(),
+            default_enabled: false,
+            default_max_items: None,
+        }
+    }
 }
 
 #[async_trait]

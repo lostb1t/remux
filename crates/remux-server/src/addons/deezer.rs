@@ -1198,10 +1198,7 @@ impl AddonKind for DeezerAddon {
         Ok(self
             .playlists()
             .iter()
-            .map(|id| CatalogInfo {
-                provider_catalog_id: id.clone(),
-                name: format!("Deezer playlist {id}"),
-            })
+            .map(|id| CatalogInfo::new(id.clone(), format!("Deezer playlist {id}")))
             .collect())
     }
 

@@ -270,7 +270,12 @@ pub async fn get_addon_catalogs(
         .map(|cat_info| {
             let full_id = make_media_id(id, &cat_info.provider_catalog_id);
             let local_id = full_id.strip_prefix(&prefix).unwrap_or(&full_id);
-            let state_entry = states.get(local_id).cloned().unwrap_or_default();
+            let state_entry = states.get(local_id).cloned().unwrap_or_else(|| {
+                crate::addons::CatalogState {
+                    enabled: cat_info.default_enabled,
+                    max_items: cat_info.default_max_items,
+                }
+            });
             AddonCatalogDto {
                 catalog_id: full_id,
                 name: cat_info.name.clone(),
