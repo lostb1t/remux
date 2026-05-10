@@ -8,7 +8,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: ghcr.io/remuxd/remux
+  REGISTRY_IMAGE: ghcr.io/lostb1t/remux-server
 
 jobs:
   semantic-release:
@@ -46,8 +46,8 @@ jobs:
     with:
       version: ${{ needs.semantic-release.outputs.new_release_version }}
       docker_tags: >-
-        -t ghcr.io/remuxd/remux:${{ needs.semantic-release.outputs.new_release_version }}
-        -t ghcr.io/remuxd/remux:latest
+        -t ghcr.io/lostb1t/remux-server:${{ needs.semantic-release.outputs.new_release_version }}
+        -t ghcr.io/lostb1t/remux-server:latest
       public_docker_tags: >-
         -t ghcr.io/lostb1t/remux:${{ needs.semantic-release.outputs.new_release_version }}
         -t ghcr.io/lostb1t/remux:latest

@@ -10,7 +10,7 @@ on:
       docker_tags:
         description: >-
           Space-separated imagetools tag flags,
-          e.g. "-t ghcr.io/remuxd/remux:1.2.3 -t ghcr.io/remuxd/remux:latest"
+          e.g. "-t ghcr.io/lostb1t/remux-server:1.2.3 -t ghcr.io/lostb1t/remux-server:latest"
         type: string
         required: true
       public_docker_tags:
@@ -35,7 +35,7 @@ on:
         default: ""
 
 env:
-  REGISTRY_IMAGE: ghcr.io/remuxd/remux
+  REGISTRY_IMAGE: ghcr.io/lostb1t/remux-server
   PUBLIC_REGISTRY_IMAGE: ghcr.io/lostb1t/remux
 
 jobs:

@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: ghcr.io/remuxd/remux
+  REGISTRY_IMAGE: ghcr.io/lostb1t/remux-server
 
 jobs:
   version:
@@ -35,7 +35,7 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
       cargo_version: ${{ needs.version.outputs.version }}
-      docker_tags: -t ghcr.io/remuxd/remux:nightly
+      docker_tags: -t ghcr.io/lostb1t/remux-server:nightly
       public_docker_tags: -t ghcr.io/lostb1t/remux:nightly
     secrets: inherit
 
