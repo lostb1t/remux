@@ -423,89 +423,16 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
     }
 
     if meta.imdb_id.is_none() {
-        let external_ids = db::ExternalIds::from_stremio_id(&meta.id);
-        let tmdb_id = external_ids
-            .tmdb
-            .or_else(|| meta.moviedb_id.map(|n| n as i64));
-
-        if let (Some(client), Some(tid)) = (tmdb_client, tmdb_id) {
-            match meta.media_type {
-                sdks::stremio::MediaType::Movie => {
-                    match client
-                        .execute(
-                            sdks::tmdb::MovieEndpoint::new(tid)
-                                .with_cache(Duration::from_secs(3600)),
-                        )
-                        .await
-                    {
-                        Ok(movie) => {
-                            if needs_release_dates(meta) {
-                                if let Some(rd) = movie.release_dates {
-                                    inject_tmdb_release_dates(meta, rd);
-                                }
-                            }
-                            if movie.imdb_id.is_none() {
-                                debug!(id = %meta.id, tmdb_id = tid, "TMDB movie has no imdb_id");
-                            }
-                            meta.imdb_id = movie.imdb_id;
-                        }
-                        Err(e) => {
-                            warn!(id = %meta.id, tmdb_id = tid, error = %e, "TMDB movie lookup failed");
-                        }
-                    }
-                }
-                sdks::stremio::MediaType::Series => {
-                    match client
-                        .execute(
-                            sdks::tmdb::SeriesEndpoint::new(tid)
-                                .with_cache(Duration::from_secs(3600)),
-                        )
-                        .await
-                    {
-                        Ok(series) => {
-                            meta.imdb_id = series.external_ids.and_then(|e| e.imdb_id);
-                            if meta.imdb_id.is_none() {
-                                debug!(id = %meta.id, tmdb_id = tid, "TMDB series has no imdb_id in external_ids");
-                            }
-                        }
-                        Err(e) => {
-                            warn!(id = %meta.id, tmdb_id = tid, error = %e, "TMDB series lookup failed");
-                        }
-                    }
-                }
-                _ => {
-                    debug!(id = %meta.id, tmdb_id = tid, media_type = ?meta.media_type, "TMDB lookup skipped: unsupported media_type");
-                }
-            }
+        let mut ids = db::ExternalIds::from_stremio_id(&meta.id);
+        if ids.tmdb.is_none() {
+            ids.tmdb = meta.moviedb_id.map(|n| n as i64);
         }
-
-        if meta.imdb_id.is_none() {
-            if let (Some(client), Some(tvdb)) =
-                (tmdb_client, db::ExternalIds::from_stremio_id(&meta.id).tvdb)
-            {
-                let find_resp = client
-                    .execute(
-                        sdks::tmdb::FindByIdEndpoint {
-                            external_id: tvdb.to_string(),
-                            external_source: "tvdb_id".to_string(),
-                        }
-                        .with_cache(Duration::from_secs(3600)),
-                    )
-                    .await
-                    .ok();
-
-                meta.imdb_id = find_resp.and_then(|r| match meta.media_type {
-                    sdks::stremio::MediaType::Movie => {
-                        r.movie_results.into_iter().next().and_then(|m| m.imdb_id)
-                    }
-                    sdks::stremio::MediaType::Series => r
-                        .tv_results
-                        .into_iter()
-                        .next()
-                        .and_then(|s| s.external_ids)
-                        .and_then(|e| e.imdb_id),
-                    _ => None,
-                });
+        if let Some(client) = tmdb_client {
+            if !ids.is_empty() {
+                let is_tv = meta.media_type == sdks::stremio::MediaType::Series;
+                meta.imdb_id =
+                    crate::addons::tmdb::resolve_imdb_from_ids(&ids, is_tv, client)
+                        .await;
             }
         }
     }

@@ -558,9 +558,6 @@ async fn scan_addon(
         VIDEO_EXTENSIONS
     };
 
-    let ep_re =
-        Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,2})|(\d{1,2})[xX](\d{2})").unwrap();
-    let year_re = Regex::new(r"\b((?:19|20)\d{2})\b").unwrap();
     let track_num_re = Regex::new(r"^(\d{1,3})[.\s\-_\[\]]+").unwrap();
 
     let mut lister = operator.lister_with("/").recursive(true).await?;
@@ -613,6 +610,8 @@ async fn scan_addon(
             .unwrap_or(&name)
             .to_string();
 
+        let jellyfin_ids = db::ExternalIds::from_path(&path);
+
         let (title, season, episode, track_number, year, imdb_id) = match media_kind
             .as_str()
         {
@@ -626,17 +625,31 @@ async fn scan_addon(
                 } else {
                     stem.clone()
                 };
-                let title = clean_filename(&clean_stem, &ep_re, &year_re);
+                let parsed = hunch::hunch(&clean_stem);
+                let title = parsed.title().unwrap_or(clean_stem.as_str()).to_string();
                 (Some(title), None, None, track_number, None, None)
             }
             "episode" => {
-                let (season, episode) = parse_episode(&stem, &ep_re);
-                let year = parse_year(&stem, &year_re);
-                let clean_title = clean_filename(&stem, &ep_re, &year_re);
+                let parsed = hunch::hunch(&stem);
+                let season = parsed.season().map(|s| s as i64);
+                let episode = parsed.episode().map(|e| e as i64);
+                let year = parsed.year().map(|y| y as i64);
+                let clean_title = parsed.title().unwrap_or(stem.as_str()).to_string();
 
                 let existing_imdb = fetch_existing_imdb(ctx, addon.id, &path).await?;
                 let imdb_id = if let Some(id) = existing_imdb {
                     Some(id)
+                } else if !jellyfin_ids.is_empty() {
+                    if let Some(client) = tmdb {
+                        crate::addons::tmdb::resolve_imdb_from_ids(
+                            &jellyfin_ids,
+                            true,
+                            client,
+                        )
+                        .await
+                    } else {
+                        jellyfin_ids.imdb.clone()
+                    }
                 } else {
                     resolve_imdb(tmdb, &clean_title, None, true).await
                 };
@@ -650,12 +663,24 @@ async fn scan_addon(
             }
             _ => {
                 // movie
-                let year = parse_year(&stem, &year_re);
-                let clean_title = clean_filename(&stem, &ep_re, &year_re);
+                let parsed = hunch::hunch(&stem);
+                let year = parsed.year().map(|y| y as i64);
+                let clean_title = parsed.title().unwrap_or(stem.as_str()).to_string();
 
                 let existing_imdb = fetch_existing_imdb(ctx, addon.id, &path).await?;
                 let imdb_id = if let Some(id) = existing_imdb {
                     Some(id)
+                } else if !jellyfin_ids.is_empty() {
+                    if let Some(client) = tmdb {
+                        crate::addons::tmdb::resolve_imdb_from_ids(
+                            &jellyfin_ids,
+                            false,
+                            client,
+                        )
+                        .await
+                    } else {
+                        jellyfin_ids.imdb.clone()
+                    }
                 } else {
                     resolve_imdb(tmdb, &clean_title, year, false).await
                 };
@@ -747,48 +772,6 @@ fn build_operator(
         }
         other => anyhow::bail!("opendal: unknown preset kind {:?}", other),
     }
-}
-
-fn parse_episode(stem: &str, ep_re: &Regex) -> (Option<i64>, Option<i64>) {
-    if let Some(caps) = ep_re.captures(stem) {
-        if let (Some(s), Some(e)) = (caps.get(1), caps.get(2)) {
-            return (s.as_str().parse().ok(), e.as_str().parse().ok());
-        }
-        if let (Some(s), Some(e)) = (caps.get(3), caps.get(4)) {
-            return (s.as_str().parse().ok(), e.as_str().parse().ok());
-        }
-    }
-    (None, None)
-}
-
-fn parse_year(stem: &str, year_re: &Regex) -> Option<i64> {
-    year_re
-        .captures(stem)
-        .and_then(|c| c.get(1))
-        .and_then(|m| m.as_str().parse().ok())
-}
-
-fn clean_filename(stem: &str, ep_re: &Regex, year_re: &Regex) -> String {
-    let cut = ep_re
-        .find(stem)
-        .map(|m| m.start())
-        .unwrap_or(usize::MAX)
-        .min(year_re.find(stem).map(|m| m.start()).unwrap_or(usize::MAX));
-
-    let raw = if cut == usize::MAX {
-        stem.to_string()
-    } else {
-        stem[..cut].to_string()
-    };
-
-    raw.replace('.', " ")
-        .replace('_', " ")
-        .replace('-', " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_string()
 }
 
 async fn fetch_existing_imdb(

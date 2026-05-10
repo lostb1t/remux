@@ -38,6 +38,7 @@ use config::Config;
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
+use regex::Regex;
 use reqwest;
 use reqwest::header::LOCATION;
 use serde::{Deserialize, Serialize};
@@ -51,7 +52,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use thiserror::Error;
 use timed;
 use tower::Layer;
@@ -563,6 +564,45 @@ impl ExternalIds {
             }
         }
         Self::default()
+    }
+
+    /// Parse Jellyfin metadata provider IDs from a file path.
+    ///
+    /// Scans all path components for bracket-encoded provider IDs, e.g.
+    /// `Movies/The Matrix (1999) [tmdbid-603]/The Matrix.mkv` → `tmdb: Some(603)`.
+    /// Supported providers (case-insensitive): tmdbid/tmdb, imdbid/imdb, tvdbid/tvdb.
+    pub fn from_path(path: &str) -> Self {
+        static RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"(?i)\[(tmdbid?|imdbid?|tvdbid?)-([^\]]+)\]").unwrap()
+        });
+        let mut result = Self::default();
+        for cap in RE.captures_iter(path) {
+            let provider = cap[1].to_ascii_lowercase();
+            let value = cap[2].trim().to_string();
+            match provider.as_str() {
+                "tmdb" | "tmdbid" => {
+                    if result.tmdb.is_none() {
+                        result.tmdb = value.parse::<i64>().ok();
+                    }
+                }
+                "imdb" | "imdbid" => {
+                    if result.imdb.is_none() {
+                        result.imdb = Some(value);
+                    }
+                }
+                "tvdb" | "tvdbid" => {
+                    if result.tvdb.is_none() {
+                        result.tvdb = value.parse::<i64>().ok();
+                    }
+                }
+                _ => {}
+            }
+        }
+        result
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.imdb.is_none() && self.tmdb.is_none() && self.tvdb.is_none()
     }
 
     /// Merge another `ExternalIds` into `self`, with `other` taking precedence

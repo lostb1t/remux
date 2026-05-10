@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::{
@@ -950,4 +950,83 @@ pub async fn tmdb_remote_images(
     }
 
     Ok(out)
+}
+
+/// Resolve an IMDB ID from already-known external IDs without doing a title search.
+///
+/// Resolution order: direct IMDB → TMDB lookup → TVDB lookup via FindById.
+pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
+    ids: &db::ExternalIds,
+    is_tv: bool,
+    client: &sdks::RestClient<A>,
+) -> Option<String> {
+    if let Some(ref imdb) = ids.imdb {
+        return Some(imdb.clone());
+    }
+
+    if let Some(tmdb_id) = ids.tmdb {
+        if is_tv {
+            match client
+                .execute(
+                    sdks::tmdb::SeriesEndpoint::new(tmdb_id)
+                        .with_cache(Duration::from_secs(86400)),
+                )
+                .await
+            {
+                Ok(series) => {
+                    if let Some(imdb) = series.external_ids.and_then(|e| e.imdb_id) {
+                        return Some(imdb);
+                    }
+                    debug!(tmdb_id, "TMDB series has no imdb_id in external_ids");
+                }
+                Err(e) => warn!(tmdb_id, error = %e, "TMDB series lookup failed"),
+            }
+        } else {
+            match client
+                .execute(
+                    sdks::tmdb::MovieEndpoint::new(tmdb_id)
+                        .with_cache(Duration::from_secs(86400)),
+                )
+                .await
+            {
+                Ok(movie) => {
+                    if let Some(imdb) = movie.imdb_id {
+                        return Some(imdb);
+                    }
+                    debug!(tmdb_id, "TMDB movie has no imdb_id");
+                }
+                Err(e) => warn!(tmdb_id, error = %e, "TMDB movie lookup failed"),
+            }
+        }
+    }
+
+    if let Some(tvdb_id) = ids.tvdb {
+        let find_resp = client
+            .execute(
+                sdks::tmdb::FindByIdEndpoint {
+                    external_id: tvdb_id.to_string(),
+                    external_source: "tvdb_id".to_string(),
+                }
+                .with_cache(Duration::from_secs(86400)),
+            )
+            .await
+            .ok()?;
+
+        return if is_tv {
+            find_resp
+                .tv_results
+                .into_iter()
+                .next()
+                .and_then(|s| s.external_ids)
+                .and_then(|e| e.imdb_id)
+        } else {
+            find_resp
+                .movie_results
+                .into_iter()
+                .next()
+                .and_then(|m| m.imdb_id)
+        };
+    }
+
+    None
 }
