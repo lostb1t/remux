@@ -573,7 +573,8 @@ impl ExternalIds {
     /// Supported providers (case-insensitive): tmdbid/tmdb, imdbid/imdb, tvdbid/tvdb.
     pub fn from_path(path: &str) -> Self {
         static RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"(?i)\[(tmdbid?|imdbid?|tvdbid?)-([^\]]+)\]").unwrap()
+            Regex::new(r"(?i)\[(tmdb(?:id)?|imdb(?:id)?|tvdb(?:id)?)-([^\]]+)\]")
+                .unwrap()
         });
         let mut result = Self::default();
         for cap in RE.captures_iter(path) {
@@ -3144,4 +3145,72 @@ fn build_episode_relations_from_ep(
     );
     add_names(&mut relations, ep.writers.as_ref(), RelationRole::Writer);
     relations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_path_tmdb_in_directory() {
+        let ids = ExternalIds::from_path(
+            "Movies/The Matrix (1999) [tmdbid-603]/The Matrix.mkv",
+        );
+        assert_eq!(ids.tmdb, Some(603));
+        assert!(ids.imdb.is_none());
+        assert!(ids.tvdb.is_none());
+    }
+
+    #[test]
+    fn from_path_tvdb_in_directory() {
+        let ids = ExternalIds::from_path(
+            "TV/Breaking Bad [tvdbid-81189]/Season 1/S01E01.mkv",
+        );
+        assert_eq!(ids.tvdb, Some(81189));
+        assert!(ids.tmdb.is_none());
+    }
+
+    #[test]
+    fn from_path_imdb_in_filename() {
+        let ids = ExternalIds::from_path("[imdbid-tt0133093] The Matrix 1999.mkv");
+        assert_eq!(ids.imdb.as_deref(), Some("tt0133093"));
+    }
+
+    #[test]
+    fn from_path_short_form_tmdb() {
+        let ids = ExternalIds::from_path("[tmdb-603]/movie.mkv");
+        assert_eq!(ids.tmdb, Some(603));
+    }
+
+    #[test]
+    fn from_path_case_insensitive() {
+        let ids = ExternalIds::from_path("[TMDBID-603]/movie.mkv");
+        assert_eq!(ids.tmdb, Some(603));
+    }
+
+    #[test]
+    fn from_path_multiple_ids() {
+        let ids = ExternalIds::from_path("Show [tmdbid-603] [tvdbid-81189]/S01E01.mkv");
+        assert_eq!(ids.tmdb, Some(603));
+        assert_eq!(ids.tvdb, Some(81189));
+    }
+
+    #[test]
+    fn from_path_invalid_numeric_id_is_empty() {
+        let ids = ExternalIds::from_path("[tmdbid-notanumber]/movie.mkv");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn from_path_no_brackets_is_empty() {
+        let ids = ExternalIds::from_path("The.Matrix.1999.mkv");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn from_path_first_match_wins_per_field() {
+        // directory has [tmdbid-603], filename repeats with a different id — first wins
+        let ids = ExternalIds::from_path("[tmdbid-603]/[tmdbid-999].mkv");
+        assert_eq!(ids.tmdb, Some(603));
+    }
 }

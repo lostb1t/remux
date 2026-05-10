@@ -889,3 +889,186 @@ async fn prune_stale_paths(
     tx.commit().await?;
     Ok(result.rows_affected() as usize)
 }
+
+#[cfg(test)]
+mod tests {
+    use regex::Regex;
+
+    // ---------------------------------------------------------------------------
+    // Movie filename parsing (title + year via hunch)
+    // ---------------------------------------------------------------------------
+
+    struct MovieCase {
+        stem: &'static str,
+        title: &'static str,
+        year: Option<i32>,
+    }
+
+    #[test]
+    fn movie_filename_parsing() {
+        let cases = [
+            MovieCase {
+                stem: "The.Matrix.1999.1080p.BluRay.x264",
+                title: "The Matrix",
+                year: Some(1999),
+            },
+            MovieCase {
+                stem: "3.Days.to.Kill.2014.720p.BluRay.x264-YIFY",
+                title: "3 Days to Kill",
+                year: Some(2014),
+            },
+            MovieCase {
+                stem: "Brave (2006)",
+                title: "Brave",
+                year: Some(2006),
+            },
+            MovieCase {
+                stem: "The Wolf of Wall Street (2013)",
+                title: "The Wolf of Wall Street",
+                year: Some(2013),
+            },
+            MovieCase {
+                stem: "curse.of.chucky.2013.stv.unrated.multi.1080p",
+                title: "curse of chucky",
+                year: Some(2013),
+            },
+        ];
+
+        for c in &cases {
+            let parsed = hunch::hunch(c.stem);
+            assert_eq!(
+                parsed.title().unwrap_or(""),
+                c.title,
+                "title mismatch for {:?}",
+                c.stem
+            );
+            assert_eq!(parsed.year(), c.year, "year mismatch for {:?}", c.stem);
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Episode filename parsing (title + season + episode via hunch)
+    // ---------------------------------------------------------------------------
+
+    struct EpisodeCase {
+        stem: &'static str,
+        title: &'static str,
+        season: Option<i32>,
+        episode: Option<i32>,
+    }
+
+    #[test]
+    fn episode_filename_parsing() {
+        let cases = [
+            EpisodeCase {
+                stem: "Breaking.Bad.S01E05.720p.BluRay",
+                title: "Breaking Bad",
+                season: Some(1),
+                episode: Some(5),
+            },
+            EpisodeCase {
+                stem: "The.Walking.Dead.4x01.720p",
+                title: "The Walking Dead",
+                season: Some(4),
+                episode: Some(1),
+            },
+            EpisodeCase {
+                stem: "anything_s01e02",
+                title: "anything",
+                season: Some(1),
+                episode: Some(2),
+            },
+            EpisodeCase {
+                stem: "Foo.2019.S04E03",
+                title: "Foo",
+                season: Some(4),
+                episode: Some(3),
+            },
+        ];
+
+        for c in &cases {
+            let parsed = hunch::hunch(c.stem);
+            assert_eq!(
+                parsed.title().unwrap_or(""),
+                c.title,
+                "title mismatch for {:?}",
+                c.stem
+            );
+            assert_eq!(
+                parsed.season(),
+                c.season,
+                "season mismatch for {:?}",
+                c.stem
+            );
+            assert_eq!(
+                parsed.episode(),
+                c.episode,
+                "episode mismatch for {:?}",
+                c.stem
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Track leading-number stripping (track_num_re)
+    // ---------------------------------------------------------------------------
+
+    struct TrackCase {
+        stem: &'static str,
+        track_number: Option<i64>,
+        remainder: &'static str,
+    }
+
+    #[test]
+    fn track_number_stripping() {
+        let re = Regex::new(r"^(\d{1,3})[.\s\-_\[\]]+").unwrap();
+
+        let cases = [
+            TrackCase {
+                stem: "01. Artist - Song",
+                track_number: Some(1),
+                remainder: "Artist - Song",
+            },
+            TrackCase {
+                stem: "03 - Another Song",
+                track_number: Some(3),
+                remainder: "Another Song",
+            },
+            TrackCase {
+                stem: "123_Track Name",
+                track_number: Some(123),
+                remainder: "Track Name",
+            },
+            TrackCase {
+                stem: "Song Without Number",
+                track_number: None,
+                remainder: "Song Without Number",
+            },
+        ];
+
+        for c in &cases {
+            let track_number = re
+                .captures(c.stem)
+                .and_then(|cap| cap.get(1))
+                .and_then(|m| m.as_str().parse::<i64>().ok());
+
+            let remainder = if track_number.is_some() {
+                re.replace(c.stem, "").into_owned()
+            } else {
+                c.stem.to_string()
+            };
+
+            assert_eq!(
+                track_number, c.track_number,
+                "track_number mismatch for {:?}",
+                c.stem
+            );
+            assert_eq!(
+                remainder.trim(),
+                c.remainder,
+                "remainder mismatch for {:?}",
+                c.stem
+            );
+        }
+    }
+}
