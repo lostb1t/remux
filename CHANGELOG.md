@@ -1,3 +1,10 @@
+# [0.3.0](https://github.com/lostb1t/remux-server/compare/v0.2.0...v0.3.0) (2026-05-10)
+
+
+### Features
+
+* add descriptions to tasks ([2f4f655](https://github.com/lostb1t/remux-server/commit/2f4f655bb10d41d96b431c40de4c29f533647431))
+
 # [0.2.0](https://github.com/lostb1t/remux-server/compare/v0.1.0...v0.2.0) (2026-05-10)
 
 
