@@ -54,9 +54,10 @@ jobs:
       ref: ${{ needs.semantic-release.outputs.new_release_git_tag }}
     secrets: inherit
 
-  attach-artifacts:
-    name: Attach artifacts to release
+  publish-release:
+    name: Publish release
     needs: [semantic-release, build]
+    if: needs.semantic-release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download server binary (amd64)
@@ -78,13 +79,54 @@ jobs:
           cp artifacts/arm64/remux-server "remux-server-${VERSION}-linux-arm64"
           chmod +x "remux-server-${VERSION}-linux-amd64" "remux-server-${VERSION}-linux-arm64"
 
-      - name: Upload to GitHub release
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.semantic-release.outputs.new_release_git_tag }}
+          path: source
+
+      - name: Extract changelog for this release
+        run: |
+          VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
+          # Extract the section between the first and second version headings
+          awk "/^## \[?${VERSION}\]?/{found=1; next} found && /^## /{exit} found{print}" \
+            source/CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Release ${VERSION}" > release-notes.md
+          fi
+
+      - name: Create release on public repo
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
           TAG="${{ needs.semantic-release.outputs.new_release_git_tag }}"
-          gh release upload "${TAG}" \
+          gh release create "${TAG}" \
+            --repo "lostb1t/remux" \
+            --title "${TAG}" \
+            --notes-file release-notes.md \
             "remux-server-${VERSION}-linux-amd64" \
-            "remux-server-${VERSION}-linux-arm64" \
-            --repo "lostb1t/remux"
+            "remux-server-${VERSION}-linux-arm64"
+
+      - name: Checkout public repo
+        uses: actions/checkout@v4
+        with:
+          repository: lostb1t/remux
+          token: ${{ secrets.GH_TOKEN }}
+          path: public-repo
+
+      - name: Push README to public repo
+        run: |
+          cp source/README.md public-repo/README.md
+          cd public-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- README.md; then
+            echo "README.md is already up to date"
+            exit 0
+          fi
+
+          git add README.md
+          git commit -m "docs: sync README from ${{ needs.semantic-release.outputs.new_release_git_tag }}"
+          git push
