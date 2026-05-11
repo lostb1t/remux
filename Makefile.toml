@@ -75,9 +75,6 @@ dependencies = ["jellyfin-web-ensure"]
 command = "docker"
 args = ["buildx", "build", "--network", "host", "-f", "docker/Dockerfile", "-t", "ghcr.io/lostb1t/remux-server:local", "."]
 
-[tasks.build]
-command = "docker"
-args = ["build", "-f", "Dockerfile.dev", "-t", "remux-dev", "."]
 
 [tasks.jellyfin-web-checkout]
 description = "Clone jellyfin-web if not already present"
