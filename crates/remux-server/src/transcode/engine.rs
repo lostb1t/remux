@@ -52,14 +52,14 @@ pub(crate) fn select_hw_accel(
 ) -> HardwareAccelerationType {
     let has = |name: &str| hwaccels_output.lines().any(|l| l.trim() == name);
 
-    // Priority: nvenc > vaapi > qsv > videotoolbox > v4l2m2m > rkmpp > none
+    // Priority: nvenc > qsv > vaapi > videotoolbox > v4l2m2m > rkmpp > none
+    // QSV beats VAAPI: if ffmpeg reports both, we're on Intel and QSV is the better path.
     if has("cuda") && device_exists("/dev/nvidia0") {
         HardwareAccelerationType::Nvenc
+    } else if has("qsv") && device_exists("/dev/dri/renderD128") {
+        HardwareAccelerationType::Qsv
     } else if has("vaapi") && device_exists("/dev/dri/renderD128") {
         HardwareAccelerationType::Vaapi
-    } else if has("qsv") && device_exists("/dev/dri/renderD128") {
-        // Intel QSV uses the same DRI render node as VAAPI.
-        HardwareAccelerationType::Qsv
     } else if has("videotoolbox") && cfg!(target_os = "macos") {
         // VideoToolbox is an Apple-only API; never valid on Linux/Asahi.
         HardwareAccelerationType::VideoToolbox
@@ -1285,6 +1285,15 @@ mod tests {
         assert_eq!(
             select_hw_accel(hwaccels, no_devices),
             HardwareAccelerationType::None
+        );
+    }
+
+    #[test]
+    fn hw_qsv_beats_vaapi_when_both_available() {
+        let hwaccels = "Hardware acceleration methods:\nvaapi\nqsv\n";
+        assert_eq!(
+            select_hw_accel(hwaccels, |p| p == "/dev/dri/renderD128"),
+            HardwareAccelerationType::Qsv
         );
     }
 
