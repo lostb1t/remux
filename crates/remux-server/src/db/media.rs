@@ -1806,7 +1806,70 @@ impl Media {
             }
         }
 
-        // Batch-load child counts for folder-like items (Series, Season, Collection, Folder)
+        // Batch-load genre relations for Movie/Episode/Series/Season records
+        let genre_ids: Vec<Uuid> = records
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m.kind,
+                    MediaKind::Movie
+                        | MediaKind::Episode
+                        | MediaKind::Series
+                        | MediaKind::Season
+                )
+            })
+            .map(|m| m.id)
+            .collect();
+        if !genre_ids.is_empty() {
+            let mut g_qb = sqlx::QueryBuilder::new(
+                "SELECT mr.left_media_id, mr.relation_id, mr.right_media_id, mr.weight, \
+                 g.id, g.title, g.poster \
+                 FROM media_relations mr \
+                 JOIN media g ON g.id = mr.right_media_id \
+                 WHERE g.kind = 'genre' AND mr.left_media_id IN (",
+            );
+            let mut sep = g_qb.separated(", ");
+            for id in &genre_ids {
+                sep.push_bind(id);
+            }
+            g_qb.push(") ORDER BY mr.left_media_id, mr.weight");
+            match g_qb.build().fetch_all(db).await {
+                Ok(rows) => {
+                    let mut genres_map: HashMap<Uuid, Vec<(MediaRelation, Media)>> =
+                        HashMap::new();
+                    for row in rows {
+                        let left_media_id: Uuid = row.get(0);
+                        let rel = MediaRelation {
+                            relation_id: row.get(1),
+                            left_media_id,
+                            right_media_id: row.get(2),
+                            weight: row.get(3),
+                            ..Default::default()
+                        };
+                        let genre = Media {
+                            id: row.get(4),
+                            title: row.get(5),
+                            kind: MediaKind::Genre,
+                            poster: row.get(6),
+                            ..Default::default()
+                        };
+                        genres_map
+                            .entry(left_media_id)
+                            .or_default()
+                            .push((rel, genre));
+                    }
+                    for media in &mut records {
+                        if let Some(genre_rels) = genres_map.remove(&media.id) {
+                            media.relations = Some(genre_rels);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to batch-load genre relations: {e}");
+                }
+            }
+        }
+
         if filter.include_child_count && !records.is_empty() {
             let folder_ids: Vec<Uuid> = records
                 .iter()

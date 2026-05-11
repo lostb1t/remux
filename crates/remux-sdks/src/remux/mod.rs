@@ -633,6 +633,7 @@ pub struct PublicSystemInfo {
 #[serde(rename_all = "PascalCase")]
 pub struct SystemInfo {
     pub operating_system_display_name: Option<String>,
+    pub product_name: Option<String>,
     #[default(false)]
     pub has_pending_restart: bool,
     #[default(false)]
@@ -1474,8 +1475,7 @@ pub struct MediaSourceInfo {
     pub name: Option<String>,
     pub open_token: Option<String>,
     pub path: Option<String>,
-    #[default("File".to_string())]
-    pub protocol: String,
+    pub protocol: MediaProtocol,
     #[default(false)]
     pub read_at_native_framerate: bool,
     pub required_http_headers: Option<HashMap<String, String>>,
@@ -1501,13 +1501,11 @@ pub struct MediaSourceInfo {
     #[default("http".to_string())]
     pub transcoding_sub_protocol: String,
     pub transcoding_url: Option<String>,
-    #[default("Default".to_string())]
-    pub type_: String,
+    pub type_: MediaSourceType,
     #[default(false)]
     pub use_most_compatible_transcoding_profile: bool,
     //  pub video3_d_format: Option<Video3DFormat>,
-    #[default("VideoFile".to_string())]
-    pub video_type: String,
+    pub video_type: VideoType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segments: Option<MediaSegments>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2065,6 +2063,43 @@ pub enum RemuxCollectionKind {
     Smart,
 }
 
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum MediaProtocol {
+    #[default]
+    File,
+    Http,
+}
+
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum MediaSourceType {
+    #[default]
+    Default,
+    Placeholder,
+}
+
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum VideoType {
+    #[default]
+    VideoFile,
+    BluRay,
+    Dvd,
+    Iso,
+    HdDvd,
+}
+
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum LocationType {
+    #[default]
+    FileSystem,
+    Remote,
+    Virtual,
+    Offline,
+}
+
 #[derive(
     Default,
     Clone,
@@ -2360,7 +2395,7 @@ pub struct BaseItemDto {
     pub album_artists: Option<Vec<NameIdPair>>,
     pub season_name: Option<String>,
     pub media_streams: Option<Vec<MediaStream>>,
-    pub video_type: Option<String>,
+    pub video_type: Option<VideoType>,
     pub part_count: Option<i64>,
     pub media_source_count: Option<i64>,
     pub image_tags: Option<ImageTags>,
@@ -2373,7 +2408,8 @@ pub struct BaseItemDto {
     pub parent_primary_image_item_id: Option<String>,
     pub parent_primary_image_tag: Option<String>,
     //pub chapters: Option<Vec<ChapterInfo>>,
-    pub location_type: Option<String>,
+    #[default(LocationType::FileSystem)]
+    pub location_type: LocationType,
     pub iso_type: Option<String>,
     #[default(MediaType::Unknown)]
     pub media_type: MediaType,
@@ -2801,6 +2837,7 @@ pub enum ItemFields {
     ItemCounts,
     MediaSourceCount,
     MediaSources,
+    AlternateMediaSources,
     OriginalTitle,
     Overview,
     ParentId,

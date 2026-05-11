@@ -1,9 +1,11 @@
 use crate::api;
 use crate::common;
+use crate::common::ToRunTimeTicks;
 use crate::common::get_uuid;
 use crate::db;
 use crate::sdks::stremio;
 use anyhow::Result;
+use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 
 // Heuristic metadata fallback for remote source URLs when ffprobe metadata is
@@ -121,23 +123,16 @@ fn fallback_media_streams(source: &db::Media) -> Vec<api::MediaStream> {
 impl From<db::Media> for api::MediaSourceInfo {
     fn from(source: db::Media) -> Self {
         let is_remote = source.is_remote_url();
-        let protocol = source.media_source_protocol().to_string();
+        let protocol = if is_remote {
+            api::MediaProtocol::Http
+        } else {
+            api::MediaProtocol::File
+        };
         let container = source
             .url
             .as_ref()
             .and_then(|d| d.as_http_url())
             .and_then(infer_container_from_url);
-
-        let clean_path = source
-            .url
-            .as_ref()
-            .and_then(|d| d.as_http_url())
-            .and_then(|u| {
-                url::Url::parse(u).ok().and_then(|parsed| {
-                    parsed.path_segments()?.last().map(|s| s.to_string())
-                })
-            })
-            .unwrap_or_else(|| source.title.clone());
 
         let remux = Some(api::MediaSourceRemuxInfo {
             provider_info: source
@@ -145,22 +140,31 @@ impl From<db::Media> for api::MediaSourceInfo {
                 .and_then(|info| serde_json::to_value(info).ok()),
         });
 
+        let url_path = source
+            .url
+            .as_ref()
+            .and_then(|d| d.as_http_url().map(str::to_owned));
+        let is_stub = url_path.is_none();
+        let path = url_path.or_else(|| Some(format!("remux://{}", source.id)));
+
         api::MediaSourceInfo {
             id: source.id.clone(),
             e_tag: source.id.clone(),
-            path: source
-                .url
-                .as_ref()
-                .and_then(|d| d.as_http_url().map(str::to_owned)),
+            path,
             protocol,
-            supports_transcoding: false,
+            supports_transcoding: is_stub,
             supports_direct_stream: true,
             supports_direct_play: true,
             is_remote,
             name: Some(source.title.clone()),
             container,
             remux,
-            has_segments: true,
+            has_segments: !is_stub,
+            formats: Some(vec![]),
+            required_http_headers: Some(HashMap::new()),
+            run_time_ticks: source
+                .runtime
+                .and_then(|r| r.to_ticks(common::TickUnit::Seconds)),
             // media_streams,
             ..Default::default()
         }
@@ -242,7 +246,7 @@ pub fn stream_into_media_source_info(
         id: id.clone(),
         e_tag: id.clone(),
         path: stream.url,
-        protocol: "File".to_string(),
+        protocol: api::MediaProtocol::File,
         supports_transcoding: false,
         supports_direct_stream: true,
         supports_direct_play: true,

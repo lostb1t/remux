@@ -519,6 +519,7 @@ pub async fn system_info(
     Ok(Json(api::SystemInfo {
         id: Some(server_id()),
         server_name: config.server_name,
+        product_name: Some("Jellyfin Server".to_string()),
         can_self_restart: Some(true),
         has_pending_restart: false,
         is_shutting_down: false,

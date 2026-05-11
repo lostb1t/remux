@@ -504,6 +504,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     }
     item.external_urls = external_urls;
 
+    // several dlients require at least one stream
     if media.kind == db::MediaKind::Movie
         || media.kind == db::MediaKind::Episode
         || media.kind == db::MediaKind::Track
@@ -520,28 +521,29 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 }
                 Some(infos)
             }
-            None => None,
+            None => Some(vec![media.clone().into()]),
         };
-    }
-
-    if matches!(
-        media.kind,
-        db::MediaKind::Collection | db::MediaKind::Folder
-    ) {
-        item.location_type = Some("FileSystem".to_string());
+        item.path = item
+            .media_sources
+            .as_ref()
+            .and_then(|s| s.first())
+            .and_then(|s| s.path.clone());
+        if media.kind != db::MediaKind::Track {
+            item.video_type = Some(VideoType::VideoFile);
+        }
     }
 
     if media.kind == db::MediaKind::TvProgram {
         item.channel_id = media.parent_id.map(|id| id.to_string());
         item.channel_primary_image_tag = media.series_poster.clone();
-        item.location_type = Some("Remote".to_string());
+        item.location_type = LocationType::Remote;
         item.can_delete = Some(false);
         item.can_download = Some(false);
         item.lock_data = false;
     }
 
     if media.kind == db::MediaKind::TvChannel {
-        item.location_type = Some("Remote".to_string());
+        item.location_type = LocationType::Remote;
         item.can_delete = Some(false);
         item.can_download = Some(false);
         item.lock_data = false;
@@ -555,14 +557,14 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .url
                 .as_ref()
                 .and_then(|d| d.as_http_url().map(str::to_owned)),
-            protocol: "Http".to_string(),
+            protocol: MediaProtocol::Http,
             is_remote: true,
             is_infinite_stream: true,
             supports_direct_play: true,
             supports_direct_stream: true,
             supports_transcoding: true,
-            type_: "Placeholder".to_string(),
-            video_type: "VideoFile".to_string(),
+            type_: MediaSourceType::Placeholder,
+            video_type: VideoType::VideoFile,
             ..Default::default()
         }]);
     }

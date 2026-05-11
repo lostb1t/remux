@@ -1077,7 +1077,7 @@ pub async fn item(
             id: media.id,
             e_tag: media.id,
             name: Some(media.title.clone()),
-            protocol: "Http".to_string(),
+            protocol: api::MediaProtocol::Http,
             is_remote: true,
             supports_direct_play: true,
             supports_direct_stream: true,
@@ -1120,7 +1120,7 @@ pub async fn item(
             db::MediaKind::TvChannel | db::MediaKind::TvProgram
         )
     {
-        base_item.location_type = Some("Virtual".to_string());
+        base_item.location_type = api::LocationType::Virtual;
         base_item.path = None;
         base_item.can_download = Some(false);
     }
