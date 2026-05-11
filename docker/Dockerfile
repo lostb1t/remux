@@ -11,6 +11,9 @@ ENV FFPROBE_PATH=/app/jellyfin-ffmpeg/ffprobe
 # jellyfin-ffmpeg portable bundles iHD and other VA drivers under lib/dri/
 ENV LIBVA_DRIVERS_PATH=/app/jellyfin-ffmpeg/lib/dri
 ENV LIBVA_DRIVER_NAME=iHD
+# NVIDIA Container Runtime
+ENV NVIDIA_VISIBLE_DEVICES="all"
+ENV NVIDIA_DRIVER_CAPABILITIES="compute,video,utility"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
