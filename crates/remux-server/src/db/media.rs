@@ -713,7 +713,9 @@ pub struct Media {
     pub title: String,
     #[default(MediaKind::Movie)]
     pub kind: MediaKind,
+    #[default(chrono::Utc::now().naive_utc())]
     pub created_at: NaiveDateTime,
+    #[default(chrono::Utc::now().naive_utc())]
     pub updated_at: NaiveDateTime,
     pub refreshed_at: Option<NaiveDateTime>,
     pub streams_refreshed_at: Option<NaiveDateTime>,
@@ -1723,7 +1725,7 @@ impl Media {
                             format!("title COLLATE NOCASE {}", dir)
                         }
                         api::ItemSortBy::DateCreated => {
-                            format!("created_at {}", dir)
+                            format!("datetime(created_at) {}", dir)
                         }
                         api::ItemSortBy::PremiereDate
                         | api::ItemSortBy::ProductionYear => {

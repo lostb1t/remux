@@ -468,6 +468,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             smart_filter: media.parse_smart_filter().cloned(),
             promoted: Some(media.promoted),
         }),
+        date_created: Some(media.created_at.and_utc().to_rfc3339()),
         ..Default::default()
     };
 

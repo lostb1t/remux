@@ -469,8 +469,12 @@ pub async fn get_items(
 pub async fn items_flat(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Query(q): Query<api::GetItemsQuery>,
+    Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    if q.sort_by.is_none() {
+        q.sort_by = Some(vec![api::ItemSortBy::DateCreated]);
+        q.sort_order = Some(vec![api::SortOrder::Descending]);
+    }
     let items = get_items(state.clone(), session.clone(), q, false)
         .await?
         .with_permissions(&session);
