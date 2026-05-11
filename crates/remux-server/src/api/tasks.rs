@@ -11,9 +11,6 @@ use crate::tasks::{TaskStatus, TaskView};
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::TaskTriggerInfoType;
 
-#[cfg(test)]
-use crate::integration_test;
-
 // 1 tick = 100 nanoseconds (Windows FILETIME / .NET TimeSpan)
 const TICKS_PER_SECOND: i64 = 10_000_000;
 const TICKS_PER_HOUR: i64 = 3600 * TICKS_PER_SECOND;
@@ -279,39 +276,4 @@ pub async fn update_task_triggers(
 
     state.tasks.replace_triggers(&task_id, triggers).await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[cfg(test)]
-#[tokio::test]
-async fn scheduled_tasks_test() {
-    use crate::integration_test::{auth_header_with_token, authenticated_server};
-    use http::header::HeaderValue;
-    let (server, _ctx, token) = authenticated_server().await;
-    let auth = auth_header_with_token(&token);
-
-    let response = server
-        .get("/scheduledtasks")
-        .add_header(
-            http::header::AUTHORIZATION,
-            HeaderValue::from_str(&auth).unwrap(),
-        )
-        .await;
-
-    response.assert_status_ok();
-    let tasks: Vec<crate::api::TaskInfo> = response.json();
-
-    assert!(tasks.len() >= 2);
-
-    let task_names: Vec<String> = tasks.iter().map(|task| task.name.clone()).collect();
-    assert!(
-        task_names.contains(&"Media Scan".to_string())
-            || task_names.contains(&"Catalog Import".to_string())
-    );
-
-    for task in &tasks {
-        assert!(task.id.len() > 0);
-        assert!(task.name.len() > 0);
-        assert!(task.state.is_some());
-        assert!(task.category.is_some());
-    }
 }

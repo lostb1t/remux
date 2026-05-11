@@ -15,12 +15,29 @@ pub fn auth_header_with_token(token: &str) -> String {
     )
 }
 
+/// RAII guard that shuts down the `AppContext` (releases torrent/DHT sockets)
+/// when the test ends. Hold this for the lifetime of the test.
+pub struct TestGuard(pub AppContext);
+
+impl Drop for TestGuard {
+    fn drop(&mut self) {
+        let ctx = self.0.clone();
+        // Fire-and-forget shutdown: releases sockets so the next test (or a
+        // server restart) can bind the same ports without "address in use" errors.
+        tokio::spawn(async move {
+            ctx.shutdown().await;
+        });
+    }
+}
+
 /// Creates a test server with an in-memory SQLite DB, seeds an admin user
-/// "test"/"test", and returns the server alongside the `AppContext` (which
-/// carries the `SqlitePool`) so callers can insert fixture data directly.
-pub async fn new_test_server() -> Result<(TestServer, AppContext)> {
+/// "test"/"test", and returns the server alongside a [`TestGuard`] (which
+/// carries the `AppContext` and shuts down background services on drop).
+pub async fn new_test_server() -> Result<(TestServer, TestGuard)> {
     let config = Config {
         database_url: "sqlite::memory:".into(),
+        torrent_http_port: None, // OS picks a free ephemeral port
+        disable_dht: true,       // no DHT needed in tests; avoids socket conflicts
         ..Default::default()
     };
 
@@ -40,13 +57,13 @@ pub async fn new_test_server() -> Result<(TestServer, AppContext)> {
 
     server.post("/startup/complete").await;
 
-    Ok((server, ctx))
+    Ok((server, TestGuard(ctx)))
 }
 
 /// Spins up a test server and authenticates as the seeded "test" user.
-/// Returns `(server, ctx, access_token)`.
-pub async fn authenticated_server() -> (TestServer, AppContext, String) {
-    let (server, ctx) = new_test_server().await.unwrap();
+/// Returns `(server, guard, access_token)`.
+pub async fn authenticated_server() -> (TestServer, TestGuard, String) {
+    let (server, guard) = new_test_server().await.unwrap();
 
     let resp = server
         .post("/users/authenticatebyname")
@@ -59,7 +76,7 @@ pub async fn authenticated_server() -> (TestServer, AppContext, String) {
 
     let body: serde_json::Value = resp.json();
     let token = body["AccessToken"].as_str().unwrap().to_string();
-    (server, ctx, token)
+    (server, guard, token)
 }
 
 /// Inserts a `MediaKind::Stream` backed by a real public video so that

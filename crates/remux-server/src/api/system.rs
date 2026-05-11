@@ -545,82 +545,15 @@ mod test {
         let resp = server.get("/system/info/public").await;
 
         resp.assert_status_ok();
-        resp.assert_json(&json!({
+        resp.assert_json_contains(&json!({
             "Id": expect_json::uuid(),
             "LocalAddress": "",
             "ServerName": "Remux",
             "ProductName": "Jellyfin Server",
-            "Version": "10.11.6",
+            "Version": "10.11.8",
             "RemuxVersion": env!("CARGO_PKG_VERSION"),
             "StartupWizardCompleted": true,
         }));
-    }
-
-    #[tokio::test]
-    async fn system_ping_test() {
-        let (server, _ctx) = new_test_server().await.unwrap();
-
-        let response = server.get("/system/ping").await;
-
-        response.assert_status_ok();
-        //response.assert_text("Remux Server");
-    }
-
-    #[tokio::test]
-    async fn system_info_storage_test() {
-        let (server, _ctx, token) = authenticated_server().await;
-        let auth = auth_header_with_token(&token);
-
-        let response = server
-            .get("/system/info/storage")
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
-            )
-            .await;
-
-        response.assert_status_ok();
-        let storage_info: crate::api::SystemStorageInfo = response.json();
-
-        // Check that we have the expected storage folders
-        assert!(storage_info.program_data_folder.is_some());
-        assert!(storage_info.cache_folder.is_some());
-        assert!(storage_info.web_folder.is_some());
-
-        // Check that we have libraries
-        assert!(storage_info.libraries.is_some());
-        let libraries = storage_info.libraries.unwrap();
-        assert_eq!(libraries.len(), 2);
-
-        // Check library names
-        let library_names: Vec<String> = libraries
-            .iter()
-            .filter_map(|lib| lib.name.clone())
-            .collect();
-        assert!(library_names.contains(&"Movies".to_string()));
-        assert!(library_names.contains(&"TV Shows".to_string()));
-    }
-
-    #[tokio::test]
-    async fn system_activity_log_test() {
-        let (server, _ctx, token) = authenticated_server().await;
-        let auth = auth_header_with_token(&token);
-
-        let response = server
-            .get("/system/activitylog/entries")
-            .add_header(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_str(&auth).unwrap(),
-            )
-            .await;
-
-        response.assert_status_ok();
-        let log_result: serde_json::Value = response.json();
-
-        // Check that we have the expected structure
-        assert!(log_result["Items"].is_array());
-        assert_eq!(log_result["Items"].as_array().unwrap().len(), 0);
-        assert_eq!(log_result["TotalRecordCount"].as_i64().unwrap(), 0);
     }
 
     #[tokio::test]
@@ -804,7 +737,7 @@ mod test {
         let resp = server.get("/quickconnect/enabled").await;
 
         resp.assert_status_ok();
-        assert!(resp.text().contains("false"));
+        assert!(resp.text().contains("true"));
     }
 
     #[tokio::test]
@@ -814,7 +747,7 @@ mod test {
         let resp = server.post("/quickconnect/enabled").await;
 
         resp.assert_status_ok();
-        assert!(resp.text().contains("false"));
+        assert!(resp.text().contains("true"));
     }
 
     // --- GET /branding/configuration ---

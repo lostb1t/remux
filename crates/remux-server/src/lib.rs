@@ -184,6 +184,19 @@ pub async fn init_app(
     db::migrate(&conn).await?;
     info!("migrations complete");
     crate::common::init_server_id(&conn).await?;
+
+    // If auto-detect is enabled, probe available hardware and persist the result
+    // so clients always see a concrete, Jellyfin-compatible HardwareAccelerationType.
+    {
+        let mut enc_opts = db::Settings::get_encoding_config(&conn).await?;
+        if enc_opts.auto_detect_hardware_acceleration.unwrap_or(true) {
+            let detected =
+                crate::transcode::engine::detect_hardware_acceleration().await;
+            enc_opts.hardware_acceleration_type = Some(detected);
+            db::Settings::set_encoding_config(&conn, &enc_opts).await?;
+        }
+    }
+
     db::ensure_collection_folder(&conn).await?;
 
     let saved_config = db::Settings::get_config(&conn).await?;
@@ -198,7 +211,8 @@ pub async fn init_app(
     let torrent_mgr = Arc::new(
         torrent::TorrentManager::new(
             std::path::PathBuf::from(&config.torrent_data_dir),
-            TORRENT_HTTP_PORT,
+            config.torrent_http_port,
+            config.disable_dht,
         )
         .await?,
     );
@@ -279,6 +293,14 @@ pub struct AppContext {
     pub addons: addons::AddonService,
 }
 
+impl AppContext {
+    /// Gracefully shut down background services (torrent DHT, etc.).
+    /// Call this when the server is stopping to release sockets immediately.
+    pub async fn shutdown(&self) {
+        self.torrent.shutdown().await;
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub ctx: AppContext,
@@ -318,7 +340,9 @@ fn default_port() -> u16 {
     3000
 }
 
-const TORRENT_HTTP_PORT: u16 = 9876;
+fn default_torrent_http_port() -> u16 {
+    9876
+}
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Config {
@@ -328,6 +352,18 @@ pub struct Config {
     pub torrent_data_dir: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Explicit port for the internal torrent HTTP server.
+    /// When absent the OS picks a free ephemeral port.
+    #[serde(default = "default_torrent_http_port_opt")]
+    pub torrent_http_port: Option<u16>,
+    /// Disable the DHT gossip socket. Useful when no Torznab sources are
+    /// configured or when running in a restricted network environment.
+    #[serde(default)]
+    pub disable_dht: bool,
+}
+
+fn default_torrent_http_port_opt() -> Option<u16> {
+    Some(default_torrent_http_port())
 }
 
 impl Default for Config {
@@ -336,6 +372,8 @@ impl Default for Config {
             database_url: default_database_url(),
             torrent_data_dir: default_torrent_data_dir(),
             port: default_port(),
+            torrent_http_port: default_torrent_http_port_opt(),
+            disable_dht: false,
         }
     }
 }

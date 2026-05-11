@@ -783,7 +783,8 @@ mod e2e_tests {
                 "HidePlayedInLatest": true,
                 "RememberAudioSelections": true,
                 "RememberSubtitleSelections": true,
-                "EnableNextEpisodeAutoPlay": true
+                "EnableNextEpisodeAutoPlay": true,
+                "DisplayCollectionsView": false
             }))
             .await;
 

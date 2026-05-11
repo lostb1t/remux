@@ -402,12 +402,36 @@ pub struct ServerConfiguration {
     pub search_remote_enabled: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HardwareAccelerationType {
+    /// Software encoding only.
+    #[default]
+    None,
+    Vaapi,
+    Nvenc,
+    Qsv,
+    Amf,
+    VideoToolbox,
+    V4l2m2m,
+    Rkmpp,
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct EncodingOptions {
     #[default(Some("fast".to_string()))]
     pub encoding_preset: Option<String>,
+    #[default(Some(HardwareAccelerationType::None))]
+    pub hardware_acceleration_type: Option<HardwareAccelerationType>,
+    /// VAAPI render device path (used when hardware_acceleration_type is vaapi).
+    #[default(Some("/dev/dri/renderD128".to_string()))]
+    pub vaapi_device: Option<String>,
+    /// When true, the server probes available hardware at startup and saves the
+    /// detected type to hardware_acceleration_type automatically.
+    #[default(Some(true))]
+    pub auto_detect_hardware_acceleration: Option<bool>,
 }
 
 // --- Jellyfin import models (used to consume a remote Jellyfin server) ---

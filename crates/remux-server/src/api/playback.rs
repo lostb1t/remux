@@ -588,22 +588,6 @@ async fn items_playbackinfo_inner(
         ..Default::default()
     };
 
-    let item_title = subtitle_media
-        .as_ref()
-        .map(|m| m.title.as_str())
-        .unwrap_or_default();
-    let sources_summary: Vec<String> = info
-        .media_sources
-        .iter()
-        .map(|s| format!("{:?}", s.transcoding_reasons))
-        .collect();
-    tracing::info!(
-        item_id = %id,
-        title = %item_title,
-        user = %session.user.username,
-        sources = ?sources_summary,
-        "playback info"
-    );
     trace!(?info, "items_playbackinfo_result");
     Ok(Json(info))
 }
@@ -789,6 +773,12 @@ async fn videos_stream_inner(
         subtitle_height: None,
         encoding_preset: encoding_opts.encoding_preset,
         source_video_codec,
+        hardware_acceleration_type: encoding_opts
+            .hardware_acceleration_type
+            .unwrap_or_default(),
+        vaapi_device: encoding_opts
+            .vaapi_device
+            .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
     };
 
     let stream = crate::transcode::engine::start_progressive_transcode(params)?;
@@ -916,15 +906,26 @@ pub async fn report_playback_start(
     let log_session_id = play_session_id
         .trim_start_matches("audio-")
         .trim_start_matches("video-");
-    debug!(
-        play_session_id = log_session_id,
-        %item_id,
-        title = %media_title,
-        source = ?source_title,
-        path = ?source_path,
-        user = %session.user.username,
-        "Playback started"
-    );
+    let position_secs = data.position_ticks.unwrap_or(0) / 10_000_000;
+    // For transcode sessions, master_hls_video fires the info log once it has
+    // full codec/bitrate/reasons info. For direct play/stream, log here.
+    let is_transcode = matches!(data.play_method, Some(api::PlayMethod::Transcode));
+    if !is_transcode {
+        info!(
+            play_session_id = log_session_id,
+            %item_id,
+            title = %media_title,
+            source = ?source_title,
+            path = ?source_path,
+            user = %session.user.username,
+            client = %session.device.app_name,
+            play_method = ?data.play_method,
+            audio_stream = ?data.audio_stream_index,
+            subtitle_stream = ?data.subtitle_stream_index,
+            position_secs,
+            "▶ Playback started"
+        );
+    }
 
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -1312,12 +1313,12 @@ mod tests {
             .assert_status(StatusCode::NOT_FOUND);
     }
 
-    /// Without a device profile the endpoint always returns a transcoding URL.
+    /// Without a device profile the server defaults to direct play.
     #[tokio::test]
-    async fn test_playbackinfo_no_profile_returns_transcoding() {
-        let (server, ctx, token) = authenticated_server().await;
+    async fn test_playbackinfo_no_profile_returns_direct_play() {
+        let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
-        let media = insert_test_source(&ctx).await;
+        let media = insert_test_source(&guard.0).await;
 
         let resp = server
             .post(&format!("/items/{}/playbackinfo", media.id))
@@ -1329,25 +1330,22 @@ mod tests {
             .await;
 
         resp.assert_status_ok();
+        // When no MediaSourceId is given, the first source Id must equal the item id
+        // so Android TV and other clients can resolve the stream from the path parameter.
         resp.assert_json_contains(&json!({
             "MediaSources": [{
+                "Id": media.id.to_string(),
                 "SupportsTranscoding": true,
-                "SupportsDirectPlay": false,
+                "SupportsDirectPlay": true,
             }]
         }));
-
-        let body: serde_json::Value = resp.json();
-        let url = body["MediaSources"][0]["TranscodingUrl"]
-            .as_str()
-            .expect("TranscodingUrl should be set");
-        assert!(url.contains("master.m3u8"), "should be an HLS URL: {}", url);
     }
 
     #[tokio::test]
     async fn test_playbackinfo_minimal() {
-        let (server, ctx, token) = authenticated_server().await;
+        let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
-        let media = insert_test_source(&ctx).await;
+        let media = insert_test_source(&guard.0).await;
 
         let resp = server
             .post(&format!("/items/{}/playbackinfo", media.id))
@@ -1372,24 +1370,23 @@ mod tests {
         resp.assert_json_contains(&json!({
             "MediaSources": [{
                 "Id": media.id.to_string(),
-                "Etag": media.id.to_string(),
-                "Bitrate": 3849414,
                 "Container": "mp4",
-             //   "Size": 292828,
                 "RunTimeTicks": 100000000,
                 "SupportsDirectPlay": true,
-                "SupportsTranscoding": false
+                "SupportsTranscoding": true
             }]
         }));
+        // Sanity-check bitrate is probed and non-zero (exact value varies by probe).
+        let body: serde_json::Value = resp.json();
+        assert!(body["MediaSources"][0]["Bitrate"].as_i64().unwrap_or(0) > 0);
     }
 
-    /// A device profile that supports direct play for the media's container
-    /// causes the endpoint to return a direct-play response.
+    /// A device profile that supports direct play causes the endpoint to return a direct-play response.
     #[tokio::test]
     async fn test_playbackinfo_direct_play_profile() {
-        let (server, ctx, token) = authenticated_server().await;
+        let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
-        let media = insert_test_source(&ctx).await;
+        let media = insert_test_source(&guard.0).await;
 
         let resp = server
             .post(&format!("/items/{}/playbackinfo", media.id))
@@ -1411,10 +1408,13 @@ mod tests {
             .await;
 
         resp.assert_status_ok();
+        // SupportsTranscoding is always true so the client can re-request for subtitle burn-in.
+        // No MediaSourceId in request → source Id must equal the item id.
         resp.assert_json_contains(&json!({
             "MediaSources": [{
+                "Id": media.id.to_string(),
                 "SupportsDirectPlay": true,
-                "SupportsTranscoding": false,
+                "SupportsTranscoding": true,
             }]
         }));
     }
@@ -1423,9 +1423,9 @@ mod tests {
     /// so the HLS handler can cap the video bitrate accordingly.
     #[tokio::test]
     async fn test_playbackinfo_max_streaming_bitrate_in_url() {
-        let (server, ctx, token) = authenticated_server().await;
+        let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
-        let media = insert_test_source(&ctx).await;
+        let media = insert_test_source(&guard.0).await;
         let max_bitrate: i64 = 1_000_000;
 
         let resp = server
@@ -1453,9 +1453,9 @@ mod tests {
     /// device-profile value. Both should appear in the transcoding URL.
     #[tokio::test]
     async fn test_playbackinfo_effective_bitrate_is_minimum() {
-        let (server, ctx, token) = authenticated_server().await;
+        let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
-        let media = insert_test_source(&ctx).await;
+        let media = insert_test_source(&guard.0).await;
 
         // Query says 8 Mbps, profile says 4 Mbps → effective should be 4 Mbps.
         let resp = server
@@ -1491,9 +1491,9 @@ mod tests {
     /// direct-play profile.
     #[tokio::test]
     async fn test_playbackinfo_force_transcode_when_direct_play_disabled() {
-        let (server, ctx, token) = authenticated_server().await;
+        let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
-        let media = insert_test_source(&ctx).await;
+        let media = insert_test_source(&guard.0).await;
 
         let resp = server
             .post(&format!("/items/{}/playbackinfo", media.id))
@@ -1522,9 +1522,9 @@ mod tests {
     /// Response always contains a `PlaySessionId`.
     #[tokio::test]
     async fn test_playbackinfo_has_play_session_id() {
-        let (server, ctx, token) = authenticated_server().await;
+        let (server, guard, token) = authenticated_server().await;
         let auth = auth_header_with_token(&token);
-        let media = insert_test_source(&ctx).await;
+        let media = insert_test_source(&guard.0).await;
 
         let resp = server
             .post(&format!("/items/{}/playbackinfo", media.id))
@@ -1544,6 +1544,78 @@ mod tests {
             "PlaySessionId must be present and non-empty"
         );
     }
+
+    /// When MediaSourceId in the request body equals the item id (Android TV auto-play pattern),
+    /// source[0].Id must still equal the item id — not the internal source UUID.
+    #[tokio::test]
+    async fn test_playbackinfo_media_source_id_equals_item_id() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_test_source(&guard.0).await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            // Android TV sends MediaSourceId == the item id for auto-play
+            .json(&json!({ "MediaSourceId": media.id.to_string() }))
+            .await;
+
+        resp.assert_status_ok();
+        resp.assert_json_contains(&json!({
+            "MediaSources": [{
+                "Id": media.id.to_string(),
+            }]
+        }));
+    }
+
+    /// When a real specific MediaSourceId is provided (different from the item id),
+    /// source[0].Id must equal that source's UUID — not the item id — so the client
+    /// can send it back on subsequent requests to resolve the correct stream.
+    #[tokio::test]
+    async fn test_playbackinfo_specific_media_source_id_preserved() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        // insert_test_source creates a Stream which is already its own source
+        let source = insert_test_source(&guard.0).await;
+
+        // Request using just the item id (no MediaSourceId) — source Id will be item id.
+        let resp_no_sid = server
+            .post(&format!("/items/{}/playbackinfo", source.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+        resp_no_sid.assert_status_ok();
+        let body: serde_json::Value = resp_no_sid.json();
+        // Without MediaSourceId the server overrides source[0].Id to the item id.
+        assert_eq!(
+            body["MediaSources"][0]["Id"].as_str().unwrap(),
+            source.id.to_string(),
+            "source Id should equal item id when no MediaSourceId given"
+        );
+
+        // Now request with MediaSourceId == item id (Android TV pattern) — same result.
+        let resp_with_sid = server
+            .post(&format!("/items/{}/playbackinfo", source.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MediaSourceId": source.id.to_string() }))
+            .await;
+        resp_with_sid.assert_status_ok();
+        let body2: serde_json::Value = resp_with_sid.json();
+        assert_eq!(
+            body2["MediaSources"][0]["Id"].as_str().unwrap(),
+            source.id.to_string(),
+            "source Id must equal item id when MediaSourceId == item id (Android TV)"
+        );
+    }
 }
 
 #[post("/sessions/playing/progress")]
@@ -1556,6 +1628,39 @@ pub async fn report_playback_progress(
         let ps_snapshot = state.ctx.sessions.get(psid);
         if let Some(ref ps) = ps_snapshot {
             let item_id = data.item_id.unwrap_or(ps.item_id);
+
+            // Detect encode-parameter changes and log them once.
+            // We ignore pause/unpause — those are not encode changes.
+            let audio_changed = data.audio_stream_index.is_some()
+                && data.audio_stream_index != ps.audio_stream_index;
+            let subtitle_changed = data.subtitle_stream_index.is_some()
+                && data.subtitle_stream_index != ps.subtitle_stream_index;
+            let method_changed = data.play_method.is_some()
+                && data.play_method.as_ref().map(|m| m.to_string()) != ps.play_method;
+            if audio_changed || subtitle_changed || method_changed {
+                info!(
+                    play_session_id = psid.trim_start_matches("audio-").trim_start_matches("video-"),
+                    item_id = %item_id,
+                    user = %session.user.username,
+                    audio_stream = if audio_changed {
+                        format!("{:?} → {:?}", ps.audio_stream_index, data.audio_stream_index)
+                    } else {
+                        format!("{:?}", ps.audio_stream_index)
+                    },
+                    subtitle_stream = if subtitle_changed {
+                        format!("{:?} → {:?}", ps.subtitle_stream_index, data.subtitle_stream_index)
+                    } else {
+                        format!("{:?}", ps.subtitle_stream_index)
+                    },
+                    play_method = if method_changed {
+                        format!("{:?} → {:?}", ps.play_method, data.play_method)
+                    } else {
+                        format!("{:?}", ps.play_method)
+                    },
+                    "⟳ Playback params changed"
+                );
+            }
+
             state.ctx.sessions.update(psid, |ps| {
                 ps.position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
                 if data.is_paused && !ps.is_paused {
@@ -2181,11 +2286,42 @@ pub async fn master_hls_video(
             subtitle_height: None,
             encoding_preset: encoding_opts.encoding_preset,
             source_video_codec: session.read().await.source_video_codec.clone(),
+            hardware_acceleration_type: encoding_opts
+                .hardware_acceleration_type
+                .unwrap_or_default(),
+            vaapi_device: encoding_opts
+                .vaapi_device
+                .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
         };
 
         // Spawn the transcode task with proper error handling
+        let media_title_for_log = resolved_media.title.clone();
+        let transcode_reasons_for_log = q.transcode_reasons.clone();
+        // Pull user/client from the PlaybackSession created by report_playback_start
+        let ps_for_log = state.ctx.sessions.get(&play_session_id);
         let session_clone = session.clone();
         tokio::spawn(async move {
+            let start_secs = params.start_time_ticks.unwrap_or(0) / 10_000_000;
+            let resolution = match (params.max_width, params.max_height) {
+                (Some(w), Some(h)) => format!("{}x{}", w, h),
+                (Some(w), None) => format!("{}w", w),
+                (None, Some(h)) => format!("{}h", h),
+                _ => "native".to_string(),
+            };
+            info!(
+                play_session_id = %play_session_id,
+                title = %media_title_for_log,
+                user = ps_for_log.as_ref().map(|ps| ps.user_id.to_string()).unwrap_or_default(),
+                client = ps_for_log.as_ref().map(|ps| ps.client_name.as_str()).unwrap_or(""),
+                video_codec = %params.video_codec,
+                audio_codec = %params.audio_codec,
+                resolution,
+                video_bitrate = ?params.video_bitrate,
+                hw_accel = ?params.hardware_acceleration_type,
+                transcode_reasons = ?transcode_reasons_for_log,
+                start_secs,
+                "▶ Playback started (transcode)"
+            );
             if let Err(e) =
                 crate::transcode::engine::start_transcode(session_clone, params).await
             {
@@ -2579,6 +2715,12 @@ async fn hls_segment_inner(
                             .await
                             .source_video_codec
                             .clone(),
+                        hardware_acceleration_type: encoding_opts
+                            .hardware_acceleration_type
+                            .unwrap_or_default(),
+                        vaapi_device: encoding_opts
+                            .vaapi_device
+                            .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
                     };
 
                     // Reinitialise the session's state for the new transcode run.

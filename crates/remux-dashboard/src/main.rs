@@ -12,8 +12,8 @@ use remux_sdks::remux::{
     GetCertificationSuggestions, GetCountries, GetEncodingConfiguration, GetEpgSources,
     GetIptvChannels, GetItemCounts, GetItems, GetLocalSuggestions, GetParentalRatings,
     GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
-    GetTagSuggestions, GetTunerHosts, GetUsers, ItemCounts, JellyfinAuth,
-    ListAddonKinds, ListAddons, NumericOp, ParentalRating, PatchChannel,
+    GetTagSuggestions, GetTunerHosts, GetUsers, HardwareAccelerationType, ItemCounts,
+    JellyfinAuth, ListAddonKinds, ListAddons, NumericOp, ParentalRating, PatchChannel,
     PatchChannelRequest, PatchItem, PatchItemPayload, PostStartupComplete,
     PostStartupConfiguration, PostStartupUser, PublicSystemInfo, SaveEpgSource,
     ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
@@ -4149,6 +4149,8 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
 #[component]
 fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut encoding_preset = use_signal(|| "fast".to_string());
+    let mut hw_accel = use_signal(|| "none".to_string());
+    let mut auto_detect = use_signal(|| true);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -4163,6 +4165,20 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
                     encoding_preset.set(
                         opts.encoding_preset.unwrap_or_else(|| "fast".to_string()),
                     );
+                    auto_detect
+                        .set(opts.auto_detect_hardware_acceleration.unwrap_or(true));
+                    let accel_str =
+                        match opts.hardware_acceleration_type.unwrap_or_default() {
+                            HardwareAccelerationType::None => "none",
+                            HardwareAccelerationType::Vaapi => "vaapi",
+                            HardwareAccelerationType::Nvenc => "nvenc",
+                            HardwareAccelerationType::Qsv => "qsv",
+                            HardwareAccelerationType::Amf => "amf",
+                            HardwareAccelerationType::VideoToolbox => "videotoolbox",
+                            HardwareAccelerationType::V4l2m2m => "v4l2m2m",
+                            HardwareAccelerationType::Rkmpp => "rkmpp",
+                        };
+                    hw_accel.set(accel_str.to_string());
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
             }
@@ -4173,8 +4189,21 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state.client.clone();
+        let accel_type = match hw_accel.peek().as_str() {
+            "vaapi" => HardwareAccelerationType::Vaapi,
+            "nvenc" => HardwareAccelerationType::Nvenc,
+            "qsv" => HardwareAccelerationType::Qsv,
+            "amf" => HardwareAccelerationType::Amf,
+            "videotoolbox" => HardwareAccelerationType::VideoToolbox,
+            "v4l2m2m" => HardwareAccelerationType::V4l2m2m,
+            "rkmpp" => HardwareAccelerationType::Rkmpp,
+            _ => HardwareAccelerationType::None,
+        };
         let opts = EncodingOptions {
             encoding_preset: Some(encoding_preset.peek().clone()),
+            hardware_acceleration_type: Some(accel_type),
+            vaapi_device: None,
+            auto_detect_hardware_acceleration: Some(*auto_detect.peek()),
         };
         saving.set(true);
         error.set(None);
@@ -4202,8 +4231,43 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
                 } else {
                     form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
                         div { class: "field",
+                            label { class: "field-label", "Hardware Acceleration" }
+                            div { class: "field-hint",
+                                "GPU-accelerated video encoding. When auto-detect is on, the server probes available hardware at startup and selects the best option."
+                            }
+                            label { style: "display:flex;align-items:center;gap:8px;margin-bottom:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *auto_detect.read(),
+                                    onchange: move |e| auto_detect.set(e.checked()),
+                                }
+                                "Auto-detect at startup"
+                            }
+                            select {
+                                id: "hw-accel",
+                                class: "select-input",
+                                disabled: *auto_detect.read(),
+                                value: "{hw_accel}",
+                                onchange: move |e| hw_accel.set(e.value()),
+                                option { value: "none", "None (Software)" }
+                                option { value: "vaapi", "VAAPI (Intel/AMD on Linux)" }
+                                option { value: "nvenc", "NVENC (NVIDIA)" }
+                                option { value: "qsv", "Quick Sync (Intel)" }
+                                option { value: "amf", "AMF (AMD on Windows)" }
+                                option { value: "videotoolbox", "VideoToolBox (macOS/Apple)" }
+                                option { value: "v4l2m2m", "V4L2M2M (ARM/embedded)" }
+                                option { value: "rkmpp", "RKMPP (Rockchip)" }
+                            }
+                            if *auto_detect.read() {
+                                div { class: "field-hint", style: "margin-top:6px",
+                                    "Currently using: {hw_accel} (detected at last startup)"
+                                }
+                            }
+                        }
+
+                        div { class: "field",
                             label { class: "field-label", r#for: "encoding-preset", "Encoding Preset" }
-                            div { class: "field-hint", "FFmpeg -preset for transcoding. Faster presets use more CPU; slower presets produce smaller files." }
+                            div { class: "field-hint", "FFmpeg -preset for software transcoding. Faster presets use more CPU; slower presets produce smaller files." }
                             select {
                                 id: "encoding-preset",
                                 class: "select-input",
@@ -4225,7 +4289,7 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             div { class: "alert-error", "{err}" }
                         }
                         if *saved.read() {
-                            div { class: "alert-success", "Settings saved." }
+                            div { class: "alert-success", "Settings saved. Restart the server to apply hardware acceleration changes." }
                         }
 
                         div { class: "form-actions",

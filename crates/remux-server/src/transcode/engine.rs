@@ -6,9 +6,72 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
+
+use remux_sdks::remux::HardwareAccelerationType;
 
 use super::session::{TranscodeSession, TranscodeState};
+
+/// Probe `ffmpeg -hwaccels` and device files to pick the best available
+/// hardware acceleration type.  Called at startup when auto-detect is enabled;
+/// the result is saved back to the database by the caller.
+pub async fn detect_hardware_acceleration() -> HardwareAccelerationType {
+    let detected = probe_hw_accel().await;
+    info!(hw_accel = ?detected, "Hardware acceleration detected");
+    detected
+}
+
+async fn probe_hw_accel() -> HardwareAccelerationType {
+    // Collect the hwaccel names supported by the installed ffmpeg binary.
+    let supported = match tokio::process::Command::new(ffmpeg_bin())
+        .args(["-hide_banner", "-hwaccels"])
+        .output()
+        .await
+    {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
+        Err(e) => {
+            warn!("Could not run ffmpeg to detect hwaccels: {e}");
+            String::new()
+        }
+    };
+
+    select_hw_accel(&supported, |p| std::path::Path::new(p).exists())
+}
+
+/// Pure selection logic — separated so it can be unit-tested without real hardware.
+///
+/// `device_exists` is a closure so tests can inject a fake device-file checker.
+/// Every accelerator that requires hardware must verify *both* that ffmpeg was
+/// compiled with the codec AND that the device node is present on this machine.
+/// Checking only the ffmpeg hwaccels list is not sufficient — distro packages are
+/// often compiled with support for hardware that isn't present on every machine
+/// (e.g. rkmpp in a generic Arch/Fedora ffmpeg running on non-Rockchip hardware).
+pub(crate) fn select_hw_accel(
+    hwaccels_output: &str,
+    device_exists: impl Fn(&str) -> bool,
+) -> HardwareAccelerationType {
+    let has = |name: &str| hwaccels_output.lines().any(|l| l.trim() == name);
+
+    // Priority: nvenc > vaapi > qsv > videotoolbox > v4l2m2m > rkmpp > none
+    if has("cuda") && device_exists("/dev/nvidia0") {
+        HardwareAccelerationType::Nvenc
+    } else if has("vaapi") && device_exists("/dev/dri/renderD128") {
+        HardwareAccelerationType::Vaapi
+    } else if has("qsv") && device_exists("/dev/dri/renderD128") {
+        // Intel QSV uses the same DRI render node as VAAPI.
+        HardwareAccelerationType::Qsv
+    } else if has("videotoolbox") && cfg!(target_os = "macos") {
+        // VideoToolbox is an Apple-only API; never valid on Linux/Asahi.
+        HardwareAccelerationType::VideoToolbox
+    } else if has("v4l2m2m") && device_exists("/dev/video0") {
+        HardwareAccelerationType::V4l2m2m
+    } else if has("rkmpp") && device_exists("/dev/mpp_service") {
+        // Rockchip MPP: device node must exist, not just ffmpeg compile support.
+        HardwareAccelerationType::Rkmpp
+    } else {
+        HardwareAccelerationType::None
+    }
+}
 
 /// Max seconds to buffer ahead of the current playback position.
 const MAX_BUFFER_SECS: u32 = 300;
@@ -145,6 +208,9 @@ pub struct TranscodeParams {
     /// Codec of the source video stream (e.g. "hevc", "h264"), used to apply
     /// codec-specific output flags such as `-tag:v hvc1` for HEVC in HLS.
     pub source_video_codec: Option<String>,
+    pub hardware_acceleration_type: HardwareAccelerationType,
+    /// VAAPI render device (only used when acceleration type is VAAPI).
+    pub vaapi_device: String,
 }
 
 impl Default for TranscodeParams {
@@ -168,6 +234,8 @@ impl Default for TranscodeParams {
             subtitle_height: None,
             encoding_preset: None,
             source_video_codec: None,
+            hardware_acceleration_type: HardwareAccelerationType::None,
+            vaapi_device: "/dev/dri/renderD128".to_string(),
         }
     }
 }
@@ -175,6 +243,59 @@ impl Default for TranscodeParams {
 /// Return the expected output video dimensions based on transcode params.
 fn output_dimensions(params: &TranscodeParams) -> (Option<u32>, Option<u32>) {
     (params.max_width, params.max_height)
+}
+
+/// Return the ffmpeg input args that enable hardware-accelerated decoding.
+/// These are placed **before** the `-i` flag.
+fn hw_input_args(accel: HardwareAccelerationType, vaapi_device: &str) -> Vec<String> {
+    match accel {
+        HardwareAccelerationType::Nvenc => vec!["-hwaccel".into(), "cuda".into()],
+        HardwareAccelerationType::Vaapi => {
+            // Use -vaapi_device so ffmpeg initialises the VAAPI context; frames
+            // stay in CPU memory so the normal `scale` filter can still be used,
+            // then hwupload transfers them to VAAPI before encoding.
+            vec!["-vaapi_device".into(), vaapi_device.to_string()]
+        }
+        HardwareAccelerationType::Qsv => vec!["-hwaccel".into(), "qsv".into()],
+        HardwareAccelerationType::VideoToolbox => {
+            vec!["-hwaccel".into(), "videotoolbox".into()]
+        }
+        HardwareAccelerationType::Amf => vec!["-hwaccel".into(), "d3d11va".into()],
+        HardwareAccelerationType::Rkmpp => vec!["-hwaccel".into(), "rkmpp".into()],
+        // v4l2m2m and None: software decode
+        _ => vec![],
+    }
+}
+
+/// Map a software encoder name to the equivalent hardware encoder name.
+/// Returns the original name unchanged if the codec should not be re-mapped
+/// (e.g. "copy", "libvpx-vp9") or if `accel` is None.
+fn hw_encoder_name(base: &str, accel: HardwareAccelerationType) -> String {
+    let suffix = match accel {
+        HardwareAccelerationType::Nvenc => "_nvenc",
+        HardwareAccelerationType::Vaapi => "_vaapi",
+        HardwareAccelerationType::Qsv => "_qsv",
+        HardwareAccelerationType::Amf => "_amf",
+        HardwareAccelerationType::VideoToolbox => "_videotoolbox",
+        HardwareAccelerationType::V4l2m2m => "_v4l2m2m",
+        HardwareAccelerationType::Rkmpp => "_rkmpp",
+        _ => return base.to_string(),
+    };
+    match base {
+        "libx264" => format!("h264{suffix}"),
+        "libx265" => format!("hevc{suffix}"),
+        other => other.to_string(),
+    }
+}
+
+/// Append any filter steps required by the hardware encoder after the
+/// scale/video filter chain (e.g. hwupload for VAAPI).
+fn hw_filter_suffix(accel: HardwareAccelerationType) -> Option<String> {
+    match accel {
+        // VAAPI encoder requires frames in VAAPI memory; upload them after scaling.
+        HardwareAccelerationType::Vaapi => Some("format=nv12,hwupload".to_string()),
+        _ => None,
+    }
 }
 
 /// Build a scale filter string for FFmpeg, if needed.
@@ -191,7 +312,10 @@ fn build_scale_filter(params: &TranscodeParams) -> Option<String> {
 }
 
 /// Build the ffmpeg CLI args for an HLS transcode.
-fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
+pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
+    let accel = params.hardware_acceleration_type;
+    let is_hw = !matches!(accel, HardwareAccelerationType::None);
+
     let ffmpeg_video_codec = {
         let base = match params.video_codec.as_str() {
             "copy" => "copy",
@@ -200,13 +324,18 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             other => other,
         };
         // Subtitle burn-in requires re-encoding; can't copy video.
-        if params.burn_subtitle
+        let base = if params.burn_subtitle
             && params.subtitle_stream_index.is_some()
             && base == "copy"
         {
             "libx264"
         } else {
             base
+        };
+        if base != "copy" && is_hw {
+            hw_encoder_name(base, accel)
+        } else {
+            base.to_string()
         }
     };
     let ffmpeg_audio_codec = match params.audio_codec.as_str() {
@@ -231,6 +360,9 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "1000000".into(),
     ];
 
+    // Hardware acceleration input flags (before -ss and -i)
+    args.extend(hw_input_args(accel, &params.vaapi_device));
+
     // Input seek (fast, before -i)
     if let Some(ticks) = params.start_time_ticks {
         let secs = ticks as f64 / 10_000_000.0;
@@ -246,6 +378,8 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "-max_muxing_queue_size".into(),
         "2048".into(),
     ]);
+
+    let hw_suffix = hw_filter_suffix(accel);
 
     // Stream mapping
     if params.burn_subtitle {
@@ -267,13 +401,28 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             } else {
                 format!("scale,{sub_scale}")
             };
-            let filter = match build_scale_filter(params) {
-                Some(main_scale) => format!(
-                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale}[main];[main][sub]overlay=eof_action=pass:repeatlast=0[v]"
-                ),
-                None => format!(
-                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]overlay=eof_action=pass:repeatlast=0[v]"
-                ),
+            let main_scale_part = build_scale_filter(params)
+                .map(|s| format!("{s}"))
+                .unwrap_or_default();
+            let overlay = "[main][sub]overlay=eof_action=pass:repeatlast=0";
+            let filter = if main_scale_part.is_empty() {
+                let base =
+                    format!("[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{overlay}[v]");
+                match &hw_suffix {
+                    Some(suf) => format!(
+                        "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{overlay}[vraw];[vraw]{suf}[v]"
+                    ),
+                    None => base,
+                }
+            } else {
+                match &hw_suffix {
+                    Some(suf) => format!(
+                        "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale_part}[main];[main][sub]{overlay}[vraw];[vraw]{suf}[v]"
+                    ),
+                    None => format!(
+                        "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale_part}[main];[main][sub]{overlay}[v]"
+                    ),
+                }
             };
             args.extend(["-filter_complex".into(), filter]);
             args.extend(["-map".into(), "[v]".into()]);
@@ -289,7 +438,13 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         } else {
             None
         };
-        if let Some(ref filter) = scale_filter {
+        let vf = match (&scale_filter, &hw_suffix) {
+            (Some(s), Some(suf)) => Some(format!("{s},{suf}")),
+            (Some(s), None) => Some(s.clone()),
+            (None, Some(suf)) if ffmpeg_video_codec != "copy" => Some(suf.clone()),
+            _ => None,
+        };
+        if let Some(ref filter) = vf {
             args.extend(["-vf".into(), filter.clone()]);
         } else if let Some(audio_idx) = params.audio_stream_index {
             args.extend([
@@ -302,7 +457,7 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     }
 
     // Video codec
-    args.extend(["-c:v".into(), ffmpeg_video_codec.into()]);
+    args.extend(["-c:v".into(), ffmpeg_video_codec.clone()]);
 
     if ffmpeg_video_codec == "copy" {
         if is_hevc_copy {
@@ -311,6 +466,11 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             // Strip embedded Dolby Vision RPU NALs so VideoToolbox treats this as
             // plain HDR10 rather than Dolby Vision (avoids black video on some devices).
             args.extend(["-bsf:v".into(), "dovi_rpu=strip=1".into()]);
+        }
+    } else if is_hw {
+        // HW encoders use bitrate control; CRF/preset/profile flags don't apply.
+        if let Some(bitrate) = params.video_bitrate {
+            args.extend(["-b:v".into(), bitrate.to_string()]);
         }
     } else if ffmpeg_video_codec == "libx264" {
         let preset = params.encoding_preset.as_deref().unwrap_or("fast");
@@ -393,7 +553,73 @@ fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     args
 }
 
+/// Spawn an ffmpeg process, drain its stderr to DEBUG logs, and wait for it
+/// to finish (or be killed via `kill_rx`).  Returns the exit result and the
+/// accumulated stderr text for error reporting.
+async fn run_ffmpeg(
+    args: Vec<String>,
+    kill_rx: tokio::sync::oneshot::Receiver<()>,
+    monitor_stop_tx: tokio::sync::oneshot::Sender<()>,
+    ffmpeg_pid_out: &mut u32,
+) -> (
+    Option<std::result::Result<std::process::ExitStatus, std::io::Error>>,
+    String,
+) {
+    let child = tokio::process::Command::new(ffmpeg_bin())
+        .args(&args)
+        .stderr(Stdio::piped())
+        .spawn();
+
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = monitor_stop_tx.send(());
+            return (Some(Err(e)), String::new());
+        }
+    };
+
+    *ffmpeg_pid_out = child.id().unwrap_or(0);
+    let stderr = child.stderr.take();
+
+    let (stderr_tx, stderr_rx) = tokio::sync::oneshot::channel::<String>();
+    if let Some(stderr) = stderr {
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            let mut buf = String::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.is_empty() {
+                    debug!("ffmpeg: {}", line);
+                    buf.push_str(&line);
+                    buf.push('\n');
+                }
+            }
+            let _ = stderr_tx.send(buf);
+        });
+    } else {
+        let _ = stderr_tx.send(String::new());
+    }
+
+    let pid = *ffmpeg_pid_out;
+    let result = tokio::select! {
+        r = child.wait() => Some(r),
+        _ = kill_rx => {
+            #[cfg(unix)]
+            send_signal(pid, libc::SIGCONT);
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            None
+        }
+    };
+
+    let _ = monitor_stop_tx.send(());
+    let stderr_out = stderr_rx.await.unwrap_or_default();
+    (result, stderr_out)
+}
+
 /// Start an HLS transcode job by spawning ffmpeg.
+/// If hardware-accelerated encoding fails, automatically retries once with
+/// software encoding so a broken HW driver doesn't permanently block playback.
 pub async fn start_transcode(
     session: Arc<RwLock<TranscodeSession>>,
     params: TranscodeParams,
@@ -407,107 +633,95 @@ pub async fn start_transcode(
     std::fs::create_dir_all(&params.output_dir)
         .map_err(|e| anyhow!("Failed to create output dir: {}", e))?;
 
-    let args = build_hls_args(&params);
-    debug!("ffmpeg args: {}", args.join(" "));
-
-    let mut child = tokio::process::Command::new(ffmpeg_bin())
-        .args(&args)
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
-
-    let stderr = child.stderr.take();
-    let ffmpeg_pid = child.id().unwrap_or(0);
-
-    let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
-    let (monitor_stop_tx, monitor_stop_rx) = tokio::sync::oneshot::channel::<()>();
-
-    {
-        let mut s = session.write().await;
-        s.start_time_secs = params
-            .start_time_ticks
-            .map(|t| (t / 10_000_000) as u32)
-            .unwrap_or(0);
-        spawn_buffer_monitor(
-            s.output_dir.clone(),
-            s.segment_length,
-            s.playback_offset_secs.clone(),
-            ffmpeg_pid,
-            monitor_stop_rx,
-        );
-    }
-
-    {
-        let mut s = session.write().await;
-        s.kill_tx = Some(kill_tx);
-    }
-
     let session_clone = session.clone();
     tokio::spawn(async move {
-        // Drain stderr in the background while waiting for exit.
-        let stderr_task = async {
-            if let Some(stderr) = stderr {
-                use tokio::io::AsyncReadExt;
-                let mut buf = String::new();
-                let _ = tokio::io::BufReader::new(stderr)
-                    .read_to_string(&mut buf)
-                    .await;
-                buf
-            } else {
-                String::new()
-            }
-        };
+        let mut params = params;
+        let mut sw_fallback = false;
 
-        let result = tokio::select! {
-            r = child.wait() => Some(r),
-            // kill_rx fires when stop() sends (), or when the sender is dropped.
-            _ = kill_rx => {
-                // Make sure ffmpeg isn't paused before we kill it.
-                #[cfg(unix)]
-                send_signal(ffmpeg_pid, libc::SIGCONT);
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                None
-            }
-        };
+        loop {
+            let args = build_hls_args(&params);
+            debug!("ffmpeg args: {}", args.join(" "));
 
-        // Stop the buffer monitor.
-        let _ = monitor_stop_tx.send(());
+            let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
+            let (monitor_stop_tx, monitor_stop_rx) =
+                tokio::sync::oneshot::channel::<()>();
 
-        let stderr_out = stderr_task.await;
-
-        let mut s = session_clone.write().await;
-        s.kill_tx = None;
-
-        match result {
-            Some(Ok(status)) if status.success() => {
-                s.state = TranscodeState::Complete;
-                let _ = s.state_tx.send(TranscodeState::Complete);
-                info!(session_id = %s.id, "Transcode completed successfully");
-            }
-            Some(Ok(status)) => {
-                let err_msg = format!(
-                    "ffmpeg exited with status {}: {}",
-                    status,
-                    stderr_out.trim()
+            let mut ffmpeg_pid: u32 = 0;
+            {
+                let mut s = session_clone.write().await;
+                s.start_time_secs = params
+                    .start_time_ticks
+                    .map(|t| (t / 10_000_000) as u32)
+                    .unwrap_or(0);
+                s.kill_tx = Some(kill_tx);
+                spawn_buffer_monitor(
+                    s.output_dir.clone(),
+                    s.segment_length,
+                    s.playback_offset_secs.clone(),
+                    0, // updated below once child spawns
+                    monitor_stop_rx,
                 );
-                error!(session_id = %s.id, error = %err_msg, "Transcode failed");
-                s.state = TranscodeState::Error(err_msg.clone());
-                let _ = s.state_tx.send(TranscodeState::Error(err_msg));
             }
-            Some(Err(e)) => {
-                let err_msg = format!("Failed to wait for ffmpeg: {}", e);
-                error!(session_id = %s.id, error = %err_msg, "Transcode error");
-                s.state = TranscodeState::Error(err_msg.clone());
-                let _ = s.state_tx.send(TranscodeState::Error(err_msg));
-            }
-            None => {
-                // Killed by stop() — session already removed, no state update needed.
-                debug!(session_id = %s.id, "ffmpeg killed by session stop");
-            }
-        }
 
-        s.wait_done.notify_one();
+            let (result, stderr_out) =
+                run_ffmpeg(args, kill_rx, monitor_stop_tx, &mut ffmpeg_pid).await;
+
+            let using_hw = !matches!(
+                params.hardware_acceleration_type,
+                HardwareAccelerationType::None
+            );
+
+            // If HW accel caused the failure, retry once with software encoding.
+            if !sw_fallback
+                && using_hw
+                && matches!(&result, Some(Ok(s)) if !s.success())
+            {
+                warn!(
+                    accel = ?params.hardware_acceleration_type,
+                    stderr = stderr_out.trim(),
+                    "HW-accelerated transcode failed — retrying with software encoding"
+                );
+                // Clean partial output so the retry starts fresh.
+                let _ = std::fs::remove_dir_all(&params.output_dir);
+                let _ = std::fs::create_dir_all(&params.output_dir);
+                params.hardware_acceleration_type = HardwareAccelerationType::None;
+                sw_fallback = true;
+                continue;
+            }
+
+            let mut s = session_clone.write().await;
+            s.kill_tx = None;
+
+            match result {
+                Some(Ok(status)) if status.success() => {
+                    s.state = TranscodeState::Complete;
+                    let _ = s.state_tx.send(TranscodeState::Complete);
+                    info!(session_id = %s.id, sw_fallback, "Transcode completed successfully");
+                }
+                Some(Ok(status)) => {
+                    let err_msg = format!(
+                        "ffmpeg exited with status {}: {}",
+                        status,
+                        stderr_out.trim()
+                    );
+                    error!(session_id = %s.id, error = %err_msg, "Transcode failed");
+                    s.state = TranscodeState::Error(err_msg.clone());
+                    let _ = s.state_tx.send(TranscodeState::Error(err_msg));
+                }
+                Some(Err(e)) => {
+                    let err_msg = format!("Failed to wait for ffmpeg: {}", e);
+                    error!(session_id = %s.id, error = %err_msg, "Transcode error");
+                    s.state = TranscodeState::Error(err_msg.clone());
+                    let _ = s.state_tx.send(TranscodeState::Error(err_msg));
+                }
+                None => {
+                    debug!(session_id = %s.id, "ffmpeg killed by session stop");
+                }
+            }
+
+            s.wait_done.notify_one();
+            break;
+        }
     });
 
     Ok(())
@@ -533,10 +747,17 @@ pub struct ProgressiveTranscodeParams {
     pub subtitle_height: Option<u32>,
     pub encoding_preset: Option<String>,
     pub source_video_codec: Option<String>,
+    pub hardware_acceleration_type: HardwareAccelerationType,
+    pub vaapi_device: String,
 }
 
 /// Build the ffmpeg CLI args for a progressive transcode piped to stdout.
-fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
+pub(crate) fn build_progressive_args(
+    params: &ProgressiveTranscodeParams,
+) -> Vec<String> {
+    let accel = params.hardware_acceleration_type;
+    let is_hw = !matches!(accel, HardwareAccelerationType::None);
+
     let ffmpeg_video_codec = {
         let base = match params.video_codec.as_str() {
             "copy" => "copy",
@@ -545,13 +766,18 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
             "libvpx-vp9" | "vp9" => "libvpx-vp9",
             other => other,
         };
-        if params.burn_subtitle
+        let base = if params.burn_subtitle
             && params.subtitle_stream_index.is_some()
             && base == "copy"
         {
             "libx264"
         } else {
             base
+        };
+        if base != "copy" && is_hw {
+            hw_encoder_name(base, accel)
+        } else {
+            base.to_string()
         }
     };
     let ffmpeg_audio_codec = match params.audio_codec.as_str() {
@@ -594,6 +820,9 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
         "5".into(),
     ];
 
+    // Hardware acceleration input flags (before -ss and -i)
+    args.extend(hw_input_args(accel, &params.vaapi_device));
+
     // Input seek (fast, before -i)
     if let Some(ticks) = params.start_time_ticks {
         let secs = ticks as f64 / 10_000_000.0;
@@ -601,6 +830,8 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
     }
 
     args.extend(["-i".into(), params.input_url.clone()]);
+
+    let hw_suffix = hw_filter_suffix(accel);
 
     // Stream mapping
     let scale_filter = if ffmpeg_video_codec != "copy" {
@@ -628,13 +859,20 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
             } else {
                 format!("scale,{sub_scale}")
             };
-            let filter = match scale_filter {
-                Some(ref main_scale) => format!(
-                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale}[main];[main][sub]overlay=eof_action=pass:repeatlast=0[v]"
+            let overlay = "[main][sub]overlay=eof_action=pass:repeatlast=0";
+            let filter = match (&scale_filter, &hw_suffix) {
+                (Some(main_scale), Some(suf)) => format!(
+                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale}[main];[main][sub]{overlay}[vraw];[vraw]{suf}[v]"
                 ),
-                None => format!(
-                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]overlay=eof_action=pass:repeatlast=0[v]"
+                (Some(main_scale), None) => format!(
+                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale}[main];[main][sub]{overlay}[v]"
                 ),
+                (None, Some(suf)) => format!(
+                    "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]{overlay}[vraw];[vraw]{suf}[v]"
+                ),
+                (None, None) => {
+                    format!("[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]{overlay}[v]")
+                }
             };
             args.extend(["-filter_complex".into(), filter]);
             args.extend(["-map".into(), "[v]".into()]);
@@ -644,24 +882,32 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
                 args.extend(["-map".into(), "0:a?".into()]);
             }
         }
-    } else if let Some(ref filter) = scale_filter {
-        args.extend(["-vf".into(), filter.clone()]);
-    } else if params.audio_stream_index.is_some()
-        || params.subtitle_stream_index.is_some()
-    {
-        args.extend(["-map".into(), "0:v:0".into()]);
-        if let Some(audio_idx) = params.audio_stream_index {
-            args.extend(["-map".into(), format!("0:{}", audio_idx)]);
-        } else {
-            args.extend(["-map".into(), "0:a?".into()]);
-        }
-        if let Some(sub_idx) = params.subtitle_stream_index {
-            args.extend(["-map".into(), format!("0:{}?", sub_idx)]);
+    } else {
+        let vf = match (&scale_filter, &hw_suffix) {
+            (Some(s), Some(suf)) => Some(format!("{s},{suf}")),
+            (Some(s), None) => Some(s.clone()),
+            (None, Some(suf)) if ffmpeg_video_codec != "copy" => Some(suf.clone()),
+            _ => None,
+        };
+        if let Some(ref filter) = vf {
+            args.extend(["-vf".into(), filter.clone()]);
+        } else if params.audio_stream_index.is_some()
+            || params.subtitle_stream_index.is_some()
+        {
+            args.extend(["-map".into(), "0:v:0".into()]);
+            if let Some(audio_idx) = params.audio_stream_index {
+                args.extend(["-map".into(), format!("0:{}", audio_idx)]);
+            } else {
+                args.extend(["-map".into(), "0:a?".into()]);
+            }
+            if let Some(sub_idx) = params.subtitle_stream_index {
+                args.extend(["-map".into(), format!("0:{}?", sub_idx)]);
+            }
         }
     }
 
     // Video
-    args.extend(["-c:v".into(), ffmpeg_video_codec.into()]);
+    args.extend(["-c:v".into(), ffmpeg_video_codec.clone()]);
     if ffmpeg_video_codec == "copy" {
         // Apply hvc1 codec tag for HEVC Apple compatibility
         if matches!(
@@ -669,6 +915,11 @@ fn build_progressive_args(params: &ProgressiveTranscodeParams) -> Vec<String> {
             Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1")
         ) {
             args.extend(["-tag:v".into(), "hvc1".into()]);
+        }
+    } else if is_hw {
+        // HW encoders use bitrate control; CRF/preset/profile flags don't apply.
+        if let Some(bitrate) = params.video_bitrate {
+            args.extend(["-b:v".into(), bitrate.to_string()]);
         }
     } else {
         if ffmpeg_video_codec == "libx264" {
@@ -733,17 +984,13 @@ pub fn start_progressive_transcode(
         .take()
         .ok_or_else(|| anyhow!("Failed to capture ffmpeg stderr"))?;
 
-    // Log stderr and reap child when done.
+    // Log stderr line-by-line at DEBUG and reap child when done.
     tokio::spawn(async move {
         use tokio::io::AsyncBufReadExt;
         let mut lines = tokio::io::BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if !line.is_empty() {
-                if line.to_ascii_lowercase().contains("broken pipe") {
-                    debug!("ffmpeg: {}", line);
-                } else {
-                    error!("ffmpeg: {}", line);
-                }
+                debug!("ffmpeg: {}", line);
             }
         }
         match child.wait().await {
@@ -967,4 +1214,560 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
         frame_rate = frame_rate_attr,
         play_session_id = play_session_id,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    fn args_contains(args: &[String], flag: &str) -> bool {
+        args.iter().any(|a| a == flag)
+    }
+
+    fn arg_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        args.windows(2)
+            .find(|w| w[0] == flag)
+            .map(|w| w[1].as_str())
+    }
+
+    // ── select_hw_accel tests ─────────────────────────────────────────────────
+
+    fn no_devices(_: &str) -> bool {
+        false
+    }
+    fn all_devices(_: &str) -> bool {
+        true
+    }
+
+    #[test]
+    fn hw_none_when_no_hwaccels_listed() {
+        assert_eq!(
+            select_hw_accel("", all_devices),
+            HardwareAccelerationType::None
+        );
+    }
+
+    #[test]
+    fn hw_none_when_devices_absent() {
+        let hwaccels =
+            "Hardware acceleration methods:\ncuda\nvaapi\nqsv\nv4l2m2m\nrkmpp\n";
+        assert_eq!(
+            select_hw_accel(hwaccels, no_devices),
+            HardwareAccelerationType::None
+        );
+    }
+
+    #[test]
+    fn hw_nvenc_requires_cuda_and_device() {
+        let hwaccels = "Hardware acceleration methods:\ncuda\n";
+        // Device present
+        assert_eq!(
+            select_hw_accel(hwaccels, |p| p == "/dev/nvidia0"),
+            HardwareAccelerationType::Nvenc
+        );
+        // Device absent
+        assert_eq!(
+            select_hw_accel(hwaccels, no_devices),
+            HardwareAccelerationType::None
+        );
+    }
+
+    #[test]
+    fn hw_vaapi_requires_vaapi_and_device() {
+        let hwaccels = "Hardware acceleration methods:\nvaapi\n";
+        assert_eq!(
+            select_hw_accel(hwaccels, |p| p == "/dev/dri/renderD128"),
+            HardwareAccelerationType::Vaapi
+        );
+        assert_eq!(
+            select_hw_accel(hwaccels, no_devices),
+            HardwareAccelerationType::None
+        );
+    }
+
+    #[test]
+    fn hw_qsv_requires_dri_device() {
+        let hwaccels = "Hardware acceleration methods:\nqsv\n";
+        assert_eq!(
+            select_hw_accel(hwaccels, |p| p == "/dev/dri/renderD128"),
+            HardwareAccelerationType::Qsv
+        );
+        assert_eq!(
+            select_hw_accel(hwaccels, no_devices),
+            HardwareAccelerationType::None
+        );
+    }
+
+    #[test]
+    fn hw_rkmpp_requires_mpp_service_device() {
+        let hwaccels = "Hardware acceleration methods:\nrkmpp\n";
+        assert_eq!(
+            select_hw_accel(hwaccels, |p| p == "/dev/mpp_service"),
+            HardwareAccelerationType::Rkmpp
+        );
+        // This was the Asahi Linux bug: rkmpp listed but device absent → None
+        assert_eq!(
+            select_hw_accel(hwaccels, no_devices),
+            HardwareAccelerationType::None
+        );
+    }
+
+    #[test]
+    fn hw_v4l2m2m_requires_video0_device() {
+        let hwaccels = "Hardware acceleration methods:\nv4l2m2m\n";
+        assert_eq!(
+            select_hw_accel(hwaccels, |p| p == "/dev/video0"),
+            HardwareAccelerationType::V4l2m2m
+        );
+        assert_eq!(
+            select_hw_accel(hwaccels, no_devices),
+            HardwareAccelerationType::None
+        );
+    }
+
+    #[test]
+    fn hw_videotoolbox_only_on_macos() {
+        let hwaccels = "Hardware acceleration methods:\nvideotoolbox\n";
+        let expected = if cfg!(target_os = "macos") {
+            HardwareAccelerationType::VideoToolbox
+        } else {
+            HardwareAccelerationType::None
+        };
+        assert_eq!(select_hw_accel(hwaccels, all_devices), expected);
+    }
+
+    #[test]
+    fn hw_priority_nvenc_over_vaapi() {
+        // When both are available nvenc wins
+        let hwaccels = "Hardware acceleration methods:\ncuda\nvaapi\n";
+        assert_eq!(
+            select_hw_accel(hwaccels, all_devices),
+            HardwareAccelerationType::Nvenc
+        );
+    }
+
+    #[test]
+    fn hw_falls_through_to_rkmpp_when_others_absent() {
+        let hwaccels =
+            "Hardware acceleration methods:\ncuda\nvaapi\nqsv\nv4l2m2m\nrkmpp\n";
+        // Only /dev/mpp_service present
+        assert_eq!(
+            select_hw_accel(hwaccels, |p| p == "/dev/mpp_service"),
+            HardwareAccelerationType::Rkmpp
+        );
+    }
+
+    fn default_hls(output_dir: PathBuf) -> TranscodeParams {
+        TranscodeParams {
+            input_url: "http://localhost/test.mkv".into(),
+            output_dir,
+            ..Default::default()
+        }
+    }
+
+    fn default_progressive() -> ProgressiveTranscodeParams {
+        ProgressiveTranscodeParams {
+            input_url: "http://localhost/test.mkv".into(),
+            container: "mp4".into(),
+            video_codec: "copy".into(),
+            audio_codec: "aac".into(),
+            start_time_ticks: None,
+            max_width: None,
+            max_height: None,
+            video_bitrate: None,
+            audio_bitrate: None,
+            audio_channels: None,
+            audio_stream_index: None,
+            subtitle_stream_index: None,
+            burn_subtitle: false,
+            subtitle_width: None,
+            subtitle_height: None,
+            encoding_preset: None,
+            source_video_codec: None,
+            hardware_acceleration_type: HardwareAccelerationType::None,
+            vaapi_device: "/dev/dri/renderD128".into(),
+        }
+    }
+
+    // ── HLS tests ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn hls_basic_copy() {
+        let dir = PathBuf::from("/tmp/test_session");
+        let args = build_hls_args(&default_hls(dir.clone()));
+
+        assert_eq!(arg_after(&args, "-c:v"), Some("copy"));
+        assert_eq!(arg_after(&args, "-c:a"), Some("aac"));
+        assert_eq!(arg_after(&args, "-f"), Some("hls"));
+        // Default TS segments — no fmp4 flag
+        assert!(!args_contains(&args, "-hls_segment_type"));
+        // Playlist and segment paths
+        assert!(args.iter().any(|a| a.ends_with("main.m3u8")));
+        assert!(
+            args.iter()
+                .any(|a| a.contains("segment_") && a.ends_with(".ts"))
+        );
+    }
+
+    #[test]
+    fn hls_hevc_copy_uses_fmp4() {
+        let dir = PathBuf::from("/tmp/test_hevc");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            source_video_codec: Some("hevc".into()),
+            ..default_hls(dir)
+        });
+
+        assert_eq!(arg_after(&args, "-hls_segment_type"), Some("fmp4"));
+        assert_eq!(
+            arg_after(&args, "-hls_fmp4_init_filename"),
+            Some("init.mp4")
+        );
+        assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
+        // Dolby Vision strip bsf
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-bsf:v" && w[1].contains("dovi_rpu"))
+        );
+        // Segments use .m4s extension
+        assert!(
+            args.iter()
+                .any(|a| a.contains("segment_") && a.ends_with(".m4s"))
+        );
+    }
+
+    #[test]
+    fn hls_hevc_copy_hvc1_tag_alias() {
+        // "hvc1" codec string should also trigger fMP4 path
+        let dir = PathBuf::from("/tmp/test_hvc1");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            source_video_codec: Some("hvc1".into()),
+            ..default_hls(dir)
+        });
+        assert_eq!(arg_after(&args, "-hls_segment_type"), Some("fmp4"));
+        assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
+    }
+
+    #[test]
+    fn hls_libx264_transcode_flags() {
+        let dir = PathBuf::from("/tmp/test_x264");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            ..default_hls(dir)
+        });
+
+        assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
+        assert_eq!(arg_after(&args, "-crf"), Some("23"));
+        assert_eq!(arg_after(&args, "-preset"), Some("fast"));
+        assert_eq!(arg_after(&args, "-profile:v"), Some("high"));
+        assert_eq!(arg_after(&args, "-tune"), Some("zerolatency"));
+        assert_eq!(arg_after(&args, "-pix_fmt"), Some("yuv420p"));
+    }
+
+    #[test]
+    fn hls_libx264_custom_preset_and_bitrate() {
+        let dir = PathBuf::from("/tmp/test_x264_br");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            encoding_preset: Some("veryfast".into()),
+            video_bitrate: Some(4_000_000),
+            ..default_hls(dir)
+        });
+
+        assert_eq!(arg_after(&args, "-preset"), Some("veryfast"));
+        assert_eq!(arg_after(&args, "-maxrate"), Some("4000000"));
+        assert_eq!(arg_after(&args, "-bufsize"), Some("8000000"));
+    }
+
+    #[test]
+    fn hls_seek_offset_placed_before_input() {
+        let dir = PathBuf::from("/tmp/test_seek");
+        let ticks: i64 = 30 * 10_000_000; // 30 seconds
+        let args = build_hls_args(&TranscodeParams {
+            start_time_ticks: Some(ticks),
+            ..default_hls(dir)
+        });
+
+        let ss_pos = args.iter().position(|a| a == "-ss").expect("-ss missing");
+        let i_pos = args.iter().position(|a| a == "-i").expect("-i missing");
+        assert!(ss_pos < i_pos, "-ss must come before -i");
+        assert_eq!(args[ss_pos + 1], "30.000000");
+
+        // start_number = floor(30 / 6) = 5
+        assert_eq!(arg_after(&args, "-start_number"), Some("5"));
+    }
+
+    #[test]
+    fn hls_no_seek_start_number_zero() {
+        let dir = PathBuf::from("/tmp/test_noseek");
+        let args = build_hls_args(&default_hls(dir));
+        assert_eq!(arg_after(&args, "-start_number"), Some("0"));
+        assert!(!args_contains(&args, "-ss"));
+    }
+
+    #[test]
+    fn hls_scale_filter_both_dimensions() {
+        let dir = PathBuf::from("/tmp/test_scale");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            max_width: Some(1920),
+            max_height: Some(1080),
+            ..default_hls(dir)
+        });
+
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(vf.contains("min(1920,iw)"), "vf: {vf}");
+        assert!(vf.contains("min(1080,ih)"), "vf: {vf}");
+        assert!(
+            vf.contains("force_original_aspect_ratio=decrease"),
+            "vf: {vf}"
+        );
+    }
+
+    #[test]
+    fn hls_scale_filter_width_only() {
+        let dir = PathBuf::from("/tmp/test_scale_w");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            max_width: Some(1280),
+            ..default_hls(dir)
+        });
+        let vf = arg_after(&args, "-vf").expect("-vf missing");
+        assert!(vf.contains("min(1280,iw)"), "vf: {vf}");
+        assert!(vf.contains(":-2"), "vf: {vf}");
+    }
+
+    #[test]
+    fn hls_audio_bitrate_and_channels() {
+        let dir = PathBuf::from("/tmp/test_audio");
+        let args = build_hls_args(&TranscodeParams {
+            audio_bitrate: Some(192_000),
+            audio_channels: Some(2),
+            ..default_hls(dir)
+        });
+
+        assert_eq!(arg_after(&args, "-b:a"), Some("192000"));
+        assert_eq!(arg_after(&args, "-ac"), Some("2"));
+    }
+
+    #[test]
+    fn hls_audio_copy_no_bitrate_flags() {
+        let dir = PathBuf::from("/tmp/test_acopy");
+        let args = build_hls_args(&TranscodeParams {
+            audio_codec: "copy".into(),
+            ..default_hls(dir)
+        });
+        assert_eq!(arg_after(&args, "-c:a"), Some("copy"));
+        assert!(
+            !args_contains(&args, "-b:a"),
+            "must not set -b:a when copying audio"
+        );
+        assert!(
+            !args_contains(&args, "-ac"),
+            "must not set -ac when copying audio"
+        );
+    }
+
+    #[test]
+    fn hls_subtitle_burn_forces_reencode_and_filter_complex() {
+        let dir = PathBuf::from("/tmp/test_sub");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(2),
+            ..default_hls(dir)
+        });
+
+        // copy → libx264 forced by subtitle burn
+        assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
+        // filter_complex with overlay
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(fc.contains("overlay"), "filter_complex: {fc}");
+        assert!(
+            fc.contains("[0:2]"),
+            "filter_complex should reference sub stream: {fc}"
+        );
+        // map [v] output label
+        assert!(args.windows(2).any(|w| w[0] == "-map" && w[1] == "[v]"));
+    }
+
+    #[test]
+    fn hls_subtitle_burn_with_scale_in_filter_complex() {
+        let dir = PathBuf::from("/tmp/test_sub_scale");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(3),
+            max_width: Some(1280),
+            max_height: Some(720),
+            ..default_hls(dir)
+        });
+
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(
+            fc.contains("scale=1280:720:fast_bilinear"),
+            "sub scale: {fc}"
+        );
+        assert!(fc.contains("min(1280,iw)"), "video scale: {fc}");
+        assert!(fc.contains("overlay"), "overlay: {fc}");
+    }
+
+    #[test]
+    fn hls_nvenc_hardware_accel() {
+        let dir = PathBuf::from("/tmp/test_nvenc");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            hardware_acceleration_type: HardwareAccelerationType::Nvenc,
+            ..default_hls(dir)
+        });
+
+        // Input flag before -i
+        let hwaccel_pos = args
+            .iter()
+            .position(|a| a == "-hwaccel")
+            .expect("-hwaccel missing");
+        let i_pos = args.iter().position(|a| a == "-i").expect("-i missing");
+        assert!(hwaccel_pos < i_pos);
+        assert_eq!(args[hwaccel_pos + 1], "cuda");
+        // Encoder remapped
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_nvenc"));
+    }
+
+    #[test]
+    fn hls_vaapi_hardware_accel() {
+        let dir = PathBuf::from("/tmp/test_vaapi");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            hardware_acceleration_type: HardwareAccelerationType::Vaapi,
+            vaapi_device: "/dev/dri/renderD128".into(),
+            ..default_hls(dir)
+        });
+
+        // Input flags
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-vaapi_device" && w[1] == "/dev/dri/renderD128")
+        );
+        // Encoder remapped
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_vaapi"));
+        // hwupload suffix in -vf
+        let vf = arg_after(&args, "-vf").expect("-vf missing for VAAPI");
+        assert!(vf.contains("format=nv12,hwupload"), "vf: {vf}");
+    }
+
+    #[test]
+    fn hls_qsv_hardware_accel() {
+        let dir = PathBuf::from("/tmp/test_qsv");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx265".into(),
+            hardware_acceleration_type: HardwareAccelerationType::Qsv,
+            ..default_hls(dir)
+        });
+        assert!(args.windows(2).any(|w| w[0] == "-hwaccel" && w[1] == "qsv"));
+        assert_eq!(arg_after(&args, "-c:v"), Some("hevc_qsv"));
+    }
+
+    // ── progressive tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn progressive_basic_copy() {
+        let args = build_progressive_args(&default_progressive());
+
+        assert_eq!(arg_after(&args, "-c:v"), Some("copy"));
+        assert_eq!(arg_after(&args, "-c:a"), Some("aac"));
+        // Copy into mp4 is promoted to matroska to avoid bsf issues
+        assert_eq!(arg_after(&args, "-f"), Some("matroska"));
+        assert!(args.last() == Some(&"pipe:1".to_string()));
+    }
+
+    #[test]
+    fn progressive_mp4_transcode_uses_mp4_format() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            container: "mp4".into(),
+            ..default_progressive()
+        });
+        assert_eq!(arg_after(&args, "-f"), Some("mp4"));
+        assert!(args_contains(&args, "-movflags"));
+    }
+
+    #[test]
+    fn progressive_ts_container() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            container: "ts".into(),
+            ..default_progressive()
+        });
+        assert_eq!(arg_after(&args, "-f"), Some("mpegts"));
+    }
+
+    #[test]
+    fn progressive_seek_before_input() {
+        let ticks: i64 = 60 * 10_000_000; // 60 s
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            start_time_ticks: Some(ticks),
+            ..default_progressive()
+        });
+        let ss_pos = args.iter().position(|a| a == "-ss").expect("-ss missing");
+        let i_pos = args.iter().position(|a| a == "-i").expect("-i missing");
+        assert!(ss_pos < i_pos);
+        assert_eq!(args[ss_pos + 1], "60.000000");
+    }
+
+    #[test]
+    fn progressive_hevc_copy_adds_hvc1_tag() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            source_video_codec: Some("hevc".into()),
+            ..default_progressive()
+        });
+        assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
+    }
+
+    #[test]
+    fn progressive_nvenc_remaps_encoder() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "libx264".into(),
+            container: "mp4".into(),
+            hardware_acceleration_type: HardwareAccelerationType::Nvenc,
+            ..default_progressive()
+        });
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_nvenc"));
+    }
+
+    #[test]
+    fn progressive_subtitle_burn_filter_complex() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            video_codec: "copy".into(),
+            burn_subtitle: true,
+            subtitle_stream_index: Some(1),
+            ..default_progressive()
+        });
+        // copy → libx264 forced
+        assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
+        let fc = arg_after(&args, "-filter_complex").expect("-filter_complex missing");
+        assert!(fc.contains("overlay"), "fc: {fc}");
+    }
+
+    #[test]
+    fn progressive_audio_channels_and_bitrate() {
+        let args = build_progressive_args(&ProgressiveTranscodeParams {
+            audio_codec: "aac".into(),
+            audio_bitrate: Some(256_000),
+            audio_channels: Some(6),
+            ..default_progressive()
+        });
+        assert_eq!(arg_after(&args, "-b:a"), Some("256000"));
+        assert_eq!(arg_after(&args, "-ac"), Some("6"));
+    }
+
+    #[test]
+    fn progressive_reconnect_flags_present() {
+        let args = build_progressive_args(&default_progressive());
+        assert!(args_contains(&args, "-reconnect"));
+        assert!(args_contains(&args, "-reconnect_at_eof"));
+        assert!(args_contains(&args, "-reconnect_streamed"));
+    }
 }

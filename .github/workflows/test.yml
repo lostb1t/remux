@@ -22,4 +22,4 @@ jobs:
           key: test
 
       - name: Run tests
-        run: cargo test -p remux-server -- --skip api::
+        run: cargo test -p remux-server

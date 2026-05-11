@@ -362,6 +362,14 @@ mod test {
         let (server, ctx, token) = authenticated_server().await;
         let (h, v) = auth(&token);
 
+        // Record baseline count (migrations may seed default addons).
+        let initial: Vec<AddonDto> = server
+            .get("/addons")
+            .add_header(h.clone(), v.clone())
+            .await
+            .json();
+        let initial_count = initial.len();
+
         let create_resp = server
             .post("/addons")
             .add_header(h.clone(), v.clone())
@@ -382,16 +390,16 @@ mod test {
 
         // Registry should reflect the new addon immediately.
         assert!(
-            ctx.addons.get(created.id).await.is_some(),
+            ctx.0.addons.get(created.id).await.is_some(),
             "registry did not pick up the new addon"
         );
 
-        // List shows it.
+        // List shows exactly one more than baseline.
         let list_resp = server.get("/addons").add_header(h.clone(), v.clone()).await;
         list_resp.assert_status_ok();
         let list: Vec<AddonDto> = list_resp.json();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, created.id);
+        assert_eq!(list.len(), initial_count + 1);
+        assert!(list.iter().any(|a| a.id == created.id));
 
         // Delete.
         let del_resp = server
@@ -402,9 +410,13 @@ mod test {
 
         let list_after: Vec<AddonDto> =
             server.get("/addons").add_header(h, v).await.json();
-        assert!(list_after.is_empty(), "addon should be gone after delete");
+        assert_eq!(
+            list_after.len(),
+            initial_count,
+            "addon should be gone after delete"
+        );
         assert!(
-            ctx.addons.get(created.id).await.is_none(),
+            ctx.0.addons.get(created.id).await.is_none(),
             "registry should have dropped the deleted addon"
         );
     }

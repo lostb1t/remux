@@ -5,7 +5,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use librqbit::api::{Api, TorrentIdOrHash};
 use librqbit::http_api::HttpApi;
-use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, Session};
+use librqbit::{
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions,
+};
 use tracing::debug;
 
 pub struct TorrentManager {
@@ -14,18 +16,44 @@ pub struct TorrentManager {
 }
 
 impl TorrentManager {
-    pub async fn new(data_dir: PathBuf, http_port: u16) -> Result<Self> {
-        let session = Session::new(data_dir).await?;
+    pub async fn new(
+        data_dir: PathBuf,
+        http_port: Option<u16>,
+        disable_dht: bool,
+    ) -> Result<Self> {
+        let session = Session::new_with_opts(
+            data_dir,
+            SessionOptions {
+                disable_dht,
+                disable_dht_persistence: disable_dht,
+                ..Default::default()
+            },
+        )
+        .await?;
 
+        // None → let the OS pick a free ephemeral port.
+        let bind_port = http_port.unwrap_or(0);
         let listener =
-            tokio::net::TcpListener::bind(format!("127.0.0.1:{}", http_port)).await?;
+            tokio::net::TcpListener::bind(format!("127.0.0.1:{}", bind_port)).await?;
+
+        let bound_port = listener.local_addr()?.port();
 
         let api = Api::new(session.clone(), None, None);
         let http_api = HttpApi::new(api, None);
         tokio::spawn(http_api.make_http_api_and_run(listener, None));
 
-        debug!(port = http_port, "torrent HTTP server listening");
-        Ok(Self { session, http_port })
+        debug!(port = bound_port, "torrent HTTP server listening");
+        Ok(Self {
+            session,
+            http_port: bound_port,
+        })
+    }
+
+    /// Gracefully shut down the librqbit session, releasing all sockets
+    /// (including the DHT UDP socket). Call this before dropping the manager
+    /// to avoid "address already in use" errors on restart.
+    pub async fn shutdown(&self) {
+        self.session.stop().await;
     }
 
     /// Resolve a magnet URI (possibly with a `&file=<name>` param we encode) to a
