@@ -2,7 +2,9 @@ use anyhow::Result;
 use axum_test::TestServer;
 use chrono::Utc;
 use http::header::HeaderValue;
+use remux_sdks::remux::{MediaSourceInfo, MediaStream, MediaStreamType};
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::{AppContext, Config, db, init_app_with_ctx};
 
@@ -79,17 +81,47 @@ pub async fn authenticated_server() -> (TestServer, TestGuard, String) {
     (server, guard, token)
 }
 
-/// Inserts a `MediaKind::Stream` backed by a real public video so that
-/// `media.probe()` succeeds in integration tests.
+/// Inserts a test video source with pre-populated probe data (container="mp4",
+/// bitrate=8_000_000, 1920×1080 h264). No ffprobe or network needed — the
+/// fields are set directly so playbackinfo tests behave identically in CI and
+/// locally.
 pub async fn insert_test_source(ctx: &AppContext) -> db::Media {
     let now = Utc::now().naive_utc();
+
+    // Build minimal probe_data so playbackinfo can make transcode decisions
+    // without needing ffprobe or a live network connection.
+    let probe = MediaSourceInfo {
+        id: Uuid::new_v4(),
+        container: Some("mp4".to_string()),
+        bitrate: Some(8_000_000),
+        run_time_ticks: Some(100_000_000),
+        media_streams: vec![
+            MediaStream {
+                codec: Some("h264".to_string()),
+                type_: Some(MediaStreamType::Video),
+                index: 0,
+                width: Some(1920),
+                height: Some(1080),
+                ..Default::default()
+            },
+            MediaStream {
+                codec: Some("aac".to_string()),
+                type_: Some(MediaStreamType::Audio),
+                index: 1,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
     let mut media = db::Media {
         title: "Test Source".to_string(),
         kind: db::MediaKind::Stream,
         url: Some(crate::stream::StreamDescriptor::Http(
-            "https://test-videos.co.uk/vids/bigbuckbunny/mkv/1080/Big_Buck_Bunny_1080_10s_5MB.mkv"
+            "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4"
                 .to_string(),
         )),
+        probe_data: Some(probe),
         created_at: now,
         updated_at: now,
         ..Default::default()
