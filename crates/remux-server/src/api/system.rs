@@ -229,11 +229,16 @@ pub struct QuickConnectEntry {
     pub code: String,
     pub authenticated: bool,
     pub user_id: Option<Uuid>,
+    pub device_id: String,
+    pub device_name: String,
+    pub app_name: String,
+    pub app_version: String,
 }
 
 #[post("/quickconnect/initiate")]
 pub async fn quickconnect_initiate(
     State(state): State<AppState>,
+    auth_header: auth::JellyfinAuthHeader,
 ) -> Result<impl IntoResponse> {
     let cfg = db::Settings::get_config(&state.ctx.db).await?;
     if !cfg.quick_connect_available.unwrap_or(true) {
@@ -244,10 +249,19 @@ pub async fn quickconnect_initiate(
     let secret = get_uuid().simple().to_string();
     let code = format!("{:06}", get_uuid().as_u128() % 1_000_000);
 
+    let device_id = auth_header.device_id.unwrap_or_default();
+    let device_name = auth_header.device.unwrap_or_default();
+    let app_name = auth_header.client.unwrap_or_default();
+    let app_version = auth_header.version.unwrap_or_default();
+
     let entry = QuickConnectEntry {
         code: code.clone(),
         authenticated: false,
         user_id: None,
+        device_id: device_id.clone(),
+        device_name: device_name.clone(),
+        app_name: app_name.clone(),
+        app_version: app_version.clone(),
     };
     state
         .ctx
@@ -265,6 +279,10 @@ pub async fn quickconnect_initiate(
         authenticated: false,
         date_added: Some(chrono::Utc::now()),
         authentication_token: None,
+        device_id: Some(device_id),
+        device_name: Some(device_name),
+        app_name: Some(app_name),
+        app_version: Some(app_version),
     }))
 }
 
@@ -301,6 +319,10 @@ pub async fn quickconnect_connect(
             None
         },
         date_added: None,
+        device_id: Some(entry.device_id),
+        device_name: Some(entry.device_name),
+        app_name: Some(entry.app_name),
+        app_version: Some(entry.app_version),
     }))
 }
 

@@ -294,6 +294,10 @@ pub struct QuickConnectResult {
     pub authenticated: bool,
     pub date_added: Option<DateTime<Utc>>,
     pub authentication_token: Option<String>,
+    pub device_id: Option<String>,
+    pub device_name: Option<String>,
+    pub app_name: Option<String>,
+    pub app_version: Option<String>,
 }
 
 #[skip_serializing_none]
