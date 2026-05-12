@@ -4203,6 +4203,7 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
             encoding_preset: Some(encoding_preset.peek().clone()),
             hardware_acceleration_type: Some(accel_type),
             vaapi_device: None,
+            vaapi_driver: None,
             auto_detect_hardware_acceleration: Some(*auto_detect.peek()),
         };
         saving.set(true);
