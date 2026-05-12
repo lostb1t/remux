@@ -5,6 +5,7 @@ pub use models::*;
 pub mod addons;
 pub mod api_keys;
 pub mod artists;
+pub mod client_log;
 pub mod devices;
 pub mod images;
 pub mod items;
