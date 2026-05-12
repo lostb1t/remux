@@ -43,6 +43,8 @@ ARG TARGETARCH
 RUN if [ "${TARGETARCH}" = "amd64" ]; then \
         mkdir intel-compute-runtime \
         && cd intel-compute-runtime \
+        && apt-get update \
+        && apt-get install --no-install-recommends --no-install-suggests -y ocl-icd-libopencl1 \
         && curl -LO https://github.com/intel/compute-runtime/releases/download/${NEO_VER}/libigdgmm12_${GMMLIB_VER}_amd64.deb \
                 -LO https://github.com/intel/intel-graphics-compiler/releases/download/v${IGC2_VER}/intel-igc-core-2_${IGC2_VER}+${IGC2_BUILD}_amd64.deb \
                 -LO https://github.com/intel/intel-graphics-compiler/releases/download/v${IGC2_VER}/intel-igc-opencl-2_${IGC2_VER}+${IGC2_BUILD}_amd64.deb \
