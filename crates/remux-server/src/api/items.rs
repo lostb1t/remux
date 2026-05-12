@@ -1424,37 +1424,6 @@ pub async fn delete_virtual_folder(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// `/gelato/subtitles/{id}` subtitle endpoint.
-#[get("/gelato/subtitles/{id}")]
-pub async fn gelato_subtitles(
-    State(state): State<AppState>,
-    _session: auth::AuthSession,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse> {
-    // Source entries can sit under an episode/movie; normalize to the parent
-    // media item before resolving subtitles.
-    let Some(mut media) = db::Media::get_by_id(&state.ctx.db, &id).await? else {
-        return Ok(Json(Vec::<sdks::stremio::Subtitle>::new()));
-    };
-
-    if media.kind == db::MediaKind::Stream {
-        if let Some(parent) = media.parent(&state.ctx.db).await? {
-            media = parent;
-        }
-    }
-
-    if !matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-        return Ok(Json(Vec::<sdks::stremio::Subtitle>::new()));
-    }
-
-    let subtitles = state
-        .ctx
-        .addons
-        .fetch_subtitles(&media, &state.ctx.db)
-        .await;
-    Ok(Json(subtitles))
-}
-
 fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
     match s {
         "movies" => Some(db::CollectionMediaKind::Movie),
