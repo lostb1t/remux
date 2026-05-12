@@ -15,9 +15,6 @@ use axum_anyhow::ApiResult as Result;
 use uuid::Uuid;
 
 const CACHE_KEY_PREFIX: &str = "remux:cache:";
-const REGISTRATION_NS: &str = "registration";
-const REGISTRATION_ENABLED_KEY: &str = "registration-enabled";
-const REGISTRATION_INDEX_KEY: &str = "requests-index";
 
 #[derive(Debug, Deserialize, Default)]
 pub struct NamespaceQuery {
@@ -52,26 +49,6 @@ pub struct CacheStatsResponse {
     pub active_keys: usize,
     pub expired_keys: usize,
     pub namespaces: usize,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RegistrationEnabledResponse {
-    pub enabled: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RegistrationRequest {
-    #[serde(rename = "Id", alias = "id")]
-    pub id: String,
-    #[serde(rename = "Data", alias = "data")]
-    pub data: String,
-    #[serde(rename = "TtlSeconds", alias = "ttlSeconds", default)]
-    pub ttl_seconds: i64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RegistrationRequestResponse {
-    pub success: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -184,16 +161,6 @@ async fn save_cache_record(
     let storage_key = cache_storage_key(ns, key);
     let raw = serde_json::to_string(&record)?;
     db::Settings::set(db_pool, &storage_key, &raw).await
-}
-
-async fn is_registration_enabled(db_pool: &sqlx::SqlitePool) -> AnyResult<bool> {
-    let Some(record) =
-        load_cache_record(db_pool, REGISTRATION_NS, REGISTRATION_ENABLED_KEY).await?
-    else {
-        return Ok(true);
-    };
-
-    Ok(serde_json::from_str::<bool>(&record.value).unwrap_or(true))
 }
 
 #[get("/remux/cache/stats")]
@@ -318,117 +285,6 @@ pub async fn remux_cache_bulk(
     Ok((StatusCode::OK, Json(out)).into_response())
 }
 
-#[get("/remux/registration/enabled")]
-pub async fn remux_registration_enabled(
-    State(state): State<AppState>,
-) -> Result<Response> {
-    let enabled = is_registration_enabled(&state.ctx.db).await?;
-    Ok((
-        StatusCode::OK,
-        Json(RegistrationEnabledResponse { enabled }),
-    )
-        .into_response())
-}
-
-#[post("/remux/registration/request")]
-pub async fn remux_registration_request(
-    State(state): State<AppState>,
-    Json(payload): Json<RegistrationRequest>,
-) -> Result<Response> {
-    if !is_registration_enabled(&state.ctx.db).await? {
-        return Ok((
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "success": false,
-                "error": "Registration is disabled"
-            })),
-        )
-            .into_response());
-    }
-
-    if payload.id.trim().is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "success": false,
-                "error": "Id is required"
-            })),
-        )
-            .into_response());
-    }
-
-    save_cache_record(
-        &state.ctx.db,
-        REGISTRATION_NS,
-        &payload.id,
-        &payload.data,
-        payload.ttl_seconds,
-    )
-    .await?;
-
-    let mut request_index = if let Some(index_record) =
-        load_cache_record(&state.ctx.db, REGISTRATION_NS, REGISTRATION_INDEX_KEY)
-            .await?
-    {
-        serde_json::from_str::<Vec<String>>(&index_record.value).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-
-    let normalized_id = normalize_registration_id(&payload.id);
-    if !request_index.iter().any(|id| id == &normalized_id) {
-        request_index.push(normalized_id);
-    }
-
-    let index_json = serde_json::to_string(&request_index)?;
-    save_cache_record(
-        &state.ctx.db,
-        REGISTRATION_NS,
-        REGISTRATION_INDEX_KEY,
-        &index_json,
-        payload.ttl_seconds,
-    )
-    .await?;
-
-    Ok((
-        StatusCode::OK,
-        Json(RegistrationRequestResponse { success: true }),
-    )
-        .into_response())
-}
-
-#[derive(Debug, Deserialize)]
-pub struct EmailSendRequest {
-    #[serde(default)]
-    pub to: String,
-    #[serde(default)]
-    pub subject: String,
-    #[serde(default)]
-    pub body: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct EmailSendResponse {
-    pub success: bool,
-    pub error: Option<String>,
-}
-
-#[post("/remux/email/send")]
-pub async fn remux_email_send(
-    _session: auth::AdminSession,
-    Json(_payload): Json<EmailSendRequest>,
-) -> Result<Response> {
-    // SMTP relay is optional in this compatibility shim.
-    Ok((
-        StatusCode::OK,
-        Json(EmailSendResponse {
-            success: false,
-            error: Some("SMTP relay is not configured in remux-server yet".to_string()),
-        }),
-    )
-        .into_response())
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct StreamMetadataDto {
@@ -496,7 +352,7 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
     Ok(StreamsResponse { streams })
 }
 
-#[get("/remux/streams/{id}", "/gelato/streams/{id}")]
+#[get("/remux/streams/{id}")]
 pub async fn remux_streams(
     State(state): State<AppState>,
     _session: auth::AuthSession,
@@ -508,7 +364,7 @@ pub async fn remux_streams(
     Ok(Json(payload))
 }
 
-#[get("/remux/meta/{kind}/{id}", "/gelato/meta/{kind}/{id}")]
+#[get("/remux/meta/{kind}/{id}")]
 pub async fn remux_meta(
     State(state): State<AppState>,
     _session: auth::AuthSession,
