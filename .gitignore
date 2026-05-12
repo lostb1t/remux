@@ -15,3 +15,4 @@ config.toml
 config.toml
 transcode_sessions
 jellyfin-web/
+jellyfin-ffmpeg/

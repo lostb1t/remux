@@ -12,9 +12,6 @@ use remux_sdks::remux::HardwareAccelerationType;
 
 use super::session::{TranscodeSession, TranscodeState};
 
-/// Probe `ffmpeg -hwaccels` and device files to pick the best available
-/// hardware acceleration type.  Called at startup when auto-detect is enabled;
-/// the result is saved back to the database by the caller.
 pub async fn detect_hardware_acceleration() -> HardwareAccelerationType {
     let detected = probe_hw_accel().await;
     info!(hw_accel = ?detected, "Hardware acceleration detected");
@@ -22,7 +19,6 @@ pub async fn detect_hardware_acceleration() -> HardwareAccelerationType {
 }
 
 async fn probe_hw_accel() -> HardwareAccelerationType {
-    // Collect the hwaccel names supported by the installed ffmpeg binary.
     let supported = match tokio::process::Command::new(ffmpeg_bin())
         .args(["-hide_banner", "-hwaccels"])
         .output()
@@ -35,38 +31,38 @@ async fn probe_hw_accel() -> HardwareAccelerationType {
         }
     };
 
-    select_hw_accel(&supported, |p| std::path::Path::new(p).exists())
+    select_hw_accel(
+        &supported,
+        |p| std::path::Path::new(p).exists(),
+        || {
+            std::fs::read_to_string("/sys/class/drm/renderD128/device/vendor")
+                .ok()
+                .map(|s| s.trim().to_string())
+        },
+    )
 }
 
-/// Pure selection logic — separated so it can be unit-tested without real hardware.
-///
-/// `device_exists` is a closure so tests can inject a fake device-file checker.
-/// Every accelerator that requires hardware must verify *both* that ffmpeg was
-/// compiled with the codec AND that the device node is present on this machine.
-/// Checking only the ffmpeg hwaccels list is not sufficient — distro packages are
-/// often compiled with support for hardware that isn't present on every machine
-/// (e.g. rkmpp in a generic Arch/Fedora ffmpeg running on non-Rockchip hardware).
 pub(crate) fn select_hw_accel(
     hwaccels_output: &str,
     device_exists: impl Fn(&str) -> bool,
+    drm_vendor: impl Fn() -> Option<String>,
 ) -> HardwareAccelerationType {
     let has = |name: &str| hwaccels_output.lines().any(|l| l.trim() == name);
 
-    // Priority: nvenc > qsv > vaapi > videotoolbox > v4l2m2m > rkmpp > none
-    // QSV beats VAAPI: if ffmpeg reports both, we're on Intel and QSV is the better path.
+    let has_render_node = device_exists("/dev/dri/renderD128");
+    let is_intel = drm_vendor().as_deref() == Some("0x8086");
+
     if has("cuda") && device_exists("/dev/nvidia0") {
         HardwareAccelerationType::Nvenc
-    } else if has("qsv") && device_exists("/dev/dri/renderD128") {
+    } else if has("qsv") && has_render_node && is_intel {
         HardwareAccelerationType::Qsv
-    } else if has("vaapi") && device_exists("/dev/dri/renderD128") {
+    } else if has("vaapi") && has_render_node {
         HardwareAccelerationType::Vaapi
     } else if has("videotoolbox") && cfg!(target_os = "macos") {
-        // VideoToolbox is an Apple-only API; never valid on Linux/Asahi.
         HardwareAccelerationType::VideoToolbox
     } else if has("v4l2m2m") && device_exists("/dev/video0") {
         HardwareAccelerationType::V4l2m2m
     } else if has("rkmpp") && device_exists("/dev/mpp_service") {
-        // Rockchip MPP: device node must exist, not just ffmpeg compile support.
         HardwareAccelerationType::Rkmpp
     } else {
         HardwareAccelerationType::None
