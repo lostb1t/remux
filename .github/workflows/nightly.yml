@@ -70,6 +70,27 @@ jobs:
     needs: [version, build]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up git-cliff
+        uses: kenji-miyake/setup-git-cliff@v1
+
+      - name: Generate changelog since last stable
+        run: |
+          LAST_STABLE=$(git tag --list 'v[0-9]*' --sort=-version:refname | head -1)
+          VERSION="${{ needs.version.outputs.version }}"
+          if [ -n "$LAST_STABLE" ]; then
+            git cliff "${LAST_STABLE}..HEAD" --tag "${VERSION}" --output release-notes.md
+          else
+            git cliff --tag "${VERSION}" --output release-notes.md
+          fi
+          echo "--- release-notes.md ---"
+          cat release-notes.md
+
       - name: Download server binary (amd64)
         uses: actions/download-artifact@v4
         with:
@@ -110,15 +131,10 @@ jobs:
           gh release create nightly \
             --repo "lostb1t/remux" \
             --title "Nightly ${VERSION}" \
-            --notes "Automated nightly build." \
+            --notes-file release-notes.md \
             --prerelease \
             "remux-server-${VERSION}-linux-amd64" \
             "remux-server-${VERSION}-linux-arm64"
-
-      - name: Checkout source README
-        uses: actions/checkout@v4
-        with:
-          path: source
 
       - name: Checkout public repo
         uses: actions/checkout@v4
@@ -129,7 +145,7 @@ jobs:
 
       - name: Push README to public repo
         run: |
-          cp source/README.md public-repo/README.md
+          cp README.md public-repo/README.md
           cd public-repo
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
