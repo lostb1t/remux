@@ -696,16 +696,24 @@ fn magnet_to_descriptor(
     magnet: &str,
     file_hint: Option<String>,
 ) -> Option<crate::stream::StreamDescriptor> {
-    let info_hash = url::Url::parse(magnet)
-        .ok()?
+    let parsed = url::Url::parse(magnet).ok()?;
+    let info_hash =
+        parsed
+            .query_pairs()
+            .find(|(k, _)| k == "xt")
+            .and_then(|(_, v)| {
+                v.strip_prefix("urn:btih:").map(|h| h.to_ascii_lowercase())
+            })?;
+    let trackers = parsed
         .query_pairs()
-        .find(|(k, _)| k == "xt")
-        .and_then(|(_, v)| {
-            v.strip_prefix("urn:btih:").map(|h| h.to_ascii_lowercase())
-        })?;
+        .filter(|(k, _)| k == "tr")
+        .map(|(_, v)| v.into_owned())
+        .collect();
     Some(crate::stream::StreamDescriptor::Torrent {
         info_hash,
         file_hint,
+        file_idx: None,
+        trackers,
     })
 }
 
@@ -799,7 +807,8 @@ mod tests {
             descriptor,
             Some(crate::stream::StreamDescriptor::Torrent {
                 ref info_hash,
-                file_hint: Some(ref hint)
+                file_hint: Some(ref hint),
+                ..
             }) if info_hash == "abc" && hint == "Hit Em Up"
         ));
     }

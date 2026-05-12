@@ -1088,6 +1088,15 @@ async fn stremio_streams(
                 crate::stream::StreamDescriptor::Torrent {
                     info_hash: s.info_hash.clone()?.to_ascii_lowercase(),
                     file_hint: s.filename.clone(),
+                    file_idx: s.file_idx.map(|i| i as usize),
+                    trackers: s
+                        .sources
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|src| src.strip_prefix("tracker:"))
+                        .map(String::from)
+                        .collect(),
                 }
             } else {
                 let url = s.url.clone().or_else(|| s.external_url.clone())?;

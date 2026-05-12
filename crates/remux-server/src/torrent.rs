@@ -20,12 +20,14 @@ impl TorrentManager {
         data_dir: PathBuf,
         http_port: Option<u16>,
         disable_dht: bool,
+        peer_port: Option<u16>,
     ) -> Result<Self> {
         let session = Session::new_with_opts(
             data_dir,
             SessionOptions {
                 disable_dht,
                 disable_dht_persistence: disable_dht,
+                listen_port_range: peer_port.map(|p| p..p + 10),
                 ..Default::default()
             },
         )
@@ -56,11 +58,17 @@ impl TorrentManager {
         self.session.stop().await;
     }
 
-    /// Resolve a magnet URI (possibly with a `&file=<name>` param we encode) to a
-    /// local `http://127.0.0.1:<port>/torrents/<id>/stream/<file_idx>` URL
+    /// Resolve a magnet URI (possibly with `&tr=`, `&file_idx=`, `&file=` params
+    /// we encode) to a local `http://127.0.0.1:<port>/torrents/<id>/stream/<file_idx>` URL
     pub async fn resolve_url(&self, magnet: &str) -> Result<String> {
+        let file_idx_override = parse_file_idx_param(magnet);
         let wanted_file = parse_file_param(magnet);
-        debug!(magnet, ?wanted_file, "resolving torrent");
+        debug!(
+            magnet,
+            ?wanted_file,
+            ?file_idx_override,
+            "resolving torrent"
+        );
 
         let opts = wanted_file.as_deref().map(|name| AddTorrentOptions {
             // Ask librqbit to download only the matching file so we don't pull the
@@ -89,27 +97,31 @@ impl TorrentManager {
             .context("timed out waiting for torrent metadata")?
             .context("torrent initialization failed")?;
 
-        // Find the file index to stream.
-        let file_idx = handle
-            .with_metadata(|meta| {
-                if let Some(name) = wanted_file.as_deref() {
-                    meta.file_infos
-                        .iter()
-                        .enumerate()
-                        .find(|(_, fi)| {
-                            fi.relative_filename
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|n| n.eq_ignore_ascii_case(name))
-                                .unwrap_or(false)
-                        })
-                        .map(|(idx, _)| idx)
-                        .unwrap_or(0)
-                } else {
-                    0
-                }
-            })
-            .unwrap_or(0);
+        // file_idx from the magnet params takes precedence; fall back to name search.
+        let file_idx = if let Some(idx) = file_idx_override {
+            idx
+        } else {
+            handle
+                .with_metadata(|meta| {
+                    if let Some(name) = wanted_file.as_deref() {
+                        meta.file_infos
+                            .iter()
+                            .enumerate()
+                            .find(|(_, fi)| {
+                                fi.relative_filename
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|n| n.eq_ignore_ascii_case(name))
+                                    .unwrap_or(false)
+                            })
+                            .map(|(idx, _)| idx)
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    }
+                })
+                .unwrap_or(0)
+        };
 
         Ok(format!(
             "http://127.0.0.1:{}/torrents/{}/stream/{}",
@@ -179,4 +191,12 @@ fn parse_file_param(magnet: &str) -> Option<String> {
     url::form_urlencoded::parse(query.as_bytes())
         .find(|(k, _)| k == "file")
         .map(|(_, v)| v.into_owned())
+}
+
+/// Extract the `file_idx=` query parameter we encode into our magnet URIs.
+fn parse_file_idx_param(magnet: &str) -> Option<usize> {
+    let query = magnet.split_once('?')?.1;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == "file_idx")
+        .and_then(|(_, v)| v.parse().ok())
 }

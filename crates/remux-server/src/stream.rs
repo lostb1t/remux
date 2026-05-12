@@ -24,7 +24,13 @@ pub enum StreamDescriptor {
     Local(PathBuf),
     Torrent {
         info_hash: String,
+        /// Filename hint for multi-file torrents (matched by name).
         file_hint: Option<String>,
+        /// Direct file index within the torrent (takes precedence over file_hint).
+        file_idx: Option<usize>,
+        /// Tracker announce URLs (populated from the stream's `sources`).
+        #[serde(default)]
+        trackers: Vec<String>,
     },
     Opendal {
         addon_id: Uuid,
@@ -83,9 +89,13 @@ impl StreamDescriptor {
             Self::Torrent {
                 info_hash,
                 file_hint,
+                file_idx,
+                trackers,
             } => Box::new(TorrentSource {
                 info_hash,
                 file_hint,
+                file_idx,
+                trackers,
             }),
             Self::Opendal { .. } => {
                 panic!("Opendal descriptors must be served through their addon")
@@ -159,16 +169,43 @@ pub struct LocalSource {
     pub path: PathBuf,
 }
 
+/// Public trackers used as fallback when a torrent stream provides none.
+/// Sourced from https://github.com/ngosang/trackerslist (trackers_best).
+const DEFAULT_TRACKERS: &[&str] = &[
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://tracker.qu.ax:6969/announce",
+    "udp://wepzone.net:6969/announce",
+    "udp://tracker.srv00.com:6969/announce",
+];
+
 pub struct TorrentSource {
     pub info_hash: String,
     pub file_hint: Option<String>,
+    pub file_idx: Option<usize>,
+    pub trackers: Vec<String>,
 }
 
 impl TorrentSource {
     fn to_magnet(&self) -> String {
         let mut m = format!("magnet:?xt=urn:btih:{}", self.info_hash);
+        let trackers: &[String] = &self.trackers;
+        if trackers.is_empty() {
+            for t in DEFAULT_TRACKERS {
+                m.push_str(&format!("&tr={}", urlencoding::encode(t)));
+            }
+        } else {
+            for t in trackers {
+                m.push_str(&format!("&tr={}", urlencoding::encode(t)));
+            }
+        }
+        if let Some(idx) = self.file_idx {
+            m.push_str(&format!("&file_idx={}", idx));
+        }
         if let Some(hint) = &self.file_hint {
-            m.push_str(&format!("&file_hint={}", urlencoding::encode(hint)));
+            m.push_str(&format!("&file={}", urlencoding::encode(hint)));
         }
         m
     }

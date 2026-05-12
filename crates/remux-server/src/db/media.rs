@@ -2666,6 +2666,15 @@ impl From<sdks::stremio::Stream> for Media {
             Some(StreamDescriptor::Torrent {
                 info_hash: hash.to_ascii_lowercase(),
                 file_hint: source.filename.clone(),
+                file_idx: source.file_idx.map(|i| i as usize),
+                trackers: source
+                    .sources
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|src| src.strip_prefix("tracker:"))
+                    .map(String::from)
+                    .collect(),
             })
         } else {
             source.url.clone().map(StreamDescriptor::Http)

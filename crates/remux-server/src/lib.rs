@@ -213,6 +213,7 @@ pub async fn init_app(
             std::path::PathBuf::from(&config.torrent_data_dir),
             config.torrent_http_port,
             config.disable_dht,
+            config.torrent_peer_port,
         )
         .await?,
     );
@@ -360,10 +361,20 @@ pub struct Config {
     /// configured or when running in a restricted network environment.
     #[serde(default)]
     pub disable_dht: bool,
+    /// TCP port range for librqbit peer connections.  Announced to trackers so
+    /// they return us in peer lists.  Defaults to 6881.  Does not need to be
+    /// forwarded/open for outbound-only operation, but must be a real port
+    /// (not 0) or many trackers will reject the announce.
+    #[serde(default = "default_torrent_peer_port")]
+    pub torrent_peer_port: Option<u16>,
 }
 
 fn default_torrent_http_port_opt() -> Option<u16> {
     Some(default_torrent_http_port())
+}
+
+fn default_torrent_peer_port() -> Option<u16> {
+    Some(6881)
 }
 
 impl Default for Config {
@@ -374,6 +385,7 @@ impl Default for Config {
             port: default_port(),
             torrent_http_port: default_torrent_http_port_opt(),
             disable_dht: false,
+            torrent_peer_port: default_torrent_peer_port(),
         }
     }
 }
