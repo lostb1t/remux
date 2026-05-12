@@ -195,7 +195,11 @@ pub async fn init_app(
                 crate::transcode::engine::detect_hardware_acceleration().await;
             enc_opts.hardware_acceleration_type = Some(detected);
         }
-        let driver = crate::transcode::engine::detect_vaapi_driver();
+        let device = enc_opts
+            .vaapi_device
+            .as_deref()
+            .unwrap_or("/dev/dri/renderD128");
+        let driver = crate::transcode::engine::detect_vaapi_driver(device).await;
         enc_opts.vaapi_driver = Some(driver);
         db::Settings::set_encoding_config(&conn, &enc_opts).await?;
     }

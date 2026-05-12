@@ -20,13 +20,43 @@ pub async fn detect_hardware_acceleration() -> HardwareAccelerationType {
 
 /// Detect the VAAPI driver name for the primary DRM render node.
 /// Returns "iHD" for Intel (vendor 0x8086), empty string for others.
-pub fn detect_vaapi_driver() -> String {
-    let vendor = std::fs::read_to_string("/sys/class/drm/renderD128/device/vendor")
-        .ok()
-        .map(|s| s.trim().to_string());
-    match vendor.as_deref() {
-        Some("0x8086") => "iHD".to_string(),
-        _ => String::new(),
+/// Probe the VAAPI device by running ffmpeg in verbose mode and inspecting
+/// the driver string it reports.  Mirrors Jellyfin's `CheckVaapiDeviceByDriverName`.
+///
+/// Returns "iHD" for Intel iHD driver, "i965" for Intel legacy, or "" if
+/// the device is unavailable or the driver is unknown.
+pub async fn detect_vaapi_driver(vaapi_device: &str) -> String {
+    let device = if vaapi_device.is_empty() {
+        "/dev/dri/renderD128"
+    } else {
+        vaapi_device
+    };
+
+    let result = tokio::process::Command::new(ffmpeg_bin())
+        .args([
+            "-v",
+            "verbose",
+            "-hide_banner",
+            "-init_hw_device",
+            &format!("vaapi=va:{device}"),
+        ])
+        .output()
+        .await;
+
+    let output = match result {
+        Ok(o) => String::from_utf8_lossy(&o.stderr).into_owned(),
+        Err(e) => {
+            warn!("Could not probe VAAPI device for driver detection: {e}");
+            return String::new();
+        }
+    };
+
+    if output.contains("Intel iHD driver") {
+        "iHD".to_string()
+    } else if output.contains("Intel i965 driver") {
+        "i965".to_string()
+    } else {
+        String::new()
     }
 }
 
@@ -651,11 +681,37 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     args
 }
 
+/// Build environment variable overrides needed for the ffmpeg process.
+///
+/// Mirrors Jellyfin's rule: only set LIBVA_DRIVER_NAME for "i965" because
+/// i965 has *lower* priority than iHD in libva's lookup order — without the
+/// env var, libva would pick iHD first and ignore i965.  For iHD the
+/// `driver=iHD` option inside `-init_hw_device` is sufficient and no env
+/// override is needed.
+fn ffmpeg_env_overrides(
+    accel: HardwareAccelerationType,
+    vaapi_driver: &str,
+) -> Vec<(String, String)> {
+    match accel {
+        HardwareAccelerationType::Vaapi | HardwareAccelerationType::Qsv => {
+            if vaapi_driver == "i965" {
+                // Force i965 via env so libva doesn't prefer iHD over it.
+                vec![("LIBVA_DRIVER_NAME".to_string(), "i965".to_string())]
+            } else {
+                // iHD (and unknown): driver= in init_hw_device is enough.
+                vec![]
+            }
+        }
+        _ => vec![],
+    }
+}
+
 /// Spawn an ffmpeg process, drain its stderr to DEBUG logs, and wait for it
 /// to finish (or be killed via `kill_rx`).  Returns the exit result and the
 /// accumulated stderr text for error reporting.
 async fn run_ffmpeg(
     args: Vec<String>,
+    env_overrides: Vec<(String, String)>,
     kill_rx: tokio::sync::oneshot::Receiver<()>,
     monitor_stop_tx: tokio::sync::oneshot::Sender<()>,
     ffmpeg_pid_out: &mut u32,
@@ -663,10 +719,12 @@ async fn run_ffmpeg(
     Option<std::result::Result<std::process::ExitStatus, std::io::Error>>,
     String,
 ) {
-    let child = tokio::process::Command::new(ffmpeg_bin())
-        .args(&args)
-        .stderr(Stdio::piped())
-        .spawn();
+    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    cmd.args(&args).stderr(Stdio::piped());
+    for (k, v) in env_overrides {
+        cmd.env(k, v);
+    }
+    let child = cmd.spawn();
 
     let mut child = match child {
         Ok(c) => c,
@@ -761,8 +819,18 @@ pub async fn start_transcode(
                 );
             }
 
-            let (result, stderr_out) =
-                run_ffmpeg(args, kill_rx, monitor_stop_tx, &mut ffmpeg_pid).await;
+            let env_overrides = ffmpeg_env_overrides(
+                params.hardware_acceleration_type,
+                &params.vaapi_driver,
+            );
+            let (result, stderr_out) = run_ffmpeg(
+                args,
+                env_overrides,
+                kill_rx,
+                monitor_stop_tx,
+                &mut ffmpeg_pid,
+            )
+            .await;
 
             let using_hw = !matches!(
                 params.hardware_acceleration_type,
@@ -1075,10 +1143,16 @@ pub fn start_progressive_transcode(
     let args = build_progressive_args(&params);
     debug!("ffmpeg progressive args: {:?}", args);
 
-    let mut child = tokio::process::Command::new(ffmpeg_bin())
-        .args(&args)
+    let env_overrides =
+        ffmpeg_env_overrides(params.hardware_acceleration_type, &params.vaapi_driver);
+    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    cmd.args(&args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in env_overrides {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| anyhow!("Failed to spawn ffmpeg: {}", e))?;
 
