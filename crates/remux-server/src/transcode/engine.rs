@@ -264,11 +264,19 @@ fn hw_input_args(
     vaapi_driver: &str,
 ) -> Vec<String> {
     // Build the vaapi init_hw_device string, appending ",driver=X" when known.
-    let vaapi_init = |alias: &str| {
-        let driver_opt = if vaapi_driver.is_empty() {
+    // For QSV we always fall back to "iHD" because QSV is Intel-only.
+    let effective_driver = |fallback: &'static str| -> String {
+        if vaapi_driver.is_empty() {
+            fallback.to_string()
+        } else {
+            vaapi_driver.to_string()
+        }
+    };
+    let vaapi_init = |alias: &str, driver: &str| {
+        let driver_opt = if driver.is_empty() {
             String::new()
         } else {
-            format!(",driver={vaapi_driver}")
+            format!(",driver={driver}")
         };
         format!("vaapi={alias}:{vaapi_device}{driver_opt}")
     };
@@ -280,22 +288,25 @@ fn hw_input_args(
             // driver= option takes effect (fixes iHD resolution on Intel).
             // Frames are decoded in software; hwupload in the filter chain
             // uploads the scaled frame to the VAAPI device for encoding.
+            let driver = effective_driver("");
             vec![
                 "-init_hw_device".into(),
-                vaapi_init("va"),
+                vaapi_init("va", &driver),
                 "-filter_hw_device".into(),
                 "va".into(),
             ]
         }
         HardwareAccelerationType::Qsv => {
+            // QSV is Intel-only, so always use iHD as the VAAPI driver.
             // On Linux, QSV is derived from a VAAPI device.  We initialise the
             // VAAPI device first (with an explicit driver so iHD is found on
             // Intel), derive a QSV device from it, then use VAAPI for hardware-
             // assisted decoding.  Frames stay in GPU memory; scale_vaapi +
             // hwmap map them to a QSV surface for the QSV encoder.
+            let driver = effective_driver("iHD");
             vec![
                 "-init_hw_device".into(),
-                vaapi_init("va"),
+                vaapi_init("va", &driver),
                 "-init_hw_device".into(),
                 "qsv=qs@va".into(),
                 "-filter_hw_device".into(),

@@ -185,20 +185,19 @@ pub async fn init_app(
     info!("migrations complete");
     crate::common::init_server_id(&conn).await?;
 
-    // If auto-detect is enabled, probe available hardware and persist the result
-    // so clients always see a concrete, Jellyfin-compatible HardwareAccelerationType.
+    // Probe hardware and persist results at startup.
+    // vaapi_driver is always re-detected (regardless of auto_detect) because
+    // it is a runtime property of the host, not a user preference.
     {
         let mut enc_opts = db::Settings::get_encoding_config(&conn).await?;
         if enc_opts.auto_detect_hardware_acceleration.unwrap_or(true) {
             let detected =
                 crate::transcode::engine::detect_hardware_acceleration().await;
             enc_opts.hardware_acceleration_type = Some(detected);
-            let driver = crate::transcode::engine::detect_vaapi_driver();
-            if !driver.is_empty() {
-                enc_opts.vaapi_driver = Some(driver);
-            }
-            db::Settings::set_encoding_config(&conn, &enc_opts).await?;
         }
+        let driver = crate::transcode::engine::detect_vaapi_driver();
+        enc_opts.vaapi_driver = Some(driver);
+        db::Settings::set_encoding_config(&conn, &enc_opts).await?;
     }
 
     db::ensure_collection_folder(&conn).await?;
