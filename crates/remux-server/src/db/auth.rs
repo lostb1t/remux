@@ -133,17 +133,48 @@ impl Device {
         Ok(row)
     }
 
-    /// Get all devices
-    pub async fn get_all(db: &SqlitePool) -> Result<Vec<Self>> {
-        let devices = sqlx::query_as::<_, Self>(
-            r#"
+    /// Get all devices, optionally filtering to those active since `since`.
+    pub async fn get_all(
+        db: &SqlitePool,
+
+        active_within: Option<std::time::Duration>,
+    ) -> Result<Vec<Self>> {
+        let devices = if let Some(duration) = active_within {
+            let since = Utc::now()
+                - Duration::from_std(duration)
+                    .map_err(|e| anyhow::anyhow!("invalid duration: {e}"))?;
+
+            sqlx::query_as::<_, Self>(
+                r#"
+
             SELECT *
+
             FROM devices
+
+            WHERE last_activity_at >= ?
+
             ORDER BY name
+
             "#,
-        )
-        .fetch_all(db)
-        .await?;
+            )
+            .bind(since)
+            .fetch_all(db)
+            .await?
+        } else {
+            sqlx::query_as::<_, Self>(
+                r#"
+
+            SELECT *
+
+            FROM devices
+
+            ORDER BY name
+
+            "#,
+            )
+            .fetch_all(db)
+            .await?
+        };
 
         Ok(devices)
     }

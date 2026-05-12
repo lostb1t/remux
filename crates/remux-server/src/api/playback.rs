@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum_extra::extract::Query;
-use chrono::{Duration, Local, Utc};
+use chrono::{Local, Utc};
 use futures_util::StreamExt;
 use futures_util::TryStreamExt;
 use headers;
@@ -17,7 +17,9 @@ use http::StatusCode;
 use remux_macros::{delete, get, post};
 use serde::Deserialize;
 use serde_json::json;
+use serde_with::{DurationSeconds, serde_as};
 use std::io;
+use std::time::Duration;
 use tokio_util::io::ReaderStream;
 use tracing::{debug, info, trace};
 use url::Url;
@@ -1805,10 +1807,12 @@ pub async fn sessions_capabilities_full_by_id(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[serde_as]
 #[derive(Deserialize, Default)]
 struct SessionsQuery {
     #[serde(rename = "activeWithinSeconds", alias = "ActiveWithinSeconds")]
-    active_within_seconds: Option<i64>,
+    #[serde_as(as = "Option<DurationSeconds<u64>>")]
+    active_within: Option<Duration>,
 }
 
 /// Get all active sessions
@@ -1818,26 +1822,19 @@ pub async fn get_sessions(
     _session: auth::AuthSession,
     Query(q): Query<SessionsQuery>,
 ) -> Result<impl IntoResponse> {
-    let cutoff = q
-        .active_within_seconds
-        .map(|s| Utc::now() - Duration::seconds(s));
-    let devices = auth::Device::get_all(&state.ctx.db).await?;
+    let devices = auth::Device::get_all(&state.ctx.db, q.active_within).await?;
     let playback_sessions = state.ctx.sessions.get_all();
 
-    let filtered_devices: Vec<_> = devices
-        .into_iter()
-        .filter(|device| {
-            if let Some(cutoff) = cutoff {
-                device.last_activity_at.is_some_and(|t| t >= cutoff)
-            } else {
-                true
-            }
-        })
-        .collect();
-
-    let mut sessions = Vec::with_capacity(filtered_devices.len());
-    for device in filtered_devices {
-        let ps = playback_sessions.iter().find(|s| s.device_id == device.id);
+    let mut sessions = Vec::with_capacity(devices.len());
+    for device in devices {
+        // Prefer a session that has an active transcode attached; fall back to
+        // any session for this device. This handles quality-switch windows where
+        // a new stub (with inherited device_id) coexists with the old session
+        // that had its transcode cleared.
+        let ps = playback_sessions
+            .iter()
+            .filter(|s| s.device_id == device.id)
+            .max_by_key(|s| (s.transcode.is_some(), s.last_activity));
 
         // Load full media from DB if there's an active playback session.
         let mut media = if let Some(ps) = ps {
@@ -1899,10 +1896,20 @@ pub async fn get_sessions(
                     ..Default::default()
                 });
             // Attach MediaStreams from probe data so clients can see track info.
-            if item.media_streams.is_none() {
-                if let Some(probe) = probe_data {
-                    if !probe.media_streams.is_empty() {
+            if let Some(probe) = probe_data {
+                if !probe.media_streams.is_empty() {
+                    if item.media_streams.is_none() {
                         item.media_streams = Some(probe.media_streams.clone());
+                    }
+                    // Populate MediaStreams inside each MediaSource so clients
+                    // that read streams from the source (e.g. Streamyfin) get
+                    // the full track list even in the Sessions response.
+                    if let Some(ref mut sources) = item.media_sources {
+                        for source in sources.iter_mut() {
+                            if source.media_streams.is_empty() {
+                                source.media_streams = probe.media_streams.clone();
+                            }
+                        }
                     }
                 }
             }
@@ -1912,71 +1919,95 @@ pub async fn get_sessions(
         };
 
         // Attach TranscodingInfo with enriched metadata from probe data.
-        let transcoding_info = ps
-            .and_then(|ps| ps.transcode.as_ref().and_then(|ts| ts.try_read().ok()))
-            .map(|ts| {
-                // Pull width/height/bitrate/channels from source media probe data.
-                let video_stream = probe_data.and_then(|p| {
-                    p.media_streams
-                        .iter()
-                        .find(|s| s.type_ == Some(api::MediaStreamType::Video))
-                });
-                let width = video_stream.and_then(|v| v.width.map(|x| x as i32));
-                let height = video_stream.and_then(|v| v.height.map(|x| x as i32));
-                let audio_channels = probe_data.and_then(|p| {
-                    p.media_streams
-                        .iter()
-                        .find(|s| s.type_ == Some(api::MediaStreamType::Audio))
-                        .and_then(|a| a.channels.map(|x| x as i32))
-                });
-
-                // Compute completion percentage from transcode progress.
-                let completion_percentage = if ts.runtime_ticks > 0 {
-                    let start_ticks = ts.start_time_secs as i64 * 10_000_000;
-                    let last_seg = ts
-                        .last_segment_index
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                        as i64;
-                    let transcoded_ticks = start_ticks
-                        + (last_seg + 1) * ts.segment_length as i64 * 10_000_000;
-                    Some(
-                        (transcoded_ticks as f64 / ts.runtime_ticks as f64 * 100.0)
-                            .min(100.0),
-                    )
-                } else {
-                    None
-                };
-
-                api::TranscodingInfo {
-                    audio_codec: Some(ts.audio_codec.clone()),
-                    video_codec: Some(ts.video_codec.clone()),
-                    container: Some("ts".to_string()),
-                    is_video_direct: ts.video_codec == "copy",
-                    is_audio_direct: ts.audio_codec == "copy",
-                    bitrate: probe_data.and_then(|p| p.bitrate),
-                    width,
-                    height,
-                    audio_channels,
-                    completion_percentage,
-                    transcode_reasons: ts.transcode_reasons.clone(),
-                    ..Default::default()
-                }
+        let transcode_guard = if let Some(ts) = ps.and_then(|ps| ps.transcode.clone()) {
+            Some(ts.read_owned().await)
+        } else {
+            None
+        };
+        let transcoding_info = transcode_guard.as_deref().map(|ts| {
+            // Pull width/height/bitrate/channels from source media probe data.
+            let video_stream = probe_data.and_then(|p| {
+                p.media_streams
+                    .iter()
+                    .find(|s| s.type_ == Some(api::MediaStreamType::Video))
+            });
+            let width = video_stream.and_then(|v| v.width.map(|x| x as i32));
+            let height = video_stream.and_then(|v| v.height.map(|x| x as i32));
+            let audio_channels = probe_data.and_then(|p| {
+                p.media_streams
+                    .iter()
+                    .find(|s| s.type_ == Some(api::MediaStreamType::Audio))
+                    .and_then(|a| a.channels.map(|x| x as i32))
             });
 
-        // Build PlayState from active playback session.
-        let play_state = ps.map(|ps| api::PlayerStateInfo {
-            position_ticks: Some(ps.position_ticks),
-            can_seek: ps.can_seek,
-            is_paused: ps.is_paused,
-            is_muted: ps.is_muted,
-            volume_level: ps.volume_level,
-            audio_stream_index: ps.audio_stream_index,
-            subtitle_stream_index: ps.subtitle_stream_index,
-            media_source_id: ps.media_source_id.clone(),
-            play_method: ps.play_method.clone(),
-            repeat_mode: "RepeatNone".to_string(),
-            playback_order: "Default".to_string(),
+            // Compute completion percentage from transcode progress.
+            let completion_percentage = if ts.runtime_ticks > 0 {
+                let start_ticks = ts.start_time_secs as i64 * 10_000_000;
+                let last_seg = ts
+                    .last_segment_index
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    as i64;
+                let transcoded_ticks = start_ticks
+                    + (last_seg + 1) * ts.segment_length as i64 * 10_000_000;
+                Some(
+                    (transcoded_ticks as f64 / ts.runtime_ticks as f64 * 100.0)
+                        .min(100.0),
+                )
+            } else {
+                None
+            };
+
+            // Use the actual source codec name when ffmpeg is copying the
+            // stream (remux). Clients use VideoCodec/AudioCodec to display
+            // the stream format, so "copy" is meaningless to them.
+            let video_codec_name = if ts.video_codec == "copy" {
+                ts.source_video_codec
+                    .clone()
+                    .unwrap_or_else(|| ts.video_codec.clone())
+            } else {
+                ts.video_codec.clone()
+            };
+            let audio_codec_name = if ts.audio_codec == "copy" {
+                ts.source_audio_codec
+                    .clone()
+                    .unwrap_or_else(|| ts.audio_codec.clone())
+            } else {
+                ts.audio_codec.clone()
+            };
+
+            api::TranscodingInfo {
+                audio_codec: Some(audio_codec_name),
+                video_codec: Some(video_codec_name),
+                container: Some("ts".to_string()),
+                is_video_direct: ts.video_codec == "copy",
+                is_audio_direct: ts.audio_codec == "copy",
+                bitrate: probe_data.and_then(|p| p.bitrate),
+                width,
+                height,
+                audio_channels,
+                completion_percentage,
+                transcode_reasons: ts.transcode_reasons.clone(),
+                ..Default::default()
+            }
         });
+
+        // Build PlayState from active playback session, always non-null.
+        let play_state = Some(
+            ps.map(|ps| api::PlayerStateInfo {
+                position_ticks: Some(ps.position_ticks),
+                can_seek: ps.can_seek,
+                is_paused: ps.is_paused,
+                is_muted: ps.is_muted,
+                volume_level: ps.volume_level,
+                audio_stream_index: ps.audio_stream_index,
+                subtitle_stream_index: ps.subtitle_stream_index,
+                media_source_id: ps.media_source_id.clone(),
+                play_method: ps.play_method.clone(),
+                repeat_mode: "RepeatNone".to_string(),
+                playback_order: "Default".to_string(),
+            })
+            .unwrap_or_default(),
+        );
 
         let capabilities = device.parsed_capabilities();
 
@@ -2220,6 +2251,11 @@ pub async fn master_hls_video(
             source_frame_rate,
             "source video codec for HLS session"
         );
+        let source_audio_stream = resolved_media
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.audio_stream());
+        let source_audio_codec = source_audio_stream.and_then(|s| s.codec.clone());
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -2240,6 +2276,7 @@ pub async fn master_hls_video(
             runtime_ticks,
             is_live,
             source_video_codec,
+            source_audio_codec,
             source_video_profile,
             source_video_level,
             source_video_range_type,

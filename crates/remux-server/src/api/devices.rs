@@ -44,7 +44,7 @@ pub async fn get_devices(
     let devices = if let Some(user_id) = params.user_id {
         auth::Device::get_by_user_id(&state.ctx.db, &user_id).await?
     } else {
-        auth::Device::get_all(&state.ctx.db).await?
+        auth::Device::get_all(&state.ctx.db, None).await?
     };
 
     // Convert to Jellyfin DeviceInfo format

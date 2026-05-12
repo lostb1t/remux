@@ -195,7 +195,7 @@ fn parse_sessions_data(data: Option<&serde_json::Value>) -> (u64, u64) {
 
 async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
     let devices: std::collections::HashMap<String, db::auth::Device> =
-        db::auth::Device::get_all(&state.ctx.db)
+        db::auth::Device::get_all(&state.ctx.db, None)
             .await
             .unwrap_or_default()
             .into_iter()

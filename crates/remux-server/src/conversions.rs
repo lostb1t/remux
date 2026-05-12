@@ -165,7 +165,10 @@ impl From<db::Media> for api::MediaSourceInfo {
             run_time_ticks: source
                 .runtime
                 .and_then(|r| r.to_ticks(common::TickUnit::Seconds)),
-            // media_streams,
+            media_streams: source
+                .probe_data
+                .map(|p| p.media_streams)
+                .unwrap_or_default(),
             ..Default::default()
         }
     }

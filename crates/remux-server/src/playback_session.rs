@@ -114,6 +114,12 @@ impl PlaybackSessionManager {
     /// calls master.m3u8 before POST /sessions/playing), a stub is inserted so the
     /// transcode isn't lost. `insert` will later overwrite the stub fields while
     /// preserving the transcode.
+    ///
+    /// When creating a stub, we inherit the `device_id` from the most recently
+    /// active session that currently has no transcode. This covers quality-switch
+    /// flows where the client sends a new play_session_id without first calling
+    /// POST /Sessions/Playing — without this, `get_sessions` can't find the new
+    /// transcode by device_id until the client reports playback again.
     pub fn attach_transcode(
         &self,
         id: &str,
@@ -122,6 +128,18 @@ impl PlaybackSessionManager {
         if let Some(mut entry) = self.sessions.get_mut(id) {
             entry.value_mut().transcode = Some(ts);
         } else {
+            // Inherit device_id from the freshest transcodeless session so that
+            // get_sessions can find this stub by device_id immediately.
+            let inherited_device_id = self
+                .sessions
+                .iter()
+                .filter(|e| {
+                    e.value().transcode.is_none() && !e.value().device_id.is_empty()
+                })
+                .max_by_key(|e| e.value().last_activity)
+                .map(|e| e.value().device_id.clone())
+                .unwrap_or_default();
+
             self.sessions.insert(
                 id.to_string(),
                 PlaybackSession {
@@ -130,7 +148,7 @@ impl PlaybackSessionManager {
                     user_id: Uuid::nil(),
                     item_id: Uuid::nil(),
                     media_source_id: None,
-                    device_id: String::new(),
+                    device_id: inherited_device_id,
                     client_name: String::new(),
                     position_ticks: 0,
                     can_seek: true,
