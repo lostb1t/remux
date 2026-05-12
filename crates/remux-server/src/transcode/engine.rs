@@ -1241,7 +1241,7 @@ mod tests {
     #[test]
     fn hw_none_when_no_hwaccels_listed() {
         assert_eq!(
-            select_hw_accel("", all_devices),
+            select_hw_accel("", all_devices, || None),
             HardwareAccelerationType::None
         );
     }
@@ -1251,7 +1251,7 @@ mod tests {
         let hwaccels =
             "Hardware acceleration methods:\ncuda\nvaapi\nqsv\nv4l2m2m\nrkmpp\n";
         assert_eq!(
-            select_hw_accel(hwaccels, no_devices),
+            select_hw_accel(hwaccels, no_devices, || None),
             HardwareAccelerationType::None
         );
     }
@@ -1261,12 +1261,12 @@ mod tests {
         let hwaccels = "Hardware acceleration methods:\ncuda\n";
         // Device present
         assert_eq!(
-            select_hw_accel(hwaccels, |p| p == "/dev/nvidia0"),
+            select_hw_accel(hwaccels, |p| p == "/dev/nvidia0", || None),
             HardwareAccelerationType::Nvenc
         );
         // Device absent
         assert_eq!(
-            select_hw_accel(hwaccels, no_devices),
+            select_hw_accel(hwaccels, no_devices, || None),
             HardwareAccelerationType::None
         );
     }
@@ -1275,11 +1275,11 @@ mod tests {
     fn hw_vaapi_requires_vaapi_and_device() {
         let hwaccels = "Hardware acceleration methods:\nvaapi\n";
         assert_eq!(
-            select_hw_accel(hwaccels, |p| p == "/dev/dri/renderD128"),
+            select_hw_accel(hwaccels, |p| p == "/dev/dri/renderD128", || None),
             HardwareAccelerationType::Vaapi
         );
         assert_eq!(
-            select_hw_accel(hwaccels, no_devices),
+            select_hw_accel(hwaccels, no_devices, || None),
             HardwareAccelerationType::None
         );
     }
@@ -1288,7 +1288,11 @@ mod tests {
     fn hw_qsv_beats_vaapi_when_both_available() {
         let hwaccels = "Hardware acceleration methods:\nvaapi\nqsv\n";
         assert_eq!(
-            select_hw_accel(hwaccels, |p| p == "/dev/dri/renderD128"),
+            select_hw_accel(
+                hwaccels,
+                |p| p == "/dev/dri/renderD128",
+                || { Some("0x8086".to_string()) }
+            ),
             HardwareAccelerationType::Qsv
         );
     }
@@ -1297,11 +1301,15 @@ mod tests {
     fn hw_qsv_requires_dri_device() {
         let hwaccels = "Hardware acceleration methods:\nqsv\n";
         assert_eq!(
-            select_hw_accel(hwaccels, |p| p == "/dev/dri/renderD128"),
+            select_hw_accel(
+                hwaccels,
+                |p| p == "/dev/dri/renderD128",
+                || { Some("0x8086".to_string()) }
+            ),
             HardwareAccelerationType::Qsv
         );
         assert_eq!(
-            select_hw_accel(hwaccels, no_devices),
+            select_hw_accel(hwaccels, no_devices, || Some("0x8086".to_string())),
             HardwareAccelerationType::None
         );
     }
@@ -1310,12 +1318,12 @@ mod tests {
     fn hw_rkmpp_requires_mpp_service_device() {
         let hwaccels = "Hardware acceleration methods:\nrkmpp\n";
         assert_eq!(
-            select_hw_accel(hwaccels, |p| p == "/dev/mpp_service"),
+            select_hw_accel(hwaccels, |p| p == "/dev/mpp_service", || None),
             HardwareAccelerationType::Rkmpp
         );
         // This was the Asahi Linux bug: rkmpp listed but device absent → None
         assert_eq!(
-            select_hw_accel(hwaccels, no_devices),
+            select_hw_accel(hwaccels, no_devices, || None),
             HardwareAccelerationType::None
         );
     }
@@ -1324,11 +1332,11 @@ mod tests {
     fn hw_v4l2m2m_requires_video0_device() {
         let hwaccels = "Hardware acceleration methods:\nv4l2m2m\n";
         assert_eq!(
-            select_hw_accel(hwaccels, |p| p == "/dev/video0"),
+            select_hw_accel(hwaccels, |p| p == "/dev/video0", || None),
             HardwareAccelerationType::V4l2m2m
         );
         assert_eq!(
-            select_hw_accel(hwaccels, no_devices),
+            select_hw_accel(hwaccels, no_devices, || None),
             HardwareAccelerationType::None
         );
     }
@@ -1341,7 +1349,7 @@ mod tests {
         } else {
             HardwareAccelerationType::None
         };
-        assert_eq!(select_hw_accel(hwaccels, all_devices), expected);
+        assert_eq!(select_hw_accel(hwaccels, all_devices, || None), expected);
     }
 
     #[test]
@@ -1349,7 +1357,7 @@ mod tests {
         // When both are available nvenc wins
         let hwaccels = "Hardware acceleration methods:\ncuda\nvaapi\n";
         assert_eq!(
-            select_hw_accel(hwaccels, all_devices),
+            select_hw_accel(hwaccels, all_devices, || None),
             HardwareAccelerationType::Nvenc
         );
     }
@@ -1360,7 +1368,7 @@ mod tests {
             "Hardware acceleration methods:\ncuda\nvaapi\nqsv\nv4l2m2m\nrkmpp\n";
         // Only /dev/mpp_service present
         assert_eq!(
-            select_hw_accel(hwaccels, |p| p == "/dev/mpp_service"),
+            select_hw_accel(hwaccels, |p| p == "/dev/mpp_service", || None),
             HardwareAccelerationType::Rkmpp
         );
     }
