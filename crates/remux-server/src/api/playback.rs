@@ -781,6 +781,7 @@ async fn videos_stream_inner(
         vaapi_device: encoding_opts
             .vaapi_device
             .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
+        vaapi_driver: encoding_opts.vaapi_driver.unwrap_or_default(),
     };
 
     let stream = crate::transcode::engine::start_progressive_transcode(params)?;
@@ -2329,6 +2330,7 @@ pub async fn master_hls_video(
             vaapi_device: encoding_opts
                 .vaapi_device
                 .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
+            vaapi_driver: encoding_opts.vaapi_driver.unwrap_or_default(),
         };
 
         // Spawn the transcode task with proper error handling
@@ -2758,6 +2760,7 @@ async fn hls_segment_inner(
                         vaapi_device: encoding_opts
                             .vaapi_device
                             .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
+                        vaapi_driver: encoding_opts.vaapi_driver.unwrap_or_default(),
                     };
 
                     // Reinitialise the session's state for the new transcode run.

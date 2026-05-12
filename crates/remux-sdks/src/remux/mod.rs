@@ -429,9 +429,13 @@ pub struct EncodingOptions {
     pub encoding_preset: Option<String>,
     #[default(Some(HardwareAccelerationType::None))]
     pub hardware_acceleration_type: Option<HardwareAccelerationType>,
-    /// VAAPI render device path (used when hardware_acceleration_type is vaapi).
+    /// VAAPI render device path (used when hardware_acceleration_type is vaapi or qsv).
     #[default(Some("/dev/dri/renderD128".to_string()))]
     pub vaapi_device: Option<String>,
+    /// VAAPI driver name to pass via `driver=` in `-init_hw_device vaapi=...`.
+    /// Auto-detected at startup: "iHD" for Intel, empty for others.
+    #[default(None)]
+    pub vaapi_driver: Option<String>,
     /// When true, the server probes available hardware at startup and saves the
     /// detected type to hardware_acceleration_type automatically.
     #[default(Some(true))]

@@ -18,6 +18,18 @@ pub async fn detect_hardware_acceleration() -> HardwareAccelerationType {
     detected
 }
 
+/// Detect the VAAPI driver name for the primary DRM render node.
+/// Returns "iHD" for Intel (vendor 0x8086), empty string for others.
+pub fn detect_vaapi_driver() -> String {
+    let vendor = std::fs::read_to_string("/sys/class/drm/renderD128/device/vendor")
+        .ok()
+        .map(|s| s.trim().to_string());
+    match vendor.as_deref() {
+        Some("0x8086") => "iHD".to_string(),
+        _ => String::new(),
+    }
+}
+
 async fn probe_hw_accel() -> HardwareAccelerationType {
     let supported = match tokio::process::Command::new(ffmpeg_bin())
         .args(["-hide_banner", "-hwaccels"])
@@ -205,8 +217,10 @@ pub struct TranscodeParams {
     /// codec-specific output flags such as `-tag:v hvc1` for HEVC in HLS.
     pub source_video_codec: Option<String>,
     pub hardware_acceleration_type: HardwareAccelerationType,
-    /// VAAPI render device (only used when acceleration type is VAAPI).
+    /// VAAPI render device path.
     pub vaapi_device: String,
+    /// VAAPI driver name (e.g. "iHD" for Intel). Empty string means auto-detect.
+    pub vaapi_driver: String,
 }
 
 impl Default for TranscodeParams {
@@ -232,6 +246,7 @@ impl Default for TranscodeParams {
             source_video_codec: None,
             hardware_acceleration_type: HardwareAccelerationType::None,
             vaapi_device: "/dev/dri/renderD128".to_string(),
+            vaapi_driver: String::new(),
         }
     }
 }
@@ -243,16 +258,54 @@ fn output_dimensions(params: &TranscodeParams) -> (Option<u32>, Option<u32>) {
 
 /// Return the ffmpeg input args that enable hardware-accelerated decoding.
 /// These are placed **before** the `-i` flag.
-fn hw_input_args(accel: HardwareAccelerationType, vaapi_device: &str) -> Vec<String> {
+fn hw_input_args(
+    accel: HardwareAccelerationType,
+    vaapi_device: &str,
+    vaapi_driver: &str,
+) -> Vec<String> {
+    // Build the vaapi init_hw_device string, appending ",driver=X" when known.
+    let vaapi_init = |alias: &str| {
+        let driver_opt = if vaapi_driver.is_empty() {
+            String::new()
+        } else {
+            format!(",driver={vaapi_driver}")
+        };
+        format!("vaapi={alias}:{vaapi_device}{driver_opt}")
+    };
+
     match accel {
         HardwareAccelerationType::Nvenc => vec!["-hwaccel".into(), "cuda".into()],
         HardwareAccelerationType::Vaapi => {
-            // Use -vaapi_device so ffmpeg initialises the VAAPI context; frames
-            // stay in CPU memory so the normal `scale` filter can still be used,
-            // then hwupload transfers them to VAAPI before encoding.
-            vec!["-vaapi_device".into(), vaapi_device.to_string()]
+            // Initialise the VAAPI device via init_hw_device so that the
+            // driver= option takes effect (fixes iHD resolution on Intel).
+            // Frames are decoded in software; hwupload in the filter chain
+            // uploads the scaled frame to the VAAPI device for encoding.
+            vec![
+                "-init_hw_device".into(),
+                vaapi_init("va"),
+                "-filter_hw_device".into(),
+                "va".into(),
+            ]
         }
-        HardwareAccelerationType::Qsv => vec!["-hwaccel".into(), "qsv".into()],
+        HardwareAccelerationType::Qsv => {
+            // On Linux, QSV is derived from a VAAPI device.  We initialise the
+            // VAAPI device first (with an explicit driver so iHD is found on
+            // Intel), derive a QSV device from it, then use VAAPI for hardware-
+            // assisted decoding.  Frames stay in GPU memory; scale_vaapi +
+            // hwmap map them to a QSV surface for the QSV encoder.
+            vec![
+                "-init_hw_device".into(),
+                vaapi_init("va"),
+                "-init_hw_device".into(),
+                "qsv=qs@va".into(),
+                "-filter_hw_device".into(),
+                "qs".into(),
+                "-hwaccel".into(),
+                "vaapi".into(),
+                "-hwaccel_output_format".into(),
+                "vaapi".into(),
+            ]
+        }
         HardwareAccelerationType::VideoToolbox => {
             vec!["-hwaccel".into(), "videotoolbox".into()]
         }
@@ -290,6 +343,12 @@ fn hw_filter_suffix(accel: HardwareAccelerationType) -> Option<String> {
     match accel {
         // VAAPI encoder requires frames in VAAPI memory; upload them after scaling.
         HardwareAccelerationType::Vaapi => Some("format=nv12,hwupload".to_string()),
+        // QSV: frames are in VAAPI memory after decode; map them to a QSV surface
+        // for the QSV encoder.  scale_vaapi (the scale step) already converted the
+        // pixel format, so we only need the device remap here.
+        HardwareAccelerationType::Qsv => {
+            Some("hwmap=derive_device=qsv,format=qsv".to_string())
+        }
         _ => None,
     }
 }
@@ -304,6 +363,28 @@ fn build_scale_filter(params: &TranscodeParams) -> Option<String> {
         (Some(w), None) => Some(format!("scale='min({},iw)':-2", w)),
         (None, Some(h)) => Some(format!("scale=-2:'min({},ih)'", h)),
         _ => None,
+    }
+}
+
+/// Build a VAAPI hardware scale filter for QSV transcoding.
+///
+/// When using QSV (VAAPI-decode → QSV-encode pipeline) frames live in VAAPI
+/// GPU memory, so we must use `scale_vaapi` instead of the CPU `scale` filter.
+/// Always returns `Some` — at minimum a format-conversion pass is needed so the
+/// `hwmap=derive_device=qsv` suffix can map frames into QSV memory.
+/// `extra_hw_frames=24` follows Jellyfin's recommendation for VAAPI VPP pools.
+fn build_qsv_scale_filter(max_width: Option<u32>, max_height: Option<u32>) -> String {
+    match (max_width, max_height) {
+        (Some(w), Some(h)) => format!(
+            "scale_vaapi=w='min({w},iw)':h='min({h},ih)':format=nv12:extra_hw_frames=24:force_original_aspect_ratio=decrease"
+        ),
+        (Some(w), None) => {
+            format!("scale_vaapi=w='min({w},iw)':h=-2:format=nv12:extra_hw_frames=24")
+        }
+        (None, Some(h)) => {
+            format!("scale_vaapi=w=-2:h='min({h},ih)':format=nv12:extra_hw_frames=24")
+        }
+        _ => "scale_vaapi=format=nv12:extra_hw_frames=24".to_string(),
     }
 }
 
@@ -357,7 +438,11 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     ];
 
     // Hardware acceleration input flags (before -ss and -i)
-    args.extend(hw_input_args(accel, &params.vaapi_device));
+    args.extend(hw_input_args(
+        accel,
+        &params.vaapi_device,
+        &params.vaapi_driver,
+    ));
 
     // Input seek (fast, before -i)
     if let Some(ticks) = params.start_time_ticks {
@@ -430,7 +515,13 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         }
     } else {
         let scale_filter = if ffmpeg_video_codec != "copy" {
-            build_scale_filter(params)
+            if matches!(accel, HardwareAccelerationType::Qsv) {
+                // QSV pipeline: frames in VAAPI memory — must use scale_vaapi.
+                // Always Some so the hwmap suffix is always combined with it.
+                Some(build_qsv_scale_filter(params.max_width, params.max_height))
+            } else {
+                build_scale_filter(params)
+            }
         } else {
             None
         };
@@ -745,6 +836,8 @@ pub struct ProgressiveTranscodeParams {
     pub source_video_codec: Option<String>,
     pub hardware_acceleration_type: HardwareAccelerationType,
     pub vaapi_device: String,
+    /// VAAPI driver name (e.g. "iHD" for Intel). Empty string means auto-detect.
+    pub vaapi_driver: String,
 }
 
 /// Build the ffmpeg CLI args for a progressive transcode piped to stdout.
@@ -817,7 +910,11 @@ pub(crate) fn build_progressive_args(
     ];
 
     // Hardware acceleration input flags (before -ss and -i)
-    args.extend(hw_input_args(accel, &params.vaapi_device));
+    args.extend(hw_input_args(
+        accel,
+        &params.vaapi_device,
+        &params.vaapi_driver,
+    ));
 
     // Input seek (fast, before -i)
     if let Some(ticks) = params.start_time_ticks {
@@ -831,12 +928,16 @@ pub(crate) fn build_progressive_args(
 
     // Stream mapping
     let scale_filter = if ffmpeg_video_codec != "copy" {
-        let tp = TranscodeParams {
-            max_width: params.max_width,
-            max_height: params.max_height,
-            ..Default::default()
-        };
-        build_scale_filter(&tp)
+        if matches!(accel, HardwareAccelerationType::Qsv) {
+            Some(build_qsv_scale_filter(params.max_width, params.max_height))
+        } else {
+            let tp = TranscodeParams {
+                max_width: params.max_width,
+                max_height: params.max_height,
+                ..Default::default()
+            };
+            build_scale_filter(&tp)
+        }
     } else {
         None
     };
@@ -1402,6 +1503,7 @@ mod tests {
             source_video_codec: None,
             hardware_acceleration_type: HardwareAccelerationType::None,
             vaapi_device: "/dev/dri/renderD128".into(),
+            vaapi_driver: String::new(),
         }
     }
 
@@ -1657,14 +1759,25 @@ mod tests {
             video_codec: "libx264".into(),
             hardware_acceleration_type: HardwareAccelerationType::Vaapi,
             vaapi_device: "/dev/dri/renderD128".into(),
+            vaapi_driver: "iHD".into(),
             ..default_hls(dir)
         });
 
-        // Input flags
+        // init_hw_device with driver= instead of legacy -vaapi_device
+        assert!(
+            args.windows(2).any(|w| w[0] == "-init_hw_device"
+                && w[1].contains("vaapi=va:")
+                && w[1].contains("/dev/dri/renderD128")
+                && w[1].contains("driver=iHD")),
+            "expected init_hw_device vaapi with iHD driver, got: {args:?}"
+        );
         assert!(
             args.windows(2)
-                .any(|w| w[0] == "-vaapi_device" && w[1] == "/dev/dri/renderD128")
+                .any(|w| w[0] == "-filter_hw_device" && w[1] == "va"),
+            "expected -filter_hw_device va"
         );
+        // legacy -vaapi_device must NOT appear
+        assert!(!args.windows(2).any(|w| w[0] == "-vaapi_device"));
         // Encoder remapped
         assert_eq!(arg_after(&args, "-c:v"), Some("h264_vaapi"));
         // hwupload suffix in -vf
@@ -1673,15 +1786,82 @@ mod tests {
     }
 
     #[test]
+    fn hls_vaapi_no_driver_omits_driver_option() {
+        let dir = PathBuf::from("/tmp/test_vaapi_amd");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            hardware_acceleration_type: HardwareAccelerationType::Vaapi,
+            vaapi_device: "/dev/dri/renderD128".into(),
+            vaapi_driver: String::new(), // AMD / unknown: no driver=
+            ..default_hls(dir)
+        });
+
+        let init_dev = args
+            .windows(2)
+            .find(|w| w[0] == "-init_hw_device")
+            .expect("init_hw_device missing");
+        assert!(
+            !init_dev[1].contains("driver="),
+            "unexpected driver= in {}",
+            init_dev[1]
+        );
+        assert!(init_dev[1].contains("vaapi=va:"));
+    }
+
+    #[test]
     fn hls_qsv_hardware_accel() {
         let dir = PathBuf::from("/tmp/test_qsv");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx265".into(),
             hardware_acceleration_type: HardwareAccelerationType::Qsv,
+            vaapi_device: "/dev/dri/renderD128".into(),
+            vaapi_driver: "iHD".into(),
             ..default_hls(dir)
         });
-        assert!(args.windows(2).any(|w| w[0] == "-hwaccel" && w[1] == "qsv"));
+
+        // VAAPI device init with iHD driver
+        assert!(
+            args.windows(2).any(|w| w[0] == "-init_hw_device"
+                && w[1].starts_with("vaapi=va:")
+                && w[1].contains("driver=iHD")),
+            "expected VAAPI init with iHD: {args:?}"
+        );
+        // QSV device derived from VAAPI
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-init_hw_device" && w[1] == "qsv=qs@va"),
+            "expected qsv=qs@va init"
+        );
+        // filter_hw_device points at QSV
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-filter_hw_device" && w[1] == "qs"),
+            "expected -filter_hw_device qs"
+        );
+        // VAAPI hwaccel (not qsv) for decode
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-hwaccel" && w[1] == "vaapi"),
+            "expected -hwaccel vaapi"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-hwaccel_output_format" && w[1] == "vaapi"),
+            "expected -hwaccel_output_format vaapi"
+        );
+        // Encoder remapped to QSV
         assert_eq!(arg_after(&args, "-c:v"), Some("hevc_qsv"));
+        // scale_vaapi in -vf
+        let vf = arg_after(&args, "-vf").expect("-vf missing for QSV");
+        assert!(
+            vf.contains("scale_vaapi"),
+            "expected scale_vaapi in vf: {vf}"
+        );
+        assert!(
+            vf.contains("hwmap=derive_device=qsv"),
+            "expected hwmap in vf: {vf}"
+        );
+        assert!(vf.contains("format=qsv"), "expected format=qsv in vf: {vf}");
     }
 
     // ── progressive tests ────────────────────────────────────────────────────
