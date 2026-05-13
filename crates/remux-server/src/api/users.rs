@@ -1,6 +1,8 @@
 use anyhow::Context;
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::{Path, State};
+use axum::http::header;
 use axum::response::IntoResponse;
 use axum::response::Redirect;
 use axum_extra::extract::Query;
@@ -260,16 +262,6 @@ pub async fn users(
     .collect::<Vec<api::UserDto>>();
 
     Ok(Json(items))
-}
-
-#[get("/userimage")]
-pub async fn user_image(
-    State(state): State<AppState>,
-    // Query(q): Query<api::ImageQuery>,
-) -> Result<impl IntoResponse> {
-    let url = Some("https://placehold.co/600x400".to_string());
-
-    Ok(Redirect::temporary(url.unwrap().as_str()))
 }
 
 #[get("/users/me")]
@@ -628,6 +620,202 @@ pub async fn forgot_password() -> impl IntoResponse {
         "PinFile": null,
         "PinExpirationDate": null,
     }))
+}
+
+// ===== User avatar endpoints =====
+
+fn avatar_path(user_id: &Uuid) -> std::path::PathBuf {
+    crate::base_data_dir()
+        .join("meta")
+        .join("avatars")
+        .join(user_id.to_string())
+}
+
+pub fn user_has_avatar(user_id: &Uuid) -> bool {
+    avatar_path(user_id).exists()
+}
+
+fn detect_image_content_type(bytes: &[u8]) -> &'static str {
+    match bytes {
+        [0xff, 0xd8, 0xff, ..] => "image/jpeg",
+        [0x89, b'P', b'N', b'G', ..] => "image/png",
+        [b'G', b'I', b'F', ..] => "image/gif",
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => "image/webp",
+        _ => "image/jpeg",
+    }
+}
+
+/// Jellyfin clients send the image body base64-encoded. Decode it, falling
+/// back to raw bytes if the content does not look like valid base64.
+fn decode_image_body(body: &[u8]) -> Vec<u8> {
+    use base64::Engine;
+    // Strip optional data-URI prefix (data:image/jpeg;base64,...)
+    let src = if let Some(pos) = body.iter().position(|&b| b == b',') {
+        &body[pos + 1..]
+    } else {
+        body
+    };
+    base64::engine::general_purpose::STANDARD
+        .decode(src)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(src))
+        .unwrap_or_else(|_| body.to_vec())
+}
+
+async fn upload_avatar_for(user_id: &Uuid, body: Bytes) -> anyhow::Result<()> {
+    let decoded = decode_image_body(&body);
+    let path = avatar_path(user_id);
+    tokio::fs::create_dir_all(path.parent().unwrap())
+        .await
+        .context("failed to create avatars directory")?;
+    tokio::fs::write(&path, &decoded)
+        .await
+        .context("failed to write avatar file")?;
+    Ok(())
+}
+
+async fn delete_avatar_for(user_id: &Uuid) -> anyhow::Result<()> {
+    let path = avatar_path(user_id);
+    if path.exists() {
+        tokio::fs::remove_file(&path)
+            .await
+            .context("failed to delete avatar file")?;
+    }
+    Ok(())
+}
+
+async fn serve_avatar_for(user_id: Uuid) -> Result<impl IntoResponse> {
+    let path = avatar_path(&user_id);
+    let bytes = tokio::fs::read(&path).await.map_err(|_| {
+        anyhow::anyhow!("avatar not found")
+            .context_not_found("not found", "avatar not found")
+    })?;
+    let content_type = detect_image_content_type(&bytes);
+    Ok(([(header::CONTENT_TYPE, content_type)], bytes).into_response())
+}
+
+// --- GET (no auth required — matches Jellyfin behaviour) ---
+
+#[derive(Deserialize)]
+struct UserImageQuery {
+    #[serde(rename = "userId", alias = "user_id")]
+    user_id: Option<Uuid>,
+    tag: Option<String>,
+}
+
+#[get("/userimage")]
+pub async fn get_user_image(
+    Query(q): Query<UserImageQuery>,
+) -> Result<impl IntoResponse> {
+    let uid = q
+        .user_id
+        .or_else(|| q.tag.as_deref().and_then(|t| Uuid::parse_str(t).ok()))
+        .context_bad_request("missing", "userId required")?;
+    serve_avatar_for(uid).await
+}
+
+#[get("/users/{user_id}/images/{image_type}")]
+pub async fn get_user_image_by_id(
+    Path((user_id, _image_type)): Path<(Uuid, String)>,
+) -> Result<impl IntoResponse> {
+    serve_avatar_for(user_id).await
+}
+
+#[get("/users/{user_id}/images/{image_type}/{index}")]
+pub async fn get_user_image_by_id_indexed(
+    Path((user_id, _image_type, _index)): Path<(Uuid, String, usize)>,
+) -> Result<impl IntoResponse> {
+    serve_avatar_for(user_id).await
+}
+
+// --- POST (upload) ---
+
+#[post("/userimage")]
+pub async fn upload_user_image(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    upload_avatar_for(&session.user.id, body)
+        .await
+        .context_internal("upload failed", "failed to save avatar")?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[post("/users/{user_id}/images/{image_type}")]
+pub async fn upload_user_image_legacy(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((user_id, _image_type)): Path<(Uuid, String)>,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    upload_avatar_for(&user_id, body)
+        .await
+        .context_internal("upload failed", "failed to save avatar")?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[post("/users/{user_id}/images/{image_type}/{index}")]
+pub async fn upload_user_image_indexed(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((user_id, _image_type, _index)): Path<(Uuid, String, usize)>,
+    body: Bytes,
+) -> Result<impl IntoResponse> {
+    upload_avatar_for(&user_id, body)
+        .await
+        .context_internal("upload failed", "failed to save avatar")?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+// --- DELETE ---
+
+#[delete("/userimage")]
+pub async fn delete_user_image(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    delete_avatar_for(&session.user.id)
+        .await
+        .context_internal("delete failed", "failed to delete avatar")?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[delete("/users/{user_id}/images/{image_type}")]
+pub async fn delete_user_image_legacy(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((user_id, _image_type)): Path<(Uuid, String)>,
+) -> Result<impl IntoResponse> {
+    delete_avatar_for(&user_id)
+        .await
+        .context_internal("delete failed", "failed to delete avatar")?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[delete("/users/{user_id}/images/{image_type}/{index}")]
+pub async fn delete_user_image_indexed(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path((user_id, _image_type, _index)): Path<(Uuid, String, usize)>,
+) -> Result<impl IntoResponse> {
+    delete_avatar_for(&user_id)
+        .await
+        .context_internal("delete failed", "failed to delete avatar")?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[cfg(test)]

@@ -130,12 +130,18 @@ pub fn db_user_to_dto(user: db::User) -> UserDto {
     }
     default_if_empty!(authentication_provider_id);
     default_if_empty!(password_reset_provider_id);
+    let primary_image_tag = if crate::api::users::user_has_avatar(&user.id) {
+        Some(user.id.to_string())
+    } else {
+        None
+    };
     UserDto {
         server_id: common::server_id(),
         name: user.username,
         id: user.id,
         configuration: Some(config),
         policy,
+        primary_image_tag,
         ..Default::default()
     }
 }

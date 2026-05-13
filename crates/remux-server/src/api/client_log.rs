@@ -16,9 +16,7 @@ use axum_anyhow::ApiResult as Result;
 const MAX_DOCUMENT_SIZE: usize = 1_000_000;
 
 fn client_log_dir() -> PathBuf {
-    dirs::data_dir()
-        .map(|d| d.join("remux").join("logs"))
-        .unwrap_or_else(|| PathBuf::from("/data/logs"))
+    crate::base_data_dir().join("logs")
 }
 
 /// Upload a client log document.

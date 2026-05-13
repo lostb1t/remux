@@ -315,32 +315,44 @@ pub struct AppState {
     pub tasks: tasks::TaskService,
 }
 
-fn default_web_path() -> String {
+/// Returns the base data directory for remux: `~/.local/share/remux` on Linux,
+/// or `/data` as a fallback (used in Docker / production deployments).
+pub fn base_data_dir() -> std::path::PathBuf {
     dirs::data_dir()
-        .map(|d| d.join("remux").join("jellyfin-web"))
-        .and_then(|p| p.to_str().map(str::to_owned))
+        .map(|d| d.join("remux"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/data"))
+}
+
+fn default_web_path() -> String {
+    base_data_dir()
+        .join("jellyfin-web")
+        .to_str()
+        .map(str::to_owned)
         .unwrap_or_else(|| "/data/jellyfin-web".to_string())
 }
 
 fn default_dashboard_path() -> String {
-    dirs::data_dir()
-        .map(|d| d.join("remux").join("dashboard"))
-        .and_then(|p| p.to_str().map(str::to_owned))
+    base_data_dir()
+        .join("dashboard")
+        .to_str()
+        .map(str::to_owned)
         .unwrap_or_else(|| "/data/dashboard".to_string())
 }
 
 fn default_database_url() -> String {
-    let path = dirs::data_dir()
-        .map(|d| d.join("remux").join("db.sqlite"))
-        .and_then(|p| p.to_str().map(str::to_owned))
+    let path = base_data_dir()
+        .join("db.sqlite")
+        .to_str()
+        .map(str::to_owned)
         .unwrap_or_else(|| "/data/db.sqlite".to_string());
     format!("sqlite://{}?mode=rwc", path)
 }
 
 fn default_torrent_data_dir() -> String {
-    dirs::data_dir()
-        .map(|d| d.join("remux").join("torrents"))
-        .and_then(|p| p.to_str().map(str::to_owned))
+    base_data_dir()
+        .join("torrents")
+        .to_str()
+        .map(str::to_owned)
         .unwrap_or_else(|| "/data/torrents".to_string())
 }
 
