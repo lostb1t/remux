@@ -1125,12 +1125,12 @@ pub async fn item(
         base_item.can_download = Some(false);
     }
 
-    let enable_subtitles_detail = crate::db::Settings::get_config(&state.ctx.db)
-        .await
-        .ok()
-        .and_then(|c| c.enable_subtitles_detail)
-        .unwrap_or(true);
-
+    //let enable_subtitles_detail = crate::db::Settings::get_config(&state.ctx.db)
+    //    .await
+    //    .ok()
+    //    .and_then(|c| c.enable_subtitles_detail)
+    //    .unwrap_or(true);
+    let enable_subtitles_detail = false;
     if enable_subtitles_detail {
         if let Some(ref mut sources) = base_item.media_sources {
             if !sources.is_empty() {
