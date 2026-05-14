@@ -192,6 +192,24 @@ async fn apply_meta_result(
 }
 
 // ---------------------------------------------------------------------------
+impl From<crate::stream::StreamInfo> for db::Media {
+    fn from(si: crate::stream::StreamInfo) -> Self {
+        let title = si
+            .name
+            .clone()
+            .or_else(|| si.description.clone())
+            .unwrap_or_default();
+        let probe_data = si.probe_data.clone();
+        db::Media {
+            kind: db::MediaKind::Stream,
+            title,
+            stream_info: Some(si),
+            probe_data,
+            ..Default::default()
+        }
+    }
+}
+
 // Preset registry
 // ---------------------------------------------------------------------------
 
@@ -346,11 +364,11 @@ pub trait AddonKind: Send + Sync {
     fn stream_supports(&self, _media: &db::Media) -> bool {
         false
     }
-    async fn stream_resolve(
+    async fn get_streams(
         &self,
         _media: &db::Media,
         _ctx: &AppContext,
-    ) -> Result<Vec<db::Media>> {
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
         Ok(vec![])
     }
 
@@ -861,7 +879,7 @@ impl AddonService {
         let tasks: Vec<_> = addons
             .into_iter()
             .map(|(name, addon)| async move {
-                match addon.stream_resolve(media, ctx).await {
+                match addon.get_streams(media, ctx).await {
                     Ok(streams) => {
                         tracing::debug!(addon = %name, count = streams.len(), "addon returned streams");
                         streams
@@ -877,16 +895,19 @@ impl AddonService {
             .await
             .into_iter()
             .flatten()
+            .map(db::Media::from)
             .collect();
         Ok(all)
     }
 
     fn stream_dedup_key(s: &db::Media) -> Option<String> {
-        match s.url.as_ref()? {
+        match &s.stream_info.as_ref()?.descriptor {
             crate::stream::StreamDescriptor::Torrent { info_hash, .. } => {
                 Some(format!("torrent:{}", info_hash.to_lowercase()))
             }
-            crate::stream::StreamDescriptor::Http(url) => Some(format!("http:{url}")),
+            crate::stream::StreamDescriptor::Http { url, .. } => {
+                Some(format!("http:{url}"))
+            }
             crate::stream::StreamDescriptor::Local(path) => {
                 Some(format!("local:{}", path.display()))
             }

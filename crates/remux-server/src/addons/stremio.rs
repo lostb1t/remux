@@ -341,11 +341,11 @@ impl AddonKind for StremioAddon {
         stremio_type_for_kind(&media.kind).is_some()
     }
 
-    async fn stream_resolve(
+    async fn get_streams(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
-    ) -> Result<Vec<db::Media>> {
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
         let svc = self.service()?;
         stremio_streams(&svc, &self.manifest_url, media).await
     }
@@ -1050,9 +1050,7 @@ async fn stremio_streams(
     svc: &stremio_service::StremioService,
     manifest_url: &StremioManifestUrl,
     media: &db::Media,
-) -> Result<Vec<db::Media>> {
-    use crate::db::StreamProviderInfo;
-
+) -> Result<Vec<crate::stream::StreamInfo>> {
     let (media_type, id) = match media.kind {
         db::MediaKind::Episode => {
             let series_id = media.grandparent_media_id.as_deref().ok_or_else(|| {
@@ -1100,10 +1098,11 @@ async fn stremio_streams(
                 }
             } else {
                 let url = s.url.clone().or_else(|| s.external_url.clone())?;
-                crate::stream::StreamDescriptor::Http(rewrite_aio_url(
-                    &url,
-                    manifest_url,
-                ))
+                crate::stream::StreamDescriptor::Http {
+                    url: rewrite_aio_url(&url, manifest_url),
+                    request_headers: s.request_headers.clone(),
+                    response_headers: s.response_headers.clone(),
+                }
             };
             let label = match (s.name.as_deref(), s.description.as_deref()) {
                 (Some(n), Some(d)) if !d.is_empty() => format!("{}\n{}", n, d),
@@ -1111,11 +1110,16 @@ async fn stremio_streams(
                 (None, Some(d)) => d.to_string(),
                 _ => "Stream".to_string(),
             };
-            Some(db::Media {
-                kind: db::MediaKind::Stream,
-                title: label,
-                url: Some(descriptor),
-                provider_info: Some(StreamProviderInfo::Aio(s)),
+            Some(crate::stream::StreamInfo {
+                descriptor,
+                name: Some(label),
+                description: s.description.clone(),
+                filename: s.filename.clone(),
+                seeders: s.seeders,
+                size: s.size,
+                duration: s.duration,
+                subtitles: s.subtitles.clone(),
+                probe_data: None,
                 ..Default::default()
             })
         })

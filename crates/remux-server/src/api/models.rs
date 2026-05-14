@@ -29,8 +29,8 @@ pub trait MediaSourceInfoExt {
 impl MediaSourceInfoExt for db::Media {
     fn probe(&self) -> Result<MediaSourceInfo> {
         use crate::stream::StreamDescriptor;
-        let url = match self.url.as_ref() {
-            Some(StreamDescriptor::Http(u)) => u.clone(),
+        let url = match self.stream_info.as_ref().map(|si| &si.descriptor) {
+            Some(StreamDescriptor::Http { url, .. }) => url.clone(),
             Some(StreamDescriptor::Local(p)) => p.to_string_lossy().into_owned(),
             _ => return Err(anyhow::anyhow!("cannot probe this stream type directly")),
         };
@@ -43,9 +43,9 @@ impl MediaSourceInfoExt for db::Media {
         probed.id = self.id.clone();
         probed.name = Some(self.title.clone());
         probed.path = self
-            .url
+            .stream_info
             .as_ref()
-            .and_then(|d| d.as_http_url().map(str::to_owned));
+            .and_then(|si| si.descriptor.as_http_url().map(str::to_owned));
 
         Ok(probed)
     }
@@ -560,9 +560,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             e_tag: media.id,
             name: Some(media.title.clone()),
             path: media
-                .url
+                .stream_info
                 .as_ref()
-                .and_then(|d| d.as_http_url().map(str::to_owned)),
+                .and_then(|si| si.descriptor.as_http_url().map(str::to_owned)),
             protocol: MediaProtocol::Http,
             is_remote: true,
             is_infinite_stream: true,

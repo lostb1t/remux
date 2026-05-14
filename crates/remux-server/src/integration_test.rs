@@ -117,10 +117,13 @@ pub async fn insert_test_source(ctx: &AppContext) -> db::Media {
     let mut media = db::Media {
         title: "Test Source".to_string(),
         kind: db::MediaKind::Stream,
-        url: Some(crate::stream::StreamDescriptor::Http(
-            "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4"
-                .to_string(),
-        )),
+        stream_info: Some(crate::stream::StreamInfo {
+            descriptor: crate::stream::StreamDescriptor::http(
+                "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4"
+                    .to_string(),
+            ),
+            ..Default::default()
+        }),
         probe_data: Some(probe),
         created_at: now,
         updated_at: now,

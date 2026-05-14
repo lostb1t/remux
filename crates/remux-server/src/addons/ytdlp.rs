@@ -13,7 +13,7 @@ use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
     AddonPresetRegistration, MediaKind, ResourceType,
 };
-use crate::db::{MetaResult, StreamProviderInfo};
+use crate::db::MetaResult;
 use crate::{AppContext, api, db};
 
 pub struct YtDlpPreset;
@@ -321,7 +321,11 @@ impl YtDlpAddon {
     }
 
     async fn resolve_watch_url(&self, media: &db::Media) -> Result<String> {
-        if let Some(url) = media.url.as_ref().and_then(|d| d.as_http_url()) {
+        if let Some(url) = media
+            .stream_info
+            .as_ref()
+            .and_then(|si| si.descriptor.as_http_url())
+        {
             return Ok(url.to_owned());
         }
         if let Some(id) = &media.media_id {
@@ -387,7 +391,7 @@ impl YtDlpAddon {
     }
 
     fn meta_can_refresh(&self, media: &db::Media) -> bool {
-        media.kind == db::MediaKind::Track && media.url.is_some()
+        media.kind == db::MediaKind::Track && media.stream_info.is_some()
     }
 
     async fn fetch_meta(&self, media: &db::Media) -> Result<Option<MetaResult>> {
@@ -395,9 +399,9 @@ impl YtDlpAddon {
             return Ok(None);
         }
         let url = media
-            .url
+            .stream_info
             .as_ref()
-            .and_then(|d| d.as_http_url().map(str::to_owned))
+            .and_then(|si| si.descriptor.as_http_url().map(str::to_owned))
             .or_else(|| {
                 media
                     .media_id
@@ -485,7 +489,10 @@ impl YtDlpAddon {
                     title: entry.title,
                     kind: db::MediaKind::Track,
                     media_id: Some(entry.id.clone()),
-                    url: watch_url.map(crate::stream::StreamDescriptor::Http),
+                    stream_info: watch_url.map(|u| crate::stream::StreamInfo {
+                        descriptor: crate::stream::StreamDescriptor::http(u),
+                        ..Default::default()
+                    }),
                     poster: entry.thumbnail,
                     runtime: entry.duration.map(|d| d as i64),
                     ..Default::default()
@@ -605,7 +612,10 @@ impl YtDlpAddon {
                     title: playlist.title,
                     kind: db::MediaKind::Album,
                     media_id: Some(playlist.id.clone()),
-                    url: Some(crate::stream::StreamDescriptor::Http(url)),
+                    stream_info: Some(crate::stream::StreamInfo {
+                        descriptor: crate::stream::StreamDescriptor::http(url),
+                        ..Default::default()
+                    }),
                     poster: thumbnail,
                     ..Default::default()
                 }
@@ -621,21 +631,25 @@ impl YtDlpAddon {
         Ok(results)
     }
 
-    async fn get_streams_for(&self, media: &db::Media) -> Result<Vec<db::Media>> {
+    async fn get_streams_for(
+        &self,
+        media: &db::Media,
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
         let url = self.resolve_watch_url(media).await?;
         let video = self.dump_json(&url).await?;
 
-        let to_source = |f: &YtDlpFormat| -> db::Media {
+        let to_source = |f: &YtDlpFormat| -> crate::stream::StreamInfo {
             let codec = f.normalized_codec();
             let display_title = match (codec.as_deref(), f.audio_channels) {
                 (Some(c), Some(ch)) => format!("{} - {}ch", c.to_uppercase(), ch),
                 (Some(c), None) => c.to_uppercase(),
                 _ => f.label(),
             };
-            db::Media {
-                kind: db::MediaKind::Stream,
-                title: f.label(),
-                url: f.url.clone().map(crate::stream::StreamDescriptor::Http),
+            crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(
+                    f.url.clone().unwrap_or_default(),
+                ),
+                name: Some(f.label()),
                 probe_data: Some(api::MediaSourceInfo {
                     container: f.container(),
                     run_time_ticks: media.runtime.map(|r| r * 10_000_000),
@@ -656,11 +670,11 @@ impl YtDlpAddon {
             }
         };
 
-        let audio_only: Vec<db::Media> = video
+        let audio_only: Vec<crate::stream::StreamInfo> = video
             .formats
             .iter()
             .filter(|f| f.url.is_some() && f.is_audio_only())
-            .map(to_source)
+            .map(&to_source)
             .collect();
 
         if !audio_only.is_empty() {
@@ -671,7 +685,7 @@ impl YtDlpAddon {
             .formats
             .iter()
             .filter(|f| f.url.is_some())
-            .map(to_source)
+            .map(&to_source)
             .collect())
     }
 }
@@ -728,11 +742,11 @@ impl AddonKind for YtDlpAddon {
         media.kind == db::MediaKind::Track
     }
 
-    async fn stream_resolve(
+    async fn get_streams(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
-    ) -> Result<Vec<db::Media>> {
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
         self.get_streams_for(media).await
     }
 }

@@ -117,7 +117,7 @@ async fn try_instance(
     base: &str,
     query: &str,
     parent: &db::Media,
-) -> Result<Option<db::Media>> {
+) -> Result<Option<crate::stream::StreamInfo>> {
     let search_url = format!("{}/search/?s={}", base, urlencoding::encode(query));
     let resp = client
         .get(&search_url)
@@ -204,10 +204,9 @@ async fn try_instance(
         None => label.to_string(),
     };
 
-    Ok(Some(db::Media {
-        kind: db::MediaKind::Stream,
-        title: label.to_string(),
-        url: Some(crate::stream::StreamDescriptor::Http(url)),
+    Ok(Some(crate::stream::StreamInfo {
+        descriptor: crate::stream::StreamDescriptor::http(url),
+        name: Some(label.to_string()),
         probe_data: Some(api::MediaSourceInfo {
             container: mime_to_container(&manifest.mime_type),
             run_time_ticks: parent.runtime.map(|r| r * 10_000_000),
@@ -282,15 +281,16 @@ impl AddonKind for SquidAddon {
         media.kind == db::MediaKind::Track
     }
 
-    async fn stream_resolve(
+    async fn get_streams(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
-    ) -> Result<Vec<db::Media>> {
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
         let query = build_query(media);
         tracing::debug!(query, title = %media.title, "squid stream lookup");
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<(db::Media, String)>(1);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<(crate::stream::StreamInfo, String)>(1);
         let mut handles = Vec::with_capacity(INSTANCES.len());
 
         for base in INSTANCES {
@@ -314,7 +314,7 @@ impl AddonKind for SquidAddon {
         drop(tx);
 
         let result = if let Some((source, base)) = rx.recv().await {
-            tracing::debug!(query, base, label = %source.title, "squid: stream resolved");
+            tracing::debug!(query, base, label = ?source.name, "squid: stream resolved");
             Ok(vec![source])
         } else {
             tracing::warn!(query, "squid: all instances failed");

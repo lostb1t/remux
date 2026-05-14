@@ -100,9 +100,12 @@ impl Task for IptvRefreshTask {
                         id: channel_id,
                         title: ch.name.clone(),
                         kind: db::MediaKind::TvChannel,
-                        url: Some(crate::stream::StreamDescriptor::Http(
-                            ch.url.clone(),
-                        )),
+                        stream_info: Some(crate::stream::StreamInfo {
+                            descriptor: crate::stream::StreamDescriptor::http(
+                                ch.url.clone(),
+                            ),
+                            ..Default::default()
+                        }),
                         poster: ch.logo.clone(),
                         tvg_id: ch.tvg_id.clone(),
                         channel_number: ch.channel_number,

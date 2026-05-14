@@ -14,13 +14,21 @@ use crate::AppState;
 
 // ── StreamDescriptor (data) ───────────────────────────────────────────────────
 
-/// Typed representation of a stream descriptor stored as JSON in `db::Media.url`.
+/// Typed representation of how a stream is accessed (transport mechanism).
 ///
 /// Each variant maps to a [`StreamSource`] implementation via [`into_source`],
 /// or for addon-owned streams, to the addon's [`AddonKind::serve_stream`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum StreamDescriptor {
-    Http(String),
+    Http {
+        url: String,
+        /// HTTP request headers to send when fetching this stream.
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        request_headers: std::collections::HashMap<String, String>,
+        /// HTTP response headers to forward to the client.
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        response_headers: std::collections::HashMap<String, String>,
+    },
     Local(PathBuf),
     Torrent {
         info_hash: String,
@@ -38,13 +46,31 @@ pub enum StreamDescriptor {
     },
 }
 
+impl Default for StreamDescriptor {
+    fn default() -> Self {
+        Self::Http {
+            url: String::new(),
+            request_headers: Default::default(),
+            response_headers: Default::default(),
+        }
+    }
+}
+
 impl StreamDescriptor {
+    pub fn http(url: impl Into<String>) -> Self {
+        Self::Http {
+            url: url.into(),
+            request_headers: Default::default(),
+            response_headers: Default::default(),
+        }
+    }
+
     /// Input URL/path for ffprobe and ffmpeg (server-side tools).
     /// `Local` → raw filesystem path. `Http` → URL as-is.
     /// `Torrent`/`Opendal` → our stream proxy, which resolves them on demand.
     pub fn server_input(&self, media_id: Uuid, port: u16) -> String {
         match self {
-            Self::Http(url) => url.clone(),
+            Self::Http { url, .. } => url.clone(),
             Self::Local(path) => path.to_string_lossy().into_owned(),
             Self::Torrent { .. } | Self::Opendal { .. } => {
                 format!("http://127.0.0.1:{}/stream/{}", port, media_id)
@@ -57,7 +83,7 @@ impl StreamDescriptor {
     /// (client can't access local FS; Torrent/Opendal need server-side resolution).
     pub fn client_url(&self, media_id: Uuid, server_base: &str) -> String {
         match self {
-            Self::Http(url) => url.clone(),
+            Self::Http { url, .. } => url.clone(),
             _ => format!("{}/stream/{}", server_base.trim_end_matches('/'), media_id),
         }
     }
@@ -65,7 +91,7 @@ impl StreamDescriptor {
     /// The raw HTTP URL for `Http` variants, or `None` for everything else.
     pub fn as_http_url(&self) -> Option<&str> {
         match self {
-            Self::Http(url) => Some(url),
+            Self::Http { url, .. } => Some(url),
             _ => None,
         }
     }
@@ -84,7 +110,15 @@ impl StreamDescriptor {
     /// Do **not** call this for `Opendal` — those must go through the addon.
     pub fn into_source(self) -> Box<dyn StreamSource> {
         match self {
-            Self::Http(url) => Box::new(HttpSource { url }),
+            Self::Http {
+                url,
+                request_headers,
+                response_headers,
+            } => Box::new(HttpSource {
+                url,
+                request_headers,
+                response_headers,
+            }),
             Self::Local(path) => Box::new(LocalSource { path }),
             Self::Torrent {
                 info_hash,
@@ -104,47 +138,48 @@ impl StreamDescriptor {
     }
 }
 
-// ── sqlx ──────────────────────────────────────────────────────────────────────
+// ── StreamInfo (stream + metadata) ───────────────────────────────────────────
 
-impl sqlx::Type<sqlx::Sqlite> for StreamDescriptor {
-    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
-        <String as sqlx::Type<sqlx::Sqlite>>::type_info()
-    }
-    fn compatible(ty: &sqlx::sqlite::SqliteTypeInfo) -> bool {
-        <String as sqlx::Type<sqlx::Sqlite>>::compatible(ty)
-    }
+/// Combined stream descriptor and provider metadata stored in `db::Media.stream_info`.
+///
+/// Replaces the old split between `db::Media.url` (transport) and
+/// `db::Media.provider_info` (Stremio metadata). All addons populate whichever
+/// fields they have; the rest are `None` / empty.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct StreamInfo {
+    pub descriptor: StreamDescriptor,
+    /// Filename from the provider (e.g. "Movie.2021.1080p.BluRay.mkv").
+    /// Used for resolution matching during probe fallback.
+    pub filename: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub seeders: Option<i64>,
+    pub size: Option<i64>,
+    pub duration: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitles: Vec<crate::sdks::stremio::Subtitle>,
+    /// Pre-probed codec/bitrate metadata from the addon.
+    /// Extracted into `db::Media.probe_data` on conversion; not persisted here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_data: Option<crate::api::MediaSourceInfo>,
 }
 
-impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for StreamDescriptor {
-    fn decode(
-        value: sqlx::sqlite::SqliteValueRef<'r>,
-    ) -> std::result::Result<Self, sqlx::error::BoxDynError> {
-        let s = <String as sqlx::Decode<sqlx::Sqlite>>::decode(value)?;
-        if s.is_empty() {
-            return Err("empty url".into());
-        }
-        // JSON path (new format).
-        if s.starts_with('{') {
-            return Ok(serde_json::from_str(&s)?);
-        }
-        // Legacy URL string — convert on the fly until the migration catches up.
-        if s.starts_with("http://") || s.starts_with("https://") {
-            return Ok(Self::Http(s));
-        }
-        if let Some(path) = s.strip_prefix("file://") {
-            return Ok(Self::Local(std::path::PathBuf::from(path)));
-        }
-        Err(format!("unrecognised stream url: {s}").into())
+impl StreamInfo {
+    pub fn is_p2p(&self) -> bool {
+        matches!(self.descriptor, StreamDescriptor::Torrent { .. })
     }
-}
 
-impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for StreamDescriptor {
-    fn encode_by_ref(
-        &self,
-        buf: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>,
-    ) -> std::result::Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
-        let json = serde_json::to_string(self)?;
-        <String as sqlx::Encode<sqlx::Sqlite>>::encode_by_ref(&json, buf)
+    /// Extract a resolution tag ("2160p", "1080p", "720p", etc.) from the
+    /// filename or name for use in next-stream matching on probe failure.
+    pub fn resolution_tag(&self) -> Option<&'static str> {
+        let src = self.filename.as_deref().or(self.name.as_deref())?;
+        let lower = src.to_lowercase();
+        for tag in ["2160p", "4k", "1080p", "720p", "480p", "360p"] {
+            if lower.contains(tag) {
+                return Some(tag);
+            }
+        }
+        None
     }
 }
 
@@ -163,6 +198,8 @@ pub trait StreamSource: Send + Sync {
 
 pub struct HttpSource {
     pub url: String,
+    pub request_headers: std::collections::HashMap<String, String>,
+    pub response_headers: std::collections::HashMap<String, String>,
 }
 
 pub struct LocalSource {
@@ -217,6 +254,9 @@ impl StreamSource for HttpSource {
         let mut req = reqwest::Client::new().get(&self.url);
         if let Some(v) = headers.get(http::header::RANGE) {
             req = req.header(http::header::RANGE, v.clone());
+        }
+        for (k, v) in &self.request_headers {
+            req = req.header(k.as_str(), v.as_str());
         }
 
         let upstream = req
@@ -322,7 +362,13 @@ impl StreamSource for TorrentSource {
             .await
             .context_bad_request("stream", "failed to resolve torrent")?;
 
-        HttpSource { url: resolved }.serve(state, headers).await
+        HttpSource {
+            url: resolved,
+            request_headers: Default::default(),
+            response_headers: Default::default(),
+        }
+        .serve(state, headers)
+        .await
     }
 }
 

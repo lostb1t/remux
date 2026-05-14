@@ -404,6 +404,18 @@ pub struct ServerConfiguration {
     /// Kinds that use remote (addon) search. None = all remote-capable kinds enabled.
     /// Values are snake_case MediaKind strings: "movie", "series", "track", "album", "artist", "person".
     pub search_remote_enabled: Option<Vec<String>>,
+    /// Probe timeout in seconds for HTTP/local streams (default: 20).
+    #[default(Some(20_i64))]
+    pub probe_timeout_secs: Option<i64>,
+    /// Probe timeout in seconds for P2P (torrent) streams (default: 60).
+    #[default(Some(60_i64))]
+    pub probe_timeout_p2p_secs: Option<i64>,
+    /// When probe fails, automatically try the next stream with matching resolution and type.
+    #[default(Some(true))]
+    pub auto_next_stream_on_probe_fail: Option<bool>,
+    /// Maximum number of alternative streams to try before giving up (default: 3).
+    #[default(Some(3_i64))]
+    pub max_probe_fallback_streams: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

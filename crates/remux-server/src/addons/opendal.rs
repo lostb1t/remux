@@ -373,11 +373,11 @@ impl AddonKind for OpendalAddon {
         }
     }
 
-    async fn stream_resolve(
+    async fn get_streams(
         &self,
         media: &db::Media,
         ctx: &AppContext,
-    ) -> Result<Vec<db::Media>> {
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
         let files: Vec<OpendalFile> = if self.media_kind == "track" {
             sqlx::query_as(
                 "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
@@ -421,29 +421,24 @@ impl AddonKind for OpendalAddon {
                 }
             })
             .map(|f| {
-                let stable_id =
-                    common::get_stable_uuid(format!("{}:{}", self.addon_id, f.path));
-                let url = if self.backend == "local" {
+                let descriptor = if self.backend == "local" {
                     let full = format!(
                         "{}/{}",
                         self.root.trim_end_matches('/'),
                         f.path.trim_start_matches('/')
                     );
-                    Some(crate::stream::StreamDescriptor::Local(
-                        std::path::PathBuf::from(full),
+                    crate::stream::StreamDescriptor::Local(std::path::PathBuf::from(
+                        full,
                     ))
                 } else {
-                    Some(crate::stream::StreamDescriptor::Opendal {
+                    crate::stream::StreamDescriptor::Opendal {
                         addon_id: self.addon_id,
                         path: f.path.clone(),
-                    })
+                    }
                 };
-                db::Media {
-                    id: stable_id,
-                    title: f.name.clone(),
-                    kind: db::MediaKind::Stream,
-                    url,
-                    parent_id: Some(media.id),
+                crate::stream::StreamInfo {
+                    descriptor,
+                    name: Some(f.name.clone()),
                     ..Default::default()
                 }
             })

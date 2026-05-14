@@ -6,7 +6,7 @@ use crate::common::get_uuid;
 use crate::common::server_id;
 use crate::sdks;
 use crate::services::stremio as stremio_service;
-use crate::stream::StreamDescriptor;
+use crate::stream::{StreamDescriptor, StreamInfo};
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -69,12 +69,6 @@ use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
 use uuid::{Uuid, uuid};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StreamProviderInfo {
-    Aio(crate::sdks::stremio::Stream),
-}
 
 /// A single enrichment relation returned by a metadata fetch.
 pub struct MetaRelation {
@@ -785,11 +779,10 @@ pub struct Media {
     pub relations: Option<Vec<(MediaRelation, Media)>>,
 
     // stream
-    pub url: Option<StreamDescriptor>,
+    #[sqlx(json(nullable))]
+    pub stream_info: Option<crate::stream::StreamInfo>,
     #[sqlx(json(nullable))]
     pub probe_data: Option<MediaSourceInfo>,
-    #[sqlx(json(nullable))]
-    pub provider_info: Option<StreamProviderInfo>,
 
     // collection
     pub promoted: bool,
@@ -933,7 +926,10 @@ impl Media {
     }
 
     pub fn is_remote_url(&self) -> bool {
-        matches!(&self.url, Some(StreamDescriptor::Http(_)))
+        matches!(
+            self.stream_info.as_ref().map(|si| &si.descriptor),
+            Some(crate::stream::StreamDescriptor::Http { .. })
+        )
     }
 
     pub fn media_source_protocol(&self) -> &'static str {
@@ -1001,12 +997,12 @@ impl Media {
         r#"
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
-            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
-            provider_info, grandparent_media_id, media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
+            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
+            grandparent_media_id, media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -1021,12 +1017,11 @@ impl Media {
             backdrop = excluded.backdrop,
             description = excluded.description,
             trailers = excluded.trailers,
-            url = excluded.url,
+            stream_info = excluded.stream_info,
             probe_data = CASE
-                WHEN excluded.url IS NOT media.url THEN NULL
+                WHEN excluded.stream_info IS NOT media.stream_info THEN NULL
                 ELSE COALESCE(excluded.probe_data, media.probe_data)
             END,
-            provider_info = excluded.provider_info,
             grandparent_media_id = excluded.grandparent_media_id,
             grandparent_id = excluded.grandparent_id,
             external_ids = excluded.external_ids,
@@ -1067,13 +1062,12 @@ impl Media {
         .bind(&self.backdrop)
         .bind(&self.description)
         .bind(sqlx::types::Json(&self.trailers))
-        .bind(&self.url)
+        .bind(sqlx::types::Json(&self.stream_info))
         .bind(sqlx::types::Json(&self.probe_data))
         .bind(self.promoted)
         .bind(&self.collection_kind)
         .bind(&self.collection_media_kind)
         .bind(self.collection_max_items)
-        .bind(sqlx::types::Json(&self.provider_info))
         .bind(&self.grandparent_media_id)
         .bind(&self.media_id)
         .bind(sqlx::types::Json(&self.external_ids))
@@ -1139,8 +1133,8 @@ impl Media {
             let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
-            provider_info, grandparent_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
+                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
+                grandparent_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind
             )",
         );
@@ -1162,12 +1156,11 @@ impl Media {
                     .push_bind(&item.backdrop)
                     .push_bind(&item.description)
                     .push_bind(sqlx::types::Json(&item.trailers))
-                    .push_bind(&item.url)
+                    .push_bind(sqlx::types::Json(&item.stream_info))
                     .push_bind(sqlx::types::Json(&item.probe_data))
                     .push_bind(&item.promoted)
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
-                    .push_bind(sqlx::types::Json(&item.provider_info))
                     .push_bind(&item.grandparent_media_id)
                     .push_bind(sqlx::types::Json(&item.external_ids))
                     .push_bind(&item.media_id)
@@ -1214,8 +1207,8 @@ impl Media {
             let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, url, probe_data, promoted, collection_kind, collection_media_kind,
-                provider_info, grandparent_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
+                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
+                grandparent_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind
             )",
         );
@@ -1235,12 +1228,11 @@ impl Media {
                     .push_bind(&item.backdrop)
                     .push_bind(&item.description)
                     .push_bind(sqlx::types::Json(&item.trailers))
-                    .push_bind(&item.url)
+                    .push_bind(sqlx::types::Json(&item.stream_info))
                     .push_bind(sqlx::types::Json(&item.probe_data))
                     .push_bind(&item.promoted)
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
-                    .push_bind(sqlx::types::Json(&item.provider_info))
                     .push_bind(&item.grandparent_media_id)
                     .push_bind(sqlx::types::Json(&item.external_ids))
                     .push_bind(&item.media_id)
@@ -1278,14 +1270,13 @@ impl Media {
                 backdrop = excluded.backdrop,
                 description = excluded.description,
                 trailers = excluded.trailers,
-                url = excluded.url,
+                stream_info = excluded.stream_info,
                 media_id = excluded.media_id,
                 external_ids = excluded.external_ids,
                 probe_data = CASE
-                WHEN excluded.url IS NOT media.url THEN NULL
+                WHEN excluded.stream_info IS NOT media.stream_info THEN NULL
                 ELSE COALESCE(excluded.probe_data, media.probe_data)
             END,
-                provider_info = excluded.provider_info,
                 grandparent_media_id = excluded.grandparent_media_id,
                 grandparent_id = excluded.grandparent_id,
                 updated_at = excluded.updated_at,
@@ -1729,10 +1720,13 @@ impl Media {
                         }
                         api::ItemSortBy::PremiereDate
                         | api::ItemSortBy::ProductionYear => {
-                            format!("COALESCE(released_at, digital_released_at) {}", dir)
+                            format!(
+                                "COALESCE(released_at, digital_released_at) {}",
+                                dir
+                            )
                         }
                         api::ItemSortBy::CommunityRating => {
-                            format!("CAST(json_extract(provider_info, '$.aio.rating') AS REAL) {}", dir)
+                            format!("COALESCE(rating_audience, rating_critic) {}", dir)
                         }
                         api::ItemSortBy::IndexNumber => {
                             format!("COALESCE(idx, 999999) {}", dir)
@@ -2662,8 +2656,9 @@ impl From<sdks::stremio::Catalog> for Media {
 
 impl From<sdks::stremio::Stream> for Media {
     fn from(source: sdks::stremio::Stream) -> Self {
-        let url = if let Some(hash) = &source.info_hash {
-            Some(StreamDescriptor::Torrent {
+        use crate::stream::{StreamDescriptor, StreamInfo};
+        let descriptor = if let Some(hash) = &source.info_hash {
+            StreamDescriptor::Torrent {
                 info_hash: hash.to_ascii_lowercase(),
                 file_hint: source.filename.clone(),
                 file_idx: source.file_idx.map(|i| i as usize),
@@ -2675,10 +2670,30 @@ impl From<sdks::stremio::Stream> for Media {
                     .filter_map(|src| src.strip_prefix("tracker:"))
                     .map(String::from)
                     .collect(),
-            })
+            }
+        } else if let Some(url) =
+            source.url.clone().or_else(|| source.external_url.clone())
+        {
+            StreamDescriptor::http(url)
         } else {
-            source.url.clone().map(StreamDescriptor::Http)
+            return Media {
+                kind: MediaKind::Stream,
+                id: source.get_guid(),
+                ..Default::default()
+            };
         };
+
+        let stream_info = Some(StreamInfo {
+            descriptor,
+            filename: source.filename.clone(),
+            name: source.name.clone(),
+            description: source.description.clone(),
+            seeders: source.seeders,
+            size: source.size,
+            duration: source.duration,
+            subtitles: source.subtitles.clone(),
+            probe_data: None,
+        });
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`
         // and the full codec/resolution details in `description`. Clients expect both.
@@ -2692,7 +2707,7 @@ impl From<sdks::stremio::Stream> for Media {
         Media {
             title,
             kind: MediaKind::Stream,
-            url,
+            stream_info,
             id: source.get_guid(),
             ..Default::default()
         }

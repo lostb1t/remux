@@ -101,11 +101,11 @@ impl AddonKind for TorznabAddon {
         )
     }
 
-    async fn stream_resolve(
+    async fn get_streams(
         &self,
         media: &db::Media,
         _ctx: &AppContext,
-    ) -> Result<Vec<db::Media>> {
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
         match media.kind {
             db::MediaKind::Track => self.resolve_track(media).await,
             db::MediaKind::Movie => self.resolve_movie(media).await,
@@ -116,7 +116,10 @@ impl AddonKind for TorznabAddon {
 }
 
 impl TorznabAddon {
-    async fn resolve_track(&self, media: &db::Media) -> Result<Vec<db::Media>> {
+    async fn resolve_track(
+        &self,
+        media: &db::Media,
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
         let artist = media
             .description
             .as_deref()
@@ -164,10 +167,9 @@ impl TorznabAddon {
                 let codec = fmt.map(|f| f.codec().to_string());
                 let descriptor =
                     magnet_to_descriptor(&item.url()?, Some(search.title.clone()))?;
-                Some(db::Media {
-                    kind: db::MediaKind::Stream,
-                    title: item.label(&self.name),
-                    url: Some(descriptor),
+                Some(crate::stream::StreamInfo {
+                    descriptor,
+                    name: Some(item.label(&self.name)),
                     probe_data: Some(api::MediaSourceInfo {
                         media_streams: vec![api::MediaStream {
                             index: 0,
@@ -184,7 +186,10 @@ impl TorznabAddon {
             .collect())
     }
 
-    async fn resolve_movie(&self, media: &db::Media) -> Result<Vec<db::Media>> {
+    async fn resolve_movie(
+        &self,
+        media: &db::Media,
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
         let year = media.released_at.map(|d| d.format("%Y").to_string());
 
         let query = match year.as_deref() {
@@ -220,17 +225,19 @@ impl TorznabAddon {
             .into_iter()
             .take(MAX_RESULTS)
             .filter_map(|item| {
-                Some(db::Media {
-                    kind: db::MediaKind::Stream,
-                    title: item.label(&self.name),
-                    url: magnet_to_descriptor(&item.url()?, None),
+                Some(crate::stream::StreamInfo {
+                    descriptor: magnet_to_descriptor(&item.url()?, None)?,
+                    name: Some(item.label(&self.name)),
                     ..Default::default()
                 })
             })
             .collect())
     }
 
-    async fn resolve_episode(&self, media: &db::Media) -> Result<Vec<db::Media>> {
+    async fn resolve_episode(
+        &self,
+        media: &db::Media,
+    ) -> Result<Vec<crate::stream::StreamInfo>> {
         let season = media.parent_idx.unwrap_or(1);
         let episode = media.idx.unwrap_or(1);
         let se = format!("S{:02}E{:02}", season, episode);
@@ -264,10 +271,9 @@ impl TorznabAddon {
             .into_iter()
             .take(MAX_RESULTS)
             .filter_map(|item| {
-                Some(db::Media {
-                    kind: db::MediaKind::Stream,
-                    title: item.label(&self.name),
-                    url: magnet_to_descriptor(&item.url()?, None),
+                Some(crate::stream::StreamInfo {
+                    descriptor: magnet_to_descriptor(&item.url()?, None)?,
+                    name: Some(item.label(&self.name)),
                     ..Default::default()
                 })
             })

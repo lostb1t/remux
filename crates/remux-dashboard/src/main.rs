@@ -3835,6 +3835,7 @@ fn SettingsPage(app_state: AppState) -> Element {
     rsx! {
         ServerSettingsCard { app_state: app_state.clone() }
         PlaybackSettingsCard { app_state: app_state.clone() }
+        ProbeSettingsCard { app_state: app_state.clone() }
         SearchSettingsCard { app_state: app_state.clone() }
         JellyfinImportCard { app_state }
     }
@@ -4291,6 +4292,173 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
                         }
                         if *saved.read() {
                             div { class: "alert-success", "Settings saved. Restart the server to apply hardware acceleration changes." }
+                        }
+
+                        div { class: "form-actions",
+                            button {
+                                r#type: "submit",
+                                class: "btn btn-primary",
+                                disabled: *saving.read(),
+                                if *saving.read() { "Saving…" } else { "Save Settings" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn ProbeSettingsCard(app_state: AppState) -> Element {
+    let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
+    let mut probe_timeout = use_signal(|| 20_i64);
+    let mut probe_timeout_p2p = use_signal(|| 60_i64);
+    let mut auto_next_stream = use_signal(|| true);
+    let mut max_fallback_streams = use_signal(|| 3_i64);
+    let mut loading = use_signal(|| true);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut saved = use_signal(|| false);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load.client.clone();
+        spawn(async move {
+            match client.execute(GetSystemConfiguration).await {
+                Ok(cfg) => {
+                    probe_timeout.set(cfg.probe_timeout_secs.unwrap_or(20));
+                    probe_timeout_p2p.set(cfg.probe_timeout_p2p_secs.unwrap_or(60));
+                    auto_next_stream
+                        .set(cfg.auto_next_stream_on_probe_fail.unwrap_or(true));
+                    max_fallback_streams
+                        .set(cfg.max_probe_fallback_streams.unwrap_or(3));
+                    base_cfg.set(Some(cfg));
+                }
+                Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    let on_submit = move |e: Event<FormData>| {
+        e.prevent_default();
+        let client = app_state.client.clone();
+        let Some(cfg) = base_cfg.peek().clone() else {
+            return;
+        };
+        let updated = ServerConfiguration {
+            probe_timeout_secs: Some(*probe_timeout.peek()),
+            probe_timeout_p2p_secs: Some(*probe_timeout_p2p.peek()),
+            auto_next_stream_on_probe_fail: Some(*auto_next_stream.peek()),
+            max_probe_fallback_streams: Some(*max_fallback_streams.peek()),
+            ..cfg
+        };
+        saving.set(true);
+        error.set(None);
+        saved.set(false);
+        spawn(async move {
+            match client
+                .execute(UpdateSystemConfiguration { config: updated })
+                .await
+            {
+                Ok(_) => saved.set(true),
+                Err(e) => error.set(Some(e.user_message())),
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Stream Probing" }
+            }
+            div { class: "card-body",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else {
+                    form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
+                        div { class: "field",
+                            label { class: "field-label", r#for: "probe-timeout", "Probe Timeout (seconds)" }
+                            div { class: "field-hint",
+                                "Seconds to wait for stream probe before giving up on HTTP/local streams."
+                            }
+                            input {
+                                id: "probe-timeout",
+                                r#type: "number",
+                                class: "text-input",
+                                min: "1",
+                                max: "300",
+                                value: "{probe_timeout}",
+                                oninput: move |e| {
+                                    if let Ok(v) = e.value().parse::<i64>() {
+                                        probe_timeout.set(v);
+                                    }
+                                },
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "probe-timeout-p2p", "P2P Probe Timeout (seconds)" }
+                            div { class: "field-hint",
+                                "Seconds to wait for stream probe before giving up on torrent/P2P streams."
+                            }
+                            input {
+                                id: "probe-timeout-p2p",
+                                r#type: "number",
+                                class: "text-input",
+                                min: "1",
+                                max: "600",
+                                value: "{probe_timeout_p2p}",
+                                oninput: move |e| {
+                                    if let Ok(v) = e.value().parse::<i64>() {
+                                        probe_timeout_p2p.set(v);
+                                    }
+                                },
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", "Auto Next Stream on Probe Fail" }
+                            div { class: "field-hint",
+                                "When a stream probe fails, automatically try the next stream with matching resolution and type."
+                            }
+                            label { style: "display:flex;align-items:center;gap:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *auto_next_stream.read(),
+                                    onchange: move |e| auto_next_stream.set(e.checked()),
+                                }
+                                "Enabled"
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "max-fallback", "Max Stream Retries" }
+                            div { class: "field-hint",
+                                "How many alternative streams to try before giving up and using static metadata."
+                            }
+                            input {
+                                id: "max-fallback",
+                                r#type: "number",
+                                class: "text-input",
+                                min: "0",
+                                max: "20",
+                                value: "{max_fallback_streams}",
+                                oninput: move |e| {
+                                    if let Ok(v) = e.value().parse::<i64>() {
+                                        max_fallback_streams.set(v);
+                                    }
+                                },
+                            }
+                        }
+
+                        if let Some(err) = error.read().as_ref() {
+                            div { class: "alert-error", "{err}" }
+                        }
+                        if *saved.read() {
+                            div { class: "alert-success", "Settings saved." }
                         }
 
                         div { class: "form-actions",

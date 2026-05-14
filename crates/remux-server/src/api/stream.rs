@@ -7,9 +7,8 @@ use axum_anyhow::{ApiResult as Result, OptionExt};
 
 use crate::AppState;
 use crate::db;
-use crate::stream::StreamDescriptor;
 
-/// Proxy any stream stored in `db::Media.url` to the caller.
+/// Proxy any stream stored in `db::Media.stream_info` to the caller.
 ///
 /// Handles all URL schemes transparently via [`crate::stream::StreamSource`].
 /// Addon-owned streams (`Opendal`) are dispatched to the addon's `serve_stream`.
@@ -24,7 +23,10 @@ pub async fn stream_proxy(
         .await?
         .context_not_found("stream", "not found")?;
 
-    let descriptor = media.url.context_not_found("stream", "media has no URL")?;
+    let descriptor = media
+        .stream_info
+        .map(|si| si.descriptor)
+        .context_not_found("stream", "media has no URL")?;
 
     if let Some(addon_id) = descriptor.addon_id() {
         let addon = state

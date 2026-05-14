@@ -50,18 +50,7 @@ pub async fn items_playbackinfo(
     Path(id): Path<Uuid>,
     Json(payload): Json<api::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    let query_params = payload.clone();
-    let media_source_id = payload.media_source_id;
-    let device_profile = payload.device_profile;
-    items_playbackinfo_inner(
-        state,
-        session,
-        id,
-        media_source_id,
-        device_profile,
-        query_params,
-    )
-    .await
+    items_playbackinfo_inner(state, session, id, payload).await
 }
 
 #[get("/items/{id}/playbackinfo")]
@@ -71,29 +60,20 @@ pub async fn items_playbackinfo_get(
     Path(id): Path<Uuid>,
     Query(q): Query<api::PlaybackInfoQuery>,
 ) -> Result<impl IntoResponse> {
-    let query_params = q.clone();
-    let media_source_id = q.media_source_id;
-    let device_profile = q.device_profile;
-    items_playbackinfo_inner(
-        state,
-        session,
-        id,
-        media_source_id,
-        device_profile,
-        query_params,
-    )
-    .await
+    items_playbackinfo_inner(state, session, id, q).await
 }
 
 async fn items_playbackinfo_inner(
     state: AppState,
     session: auth::AuthSession,
     id: Uuid,
-    media_source_id: Option<Uuid>,
-    device_profile: Option<api::DeviceProfile>,
-    query: api::PlaybackInfoQuery,
+    q: api::PlaybackInfoQuery,
 ) -> Result<impl IntoResponse> {
-    trace!(?id, ?media_source_id, "items_playbackinfo");
+    let media_source_id = q.media_source_id;
+
+    trace!(?id, ?q, "items_playbackinfo");
+
+    let device_profile = q.device_profile;
 
     let mut media = db::Media::get_by_id(&state.ctx.db, &media_source_id.unwrap_or(id))
         .await?
@@ -165,7 +145,7 @@ async fn items_playbackinfo_inner(
     };
 
     let max_bitrate: Option<i64> = match (
-        query.max_streaming_bitrate,
+        q.max_streaming_bitrate,
         device_profile
             .as_ref()
             .and_then(|p| p.max_streaming_bitrate),
@@ -176,124 +156,47 @@ async fn items_playbackinfo_inner(
 
     let play_session_id = common::get_uuid().as_simple().to_string();
 
-    struct SourceWithUrl {
-        sm: db::Media,
-        resolved_url: Option<String>,
-    }
-    let mut sources_with_urls: Vec<SourceWithUrl> =
-        Vec::with_capacity(source_medias.len());
+    let probe_cfg = crate::db::Settings::get_config(&state.ctx.db)
+        .await
+        .unwrap_or_default();
+    let probe_timeout_secs = probe_cfg.probe_timeout_secs.unwrap_or(20) as u64;
+    let probe_timeout_p2p_secs = probe_cfg.probe_timeout_p2p_secs.unwrap_or(60) as u64;
+    let auto_next_stream = probe_cfg.auto_next_stream_on_probe_fail.unwrap_or(true);
+    let max_stream_retries = probe_cfg.max_probe_fallback_streams.unwrap_or(3) as usize;
+
     let port = state.ctx.config.port;
-    for sm in source_medias {
-        let resolved_url = sm.url.as_ref().map(|d| d.server_input(sm.id, port));
-        sources_with_urls.push(SourceWithUrl { sm, resolved_url });
-    }
-
-    // Probe all sources in parallel (spawn_blocking + timeout) ----
-    // Each FFmpeg probe is a blocking CPU/network call.  Running them sequentially
-    // inside the async fn blocks Tokio's runtime for 40-70 s when there are 10+
-    // sources.  We launch all probes concurrently on the blocking thread pool and
-    // wait for all of them together — total latency is now the slowest single probe
-    // (~6-7 s) instead of the sum.
-    let probe_futures: Vec<_> = sources_with_urls
-        .iter()
-        .enumerate()
-        .map(|(idx, swu)| {
-            let url_opt = swu.resolved_url.clone();
-            let mut sm = swu.sm.clone();
-            let db = state.ctx.db.clone();
-            // When no specific source was requested, only probe the first one.
-            // The rest get static metadata so we don't spawn 20+ parallel FFmpeg
-            // processes just to open a details page.
-            let skip_probe = probe_only_first && idx > 0;
-            tokio::spawn(async move {
-                // Cache hit: deserialise stored probe result and skip FFmpeg.
-                if let Some(json) = &sm.probe_data {
-                    let mut cached = json.clone();
-                    // Discard cached probe if it has no video stream — it's incomplete.
-                    if cached.video_stream().is_some() {
-                        cached.id = sm.id;
-                        cached.name = Some(sm.title.clone());
-                        cached.path = sm.url.as_ref().and_then(|d| d.as_http_url().map(str::to_owned));
-                        tracing::debug!(id = %sm.id, "probe cache hit");
-                        return cached;
-                    }
-                    tracing::debug!(id = %sm.id, "probe cache stale (no video stream), re-probing");
-                }
-
-                if skip_probe {
-                    return api::MediaSourceInfo::from(sm);
-                }
-
-                match url_opt {
-                    None => api::MediaSourceInfo::from(sm),
-                    Some(url) => {
-                        let url2 = url.clone();
-                        let sm2 = sm.clone();
-                        // Wrap the blocking probe in a dedicated thread.
-                        let probe_result = tokio::time::timeout(
-                            std::time::Duration::from_secs(30),
-                            tokio::task::spawn_blocking(move || {
-                                crate::transcode::probing::probe_media(&url2)
-                            }),
-                        )
-                        .await;
-
-                        match probe_result {
-                            // probe succeeded — persist result to cache only if it has a video stream
-                            Ok(Ok(Ok((mut probed, segments)))) => {
-                                probed.id = sm2.id;
-                                probed.name = Some(sm2.title.clone());
-                                probed.path = sm2.url.as_ref().and_then(|d| d.as_http_url().map(str::to_owned));
-                                if probed.video_stream().is_some() || probed.audio_stream().is_some() {
-                                    if !segments.is_empty() {
-                                        probed.segments = Some(segments);
-                                    }
-                                    if let Err(e) = db::Media::save_probe_data(&db, &sm2.id, &probed).await {
-                                        tracing::warn!(id = %sm2.id, error = %e, "failed to save probe data");
-                                    }
-                                } else {
-                                    tracing::warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
-                                }
-
-                                probed
-                            }
-                            // probe returned an error
-                            Ok(Ok(Err(e))) => {
-                                tracing::warn!(url = %url, error = %e, "probe failed, falling back to static metadata");
-                                api::MediaSourceInfo::from(sm2)
-                            }
-                            // spawn_blocking panicked
-                            Ok(Err(e)) => {
-                                tracing::warn!(url = %url, error = %e, "probe task panicked, falling back to static metadata");
-                                api::MediaSourceInfo::from(sm2)
-                            }
-                            // timeout elapsed
-                            Err(_) => {
-                                tracing::warn!(url = %url, "probe timed out after 30s, falling back to static metadata");
-                                api::MediaSourceInfo::from(sm2)
-                            }
-                        }
-                    }
-                }
-            })
-        })
-        .collect();
-
-    // Await all probes concurrently.
-    let probed_results = futures_util::future::join_all(probe_futures).await;
-
-    // Apply playback decision logic on the probed results ----------
-    let mut media_sources = Vec::with_capacity(probed_results.len());
-    for (swu, probe_join) in sources_with_urls.iter().zip(probed_results.into_iter()) {
-        let sm = &swu.sm;
-        let mut source: api::MediaSourceInfo =
-            probe_join.unwrap_or_else(|_| api::MediaSourceInfo::from(sm.clone()));
+    // Clone upfront so probe_with_fallback can scan siblings while we iterate.
+    let all_sources = source_medias.clone();
+    let mut media_sources = Vec::with_capacity(source_medias.len());
+    for (idx, sm) in source_medias.into_iter().enumerate() {
+        let url_opt = sm
+            .stream_info
+            .as_ref()
+            .map(|si| si.descriptor.server_input(sm.id, port));
+        let skip_probe = probe_only_first && idx > 0;
+        let timeout_secs = if sm.stream_info.as_ref().map_or(false, |si| si.is_p2p()) {
+            probe_timeout_p2p_secs
+        } else {
+            probe_timeout_secs
+        };
+        let mut source = probe_source(
+            &sm,
+            url_opt.clone(),
+            skip_probe,
+            timeout_secs,
+            auto_next_stream,
+            max_stream_retries,
+            &all_sources,
+            port,
+            &state.ctx.db,
+        )
+        .await;
         source.id = sm.id;
         source.e_tag = sm.id;
+        source.name = Some(sm.title.clone());
         source.has_segments = true;
-        // Use the AIO-remapped URL so clients can reach it for direct play.
-        if let Some(ref resolved) = swu.resolved_url {
-            source.path = Some(resolved.clone());
+        if let Some(u) = url_opt {
+            source.path = Some(u);
         }
 
         // Re-apply binge-group headers on top of the probed result —
@@ -302,9 +205,9 @@ async fn items_playbackinfo_inner(
         // hints we stashed alongside the source.
         source.remux = Some(api::MediaSourceRemuxInfo {
             provider_info: sm
-                .provider_info
-                .clone()
-                .and_then(|info| serde_json::to_value(info).ok()),
+                .stream_info
+                .as_ref()
+                .and_then(|si| serde_json::to_value(si).ok()),
         });
 
         if has_lyrics {
@@ -331,7 +234,7 @@ async fn items_playbackinfo_inner(
 
         // Image-based subtitles (PGS/DVD) can't be rendered by web clients — detect
         // from the explicitly-selected or default subtitle stream and add a transcode reason.
-        let effective_sub_idx = query
+        let effective_sub_idx = q
             .subtitle_stream_index
             .or(source.default_subtitle_stream_index);
         let needs_pgs_burn = effective_sub_idx.map_or(false, |idx| {
@@ -355,10 +258,10 @@ async fn items_playbackinfo_inner(
 
         // `EnableTranscoding=true` means "allowed", not "forced".
         let transcode_required = !transcode_reasons.is_empty()
-            || !query.enable_direct_play.unwrap_or(true)
-            || !query.enable_direct_stream.unwrap_or(true);
+            || !q.enable_direct_play.unwrap_or(true)
+            || !q.enable_direct_stream.unwrap_or(true);
         let needs_transcoding =
-            transcode_required && query.enable_transcoding.unwrap_or(true);
+            transcode_required && q.enable_transcoding.unwrap_or(true);
 
         tracing::debug!(
             source_id = %sm.id,
@@ -382,7 +285,7 @@ async fn items_playbackinfo_inner(
                     .map(|c| c.trim().to_string())
                     .unwrap_or_else(|| "aac".to_string());
 
-                let start_time_param = query
+                let start_time_param = q
                     .start_time_ticks
                     .map(|t| format!("&StartTimeTicks={}", t))
                     .unwrap_or_default();
@@ -477,7 +380,7 @@ async fn items_playbackinfo_inner(
                     .to_query_value()
                     .map(|v| format!("&TranscodeReasons={}", v))
                     .unwrap_or_default();
-                let audio_stream_param = query
+                let audio_stream_param = q
                     .audio_stream_index
                     .or(source.default_audio_stream_index)
                     .map(|idx| format!("&AudioStreamIndex={}", idx))
@@ -488,7 +391,7 @@ async fn items_playbackinfo_inner(
                 let subtitle_method_param = subtitle_method
                     .map(|m| format!("&SubtitleMethod={}", m))
                     .unwrap_or_default();
-                let start_time_param = query
+                let start_time_param = q
                     .start_time_ticks
                     .map(|t| format!("&StartTimeTicks={}", t))
                     .unwrap_or_default();
@@ -594,6 +497,144 @@ async fn items_playbackinfo_inner(
     Ok(Json(info))
 }
 
+/// Resolve probe data for a single source: cache hit → skip → live probe with fallback.
+async fn probe_source(
+    sm: &db::Media,
+    url_opt: Option<String>,
+    skip_probe: bool,
+    timeout_secs: u64,
+    auto_next_stream: bool,
+    max_retries: usize,
+    all_sources: &[db::Media],
+    port: u16,
+    db: &sqlx::SqlitePool,
+) -> api::MediaSourceInfo {
+    if skip_probe {
+        return api::MediaSourceInfo::from(sm.clone());
+    }
+    if let Some(cached) = &sm.probe_data {
+        if cached.video_stream().is_some() {
+            tracing::debug!(id = %sm.id, "probe cache hit");
+            return cached.clone();
+        }
+        tracing::debug!(id = %sm.id, "probe cache stale (no video stream), re-probing");
+    }
+    probe_with_fallback(
+        sm.clone(),
+        url_opt,
+        timeout_secs,
+        auto_next_stream,
+        max_retries,
+        all_sources,
+        port,
+        db,
+    )
+    .await
+}
+
+/// Probe a stream URL, retrying with the next matching candidate on failure.
+///
+/// Returns static metadata as a last resort if all candidates fail.
+async fn probe_with_fallback(
+    primary: db::Media,
+    primary_url: Option<String>,
+    timeout_secs: u64,
+    auto_next_stream: bool,
+    max_retries: usize,
+    all_sources: &[db::Media],
+    port: u16,
+    db: &sqlx::SqlitePool,
+) -> api::MediaSourceInfo {
+    let candidates: Vec<(db::Media, String)> = if auto_next_stream {
+        let pri_p2p = primary.stream_info.as_ref().map_or(false, |si| si.is_p2p());
+        let pri_res = primary
+            .stream_info
+            .as_ref()
+            .and_then(|si| si.resolution_tag());
+        all_sources
+            .iter()
+            .filter(|c| {
+                if c.id == primary.id {
+                    return false;
+                }
+                let c_p2p = c.stream_info.as_ref().map_or(false, |si| si.is_p2p());
+                if c_p2p != pri_p2p {
+                    return false;
+                }
+                let c_res = c.stream_info.as_ref().and_then(|si| si.resolution_tag());
+                c_res == pri_res
+            })
+            .take(max_retries)
+            .filter_map(|c| {
+                let url = c.stream_info.as_ref()?.descriptor.server_input(c.id, port);
+                Some((c.clone(), url))
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let all_to_try = std::iter::once((primary.clone(), primary_url))
+        .chain(candidates.into_iter().map(|(m, u)| (m, Some(u))));
+
+    let mut last_fallback: Option<db::Media> = None;
+    for (sm, url_opt) in all_to_try {
+        let is_retry = sm.id != primary.id;
+        let url = match url_opt {
+            Some(u) => u,
+            None => return api::MediaSourceInfo::from(primary),
+        };
+        if is_retry {
+            tracing::info!(
+                failed_id = %primary.id,
+                next_id = %sm.id,
+                next_url = %url,
+                "probe failed, trying next matching stream"
+            );
+        }
+        last_fallback = Some(sm.clone());
+        let url2 = url.clone();
+        let sm2 = sm.clone();
+        let db2 = db.clone();
+        let probe_result = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            tokio::task::spawn_blocking(move || {
+                crate::transcode::probing::probe_media(&url2)
+            }),
+        )
+        .await;
+
+        match probe_result {
+            Ok(Ok(Ok((mut probed, segments)))) => {
+                if probed.video_stream().is_some() || probed.audio_stream().is_some() {
+                    if !segments.is_empty() {
+                        probed.segments = Some(segments);
+                    }
+                    if let Err(e) =
+                        db::Media::save_probe_data(&db2, &sm2.id, &probed).await
+                    {
+                        tracing::warn!(id = %sm2.id, error = %e, "failed to save probe data");
+                    }
+                } else {
+                    tracing::warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
+                }
+                return probed;
+            }
+            Ok(Ok(Err(e))) => {
+                tracing::warn!(url = %url, error = %e, "probe failed");
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(url = %url, error = %e, "probe task panicked");
+            }
+            Err(_) => {
+                tracing::warn!(url = %url, timeout = timeout_secs, "probe timed out");
+            }
+        }
+    }
+
+    api::MediaSourceInfo::from(last_fallback.unwrap_or(primary))
+}
+
 /// Starts a direct playback for the given media UUID.
 ///
 /// # Range
@@ -676,9 +717,9 @@ async fn videos_stream_inner(
     // IPTV channels: redirect directly to the stream URL.
     if media.kind == db::MediaKind::TvChannel {
         let url = media
-            .url
+            .stream_info
             .as_ref()
-            .and_then(|d| d.as_http_url().map(str::to_owned))
+            .and_then(|si| si.descriptor.as_http_url().map(str::to_owned))
             .context_not_found("missing url", "channel has no stream url")?;
         return Ok(Response::builder()
             .status(StatusCode::FOUND)
@@ -702,8 +743,8 @@ async fn videos_stream_inner(
     }
 
     let descriptor = media
-        .url
-        .clone()
+        .stream_info
+        .map(|si| si.descriptor)
         .context_not_found("no url", "media source has no URL")?;
 
     // Direct play: serve bytes directly through the StreamSource trait.
@@ -899,7 +940,10 @@ pub async fn report_playback_start(
                 .await
                 .ok()
                 .flatten();
-            (m.as_ref().map(|m| m.title.clone()), m.and_then(|m| m.url))
+            (
+                m.as_ref().map(|m| m.title.clone()),
+                m.and_then(|m| m.stream_info.map(|si| si.descriptor)),
+            )
         } else {
             (None, None)
         }
@@ -1619,6 +1663,142 @@ mod tests {
             "source Id must equal item id when MediaSourceId == item id (Android TV)"
         );
     }
+
+    /// A Movie with two Stream children and a specific MediaSourceId:
+    /// - must return exactly one source
+    /// - source Id must equal the requested MediaSourceId (never the other stream's id)
+    /// - ETag must also match
+    ///
+    /// Without MediaSourceId, first source Id must equal the item (Movie) id.
+    /// Both paths exercise the unconditional id-stamp that prevents probe fallback
+    /// from leaking the fallback stream's UUID to the client.
+    #[tokio::test]
+    async fn test_playbackinfo_source_id_never_leaks_fallback_id() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let ctx = &guard.0;
+        let now = chrono::Utc::now().naive_utc();
+
+        use crate::api::{MediaSourceInfo, MediaStream, MediaStreamType};
+        use crate::db;
+
+        let make_probe = || MediaSourceInfo {
+            container: Some("mp4".to_string()),
+            bitrate: Some(8_000_000),
+            run_time_ticks: Some(100_000_000),
+            media_streams: vec![
+                MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(MediaStreamType::Video),
+                    index: 0,
+                    width: Some(1920),
+                    height: Some(1080),
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let mut movie = db::Media {
+            title: "Test Track".to_string(),
+            kind: db::MediaKind::Track,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        movie.save(&ctx.db).await.expect("save track");
+
+        let mut source_a = db::Media {
+            title: "1080p".to_string(),
+            kind: db::MediaKind::Stream,
+            parent_id: Some(movie.id),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(
+                    "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4"
+                        .to_string(),
+                ),
+                ..Default::default()
+            }),
+            probe_data: Some(make_probe()),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        source_a.save(&ctx.db).await.expect("save source_a");
+
+        let mut source_b = db::Media {
+            title: "720p".to_string(),
+            kind: db::MediaKind::Stream,
+            parent_id: Some(movie.id),
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(
+                    "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_5MB.mp4"
+                        .to_string(),
+                ),
+                ..Default::default()
+            }),
+            probe_data: Some(make_probe()),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        source_b.save(&ctx.db).await.expect("save source_b");
+
+        // Specific source requested: must return exactly one source with that id.
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", movie.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MediaSourceId": source_a.id.to_string() }))
+            .await;
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["MediaSources"].as_array().unwrap().len(),
+            1,
+            "specific source requested: must return exactly one MediaSource"
+        );
+        assert_eq!(
+            body["MediaSources"][0]["Id"].as_str().unwrap(),
+            source_a.id.to_string(),
+            "Id must equal the requested MediaSourceId, not source_b's id"
+        );
+        assert_eq!(
+            body["MediaSources"][0]["ETag"].as_str().unwrap(),
+            source_a.id.to_string(),
+            "ETag must equal the requested MediaSourceId"
+        );
+
+        // No MediaSourceId: first source Id must equal the Movie id.
+        let resp2 = server
+            .post(&format!("/items/{}/playbackinfo", movie.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+        resp2.assert_status_ok();
+        let body2: serde_json::Value = resp2.json();
+        assert_eq!(
+            body2["MediaSources"][0]["Id"].as_str().unwrap(),
+            movie.id.to_string(),
+            "without MediaSourceId, first source Id must equal the item id, not a stream's id"
+        );
+        assert_eq!(
+            body2["MediaSources"][0]["ETag"].as_str().unwrap(),
+            movie.id.to_string(),
+            "without MediaSourceId, ETag must equal the item id"
+        );
+    }
 }
 
 #[post("/sessions/playing/progress")]
@@ -2185,9 +2365,12 @@ pub async fn master_hls_video(
         }
 
         let input_url = resolved_media
-            .url
+            .stream_info
             .as_ref()
-            .map(|d| d.server_input(resolved_media.id, state.ctx.config.port))
+            .map(|si| {
+                si.descriptor
+                    .server_input(resolved_media.id, state.ctx.config.port)
+            })
             .context_not_found("no url", "media source has no URL")?;
 
         let output_dir =
@@ -2984,9 +3167,9 @@ pub async fn subtitles_stream(
     }
 
     let url = media
-        .url
+        .stream_info
         .as_ref()
-        .map(|d| d.server_input(media.id, state.ctx.config.port))
+        .map(|si| si.descriptor.server_input(media.id, state.ctx.config.port))
         .context_not_found("no url", "media source has no URL")?;
 
     let output_format = format.to_ascii_lowercase();

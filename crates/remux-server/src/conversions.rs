@@ -128,22 +128,19 @@ impl From<db::Media> for api::MediaSourceInfo {
         } else {
             api::MediaProtocol::File
         };
-        let container = source
-            .url
-            .as_ref()
+        let descriptor = source.stream_info.as_ref().map(|si| &si.descriptor);
+        let container = descriptor
             .and_then(|d| d.as_http_url())
             .and_then(infer_container_from_url);
 
         let remux = Some(api::MediaSourceRemuxInfo {
             provider_info: source
-                .provider_info
-                .and_then(|info| serde_json::to_value(info).ok()),
+                .stream_info
+                .as_ref()
+                .and_then(|si| serde_json::to_value(si).ok()),
         });
 
-        let url_path = source
-            .url
-            .as_ref()
-            .and_then(|d| d.as_http_url().map(str::to_owned));
+        let url_path = descriptor.and_then(|d| d.as_http_url().map(str::to_owned));
         let is_stub = url_path.is_none();
         let path = url_path.or_else(|| Some(format!("remux://{}", source.id)));
 
