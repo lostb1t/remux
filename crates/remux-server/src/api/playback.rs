@@ -190,7 +190,7 @@ async fn items_playbackinfo_inner(
             port,
             &state.ctx.db,
         )
-        .await;
+        .await?;
         source.id = sm.id;
         source.e_tag = sm.id;
         source.name = Some(sm.title.clone());
@@ -508,14 +508,14 @@ async fn probe_source(
     all_sources: &[db::Media],
     port: u16,
     db: &sqlx::SqlitePool,
-) -> api::MediaSourceInfo {
+) -> axum_anyhow::ApiResult<api::MediaSourceInfo> {
     if skip_probe {
-        return api::MediaSourceInfo::from(sm.clone());
+        return Ok(api::MediaSourceInfo::from(sm.clone()));
     }
     if let Some(cached) = &sm.probe_data {
         if cached.video_stream().is_some() {
             tracing::debug!(id = %sm.id, "probe cache hit");
-            return cached.clone();
+            return Ok(cached.clone());
         }
         tracing::debug!(id = %sm.id, "probe cache stale (no video stream), re-probing");
     }
@@ -534,7 +534,7 @@ async fn probe_source(
 
 /// Probe a stream URL, retrying with the next matching candidate on failure.
 ///
-/// Returns static metadata as a last resort if all candidates fail.
+/// Returns a 500 error if all candidates fail to probe.
 async fn probe_with_fallback(
     primary: db::Media,
     primary_url: Option<String>,
@@ -544,7 +544,9 @@ async fn probe_with_fallback(
     all_sources: &[db::Media],
     port: u16,
     db: &sqlx::SqlitePool,
-) -> api::MediaSourceInfo {
+) -> axum_anyhow::ApiResult<api::MediaSourceInfo> {
+    use axum_anyhow::{IntoApiError, ResultExt};
+
     let candidates: Vec<(db::Media, String)> = if auto_next_stream {
         let pri_p2p = primary.stream_info.as_ref().map_or(false, |si| si.is_p2p());
         let pri_res = primary
@@ -577,12 +579,14 @@ async fn probe_with_fallback(
     let all_to_try = std::iter::once((primary.clone(), primary_url))
         .chain(candidates.into_iter().map(|(m, u)| (m, Some(u))));
 
-    let mut last_fallback: Option<db::Media> = None;
     for (sm, url_opt) in all_to_try {
         let is_retry = sm.id != primary.id;
         let url = match url_opt {
             Some(u) => u,
-            None => return api::MediaSourceInfo::from(primary),
+            None => {
+                return Err(anyhow!("stream has no URL"))
+                    .context_internal("probe", "stream has no URL");
+            }
         };
         if is_retry {
             tracing::info!(
@@ -592,7 +596,6 @@ async fn probe_with_fallback(
                 "probe failed, trying next matching stream"
             );
         }
-        last_fallback = Some(sm.clone());
         let url2 = url.clone();
         let sm2 = sm.clone();
         let db2 = db.clone();
@@ -618,7 +621,7 @@ async fn probe_with_fallback(
                 } else {
                     tracing::warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
                 }
-                return probed;
+                return Ok(probed);
             }
             Ok(Ok(Err(e))) => {
                 tracing::warn!(url = %url, error = %e, "probe failed");
@@ -632,7 +635,11 @@ async fn probe_with_fallback(
         }
     }
 
-    api::MediaSourceInfo::from(last_fallback.unwrap_or(primary))
+    Err(anyhow!(
+        "all probe attempts failed for stream {}",
+        primary.id
+    ))
+    .context_internal("probe", "stream probe failed — no usable streams found")
 }
 
 /// Starts a direct playback for the given media UUID.

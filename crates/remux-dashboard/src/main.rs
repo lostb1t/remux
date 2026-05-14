@@ -4437,7 +4437,7 @@ fn ProbeSettingsCard(app_state: AppState) -> Element {
                         div { class: "field",
                             label { class: "field-label", r#for: "max-fallback", "Max Stream Retries" }
                             div { class: "field-hint",
-                                "How many alternative streams to try before giving up and using static metadata."
+                                "How many alternative streams to try before giving up and returning an error."
                             }
                             input {
                                 id: "max-fallback",
