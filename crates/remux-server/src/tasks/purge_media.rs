@@ -45,6 +45,13 @@ impl Task for PurgeMediaTask {
         .await?;
 
         sqlx::query(&format!(
+            "DELETE FROM media_images WHERE media_id IN \
+             (SELECT id FROM media WHERE kind IN ({PURGE_KINDS}))"
+        ))
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(&format!(
             "DELETE FROM media_relations WHERE \
              left_media_id  IN (SELECT id FROM media WHERE kind IN ({PURGE_KINDS})) OR \
              right_media_id IN (SELECT id FROM media WHERE kind IN ({PURGE_KINDS}))"

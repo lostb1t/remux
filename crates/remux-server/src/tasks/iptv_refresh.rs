@@ -96,7 +96,7 @@ impl Task for IptvRefreshTask {
                 .map(|ch| {
                     let tvg_key = ch.tvg_id.as_deref().unwrap_or(&ch.name);
                     let channel_id = Uuid::new_v5(&source_uuid, tvg_key.as_bytes());
-                    db::Media {
+                    let mut media = db::Media {
                         id: channel_id,
                         title: ch.name.clone(),
                         kind: db::MediaKind::TvChannel,
@@ -106,14 +106,17 @@ impl Task for IptvRefreshTask {
                             ),
                             ..Default::default()
                         }),
-                        poster: ch.logo.clone(),
                         tvg_id: ch.tvg_id.clone(),
                         channel_number: ch.channel_number,
                         media_id: Some(source_id.clone()),
                         enabled: false,
                         program_kind: ch.program_kind.clone(),
                         ..Default::default()
+                    };
+                    if let Some(url) = ch.logo.clone() {
+                        media.set_image(db::ImageKind::Primary, url);
                     }
+                    media
                 })
                 .collect();
 
@@ -261,7 +264,7 @@ async fn import_epg_programs(
                 )
                 .as_bytes(),
             );
-            Some(db::Media {
+            let mut media = db::Media {
                 id: prog_id,
                 title: prog.title.clone(),
                 kind: db::MediaKind::TvProgram,
@@ -270,9 +273,12 @@ async fn import_epg_programs(
                 live_start: prog.start,
                 live_end: prog.end,
                 program_kind: prog.program_kind.clone(),
-                poster: prog.poster.clone(),
                 ..Default::default()
-            })
+            };
+            if let Some(url) = prog.poster.clone() {
+                media.set_image(db::ImageKind::Primary, url);
+            }
+            Some(media)
         })
         .collect();
 

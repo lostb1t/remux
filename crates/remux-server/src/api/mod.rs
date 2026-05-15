@@ -7,6 +7,7 @@ pub mod api_keys;
 pub mod artists;
 pub mod client_log;
 pub mod devices;
+pub mod image;
 pub mod images;
 pub mod items;
 pub mod livetv;

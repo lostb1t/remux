@@ -7,12 +7,14 @@ use sqlx::sqlite::{
 use std::str::FromStr;
 pub mod api_key;
 pub mod auth;
+pub mod image;
 pub mod iptv;
 pub mod media;
 pub mod settings;
 pub mod task;
 pub mod user;
 pub use api_key::*;
+pub use image::*;
 pub use iptv::*;
 pub use media::*;
 pub use settings::*;

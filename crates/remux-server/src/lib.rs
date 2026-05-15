@@ -33,6 +33,7 @@ use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
 use itertools::Itertools;
+use remux_utils::Store;
 use reqwest::header::LOCATION;
 use serde::Serializer;
 use serde::{Deserialize, Serialize};
@@ -57,10 +58,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 use url::Url;
-
 use uuid::Uuid;
-
-use remux_utils::Store;
 
 mod conversions;
 mod errors;
@@ -470,12 +468,30 @@ async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {
 }
 
 fn log_api_error(err: &axum_anyhow::ApiError) {
+    let is_404 = err.status() == StatusCode::NOT_FOUND;
     if let Some(cause) = err.error() {
-        tracing::error!(
+        if is_404 {
+            tracing::debug!(
+                status = %err.status(),
+                title = %err.title(),
+                detail = %err.detail(),
+                cause = %format!("{:#}", cause),
+                "api error"
+            );
+        } else {
+            tracing::error!(
+                status = %err.status(),
+                title = %err.title(),
+                detail = %err.detail(),
+                cause = %format!("{:#}", cause),
+                "api error"
+            );
+        }
+    } else if is_404 {
+        tracing::debug!(
             status = %err.status(),
             title = %err.title(),
             detail = %err.detail(),
-            cause = %format!("{:#}", cause),
             "api error"
         );
     } else {

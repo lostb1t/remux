@@ -94,19 +94,11 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
             }
         };
     }
-    macro_rules! fill_image {
-        ($field:ident) => {
-            if source.$field.is_some() {
-                target.$field = source.$field.clone();
-            }
-        };
-    }
     if replace || target.title.is_empty() {
         if !source.title.is_empty() {
             target.title = source.title.clone();
         }
     }
-    fill_image!(poster);
     fill!(description);
     fill!(released_at);
     fill!(runtime);
@@ -114,8 +106,6 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
     fill!(certification);
     fill!(certification_age);
     fill!(country);
-    fill_image!(logo);
-    fill_image!(backdrop);
     fill!(trailers);
     fill!(digital_released_at);
     fill!(status);
@@ -158,35 +148,41 @@ pub(crate) fn episode_meta_complete(media: &db::Media) -> bool {
     has_title && has_summary && has_air_date
 }
 
-async fn apply_meta_result(
+async fn apply_meta(
     media: &mut db::Media,
-    result: db::MetaResult,
+    patch: db::Media,
     replace: bool,
     ctx: &AppContext,
 ) {
-    merge_media(media, &result.media, replace);
+    // Save images from the patch before merging (media.id is the target's id).
+    if !patch.images.is_empty() {
+        db::MediaImage::sync_from_media(&ctx.db, media.id, &patch.images)
+            .await
+            .ok();
+    }
+
+    merge_media(media, &patch, replace);
     apply_title_format(media);
 
-    if matches!(
-        media.kind,
-        db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
-    ) && !result.relations.is_empty()
-    {
-        let (rel_media, rels): (Vec<_>, Vec<_>) = result
-            .relations
-            .into_iter()
-            .map(|r| (r.media, r.relation))
-            .unzip();
-        if replace {
-            db::MediaRelation::delete_by_left_id(&ctx.db, &media.id)
-                .await
-                .ok();
-        }
-        if let Err(e) = db::Media::upsert(&ctx.db, &rel_media)
-            .await
-            .and(db::MediaRelation::upsert(&ctx.db, &rels).await)
+    if let Some(relations) = patch.relations {
+        if !relations.is_empty()
+            && matches!(
+                media.kind,
+                db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
+            )
         {
-            tracing::warn!(id = %media.id, error = %e, "failed to persist relations");
+            let (rels, rel_media): (Vec<_>, Vec<_>) = relations.into_iter().unzip();
+            if replace {
+                db::MediaRelation::delete_by_left_id(&ctx.db, &media.id)
+                    .await
+                    .ok();
+            }
+            if let Err(e) = db::Media::upsert(&ctx.db, &rel_media)
+                .await
+                .and(db::MediaRelation::upsert(&ctx.db, &rels).await)
+            {
+                tracing::warn!(id = %media.id, error = %e, "failed to persist relations");
+            }
         }
     }
 }
@@ -275,20 +271,25 @@ pub trait AddonKind: Send + Sync {
     async fn meta_supports(&self, _media: &db::Media) -> bool {
         false
     }
+    /// Fetch metadata for `media` and return a partial `db::Media` patch.
+    /// Only the fields the addon knows about need to be populated; the caller
+    /// merges the patch into the existing record via `merge_media`.
+    /// Populate `patch.images` for images, `patch.relations` for people/genres.
     async fn meta_fetch(
         &self,
         _media: &db::Media,
         _ctx: &AppContext,
-    ) -> Result<Option<crate::db::MetaResult>> {
+    ) -> Result<Option<db::Media>> {
         Ok(None)
     }
-    async fn meta_refresh_tree(
+
+    // remote images (for manual image selection in the UI)
+    async fn remote_images_fetch(
         &self,
-        _root: &db::Media,
-        _children: &mut [db::Media],
+        _media: &db::Media,
         _ctx: &AppContext,
-    ) -> Result<()> {
-        Ok(())
+    ) -> Result<Vec<crate::api::RemoteImageInfo>> {
+        Ok(vec![])
     }
 
     // tree
@@ -301,14 +302,6 @@ pub trait AddonKind: Send + Sync {
         _ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
         Ok(None)
-    }
-    async fn tree_persist_metadata(
-        &self,
-        _root: &db::Media,
-        _children: &[db::Media],
-        _ctx: &AppContext,
-    ) -> Result<()> {
-        Ok(())
     }
 
     // search
@@ -614,15 +607,15 @@ impl AddonService {
             return Ok(());
         }
         let mut applied_any = false;
-        let mut fallback_episode: Option<db::MetaResult> = None;
+        let mut fallback_episode: Option<db::Media> = None;
         for (name, addon) in &applicable {
             match addon.meta_fetch(media, ctx).await {
-                Ok(Some(result)) => {
+                Ok(Some(patch)) => {
                     if media.kind == db::MediaKind::Episode
-                        && !episode_meta_complete(&result.media)
+                        && !episode_meta_complete(&patch)
                     {
                         if fallback_episode.is_none() {
-                            fallback_episode = Some(result);
+                            fallback_episode = Some(patch);
                         }
                         continue;
                     }
@@ -633,7 +626,7 @@ impl AddonService {
                         force_refresh && !applied_any
                     };
 
-                    apply_meta_result(media, result, replace, ctx).await;
+                    apply_meta(media, patch, replace, ctx).await;
                     applied_any = true;
 
                     if media.kind == db::MediaKind::Episode {
@@ -649,8 +642,8 @@ impl AddonService {
         }
 
         if media.kind == db::MediaKind::Episode && !applied_any {
-            if let Some(result) = fallback_episode {
-                apply_meta_result(media, result, true, ctx).await;
+            if let Some(patch) = fallback_episode {
+                apply_meta(media, patch, true, ctx).await;
                 applied_any = true;
             }
         }
@@ -683,36 +676,21 @@ impl AddonService {
             if children.is_empty() {
                 continue;
             }
-            self.refresh_tree_meta(root, &mut children, ctx).await;
-            if let Err(e) = addon.tree_persist_metadata(root, &children, ctx).await {
-                tracing::warn!(id = %root.id, error = %e, "failed to persist tree metadata");
+            // Persist children first so FK constraints are satisfied when
+            // apply_meta writes media_relations with left_media_id = child.id.
+            if let Err(e) = db::Media::upsert(&ctx.db, &children).await {
+                tracing::warn!(id = %root.id, error = %e, "failed to pre-persist children");
+            }
+            for child in &mut children {
+                if child.refreshed_at.is_none() {
+                    if let Err(e) = self.refresh_meta(child, ctx, false).await {
+                        tracing::warn!(id = %child.id, error = %e, "failed to refresh child meta");
+                    }
+                }
             }
             return Ok(children);
         }
         Ok(vec![])
-    }
-
-    async fn refresh_tree_meta(
-        &self,
-        series: &db::Media,
-        children: &mut [db::Media],
-        ctx: &AppContext,
-    ) {
-        let guard = self.inner.read().await;
-        let addons: Vec<Arc<dyn AddonKind>> = guard
-            .iter()
-            .filter(|r| r.supports_type(&series.kind))
-            .map(|r| r.kind.clone())
-            .collect();
-        drop(guard);
-        for addon in addons {
-            if !addon.meta_supports(series).await {
-                continue;
-            }
-            if let Err(e) = addon.meta_refresh_tree(series, children, ctx).await {
-                tracing::warn!(id = %series.id, error = %e, "failed to refresh tree metadata");
-            }
-        }
     }
 
     pub async fn process_meta_batch(
@@ -812,6 +790,31 @@ impl AddonService {
             }
         }
         Ok(None)
+    }
+
+    pub async fn get_remote_images(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<crate::api::RemoteImageInfo>> {
+        let guard = self.inner.read().await;
+        let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
+            .iter()
+            .filter(|r| r.supports_type(&media.kind))
+            .map(|r| (r.row.name.clone(), r.kind.clone()))
+            .collect();
+        drop(guard);
+
+        let mut out = Vec::new();
+        for (name, addon) in addons {
+            match addon.remote_images_fetch(media, ctx).await {
+                Ok(images) => out.extend(images),
+                Err(e) => {
+                    tracing::warn!(addon = %name, error = %e, "remote_images_fetch failed")
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub async fn fetch_subtitles(

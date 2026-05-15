@@ -13,7 +13,6 @@ use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
     AddonPresetRegistration, MediaKind, ResourceType,
 };
-use crate::db::MetaResult;
 use crate::{AppContext, api, db};
 
 pub struct YtDlpPreset;
@@ -394,7 +393,7 @@ impl YtDlpAddon {
         media.kind == db::MediaKind::Track && media.stream_info.is_some()
     }
 
-    async fn fetch_meta(&self, media: &db::Media) -> Result<Option<MetaResult>> {
+    async fn fetch_meta(&self, media: &db::Media) -> Result<Option<db::Media>> {
         if media.kind != db::MediaKind::Track {
             return Ok(None);
         }
@@ -444,21 +443,21 @@ impl YtDlpAddon {
             format!("failed to parse yt-dlp metadata JSON for '{}'", url)
         })?;
 
-        let poster = meta.best_thumbnail().map(|s| s.to_owned());
-        Ok(Some(MetaResult {
-            media: db::Media {
-                title: if meta.title.is_empty() {
-                    media.title.clone()
-                } else {
-                    meta.title
-                },
-                poster,
-                description: meta.description,
-                runtime: meta.duration.map(|d| d as i64),
-                ..Default::default()
+        let thumbnail_url = meta.best_thumbnail().map(|s| s.to_owned());
+        let mut patch = db::Media {
+            title: if meta.title.is_empty() {
+                media.title.clone()
+            } else {
+                meta.title
             },
-            relations: vec![],
-        }))
+            description: meta.description,
+            runtime: meta.duration.map(|d| d as i64),
+            ..Default::default()
+        };
+        if let Some(url) = thumbnail_url {
+            patch.set_image(db::ImageKind::Primary, url);
+        }
+        Ok(Some(patch))
     }
 
     async fn search_tracks(&self, query: &str, limit: usize) -> Result<Vec<db::Media>> {
@@ -484,7 +483,7 @@ impl YtDlpAddon {
                         None
                     }
                 });
-                db::Media {
+                let mut media = db::Media {
                     id: crate::common::get_stable_uuid(format!("ytdlp:{}", entry.id)),
                     title: entry.title,
                     kind: db::MediaKind::Track,
@@ -493,10 +492,13 @@ impl YtDlpAddon {
                         descriptor: crate::stream::StreamDescriptor::http(u),
                         ..Default::default()
                     }),
-                    poster: entry.thumbnail,
                     runtime: entry.duration.map(|d| d as i64),
                     ..Default::default()
+                };
+                if let Some(url) = entry.thumbnail {
+                    media.set_image(db::ImageKind::Primary, url);
                 }
+                media
             })
             .collect();
 
@@ -604,7 +606,7 @@ impl YtDlpAddon {
                 let thumbnail = playlist.thumbnail.or_else(|| {
                     playlist.entries.first().and_then(|e| e.thumbnail.clone())
                 });
-                db::Media {
+                let mut media = db::Media {
                     id: crate::common::get_stable_uuid(format!(
                         "ytdlp-album:{}",
                         playlist.id
@@ -616,9 +618,12 @@ impl YtDlpAddon {
                         descriptor: crate::stream::StreamDescriptor::http(url),
                         ..Default::default()
                     }),
-                    poster: thumbnail,
                     ..Default::default()
+                };
+                if let Some(url) = thumbnail {
+                    media.set_image(db::ImageKind::Primary, url);
                 }
+                media
             })
             .collect();
 
@@ -708,7 +713,7 @@ impl AddonKind for YtDlpAddon {
         &self,
         media: &db::Media,
         _ctx: &AppContext,
-    ) -> Result<Option<MetaResult>> {
+    ) -> Result<Option<db::Media>> {
         self.fetch_meta(media).await
     }
 

@@ -1286,6 +1286,26 @@ pub struct PlaybackInfoQuery {
 #[serde(rename_all = "camelCase")]
 pub struct ImageQuery {
     pub tag: Option<String>,
+    /// Scale down to fit within box width, no upscale, maintain AR.
+    pub fill_width: Option<u32>,
+    /// Scale down to fit within box height, no upscale, maintain AR.
+    pub fill_height: Option<u32>,
+    /// Resize to exact width (maintains AR when height is omitted).
+    pub width: Option<u32>,
+    /// Resize to exact height (maintains AR when width is omitted).
+    pub height: Option<u32>,
+    /// Cap width; scale down if needed, maintain AR.
+    pub max_width: Option<u32>,
+    /// Cap height; scale down if needed, maintain AR.
+    pub max_height: Option<u32>,
+    /// JPEG quality 0–100 (server default 90).
+    pub quality: Option<u8>,
+    /// Gaussian blur sigma in pixels.
+    pub blur: Option<u32>,
+    /// Hex background color to composite behind transparent images.
+    pub background_color: Option<String>,
+    /// Output format: "jpg", "jpeg", "png". Defaults to jpeg.
+    pub format: Option<String>,
 }
 
 #[skip_serializing_none]
@@ -1750,13 +1770,25 @@ pub enum SubtitleMode {
     Smart,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum ImageType {
     Primary,
     Backdrop,
     Logo,
+    #[strum(serialize = "logo")]
     LogoImageAspectRatio,
+    #[strum(serialize = "primary")]
     Thumb,
 }
 
@@ -3992,6 +4024,53 @@ impl Endpoint for PatchItem {
     }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+/// Upload an image for a library item (POST /Items/{id}/Images/{type}).
+/// Bytes are sent as-is with the given content-type header.
+#[derive(Debug, Clone)]
+pub struct UploadItemImage {
+    pub item_id: String,
+    pub image_type: String,
+    pub bytes: Vec<u8>,
+    pub content_type: &'static str,
+}
+
+impl Endpoint for UploadItemImage {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/Items/{}/Images/{}", self.item_id, self.image_type)
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn headers(&self) -> http::HeaderMap {
+        let mut map = http::HeaderMap::new();
+        if let Ok(v) = http::HeaderValue::from_str(self.content_type) {
+            map.insert(http::header::CONTENT_TYPE, v);
+        }
+        map
+    }
+    fn body(&self) -> Body {
+        Body::Bytes(self.bytes.clone())
+    }
+}
+
+/// Delete an image for a library item (DELETE /Items/{id}/Images/{type}).
+#[derive(Debug, Clone)]
+pub struct DeleteItemImage {
+    pub item_id: String,
+    pub image_type: String,
+}
+
+impl Endpoint for DeleteItemImage {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/Items/{}/Images/{}", self.item_id, self.image_type)
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
     }
 }
 

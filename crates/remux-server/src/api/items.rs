@@ -1,3 +1,4 @@
+use crate::services::image::ImageService;
 use anyhow::Context;
 use axum::Json;
 use axum::extract::{Path, State};
@@ -829,7 +830,7 @@ pub async fn items_remote_images(
 
     if provider.is_none() || provider == Some("TheMovieDb") {
         queried_providers.push("TheMovieDb".to_string());
-        match crate::addons::tmdb::tmdb_remote_images(&state.ctx, &media).await {
+        match state.ctx.addons.get_remote_images(&media, &state.ctx).await {
             Ok(v) => images.extend(v),
             Err(e) => warn!(id = %id, error = %e, "tmdb remote images lookup failed"),
         }
@@ -867,7 +868,17 @@ pub async fn items_remote_images_providers(
     _session: auth::AuthSession,
     _path: Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(vec!["TheMovieDb".to_string()]))
+    #[derive(serde::Serialize)]
+    struct ImageProviderInfo {
+        #[serde(rename = "Name")]
+        name: &'static str,
+        #[serde(rename = "SupportedImages")]
+        supported_images: Vec<&'static str>,
+    }
+    Ok(Json(vec![ImageProviderInfo {
+        name: "TheMovieDb",
+        supported_images: vec!["Primary", "Backdrop", "Thumb", "Logo"],
+    }]))
 }
 
 /// Get item counts
@@ -1390,6 +1401,11 @@ pub async fn update_virtual_folder(
     .bind(payload.id)
     .execute(&state.ctx.db)
     .await?;
+
+    // Library name is baked into the generated placeholder — clear it so it regenerates.
+    let _ =
+        ImageService::delete_image(payload.id, db::ImageKind::Primary, &state.ctx.db)
+            .await;
 
     Ok(StatusCode::NO_CONTENT)
 }

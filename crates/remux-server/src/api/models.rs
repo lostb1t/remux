@@ -150,6 +150,10 @@ fn image_tag(url: Option<&str>) -> Option<String> {
     url.map(|u| u.to_string())
 }
 
+fn media_image_tag(media: &db::Media, kind: db::ImageKind) -> Option<String> {
+    media.images.get(kind).map(|i| i.id.to_string())
+}
+
 pub fn db_state_to_dto(
     state: db::UserMediaState,
     media: &db::Media,
@@ -273,9 +277,20 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         official_rating: media.certification.clone(),
         parent_index_number: media.parent_idx,
         image_tags: Some(ImageTags {
-            primary: image_tag(media.poster.as_deref()),
-            logo: image_tag(media.logo.as_deref()),
-            backdrop: image_tag(media.backdrop.as_deref()),
+            primary: media_image_tag(&media, db::ImageKind::Primary).or_else(|| {
+                // For collections/folders with no poster image, set a synthetic
+                // tag so clients know to request the generated placeholder.
+                if matches!(
+                    media.kind,
+                    db::MediaKind::Collection | db::MediaKind::Folder
+                ) {
+                    Some(media.id.to_string())
+                } else {
+                    None
+                }
+            }),
+            logo: media_image_tag(&media, db::ImageKind::Logo),
+            backdrop: media_image_tag(&media, db::ImageKind::Backdrop),
             ..Default::default()
         }),
         index_number: media.idx,
@@ -304,10 +319,8 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         } else {
             None
         },
-        backdrop_image_tags: media
-            .backdrop
-            .as_ref()
-            .map(|url| vec![image_tag(Some(url)).unwrap()])
+        backdrop_image_tags: media_image_tag(&media, db::ImageKind::Backdrop)
+            .map(|tag| vec![tag])
             .unwrap_or_default(),
         provider_ids: Some(ProviderIds {
             // Episodes ingested before the per-episode external_ids fix
@@ -388,7 +401,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                                 None
                             }
                         }),
-                        primary_image_tag: image_tag(m.poster.as_deref()),
+                        primary_image_tag: media_image_tag(m, db::ImageKind::Primary),
                     })
                     .collect()
             })
@@ -417,7 +430,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             .then(|| media.parent_id.map(|id| id.to_string()))
             .flatten(),
         album_primary_image_tag: (media.kind == db::MediaKind::Track)
-            .then(|| image_tag(media.poster.as_deref()))
+            .then(|| media_image_tag(&media, db::ImageKind::Primary))
             .flatten(),
         album_artist: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| media.series_title.clone())
@@ -457,10 +470,20 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             db::MediaStatus::Released | db::MediaStatus::Unknown => Status::Released,
         }),
         sort_name: Some(media.title.to_ascii_lowercase()),
-        primary_image_aspect_ratio: match media.kind {
-            db::MediaKind::Collection | db::MediaKind::Folder => 16.0 / 9.0,
-            _ => 0.6,
-        },
+        primary_image_aspect_ratio: media
+            .images
+            .get(db::ImageKind::Primary)
+            .and_then(|i| {
+                let (w, h) = (i.width?, i.height?);
+                if h == 0 {
+                    return None;
+                }
+                Some(w as f32 / h as f32)
+            })
+            .unwrap_or_else(|| match media.kind {
+                db::MediaKind::Collection | db::MediaKind::Folder => 16.0 / 9.0,
+                _ => 0.6,
+            }),
         remux: Some(RemuxInfo {
             collection_kind: media
                 .collection_kind
@@ -485,7 +508,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
 
     if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season) {
         item.series_name = media.series_title.clone();
-        item.series_primary_image_tag = image_tag(media.series_poster.as_deref());
+        item.series_primary_image_tag = media.series_poster.clone();
         // The series item is where backdrop images live.
         let series_uuid = if media.kind == db::MediaKind::Episode {
             media.grandparent_id.or(media.parent_id)
@@ -494,7 +517,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         };
         item.parent_backdrop_item_id = series_uuid.map(|id| id.to_string());
         item.parent_backdrop_image_tags =
-            image_tag(media.series_backdrop.as_deref()).map(|b| vec![b]);
+            media.series_backdrop.clone().map(|b| vec![b]);
         if media.kind == db::MediaKind::Episode {
             item.season_name = media.parent_title.clone();
         }

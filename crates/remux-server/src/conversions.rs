@@ -193,16 +193,19 @@ impl From<api::DisplayPreferencesDto> for db::JellyfinDisplayPrefsData {
 impl TryFrom<stremio::Episode> for db::Media {
     type Error = anyhow::Error;
     fn try_from(meta: stremio::Episode) -> Result<db::Media> {
-        Ok(db::Media {
+        let mut media = db::Media {
             title: meta.get_name().unwrap_or_default(),
             kind: db::MediaKind::Episode,
             released_at: meta.released.map(|x| x.naive_utc()),
             runtime: meta.runtime.map(|d| d.num_seconds()),
             description: meta.overview.or(meta.description),
             rating_audience: meta.rating,
-            poster: meta.thumbnail,
             ..Default::default()
-        })
+        };
+        if let Some(url) = meta.thumbnail {
+            media.set_image(db::ImageKind::Primary, url);
+        }
+        Ok(media)
     }
 }
 

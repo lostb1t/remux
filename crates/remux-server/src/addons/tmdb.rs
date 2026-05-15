@@ -9,8 +9,7 @@ use super::{
     AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, MediaKind,
     ResourceType,
 };
-use crate::db::{MetaRelation, MetaResult};
-use crate::sdks::CachedEndpoint;
+use crate::sdks::{CachedEndpoint, ClientError};
 use crate::{AppContext, api, common, db, sdks};
 
 pub struct TmdbPreset;
@@ -71,7 +70,10 @@ impl AddonKind for TmdbAddon {
     async fn meta_supports(&self, media: &db::Media) -> bool {
         matches!(
             media.kind,
-            db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
+            db::MediaKind::Movie
+                | db::MediaKind::Series
+                | db::MediaKind::Season
+                | db::MediaKind::Episode
         )
     }
 
@@ -79,52 +81,19 @@ impl AddonKind for TmdbAddon {
         &self,
         media: &db::Media,
         ctx: &AppContext,
-    ) -> Result<Option<MetaResult>> {
-        fetch_tmdb_meta(media, ctx).await
+    ) -> Result<Option<db::Media>> {
+        match fetch_tmdb_meta(media, ctx).await {
+            Err(e) if is_404(&e) => Ok(None),
+            other => other,
+        }
     }
 
-    async fn meta_refresh_tree(
+    async fn remote_images_fetch(
         &self,
-        series: &db::Media,
-        children: &mut [db::Media],
+        media: &db::Media,
         ctx: &AppContext,
-    ) -> Result<()> {
-        if series.kind != db::MediaKind::Series
-            || !children.iter().any(|child| {
-                child.kind == db::MediaKind::Season && child.poster.is_none()
-            })
-        {
-            return Ok(());
-        }
-        let tmdb_id = match series.external_ids.tmdb {
-            Some(id) => id,
-            None => return Ok(()),
-        };
-        let config = crate::db::Settings::get_config(&ctx.db).await?;
-        let api_key = config.get_tmdb_key().to_string();
-        if api_key.is_empty() {
-            return Ok(());
-        }
-        let client = sdks::RestClient::new("https://api.themoviedb.org/3/")?
-            .with_auth(sdks::BearerAuth { token: api_key });
-        let tv_details = client
-            .execute(
-                sdks::tmdb::SeriesEndpoint::new(tmdb_id)
-                    .with_cache(Duration::from_secs(360)),
-            )
-            .await?;
-        for child in children.iter_mut() {
-            if child.kind != db::MediaKind::Season || child.poster.is_some() {
-                continue;
-            }
-            let Some(idx) = child.idx else { continue };
-            child.poster = tv_details
-                .seasons
-                .iter()
-                .find(|season| season.season_number == idx)
-                .and_then(|season| tmdb_image(season.poster_path.as_deref()));
-        }
-        Ok(())
+    ) -> Result<Vec<crate::api::RemoteImageInfo>> {
+        tmdb_remote_images(ctx, media).await
     }
 
     async fn search_supports(&self, kind: &db::MediaKind) -> bool {
@@ -217,22 +186,24 @@ fn rating_age(label: &str, country: &str) -> Option<i32> {
 fn build_person_relations(
     left_media_id: uuid::Uuid,
     credits: &sdks::tmdb::Credits,
-) -> Vec<MetaRelation> {
+) -> Vec<(db::MediaRelation, db::Media)> {
     let mut relations = Vec::new();
     for (i, member) in credits.cast.iter().enumerate() {
         let name = &member.name;
         let person_id =
             common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
-        relations.push(MetaRelation {
-            media: db::Media {
-                id: person_id,
-                title: name.clone(),
-                kind: db::MediaKind::Person,
-                poster: tmdb_image(member.profile_path.as_deref()),
-                media_id: Some(format!("person:{}", name.to_lowercase())),
-                ..Default::default()
-            },
-            relation: db::MediaRelation {
+        let mut person = db::Media {
+            id: person_id,
+            title: name.clone(),
+            kind: db::MediaKind::Person,
+            media_id: Some(format!("person:{}", name.to_lowercase())),
+            ..Default::default()
+        };
+        if let Some(url) = tmdb_image(member.profile_path.as_deref()) {
+            person.set_image(db::ImageKind::Primary, url);
+        }
+        relations.push((
+            db::MediaRelation {
                 left_media_id,
                 right_media_id: person_id,
                 weight: Some(i as i64),
@@ -240,7 +211,8 @@ fn build_person_relations(
                 character: member.character.clone(),
                 ..Default::default()
             },
-        });
+            person,
+        ));
     }
     for (i, member) in credits.crew.iter().enumerate() {
         let role = match member.job.as_str() {
@@ -255,23 +227,26 @@ fn build_person_relations(
             let name = &member.name;
             let person_id =
                 common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
-            relations.push(MetaRelation {
-                media: db::Media {
-                    id: person_id,
-                    title: name.clone(),
-                    kind: db::MediaKind::Person,
-                    poster: tmdb_image(member.profile_path.as_deref()),
-                    media_id: Some(format!("person:{}", name.to_lowercase())),
-                    ..Default::default()
-                },
-                relation: db::MediaRelation {
+            let mut person = db::Media {
+                id: person_id,
+                title: name.clone(),
+                kind: db::MediaKind::Person,
+                media_id: Some(format!("person:{}", name.to_lowercase())),
+                ..Default::default()
+            };
+            if let Some(url) = tmdb_image(member.profile_path.as_deref()) {
+                person.set_image(db::ImageKind::Primary, url);
+            }
+            relations.push((
+                db::MediaRelation {
                     left_media_id,
                     right_media_id: person_id,
                     weight: Some(i as i64),
                     role: Some(role),
                     ..Default::default()
                 },
-            });
+                person,
+            ));
         }
     }
     relations
@@ -280,35 +255,42 @@ fn build_person_relations(
 fn build_genre_relations(
     left_media_id: uuid::Uuid,
     genres: &[sdks::tmdb::Genre],
-) -> Vec<MetaRelation> {
+) -> Vec<(db::MediaRelation, db::Media)> {
     genres
         .iter()
         .map(|genre| {
             let name = &genre.name;
             let genre_id =
                 common::get_stable_uuid(format!("genre:{}", name.to_lowercase()));
-            MetaRelation {
-                media: db::Media {
+            (
+                db::MediaRelation {
+                    left_media_id,
+                    right_media_id: genre_id,
+                    ..Default::default()
+                },
+                db::Media {
                     id: genre_id,
                     title: name.clone(),
                     kind: db::MediaKind::Genre,
                     media_id: Some(format!("genre:{}", name.to_lowercase())),
                     ..Default::default()
                 },
-                relation: db::MediaRelation {
-                    left_media_id,
-                    right_media_id: genre_id,
-                    ..Default::default()
-                },
-            }
+            )
         })
         .collect()
+}
+
+fn is_404(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<ClientError>(),
+        Some(ClientError::Http { status: 404, .. })
+    )
 }
 
 async fn fetch_tmdb_meta(
     media: &db::Media,
     ctx: &AppContext,
-) -> Result<Option<MetaResult>> {
+) -> Result<Option<db::Media>> {
     let config = crate::db::Settings::get_config(&ctx.db).await?;
     let api_key = config.get_tmdb_key().to_string();
     let metadata_country = config
@@ -405,7 +387,7 @@ async fn fetch_tmdb_meta(
                         (Some(label), age)
                     })
                     .unwrap_or((None, None));
-                let result_media = db::Media {
+                let mut patch = db::Media {
                     title: movie_details.title,
                     description: movie_details.overview,
                     released_at: movie_details
@@ -413,14 +395,20 @@ async fn fetch_tmdb_meta(
                         .and_then(|d| d.and_hms_opt(0, 0, 0)),
                     runtime: movie_details.runtime.map(|r| r * 60),
                     rating_audience: movie_details.vote_average,
-                    poster: tmdb_image(movie_details.poster_path.as_deref()),
-                    backdrop: tmdb_image(movie_details.backdrop_path.as_deref()),
-                    logo,
                     certification,
                     certification_age,
                     external_ids: external_ids,
                     ..Default::default()
                 };
+                if let Some(url) = tmdb_image(movie_details.poster_path.as_deref()) {
+                    patch.set_image(db::ImageKind::Primary, url);
+                }
+                if let Some(url) = tmdb_image(movie_details.backdrop_path.as_deref()) {
+                    patch.set_image(db::ImageKind::Backdrop, url);
+                }
+                if let Some(url) = logo {
+                    patch.set_image(db::ImageKind::Logo, url);
+                }
                 let mut relations = vec![];
                 if let Some(genres) = &movie_details.genres {
                     relations.extend(build_genre_relations(media.id, genres));
@@ -428,10 +416,10 @@ async fn fetch_tmdb_meta(
                 if let Some(credits) = &movie_details.credits {
                     relations.extend(build_person_relations(media.id, credits));
                 }
-                return Ok(Some(MetaResult {
-                    media: result_media,
-                    relations,
-                }));
+                if !relations.is_empty() {
+                    patch.relations = Some(relations);
+                }
+                return Ok(Some(patch));
             }
         }
         db::MediaKind::Series => {
@@ -472,22 +460,28 @@ async fn fetch_tmdb_meta(
                         (Some(label), age)
                     })
                     .unwrap_or((None, None));
-                let result_media = db::Media {
+                let mut patch = db::Media {
                     title: tv_details.name,
                     description: tv_details.overview,
                     released_at: tv_details
                         .first_air_date
                         .and_then(|d| d.and_hms_opt(0, 0, 0)),
                     rating_audience: tv_details.vote_average,
-                    poster: tmdb_image(tv_details.poster_path.as_deref()),
-                    backdrop: tmdb_image(tv_details.backdrop_path.as_deref()),
-                    logo,
                     certification,
                     certification_age,
                     country,
                     external_ids: external_ids,
                     ..Default::default()
                 };
+                if let Some(url) = tmdb_image(tv_details.poster_path.as_deref()) {
+                    patch.set_image(db::ImageKind::Primary, url);
+                }
+                if let Some(url) = tmdb_image(tv_details.backdrop_path.as_deref()) {
+                    patch.set_image(db::ImageKind::Backdrop, url);
+                }
+                if let Some(url) = logo {
+                    patch.set_image(db::ImageKind::Logo, url);
+                }
                 let mut relations = vec![];
                 if let Some(genres) = &tv_details.genres {
                     relations.extend(build_genre_relations(media.id, genres));
@@ -502,32 +496,32 @@ async fn fetch_tmdb_meta(
                             "person:{}",
                             name.to_lowercase()
                         ));
-                        relations.push(MetaRelation {
-                            media: db::Media {
-                                id: person_id,
-                                title: name.clone(),
-                                kind: db::MediaKind::Person,
-                                poster: tmdb_image(creator.profile_path.as_deref()),
-                                media_id: Some(format!(
-                                    "person:{}",
-                                    name.to_lowercase()
-                                )),
-                                ..Default::default()
-                            },
-                            relation: db::MediaRelation {
+                        let mut creator_media = db::Media {
+                            id: person_id,
+                            title: name.clone(),
+                            kind: db::MediaKind::Person,
+                            media_id: Some(format!("person:{}", name.to_lowercase())),
+                            ..Default::default()
+                        };
+                        if let Some(url) = tmdb_image(creator.profile_path.as_deref()) {
+                            creator_media.set_image(db::ImageKind::Primary, url);
+                        }
+                        relations.push((
+                            db::MediaRelation {
                                 left_media_id: media.id,
                                 right_media_id: person_id,
                                 weight: Some(i as i64),
                                 role: Some(db::RelationRole::Creator),
                                 ..Default::default()
                             },
-                        });
+                            creator_media,
+                        ));
                     }
                 }
-                return Ok(Some(MetaResult {
-                    media: result_media,
-                    relations,
-                }));
+                if !relations.is_empty() {
+                    patch.relations = Some(relations);
+                }
+                return Ok(Some(patch));
             }
         }
         db::MediaKind::Episode => {
@@ -589,7 +583,7 @@ async fn fetch_tmdb_meta(
                     })
                     .or_else(|| ep_details.still_path.clone());
                 let still_url = tmdb_image(best_still.as_deref());
-                let result_media = db::Media {
+                let mut patch = db::Media {
                     title: ep_details.name,
                     description: ep_details.overview,
                     released_at: ep_details
@@ -597,11 +591,13 @@ async fn fetch_tmdb_meta(
                         .and_then(|d| d.and_hms_opt(0, 0, 0)),
                     runtime: ep_details.runtime.map(|r| r * 60),
                     rating_audience: ep_details.vote_average,
-                    poster: still_url.clone(),
-                    backdrop: still_url,
                     external_ids: external_ids,
                     ..Default::default()
                 };
+                if let Some(url) = still_url {
+                    patch.set_image(db::ImageKind::Primary, url.clone());
+                    patch.set_image(db::ImageKind::Backdrop, url);
+                }
                 let mut relations = vec![];
                 if let Some(guest_stars) = &ep_details.guest_stars {
                     for (i, member) in guest_stars.iter().enumerate() {
@@ -610,19 +606,18 @@ async fn fetch_tmdb_meta(
                             "person:{}",
                             name.to_lowercase()
                         ));
-                        relations.push(MetaRelation {
-                            media: db::Media {
-                                id: person_id,
-                                title: name.clone(),
-                                kind: db::MediaKind::Person,
-                                poster: tmdb_image(member.profile_path.as_deref()),
-                                media_id: Some(format!(
-                                    "person:{}",
-                                    name.to_lowercase()
-                                )),
-                                ..Default::default()
-                            },
-                            relation: db::MediaRelation {
+                        let mut person = db::Media {
+                            id: person_id,
+                            title: name.clone(),
+                            kind: db::MediaKind::Person,
+                            media_id: Some(format!("person:{}", name.to_lowercase())),
+                            ..Default::default()
+                        };
+                        if let Some(url) = tmdb_image(member.profile_path.as_deref()) {
+                            person.set_image(db::ImageKind::Primary, url);
+                        }
+                        relations.push((
+                            db::MediaRelation {
                                 left_media_id: media.id,
                                 right_media_id: person_id,
                                 weight: Some(i as i64),
@@ -630,17 +625,18 @@ async fn fetch_tmdb_meta(
                                 character: member.character.clone(),
                                 ..Default::default()
                             },
-                        });
+                            person,
+                        ));
                     }
                 }
                 if let Some(credits) = &ep_details.credits {
                     let base_weight = relations.len() as i64;
                     let mut ep_relations = build_person_relations(media.id, credits);
-                    for rel in &mut ep_relations {
-                        if let Some(w) = rel.relation.weight {
-                            rel.relation.weight = Some(base_weight + w);
+                    for (rel, _) in &mut ep_relations {
+                        if let Some(w) = rel.weight {
+                            rel.weight = Some(base_weight + w);
                         } else {
-                            rel.relation.weight = Some(base_weight);
+                            rel.weight = Some(base_weight);
                         }
                     }
                     relations.extend(ep_relations);
@@ -656,26 +652,64 @@ async fn fetch_tmdb_meta(
                     .await
                     .unwrap_or_default();
                     for genre in series_genres {
-                        relations.push(MetaRelation {
-                            media: genre.clone(),
-                            relation: db::MediaRelation {
+                        relations.push((
+                            db::MediaRelation {
                                 left_media_id: media.id,
                                 right_media_id: genre.id,
                                 ..Default::default()
                             },
-                        });
+                            genre,
+                        ));
                     }
                 }
-                return Ok(Some(MetaResult {
-                    media: result_media,
-                    relations,
-                }));
+                if !relations.is_empty() {
+                    patch.relations = Some(relations);
+                }
+                return Ok(Some(patch));
             }
+        }
+        db::MediaKind::Season => {
+            return fetch_tmdb_season_meta(media, ctx, &client).await;
         }
         _ => {}
     }
 
     Ok(None)
+}
+
+async fn fetch_tmdb_season_meta(
+    media: &db::Media,
+    ctx: &AppContext,
+    client: &sdks::RestClient<sdks::BearerAuth>,
+) -> Result<Option<db::Media>> {
+    let series_tmdb_id = if let Some(sid) = media.grandparent_id.or(media.parent_id) {
+        db::Media::get_by_id(&ctx.db, &sid)
+            .await?
+            .and_then(|m| m.external_ids.tmdb)
+    } else {
+        None
+    };
+    let (Some(tmdb_id), Some(season_idx)) = (series_tmdb_id, media.idx) else {
+        return Ok(None);
+    };
+    let tv_details = client
+        .execute(
+            sdks::tmdb::SeriesEndpoint::new(tmdb_id)
+                .with_cache(Duration::from_secs(360)),
+        )
+        .await?;
+    let season_data = tv_details
+        .seasons
+        .iter()
+        .find(|s| s.season_number == season_idx);
+    let Some(season) = season_data else {
+        return Ok(None);
+    };
+    let mut patch = db::Media::default();
+    if let Some(url) = tmdb_image(season.poster_path.as_deref()) {
+        patch.set_image(db::ImageKind::Primary, url);
+    }
+    Ok(Some(patch))
 }
 
 // ---------------------------------------------------------------------------
@@ -706,19 +740,21 @@ async fn search_tmdb_person(
         .map(|p| {
             let media_id = format!("person:{}", p.name.to_lowercase());
             let id = common::get_stable_uuid(media_id.clone());
-            let poster = p
+            let profile_url = p
                 .profile_path
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .map(|s| format!("{}{}", TMDB_IMAGE_BASE, s));
-            let media = db::Media {
+            let mut media = db::Media {
                 id,
                 title: p.name,
                 kind: db::MediaKind::Person,
-                poster,
                 media_id: Some(media_id),
                 ..Default::default()
             };
+            if let Some(url) = profile_url {
+                media.set_image(db::ImageKind::Primary, url);
+            }
             ctx.store
                 .insert(id.to_string(), media.clone(), Duration::from_secs(360));
             media
@@ -729,10 +765,10 @@ async fn search_tmdb_person(
 }
 
 // ---------------------------------------------------------------------------
-// Remote images (used by api/items.rs)
+// Remote images
 // ---------------------------------------------------------------------------
 
-pub async fn tmdb_remote_images(
+async fn tmdb_remote_images(
     ctx: &AppContext,
     media: &db::Media,
 ) -> Result<Vec<api::RemoteImageInfo>> {

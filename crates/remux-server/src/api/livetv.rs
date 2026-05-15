@@ -722,7 +722,7 @@ fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
         channel_number: m.channel_number,
         sort_order: m.sort_order,
         enabled: m.enabled,
-        logo: m.poster.clone(),
+        logo: m.images.get_path(db::ImageKind::Primary).map(str::to_owned),
         group: m.media_id.clone(),
     }
 }

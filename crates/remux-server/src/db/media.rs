@@ -1,4 +1,4 @@
-use super::{FilterResult, QueryBuilderExt};
+use super::{FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt};
 use crate::api;
 use crate::api::MediaSourceInfo;
 use crate::common::IntoVec;
@@ -69,18 +69,6 @@ use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
 use uuid::{Uuid, uuid};
-
-/// A single enrichment relation returned by a metadata fetch.
-pub struct MetaRelation {
-    pub media: Media,
-    pub relation: MediaRelation,
-}
-
-/// Return type for addon metadata fetches.
-pub struct MetaResult {
-    pub media: Media,
-    pub relations: Vec<MetaRelation>,
-}
 
 #[derive(
     strum_macros::EnumString,
@@ -729,9 +717,8 @@ pub struct Media {
     pub certification_age: Option<i32>,
     /// ISO 3166-1 alpha-2 country code (e.g. "US", "GB").
     pub country: Option<String>,
-    pub poster: Option<String>,
-    pub logo: Option<String>,
-    pub backdrop: Option<String>,
+    #[sqlx(skip)]
+    pub images: MediaImages,
     pub status: Option<MediaStatus>,
     pub idx: Option<i64>,
     pub parent_idx: Option<i64>,
@@ -810,12 +797,10 @@ pub struct Media {
 }
 
 impl Media {
-    /// Batch-populate parent/series title and image fields for tracks, albums, episodes, seasons.
+    /// Batch-populate parent/series title fields for tracks, albums, episodes, seasons.
     pub async fn enrich_parents(db: &SqlitePool, records: &mut Vec<Self>) {
         struct ParentRow {
             title: String,
-            poster: Option<String>,
-            backdrop: Option<String>,
         }
 
         let ids_needed: Vec<Uuid> = records
@@ -841,9 +826,8 @@ impl Media {
 
         let mut parent_map: HashMap<Uuid, ParentRow> = HashMap::new();
         for chunk in ids_needed.chunks(500) {
-            let mut qb = sqlx::QueryBuilder::new(
-                "SELECT id, title, poster, backdrop FROM media WHERE id IN (",
-            );
+            let mut qb =
+                sqlx::QueryBuilder::new("SELECT id, title FROM media WHERE id IN (");
             let mut sep = qb.separated(", ");
             for id in chunk {
                 sep.push_bind(id);
@@ -853,18 +837,7 @@ impl Media {
                 parent_map.extend(rows.into_iter().filter_map(|r| {
                     let id: Option<Uuid> = r.get(0);
                     let title: Option<String> = r.get(1);
-                    let poster: Option<String> = r.get(2);
-                    let backdrop: Option<String> = r.get(3);
-                    id.zip(title).map(|(id, title)| {
-                        (
-                            id,
-                            ParentRow {
-                                title,
-                                poster,
-                                backdrop,
-                            },
-                        )
-                    })
+                    id.zip(title).map(|(id, title)| (id, ParentRow { title }))
                 }));
             }
         }
@@ -896,8 +869,6 @@ impl Media {
                         media.grandparent_id.and_then(|id| parent_map.get(&id))
                     {
                         media.series_title = Some(row.title.clone());
-                        media.series_poster = row.poster.clone();
-                        media.series_backdrop = row.backdrop.clone();
                     }
                 }
                 MediaKind::Season => {
@@ -905,15 +876,6 @@ impl Media {
                         media.parent_id.and_then(|id| parent_map.get(&id))
                     {
                         media.series_title = Some(row.title.clone());
-                        media.series_poster = row.poster.clone();
-                        media.series_backdrop = row.backdrop.clone();
-                    }
-                }
-                MediaKind::TvProgram => {
-                    if let Some(row) =
-                        media.parent_id.and_then(|id| parent_map.get(&id))
-                    {
-                        media.series_poster = row.poster.clone();
                     }
                 }
                 _ => {}
@@ -957,6 +919,33 @@ pub enum MediaError {
 }
 
 impl Media {
+    pub fn get_image(&self, kind: ImageKind) -> Option<&str> {
+        self.images.get_path(kind)
+    }
+
+    pub fn set_image(&mut self, kind: ImageKind, url: String) {
+        let media_id = self.id;
+        let vec = match kind {
+            ImageKind::Primary => &mut self.images.primary,
+            ImageKind::Backdrop => &mut self.images.backdrop,
+            ImageKind::Logo => &mut self.images.logo,
+            ImageKind::Thumb => &mut self.images.thumb,
+        };
+        if let Some(existing) = vec.iter_mut().find(|i| i.image_index == 0) {
+            existing.path = url;
+        } else {
+            vec.push(MediaImage {
+                id: Uuid::new_v4(),
+                media_id,
+                image_type: kind.to_string(),
+                image_index: 0,
+                path: url,
+                width: None,
+                height: None,
+            });
+        }
+    }
+
     /// Whether the given user may delete media items.
     pub fn can_delete(user: &super::User) -> bool {
         user.is_admin
@@ -997,12 +986,12 @@ impl Media {
         r#"
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
-            rating_critic, rating_audience, poster, logo, backdrop, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
+            rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
             grandparent_media_id, media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -1012,9 +1001,6 @@ impl Media {
             runtime = excluded.runtime,
             rating_critic = excluded.rating_critic,
             rating_audience = excluded.rating_audience,
-            poster = excluded.poster,
-            logo = excluded.logo,
-            backdrop = excluded.backdrop,
             description = excluded.description,
             trailers = excluded.trailers,
             stream_info = excluded.stream_info,
@@ -1057,9 +1043,6 @@ impl Media {
         .bind(self.runtime)
         .bind(self.rating_critic)
         .bind(self.rating_audience)
-        .bind(&self.poster)
-        .bind(&self.logo)
-        .bind(&self.backdrop)
         .bind(&self.description)
         .bind(sqlx::types::Json(&self.trailers))
         .bind(sqlx::types::Json(&self.stream_info))
@@ -1092,6 +1075,10 @@ impl Media {
         .bind(&self.program_kind)
         .execute(db)
         .await?;
+
+        MediaImage::sync_from_media(db, self.id, &self.images)
+            .await
+            .ok();
 
         Ok(())
     }
@@ -1133,7 +1120,7 @@ impl Media {
             let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
+                rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
                 grandparent_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind
             )",
@@ -1151,9 +1138,6 @@ impl Media {
                     .push_bind(&item.runtime)
                     .push_bind(&item.rating_critic)
                     .push_bind(&item.rating_audience)
-                    .push_bind(&item.poster)
-                    .push_bind(&item.logo)
-                    .push_bind(&item.backdrop)
                     .push_bind(&item.description)
                     .push_bind(sqlx::types::Json(&item.trailers))
                     .push_bind(sqlx::types::Json(&item.stream_info))
@@ -1207,7 +1191,7 @@ impl Media {
             let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
-                rating_critic, rating_audience, poster, logo, backdrop, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
+                rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
                 grandparent_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind
             )",
@@ -1223,9 +1207,6 @@ impl Media {
                     .push_bind(&item.runtime)
                     .push_bind(&item.rating_critic)
                     .push_bind(&item.rating_audience)
-                    .push_bind(&item.poster)
-                    .push_bind(&item.logo)
-                    .push_bind(&item.backdrop)
                     .push_bind(&item.description)
                     .push_bind(sqlx::types::Json(&item.trailers))
                     .push_bind(sqlx::types::Json(&item.stream_info))
@@ -1265,9 +1246,6 @@ impl Media {
                 runtime = excluded.runtime,
                 rating_critic = excluded.rating_critic,
                 rating_audience = excluded.rating_audience,
-                poster = excluded.poster,
-                logo = excluded.logo,
-                backdrop = excluded.backdrop,
                 description = excluded.description,
                 trailers = excluded.trailers,
                 stream_info = excluded.stream_info,
@@ -1304,6 +1282,13 @@ impl Media {
         }
 
         tx.commit().await?;
+
+        for item in items {
+            MediaImage::sync_from_media(db, item.id, &item.images)
+                .await
+                .ok();
+        }
+
         Ok(())
     }
 
@@ -1337,7 +1322,7 @@ impl Media {
         db: &SqlitePool,
         id: &Uuid,
     ) -> Result<Option<Self>, sqlx::Error> {
-        let row = sqlx::query_as::<_, Self>(
+        let mut row = sqlx::query_as::<_, Self>(
             r#"
         SELECT *
         FROM media
@@ -1348,6 +1333,11 @@ impl Media {
         .fetch_optional(db)
         .await?;
 
+        if let Some(ref mut media) = row {
+            media.images = MediaImage::get_for_media(db, &media.id)
+                .await
+                .unwrap_or_default();
+        }
         Ok(row)
     }
 
@@ -1798,6 +1788,14 @@ impl Media {
                     media.tags = tags;
                 }
             }
+
+            // Batch-load images
+            let mut images_map = MediaImage::get_for_media_ids(db, &ids)
+                .await
+                .unwrap_or_default();
+            for media in &mut records {
+                media.images = images_map.remove(&media.id).unwrap_or_default();
+            }
         }
 
         // Batch-load genre relations for Movie/Episode/Series/Season records
@@ -1817,7 +1815,7 @@ impl Media {
         if !genre_ids.is_empty() {
             let mut g_qb = sqlx::QueryBuilder::new(
                 "SELECT mr.left_media_id, mr.relation_id, mr.right_media_id, mr.weight, \
-                 g.id, g.title, g.poster \
+                 g.id, g.title \
                  FROM media_relations mr \
                  JOIN media g ON g.id = mr.right_media_id \
                  WHERE g.kind = 'genre' AND mr.left_media_id IN (",
@@ -1844,7 +1842,6 @@ impl Media {
                             id: row.get(4),
                             title: row.get(5),
                             kind: MediaKind::Genre,
-                            poster: row.get(6),
                             ..Default::default()
                         };
                         genres_map
@@ -2795,9 +2792,6 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 .country
                 .and_then(|v| v.into_iter().next())
                 .map(|c| normalize_country_alpha2(&c)),
-            poster: meta.poster.or(meta.thumbnail),
-            logo: meta.logo,
-            backdrop: meta.background,
             media_id: meta.imdb_id.clone(),
             external_ids: {
                 // Start by parsing the AIO id for any provider prefix
@@ -2821,12 +2815,16 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             ..Default::default()
         };
 
-        //if media.kind ==MediaKind::Season {
-        //  media.title = format!("Season {}", media.idx.unwrap());
-
-        //}
-
-        // media_instances.push(media.clone());
+        let mut media = media;
+        if let Some(url) = meta.poster.or(meta.thumbnail) {
+            media.set_image(ImageKind::Primary, url);
+        }
+        if let Some(url) = meta.logo {
+            media.set_image(ImageKind::Logo, url);
+        }
+        if let Some(url) = meta.background {
+            media.set_image(ImageKind::Backdrop, url);
+        }
 
         Ok(media)
     }
@@ -2867,7 +2865,6 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     grandparent_media_id: media.media_id.clone(),
                     grandparent_id: Some(media.id),
                     media_id: Some(season_media_id.clone()),
-                    poster: meta.get_season_poster(season_idx),
                     parent_id: Some(media.id),
                     released_at: episodes
                         .get(0)
@@ -2882,6 +2879,9 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
 
                     ..Default::default()
                 };
+                if let Some(url) = meta.get_season_poster(season_idx) {
+                    season.set_image(ImageKind::Primary, url);
+                }
                 media_instances.push(season.clone());
 
                 for ep in episodes {
@@ -2912,8 +2912,9 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
 
                     // Populate relations (Cast, Directors, Writers) for the episode
                     let rels = build_episode_relations_from_ep(&episode, &ep);
-                    episode.relations =
-                        Some(rels.into_iter().map(|r| (r.relation, r.media)).collect());
+                    if !rels.is_empty() {
+                        episode.relations = Some(rels);
+                    }
 
                     media_instances.push(episode);
                 }
@@ -3192,9 +3193,9 @@ pub async fn ensure_collection_folder(db: &SqlitePool) -> Result<()> {
 fn build_episode_relations_from_ep(
     media: &Media,
     ep: &crate::sdks::stremio::Episode,
-) -> Vec<MetaRelation> {
+) -> Vec<(MediaRelation, Media)> {
     let mut relations = Vec::new();
-    let add_names = |relations: &mut Vec<MetaRelation>,
+    let add_names = |relations: &mut Vec<(MediaRelation, Media)>,
                      names: Option<&Vec<String>>,
                      role: RelationRole| {
         let names: Vec<String> = names
@@ -3209,22 +3210,22 @@ fn build_episode_relations_from_ep(
                 "person:{}",
                 name.to_lowercase()
             ));
-            relations.push(MetaRelation {
-                media: Media {
-                    id: person_id,
-                    title: name.clone(),
-                    kind: MediaKind::Person,
-                    media_id: Some(format!("person:{}", name.to_lowercase())),
-                    ..Default::default()
-                },
-                relation: MediaRelation {
+            relations.push((
+                MediaRelation {
                     left_media_id: media.id,
                     right_media_id: person_id,
                     weight: Some(i as i64),
                     role: Some(role.clone()),
                     ..Default::default()
                 },
-            });
+                Media {
+                    id: person_id,
+                    title: name.clone(),
+                    kind: MediaKind::Person,
+                    media_id: Some(format!("person:{}", name.to_lowercase())),
+                    ..Default::default()
+                },
+            ));
         }
     };
     add_names(

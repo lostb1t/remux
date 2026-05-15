@@ -115,7 +115,10 @@ pub async fn search_hints(
             item_id: m.id,
             name: Some(m.title.clone()),
             type_: api::db_media_kind_to_type(m.kind.clone()),
-            primary_image_tag: m.poster.clone(),
+            primary_image_tag: m
+                .images
+                .get(db::ImageKind::Primary)
+                .map(|i| i.id.to_string()),
             production_year: m.released_at.map(|d| d.year() as i64),
             run_time_ticks: m.runtime.map(|r| r * 10_000_000),
             is_folder: Some(matches!(

@@ -17,7 +17,6 @@ use super::{
     AddonPresetRegistration, CatalogInfo, MediaKind, MusicSearchResult, ResourceType,
     addon,
 };
-use crate::db::{MetaRelation, MetaResult};
 use crate::sdks::CachedEndpoint;
 use crate::services::stremio as stremio_service;
 use crate::{AppContext, common, db, sdks};
@@ -257,7 +256,7 @@ impl AddonKind for StremioAddon {
         &self,
         media: &db::Media,
         ctx: &AppContext,
-    ) -> Result<Option<MetaResult>> {
+    ) -> Result<Option<db::Media>> {
         let svc = self.service()?;
         stremio_meta_fetch(&svc, media, ctx).await
     }
@@ -281,19 +280,6 @@ impl AddonKind for StremioAddon {
         } else {
             Ok(Some(children))
         }
-    }
-
-    async fn tree_persist_metadata(
-        &self,
-        root: &db::Media,
-        children: &[db::Media],
-        ctx: &AppContext,
-    ) -> Result<()> {
-        if root.kind != db::MediaKind::Series {
-            return Ok(());
-        }
-        let svc = self.service()?;
-        stremio_persist_children_metadata(&svc, root, children, ctx).await
     }
 
     async fn search_supports(&self, kind: &db::MediaKind) -> bool {
@@ -493,7 +479,7 @@ async fn stremio_meta_fetch(
     svc: &stremio_service::StremioService,
     media: &db::Media,
     ctx: &AppContext,
-) -> Result<Option<MetaResult>> {
+) -> Result<Option<db::Media>> {
     let imdb_id = media
         .grandparent_media_id
         .clone()
@@ -544,34 +530,31 @@ async fn stremio_meta_fetch(
     };
 
     if let Some(mut found_media) = found {
-        let relations = if matches!(
-            media.kind,
-            db::MediaKind::Movie | db::MediaKind::Series
-        ) {
-            build_relations(media, &meta_raw)
-        } else if media.kind == db::MediaKind::Episode {
-            if let Some(meta_ep) = meta_raw.videos.as_ref().and_then(|v| {
-                v.iter()
-                    .find(|e| e.episode == media.idx && e.season == media.parent_idx)
-            }) {
-                let rels = build_episode_relations(media, meta_ep);
-                warn!(id = %media.id, count = rels.len(), "stremio episode relations");
-                rels
+        let relations =
+            if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
+                build_relations(media, &meta_raw)
+            } else if media.kind == db::MediaKind::Episode {
+                if let Some(meta_ep) = meta_raw.videos.as_ref().and_then(|v| {
+                    v.iter().find(|e| {
+                        e.episode == media.idx && e.season == media.parent_idx
+                    })
+                }) {
+                    build_episode_relations(media, meta_ep)
+                } else {
+                    vec![]
+                }
             } else {
                 vec![]
-            }
-        } else {
-            vec![]
-        };
+            };
 
         let mut medias = vec![found_media];
         db::Media::enrich_parents(&ctx.db, &mut medias).await;
         found_media = medias.remove(0);
 
-        Ok(Some(MetaResult {
-            media: found_media,
-            relations,
-        }))
+        if !relations.is_empty() {
+            found_media.relations = Some(relations);
+        }
+        Ok(Some(found_media))
     } else {
         Ok(None)
     }
@@ -609,7 +592,11 @@ async fn stremio_sync_children(
             if x.kind == db::MediaKind::Season {
                 x.parent_id = Some(root.id);
                 x.grandparent_id = Some(root.id);
-                x.poster = x.idx.and_then(|idx| meta_clone.get_season_poster(idx));
+                if let Some(url) =
+                    x.idx.and_then(|idx| meta_clone.get_season_poster(idx))
+                {
+                    x.set_image(db::ImageKind::Primary, url);
+                }
                 x.title = format!("Season {}", x.idx.unwrap_or(1));
                 x.refreshed_at = Some(Utc::now().naive_utc());
                 Some(x)
@@ -644,59 +631,6 @@ async fn stremio_sync_children(
     Ok(children)
 }
 
-async fn stremio_persist_children_metadata(
-    svc: &stremio_service::StremioService,
-    root: &db::Media,
-    children: &[db::Media],
-    ctx: &AppContext,
-) -> Result<()> {
-    if root.kind != db::MediaKind::Series {
-        return Ok(());
-    }
-
-    let Some(media_id) = &root.media_id else {
-        return Ok(());
-    };
-
-    let series_meta = svc
-        .get_meta(sdks::stremio::MediaType::Series, media_id.clone())
-        .await?;
-
-    let Some(episodes) = series_meta.videos.as_ref() else {
-        return Ok(());
-    };
-
-    let mut all_relations = Vec::new();
-    for media in children {
-        if media.kind != db::MediaKind::Episode {
-            continue;
-        }
-
-        if let Some(ep_id) = &media.media_id {
-            if let Some(meta_ep) = episodes
-                .iter()
-                .find(|e: &&sdks::stremio::Episode| &e.id == ep_id)
-            {
-                let rels = build_episode_relations(media, meta_ep);
-                all_relations.extend(rels);
-            }
-        }
-    }
-
-    if all_relations.is_empty() {
-        return Ok(());
-    }
-
-    let persons: Vec<db::Media> =
-        all_relations.iter().map(|r| r.media.clone()).collect();
-    db::Media::upsert(&ctx.db, &persons).await?;
-    let relations: Vec<db::MediaRelation> =
-        all_relations.iter().map(|r| r.relation.clone()).collect();
-    db::MediaRelation::upsert(&ctx.db, &relations).await?;
-
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Relation builders
 // ---------------------------------------------------------------------------
@@ -704,28 +638,28 @@ async fn stremio_persist_children_metadata(
 pub(crate) fn build_relations(
     media: &db::Media,
     meta: &sdks::stremio::Meta,
-) -> Vec<MetaRelation> {
-    let mut relations: Vec<MetaRelation> = Vec::new();
+) -> Vec<(db::MediaRelation, db::Media)> {
+    let mut relations = Vec::new();
 
     if let Some(genres) = meta.genre.as_ref().or(meta.genres.as_ref()) {
         for genre_name in genres {
             let genre_id =
                 common::get_stable_uuid(format!("genre:{}", genre_name.to_lowercase()));
-            relations.push(MetaRelation {
-                media: db::Media {
+            relations.push((
+                db::MediaRelation {
+                    left_media_id: media.id,
+                    right_media_id: genre_id,
+                    role: None,
+                    ..Default::default()
+                },
+                db::Media {
                     id: genre_id,
                     title: genre_name.clone(),
                     kind: db::MediaKind::Genre,
                     media_id: Some(format!("genre:{}", genre_name.to_lowercase())),
                     ..Default::default()
                 },
-                relation: db::MediaRelation {
-                    left_media_id: media.id,
-                    right_media_id: genre_id,
-                    role: None,
-                    ..Default::default()
-                },
-            });
+            ));
         }
     }
 
@@ -758,7 +692,7 @@ pub(crate) fn build_relations(
 pub(crate) fn build_episode_relations(
     media: &db::Media,
     ep: &sdks::stremio::Episode,
-) -> Vec<MetaRelation> {
+) -> Vec<(db::MediaRelation, db::Media)> {
     build_person_relations(
         media.id,
         ep.directors.as_ref(),
@@ -778,7 +712,7 @@ fn build_person_relations(
     cast_names: Option<&Vec<String>>,
     director_members: Option<&Vec<sdks::stremio::CastMember>>,
     writer_members: Option<&Vec<sdks::stremio::CastMember>>,
-) -> Vec<MetaRelation> {
+) -> Vec<(db::MediaRelation, db::Media)> {
     let mut relations = Vec::new();
 
     let split_names = |names: Option<&Vec<String>>| -> Vec<String> {
@@ -805,16 +739,18 @@ fn build_person_relations(
                         "person:{}",
                         name.to_lowercase()
                     ));
-                    relations.push(MetaRelation {
-                        media: db::Media {
-                            id: person_id,
-                            title: name.clone(),
-                            kind: db::MediaKind::Person,
-                            poster: member.photo.clone(),
-                            media_id: Some(format!("person:{}", name.to_lowercase())),
-                            ..Default::default()
-                        },
-                        relation: db::MediaRelation {
+                    let mut person = db::Media {
+                        id: person_id,
+                        title: name.clone(),
+                        kind: db::MediaKind::Person,
+                        media_id: Some(format!("person:{}", name.to_lowercase())),
+                        ..Default::default()
+                    };
+                    if let Some(url) = member.photo.clone() {
+                        person.set_image(db::ImageKind::Primary, url);
+                    }
+                    relations.push((
+                        db::MediaRelation {
                             left_media_id,
                             right_media_id: person_id,
                             weight: Some(offset + i as i64),
@@ -822,7 +758,8 @@ fn build_person_relations(
                             character: member.character.clone(),
                             ..Default::default()
                         },
-                    });
+                        person,
+                    ));
                 }
             }
         }
@@ -835,36 +772,29 @@ fn build_person_relations(
     for (i, name) in split_names(cast_names).into_iter().enumerate() {
         let person_id =
             common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
-        relations.push(MetaRelation {
-            media: db::Media {
-                id: person_id,
-                title: name.clone(),
-                kind: db::MediaKind::Person,
-                media_id: Some(format!("person:{}", name.to_lowercase())),
-                ..Default::default()
-            },
-            relation: db::MediaRelation {
+        relations.push((
+            db::MediaRelation {
                 left_media_id,
                 right_media_id: person_id,
                 weight: Some((i + cast_members.map(|c| c.len()).unwrap_or(0)) as i64),
                 role: Some(db::RelationRole::Actor),
                 ..Default::default()
             },
-        });
-    }
-
-    for (i, name) in split_names(directors).into_iter().enumerate() {
-        let person_id =
-            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
-        relations.push(MetaRelation {
-            media: db::Media {
+            db::Media {
                 id: person_id,
                 title: name.clone(),
                 kind: db::MediaKind::Person,
                 media_id: Some(format!("person:{}", name.to_lowercase())),
                 ..Default::default()
             },
-            relation: db::MediaRelation {
+        ));
+    }
+
+    for (i, name) in split_names(directors).into_iter().enumerate() {
+        let person_id =
+            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+        relations.push((
+            db::MediaRelation {
                 left_media_id,
                 right_media_id: person_id,
                 weight: Some(
@@ -873,28 +803,35 @@ fn build_person_relations(
                 role: Some(db::RelationRole::Director),
                 ..Default::default()
             },
-        });
-    }
-
-    for (i, name) in split_names(writers).into_iter().enumerate() {
-        let person_id =
-            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
-        relations.push(MetaRelation {
-            media: db::Media {
+            db::Media {
                 id: person_id,
                 title: name.clone(),
                 kind: db::MediaKind::Person,
                 media_id: Some(format!("person:{}", name.to_lowercase())),
                 ..Default::default()
             },
-            relation: db::MediaRelation {
+        ));
+    }
+
+    for (i, name) in split_names(writers).into_iter().enumerate() {
+        let person_id =
+            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+        relations.push((
+            db::MediaRelation {
                 left_media_id,
                 right_media_id: person_id,
                 weight: Some((i + writer_members.map(|c| c.len()).unwrap_or(0)) as i64),
                 role: Some(db::RelationRole::Writer),
                 ..Default::default()
             },
-        });
+            db::Media {
+                id: person_id,
+                title: name.clone(),
+                kind: db::MediaKind::Person,
+                media_id: Some(format!("person:{}", name.to_lowercase())),
+                ..Default::default()
+            },
+        ));
     }
 
     relations
@@ -937,8 +874,7 @@ async fn stremio_search(
         .filter_map(|meta| {
             let mut m = db::Media::try_from(meta.clone()).ok()?;
             let rels = build_relations(&m, &meta);
-            m.relations =
-                Some(rels.into_iter().map(|r| (r.relation, r.media)).collect());
+            m.relations = Some(rels);
             ctx.store
                 .insert(m.id.to_string(), meta, Duration::from_secs(3600));
             Some(m)

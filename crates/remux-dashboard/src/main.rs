@@ -28,6 +28,18 @@ use remux_sdks::{ClientError, RestClient};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+fn detect_image_content_type(bytes: &[u8]) -> &'static str {
+    match bytes {
+        [0xff, 0xd8, 0xff, ..] => "image/jpeg",
+        [0x89, b'P', b'N', b'G', ..] => "image/png",
+        [b'G', b'I', b'F', ..] => "image/gif",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => {
+            "image/webp"
+        }
+        _ => "image/jpeg",
+    }
+}
+
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 const THEME_CSS: Asset = asset!("/assets/theme.css");
 
@@ -1517,6 +1529,23 @@ fn CollectionForm(
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
 
+    // Image upload state (edit mode only)
+    let existing_image_tag = existing
+        .as_ref()
+        .and_then(|f| f.image_tags.as_ref())
+        .and_then(|t| t.primary.clone());
+    let existing_item_id = existing.as_ref().map(|f| f.id.to_string());
+    let server_base = app_state.server.manual_address.clone();
+    let current_image_url = existing_item_id
+        .as_ref()
+        .zip(existing_image_tag.as_ref())
+        .map(|(id, tag)| format!("{server_base}/Items/{id}/Images/Primary?tag={tag}"));
+    let mut pending_image_bytes: Signal<Option<Vec<u8>>> = use_signal(|| None);
+    let mut pending_image_preview: Signal<Option<String>> = use_signal(|| None);
+    let mut has_image = use_signal(|| existing_image_tag.is_some());
+    let server_base_upload = app_state.server.manual_address.clone();
+    let client_for_delete = app_state.client.clone();
+
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
         let client = app_state.client.clone();
@@ -1536,11 +1565,12 @@ fn CollectionForm(
         };
         saving.set(true);
         err.set(None);
+        let pending_bytes = pending_image_bytes.peek().clone();
         spawn(async move {
             let result = if let Some(id) = item_id {
-                client
+                let patch = client
                     .execute(PatchItem {
-                        item_id: id,
+                        item_id: id.clone(),
                         payload: PatchItemPayload {
                             name: Some(name),
                             collection_type: Some(ct),
@@ -1550,7 +1580,21 @@ fn CollectionForm(
                             tags: Some(current_tags),
                         },
                     })
-                    .await
+                    .await;
+                if patch.is_ok() {
+                    if let Some(bytes) = pending_bytes {
+                        let ct = crate::detect_image_content_type(&bytes);
+                        let _ = client
+                            .execute(remux_sdks::remux::UploadItemImage {
+                                item_id: id,
+                                image_type: "Primary".to_string(),
+                                bytes,
+                                content_type: ct,
+                            })
+                            .await;
+                    }
+                }
+                patch
             } else {
                 client
                     .execute(CreateVirtualFolder {
@@ -1624,6 +1668,86 @@ fn CollectionForm(
             div { class: "field",
                 label { class: "field-label", "Tags" }
                 TagChipInput { tags }
+            }
+
+            if is_edit {
+                div { class: "field",
+                    label { class: "field-label", "Image" }
+                    div { style: "display:flex;flex-direction:column;gap:8px",
+                        // Preview: local pick takes priority over server image
+                        if let Some(preview) = pending_image_preview.read().as_ref() {
+                            img {
+                                src: "{preview}",
+                                style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
+                            }
+                        } else if let Some(url) = &current_image_url {
+                            if *has_image.read() {
+                                img {
+                                    src: "{url}",
+                                    style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
+                                }
+                            }
+                        }
+                        div { style: "display:flex;gap:8px;align-items:center",
+                            label {
+                                class: "btn btn-ghost",
+                                style: "height:30px;font-size:.68rem;padding:0 10px;cursor:pointer",
+                                input {
+                                    r#type: "file",
+                                    accept: "image/*",
+                                    style: "display:none",
+                                    onchange: move |e| {
+                                        spawn(async move {
+                                            let files_data = e.files();
+                                            if let Some(file_data) = files_data.first() {
+                                                if let Ok(raw) = file_data.read_bytes().await {
+                                                    let bytes: Vec<u8> = raw.to_vec();
+                                                    let ct = crate::detect_image_content_type(&bytes);
+                                                    let b64 = base64::Engine::encode(
+                                                        &base64::engine::general_purpose::STANDARD,
+                                                        &bytes
+                                                    );
+                                                    let data_url = format!("data:{ct};base64,{b64}");
+                                                    pending_image_preview.set(Some(data_url));
+                                                    pending_image_bytes.set(Some(bytes));
+                                                    has_image.set(true);
+                                                }
+                                            }
+                                        });
+                                    },
+                                }
+                                "Choose image"
+                            }
+                            if *has_image.read() {
+                                button {
+                                    r#type: "button",
+                                    class: "btn btn-ghost",
+                                    style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                    onclick: {
+                                        let item_id = existing_item_id.clone();
+                                        let client = client_for_delete.clone();
+                                        move |_| {
+                                            let item_id = item_id.clone();
+                                            let client = client.clone();
+                                            spawn(async move {
+                                                if let Some(id) = item_id {
+                                                    let _ = client.execute(remux_sdks::remux::DeleteItemImage {
+                                                        item_id: id,
+                                                        image_type: "Primary".to_string(),
+                                                    }).await;
+                                                }
+                                                pending_image_bytes.set(None);
+                                                pending_image_preview.set(None);
+                                                has_image.set(false);
+                                            });
+                                        }
+                                    },
+                                    "Remove image"
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             div { class: "toggle-row",
