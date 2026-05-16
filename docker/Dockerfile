@@ -7,6 +7,7 @@ ARG IGC2_BUILD=19820
 ARG NEO_VER=25.35.35096.9
 ARG IGC1_LEGACY_VER=1.0.17537.24
 ARG NEO_LEGACY_VER=24.35.30872.36
+ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WEB_PATH=/app/jellyfin-web
@@ -14,21 +15,24 @@ ENV DASHBOARD_PATH=/app/dashboard
 ENV DATABASE_URL=sqlite:///data/db.sqlite?mode=rwc
 ENV LOG_FILE=/data/logs/remux.jsonl
 ENV TORRENT_DATA_DIR=/data/torrents
-ENV FFMPEG_PATH=/app/jellyfin-ffmpeg/ffmpeg
-ENV FFPROBE_PATH=/app/jellyfin-ffmpeg/ffprobe
-ENV LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri:/app/jellyfin-ffmpeg/lib/dri
-ENV PATH="/app/jellyfin-ffmpeg:${PATH}"
+ENV FFMPEG_PATH=/usr/lib/jellyfin-ffmpeg/ffmpeg
+ENV FFPROBE_PATH=/usr/lib/jellyfin-ffmpeg/ffprobe
+ENV LIBVA_DRIVERS_PATH=/usr/lib/jellyfin-ffmpeg/lib/dri
+ENV PATH="/usr/lib/jellyfin-ffmpeg:${PATH}"
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
 RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg \
+    && printf "Types: deb\nURIs: https://repo.jellyfin.org/debian\nSuites: trixie\nComponents: main\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/jellyfin.gpg\n" "${TARGETARCH}" \
+        > /etc/apt/sources.list.d/jellyfin.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
+        jellyfin-ffmpeg7 \
         python3 \
         python3-pip \
-        libva2 \
-        libva-drm2 \
         libdrm2 \
         mesa-va-drivers \
         vainfo \
@@ -36,10 +40,10 @@ RUN apt-get update \
         libfreetype6 \
         libssl3 \
     && pip3 install --break-system-packages yt-dlp "curl-cffi>=0.10,<0.15" \
+    && apt-get remove -y --autoremove gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 # Intel OpenCL tone mapping (Gen12+ current + Gen11 legacy, amd64 only)
-ARG TARGETARCH
 RUN if [ "${TARGETARCH}" = "amd64" ]; then \
         mkdir intel-compute-runtime \
         && cd intel-compute-runtime \
@@ -63,7 +67,6 @@ WORKDIR /app
 COPY remux-server .
 COPY dashboard ./dashboard
 COPY jellyfin-web ./jellyfin-web
-COPY jellyfin-ffmpeg ./jellyfin-ffmpeg
 
 EXPOSE 3000
 
