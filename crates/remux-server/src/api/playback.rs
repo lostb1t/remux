@@ -800,11 +800,11 @@ async fn videos_stream_inner(
     let encoding_opts = crate::db::Settings::get_encoding_config(&state.ctx.db)
         .await
         .unwrap_or_default();
-    let source_video_codec = media
-        .probe_data
+    let source_video_stream = media.probe_data.as_ref().and_then(|p| p.video_stream());
+    let source_video_codec = source_video_stream.as_ref().and_then(|s| s.codec.clone());
+    let source_video_range_type = source_video_stream
         .as_ref()
-        .and_then(|p| p.video_stream())
-        .and_then(|s| s.codec.clone());
+        .and_then(|s| s.video_range_type);
     let params = crate::transcode::engine::ProgressiveTranscodeParams {
         input_url: url,
         container: container.clone(),
@@ -830,6 +830,18 @@ async fn videos_stream_inner(
             .vaapi_device
             .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
         vaapi_driver: encoding_opts.vaapi_driver.unwrap_or_default(),
+        source_video_range_type,
+        enable_tonemapping: encoding_opts.enable_tonemapping.unwrap_or(false),
+        enable_vpp_tonemapping: encoding_opts.enable_vpp_tonemapping.unwrap_or(false),
+        tonemapping_algorithm: encoding_opts
+            .tonemapping_algorithm
+            .unwrap_or_else(|| "hable".to_string()),
+        tonemapping_desat: encoding_opts.tonemapping_desat.unwrap_or(0.0),
+        tonemapping_peak: encoding_opts.tonemapping_peak.unwrap_or(0.0),
+        allow_hevc_encoding: encoding_opts.allow_hevc_encoding.unwrap_or(false),
+        allow_av1_encoding: encoding_opts.allow_av1_encoding.unwrap_or(false),
+        h264_crf: encoding_opts.h264_crf.unwrap_or(23),
+        h265_crf: encoding_opts.h265_crf.unwrap_or(28),
     };
 
     let stream = crate::transcode::engine::start_progressive_transcode(params)?;
@@ -2521,6 +2533,20 @@ pub async fn master_hls_video(
                 .vaapi_device
                 .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
             vaapi_driver: encoding_opts.vaapi_driver.unwrap_or_default(),
+            source_video_range_type,
+            enable_tonemapping: encoding_opts.enable_tonemapping.unwrap_or(false),
+            enable_vpp_tonemapping: encoding_opts
+                .enable_vpp_tonemapping
+                .unwrap_or(false),
+            tonemapping_algorithm: encoding_opts
+                .tonemapping_algorithm
+                .unwrap_or_else(|| "hable".to_string()),
+            tonemapping_desat: encoding_opts.tonemapping_desat.unwrap_or(0.0),
+            tonemapping_peak: encoding_opts.tonemapping_peak.unwrap_or(0.0),
+            allow_hevc_encoding: encoding_opts.allow_hevc_encoding.unwrap_or(false),
+            allow_av1_encoding: encoding_opts.allow_av1_encoding.unwrap_or(false),
+            h264_crf: encoding_opts.h264_crf.unwrap_or(23),
+            h265_crf: encoding_opts.h265_crf.unwrap_or(28),
         };
 
         // Spawn the transcode task with proper error handling
@@ -2951,6 +2977,31 @@ async fn hls_segment_inner(
                             .vaapi_device
                             .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
                         vaapi_driver: encoding_opts.vaapi_driver.unwrap_or_default(),
+                        source_video_range_type: session
+                            .read()
+                            .await
+                            .source_video_range_type,
+                        enable_tonemapping: encoding_opts
+                            .enable_tonemapping
+                            .unwrap_or(false),
+                        enable_vpp_tonemapping: encoding_opts
+                            .enable_vpp_tonemapping
+                            .unwrap_or(false),
+                        tonemapping_algorithm: encoding_opts
+                            .tonemapping_algorithm
+                            .unwrap_or_else(|| "hable".to_string()),
+                        tonemapping_desat: encoding_opts
+                            .tonemapping_desat
+                            .unwrap_or(0.0),
+                        tonemapping_peak: encoding_opts.tonemapping_peak.unwrap_or(0.0),
+                        allow_hevc_encoding: encoding_opts
+                            .allow_hevc_encoding
+                            .unwrap_or(false),
+                        allow_av1_encoding: encoding_opts
+                            .allow_av1_encoding
+                            .unwrap_or(false),
+                        h264_crf: encoding_opts.h264_crf.unwrap_or(23),
+                        h265_crf: encoding_opts.h265_crf.unwrap_or(28),
                     };
 
                     // Reinitialise the session's state for the new transcode run.

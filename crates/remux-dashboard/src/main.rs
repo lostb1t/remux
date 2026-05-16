@@ -4276,6 +4276,15 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut encoding_preset = use_signal(|| "fast".to_string());
     let mut hw_accel = use_signal(|| "none".to_string());
     let mut auto_detect = use_signal(|| true);
+    let mut enable_tonemapping = use_signal(|| false);
+    let mut enable_vpp_tonemapping = use_signal(|| false);
+    let mut tonemapping_algorithm = use_signal(|| "hable".to_string());
+    let mut tonemapping_desat = use_signal(|| 0.0_f32);
+    let mut tonemapping_peak = use_signal(|| 0.0_f32);
+    let mut allow_hevc_encoding = use_signal(|| false);
+    let mut allow_av1_encoding = use_signal(|| false);
+    let mut h264_crf = use_signal(|| 23_u32);
+    let mut h265_crf = use_signal(|| 28_u32);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -4304,6 +4313,19 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
                             HardwareAccelerationType::Rkmpp => "rkmpp",
                         };
                     hw_accel.set(accel_str.to_string());
+                    enable_tonemapping.set(opts.enable_tonemapping.unwrap_or(false));
+                    enable_vpp_tonemapping
+                        .set(opts.enable_vpp_tonemapping.unwrap_or(false));
+                    tonemapping_algorithm.set(
+                        opts.tonemapping_algorithm
+                            .unwrap_or_else(|| "hable".to_string()),
+                    );
+                    tonemapping_desat.set(opts.tonemapping_desat.unwrap_or(0.0));
+                    tonemapping_peak.set(opts.tonemapping_peak.unwrap_or(0.0));
+                    allow_hevc_encoding.set(opts.allow_hevc_encoding.unwrap_or(true));
+                    allow_av1_encoding.set(opts.allow_av1_encoding.unwrap_or(false));
+                    h264_crf.set(opts.h264_crf.unwrap_or(23));
+                    h265_crf.set(opts.h265_crf.unwrap_or(28));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
             }
@@ -4330,6 +4352,15 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
             vaapi_device: None,
             vaapi_driver: None,
             auto_detect_hardware_acceleration: Some(*auto_detect.peek()),
+            enable_tonemapping: Some(*enable_tonemapping.peek()),
+            enable_vpp_tonemapping: Some(*enable_vpp_tonemapping.peek()),
+            tonemapping_algorithm: Some(tonemapping_algorithm.peek().clone()),
+            tonemapping_desat: Some(*tonemapping_desat.peek()),
+            tonemapping_peak: Some(*tonemapping_peak.peek()),
+            allow_hevc_encoding: Some(*allow_hevc_encoding.peek()),
+            allow_av1_encoding: Some(*allow_av1_encoding.peek()),
+            h264_crf: Some(*h264_crf.peek()),
+            h265_crf: Some(*h265_crf.peek()),
         };
         saving.set(true);
         error.set(None);
@@ -4408,6 +4439,144 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                 option { value: "slow", "Slow" }
                                 option { value: "slower", "Slower" }
                                 option { value: "veryslow", "Very Slow" }
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", "Codec Gates" }
+                            div { class: "field-hint", "Allow these codecs for hardware/software encoding." }
+                            label { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *allow_hevc_encoding.read(),
+                                    onchange: move |e| allow_hevc_encoding.set(e.checked()),
+                                }
+                                "Allow HEVC (H.265) encoding"
+                            }
+                            label { style: "display:flex;align-items:center;gap:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *allow_av1_encoding.read(),
+                                    onchange: move |e| allow_av1_encoding.set(e.checked()),
+                                }
+                                "Allow AV1 encoding"
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", "Software Encoding Quality (CRF)" }
+                            div { class: "field-hint", "Constant Rate Factor for libx264/libx265. Lower = better quality, larger file. Ignored when using hardware encoding or bitrate-limited streams." }
+                            div { style: "display:flex;gap:16px;flex-wrap:wrap",
+                                div { style: "display:flex;flex-direction:column;gap:4px",
+                                    label { r#for: "h264-crf", style: "font-size:0.85em", "H.264 CRF (0–51, default 23)" }
+                                    input {
+                                        id: "h264-crf",
+                                        r#type: "number",
+                                        class: "text-input",
+                                        style: "width:80px",
+                                        min: "0",
+                                        max: "51",
+                                        value: "{h264_crf}",
+                                        onchange: move |e| {
+                                            if let Ok(v) = e.value().parse::<u32>() {
+                                                h264_crf.set(v.min(51));
+                                            }
+                                        },
+                                    }
+                                }
+                                div { style: "display:flex;flex-direction:column;gap:4px",
+                                    label { r#for: "h265-crf", style: "font-size:0.85em", "H.265 CRF (0–51, default 28)" }
+                                    input {
+                                        id: "h265-crf",
+                                        r#type: "number",
+                                        class: "text-input",
+                                        style: "width:80px",
+                                        min: "0",
+                                        max: "51",
+                                        value: "{h265_crf}",
+                                        onchange: move |e| {
+                                            if let Ok(v) = e.value().parse::<u32>() {
+                                                h265_crf.set(v.min(51));
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", "HDR Tone Mapping" }
+                            div { class: "field-hint", "Convert HDR content to SDR using tone mapping. Without tone mapping, colour metadata is rewritten so clients treat the stream as SDR (may look washed out on some content)." }
+                            label { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *enable_tonemapping.read(),
+                                    onchange: move |e| enable_tonemapping.set(e.checked()),
+                                }
+                                "Software tone mapping (tonemapx, CPU)"
+                            }
+                            label { style: "display:flex;align-items:center;gap:8px;margin-bottom:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *enable_vpp_tonemapping.read(),
+                                    onchange: move |e| enable_vpp_tonemapping.set(e.checked()),
+                                }
+                                "Hardware VPP tone mapping (tonemap_vaapi, Intel VAAPI/QSV)"
+                            }
+                            if *enable_tonemapping.read() && !*enable_vpp_tonemapping.read() {
+                                div { style: "margin-top:4px",
+                                    label { class: "field-label", r#for: "tonemap-algo", style: "font-size:0.85em", "Algorithm" }
+                                    select {
+                                        id: "tonemap-algo",
+                                        class: "select-input",
+                                        style: "margin-top:4px",
+                                        value: "{tonemapping_algorithm}",
+                                        onchange: move |e| tonemapping_algorithm.set(e.value()),
+                                        option { value: "hable", "Hable (Filmic, default)" }
+                                        option { value: "reinhard", "Reinhard" }
+                                        option { value: "mobius", "Mobius" }
+                                        option { value: "bt2390", "BT.2390 (perceptual quantizer)" }
+                                        option { value: "bt2446a", "BT.2446a" }
+                                        option { value: "none", "None (clip)" }
+                                    }
+                                    div { style: "display:flex;gap:16px;flex-wrap:wrap;margin-top:8px",
+                                        div { style: "display:flex;flex-direction:column;gap:4px",
+                                            label { r#for: "tonemap-desat", style: "font-size:0.85em", "Desaturation (0 = disabled)" }
+                                            input {
+                                                id: "tonemap-desat",
+                                                r#type: "number",
+                                                class: "text-input",
+                                                style: "width:80px",
+                                                min: "0",
+                                                max: "1",
+                                                step: "0.1",
+                                                value: "{tonemapping_desat}",
+                                                onchange: move |e| {
+                                                    if let Ok(v) = e.value().parse::<f32>() {
+                                                        tonemapping_desat.set(v);
+                                                    }
+                                                },
+                                            }
+                                        }
+                                        div { style: "display:flex;flex-direction:column;gap:4px",
+                                            label { r#for: "tonemap-peak", style: "font-size:0.85em", "Peak luminance nits (0 = auto)" }
+                                            input {
+                                                id: "tonemap-peak",
+                                                r#type: "number",
+                                                class: "text-input",
+                                                style: "width:90px",
+                                                min: "0",
+                                                step: "100",
+                                                value: "{tonemapping_peak}",
+                                                onchange: move |e| {
+                                                    if let Ok(v) = e.value().parse::<f32>() {
+                                                        tonemapping_peak.set(v);
+                                                    }
+                                                },
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
 

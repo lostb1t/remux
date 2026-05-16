@@ -452,6 +452,33 @@ pub struct EncodingOptions {
     /// detected type to hardware_acceleration_type automatically.
     #[default(Some(true))]
     pub auto_detect_hardware_acceleration: Option<bool>,
+    /// Software HDR→SDR tone mapping via the tonemapx filter (CPU).
+    #[default(Some(false))]
+    pub enable_tonemapping: Option<bool>,
+    /// Hardware HDR→SDR tone mapping via tonemap_vaapi (Intel VAAPI/QSV only).
+    #[default(Some(false))]
+    pub enable_vpp_tonemapping: Option<bool>,
+    /// Algorithm used by tonemapx: hable, reinhard, mobius, bt2390, bt2446a, none.
+    #[default(Some("hable".to_string()))]
+    pub tonemapping_algorithm: Option<String>,
+    /// Desaturation coefficient for tonemapx (0.0 = disabled).
+    #[default(Some(0.0_f32))]
+    pub tonemapping_desat: Option<f32>,
+    /// Peak luminance for tonemapx (nits). 0 = auto.
+    #[default(Some(0.0_f32))]
+    pub tonemapping_peak: Option<f32>,
+    /// Allow HEVC (H.265) hardware/software encoding.
+    #[default(Some(false))]
+    pub allow_hevc_encoding: Option<bool>,
+    /// Allow AV1 hardware/software encoding.
+    #[default(Some(false))]
+    pub allow_av1_encoding: Option<bool>,
+    /// CRF quality level for software H.264 (libx264). Lower = better quality.
+    #[default(Some(23u32))]
+    pub h264_crf: Option<u32>,
+    /// CRF quality level for software H.265 (libx265). Lower = better quality.
+    #[default(Some(28u32))]
+    pub h265_crf: Option<u32>,
 }
 
 // --- Jellyfin import models (used to consume a remote Jellyfin server) ---

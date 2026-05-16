@@ -17,7 +17,6 @@ ENV LOG_FILE=/data/logs/remux.jsonl
 ENV TORRENT_DATA_DIR=/data/torrents
 ENV FFMPEG_PATH=/usr/lib/jellyfin-ffmpeg/ffmpeg
 ENV FFPROBE_PATH=/usr/lib/jellyfin-ffmpeg/ffprobe
-ENV LIBVA_DRIVERS_PATH=/usr/lib/jellyfin-ffmpeg/lib/dri
 ENV PATH="/usr/lib/jellyfin-ffmpeg:${PATH}"
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility

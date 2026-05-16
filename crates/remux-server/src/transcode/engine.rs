@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use remux_sdks::remux::HardwareAccelerationType;
+use remux_sdks::remux::{HardwareAccelerationType, VideoRangeType};
 
 use super::session::{TranscodeSession, TranscodeState};
 
@@ -251,6 +251,27 @@ pub struct TranscodeParams {
     pub vaapi_device: String,
     /// VAAPI driver name (e.g. "iHD" for Intel). Empty string means auto-detect.
     pub vaapi_driver: String,
+    /// HDR type of the source video, used to decide whether tone-mapping or
+    /// SDR colour-space override is needed.
+    pub source_video_range_type: Option<VideoRangeType>,
+    /// Software HDR→SDR tonemapping via tonemapx filter (CPU).
+    pub enable_tonemapping: bool,
+    /// Hardware HDR→SDR tonemapping via tonemap_vaapi (Intel VAAPI/QSV only).
+    pub enable_vpp_tonemapping: bool,
+    /// Algorithm for tonemapx: hable, reinhard, mobius, bt2390, bt2446a, none.
+    pub tonemapping_algorithm: String,
+    /// Desaturation coefficient for tonemapx.
+    pub tonemapping_desat: f32,
+    /// Peak luminance for tonemapx (nits). 0 = auto.
+    pub tonemapping_peak: f32,
+    /// When false, HEVC encoding requests fall back to H.264.
+    pub allow_hevc_encoding: bool,
+    /// When false, AV1 encoding requests fall back to H.264.
+    pub allow_av1_encoding: bool,
+    /// CRF quality for software H.264 (libx264).
+    pub h264_crf: u32,
+    /// CRF quality for software H.265 (libx265).
+    pub h265_crf: u32,
 }
 
 impl Default for TranscodeParams {
@@ -277,6 +298,16 @@ impl Default for TranscodeParams {
             hardware_acceleration_type: HardwareAccelerationType::None,
             vaapi_device: "/dev/dri/renderD128".to_string(),
             vaapi_driver: String::new(),
+            source_video_range_type: None,
+            enable_tonemapping: false,
+            enable_vpp_tonemapping: false,
+            tonemapping_algorithm: "hable".to_string(),
+            tonemapping_desat: 0.0,
+            tonemapping_peak: 0.0,
+            allow_hevc_encoding: false,
+            allow_av1_encoding: false,
+            h264_crf: 23,
+            h265_crf: 28,
         }
     }
 }
@@ -429,16 +460,76 @@ fn build_qsv_scale_filter(max_width: Option<u32>, max_height: Option<u32>) -> St
     }
 }
 
+fn is_hdr(range_type: Option<&VideoRangeType>) -> bool {
+    matches!(
+        range_type,
+        Some(VideoRangeType::Hdr10)
+            | Some(VideoRangeType::Hdr10Plus)
+            | Some(VideoRangeType::Hlg)
+            | Some(VideoRangeType::Dovi)
+            | Some(VideoRangeType::DoviWithHdr10)
+            | Some(VideoRangeType::DoviWithHlg)
+    )
+}
+
+/// QSV device-init args without hardware-decode flags.
+/// Used when the source is HDR: we keep the VAAPI+QSV device setup so the
+/// QSV encoder is available, but decode in software so CPU filters like
+/// `setparams` can run before the encoder.
+fn qsv_init_only_args(vaapi_device: &str, vaapi_driver: &str) -> Vec<String> {
+    let driver = if vaapi_driver.is_empty() {
+        "iHD".to_string()
+    } else {
+        vaapi_driver.to_string()
+    };
+    let driver_opt = if driver.is_empty() {
+        String::new()
+    } else {
+        format!(",driver={driver}")
+    };
+    vec![
+        "-init_hw_device".into(),
+        format!("vaapi=va:{vaapi_device}{driver_opt}"),
+        "-init_hw_device".into(),
+        "qsv=qs@va".into(),
+        "-filter_hw_device".into(),
+        "qs".into(),
+    ]
+}
+
 /// Build the ffmpeg CLI args for an HLS transcode.
 pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     let accel = params.hardware_acceleration_type;
     let is_hw = !matches!(accel, HardwareAccelerationType::None);
+    let hdr = is_hdr(params.source_video_range_type.as_ref());
+
+    // Tone-map decisions (only apply to HDR + transcode, never to copy).
+    let do_vpp_tonemap = hdr
+        && params.enable_vpp_tonemapping
+        && matches!(
+            accel,
+            HardwareAccelerationType::Vaapi | HardwareAccelerationType::Qsv
+        );
+    let do_sw_tonemap = hdr && params.enable_tonemapping && !do_vpp_tonemap;
 
     let ffmpeg_video_codec = {
         let base = match params.video_codec.as_str() {
             "copy" => "copy",
             "h264" | "libx264" => "libx264",
-            "hevc" | "libx265" | "h265" => "libx265",
+            "hevc" | "libx265" | "h265" => {
+                if params.allow_hevc_encoding {
+                    "libx265"
+                } else {
+                    "libx264"
+                }
+            }
+            "av1" | "libsvtav1" | "librav1e" => {
+                if params.allow_av1_encoding {
+                    "libsvtav1"
+                } else {
+                    "libx264"
+                }
+            }
             other => other,
         };
         // Subtitle burn-in requires re-encoding; can't copy video.
@@ -478,12 +569,21 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "1000000".into(),
     ];
 
-    // Hardware acceleration input flags (before -ss and -i)
-    args.extend(hw_input_args(
-        accel,
-        &params.vaapi_device,
-        &params.vaapi_driver,
-    ));
+    // Hardware acceleration input flags (before -ss and -i).
+    // For QSV+HDR without VPP tonemapping: SW-decode so CPU filters can run.
+    // For QSV+HDR with VPP tonemapping: keep VAAPI hw-decode (tonemap_vaapi needs GPU frames).
+    if hdr && matches!(accel, HardwareAccelerationType::Qsv) && !do_vpp_tonemap {
+        args.extend(qsv_init_only_args(
+            &params.vaapi_device,
+            &params.vaapi_driver,
+        ));
+    } else {
+        args.extend(hw_input_args(
+            accel,
+            &params.vaapi_device,
+            &params.vaapi_driver,
+        ));
+    }
 
     // Input seek (fast, before -i)
     if let Some(ticks) = params.start_time_ticks {
@@ -501,7 +601,20 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "2048".into(),
     ]);
 
-    let hw_suffix = hw_filter_suffix(accel);
+    // HW filter suffix appended after scale.
+    // QSV+VPP: tonemap_vaapi in VAAPI memory then hwmap to QSV surface.
+    // QSV+HDR (SW decode, no VPP): just format=nv12 — QSV encoder accepts system-memory NV12.
+    // Otherwise: standard hw_filter_suffix (e.g. format=nv12,hwupload for VAAPI).
+    let hw_suffix = if do_vpp_tonemap && matches!(accel, HardwareAccelerationType::Qsv)
+    {
+        let vpp =
+            "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32";
+        Some(format!("{vpp},hwmap=derive_device=qsv,format=qsv"))
+    } else if hdr && matches!(accel, HardwareAccelerationType::Qsv) && !do_vpp_tonemap {
+        Some("format=nv12".to_string())
+    } else {
+        hw_filter_suffix(accel)
+    };
 
     // Stream mapping
     if params.burn_subtitle {
@@ -555,10 +668,13 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             }
         }
     } else {
+        // QSV uses VAAPI hw scale when: normal (non-HDR) path, or VPP tonemap path
+        // (frames already in VAAPI memory from hw decode). SW tonemap + HDR always
+        // uses CPU scale regardless of hw type.
         let scale_filter = if ffmpeg_video_codec != "copy" {
-            if matches!(accel, HardwareAccelerationType::Qsv) {
-                // QSV pipeline: frames in VAAPI memory — must use scale_vaapi.
-                // Always Some so the hwmap suffix is always combined with it.
+            if matches!(accel, HardwareAccelerationType::Qsv)
+                && (!hdr || do_vpp_tonemap)
+            {
                 Some(build_qsv_scale_filter(params.max_width, params.max_height))
             } else {
                 build_scale_filter(params)
@@ -571,6 +687,58 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             (Some(s), None) => Some(s.clone()),
             (None, Some(suf)) if ffmpeg_video_codec != "copy" => Some(suf.clone()),
             _ => None,
+        };
+        let vf = if hdr && ffmpeg_video_codec != "copy" {
+            if do_vpp_tonemap && matches!(accel, HardwareAccelerationType::Vaapi) {
+                // VAAPI VPP: frames are in VAAPI memory after hwupload; append tonemap_vaapi.
+                let vpp = "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32";
+                let base = vf.unwrap_or_default();
+                Some(if base.is_empty() {
+                    format!("format=nv12,hwupload,{vpp}")
+                } else {
+                    format!("{base},{vpp}")
+                })
+            } else if do_vpp_tonemap {
+                // QSV VPP: tonemap_vaapi already embedded in hw_suffix above.
+                vf
+            } else if do_sw_tonemap {
+                // Software tonemapx: CPU filter, output SDR. Rebuild filter chain
+                // from scale + tonemapx (bypassing hw_suffix which carries hwupload
+                // or format conversions that conflict with tonemapx).
+                let algo = &params.tonemapping_algorithm;
+                let desat = params.tonemapping_desat;
+                let peak = params.tonemapping_peak;
+                let out_fmt = if matches!(
+                    accel,
+                    HardwareAccelerationType::None | HardwareAccelerationType::V4l2m2m
+                ) {
+                    "yuv420p"
+                } else {
+                    "nv12"
+                };
+                let tonemapx = format!(
+                    "tonemapx=tonemap={algo}:desat={desat:.1}:peak={peak:.1}:t=bt709:m=bt709:p=bt709:format={out_fmt}"
+                );
+                let upload = if matches!(accel, HardwareAccelerationType::Vaapi) {
+                    ",hwupload"
+                } else {
+                    ""
+                };
+                Some(match scale_filter.as_deref() {
+                    Some(s) => format!("{s},{tonemapx}{upload}"),
+                    None => format!("{tonemapx}{upload}"),
+                })
+            } else {
+                // No tone mapping: rewrite colour metadata so clients treat output as SDR.
+                let setparams =
+                    "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709";
+                Some(match vf {
+                    Some(f) => format!("{setparams},{f}"),
+                    None => setparams.to_string(),
+                })
+            }
+        } else {
+            vf
         };
         if let Some(ref filter) = vf {
             args.extend(["-vf".into(), filter.clone()]);
@@ -608,14 +776,31 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             "-pix_fmt".into(),
             "yuv420p".into(),
             "-crf".into(),
-            "23".into(),
+            params.h264_crf.to_string(),
             "-preset".into(),
             preset.to_string(),
             "-tune".into(),
             "zerolatency".into(),
         ]);
         // Use client's max bitrate as a ceiling, not a CBR target.
-        // This keeps libx264 memory usage low while honouring the cap.
+        if let Some(bitrate) = params.video_bitrate {
+            args.extend([
+                "-maxrate".into(),
+                bitrate.to_string(),
+                "-bufsize".into(),
+                (bitrate * 2).to_string(),
+            ]);
+        }
+    } else if ffmpeg_video_codec == "libx265" {
+        let preset = params.encoding_preset.as_deref().unwrap_or("fast");
+        args.extend([
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-crf".into(),
+            params.h265_crf.to_string(),
+            "-preset".into(),
+            preset.to_string(),
+        ]);
         if let Some(bitrate) = params.video_bitrate {
             args.extend([
                 "-maxrate".into(),
@@ -917,6 +1102,16 @@ pub struct ProgressiveTranscodeParams {
     pub vaapi_device: String,
     /// VAAPI driver name (e.g. "iHD" for Intel). Empty string means auto-detect.
     pub vaapi_driver: String,
+    pub source_video_range_type: Option<VideoRangeType>,
+    pub enable_tonemapping: bool,
+    pub enable_vpp_tonemapping: bool,
+    pub tonemapping_algorithm: String,
+    pub tonemapping_desat: f32,
+    pub tonemapping_peak: f32,
+    pub allow_hevc_encoding: bool,
+    pub allow_av1_encoding: bool,
+    pub h264_crf: u32,
+    pub h265_crf: u32,
 }
 
 /// Build the ffmpeg CLI args for a progressive transcode piped to stdout.
@@ -925,12 +1120,34 @@ pub(crate) fn build_progressive_args(
 ) -> Vec<String> {
     let accel = params.hardware_acceleration_type;
     let is_hw = !matches!(accel, HardwareAccelerationType::None);
+    let hdr = is_hdr(params.source_video_range_type.as_ref());
+
+    let do_vpp_tonemap = hdr
+        && params.enable_vpp_tonemapping
+        && matches!(
+            accel,
+            HardwareAccelerationType::Vaapi | HardwareAccelerationType::Qsv
+        );
+    let do_sw_tonemap = hdr && params.enable_tonemapping && !do_vpp_tonemap;
 
     let ffmpeg_video_codec = {
         let base = match params.video_codec.as_str() {
             "copy" => "copy",
             "libx264" | "h264" => "libx264",
-            "libx265" | "hevc" => "libx265",
+            "libx265" | "hevc" | "h265" => {
+                if params.allow_hevc_encoding {
+                    "libx265"
+                } else {
+                    "libx264"
+                }
+            }
+            "av1" | "libsvtav1" | "librav1e" => {
+                if params.allow_av1_encoding {
+                    "libsvtav1"
+                } else {
+                    "libx264"
+                }
+            }
             "libvpx-vp9" | "vp9" => "libvpx-vp9",
             other => other,
         };
@@ -988,12 +1205,19 @@ pub(crate) fn build_progressive_args(
         "5".into(),
     ];
 
-    // Hardware acceleration input flags (before -ss and -i)
-    args.extend(hw_input_args(
-        accel,
-        &params.vaapi_device,
-        &params.vaapi_driver,
-    ));
+    // Hardware acceleration input flags (before -ss and -i).
+    if hdr && matches!(accel, HardwareAccelerationType::Qsv) && !do_vpp_tonemap {
+        args.extend(qsv_init_only_args(
+            &params.vaapi_device,
+            &params.vaapi_driver,
+        ));
+    } else {
+        args.extend(hw_input_args(
+            accel,
+            &params.vaapi_device,
+            &params.vaapi_driver,
+        ));
+    }
 
     // Input seek (fast, before -i)
     if let Some(ticks) = params.start_time_ticks {
@@ -1003,11 +1227,20 @@ pub(crate) fn build_progressive_args(
 
     args.extend(["-i".into(), params.input_url.clone()]);
 
-    let hw_suffix = hw_filter_suffix(accel);
+    let hw_suffix = if do_vpp_tonemap && matches!(accel, HardwareAccelerationType::Qsv)
+    {
+        let vpp =
+            "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32";
+        Some(format!("{vpp},hwmap=derive_device=qsv,format=qsv"))
+    } else if hdr && matches!(accel, HardwareAccelerationType::Qsv) && !do_vpp_tonemap {
+        Some("format=nv12".to_string())
+    } else {
+        hw_filter_suffix(accel)
+    };
 
     // Stream mapping
     let scale_filter = if ffmpeg_video_codec != "copy" {
-        if matches!(accel, HardwareAccelerationType::Qsv) {
+        if matches!(accel, HardwareAccelerationType::Qsv) && (!hdr || do_vpp_tonemap) {
             Some(build_qsv_scale_filter(params.max_width, params.max_height))
         } else {
             let tp = TranscodeParams {
@@ -1065,6 +1298,52 @@ pub(crate) fn build_progressive_args(
             (None, Some(suf)) if ffmpeg_video_codec != "copy" => Some(suf.clone()),
             _ => None,
         };
+        let vf = if hdr && ffmpeg_video_codec != "copy" {
+            if do_vpp_tonemap && matches!(accel, HardwareAccelerationType::Vaapi) {
+                let vpp = "tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709:extra_hw_frames=32";
+                let base = vf.unwrap_or_default();
+                Some(if base.is_empty() {
+                    format!("format=nv12,hwupload,{vpp}")
+                } else {
+                    format!("{base},{vpp}")
+                })
+            } else if do_vpp_tonemap {
+                vf
+            } else if do_sw_tonemap {
+                let algo = &params.tonemapping_algorithm;
+                let desat = params.tonemapping_desat;
+                let peak = params.tonemapping_peak;
+                let out_fmt = if matches!(
+                    accel,
+                    HardwareAccelerationType::None | HardwareAccelerationType::V4l2m2m
+                ) {
+                    "yuv420p"
+                } else {
+                    "nv12"
+                };
+                let tonemapx = format!(
+                    "tonemapx=tonemap={algo}:desat={desat:.1}:peak={peak:.1}:t=bt709:m=bt709:p=bt709:format={out_fmt}"
+                );
+                let upload = if matches!(accel, HardwareAccelerationType::Vaapi) {
+                    ",hwupload"
+                } else {
+                    ""
+                };
+                Some(match scale_filter.as_deref() {
+                    Some(s) => format!("{s},{tonemapx}{upload}"),
+                    None => format!("{tonemapx}{upload}"),
+                })
+            } else {
+                let setparams =
+                    "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709";
+                Some(match vf {
+                    Some(f) => format!("{setparams},{f}"),
+                    None => setparams.to_string(),
+                })
+            }
+        } else {
+            vf
+        };
         if let Some(ref filter) = vf {
             args.extend(["-vf".into(), filter.clone()]);
         } else if params.audio_stream_index.is_some()
@@ -1093,20 +1372,49 @@ pub(crate) fn build_progressive_args(
             args.extend(["-tag:v".into(), "hvc1".into()]);
         }
     } else if is_hw {
-        // HW encoders use bitrate control; CRF/preset/profile flags don't apply.
         if let Some(bitrate) = params.video_bitrate {
             args.extend(["-b:v".into(), bitrate.to_string()]);
         }
-    } else {
-        if ffmpeg_video_codec == "libx264" {
-            args.extend(["-pix_fmt".into(), "yuv420p".into()]);
-        }
+    } else if ffmpeg_video_codec == "libx264" {
+        let preset = params.encoding_preset.as_deref().unwrap_or("fast");
+        args.extend([
+            "-profile:v".into(),
+            "high".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-crf".into(),
+            params.h264_crf.to_string(),
+            "-preset".into(),
+            preset.to_string(),
+        ]);
         if let Some(bitrate) = params.video_bitrate {
-            args.extend(["-b:v".into(), bitrate.to_string()]);
-        } else {
-            let preset = params.encoding_preset.as_deref().unwrap_or("fast");
-            args.extend(["-preset".into(), preset.to_string()]);
+            args.extend([
+                "-maxrate".into(),
+                bitrate.to_string(),
+                "-bufsize".into(),
+                (bitrate * 2).to_string(),
+            ]);
         }
+    } else if ffmpeg_video_codec == "libx265" {
+        let preset = params.encoding_preset.as_deref().unwrap_or("fast");
+        args.extend([
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-crf".into(),
+            params.h265_crf.to_string(),
+            "-preset".into(),
+            preset.to_string(),
+        ]);
+        if let Some(bitrate) = params.video_bitrate {
+            args.extend([
+                "-maxrate".into(),
+                bitrate.to_string(),
+                "-bufsize".into(),
+                (bitrate * 2).to_string(),
+            ]);
+        }
+    } else if let Some(bitrate) = params.video_bitrate {
+        args.extend(["-b:v".into(), bitrate.to_string()]);
     }
 
     // Audio
@@ -1589,6 +1897,16 @@ mod tests {
             hardware_acceleration_type: HardwareAccelerationType::None,
             vaapi_device: "/dev/dri/renderD128".into(),
             vaapi_driver: String::new(),
+            source_video_range_type: None,
+            enable_tonemapping: false,
+            enable_vpp_tonemapping: false,
+            tonemapping_algorithm: "hable".into(),
+            tonemapping_desat: 0.0,
+            tonemapping_peak: 0.0,
+            allow_hevc_encoding: false,
+            allow_av1_encoding: false,
+            h264_crf: 23,
+            h265_crf: 28,
         }
     }
 
