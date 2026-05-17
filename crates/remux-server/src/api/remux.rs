@@ -301,6 +301,24 @@ pub struct StreamsResponse {
     pub streams: Vec<StreamMetadataDto>,
 }
 
+fn source_to_dto(s: &db::Media) -> StreamMetadataDto {
+    // Title in the DB carries the merged "name\ndescription" string —
+    // split it back so legacy clients that only render `Name` still
+    // see something useful and ones that consume both get the pair.
+    let (name, description) = match s.title.split_once('\n') {
+        Some((n, d)) => (Some(n.trim().to_string()), Some(d.trim().to_string())),
+        None if !s.title.is_empty() => (Some(s.title.clone()), None),
+        _ => (None, None),
+    };
+    StreamMetadataDto {
+        id: s.id,
+        name,
+        description,
+        index: s.idx.unwrap_or(0),
+        size: s.probe_data.as_ref().and_then(|p| p.size),
+    }
+}
+
 /// Source-level metadata (binge group, name, description) for an item.
 /// Returns stream metadata from `/gelato/streams/{id}` so the
 /// client can match versions across episodes without re-issuing playback info.
@@ -326,30 +344,93 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
     let mut sources = parent.streams(&state.ctx.db).await.unwrap_or_default();
     sources.sort_by_key(|s| s.idx.unwrap_or(0));
 
-    let streams = sources
-        .into_iter()
-        .map(|s| {
-            // Title in the DB carries the merged "name\ndescription" string —
-            // split it back so legacy clients that only render `Name` still
-            // see something useful and ones that consume both get the pair.
-            let (name, description) = match s.title.split_once('\n') {
-                Some((n, d)) => {
-                    (Some(n.trim().to_string()), Some(d.trim().to_string()))
-                }
-                None if !s.title.is_empty() => (Some(s.title.clone()), None),
-                _ => (None, None),
-            };
-            StreamMetadataDto {
-                id: s.id,
-                name,
-                description,
-                index: s.idx.unwrap_or(0),
-                size: s.probe_data.as_ref().and_then(|p| p.size),
-            }
-        })
-        .collect();
+    let groups = db::StreamGroup::list(&state.ctx.db)
+        .await
+        .unwrap_or_default();
+    let enabled_groups: Vec<&db::StreamGroup> =
+        groups.iter().filter(|g| g.enabled).collect();
 
-    Ok(StreamsResponse { streams })
+    if enabled_groups.is_empty() {
+        let streams = sources.iter().map(source_to_dto).collect();
+        return Ok(StreamsResponse { streams });
+    }
+
+    let config = db::Settings::get_config(&state.ctx.db)
+        .await
+        .unwrap_or_default();
+    let show_ungrouped = config.stream_groups_show_ungrouped.unwrap_or(true);
+
+    let mut result: Vec<StreamMetadataDto> = vec![];
+    let mut matched_ids: HashSet<Uuid> = HashSet::new();
+
+    for group in &enabled_groups {
+        let matching: Vec<&db::Media> = sources
+            .iter()
+            .filter(|s| {
+                s.stream_info
+                    .as_ref()
+                    .map_or(false, |info| group.matches(info))
+            })
+            .collect();
+
+        if matching.is_empty() {
+            continue;
+        }
+
+        for s in &matching {
+            matched_ids.insert(s.id);
+        }
+
+        let best = matching[0];
+        let description = {
+            use remux_sdks::remux::StreamRule;
+            let parts: Vec<String> = group
+                .filter
+                .rules
+                .iter()
+                .map(|r| match r {
+                    StreamRule::Resolution { values, .. } => values
+                        .iter()
+                        .map(|v| v.label())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    StreamRule::Source { values, .. } => values
+                        .iter()
+                        .map(|v| v.label())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    StreamRule::Codec { values, .. } => values
+                        .iter()
+                        .map(|v| v.label())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                })
+                .filter(|s| !s.is_empty())
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(" · "))
+            }
+        };
+        result.push(StreamMetadataDto {
+            id: best.id,
+            name: Some(group.display_name()),
+            description,
+            index: result.len() as i64,
+            size: best.probe_data.as_ref().and_then(|p| p.size),
+        });
+    }
+
+    if show_ungrouped {
+        for s in &sources {
+            if !matched_ids.contains(&s.id) {
+                result.push(source_to_dto(s));
+            }
+        }
+    }
+
+    Ok(StreamsResponse { streams: result })
 }
 
 #[get("/remux/streams/{id}")]

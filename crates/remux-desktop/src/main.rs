@@ -8,7 +8,7 @@ use tray_icon::{
 #[cfg(dashboard_built)]
 include!(concat!(env!("OUT_DIR"), "/dashboard_embed.rs"));
 
-#[cfg(jellyfin_web_built)]
+#[cfg(all(dashboard_built, jellyfin_web_built))]
 include!(concat!(env!("OUT_DIR"), "/jellyfin_web_embed.rs"));
 
 fn data_dir() -> PathBuf {

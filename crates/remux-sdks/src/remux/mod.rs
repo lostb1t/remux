@@ -416,6 +416,9 @@ pub struct ServerConfiguration {
     /// Maximum number of alternative streams to try before giving up (default: 3).
     #[default(Some(3_i64))]
     pub max_probe_fallback_streams: Option<i64>,
+    /// Show streams that don't match any group individually (default true).
+    #[default(Some(true))]
+    pub stream_groups_show_ungrouped: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4737,5 +4740,302 @@ impl Endpoint for UpdateAddonCatalogs {
     }
     fn body(&self) -> Body {
         Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+// ── Stream Groups ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamResolution {
+    #[serde(rename = "2160p")]
+    R2160p,
+    #[serde(rename = "1080p")]
+    R1080p,
+    #[serde(rename = "720p")]
+    R720p,
+    #[serde(rename = "480p")]
+    R480p,
+    #[serde(rename = "360p")]
+    R360p,
+    Unknown,
+}
+
+impl StreamResolution {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::R2160p => "2160p",
+            Self::R1080p => "1080p",
+            Self::R720p => "720p",
+            Self::R480p => "480p",
+            Self::R360p => "360p",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    pub fn from_hunch(s: &str) -> Option<Self> {
+        match s {
+            "2160p" => Some(Self::R2160p),
+            "1080p" => Some(Self::R1080p),
+            "720p" => Some(Self::R720p),
+            "480p" => Some(Self::R480p),
+            "360p" => Some(Self::R360p),
+            _ => None,
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[
+            Self::R2160p,
+            Self::R1080p,
+            Self::R720p,
+            Self::R480p,
+            Self::R360p,
+            Self::Unknown,
+        ]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamSource {
+    BluRayRemux,
+    BluRay,
+    WebDl,
+    WebRip,
+    Hdtv,
+    Dvd,
+    Tv,
+    Unknown,
+}
+
+impl StreamSource {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::BluRayRemux => "Blu-ray Remux",
+            Self::BluRay => "Blu-ray",
+            Self::WebDl => "WEB-DL",
+            Self::WebRip => "WEBRip",
+            Self::Hdtv => "HDTV",
+            Self::Dvd => "DVD",
+            Self::Tv => "TV",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[
+            Self::BluRayRemux,
+            Self::BluRay,
+            Self::WebDl,
+            Self::WebRip,
+            Self::Hdtv,
+            Self::Dvd,
+            Self::Tv,
+            Self::Unknown,
+        ]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamCodec {
+    H264,
+    H265,
+    Vp9,
+    Vc1,
+    Mpeg2,
+    Unknown,
+}
+
+impl StreamCodec {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::H264 => "H.264",
+            Self::H265 => "H.265",
+            Self::Vp9 => "VP9",
+            Self::Vc1 => "VC-1",
+            Self::Mpeg2 => "MPEG-2",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    pub fn from_hunch(s: &str) -> Option<Self> {
+        match s {
+            "H.264" => Some(Self::H264),
+            "H.265" => Some(Self::H265),
+            "VP9" => Some(Self::Vp9),
+            "VC-1" => Some(Self::Vc1),
+            "MPEG-2" => Some(Self::Mpeg2),
+            _ => None,
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[
+            Self::H264,
+            Self::H265,
+            Self::Vp9,
+            Self::Vc1,
+            Self::Mpeg2,
+            Self::Unknown,
+        ]
+    }
+}
+
+/// One condition in a stream group filter. Mirrors `FilterRule` but for stream attributes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "field", rename_all = "snake_case")]
+pub enum StreamRule {
+    Resolution {
+        op: SetOp,
+        values: Vec<StreamResolution>,
+    },
+    Source {
+        op: SetOp,
+        values: Vec<StreamSource>,
+    },
+    Codec {
+        op: SetOp,
+        values: Vec<StreamCodec>,
+    },
+}
+
+/// Filter stored on a StreamGroup; analogous to CollectionFilter but evaluated
+/// against hunch-parsed stream filenames rather than SQL fields.
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct StreamFilter {
+    #[serde(default)]
+    pub match_mode: FilterMatchMode,
+    #[serde(default)]
+    pub rules: Vec<StreamRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamGroupDto {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub filter: StreamFilter,
+    pub priority: i64,
+    pub enabled: bool,
+    #[serde(default)]
+    pub hidden: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateStreamGroupRequest {
+    pub name: String,
+    #[serde(default)]
+    pub filter: StreamFilter,
+    #[serde(default)]
+    pub priority: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStreamGroupRequest {
+    pub name: String,
+    #[serde(default)]
+    pub filter: StreamFilter,
+    pub priority: i64,
+    pub enabled: bool,
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ListStreamGroups;
+
+impl Endpoint for ListStreamGroups {
+    type Output = Vec<StreamGroupDto>;
+    fn path(&self) -> String {
+        "/remux/stream-groups".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateStreamGroup {
+    pub payload: CreateStreamGroupRequest,
+}
+
+impl Endpoint for CreateStreamGroup {
+    type Output = StreamGroupDto;
+    fn path(&self) -> String {
+        "/remux/stream-groups".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateStreamGroup {
+    pub id: Uuid,
+    pub payload: UpdateStreamGroupRequest,
+}
+
+impl Endpoint for UpdateStreamGroup {
+    type Output = StreamGroupDto;
+    fn path(&self) -> String {
+        format!("/remux/stream-groups/{}", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::PUT
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.payload).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteStreamGroup {
+    pub id: Uuid,
+}
+
+impl Endpoint for DeleteStreamGroup {
+    type Output = ();
+    fn path(&self) -> String {
+        format!("/remux/stream-groups/{}", self.id)
+    }
+    fn method(&self) -> Method {
+        Method::DELETE
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamGroupPreviewGroupDto {
+    pub name: String,
+    pub hidden: bool,
+    pub streams: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamGroupPreviewDto {
+    pub groups: Vec<StreamGroupPreviewGroupDto>,
+    pub ungrouped: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetStreamGroupPreview {
+    pub imdb_id: String,
+}
+
+impl Endpoint for GetStreamGroupPreview {
+    type Output = StreamGroupPreviewDto;
+    fn path(&self) -> String {
+        "/remux/stream-groups/preview".into()
+    }
+    fn query(&self) -> Vec<(String, String)> {
+        vec![("imdb_id".into(), self.imdb_id.clone())]
     }
 }

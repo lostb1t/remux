@@ -252,6 +252,8 @@ pub async fn init_app(
         std::time::Duration::from_secs(60 * 30),
     );
 
+    db::StreamGroup::migrate_from_settings(&conn).await;
+
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
 
     task_service.run_startup_tasks().await?;

@@ -5,23 +5,27 @@ use remux_sdks::remux::{
     AddonOptionType, AddonPresetRef, AdminSetPassword, AuthenticateUserByName,
     AuthenticationInfo, BaseItemDto, BrandingOptions, BulkChannelRequest, BulkChannels,
     ChannelEditorItem, CollectionFilter, CountryInfo, CreateAddon, CreateAddonRequest,
-    CreateApiKey, CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteAddon, DeleteApiKey, DeleteEpgSource, DeleteTunerHost, DeleteUser,
+    CreateApiKey, CreateStreamGroup, CreateStreamGroupRequest, CreateUser,
+    CreateVirtualFolder, CreateVirtualFolderPayload, DeleteAddon, DeleteApiKey,
+    DeleteEpgSource, DeleteStreamGroup, DeleteTunerHost, DeleteUser,
     DeleteVirtualFolder, EncodingOptions, EpgSourceInfo, FilterMatchMode, FilterRule,
     GetAddonCatalogs, GetApiKeys, GetBrandingConfiguration,
     GetCertificationSuggestions, GetCountries, GetEncodingConfiguration, GetEpgSources,
     GetIptvChannels, GetItemCounts, GetItems, GetLocalSuggestions, GetParentalRatings,
-    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetSystemConfiguration,
-    GetTagSuggestions, GetTunerHosts, GetUsers, HardwareAccelerationType, ItemCounts,
-    JellyfinAuth, ListAddonKinds, ListAddons, NumericOp, ParentalRating, PatchChannel,
-    PatchChannelRequest, PatchItem, PatchItemPayload, PostStartupComplete,
-    PostStartupConfiguration, PostStartupUser, PublicSystemInfo, SaveEpgSource,
-    ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
-    StartupConfiguration, StartupUser, StopTask, TaskInfo, TaskTriggerInfo,
+    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetStreamGroupPreview,
+    GetSystemConfiguration, GetTagSuggestions, GetTunerHosts, GetUsers,
+    HardwareAccelerationType, ItemCounts, JellyfinAuth, ListAddonKinds, ListAddons,
+    ListStreamGroups, NumericOp, ParentalRating, PatchChannel, PatchChannelRequest,
+    PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
+    PostStartupUser, PublicSystemInfo, SaveEpgSource, ServerConfiguration,
+    SessionInfoDto, SetOp, SourceUrl, StartTask, StartupConfiguration, StartupUser,
+    StopTask, StreamCodec, StreamFilter, StreamGroupDto, StreamGroupPreviewDto,
+    StreamResolution, StreamRule, StreamSource, TaskInfo, TaskTriggerInfo,
     TaskTriggerInfoType, TunerHostInfo, UpdateAddon, UpdateAddonCatalogRequest,
     UpdateAddonCatalogs, UpdateAddonRequest, UpdateBrandingConfiguration,
-    UpdateEncodingConfiguration, UpdateSystemConfiguration, UpdateTaskTriggers,
-    UpdateUser, UpdateUserPolicy, UserDto, Username,
+    UpdateEncodingConfiguration, UpdateStreamGroup, UpdateStreamGroupRequest,
+    UpdateSystemConfiguration, UpdateTaskTriggers, UpdateUser, UpdateUserPolicy,
+    UserDto, Username,
 };
 use remux_sdks::stremio::ResourceType;
 use remux_sdks::{ClientError, RestClient};
@@ -1067,6 +1071,8 @@ enum Route {
     ApiKeysRoute,
     #[route("/addons")]
     AddonsRoute,
+    #[route("/streams")]
+    StreamsRoute,
     #[route("/settings")]
     SettingsRoute,
     #[route("/branding")]
@@ -1110,6 +1116,7 @@ fn DashboardLayout() -> Element {
         Route::UsersRoute => "Users",
         Route::ApiKeysRoute => "API Keys",
         Route::AddonsRoute => "Addons",
+        Route::StreamsRoute => "Streams",
         Route::SettingsRoute => "Settings",
         Route::BrandingRoute => "Branding",
         Route::NotFound { .. } => "",
@@ -1174,6 +1181,11 @@ fn DashboardLayout() -> Element {
                         label: "Addons",
                         active: route == Route::AddonsRoute,
                         on_click: move |_| { navigator().push(Route::AddonsRoute); sidebar_open.set(false); },
+                    }
+                    NavItem {
+                        label: "Streams",
+                        active: route == Route::StreamsRoute,
+                        on_click: move |_| { navigator().push(Route::StreamsRoute); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Settings",
@@ -1294,6 +1306,12 @@ fn SettingsRoute() -> Element {
 fn BrandingRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { BrandingPage { app_state } }
+}
+
+#[component]
+fn StreamsRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { StreamsPage { app_state } }
 }
 
 #[component]
@@ -1543,7 +1561,6 @@ fn CollectionForm(
     let mut pending_image_bytes: Signal<Option<Vec<u8>>> = use_signal(|| None);
     let mut pending_image_preview: Signal<Option<String>> = use_signal(|| None);
     let mut has_image = use_signal(|| existing_image_tag.is_some());
-    let server_base_upload = app_state.server.manual_address.clone();
     let client_for_delete = app_state.client.clone();
 
     let on_submit = move |e: Event<FormData>| {
@@ -3959,7 +3976,6 @@ fn SettingsPage(app_state: AppState) -> Element {
     rsx! {
         ServerSettingsCard { app_state: app_state.clone() }
         PlaybackSettingsCard { app_state: app_state.clone() }
-        ProbeSettingsCard { app_state: app_state.clone() }
         SearchSettingsCard { app_state: app_state.clone() }
         JellyfinImportCard { app_state }
     }
@@ -3972,9 +3988,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut metadata_country = use_signal(|| "US".to_string());
     let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
-    let mut p2p_enabled = use_signal(|| true);
-    let mut p2p_upload_speed = use_signal(|| 0_i64);
-    let mut p2p_download_speed = use_signal(|| 0_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
@@ -3997,9 +4010,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             .unwrap_or_else(|| "US".to_string()),
                     );
                     catalog_max_items.set(cfg.catalog_max_items.unwrap_or(100));
-                    p2p_enabled.set(cfg.p2p_enabled.unwrap_or(true));
-                    p2p_upload_speed.set(cfg.p2p_upload_speed_kbps.unwrap_or(0));
-                    p2p_download_speed.set(cfg.p2p_download_speed_kbps.unwrap_or(0));
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
@@ -4027,9 +4037,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         let name = server_name.peek().clone();
         let country = metadata_country.peek().clone();
         let max = *catalog_max_items.peek();
-        let p2p_on = *p2p_enabled.peek();
-        let upload = *p2p_upload_speed.peek();
-        let download = *p2p_download_speed.peek();
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages.peek().clone();
@@ -4040,9 +4047,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.metadata_country_code = Some(country);
         cfg.quick_connect_available = Some(qc_enabled);
         cfg.catalog_max_items = Some(max);
-        cfg.p2p_enabled = Some(p2p_on);
-        cfg.p2p_upload_speed_kbps = Some(upload);
-        cfg.p2p_download_speed_kbps = Some(download);
         cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
         cfg.subtitle_languages = Some(
@@ -4125,60 +4129,6 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                             p { class: "field-hint",
                                 "Maximum number of items imported per collection."
-                            }
-                        }
-
-                        div { class: "field",
-                            label { class: "field-label",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *p2p_enabled.read(),
-                                    oninput: move |e| p2p_enabled.set(e.checked()),
-                                }
-                                " Enable P2P Streams"
-                            }
-                            p { class: "field-hint",
-                                "Allow torrent/magnet streams from AIO sources."
-                            }
-                        }
-
-                        if *p2p_enabled.read() {
-                            div { class: "field",
-                                label { class: "field-label", r#for: "s-p2p-up", "Upload Speed Limit (KB/s)" }
-                                input {
-                                    id: "s-p2p-up",
-                                    r#type: "number",
-                                    class: "field-input",
-                                    min: "0",
-                                    value: "{p2p_upload_speed}",
-                                    oninput: move |e| {
-                                        if let Ok(n) = e.value().parse::<i64>() {
-                                            p2p_upload_speed.set(n);
-                                        }
-                                    },
-                                }
-                                p { class: "field-hint",
-                                    "0 = no uploading (seeding disabled). Set a positive value to allow uploading."
-                                }
-                            }
-
-                            div { class: "field",
-                                label { class: "field-label", r#for: "s-p2p-down", "Download Speed Limit (KB/s)" }
-                                input {
-                                    id: "s-p2p-down",
-                                    r#type: "number",
-                                    class: "field-input",
-                                    min: "0",
-                                    value: "{p2p_download_speed}",
-                                    oninput: move |e| {
-                                        if let Ok(n) = e.value().parse::<i64>() {
-                                            p2p_download_speed.set(n);
-                                        }
-                                    },
-                                }
-                                p { class: "field-hint",
-                                    "0 = unlimited."
-                                }
                             }
                         }
 
@@ -5498,6 +5448,875 @@ fn Wizard(on_complete: EventHandler) -> Element {
                             }
                         },
                     }}
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn P2pSettingsCard(app_state: AppState) -> Element {
+    let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
+    let mut p2p_enabled = use_signal(|| true);
+    let mut p2p_upload_speed = use_signal(|| 0_i64);
+    let mut p2p_download_speed = use_signal(|| 0_i64);
+    let mut loading = use_signal(|| true);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| Option::<String>::None);
+    let mut saved = use_signal(|| false);
+
+    let app_state_load = app_state.clone();
+    use_effect(move || {
+        let client = app_state_load.client.clone();
+        spawn(async move {
+            match client.execute(GetSystemConfiguration).await {
+                Ok(cfg) => {
+                    p2p_enabled.set(cfg.p2p_enabled.unwrap_or(true));
+                    p2p_upload_speed.set(cfg.p2p_upload_speed_kbps.unwrap_or(0));
+                    p2p_download_speed.set(cfg.p2p_download_speed_kbps.unwrap_or(0));
+                    base_cfg.set(Some(cfg));
+                }
+                Err(e) => error.set(Some(format!("Failed to load: {e}"))),
+            }
+            loading.set(false);
+        });
+    });
+
+    let on_submit = move |e: Event<FormData>| {
+        e.prevent_default();
+        let client = app_state.client.clone();
+        let Some(cfg) = base_cfg.peek().clone() else {
+            return;
+        };
+        let updated = ServerConfiguration {
+            p2p_enabled: Some(*p2p_enabled.peek()),
+            p2p_upload_speed_kbps: Some(*p2p_upload_speed.peek()),
+            p2p_download_speed_kbps: Some(*p2p_download_speed.peek()),
+            ..cfg
+        };
+        saving.set(true);
+        error.set(None);
+        saved.set(false);
+        spawn(async move {
+            match client
+                .execute(UpdateSystemConfiguration { config: updated })
+                .await
+            {
+                Ok(_) => saved.set(true),
+                Err(e) => error.set(Some(e.user_message())),
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "P2P / Torrent Streams" }
+            }
+            div { class: "card-body",
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else {
+                    form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
+                        div { class: "field",
+                            label { class: "field-label",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *p2p_enabled.read(),
+                                    oninput: move |e| p2p_enabled.set(e.checked()),
+                                }
+                                " Enable P2P Streams"
+                            }
+                            p { class: "field-hint", "Allow torrent/magnet streams from AIO sources." }
+                        }
+
+                        if *p2p_enabled.read() {
+                            div { class: "field",
+                                label { class: "field-label", r#for: "p2p-up", "Upload Speed Limit (KB/s)" }
+                                input {
+                                    id: "p2p-up",
+                                    r#type: "number",
+                                    class: "field-input",
+                                    min: "0",
+                                    value: "{p2p_upload_speed}",
+                                    oninput: move |e| {
+                                        if let Ok(n) = e.value().parse::<i64>() { p2p_upload_speed.set(n); }
+                                    },
+                                }
+                                p { class: "field-hint", "0 = no uploading (seeding disabled)." }
+                            }
+
+                            div { class: "field",
+                                label { class: "field-label", r#for: "p2p-down", "Download Speed Limit (KB/s)" }
+                                input {
+                                    id: "p2p-down",
+                                    r#type: "number",
+                                    class: "field-input",
+                                    min: "0",
+                                    value: "{p2p_download_speed}",
+                                    oninput: move |e| {
+                                        if let Ok(n) = e.value().parse::<i64>() { p2p_download_speed.set(n); }
+                                    },
+                                }
+                                p { class: "field-hint", "0 = unlimited." }
+                            }
+                        }
+
+                        if let Some(err) = error.read().as_ref() {
+                            div { class: "alert-error", "{err}" }
+                        }
+                        if *saved.read() {
+                            div { class: "alert-success", "Settings saved." }
+                        }
+                        div { class: "form-actions",
+                            button {
+                                r#type: "submit",
+                                class: "btn btn-primary",
+                                disabled: *saving.read(),
+                                if *saving.read() { "Saving…" } else { "Save Settings" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn StreamsPage(app_state: AppState) -> Element {
+    rsx! {
+        ProbeSettingsCard { app_state: app_state.clone() }
+        P2pSettingsCard { app_state: app_state.clone() }
+        StreamGroupsCard { app_state }
+    }
+}
+
+#[component]
+fn StreamRuleRow(
+    idx: usize,
+    rule: StreamRule,
+    rules: Signal<Vec<StreamRule>>,
+) -> Element {
+    let field_val = match &rule {
+        StreamRule::Resolution { .. } => "resolution",
+        StreamRule::Source { .. } => "source",
+        StreamRule::Codec { .. } => "codec",
+    };
+    let op_not_in = match &rule {
+        StreamRule::Resolution { op, .. }
+        | StreamRule::Source { op, .. }
+        | StreamRule::Codec { op, .. } => matches!(op, SetOp::NotIn),
+    };
+
+    rsx! {
+        div { style: "display:flex;align-items:flex-start;gap:6px",
+            // Field selector
+            select {
+                class: "select-input",
+                style: "flex:1.2",
+                value: "{field_val}",
+                onchange: move |e| {
+                    if let Some(r) = rules.write().get_mut(idx) {
+                        *r = match e.value().as_str() {
+                            "source" => StreamRule::Source { op: SetOp::In, values: vec![] },
+                            "codec"  => StreamRule::Codec  { op: SetOp::In, values: vec![] },
+                            _        => StreamRule::Resolution { op: SetOp::In, values: vec![] },
+                        };
+                    }
+                },
+                option { value: "resolution", selected: field_val == "resolution", "Resolution" }
+                option { value: "source",     selected: field_val == "source",     "Source" }
+                option { value: "codec",      selected: field_val == "codec",      "Codec" }
+            }
+            // Operator selector
+            select {
+                class: "select-input",
+                style: "flex:1",
+                onchange: move |e| {
+                    let new_op = if e.value() == "not_in" { SetOp::NotIn } else { SetOp::In };
+                    if let Some(r) = rules.write().get_mut(idx) {
+                        *r = match r.clone() {
+                            StreamRule::Resolution { values, .. } => StreamRule::Resolution { op: new_op, values },
+                            StreamRule::Source { values, .. }     => StreamRule::Source { op: new_op, values },
+                            StreamRule::Codec { values, .. }      => StreamRule::Codec  { op: new_op, values },
+                        };
+                    }
+                },
+                option { value: "in",     selected: !op_not_in, "In" }
+                option { value: "not_in", selected:  op_not_in, "Not in" }
+            }
+            // Value checkboxes
+            div { style: "flex:2;display:flex;flex-wrap:wrap;gap:6px;padding-top:2px",
+                if field_val == "resolution" {
+                    for res in StreamResolution::all() {
+                        {
+                            let res = res.clone();
+                            let checked = match &rule { StreamRule::Resolution { values, .. } => values.contains(&res), _ => false };
+                            rsx! {
+                                label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked,
+                                        onchange: move |e| {
+                                            if let Some(StreamRule::Resolution { values, .. }) = rules.write().get_mut(idx) {
+                                                if e.checked() { if !values.contains(&res) { values.push(res.clone()); } }
+                                                else { values.retain(|r| r != &res); }
+                                            }
+                                        },
+                                    }
+                                    "{res.label()}"
+                                }
+                            }
+                        }
+                    }
+                } else if field_val == "source" {
+                    for src in StreamSource::all() {
+                        {
+                            let src = src.clone();
+                            let checked = match &rule { StreamRule::Source { values, .. } => values.contains(&src), _ => false };
+                            rsx! {
+                                label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked,
+                                        onchange: move |e| {
+                                            if let Some(StreamRule::Source { values, .. }) = rules.write().get_mut(idx) {
+                                                if e.checked() { if !values.contains(&src) { values.push(src.clone()); } }
+                                                else { values.retain(|s| s != &src); }
+                                            }
+                                        },
+                                    }
+                                    "{src.label()}"
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    for codec in StreamCodec::all() {
+                        {
+                            let codec = codec.clone();
+                            let checked = match &rule { StreamRule::Codec { values, .. } => values.contains(&codec), _ => false };
+                            rsx! {
+                                label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked,
+                                        onchange: move |e| {
+                                            if let Some(StreamRule::Codec { values, .. }) = rules.write().get_mut(idx) {
+                                                if e.checked() { if !values.contains(&codec) { values.push(codec.clone()); } }
+                                                else { values.retain(|c| c != &codec); }
+                                            }
+                                        },
+                                    }
+                                    "{codec.label()}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Remove button
+            button {
+                r#type: "button",
+                class: "btn btn-ghost",
+                style: "padding:4px 8px;color:var(--text-muted)",
+                onclick: move |_| {
+                    let mut r = rules.write();
+                    if idx < r.len() { r.remove(idx); }
+                },
+                "✕"
+            }
+        }
+    }
+}
+
+#[component]
+fn StreamFilterEditor(
+    match_mode: Signal<FilterMatchMode>,
+    rules: Signal<Vec<StreamRule>>,
+) -> Element {
+    let rule_count = rules.read().len();
+    rsx! {
+        div {
+            if rule_count > 1 {
+                div { style: "display:flex;align-items:center;gap:6px;margin-bottom:10px",
+                    span { style: "font-size:.78rem;color:var(--text-muted)", "Match:" }
+                    button {
+                        style: "font-size:.72rem;height:26px;padding:0 10px",
+                        class: if *match_mode.read() == FilterMatchMode::All { "btn btn-primary" } else { "btn btn-ghost" },
+                        onclick: move |_| match_mode.set(FilterMatchMode::All),
+                        "All (AND)"
+                    }
+                    button {
+                        style: "font-size:.72rem;height:26px;padding:0 10px",
+                        class: if *match_mode.read() == FilterMatchMode::Any { "btn btn-primary" } else { "btn btn-ghost" },
+                        onclick: move |_| match_mode.set(FilterMatchMode::Any),
+                        "Any (OR)"
+                    }
+                }
+            }
+            for (idx, rule) in rules.read().iter().enumerate() {
+                StreamRuleRow { key: "{idx}", idx, rule: rule.clone(), rules }
+            }
+            button {
+                class: "btn btn-ghost",
+                style: "margin-top:6px;font-size:.75rem;height:28px",
+                onclick: move |_| {
+                    rules.write().push(StreamRule::Resolution { op: SetOp::In, values: vec![] });
+                },
+                "+ Add rule"
+            }
+        }
+    }
+}
+
+#[component]
+fn StreamGroupsCard(app_state: AppState) -> Element {
+    let mut groups: Signal<Vec<StreamGroupDto>> = use_signal(Vec::new);
+    let mut show_ungrouped = use_signal(|| true);
+    let mut base_cfg: Signal<Option<ServerConfiguration>> = use_signal(|| None);
+    let mut loading = use_signal(|| true);
+    let mut error: Signal<Option<String>> = use_signal(|| None);
+    let mut refresh = use_signal(|| 0_u32);
+
+    // Create modal state
+    let mut show_create = use_signal(|| false);
+    let mut create_name = use_signal(String::new);
+    let mut create_match: Signal<FilterMatchMode> = use_signal(|| FilterMatchMode::All);
+    let mut create_rules: Signal<Vec<StreamRule>> = use_signal(Vec::new);
+    let mut create_priority = use_signal(|| 0_i64);
+    let mut creating = use_signal(|| false);
+
+    // Edit modal state
+    let mut id_to_edit: Signal<Option<Uuid>> = use_signal(|| None);
+    let mut edit_name = use_signal(String::new);
+    let mut edit_match: Signal<FilterMatchMode> = use_signal(|| FilterMatchMode::All);
+    let mut edit_rules: Signal<Vec<StreamRule>> = use_signal(Vec::new);
+    let mut edit_priority = use_signal(|| 0_i64);
+    let mut edit_enabled = use_signal(|| true);
+    let mut edit_hidden = use_signal(|| false);
+    let mut editing = use_signal(|| false);
+
+    // Delete modal state
+    let mut id_to_delete: Signal<Option<Uuid>> = use_signal(|| None);
+    let mut deleting = use_signal(|| false);
+
+    let mut saving_setting = use_signal(|| false);
+
+    // Preview state
+    let mut preview_imdb = use_signal(|| "tt0133093".to_string());
+    let mut preview_data: Signal<Option<StreamGroupPreviewDto>> = use_signal(|| None);
+    let mut preview_loading = use_signal(|| false);
+    let mut preview_error: Signal<Option<String>> = use_signal(|| None);
+
+    let app_state_preview = app_state.clone();
+    use_effect(move || {
+        let imdb = preview_imdb.read().clone();
+        let _r = *refresh.read();
+        if imdb.is_empty() {
+            return;
+        }
+        preview_loading.set(true);
+        preview_data.set(None);
+        preview_error.set(None);
+        let client = app_state_preview.client.clone();
+        spawn(async move {
+            match client
+                .execute(GetStreamGroupPreview { imdb_id: imdb })
+                .await
+            {
+                Ok(data) => {
+                    preview_data.set(Some(data));
+                }
+                Err(e) => {
+                    preview_error.set(Some(format!("{e}")));
+                }
+            }
+            preview_loading.set(false);
+        });
+    });
+
+    let app_state_effect = app_state.clone();
+    use_effect(move || {
+        let _r = *refresh.read();
+        loading.set(true);
+        let client = app_state_effect.client.clone();
+        spawn(async move {
+            let groups_res = client.execute(ListStreamGroups).await;
+            let cfg_res = client.execute(GetSystemConfiguration).await;
+            match (groups_res, cfg_res) {
+                (Ok(g), Ok(cfg)) => {
+                    show_ungrouped
+                        .set(cfg.stream_groups_show_ungrouped.unwrap_or(true));
+                    base_cfg.set(Some(cfg));
+                    groups.set(g);
+                    error.set(None);
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    error.set(Some(format!("Failed to load: {e}")));
+                }
+            }
+            loading.set(false);
+        });
+    });
+
+    rsx! {
+        // Settings card
+        div { class: "card", style: "margin-bottom:16px",
+            div { class: "card-header",
+                span { class: "card-title", "Settings" }
+            }
+            div { class: "card-body",
+                div {
+                    class: "flex items-center justify-between",
+                    style: "padding:8px 0",
+                    div {
+                        div { style: "font-size:.85rem;font-weight:500", "Show ungrouped streams" }
+                        div { style: "font-size:.75rem;color:var(--text-muted)",
+                            "Show streams that don't match any group as individual entries."
+                        }
+                    }
+                    div { class: "flex items-center gap-2",
+                        if *saving_setting.read() {
+                            span { style: "font-size:.72rem;color:var(--text-muted)", "Saving…" }
+                        }
+                        input {
+                            r#type: "checkbox",
+                            checked: *show_ungrouped.read(),
+                            disabled: *saving_setting.read(),
+                            onchange: {
+                                let client = app_state.client.clone();
+                                move |e: Event<FormData>| {
+                                    let checked = e.checked();
+                                    show_ungrouped.set(checked);
+                                    let Some(cfg) = base_cfg.peek().clone() else { return };
+                                    let updated = ServerConfiguration {
+                                        stream_groups_show_ungrouped: Some(checked),
+                                        ..cfg
+                                    };
+                                    saving_setting.set(true);
+                                    let c = client.clone();
+                                    spawn(async move {
+                                        let _ = c.execute(UpdateSystemConfiguration { config: updated }).await;
+                                        saving_setting.set(false);
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Groups card
+        div { class: "card",
+            div { class: "card-header",
+                span { class: "card-title", "Stream Groups" }
+                button {
+                    class: "btn btn-primary",
+                    style: "height:32px;font-size:.68rem",
+                    onclick: move |_| {
+                        create_name.set(String::new());
+                        create_match.set(FilterMatchMode::All);
+                        create_rules.set(vec![]);
+                        create_priority.set(0);
+                        show_create.set(true);
+                    },
+                    "+ New Group"
+                }
+            }
+            div { class: "card-body tight",
+
+                if *loading.read() {
+                    span { class: "loading-text", "Loading…" }
+                } else if let Some(err) = error.read().as_ref() {
+                    span { class: "loading-text", style: "color:var(--error)", "{err}" }
+                } else if groups.read().is_empty() {
+                    div { class: "empty-state",
+                        "No stream groups — create one to consolidate similar streams."
+                    }
+                } else {
+                    div { class: "row-list",
+                        for group in groups.read().clone() {
+                            {
+                                let gid = group.id;
+                                let gid_del = group.id;
+                                rsx! {
+                                    div {
+                                        class: "flex items-center border-b border-[var(--border)] hover:bg-[rgba(0,0,0,0.03)]",
+                                        key: "{group.id}",
+                                        div { class: "flex-1 min-w-0 px-3 py-[10px]",
+                                            div { style: "font-weight:500;font-size:.85rem", "{group.name}" }
+                                            div { style: "font-size:.72rem;color:var(--text-muted);margin-top:3px;display:flex;flex-wrap:wrap;gap:4px",
+                                                for rule in group.filter.rules.iter() {
+                                                    {
+                                                        let (label, is_excl, color_style) = match rule {
+                                                            StreamRule::Resolution { op, values } => {
+                                                                let lbl = values.iter().map(|v| v.label()).collect::<Vec<_>>().join("/");
+                                                                (lbl, matches!(op, SetOp::NotIn), "background:var(--accent-subtle,rgba(99,102,241,.12));color:var(--accent,#6366f1);padding:1px 6px;border-radius:4px")
+                                                            }
+                                                            StreamRule::Source { op, values } => {
+                                                                let lbl = values.iter().map(|v| v.label()).collect::<Vec<_>>().join("/");
+                                                                (lbl, matches!(op, SetOp::NotIn), "background:rgba(0,0,0,0.06);padding:1px 6px;border-radius:4px")
+                                                            }
+                                                            StreamRule::Codec { op, values } => {
+                                                                let lbl = values.iter().map(|v| v.label()).collect::<Vec<_>>().join("/");
+                                                                (lbl, matches!(op, SetOp::NotIn), "background:rgba(16,185,129,.12);color:rgb(5,150,105);padding:1px 6px;border-radius:4px")
+                                                            }
+                                                        };
+                                                        let prefix = if is_excl { "NOT " } else { "" };
+                                                        rsx! { span { style: "{color_style}", "{prefix}{label}" } }
+                                                    }
+                                                }
+                                                if group.filter.rules.len() > 1 {
+                                                    span { style: "color:var(--text-muted);font-style:italic",
+                                                        {if group.filter.match_mode == FilterMatchMode::All { "AND" } else { "OR" }}
+                                                    }
+                                                }
+                                                span { style: "color:var(--text-muted)", "priority {group.priority}" }
+                                                if !group.enabled {
+                                                    span { style: "color:var(--error)", "disabled" }
+                                                }
+                                            }
+                                        }
+                                        div { class: "shrink-0 px-3 py-[10px] flex items-center gap-2",
+                                            button {
+                                                class: "btn btn-ghost",
+                                                style: "height:30px;font-size:.68rem;padding:0 10px",
+                                                onclick: move |_| {
+                                                    edit_name.set(group.name.clone());
+                                                    edit_match.set(group.filter.match_mode.clone());
+                                                    edit_rules.set(group.filter.rules.clone());
+                                                    edit_priority.set(group.priority);
+                                                    edit_enabled.set(group.enabled);
+                                                    edit_hidden.set(group.hidden);
+                                                    id_to_edit.set(Some(gid));
+                                                },
+                                                "Edit"
+                                            }
+                                            button {
+                                                class: "btn btn-ghost",
+                                                style: "height:30px;font-size:.68rem;padding:0 10px;color:var(--error);border-color:var(--error)",
+                                                onclick: move |_| id_to_delete.set(Some(gid_del)),
+                                                "Delete"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Preview card — only shown when at least one group is configured
+        if !groups.read().is_empty() {
+            div { class: "card", style: "margin-top:16px",
+                div { class: "card-header",
+                    span { class: "card-title", "Example output" }
+                }
+                div { class: "card-body",
+                    div { class: "form-group", style: "margin-bottom:12px",
+                        label { style: "font-size:.75rem;font-weight:500;display:block;margin-bottom:4px",
+                            "IMDB ID"
+                        }
+                        input {
+                            r#type: "text",
+                            class: "input",
+                            style: "width:180px",
+                            value: "{preview_imdb}",
+                            oninput: move |e| preview_imdb.set(e.value()),
+                        }
+                    }
+                    if *preview_loading.read() {
+                        div { style: "font-size:.8rem;color:var(--text-muted)", "Loading…" }
+                    } else if let Some(ref err) = *preview_error.read() {
+                        div { style: "font-size:.8rem;color:var(--error)", "{err}" }
+                    } else if let Some(ref data) = *preview_data.read() {
+                        div { style: "font-family:monospace;font-size:.78rem;line-height:1.6",
+                            if data.groups.is_empty() && data.ungrouped.is_empty() {
+                                div { style: "color:var(--text-muted)", "No streams returned for this IMDB ID." }
+                            }
+                            for group in &data.groups {
+                                div { style: "margin-bottom:6px",
+                                    div { style: "font-weight:600;display:flex;align-items:center;gap:6px",
+                                        "▼ {group.name}"
+                                        if group.hidden {
+                                            span {
+                                                style: "font-size:.68rem;padding:1px 5px;border-radius:3px;background:var(--bg-subtle,#333);color:var(--text-muted);font-family:sans-serif",
+                                                "hidden"
+                                            }
+                                        }
+                                    }
+                                    for stream in &group.streams {
+                                        div { style: "padding-left:16px;color:var(--text-muted)",
+                                            "└ {stream}"
+                                        }
+                                    }
+                                }
+                            }
+                            if !data.ungrouped.is_empty() {
+                                div { style: "margin-top:4px",
+                                    div { style: "font-weight:600", "─ Ungrouped" }
+                                    for stream in &data.ungrouped {
+                                        div { style: "padding-left:16px;color:var(--text-muted)",
+                                            "└ {stream}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Create modal
+        if *show_create.read() {
+            div { class: "modal-backdrop",
+                div { class: "modal",
+                    div { class: "modal-header",
+                        span { class: "modal-title", "New Stream Group" }
+                    }
+                    div { class: "modal-body",
+                        div { class: "form-group",
+                            label { class: "form-label", "Name" }
+                            input {
+                                class: "form-input",
+                                r#type: "text",
+                                placeholder: "Auto-generated from filter",
+                                value: "{create_name}",
+                                oninput: move |e| create_name.set(e.value()),
+                            }
+                        }
+                        div { class: "form-group",
+                            label { class: "form-label", "Filter rules" }
+                            StreamFilterEditor { match_mode: create_match, rules: create_rules }
+                        }
+                        div { class: "form-group",
+                            label { class: "form-label", "Priority (lower = shown first)" }
+                            input {
+                                class: "form-input",
+                                r#type: "number",
+                                value: "{create_priority}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        create_priority.set(n);
+                                    }
+                                },
+                            }
+                        }
+                    }
+                    div { class: "modal-footer",
+                        button {
+                            class: "btn btn-ghost",
+                            onclick: move |_| show_create.set(false),
+                            "Cancel"
+                        }
+                        button {
+                            class: "btn btn-primary",
+                            disabled: *creating.read(),
+                            onclick: {
+                                let client = app_state.client.clone();
+                                move |_| {
+                                    let name = create_name.read().trim().to_string();
+                                    creating.set(true);
+                                    let c = client.clone();
+                                    let filter = StreamFilter {
+                                        match_mode: create_match.peek().clone(),
+                                        rules: create_rules.peek().clone(),
+                                    };
+                                    let prio = *create_priority.peek();
+                                    spawn(async move {
+                                        match c.execute(CreateStreamGroup {
+                                            payload: CreateStreamGroupRequest {
+                                                name,
+                                                filter,
+                                                priority: prio,
+                                            },
+                                        }).await {
+                                            Ok(_) => {
+                                                show_create.set(false);
+                                                let v = *refresh.peek() + 1;
+                                                refresh.set(v);
+                                            }
+                                            Err(e) => {
+                                                error.set(Some(format!("Failed to create: {e}")));
+                                                show_create.set(false);
+                                            }
+                                        }
+                                        creating.set(false);
+                                    });
+                                }
+                            },
+                            if *creating.read() { "Creating…" } else { "Create" }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Edit modal
+        if id_to_edit.read().is_some() {
+            div { class: "modal-backdrop",
+                div { class: "modal",
+                    div { class: "modal-header",
+                        span { class: "modal-title", "Edit Stream Group" }
+                    }
+                    div { class: "modal-body",
+                        div { class: "form-group",
+                            label { class: "form-label", "Name" }
+                            input {
+                                class: "form-input",
+                                r#type: "text",
+                                value: "{edit_name}",
+                                oninput: move |e| edit_name.set(e.value()),
+                            }
+                        }
+                        div { class: "form-group",
+                            label { class: "form-label", "Filter rules" }
+                            StreamFilterEditor { match_mode: edit_match, rules: edit_rules }
+                        }
+                        div { class: "form-group",
+                            label { class: "form-label", "Priority (lower = shown first)" }
+                            input {
+                                class: "form-input",
+                                r#type: "number",
+                                value: "{edit_priority}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        edit_priority.set(n);
+                                    }
+                                },
+                            }
+                        }
+                        div { class: "form-group",
+                            label { class: "form-label", style: "display:flex;align-items:center;gap:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *edit_enabled.read(),
+                                    onchange: move |e| edit_enabled.set(e.checked()),
+                                }
+                                "Enabled"
+                            }
+                        }
+                        div { class: "form-group",
+                            label { class: "form-label", style: "display:flex;align-items:center;gap:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *edit_hidden.read(),
+                                    onchange: move |e| edit_hidden.set(e.checked()),
+                                }
+                                "Hide (consume matching streams without showing them)"
+                            }
+                        }
+                    }
+                    div { class: "modal-footer",
+                        button {
+                            class: "btn btn-ghost",
+                            onclick: move |_| id_to_edit.set(None),
+                            "Cancel"
+                        }
+                        button {
+                            class: "btn btn-primary",
+                            disabled: *editing.read(),
+                            onclick: {
+                                let client = app_state.client.clone();
+                                move |_| {
+                                    let Some(id) = *id_to_edit.peek() else { return };
+                                    let name = edit_name.read().trim().to_string();
+                                    editing.set(true);
+                                    let c = client.clone();
+                                    let filter = StreamFilter {
+                                        match_mode: edit_match.peek().clone(),
+                                        rules: edit_rules.peek().clone(),
+                                    };
+                                    let prio = *edit_priority.peek();
+                                    let enabled = *edit_enabled.peek();
+                                    let hidden = *edit_hidden.peek();
+                                    spawn(async move {
+                                        match c.execute(UpdateStreamGroup {
+                                            id,
+                                            payload: UpdateStreamGroupRequest {
+                                                name,
+                                                filter,
+                                                priority: prio,
+                                                enabled,
+                                                hidden,
+                                            },
+                                        }).await {
+                                            Ok(_) => {
+                                                id_to_edit.set(None);
+                                                let v = *refresh.peek() + 1;
+                                                refresh.set(v);
+                                            }
+                                            Err(e) => {
+                                                error.set(Some(format!("Failed to update: {e}")));
+                                                id_to_edit.set(None);
+                                            }
+                                        }
+                                        editing.set(false);
+                                    });
+                                }
+                            },
+                            if *editing.read() { "Saving…" } else { "Save" }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Delete confirm modal
+        if id_to_delete.read().is_some() {
+            div { class: "modal-backdrop",
+                div { class: "modal",
+                    div { class: "modal-header",
+                        span { class: "modal-title", "Delete Stream Group" }
+                    }
+                    div { class: "modal-body",
+                        p { style: "font-size:.85rem",
+                            "Are you sure you want to delete this stream group? This cannot be undone."
+                        }
+                    }
+                    div { class: "modal-footer",
+                        button {
+                            class: "btn btn-ghost",
+                            disabled: *deleting.read(),
+                            onclick: move |_| id_to_delete.set(None),
+                            "Cancel"
+                        }
+                        button {
+                            class: "btn btn-primary",
+                            style: "background:var(--error);border-color:var(--error)",
+                            disabled: *deleting.read(),
+                            onclick: {
+                                let client = app_state.client.clone();
+                                move |_| {
+                                    let Some(id) = *id_to_delete.peek() else { return };
+                                    deleting.set(true);
+                                    let c = client.clone();
+                                    spawn(async move {
+                                        match c.execute(DeleteStreamGroup { id }).await {
+                                            Ok(_) => {
+                                                id_to_delete.set(None);
+                                                let v = *refresh.peek() + 1;
+                                                refresh.set(v);
+                                            }
+                                            Err(e) => {
+                                                error.set(Some(format!("Failed to delete: {e}")));
+                                                id_to_delete.set(None);
+                                            }
+                                        }
+                                        deleting.set(false);
+                                    });
+                                }
+                            },
+                            if *deleting.read() { "Deleting…" } else { "Delete" }
+                        }
+                    }
                 }
             }
         }

@@ -33,6 +33,8 @@ pub struct PlaybackSession {
     pub last_activity: DateTime<Utc>,
     /// Active transcode session owned by this playback session, if any.
     pub transcode: Option<Arc<tokio::sync::RwLock<TranscodeSession>>>,
+    /// Stream group UUID that the selected source belongs to, if any.
+    pub group_id: Option<Uuid>,
 }
 
 #[derive(Clone)]
@@ -163,6 +165,7 @@ impl PlaybackSessionManager {
                     playlist_item_id: None,
                     started_at: Utc::now(),
                     last_activity: Utc::now(),
+                    group_id: None,
                 },
             );
         }

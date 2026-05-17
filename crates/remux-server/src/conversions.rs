@@ -144,9 +144,10 @@ impl From<db::Media> for api::MediaSourceInfo {
         let is_stub = url_path.is_none();
         let path = url_path.or_else(|| Some(format!("remux://{}", source.id)));
 
+        let client_id = source.group_id.unwrap_or(source.id);
         api::MediaSourceInfo {
-            id: source.id.clone(),
-            e_tag: source.id.clone(),
+            id: client_id,
+            e_tag: client_id,
             path,
             protocol,
             supports_transcoding: is_stub,

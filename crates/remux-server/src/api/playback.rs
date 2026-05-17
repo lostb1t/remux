@@ -79,6 +79,23 @@ async fn items_playbackinfo_inner(
         .await?
         .context_not_found("not found", "not found")?;
 
+    // When a StreamGroup UUID is requested, resolve it to the group's best candidate
+    // and keep all candidates for probe fallback scope.
+    let group_source_override: Option<(Uuid, String, Vec<db::Media>)> = if media.kind
+        == db::MediaKind::StreamGroup
+    {
+        let gid = media.id;
+        let gtitle = media.title.clone();
+        let candidates = db::StreamGroup::streams_for(&state.ctx.db, &gid, &id).await?;
+        if candidates.is_empty() {
+            return Err(anyhow::anyhow!("no streams available for this group").into());
+        }
+        media = candidates[0].clone();
+        Some((gid, gtitle, candidates))
+    } else {
+        None
+    };
+
     // Load the top-level Movie/Episode for subtitle lookup.
     // `id` is always the movie/episode UUID; `media_source_id` may point to a
     // child Source, so we always resolve via `id` to get the IMDB fields.
@@ -103,11 +120,12 @@ async fn items_playbackinfo_inner(
         db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
     ) {
         let sources = media.streams(&state.ctx.db).await?;
-        if sources.is_empty() {
+        let raw = if sources.is_empty() {
             vec![media]
         } else {
             sources
-        }
+        };
+        db::StreamGroup::filter_sources(&state.ctx.db, raw).await
     } else {
         vec![media]
     };
@@ -165,8 +183,13 @@ async fn items_playbackinfo_inner(
     let max_stream_retries = probe_cfg.max_probe_fallback_streams.unwrap_or(3) as usize;
 
     let port = state.ctx.config.port;
-    // Clone upfront so probe_with_fallback can scan siblings while we iterate.
-    let all_sources = source_medias.clone();
+    // For group selections, use all group candidates as the probe fallback pool.
+    let all_sources: Vec<db::Media> =
+        if let Some((_, _, ref candidates)) = group_source_override {
+            candidates.clone()
+        } else {
+            source_medias.clone()
+        };
     let mut media_sources = Vec::with_capacity(source_medias.len());
     for (idx, sm) in source_medias.into_iter().enumerate() {
         let url_opt = sm
@@ -447,6 +470,15 @@ async fn items_playbackinfo_inner(
         }
 
         source.transcoding_reasons = transcode_reasons;
+
+        // For group selections, expose the stable group UUID to the client.
+        // TranscodingUrl already embeds the real source UUID (set before this point).
+        if let Some((gid, ref gtitle, _)) = group_source_override {
+            source.id = gid;
+            source.e_tag = gid;
+            source.name = Some(gtitle.clone());
+        }
+
         media_sources.push(source);
     }
 
@@ -919,6 +951,22 @@ pub async fn report_playback_start(
 
     let item_id = data.item_id.unwrap_or_default();
 
+    // If the client selected a StreamGroup source, record its group UUID.
+    let group_id: Option<Uuid> = if let Some(ref sid) = data.media_source_id {
+        if let Ok(uid) = sid.parse::<Uuid>() {
+            db::Media::get_by_id(&state.ctx.db, &uid)
+                .await
+                .ok()
+                .flatten()
+                .filter(|m| m.kind == db::MediaKind::StreamGroup)
+                .map(|_| uid)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let ps = PlaybackSession {
         play_session_id: play_session_id.clone(),
         user_id: session.user.id,
@@ -944,6 +992,7 @@ pub async fn report_playback_start(
         started_at: Utc::now(),
         last_activity: Utc::now(),
         transcode: None,
+        group_id,
     };
 
     state.ctx.sessions.insert(ps);

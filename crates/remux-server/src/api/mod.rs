@@ -23,6 +23,7 @@ pub mod search;
 pub mod shows;
 pub mod startup;
 pub mod stream;
+pub mod stream_group;
 pub mod system;
 pub mod tasks;
 pub mod users;

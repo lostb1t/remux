@@ -2219,6 +2219,7 @@ mod tests {
             hardware_acceleration_type: HardwareAccelerationType::Qsv,
             vaapi_device: "/dev/dri/renderD128".into(),
             vaapi_driver: "iHD".into(),
+            allow_hevc_encoding: true,
             ..default_hls(dir)
         });
 

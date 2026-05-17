@@ -11,6 +11,7 @@ pub mod image;
 pub mod iptv;
 pub mod media;
 pub mod settings;
+pub mod stream_group;
 pub mod task;
 pub mod user;
 pub use api_key::*;
@@ -18,6 +19,7 @@ pub use image::*;
 pub use iptv::*;
 pub use media::*;
 pub use settings::*;
+pub use stream_group::*;
 pub use task::*;
 pub use user::*;
 

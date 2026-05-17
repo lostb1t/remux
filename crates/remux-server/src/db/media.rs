@@ -147,6 +147,7 @@ pub enum MediaKind {
     Album,
     Artist,
     Playlist,
+    StreamGroup,
 }
 
 impl TryFrom<String> for MediaKind {
@@ -211,6 +212,7 @@ impl Into<sdks::remux::MediaKind> for MediaKind {
             MediaKind::Album => sdks::remux::MediaKind::Album,
             MediaKind::Artist => sdks::remux::MediaKind::Artist,
             MediaKind::Playlist => sdks::remux::MediaKind::Playlist,
+            MediaKind::StreamGroup => sdks::remux::MediaKind::Stream,
         }
     }
 }
@@ -686,6 +688,21 @@ pub fn normalize_country_alpha2(c: &str) -> String {
         .unwrap_or(upper)
 }
 
+/// Stream group filter/config data stored as JSON in the `stream_group_data` media column.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StreamGroupData {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub filter: remux_sdks::remux::StreamFilter,
+    #[serde(default)]
+    pub priority: i64,
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default)]
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Media {
     // shared
@@ -756,6 +773,11 @@ pub struct Media {
     pub unplayed_item_count: Option<i64>,
     #[sqlx(skip)]
     pub sources: Option<Vec<Media>>,
+    /// When this source represents a stream group in a filtered result,
+    /// holds the group UUID to expose as the client-facing source ID.
+    #[sqlx(skip)]
+    #[serde(skip)]
+    pub group_id: Option<Uuid>,
     #[sqlx(skip)]
     pub seasons: Option<Vec<Media>>,
     #[sqlx(skip)]
@@ -770,6 +792,9 @@ pub struct Media {
     pub stream_info: Option<crate::stream::StreamInfo>,
     #[sqlx(json(nullable))]
     pub probe_data: Option<MediaSourceInfo>,
+    #[sqlx(json(nullable))]
+    #[serde(skip)]
+    pub stream_group_data: Option<StreamGroupData>,
 
     // collection
     pub promoted: bool,

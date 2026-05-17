@@ -1050,10 +1050,12 @@ pub async fn item(
     if media.kind == db::MediaKind::Stream {
         media.sources = Some(vec![media.clone()]);
     } else if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-        media.streams(&state.ctx.db).await?;
+        let raw = media.streams(&state.ctx.db).await?;
+        media.sources = Some(db::StreamGroup::filter_sources(&state.ctx.db, raw).await);
         media.user_state(&state.ctx.db, &session.user).await?;
     } else if media.kind == db::MediaKind::Track {
-        media.streams(&state.ctx.db).await?;
+        let raw = media.streams(&state.ctx.db).await?;
+        media.sources = Some(db::StreamGroup::filter_sources(&state.ctx.db, raw).await);
         media.user_state(&state.ctx.db, &session.user).await?;
     }
     // info!("Seasons length: {:?}", media.seasons(&state.ctx.db).await?.len());
