@@ -366,6 +366,35 @@ impl StreamGroup {
         let raw = if raw.is_empty() { vec![parent] } else { raw };
         Ok(Self::candidates_for_group(&group, &raw))
     }
+
+    /// Returns streams from all enabled groups that come after `current_group_id`
+    /// in priority order, concatenated. Used to extend the probe fallback pool
+    /// so that exhausting one group cascades into the next.
+    pub async fn streams_for_groups_after(
+        db: &SqlitePool,
+        current_group_id: &Uuid,
+        parent_id: &Uuid,
+    ) -> Result<Vec<Media>> {
+        let groups = Self::list(db).await?;
+        let mut parent = Media::get_by_id(db, parent_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("parent item not found"))?;
+        let raw = parent.streams(db).await?;
+        let raw = if raw.is_empty() { vec![parent] } else { raw };
+
+        let mut result = vec![];
+        let mut found = false;
+        for group in groups.iter().filter(|g| g.enabled) {
+            if !found {
+                if group.id == *current_group_id {
+                    found = true;
+                }
+                continue;
+            }
+            result.extend(Self::candidates_for_group(group, &raw));
+        }
+        Ok(result)
+    }
 }
 
 fn auto_name(filter: &StreamFilter) -> String {

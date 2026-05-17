@@ -80,16 +80,23 @@ async fn items_playbackinfo_inner(
         .context_not_found("not found", "not found")?;
 
     // When a StreamGroup UUID is requested, resolve it to the group's best candidate
-    // and keep all candidates for probe fallback scope.
+    // and keep all candidates (including subsequent groups) for probe fallback scope.
     let group_source_override: Option<(Uuid, String, Vec<db::Media>)> = if media.kind
         == db::MediaKind::StreamGroup
     {
         let gid = media.id;
         let gtitle = media.title.clone();
-        let candidates = db::StreamGroup::streams_for(&state.ctx.db, &gid, &id).await?;
+        let mut candidates =
+            db::StreamGroup::streams_for(&state.ctx.db, &gid, &id).await?;
         if candidates.is_empty() {
             return Err(anyhow::anyhow!("no streams available for this group").into());
         }
+        // Append streams from lower-priority groups so probe can cascade across groups.
+        let cascade =
+            db::StreamGroup::streams_for_groups_after(&state.ctx.db, &gid, &id)
+                .await
+                .unwrap_or_default();
+        candidates.extend(cascade);
         media = candidates[0].clone();
         Some((gid, gtitle, candidates))
     } else {
@@ -183,12 +190,14 @@ async fn items_playbackinfo_inner(
     let max_stream_retries = probe_cfg.max_probe_fallback_streams.unwrap_or(3) as usize;
 
     let port = state.ctx.config.port;
-    // For group selections, use all group candidates as the probe fallback pool.
-    let all_sources: Vec<db::Media> =
+    // For group selections, use all group candidates (including cascade) as the probe fallback pool.
+    // Resolution filtering is disabled for group requests: the group priority order already
+    // encodes the user's quality preference, so cross-resolution fallback is intentional.
+    let (all_sources, restrict_resolution) =
         if let Some((_, _, ref candidates)) = group_source_override {
-            candidates.clone()
+            (candidates.clone(), false)
         } else {
-            source_medias.clone()
+            (source_medias.clone(), true)
         };
     let mut media_sources = Vec::with_capacity(source_medias.len());
     for (idx, sm) in source_medias.into_iter().enumerate() {
@@ -210,6 +219,7 @@ async fn items_playbackinfo_inner(
             auto_next_stream,
             max_stream_retries,
             &all_sources,
+            restrict_resolution,
             port,
             &state.ctx.db,
         )
@@ -538,6 +548,7 @@ async fn probe_source(
     auto_next_stream: bool,
     max_retries: usize,
     all_sources: &[db::Media],
+    restrict_resolution: bool,
     port: u16,
     db: &sqlx::SqlitePool,
 ) -> axum_anyhow::ApiResult<api::MediaSourceInfo> {
@@ -558,6 +569,7 @@ async fn probe_source(
         auto_next_stream,
         max_retries,
         all_sources,
+        restrict_resolution,
         port,
         db,
     )
@@ -574,6 +586,7 @@ async fn probe_with_fallback(
     auto_next_stream: bool,
     max_retries: usize,
     all_sources: &[db::Media],
+    restrict_resolution: bool,
     port: u16,
     db: &sqlx::SqlitePool,
 ) -> axum_anyhow::ApiResult<api::MediaSourceInfo> {
@@ -595,10 +608,22 @@ async fn probe_with_fallback(
                 if c_p2p != pri_p2p {
                     return false;
                 }
-                let c_res = c.stream_info.as_ref().and_then(|si| si.resolution_tag());
-                c_res == pri_res
+                if restrict_resolution {
+                    let c_res =
+                        c.stream_info.as_ref().and_then(|si| si.resolution_tag());
+                    if c_res != pri_res {
+                        return false;
+                    }
+                }
+                true
             })
-            .take(max_retries)
+            // In group-cascade mode (restrict_resolution=false) try all candidates;
+            // otherwise honour the configured retry cap.
+            .take(if restrict_resolution {
+                max_retries
+            } else {
+                usize::MAX
+            })
             .filter_map(|c| {
                 let url = c.stream_info.as_ref()?.descriptor.server_input(c.id, port);
                 Some((c.clone(), url))
