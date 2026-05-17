@@ -2790,6 +2790,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             sdks::stremio::Status::Upcoming | sdks::stremio::Status::Planned => {
                 MediaStatus::Unreleased
             }
+            sdks::stremio::Status::Unknown => MediaStatus::Continuing,
         });
 
         let media = Media {

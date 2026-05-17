@@ -56,12 +56,13 @@ impl StreamGroup {
         let data_json = serde_json::to_string(&data)?;
         let now = Utc::now().naive_utc();
         sqlx::query(
-            "INSERT INTO media (id, kind, title, enabled, stream_group_data, created_at, updated_at)
-             VALUES (?, 'stream_group', ?, ?, ?, ?, ?)
+            "INSERT INTO media (id, kind, title, enabled, stream_group_data, external_ids, created_at, updated_at)
+             VALUES (?, 'stream_group', ?, ?, ?, '{}', ?, ?)
              ON CONFLICT (id) DO UPDATE SET
                  title = excluded.title,
                  enabled = excluded.enabled,
                  stream_group_data = excluded.stream_group_data,
+                 external_ids = COALESCE(media.external_ids, excluded.external_ids),
                  updated_at = excluded.updated_at",
         )
         .bind(self.id)

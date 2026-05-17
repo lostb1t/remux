@@ -320,6 +320,7 @@ pub struct Trailer {
     strum_macros::Display,
     Debug,
     Clone,
+    Default,
     PartialEq,
     Serialize,
     Deserialize,
@@ -337,6 +338,9 @@ pub enum Status {
     #[serde(rename = "In Production")]
     InProduction,
     Running,
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 #[skip_serializing_none]
