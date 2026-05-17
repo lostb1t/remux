@@ -470,35 +470,36 @@ async fn handle_404(uri: axum::http::Uri) -> impl IntoResponse {
 }
 
 fn log_api_error(err: &axum_anyhow::ApiError) {
-    let is_404 = err.status() == StatusCode::NOT_FOUND;
+    let status = err.status();
+    let is_server_error = status.is_server_error();
     if let Some(cause) = err.error() {
-        if is_404 {
-            tracing::debug!(
-                status = %err.status(),
+        if is_server_error {
+            tracing::error!(
+                status = %status,
                 title = %err.title(),
                 detail = %err.detail(),
                 cause = %format!("{:#}", cause),
                 "api error"
             );
         } else {
-            tracing::error!(
-                status = %err.status(),
+            tracing::debug!(
+                status = %status,
                 title = %err.title(),
                 detail = %err.detail(),
                 cause = %format!("{:#}", cause),
                 "api error"
             );
         }
-    } else if is_404 {
-        tracing::debug!(
-            status = %err.status(),
+    } else if is_server_error {
+        tracing::error!(
+            status = %status,
             title = %err.title(),
             detail = %err.detail(),
             "api error"
         );
     } else {
-        tracing::error!(
-            status = %err.status(),
+        tracing::debug!(
+            status = %status,
             title = %err.title(),
             detail = %err.detail(),
             "api error"
