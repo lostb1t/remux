@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-use super::catalog_import_shared::{catalog_membership_tag, import_catalog_items};
+use super::catalog_import_shared::{catalog_membership, import_catalog_items};
 use super::{ProgressReporter, Task, TaskService};
 use crate::addons::make_media_id;
 use crate::{AppContext, db};
@@ -41,7 +41,7 @@ impl Task for CatalogImportTask {
 
         let addons = ctx.addons.catalog_addons().await;
         let total_work = addons.len().max(1);
-        let mut valid_tags: HashSet<String> = HashSet::new();
+        let mut valid_pairs: HashSet<(String, String)> = HashSet::new();
         let mut total_counts: HashMap<String, usize> = HashMap::new();
 
         for (addon_idx, runtime) in addons.iter().enumerate() {
@@ -89,8 +89,9 @@ impl Task for CatalogImportTask {
                     .map(|n| n as usize)
                     .unwrap_or(global_max);
 
-                if let Some(tag) = catalog_membership_tag(&full_id) {
-                    valid_tags.insert(tag);
+                if let Some((addon_uuid, local_cat_id)) = catalog_membership(&full_id) {
+                    valid_pairs
+                        .insert((addon_uuid.to_string(), local_cat_id.to_string()));
                 }
 
                 let source = match ctx.addons.make_catalog_stream(&full_id).await {
@@ -138,49 +139,51 @@ impl Task for CatalogImportTask {
             sorted.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
         info!(total, counts = %breakdown.join(" "), "catalog import complete");
 
-        remove_stale_catalog_tags(&ctx.db, &valid_tags).await;
+        remove_stale_catalog_memberships(&ctx.db, &valid_pairs).await;
 
         tasks.run_task("RefreshLibrary").await?;
         Ok(())
     }
 }
 
-/// Delete `catalog:*` tags from `media_tags` that are not in `valid_tags`.
-pub(crate) async fn remove_stale_catalog_tags(
+/// Delete rows from `media_catalog_items` whose (addon_id, catalog_id) pair is not in `valid_pairs`.
+pub(crate) async fn remove_stale_catalog_memberships(
     db: &sqlx::SqlitePool,
-    valid_tags: &HashSet<String>,
+    valid_pairs: &HashSet<(String, String)>,
 ) {
-    // Fetch all distinct catalog tags currently in the DB.
-    let existing: Vec<String> = match sqlx::query_scalar(
-        "SELECT DISTINCT tag FROM media_tags WHERE tag LIKE 'catalog:%'",
+    let existing: Vec<(String, String)> = match sqlx::query_as(
+        "SELECT DISTINCT addon_id, catalog_id FROM media_catalog_items",
     )
     .fetch_all(db)
     .await
     {
         Ok(v) => v,
         Err(e) => {
-            warn!(error = %e, "failed to fetch catalog tags for cleanup");
+            warn!(error = %e, "failed to fetch catalog memberships for cleanup");
             return;
         }
     };
 
-    let stale: Vec<&String> = existing
+    let stale: Vec<&(String, String)> = existing
         .iter()
-        .filter(|t| !valid_tags.contains(*t))
+        .filter(|p| !valid_pairs.contains(*p))
         .collect();
 
     if stale.is_empty() {
         return;
     }
 
-    info!(count = stale.len(), "removing stale catalog tags");
-    for tag in stale {
-        if let Err(e) = sqlx::query("DELETE FROM media_tags WHERE tag = ?")
-            .bind(tag)
-            .execute(db)
-            .await
+    info!(count = stale.len(), "removing stale catalog memberships");
+    for (addon_id, catalog_id) in stale {
+        if let Err(e) = sqlx::query(
+            "DELETE FROM media_catalog_items WHERE addon_id = ? AND catalog_id = ?",
+        )
+        .bind(addon_id)
+        .bind(catalog_id)
+        .execute(db)
+        .await
         {
-            warn!(tag = %tag, error = %e, "failed to remove stale catalog tag");
+            warn!(addon = %addon_id, catalog = %catalog_id, error = %e, "failed to remove stale catalog membership");
         }
     }
 }

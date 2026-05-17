@@ -10,9 +10,8 @@ use crate::db;
 /// Consume `stream`, upserting items and recording catalog membership.
 ///
 /// For addon-sourced catalogs (media_id starting with `addon:`), each top-level
-/// imported item gets tagged with `catalog:{addon_uuid}:{local_id}`. Smart
-/// collections filter on those tags. Legacy catalogs continue to use
-/// `media_relations` with `RelationRole::Catalog`.
+/// imported item gets a row in `media_catalog_items`. Legacy catalogs continue to
+/// use `media_relations` with `RelationRole::Catalog`.
 ///
 /// Items already carry their `kind`, IDs, and metadata — no enrichment happens here.
 /// Returns a map of `kind -> count` for top-level items imported.
@@ -30,7 +29,7 @@ where
     let mut chunks = stream.chunks(500);
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut total = 0usize;
-    let catalog_tag = catalog_membership_tag(media_id);
+    let membership = catalog_membership(media_id);
 
     while let Some(items) = chunks.next().await {
         progress.report(total, max.max(1));
@@ -50,31 +49,30 @@ where
             continue;
         }
 
-        if let Some(tag) = catalog_tag.as_deref() {
-            // Addon-sourced catalogs use tags to track membership.
-            //
+        if let Some((addon_uuid, local_cat_id)) = membership {
             // Note: after upsert the stored `id` may differ from `item.id` when
             // the row was matched by the (kind, media_id) unique index instead of
             // the primary key.  We resolve the real id via a subquery so the FK
-            // on media_tags is never violated.
+            // on media_catalog_items is never violated.
             for item in items.iter().filter(|m| m.parent_id.is_none()) {
                 if let Err(e) = sqlx::query(
-                    "INSERT OR IGNORE INTO media_tags (media_id, tag) \
-                     SELECT id, ?1 FROM media \
-                     WHERE CASE WHEN ?2 IS NOT NULL \
-                                THEN (kind = ?3 AND media_id = ?2) \
-                                ELSE id = ?4 \
+                    "INSERT OR IGNORE INTO media_catalog_items (media_id, addon_id, catalog_id) \
+                     SELECT id, ?1, ?2 FROM media \
+                     WHERE CASE WHEN ?3 IS NOT NULL \
+                                THEN (kind = ?4 AND media_id = ?3) \
+                                ELSE id = ?5 \
                            END \
                      LIMIT 1",
                 )
-                .bind(tag)
+                .bind(addon_uuid)
+                .bind(local_cat_id)
                 .bind(&item.media_id)
                 .bind(&item.kind)
                 .bind(item.id)
                 .execute(db)
                 .await
                 {
-                    error!(catalog = media_id, error = %e, "failed to tag item");
+                    error!(catalog = media_id, error = %e, "failed to record catalog membership");
                 }
             }
         }
@@ -91,11 +89,9 @@ where
     Ok(counts)
 }
 
-/// Compute the membership tag for a catalog's `media_id`. Addon-sourced
-/// catalogs return `Some("catalog:{addon_uuid}:{local_id}")`; legacy
-/// catalogs return `None`.
-pub fn catalog_membership_tag(media_id: &str) -> Option<String> {
+/// Extract `(addon_uuid_str, local_catalog_id)` from an addon-sourced `media_id`.
+/// Returns `None` for legacy catalog IDs that don't start with `addon:`.
+pub fn catalog_membership(media_id: &str) -> Option<(&str, &str)> {
     let rest = media_id.strip_prefix("addon:")?;
-    let (uuid_str, local_id) = rest.split_once(':')?;
-    Some(format!("catalog:{uuid_str}:{local_id}"))
+    rest.split_once(':')
 }

@@ -2046,7 +2046,8 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
         | FilterRule::Tag { values, .. }
         | FilterRule::Studio { values, .. }
         | FilterRule::Country { values, .. }
-        | FilterRule::Person { values, .. } => values.clone(),
+        | FilterRule::Person { values, .. }
+        | FilterRule::Collection { values, .. } => values.clone(),
         _ => vec![],
     }
 }
@@ -2055,7 +2056,13 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
 fn is_set_field(key: &str) -> bool {
     matches!(
         key,
-        "genre" | "certification" | "tag" | "studio" | "country" | "person"
+        "genre"
+            | "certification"
+            | "tag"
+            | "studio"
+            | "country"
+            | "person"
+            | "collection"
     )
 }
 
@@ -2100,6 +2107,33 @@ async fn fetch_suggestions(
                 Ok(tags) => tags.into_iter().map(|t| (t.clone(), t)).collect(),
                 Err(_) => vec![],
             }
+        }
+        "collection" => {
+            let Ok(addons) = client.execute(ListAddons).await else {
+                return vec![];
+            };
+            let q = query.to_lowercase();
+            let mut results = vec![];
+            for addon in addons {
+                let Ok(cats) = client.execute(GetAddonCatalogs { id: addon.id }).await
+                else {
+                    continue;
+                };
+                for cat in cats {
+                    let label = format!("{}: {}", addon.name, cat.name);
+                    if !label.to_lowercase().contains(&q) {
+                        continue;
+                    }
+                    // Strip the "addon:" prefix — the stored value is "{uuid}:{local_id}"
+                    let value = cat
+                        .catalog_id
+                        .strip_prefix("addon:")
+                        .unwrap_or(&cat.catalog_id)
+                        .to_string();
+                    results.push((label, value));
+                }
+            }
+            results
         }
         "certification" => {
             match client
@@ -2157,6 +2191,7 @@ fn field_label(key: &str) -> &'static str {
         "has_trailer" => "Has Trailer",
         "country" => "Country",
         "person" => "Person",
+        "collection" => "Catalog",
         _ => "",
     }
 }
@@ -2318,6 +2353,10 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
         "has_trailer" => FilterRule::HasTrailer {
             value: value_str == "true",
         },
+        "collection" => FilterRule::Collection {
+            op: set_op,
+            values: set_values(),
+        },
         _ => FilterRule::Genre {
             op: set_op,
             values: set_values(),
@@ -2410,6 +2449,47 @@ fn ChipInput(
     let mut show_dropdown = use_signal(|| false);
     let mut label_cache: Signal<std::collections::HashMap<String, String>> =
         use_signal(std::collections::HashMap::new);
+
+    // On mount: pre-populate label_cache for collection values loaded from saved state.
+    if field_key == "collection" {
+        let client_init = app_state.client.clone();
+        let values_init = values.clone();
+        use_effect(move || {
+            let uncached: Vec<String> = values_init
+                .iter()
+                .filter(|v| !label_cache.read().contains_key(*v))
+                .cloned()
+                .collect();
+            if uncached.is_empty() {
+                return;
+            }
+            let client = client_init.clone();
+            spawn(async move {
+                let Ok(addons) = client.execute(ListAddons).await else {
+                    return;
+                };
+                for addon in addons {
+                    let Ok(cats) =
+                        client.execute(GetAddonCatalogs { id: addon.id }).await
+                    else {
+                        continue;
+                    };
+                    for cat in cats {
+                        let value = cat
+                            .catalog_id
+                            .strip_prefix("addon:")
+                            .unwrap_or(&cat.catalog_id)
+                            .to_string();
+                        if uncached.contains(&value) {
+                            label_cache
+                                .write()
+                                .insert(value, format!("{}: {}", addon.name, cat.name));
+                        }
+                    }
+                }
+            });
+        });
+    }
 
     // Re-fetch suggestions whenever the typed text changes.
     let fk_fetch = field_key.clone();
@@ -2592,6 +2672,9 @@ fn FilterRuleRow(
                 }
                 if collection_mode {
                     option { value: "person",          selected: field_val == "person",          { field_label("person") } }
+                }
+                if collection_mode {
+                    option { value: "collection",      selected: field_val == "collection",      { field_label("collection") } }
                 }
             }
             // Operator selector (hidden for has_trailer which has no operator)

@@ -223,15 +223,14 @@ pub async fn delete_addon(
     Addon::delete(&state.ctx.db, id).await?;
     state.ctx.addons.reload(&state.ctx.db).await?;
 
-    // Remove all catalog membership tags for this addon so items are no longer
+    // Remove catalog memberships for this addon so items are no longer
     // associated with catalogs that no longer exist.
-    let tag_prefix = format!("catalog:{id}:%");
-    if let Err(e) = sqlx::query("DELETE FROM media_tags WHERE tag LIKE ?")
-        .bind(&tag_prefix)
+    if let Err(e) = sqlx::query("DELETE FROM media_catalog_items WHERE addon_id = ?")
+        .bind(id.to_string())
         .execute(&state.ctx.db)
         .await
     {
-        tracing::warn!(addon = %id, error = %e, "failed to clean up catalog tags on addon delete");
+        tracing::warn!(addon = %id, error = %e, "failed to clean up catalog memberships on addon delete");
     }
 
     Ok(StatusCode::NO_CONTENT)

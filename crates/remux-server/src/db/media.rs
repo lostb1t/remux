@@ -3173,7 +3173,28 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             };
             Some((sql, false))
         }
-        R::Collection { .. } => None,
+        R::Collection { op, values } => {
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            let sql = match op {
+                SetOp::Is | SetOp::IsNot => {
+                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_catalog_items mci \
+                         WHERE mci.media_id = media.id \
+                         AND lower(mci.addon_id || ':' || mci.catalog_id) = lower('{v}'))"
+                    )
+                }
+                SetOp::In | SetOp::NotIn => {
+                    let list = in_list(values)?;
+                    format!(
+                        "EXISTS (SELECT 1 FROM media_catalog_items mci \
+                         WHERE mci.media_id = media.id \
+                         AND lower(mci.addon_id || ':' || mci.catalog_id) IN ({list}))"
+                    )
+                }
+            };
+            Some((sql, negated))
+        }
         R::Person { op, values } => {
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             let sql = match op {
