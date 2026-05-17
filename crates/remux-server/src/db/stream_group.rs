@@ -294,7 +294,14 @@ impl StreamGroup {
             .screen_size()
             .and_then(StreamResolution::from_hunch)
             .unwrap_or(StreamResolution::Unknown);
-        let source = canonical_source(&parsed);
+        let source = {
+            let s = canonical_source(&parsed);
+            if s == StreamSource::Unknown {
+                fallback_source(raw)
+            } else {
+                s
+            }
+        };
         let codec = parsed
             .video_codec()
             .and_then(StreamCodec::from_hunch)
@@ -302,6 +309,13 @@ impl StreamGroup {
 
         let eval = |rule: &StreamRule| match rule {
             StreamRule::Resolution { op, values } => {
+                // When resolution is unknown and the rule doesn't explicitly target Unknown,
+                // let the stream through so source/codec rules can still match.
+                if resolution == StreamResolution::Unknown
+                    && !values.contains(&StreamResolution::Unknown)
+                {
+                    return true;
+                }
                 let hit = values.contains(&resolution);
                 matches!(op, SetOp::In | SetOp::Is) == hit
             }
@@ -405,5 +419,27 @@ fn canonical_source(parsed: &hunch::HunchResult) -> StreamSource {
         "DVD" => StreamSource::Dvd,
         "TV" => StreamSource::Tv,
         _ => StreamSource::Unknown,
+    }
+}
+
+/// Fallback source detection via case-insensitive substring search.
+/// Used when hunch fails to identify the source (e.g. "WEBRip-AVC" or
+/// space-delimited multi-language filenames where hunch loses the token).
+fn fallback_source(raw: &str) -> StreamSource {
+    let lower = raw.to_lowercase();
+    if lower.contains("webrip") || lower.contains("web-rip") {
+        StreamSource::WebRip
+    } else if lower.contains("web-dl") || lower.contains("webdl") {
+        StreamSource::WebDl
+    } else if lower.contains("remux") {
+        StreamSource::BluRayRemux
+    } else if lower.contains("bluray") || lower.contains("blu-ray") {
+        StreamSource::BluRay
+    } else if lower.contains("hdtv") {
+        StreamSource::Hdtv
+    } else if lower.contains("dvdrip") {
+        StreamSource::Dvd
+    } else {
+        StreamSource::Unknown
     }
 }
