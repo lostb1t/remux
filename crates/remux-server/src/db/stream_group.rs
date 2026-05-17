@@ -385,12 +385,17 @@ fn auto_name(filter: &StreamFilter) -> String {
 }
 
 fn canonical_source(parsed: &hunch::HunchResult) -> StreamSource {
-    let Some(source) = parsed.source() else {
-        return StreamSource::Unknown;
-    };
     let other = parsed.other();
     let is_remux = other.contains(&"Remux");
     let is_rip = other.contains(&"Rip");
+    let Some(source) = parsed.source() else {
+        // No source keyword — remux is always Blu-ray regardless
+        return if is_remux {
+            StreamSource::BluRayRemux
+        } else {
+            StreamSource::Unknown
+        };
+    };
     match source {
         "Web" if is_rip => StreamSource::WebRip,
         "Web" => StreamSource::WebDl,

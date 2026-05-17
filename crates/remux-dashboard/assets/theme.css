@@ -649,6 +649,97 @@ html, body {
   color: var(--primary-hover);
 }
 
+/* ── Nav divider ────────────────────────────────────────────────── */
+.nav-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 6px 4px;
+  opacity: 0.5;
+}
+
+/* ── Nav groups (collapsible sections) ───────────────────────────── */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: none;
+  font-family: var(--font-head);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--transition);
+}
+
+.nav-group-header:hover {
+  background: var(--panel-hover);
+  color: var(--text-secondary);
+}
+
+.nav-group-header-active {
+  color: var(--primary);
+}
+
+.nav-group-chevron {
+  font-size: 0.65rem;
+  opacity: 0.7;
+}
+
+.nav-group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 2px;
+}
+
+/* ── Nav sub-items ───────────────────────────────────────────────── */
+.nav-sub-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 7px 12px 7px 22px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: none;
+  font-family: var(--font-head);
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--transition);
+}
+
+.nav-sub-item:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.nav-sub-item-active {
+  background: var(--primary-dim);
+  color: var(--primary);
+  font-weight: 600;
+  border-left: 2px solid var(--primary);
+  padding-left: 20px;
+}
+
+.nav-sub-item-active:hover {
+  background: var(--primary-glow);
+  color: var(--primary-hover);
+}
+
 /* ── Main area ───────────────────────────────────────────────────── */
 .main {
   flex: 1;

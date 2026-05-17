@@ -1055,28 +1055,44 @@ fn TaskRow(
 #[derive(Clone, Routable, PartialEq, Debug)]
 enum Route {
     #[layout(DashboardLayout)]
+    // Standalone top
     #[route("/")]
-    OverviewRoute,
-    #[route("/library")]
-    CollectionsRoute,
-    #[route("/iptv")]
-    IptvRoute,
-    #[route("/devices")]
-    DevicesRoute,
-    #[route("/tasks")]
-    TasksRoute,
-    #[route("/users")]
-    UsersRoute,
-    #[route("/apikeys")]
-    ApiKeysRoute,
+    DashboardRoute,
     #[route("/addons")]
     AddonsRoute,
-    #[route("/streams")]
-    StreamsRoute,
-    #[route("/settings")]
-    SettingsRoute,
-    #[route("/branding")]
-    BrandingRoute,
+    // Content
+    #[route("/content/library")]
+    LibraryRoute,
+    #[route("/content/iptv")]
+    IptvRoute,
+    // Streaming
+    #[route("/streaming/groups")]
+    StreamingGroupsRoute,
+    #[route("/streaming/probing")]
+    StreamingProbingRoute,
+    #[route("/streaming/p2p")]
+    StreamingP2pRoute,
+    // Settings
+    #[route("/settings/general")]
+    SettingsGeneralRoute,
+    #[route("/settings/playback")]
+    SettingsPlaybackRoute,
+    #[route("/settings/search")]
+    SettingsSearchRoute,
+    #[route("/settings/jellyfin-sync")]
+    SettingsJellyfinSyncRoute,
+    #[route("/settings/branding")]
+    SettingsBrandingRoute,
+    // Access
+    #[route("/access/users")]
+    AccessUsersRoute,
+    #[route("/access/apikeys")]
+    AccessApiKeysRoute,
+    // Standalone bottom
+    #[route("/tasks")]
+    TasksRoute,
+    #[route("/activity")]
+    ActivityRoute,
     #[end_layout]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -1089,6 +1105,42 @@ fn NavItem(label: &'static str, active: bool, on_click: EventHandler) -> Element
             class: if active { "nav-item nav-item-active" } else { "nav-item" },
             onclick: move |_| on_click.call(()),
             "{label}"
+        }
+    }
+}
+
+#[component]
+fn NavSubItem(label: &'static str, active: bool, on_click: EventHandler) -> Element {
+    rsx! {
+        button {
+            class: if active { "nav-sub-item nav-sub-item-active" } else { "nav-sub-item" },
+            onclick: move |_| on_click.call(()),
+            "{label}"
+        }
+    }
+}
+
+#[component]
+fn SidebarGroup(label: &'static str, active: bool, children: Element) -> Element {
+    let storage_key = format!("sidebar_group_{label}");
+    let mut open =
+        use_signal(|| LocalStorage::get::<bool>(&storage_key).unwrap_or(true));
+    let expanded = *open.read() || active;
+    rsx! {
+        div { class: "nav-group",
+            button {
+                class: if active { "nav-group-header nav-group-header-active" } else { "nav-group-header" },
+                onclick: move |_| {
+                    let v = !*open.read();
+                    open.set(v);
+                    let _ = LocalStorage::set(&storage_key, v);
+                },
+                span { "{label}" }
+                span { class: "nav-group-chevron", if expanded { "▾" } else { "▸" } }
+            }
+            if expanded {
+                div { class: "nav-group-items", {children} }
+            }
         }
     }
 }
@@ -1108,17 +1160,22 @@ fn DashboardLayout() -> Element {
     let route = use_route::<Route>();
 
     let page_title = match route {
-        Route::OverviewRoute => "Overview",
-        Route::CollectionsRoute => "Library",
-        Route::IptvRoute => "IPTV",
-        Route::DevicesRoute => "Devices",
-        Route::TasksRoute => "Scheduled Tasks",
-        Route::UsersRoute => "Users",
-        Route::ApiKeysRoute => "API Keys",
+        Route::DashboardRoute => "Remux",
         Route::AddonsRoute => "Addons",
-        Route::StreamsRoute => "Streams",
-        Route::SettingsRoute => "Settings",
-        Route::BrandingRoute => "Branding",
+        Route::LibraryRoute => "Library",
+        Route::IptvRoute => "IPTV",
+        Route::StreamingGroupsRoute => "Stream Groups",
+        Route::StreamingProbingRoute => "Probing",
+        Route::StreamingP2pRoute => "P2P",
+        Route::SettingsGeneralRoute => "General",
+        Route::SettingsPlaybackRoute => "Playback",
+        Route::SettingsSearchRoute => "Search",
+        Route::SettingsJellyfinSyncRoute => "Jellyfin Sync",
+        Route::SettingsBrandingRoute => "Branding",
+        Route::AccessUsersRoute => "Users",
+        Route::AccessApiKeysRoute => "API Keys",
+        Route::TasksRoute => "Tasks",
+        Route::ActivityRoute => "Activity",
         Route::NotFound { .. } => "",
     };
 
@@ -1137,45 +1194,15 @@ fn DashboardLayout() -> Element {
                 class: if *sidebar_open.read() { "sidebar sidebar-open" } else { "sidebar" },
 
                 div { class: "sidebar-brand",
-                    span { class: "brand-label", "Remux" }
-                    h1 { class: "brand-title", style: "font-size:1.1rem;margin:0", "Dashboard" }
+                    h1 { class: "brand-title", style: "margin:0", "Remux" }
                 }
 
                 div { class: "sidebar-nav",
+                    // Top standalone items
                     NavItem {
-                        label: "Overview",
-                        active: route == Route::OverviewRoute,
-                        on_click: move |_| { navigator().push(Route::OverviewRoute); sidebar_open.set(false); },
-                    }
-                    NavItem {
-                        label: "Library",
-                        active: route == Route::CollectionsRoute,
-                        on_click: move |_| { navigator().push(Route::CollectionsRoute); sidebar_open.set(false); },
-                    }
-                    NavItem {
-                        label: "IPTV",
-                        active: route == Route::IptvRoute,
-                        on_click: move |_| { navigator().push(Route::IptvRoute); sidebar_open.set(false); },
-                    }
-                    NavItem {
-                        label: "Devices",
-                        active: route == Route::DevicesRoute,
-                        on_click: move |_| { navigator().push(Route::DevicesRoute); sidebar_open.set(false); },
-                    }
-                    NavItem {
-                        label: "Tasks",
-                        active: route == Route::TasksRoute,
-                        on_click: move |_| { navigator().push(Route::TasksRoute); sidebar_open.set(false); },
-                    }
-                    NavItem {
-                        label: "Users",
-                        active: route == Route::UsersRoute,
-                        on_click: move |_| { navigator().push(Route::UsersRoute); sidebar_open.set(false); },
-                    }
-                    NavItem {
-                        label: "API Keys",
-                        active: route == Route::ApiKeysRoute,
-                        on_click: move |_| { navigator().push(Route::ApiKeysRoute); sidebar_open.set(false); },
+                        label: "Dashboard",
+                        active: route == Route::DashboardRoute,
+                        on_click: move |_| { navigator().push(Route::DashboardRoute); sidebar_open.set(false); },
                     }
                     NavItem {
                         label: "Addons",
@@ -1183,19 +1210,106 @@ fn DashboardLayout() -> Element {
                         on_click: move |_| { navigator().push(Route::AddonsRoute); sidebar_open.set(false); },
                     }
                     NavItem {
-                        label: "Streams",
-                        active: route == Route::StreamsRoute,
-                        on_click: move |_| { navigator().push(Route::StreamsRoute); sidebar_open.set(false); },
+                        label: "Tasks",
+                        active: route == Route::TasksRoute,
+                        on_click: move |_| { navigator().push(Route::TasksRoute); sidebar_open.set(false); },
                     }
-                    NavItem {
+
+                    div { class: "nav-divider" }
+
+                    SidebarGroup {
+                        label: "Content",
+                        active: matches!(route, Route::LibraryRoute | Route::IptvRoute),
+                        NavSubItem {
+                            label: "Library",
+                            active: route == Route::LibraryRoute,
+                            on_click: move |_| { navigator().push(Route::LibraryRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "IPTV",
+                            active: route == Route::IptvRoute,
+                            on_click: move |_| { navigator().push(Route::IptvRoute); sidebar_open.set(false); },
+                        }
+                    }
+
+                    SidebarGroup {
+                        label: "Streaming",
+                        active: matches!(route, Route::StreamingGroupsRoute | Route::StreamingProbingRoute | Route::StreamingP2pRoute),
+                        NavSubItem {
+                            label: "Groups",
+                            active: route == Route::StreamingGroupsRoute,
+                            on_click: move |_| { navigator().push(Route::StreamingGroupsRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Probing",
+                            active: route == Route::StreamingProbingRoute,
+                            on_click: move |_| { navigator().push(Route::StreamingProbingRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "P2P",
+                            active: route == Route::StreamingP2pRoute,
+                            on_click: move |_| { navigator().push(Route::StreamingP2pRoute); sidebar_open.set(false); },
+                        }
+                    }
+
+                    SidebarGroup {
                         label: "Settings",
-                        active: route == Route::SettingsRoute,
-                        on_click: move |_| { navigator().push(Route::SettingsRoute); sidebar_open.set(false); },
+                        active: matches!(route,
+                            Route::SettingsGeneralRoute
+                            | Route::SettingsPlaybackRoute
+                            | Route::SettingsSearchRoute
+                            | Route::SettingsJellyfinSyncRoute
+                            | Route::SettingsBrandingRoute
+                        ),
+                        NavSubItem {
+                            label: "General",
+                            active: route == Route::SettingsGeneralRoute,
+                            on_click: move |_| { navigator().push(Route::SettingsGeneralRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Playback",
+                            active: route == Route::SettingsPlaybackRoute,
+                            on_click: move |_| { navigator().push(Route::SettingsPlaybackRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Search",
+                            active: route == Route::SettingsSearchRoute,
+                            on_click: move |_| { navigator().push(Route::SettingsSearchRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Jellyfin Sync",
+                            active: route == Route::SettingsJellyfinSyncRoute,
+                            on_click: move |_| { navigator().push(Route::SettingsJellyfinSyncRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Branding",
+                            active: route == Route::SettingsBrandingRoute,
+                            on_click: move |_| { navigator().push(Route::SettingsBrandingRoute); sidebar_open.set(false); },
+                        }
                     }
+
+                    SidebarGroup {
+                        label: "Access",
+                        active: matches!(route, Route::AccessUsersRoute | Route::AccessApiKeysRoute),
+                        NavSubItem {
+                            label: "Users",
+                            active: route == Route::AccessUsersRoute,
+                            on_click: move |_| { navigator().push(Route::AccessUsersRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "API Keys",
+                            active: route == Route::AccessApiKeysRoute,
+                            on_click: move |_| { navigator().push(Route::AccessApiKeysRoute); sidebar_open.set(false); },
+                        }
+                    }
+
+                    div { class: "nav-divider" }
+
+                    // Bottom standalone items
                     NavItem {
-                        label: "Branding",
-                        active: route == Route::BrandingRoute,
-                        on_click: move |_| { navigator().push(Route::BrandingRoute); sidebar_open.set(false); },
+                        label: "Activity",
+                        active: route == Route::ActivityRoute,
+                        on_click: move |_| { navigator().push(Route::ActivityRoute); sidebar_open.set(false); },
                     }
                 }
 
@@ -1244,7 +1358,7 @@ fn DashboardLayout() -> Element {
 // then pass as props to the real page components.
 
 #[component]
-fn OverviewRoute() -> Element {
+fn DashboardRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! {
         ServerInfoCard { app_state: app_state.clone() }
@@ -1255,7 +1369,13 @@ fn OverviewRoute() -> Element {
 }
 
 #[component]
-fn CollectionsRoute() -> Element {
+fn AddonsRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { AddonsPage { app_state } }
+}
+
+#[component]
+fn LibraryRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { CollectionsPage { app_state } }
 }
@@ -1267,9 +1387,63 @@ fn IptvRoute() -> Element {
 }
 
 #[component]
-fn DevicesRoute() -> Element {
+fn StreamingGroupsRoute() -> Element {
     let app_state = use_context::<AppState>();
-    rsx! { SessionsCard { app_state } }
+    rsx! { StreamGroupsCard { app_state } }
+}
+
+#[component]
+fn StreamingProbingRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { ProbeSettingsCard { app_state } }
+}
+
+#[component]
+fn StreamingP2pRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { P2pSettingsCard { app_state } }
+}
+
+#[component]
+fn SettingsGeneralRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { ServerSettingsCard { app_state } }
+}
+
+#[component]
+fn SettingsPlaybackRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { PlaybackSettingsCard { app_state } }
+}
+
+#[component]
+fn SettingsSearchRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { SearchSettingsCard { app_state } }
+}
+
+#[component]
+fn SettingsJellyfinSyncRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { JellyfinImportCard { app_state } }
+}
+
+#[component]
+fn SettingsBrandingRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { BrandingPage { app_state } }
+}
+
+#[component]
+fn AccessUsersRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { UsersPage { app_state } }
+}
+
+#[component]
+fn AccessApiKeysRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { ApiKeysPage { app_state } }
 }
 
 #[component]
@@ -1279,44 +1453,14 @@ fn TasksRoute() -> Element {
 }
 
 #[component]
-fn UsersRoute() -> Element {
+fn ActivityRoute() -> Element {
     let app_state = use_context::<AppState>();
-    rsx! { UsersPage { app_state } }
-}
-
-#[component]
-fn ApiKeysRoute() -> Element {
-    let app_state = use_context::<AppState>();
-    rsx! { ApiKeysPage { app_state } }
-}
-
-#[component]
-fn AddonsRoute() -> Element {
-    let app_state = use_context::<AppState>();
-    rsx! { AddonsPage { app_state } }
-}
-
-#[component]
-fn SettingsRoute() -> Element {
-    let app_state = use_context::<AppState>();
-    rsx! { SettingsPage { app_state } }
-}
-
-#[component]
-fn BrandingRoute() -> Element {
-    let app_state = use_context::<AppState>();
-    rsx! { BrandingPage { app_state } }
-}
-
-#[component]
-fn StreamsRoute() -> Element {
-    let app_state = use_context::<AppState>();
-    rsx! { StreamsPage { app_state } }
+    rsx! { SessionsCard { app_state } }
 }
 
 #[component]
 fn NotFound(segments: Vec<String>) -> Element {
-    navigator().replace(Route::OverviewRoute);
+    navigator().replace(Route::DashboardRoute);
     rsx! {}
 }
 
