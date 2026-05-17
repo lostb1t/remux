@@ -6354,7 +6354,7 @@ fn StreamGroupsCard(app_state: AppState) -> Element {
                                     checked: *edit_hidden.read(),
                                     onchange: move |e| edit_hidden.set(e.checked()),
                                 }
-                                "Hide (consume matching streams without showing them)"
+                                "Hide group"
                             }
                         }
                     }
