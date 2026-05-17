@@ -1050,7 +1050,11 @@ async fn stremio_streams(
                 descriptor,
                 name: Some(label),
                 description: s.description.clone(),
-                filename: s.filename.clone(),
+                filename: s
+                    .behavior_hints
+                    .as_ref()
+                    .and_then(|bh| bh.filename.clone())
+                    .or_else(|| s.filename.clone()),
                 seeders: s.seeders,
                 size: s.size,
                 duration: s.duration,

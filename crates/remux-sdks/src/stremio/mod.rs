@@ -742,6 +742,17 @@ pub struct Stream {
     pub parsed_file: Option<ParsedFile>,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub behavior_hints: Option<BehaviorHints>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BehaviorHints {
+    pub filename: Option<String>,
+    pub binge_group: Option<String>,
+    pub not_web_ready: Option<bool>,
+    pub video_size: Option<i64>,
 }
 
 impl Stream {
