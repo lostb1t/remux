@@ -598,7 +598,8 @@ async fn stremio_sync_children(
                     x.set_image(db::ImageKind::Primary, url);
                 }
                 x.title = format!("Season {}", x.idx.unwrap_or(1));
-                x.refreshed_at = Some(Utc::now().naive_utc());
+                // Leave refreshed_at as None so sync_tree will call refresh_meta
+                // and TMDB can provide the season poster.
                 Some(x)
             } else if x.kind == db::MediaKind::Episode {
                 if let Some(season_idx) = x.parent_idx {

@@ -622,6 +622,7 @@ impl AddonService {
         &self,
         root: &mut db::Media,
         ctx: &AppContext,
+        force_refresh: bool,
     ) -> Result<Vec<db::Media>> {
         let guard = self.inner.read().await;
         let applicable: Vec<Arc<dyn AddonKind>> = guard
@@ -643,14 +644,19 @@ impl AddonService {
             if children.is_empty() {
                 continue;
             }
-            // Persist children first so FK constraints are satisfied when
-            // apply_meta writes media_relations with left_media_id = child.id.
+            // Persist root first so children can look up its external IDs (e.g. TMDB
+            // ID) via get_by_id when fetching their own metadata.
+            if let Err(e) = db::Media::upsert(&ctx.db, &[root.clone()]).await {
+                tracing::warn!(id = %root.id, error = %e, "failed to pre-persist root before children");
+            }
+            // Persist children so FK constraints are satisfied when apply_meta
+            // writes media_relations with left_media_id = child.id.
             if let Err(e) = db::Media::upsert(&ctx.db, &children).await {
                 tracing::warn!(id = %root.id, error = %e, "failed to pre-persist children");
             }
             for child in &mut children {
-                if child.refreshed_at.is_none() {
-                    if let Err(e) = self.refresh_meta(child, ctx, false).await {
+                if force_refresh || child.refreshed_at.is_none() {
+                    if let Err(e) = self.refresh_meta(child, ctx, force_refresh).await {
                         tracing::warn!(id = %child.id, error = %e, "failed to refresh child meta");
                     }
                 }
@@ -697,7 +703,7 @@ impl AddonService {
         drop(guard);
         if any_tree {
             batch.push(media.clone());
-            match self.sync_tree(&mut media, ctx).await {
+            match self.sync_tree(&mut media, ctx, force_refresh).await {
                 Ok(children) => batch.extend(children),
                 Err(e) => {
                     tracing::warn!(id = %media.id, error = %e, "failed to sync tree")
