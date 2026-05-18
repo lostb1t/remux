@@ -1822,8 +1822,8 @@ impl Media {
             }
         }
 
-        // Batch-load genre relations for Movie/Episode/Series/Season records
-        let genre_ids: Vec<Uuid> = records
+        // Batch-load genre and person relations for Movie/Episode/Series/Season records
+        let rel_ids: Vec<Uuid> = records
             .iter()
             .filter(|m| {
                 matches!(
@@ -1836,22 +1836,22 @@ impl Media {
             })
             .map(|m| m.id)
             .collect();
-        if !genre_ids.is_empty() {
+        if !rel_ids.is_empty() {
             let mut g_qb = sqlx::QueryBuilder::new(
                 "SELECT mr.left_media_id, mr.relation_id, mr.right_media_id, mr.weight, \
-                 g.id, g.title \
+                 mr.role, mr.character, g.id, g.title, g.kind \
                  FROM media_relations mr \
                  JOIN media g ON g.id = mr.right_media_id \
-                 WHERE g.kind = 'genre' AND mr.left_media_id IN (",
+                 WHERE g.kind IN ('genre', 'person') AND mr.left_media_id IN (",
             );
             let mut sep = g_qb.separated(", ");
-            for id in &genre_ids {
+            for id in &rel_ids {
                 sep.push_bind(id);
             }
             g_qb.push(") ORDER BY mr.left_media_id, mr.weight");
             match g_qb.build().fetch_all(db).await {
                 Ok(rows) => {
-                    let mut genres_map: HashMap<Uuid, Vec<(MediaRelation, Media)>> =
+                    let mut rels_map: HashMap<Uuid, Vec<(MediaRelation, Media)>> =
                         HashMap::new();
                     for row in rows {
                         let left_media_id: Uuid = row.get(0);
@@ -1860,27 +1860,31 @@ impl Media {
                             left_media_id,
                             right_media_id: row.get(2),
                             weight: row.get(3),
+                            role: row.get(4),
+                            character: row.get(5),
                             ..Default::default()
                         };
-                        let genre = Media {
-                            id: row.get(4),
-                            title: row.get(5),
-                            kind: MediaKind::Genre,
+                        let kind_str: String = row.get(8);
+                        let related = Media {
+                            id: row.get(6),
+                            title: row.get(7),
+                            kind: MediaKind::try_from(kind_str)
+                                .unwrap_or(MediaKind::Genre),
                             ..Default::default()
                         };
-                        genres_map
+                        rels_map
                             .entry(left_media_id)
                             .or_default()
-                            .push((rel, genre));
+                            .push((rel, related));
                     }
                     for media in &mut records {
-                        if let Some(genre_rels) = genres_map.remove(&media.id) {
-                            media.relations = Some(genre_rels);
+                        if let Some(rels) = rels_map.remove(&media.id) {
+                            media.relations = Some(rels);
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("failed to batch-load genre relations: {e}");
+                    tracing::warn!("failed to batch-load relations: {e}");
                 }
             }
         }

@@ -446,9 +446,8 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
 }
 
 pub fn setup_logging() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("info,librqbit_dht=warn,hyper=warn,sqlx=warn")
-    });
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn,remux=info"));
 
     let fmt_layer = fmt::layer()
         .with_timer(fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
