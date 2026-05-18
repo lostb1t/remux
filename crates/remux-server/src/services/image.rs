@@ -224,28 +224,34 @@ impl ImageService {
             return Ok((bytes, ct));
         }
 
-        let ext = match opts.output_format() {
-            ImageFormat::Png => "png",
-            _ => "jpg",
-        };
         let cache_key = opts.cache_key(source_key);
-        let cache_path = Self::cache_dir().join(format!("{cache_key}.{ext}"));
+        let cache_dir = Self::cache_dir();
 
-        if cache_path.exists() {
-            let cached = tokio::fs::read(&cache_path).await?;
-            return Ok((cached, opts.content_type()));
+        // Check both extensions — alpha auto-detection may produce PNG even when opts say JPEG.
+        for (ext, ct) in [("png", "image/png"), ("jpg", "image/jpeg")] {
+            let path = cache_dir.join(format!("{cache_key}.{ext}"));
+            if path.exists() {
+                let cached = tokio::fs::read(&path).await?;
+                return Ok((cached, ct));
+            }
         }
 
         let opts_clone = opts.clone();
-        let processed = tokio::task::spawn_blocking(move || {
+        let (processed, content_type) = tokio::task::spawn_blocking(move || {
             process_image_sync(&bytes, &opts_clone)
         })
         .await??;
 
-        tokio::fs::create_dir_all(Self::cache_dir()).await?;
-        tokio::fs::write(&cache_path, &processed).await?;
+        let ext = if content_type == "image/png" {
+            "png"
+        } else {
+            "jpg"
+        };
+        tokio::fs::create_dir_all(&cache_dir).await?;
+        tokio::fs::write(cache_dir.join(format!("{cache_key}.{ext}")), &processed)
+            .await?;
 
-        Ok((processed, opts.content_type()))
+        Ok((processed, content_type))
     }
 
     async fn write_image_to_disk(path: &PathBuf, bytes: &[u8]) -> anyhow::Result<()> {
@@ -408,8 +414,9 @@ fn encode_jpeg(img: RgbImage) -> anyhow::Result<Vec<u8>> {
 fn process_image_sync(
     bytes: &[u8],
     opts: &ImageProcessOptions,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<(Vec<u8>, &'static str)> {
     let img = image::load_from_memory(bytes)?;
+    let has_alpha = img.color().has_alpha();
     let img = apply_sizing(img, opts);
     let img = if let Some(sigma) = opts.blur {
         img.blur(sigma as f32)
@@ -417,18 +424,21 @@ fn process_image_sync(
         img
     };
 
+    // Auto-preserve transparency: use PNG when the source has alpha and the caller
+    // didn't explicitly request a lossy format.
+    let use_png = matches!(opts.format.as_deref(), Some("png"))
+        || (has_alpha && !matches!(opts.format.as_deref(), Some("jpeg" | "jpg")));
+
     let quality = opts.quality.unwrap_or(90);
     let mut buf = Cursor::new(Vec::<u8>::new());
-    match opts.output_format() {
-        ImageFormat::Png => {
-            img.write_to(&mut buf, ImageFormat::Png)?;
-        }
-        _ => {
-            use image::codecs::jpeg::JpegEncoder;
-            img.write_with_encoder(JpegEncoder::new_with_quality(&mut buf, quality))?;
-        }
+    if use_png {
+        img.write_to(&mut buf, ImageFormat::Png)?;
+        Ok((buf.into_inner(), "image/png"))
+    } else {
+        use image::codecs::jpeg::JpegEncoder;
+        img.write_with_encoder(JpegEncoder::new_with_quality(&mut buf, quality))?;
+        Ok((buf.into_inner(), "image/jpeg"))
     }
-    Ok(buf.into_inner())
 }
 
 /// Resize `img` according to sizing params (fill → exact → max priority order).

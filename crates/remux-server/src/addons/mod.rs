@@ -925,7 +925,7 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<()> {
-        const STREAMS_TTL_SECS: i64 = 3600;
+        const STREAMS_TTL_SECS: i64 = 360;
         if let Some(refreshed) = media.streams_refreshed_at {
             let age = chrono::Utc::now().naive_utc() - refreshed;
             if age.num_seconds() < STREAMS_TTL_SECS {
@@ -947,6 +947,7 @@ impl AddonService {
                 None => true,
             })
             .collect();
+
         info!(streams = deduped.len(), elapsed = ?instant.elapsed(), "streams synced");
         if deduped.is_empty() {
             return Ok(());

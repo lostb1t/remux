@@ -262,7 +262,6 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         is_place_holder: media.sources.as_ref().map(|sources| sources.is_empty()),
         premiere_date: media.released_at.clone().map(|d| d.and_utc()),
         production_year: media.released_at.map(|d| d.year() as i64),
-        digital_release_date: media.digital_released_at.map(|d| d.and_utc()),
         community_rating: media.rating_audience.clone(),
         critic_rating: media.rating_critic.clone(),
         official_rating: media.certification.clone(),
@@ -482,6 +481,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             collection_max_items: media.collection_max_items,
             smart_filter: media.parse_smart_filter().cloned(),
             promoted: Some(media.promoted),
+            digital_release_date: media.digital_released_at.map(|d| d.and_utc()),
         }),
         date_created: Some(media.created_at.and_utc().to_rfc3339()),
         ..Default::default()

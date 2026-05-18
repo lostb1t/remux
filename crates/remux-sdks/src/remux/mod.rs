@@ -2358,6 +2358,7 @@ pub struct RemuxInfo {
     pub collection_max_items: Option<i64>,
     pub smart_filter: Option<CollectionFilter>,
     pub promoted: Option<bool>,
+    pub digital_release_date: Option<DateTime<Utc>>,
 }
 
 #[skip_serializing_none]
@@ -2394,8 +2395,6 @@ pub struct BaseItemDto {
     pub video_3d_format: Option<String>,
     //#[serde_as(as = "Option<DisplayFromStr>")]
     pub premiere_date: Option<DateTime<Utc>>,
-    // Remux: digital/home release date, distinct from theatrical premiere_date
-    pub digital_release_date: Option<DateTime<Utc>>,
     #[serde(default)]
     pub external_urls: Vec<ExternalUrl>,
     pub media_sources: Option<Vec<MediaSourceInfo>>,
@@ -5038,4 +5037,45 @@ impl Endpoint for GetStreamGroupPreview {
     fn query(&self) -> Vec<(String, String)> {
         vec![("imdb_id".into(), self.imdb_id.clone())]
     }
+}
+
+// ---------------------------------------------------------------------------
+// Item refresh
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
+pub enum MetadataRefreshMode {
+    #[default]
+    None,
+    ValidationOnly,
+    Default,
+    #[serde(other)]
+    FullRefresh,
+}
+
+#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
+pub enum ImageRefreshMode {
+    #[default]
+    None,
+    ValidationOnly,
+    Default,
+    #[serde(other)]
+    FullRefresh,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct RefreshItemQuery {
+    #[serde(default)]
+    pub metadata_refresh_mode: MetadataRefreshMode,
+    #[serde(default)]
+    pub image_refresh_mode: ImageRefreshMode,
+    #[serde(default)]
+    pub replace_all_metadata: bool,
+    #[serde(default)]
+    pub replace_all_images: bool,
+    #[serde(default)]
+    pub recursive: bool,
+    #[serde(default)]
+    pub regenerate_trickplay: bool,
 }

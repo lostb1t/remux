@@ -387,12 +387,25 @@ async fn fetch_tmdb_meta(
                         (Some(label), age)
                     })
                     .unwrap_or((None, None));
+                let digital_released_at = movie_details
+                    .release_dates
+                    .as_ref()
+                    .and_then(|rd| {
+                        rd.results
+                            .iter()
+                            .flat_map(|country| country.release_dates.iter())
+                            .filter(|e| e.release_type >= 4)
+                            .filter_map(|e| e.release_date)
+                            .min()
+                    })
+                    .map(|dt| dt.naive_utc());
                 let mut patch = db::Media {
                     title: movie_details.title,
                     description: movie_details.overview,
                     released_at: movie_details
                         .release_date
                         .and_then(|d| d.and_hms_opt(0, 0, 0)),
+                    digital_released_at,
                     runtime: movie_details.runtime.map(|r| r * 60),
                     rating_audience: movie_details.vote_average,
                     certification,

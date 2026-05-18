@@ -540,34 +540,12 @@ pub async fn delete_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Controls what happens during an item refresh.
-#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
-pub enum MetadataRefreshMode {
-    /// Re-fetch streams from AIO for the item (or its parent if a Source).
-    #[default]
-    Default,
-    /// Run the full metadata provider pipeline.
-    #[serde(other)]
-    Full,
-}
-
-/// Refresh a single item — behaviour depends on `MetadataRefreshMode`:
-/// - `Default`      → re-fetch streams from AIO for the item (or its parent if a Source).
-/// - anything else  → run the full metadata provider pipeline.
-#[derive(Debug, Deserialize, Default)]
-pub struct RefreshItemQuery {
-    #[serde(rename = "MetadataRefreshMode", default)]
-    pub metadata_refresh_mode: MetadataRefreshMode,
-    #[serde(rename = "ReplaceAllMetadata", default)]
-    pub replace_all_metadata: bool,
-}
-
 #[post("/items/{id}/refresh")]
 pub async fn refresh_item(
     State(state): State<AppState>,
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
-    Query(q): Query<RefreshItemQuery>,
+    Query(q): Query<api::RefreshItemQuery>,
 ) -> Result<StatusCode> {
     let mut media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
@@ -583,7 +561,8 @@ pub async fn refresh_item(
             .context_not_found("Not Found", "Parent item not found")?;
     }
 
-    if q.metadata_refresh_mode == MetadataRefreshMode::Default {
+    // new files
+    if q.metadata_refresh_mode == api::MetadataRefreshMode::Default {
         // Force-refresh streams by clearing the timestamp first.
         sqlx::query("UPDATE media SET streams_refreshed_at = NULL WHERE id = ?")
             .bind(media.id)
@@ -601,7 +580,7 @@ pub async fn refresh_item(
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
             warm_providers_cache(&state.ctx, &media);
         }
-    } else {
+    } else if q.metadata_refresh_mode == api::MetadataRefreshMode::FullRefresh {
         let force_refresh = q.replace_all_metadata;
         state
             .ctx
