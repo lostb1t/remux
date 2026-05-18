@@ -212,10 +212,8 @@ pub async fn get_items(
 
             // Local: single DB query for all local kinds combined.
             if !local_kinds.is_empty() {
-                let local_types: Vec<api::MediaType> = local_kinds
-                    .iter()
-                    .map(|k| api::db_media_kind_to_type(k.clone()))
-                    .collect();
+                let local_types: Vec<api::MediaType> =
+                    local_kinds.iter().map(|k| k.clone().into()).collect();
                 let mut local_q = q.clone();
                 local_q.search_term = Some(s.clone());
                 local_q.include_item_types = Some(local_types);
@@ -335,10 +333,8 @@ pub async fn get_items(
                 };
 
             q.include_item_types = Some({
-                let collection_types: Vec<api::MediaType> = media_kind_filter
-                    .iter()
-                    .map(|k| api::db_media_kind_to_type(k.clone()))
-                    .collect();
+                let collection_types: Vec<api::MediaType> =
+                    media_kind_filter.iter().map(|k| k.clone().into()).collect();
                 // Respect the client's IncludeItemTypes filter if provided,
                 // but constrain it to what this collection actually holds.
                 if let Some(requested) = &q.include_item_types {

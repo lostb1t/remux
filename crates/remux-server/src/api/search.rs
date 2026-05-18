@@ -114,7 +114,7 @@ pub async fn search_hints(
         .map(|m| api::SearchHint {
             item_id: m.id,
             name: Some(m.title.clone()),
-            type_: api::db_media_kind_to_type(m.kind.clone()),
+            type_: m.kind.clone().into(),
             primary_image_tag: m
                 .images
                 .get(db::ImageKind::Primary)

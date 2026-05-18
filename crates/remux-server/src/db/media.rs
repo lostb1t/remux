@@ -1694,9 +1694,8 @@ impl Media {
             }
 
             if let Some(threshold) = &filter.digital_released_before {
-                qb.push(" AND (released_at < datetime('now', '-1 year') OR (digital_released_at IS NOT NULL AND digital_released_at <= ")
-    .push_bind(threshold)
-    .push("))");
+                qb.push(" AND COALESCE(digital_released_at, released_at) <= ")
+                    .push_bind(threshold);
             }
 
             if !filter.filter_rules.is_empty() {
@@ -2455,7 +2454,7 @@ impl Media {
         let mut item = api::BaseItemDto {
             id: self.id,
             server_id: server_id(),
-            type_: api::db_media_kind_to_type(self.kind.clone()),
+            type_: self.kind.clone().into(),
             parent_id: self.parent_id,
             index_number: self.idx,
             name: Some(match self.kind {

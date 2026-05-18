@@ -88,24 +88,26 @@ pub fn db_display_prefs_to_dto(
     }
 }
 
-pub fn db_media_kind_to_type(kind: db::MediaKind) -> MediaType {
-    match kind {
-        db::MediaKind::Movie => MediaType::Movie,
-        db::MediaKind::Series => MediaType::Series,
-        db::MediaKind::Season => MediaType::Season,
-        db::MediaKind::Episode => MediaType::Episode,
-        db::MediaKind::Collection => MediaType::BoxSet,
-        db::MediaKind::Folder => MediaType::Folder,
-        db::MediaKind::Genre => MediaType::Genre,
-        db::MediaKind::Person => MediaType::Person,
-        db::MediaKind::Studio => MediaType::Studio,
-        db::MediaKind::TvChannel => MediaType::TvChannel,
-        db::MediaKind::TvProgram => MediaType::Program,
-        db::MediaKind::Track => MediaType::Audio,
-        db::MediaKind::Album => MediaType::MusicAlbum,
-        db::MediaKind::Artist => MediaType::MusicArtist,
-        db::MediaKind::Playlist => MediaType::Playlist,
-        db::MediaKind::Stream | db::MediaKind::StreamGroup => MediaType::Video,
+impl Into<MediaType> for db::MediaKind {
+    fn into(self) -> MediaType {
+        match self {
+            db::MediaKind::Movie => MediaType::Movie,
+            db::MediaKind::Series => MediaType::Series,
+            db::MediaKind::Season => MediaType::Season,
+            db::MediaKind::Episode => MediaType::Episode,
+            db::MediaKind::Collection => MediaType::BoxSet,
+            db::MediaKind::Folder => MediaType::Folder,
+            db::MediaKind::Genre => MediaType::Genre,
+            db::MediaKind::Person => MediaType::Person,
+            db::MediaKind::Studio => MediaType::Studio,
+            db::MediaKind::TvChannel => MediaType::TvChannel,
+            db::MediaKind::TvProgram => MediaType::Program,
+            db::MediaKind::Track => MediaType::Audio,
+            db::MediaKind::Album => MediaType::MusicAlbum,
+            db::MediaKind::Artist => MediaType::MusicArtist,
+            db::MediaKind::Playlist => MediaType::Playlist,
+            db::MediaKind::Stream | db::MediaKind::StreamGroup => MediaType::Video,
+        }
     }
 }
 
@@ -186,7 +188,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     use crate::common::IntoVec;
     use crate::common::ToRunTimeTicks;
 
-    let type_ = db_media_kind_to_type(media.kind.clone());
+    let type_ = media.kind.clone().into();
 
     let mut item = BaseItemDto {
         id: media.id.clone(),
