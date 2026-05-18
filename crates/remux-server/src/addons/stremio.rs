@@ -614,11 +614,7 @@ async fn stremio_sync_children(
                         x.title = format!("E{} - {}", episode_num, x.title);
                     }
                 }
-                if super::episode_meta_complete(&x) {
-                    x.refreshed_at = Some(Utc::now().naive_utc());
-                } else {
-                    x.refreshed_at = None;
-                }
+                x.refreshed_at = Some(Utc::now().naive_utc());
                 Some(x)
             } else {
                 None

@@ -300,49 +300,40 @@ async fn fetch_tmdb_meta(
         .unwrap_or_else(|| "US".to_string());
 
     let ids = &media.external_ids;
-    let lookup = if let Some(tmdb_id) = ids.tmdb {
-        Some((tmdb_id.to_string(), "tmdb_id"))
-    } else if let Some(ref imdb) = ids.imdb {
-        Some((imdb.clone(), "imdb_id"))
-    } else if let Some(ref gp_media_id) = media.grandparent_media_id {
-        Some((gp_media_id.clone(), "imdb_id"))
-    } else if let Some(tvdb_id) = ids.tvdb {
-        Some((tvdb_id.to_string(), "tvdb_id"))
-    } else {
-        None
-    };
-
-    let (external_id, external_source) = match lookup {
-        Some(pair) => pair,
-        None => return Ok(None),
-    };
 
     let client = sdks::RestClient::new("https://api.themoviedb.org/3/")?
         .with_auth(sdks::BearerAuth { token: api_key });
 
-    let find_resp = match client
-        .execute(
-            sdks::tmdb::FindByIdEndpoint {
-                external_id,
-                external_source: external_source.to_string(),
-            }
-            .with_cache(Duration::from_secs(360)),
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("tmdb find error: {e}");
-            return Ok(None);
-        }
-    };
-
     match media.kind {
         db::MediaKind::Movie => {
-            if let Some(m) = find_resp.movie_results.into_iter().next() {
+            // Use the TMDB ID directly if known; otherwise discover it via /find.
+            let tmdb_movie_id: Option<i64> = if let Some(id) = ids.tmdb {
+                Some(id)
+            } else {
+                let (external_id, external_source) = if let Some(ref imdb) = ids.imdb {
+                    (imdb.clone(), "imdb_id")
+                } else if let Some(tvdb) = ids.tvdb {
+                    (tvdb.to_string(), "tvdb_id")
+                } else {
+                    return Ok(None);
+                };
+                client
+                    .execute(
+                        sdks::tmdb::FindByIdEndpoint {
+                            external_id,
+                            external_source: external_source.to_string(),
+                        }
+                        .with_cache(Duration::from_secs(360)),
+                    )
+                    .await
+                    .ok()
+                    .and_then(|r| r.movie_results.into_iter().next().map(|m| m.id))
+            };
+
+            if let Some(tmdb_id) = tmdb_movie_id {
                 let movie_details = client
                     .execute(
-                        sdks::tmdb::MovieEndpoint::new(m.id)
+                        sdks::tmdb::MovieEndpoint::new(tmdb_id)
                             .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
@@ -436,10 +427,34 @@ async fn fetch_tmdb_meta(
             }
         }
         db::MediaKind::Series => {
-            if let Some(s) = find_resp.tv_results.into_iter().next() {
+            // Use the TMDB ID directly if known; otherwise discover it via /find.
+            let tmdb_series_id: Option<i64> = if let Some(id) = ids.tmdb {
+                Some(id)
+            } else {
+                let (external_id, external_source) = if let Some(ref imdb) = ids.imdb {
+                    (imdb.clone(), "imdb_id")
+                } else if let Some(tvdb) = ids.tvdb {
+                    (tvdb.to_string(), "tvdb_id")
+                } else {
+                    return Ok(None);
+                };
+                client
+                    .execute(
+                        sdks::tmdb::FindByIdEndpoint {
+                            external_id,
+                            external_source: external_source.to_string(),
+                        }
+                        .with_cache(Duration::from_secs(360)),
+                    )
+                    .await
+                    .ok()
+                    .and_then(|r| r.tv_results.into_iter().next().map(|s| s.id))
+            };
+
+            if let Some(tmdb_id) = tmdb_series_id {
                 let tv_details = client
                     .execute(
-                        sdks::tmdb::SeriesEndpoint::new(s.id)
+                        sdks::tmdb::SeriesEndpoint::new(tmdb_id)
                             .with_cache(Duration::from_secs(360)),
                     )
                     .await?;

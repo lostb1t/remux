@@ -99,6 +99,7 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
             target.title = source.title.clone();
         }
     }
+
     fill!(description);
     fill!(released_at);
     fill!(runtime);
@@ -135,17 +136,6 @@ pub(crate) fn apply_title_format(media: &mut db::Media) {
             };
         }
     }
-}
-
-pub(crate) fn episode_meta_complete(media: &db::Media) -> bool {
-    let has_title = !media.title.trim().is_empty();
-    let has_summary = media
-        .description
-        .as_ref()
-        .map(|text| !text.trim().is_empty())
-        .unwrap_or(false);
-    let has_air_date = media.released_at.is_some();
-    has_title && has_summary && has_air_date
 }
 
 async fn apply_meta(
@@ -606,47 +596,24 @@ impl AddonService {
         if applicable.is_empty() {
             return Ok(());
         }
-        let mut applied_any = false;
-        let mut fallback_episode: Option<db::Media> = None;
-        for (name, addon) in &applicable {
-            match addon.meta_fetch(media, ctx).await {
-                Ok(Some(patch)) => {
-                    if media.kind == db::MediaKind::Episode
-                        && !episode_meta_complete(&patch)
-                    {
-                        if fallback_episode.is_none() {
-                            fallback_episode = Some(patch);
-                        }
-                        continue;
-                    }
 
-                    let replace = if media.kind == db::MediaKind::Episode {
-                        true
-                    } else {
-                        force_refresh && !applied_any
-                    };
+        let results = futures::future::join_all(
+            applicable
+                .iter()
+                .map(|(_, addon)| addon.meta_fetch(media, ctx)),
+        )
+        .await;
 
-                    apply_meta(media, patch, replace, ctx).await;
-                    applied_any = true;
-
-                    if media.kind == db::MediaKind::Episode {
-                        break;
-                    }
-                }
-                Ok(None) => continue,
+        for ((name, _), result) in applicable.iter().zip(results) {
+            match result {
+                Ok(Some(patch)) => apply_meta(media, patch, force_refresh, ctx).await,
+                Ok(None) => {}
                 Err(e) => {
-                    tracing::error!(addon = %name, error = %e, "meta addon error");
-                    continue;
+                    tracing::error!(addon = %name, error = %e, "meta addon error")
                 }
             }
         }
 
-        if media.kind == db::MediaKind::Episode && !applied_any {
-            if let Some(patch) = fallback_episode {
-                apply_meta(media, patch, true, ctx).await;
-                applied_any = true;
-            }
-        }
         media.refreshed_at = Some(chrono::Utc::now().naive_utc());
         Ok(())
     }
