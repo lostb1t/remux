@@ -1838,11 +1838,15 @@ impl Media {
             .collect();
         if !rel_ids.is_empty() {
             let mut g_qb = sqlx::QueryBuilder::new(
+                // Drive from media_relations using the left_media_id index.
+                // Filtering g.kind in SQL caused the planner to drive from the
+                // media table (scanning all persons/genres) instead — very slow.
+                // We filter by kind in Rust after the fetch.
                 "SELECT mr.left_media_id, mr.relation_id, mr.right_media_id, mr.weight, \
                  mr.role, mr.character, g.id, g.title, g.kind \
                  FROM media_relations mr \
                  JOIN media g ON g.id = mr.right_media_id \
-                 WHERE g.kind IN ('genre', 'person') AND mr.left_media_id IN (",
+                 WHERE mr.left_media_id IN (",
             );
             let mut sep = g_qb.separated(", ");
             for id in &rel_ids {
@@ -1854,6 +1858,13 @@ impl Media {
                     let mut rels_map: HashMap<Uuid, Vec<(MediaRelation, Media)>> =
                         HashMap::new();
                     for row in rows {
+                        let kind_str: String = row.get(8);
+                        let Ok(kind) = MediaKind::try_from(kind_str) else {
+                            continue;
+                        };
+                        if !matches!(kind, MediaKind::Genre | MediaKind::Person) {
+                            continue;
+                        }
                         let left_media_id: Uuid = row.get(0);
                         let rel = MediaRelation {
                             relation_id: row.get(1),
@@ -1864,12 +1875,10 @@ impl Media {
                             character: row.get(5),
                             ..Default::default()
                         };
-                        let kind_str: String = row.get(8);
                         let related = Media {
                             id: row.get(6),
                             title: row.get(7),
-                            kind: MediaKind::try_from(kind_str)
-                                .unwrap_or(MediaKind::Genre),
+                            kind,
                             ..Default::default()
                         };
                         rels_map

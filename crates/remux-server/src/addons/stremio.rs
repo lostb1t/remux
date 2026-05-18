@@ -230,6 +230,11 @@ impl AddonKind for StremioAddon {
                     }
                     match db::stremio_meta_to_medias(meta) {
                         Ok(mut items) => {
+                            // Only emit the top-level item (series/movie).
+                            // Seasons and episodes are populated by sync_tree
+                            // during RefreshLibrary, avoiding FK constraint
+                            // failures when chunks are split across parents.
+                            items.retain(|x| x.parent_id.is_none());
                             if let Some(top) = items.first_mut() {
                                 top.parent_id = None;
                             }
