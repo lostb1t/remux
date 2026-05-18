@@ -330,6 +330,21 @@ pub async fn livetv_timers(_session: AuthSession) -> Result<impl IntoResponse> {
 }
 
 // --------------------------------------------------------------------------
+// GET /livetv/recordings/folders
+// --------------------------------------------------------------------------
+
+#[get("/livetv/recordings/folders")]
+pub async fn livetv_recording_folders(
+    _session: AuthSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(api::QueryResult::<api::BaseItemDto> {
+        total_record_count: 0,
+        start_index: 0,
+        items: vec![],
+    }))
+}
+
+// --------------------------------------------------------------------------
 // GET /livetv/programs/{programId}
 // --------------------------------------------------------------------------
 
