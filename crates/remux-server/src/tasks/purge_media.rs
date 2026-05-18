@@ -7,8 +7,7 @@ use crate::AppContext;
 
 pub struct PurgeMediaTask;
 
-const PURGE_KINDS: &str =
-    "'movie','series','season','episode','source','track','album','artist'";
+const PURGE_KINDS: &str = "'movie','series','season','episode','source','track','album','artist','person','genre'";
 
 #[async_trait]
 impl Task for PurgeMediaTask {

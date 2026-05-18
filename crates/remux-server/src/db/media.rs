@@ -1877,6 +1877,24 @@ impl Media {
                             .or_default()
                             .push((rel, related));
                     }
+                    // Batch-load images for the related nodes (persons, genres)
+                    let related_ids: Vec<Uuid> = rels_map
+                        .values()
+                        .flat_map(|v| v.iter().map(|(_, m)| m.id))
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    let mut related_images =
+                        MediaImage::get_for_media_ids(db, &related_ids)
+                            .await
+                            .unwrap_or_default();
+                    for rels in rels_map.values_mut() {
+                        for (_, m) in rels.iter_mut() {
+                            if let Some(imgs) = related_images.remove(&m.id) {
+                                m.images = imgs;
+                            }
+                        }
+                    }
                     for media in &mut records {
                         if let Some(rels) = rels_map.remove(&media.id) {
                             media.relations = Some(rels);
