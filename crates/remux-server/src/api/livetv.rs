@@ -711,6 +711,9 @@ pub struct GetAllChannelsQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
     pub search: Option<String>,
+    pub enabled: Option<bool>,
+    pub country: Option<String>,
+    pub sort: Option<String>,
 }
 
 #[get("/remux/iptv/channels")]
@@ -719,6 +722,10 @@ pub async fn remux_iptv_channels(
     _session: AdminSession,
     Query(q): Query<GetAllChannelsQuery>,
 ) -> Result<impl IntoResponse> {
+    let sort_by = match q.sort.as_deref() {
+        Some("name") => vec![api::ItemSortBy::SortName],
+        _ => vec![api::ItemSortBy::ChannelOrder],
+    };
     let result = db::Media::get_by_filter(
         &state.ctx.db,
         &db::MediaFilter {
@@ -726,6 +733,10 @@ pub async fn remux_iptv_channels(
             limit: q.limit,
             offset: q.offset,
             title_contains: q.search.filter(|s| !s.is_empty()),
+            enabled: q.enabled,
+            country_filter: q.country.filter(|s| !s.is_empty()),
+            sort_by,
+            sort_order: vec![api::SortOrder::Ascending],
             total_count: true,
             ..Default::default()
         },
@@ -742,6 +753,25 @@ pub async fn remux_iptv_channels(
         "Items": dtos,
         "TotalRecordCount": result.total_count,
     })))
+}
+
+// --------------------------------------------------------------------------
+// GET /remux/iptv/channels/countries  (distinct country codes for TvChannels)
+// --------------------------------------------------------------------------
+
+#[get("/remux/iptv/channels/countries")]
+pub async fn remux_iptv_channel_countries(
+    State(state): State<AppState>,
+    _session: AdminSession,
+) -> Result<impl IntoResponse> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT country FROM media \
+         WHERE kind = 'tv_channel' AND country IS NOT NULL AND country != '' \
+         ORDER BY country",
+    )
+    .fetch_all(&state.ctx.db)
+    .await?;
+    Ok(Json(rows))
 }
 
 // --------------------------------------------------------------------------
@@ -862,6 +892,7 @@ pub struct ChannelEditorDto {
     pub enabled: bool,
     pub logo: Option<String>,
     pub group: Option<String>,
+    pub country: Option<String>,
 }
 
 fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
@@ -874,5 +905,6 @@ fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
         enabled: m.enabled,
         logo: m.images.get_path(db::ImageKind::Primary).map(str::to_owned),
         group: m.media_id.clone(),
+        country: m.country.clone(),
     }
 }

@@ -2862,6 +2862,7 @@ pub enum ItemSortBy {
     IndexNumber,
     SimilarityScore,
     SearchScore,
+    ChannelOrder,
 }
 
 #[derive(
@@ -3410,6 +3411,7 @@ pub struct ChannelEditorItem {
     pub enabled: bool,
     pub logo: Option<String>,
     pub group: Option<String>,
+    pub country: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -4515,6 +4517,9 @@ pub struct GetIptvChannels {
     pub limit: u32,
     pub offset: u32,
     pub search: String,
+    pub enabled: Option<bool>,
+    pub country: String,
+    pub sort: String,
 }
 
 impl Endpoint for GetIptvChannels {
@@ -4530,7 +4535,26 @@ impl Endpoint for GetIptvChannels {
         if !self.search.is_empty() {
             q.push(("search".into(), self.search.clone()));
         }
+        if let Some(e) = self.enabled {
+            q.push(("enabled".into(), e.to_string()));
+        }
+        if !self.country.is_empty() {
+            q.push(("country".into(), self.country.clone()));
+        }
+        if !self.sort.is_empty() {
+            q.push(("sort".into(), self.sort.clone()));
+        }
         q
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetIptvChannelCountries;
+
+impl Endpoint for GetIptvChannelCountries {
+    type Output = Vec<String>;
+    fn path(&self) -> String {
+        "/remux/iptv/channels/countries".into()
     }
 }
 

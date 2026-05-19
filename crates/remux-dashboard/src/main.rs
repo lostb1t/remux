@@ -11,21 +11,21 @@ use remux_sdks::remux::{
     DeleteVirtualFolder, EncodingOptions, EpgSourceInfo, FilterMatchMode, FilterRule,
     GetAddonCatalogs, GetApiKeys, GetBrandingConfiguration,
     GetCertificationSuggestions, GetCountries, GetEncodingConfiguration, GetEpgSources,
-    GetIptvChannels, GetItemCounts, GetItems, GetLocalSuggestions, GetParentalRatings,
-    GetScheduledTasks, GetSessions, GetStartupConfiguration, GetStreamGroupPreview,
-    GetSystemConfiguration, GetTagSuggestions, GetTunerHosts, GetUsers,
-    HardwareAccelerationType, ItemCounts, JellyfinAuth, ListAddonKinds, ListAddons,
-    ListStreamGroups, NumericOp, ParentalRating, PatchChannel, PatchChannelRequest,
-    PatchItem, PatchItemPayload, PostStartupComplete, PostStartupConfiguration,
-    PostStartupUser, PublicSystemInfo, SaveEpgSource, ServerConfiguration,
-    SessionInfoDto, SetOp, SourceUrl, StartTask, StartupConfiguration, StartupUser,
-    StopTask, StreamCodec, StreamFilter, StreamGroupDto, StreamGroupPreviewDto,
-    StreamResolution, StreamRule, StreamSource, TaskInfo, TaskTriggerInfo,
-    TaskTriggerInfoType, TunerHostInfo, UpdateAddon, UpdateAddonCatalogRequest,
-    UpdateAddonCatalogs, UpdateAddonRequest, UpdateBrandingConfiguration,
-    UpdateEncodingConfiguration, UpdateStreamGroup, UpdateStreamGroupRequest,
-    UpdateSystemConfiguration, UpdateTaskTriggers, UpdateUser, UpdateUserPolicy,
-    UserDto, Username,
+    GetIptvChannelCountries, GetIptvChannels, GetItemCounts, GetItems,
+    GetLocalSuggestions, GetParentalRatings, GetScheduledTasks, GetSessions,
+    GetStartupConfiguration, GetStreamGroupPreview, GetSystemConfiguration,
+    GetTagSuggestions, GetTunerHosts, GetUsers, HardwareAccelerationType, ItemCounts,
+    JellyfinAuth, ListAddonKinds, ListAddons, ListStreamGroups, NumericOp,
+    ParentalRating, PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
+    PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
+    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
+    StartupConfiguration, StartupUser, StopTask, StreamCodec, StreamFilter,
+    StreamGroupDto, StreamGroupPreviewDto, StreamResolution, StreamRule, StreamSource,
+    TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo, UpdateAddon,
+    UpdateAddonCatalogRequest, UpdateAddonCatalogs, UpdateAddonRequest,
+    UpdateBrandingConfiguration, UpdateEncodingConfiguration, UpdateStreamGroup,
+    UpdateStreamGroupRequest, UpdateSystemConfiguration, UpdateTaskTriggers,
+    UpdateUser, UpdateUserPolicy, UserDto, Username,
 };
 use remux_sdks::stremio::ResourceType;
 use remux_sdks::{ClientError, RestClient};
@@ -3302,19 +3302,48 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
     let mut search_committed = use_signal(String::new);
     let mut search_input = use_signal(String::new);
     let mut bulk_working = use_signal(|| false);
+    // "all" | "true" | "false"
+    let mut enabled_filter = use_signal(|| "all".to_string());
+    let mut country_filter = use_signal(String::new);
+    let mut countries: Signal<Vec<String>> = use_signal(Vec::new);
+    // "order" | "name"
+    let mut sort_mode = use_signal(|| "order".to_string());
+    let mut show_filter_modal = use_signal(|| false);
+
+    // Load distinct country codes once on mount
+    let app_state_countries = app_state.clone();
+    use_effect(move || {
+        let client = app_state_countries.client.clone();
+        spawn(async move {
+            if let Ok(cs) = client.execute(GetIptvChannelCountries).await {
+                countries.set(cs);
+            }
+        });
+    });
 
     let app_state_effect = app_state.clone();
     use_effect(move || {
         let p = *page.read();
         let s = search_committed.read().clone();
+        let ef = enabled_filter.read().clone();
+        let cf = country_filter.read().clone();
+        let sm = sort_mode.read().clone();
         loading.set(true);
         let client = app_state_effect.client.clone();
         spawn(async move {
+            let enabled = match ef.as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            };
             match client
                 .execute(GetIptvChannels {
                     limit: PAGE_SIZE,
                     offset: p * PAGE_SIZE,
                     search: s,
+                    enabled,
+                    country: cf,
+                    sort: sm,
                 })
                 .await
             {
@@ -3347,6 +3376,21 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                     span { style: "font-size:.75rem;opacity:.5;margin-left:8px", "{total_v} total" }
                 }
                 div { style: "display:flex;gap:8px;align-items:center;margin-left:auto",
+                    // Filters / Sort modal trigger
+                    {
+                        let filters_active = enabled_filter.read().as_str() != "all"
+                            || !country_filter.read().is_empty()
+                            || sort_mode.read().as_str() != "order"
+                            || !search_committed.read().is_empty();
+                        rsx! {
+                            button {
+                                class: if filters_active { "btn btn-primary" } else { "btn btn-ghost" },
+                                style: "height:32px;font-size:.68rem",
+                                onclick: move |_| show_filter_modal.set(true),
+                                if filters_active { "Filters ●" } else { "Filters" }
+                            }
+                        }
+                    }
                     // Enable all / Disable all — server-side bulk op
                     button {
                         class: "btn btn-ghost",
@@ -3366,8 +3410,16 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                     // re-fetch to reflect new state
                                     let s = search_committed.peek().clone();
                                     let p = *page.peek();
+                                    let ef = enabled_filter.peek().clone();
+                                    let cf = country_filter.peek().clone();
+                                    let sm = sort_mode.peek().clone();
+                                    let enabled = match ef.as_str() {
+                                        "true" => Some(true),
+                                        "false" => Some(false),
+                                        _ => None,
+                                    };
                                     loading.set(true);
-                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s }).await {
+                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s, enabled, country: cf, sort: sm }).await {
                                         total.set(r.total_record_count);
                                         channels.set(r.items);
                                     }
@@ -3394,8 +3446,16 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                     bulk_working.set(false);
                                     let s = search_committed.peek().clone();
                                     let p = *page.peek();
+                                    let ef = enabled_filter.peek().clone();
+                                    let cf = country_filter.peek().clone();
+                                    let sm = sort_mode.peek().clone();
+                                    let enabled = match ef.as_str() {
+                                        "true" => Some(true),
+                                        "false" => Some(false),
+                                        _ => None,
+                                    };
                                     loading.set(true);
-                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s }).await {
+                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s, enabled, country: cf, sort: sm }).await {
                                         total.set(r.total_record_count);
                                         channels.set(r.items);
                                     }
@@ -3404,23 +3464,6 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                             }
                         },
                         if *bulk_working.read() { "Working…" } else { "Disable All" }
-                    }
-                    // Search
-                    input {
-                        class: "form-input",
-                        style: "height:32px;font-size:.8rem;width:220px",
-                        placeholder: "Search channels…",
-                        value: "{search_input.read()}",
-                        oninput: move |e| search_input.set(e.value()),
-                        onkeydown: move |e| {
-                            if e.key() == Key::Enter { do_search(); }
-                        },
-                    }
-                    button {
-                        class: "btn btn-ghost",
-                        style: "height:32px;font-size:.68rem",
-                        onclick: move |_| do_search(),
-                        "Search"
                     }
                 }
             }
@@ -3432,10 +3475,14 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                     span { class: "loading-text", style: "color:var(--error)", "{err}" }
                 } else if channels.read().is_empty() {
                     div { class: "empty-state",
-                        if total_v == 0 && search_committed.read().is_empty() {
+                        if total_v == 0
+                            && search_committed.read().is_empty()
+                            && enabled_filter.read().as_str() == "all"
+                            && country_filter.read().is_empty()
+                        {
                             "No channels yet. Run a refresh after adding channel sources."
                         } else {
-                            "No channels match your search."
+                            "No channels match your filters."
                         }
                     }
                 } else {
@@ -3444,9 +3491,8 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                         div { class: "flex items-center px-3 py-1 border-b border-[var(--border)]",
                             style: "font-size:.72rem;opacity:.5;font-weight:600;gap:8px",
                             div { style: "width:32px", "On" }
-                            div { style: "width:64px", "Order" }
                             div { class: "flex-1", "Name / Display Name" }
-                            div { style: "width:48px;text-align:right", "Ch#" }
+                            div { style: "width:80px;text-align:right", "Ch#" }
                         }
                         div { class: "row-list",
                             for ch in channels.read().clone() {
@@ -3456,6 +3502,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                     let client2 = app_state.client.clone();
                                     let client3 = app_state.client.clone();
                                     let sort_val = ch.sort_order.map(|n| n.to_string()).unwrap_or_default();
+                                    let ch_placeholder = ch.channel_number.map(|n| n.to_string()).unwrap_or_else(|| "–".into());
                                     let name_val = ch.custom_name.clone().unwrap_or_default();
 
                                     rsx! {
@@ -3487,12 +3534,41 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                                     }
                                                 },
                                             }
+                                            div { class: "flex-1 min-w-0",
+                                                div { style: "font-size:.82rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis",
+                                                    "{ch.name}"
+                                                }
+                                                input {
+                                                    class: "form-input",
+                                                    style: "height:24px;font-size:.75rem;padding:2px 6px;margin-top:2px;width:100%",
+                                                    value: "{name_val}",
+                                                    placeholder: "Custom display name…",
+                                                    onchange: {
+                                                        let id = id.clone();
+                                                        move |e| {
+                                                            let v = e.value();
+                                                            let custom = if v.is_empty() { None } else { Some(v.clone()) };
+                                                            if let Some(c) = channels.write().iter_mut().find(|c| c.id == id) {
+                                                                c.custom_name = custom.clone();
+                                                            }
+                                                            let c = client3.clone();
+                                                            let id = id.clone();
+                                                            spawn(async move {
+                                                                let _ = c.execute(PatchChannel {
+                                                                    id,
+                                                                    patch: PatchChannelRequest { custom_name: custom, ..Default::default() },
+                                                                }).await;
+                                                            });
+                                                        }
+                                                    },
+                                                }
+                                            }
                                             input {
                                                 class: "form-input",
                                                 r#type: "number",
-                                                style: "width:64px;height:28px;font-size:.8rem;padding:2px 6px;flex-shrink:0",
+                                                style: "width:80px;height:28px;font-size:.8rem;padding:2px 6px;flex-shrink:0;text-align:right",
                                                 value: "{sort_val}",
-                                                placeholder: "–",
+                                                placeholder: "{ch_placeholder}",
                                                 onchange: {
                                                     let id = id.clone();
                                                     move |e| {
@@ -3510,35 +3586,6 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                                         });
                                                     }
                                                 },
-                                            }
-                                            div { class: "flex-1 min-w-0",
-                                                div { style: "font-size:.82rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis",
-                                                    "{ch.name}"
-                                                }
-                                                input {
-                                                    class: "form-input",
-                                                    style: "height:24px;font-size:.75rem;padding:2px 6px;margin-top:2px;width:100%",
-                                                    value: "{name_val}",
-                                                    placeholder: "Custom display name…",
-                                                    onchange: move |e| {
-                                                        let v = e.value();
-                                                        let custom = if v.is_empty() { None } else { Some(v.clone()) };
-                                                        if let Some(c) = channels.write().iter_mut().find(|c| c.id == id) {
-                                                            c.custom_name = custom.clone();
-                                                        }
-                                                        let c = client3.clone();
-                                                        let id = id.clone();
-                                                        spawn(async move {
-                                                            let _ = c.execute(PatchChannel {
-                                                                id,
-                                                                patch: PatchChannelRequest { custom_name: custom, ..Default::default() },
-                                                            }).await;
-                                                        });
-                                                    },
-                                                }
-                                            }
-                                            div { style: "width:48px;font-size:.8rem;opacity:.5;text-align:right;flex-shrink:0",
-                                                if let Some(n) = ch.channel_number { "{n}" }
                                             }
                                         }
                                     }
@@ -3567,6 +3614,94 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                 onclick: move |_| page.set(page_v + 1),
                                 "Next ›"
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Filter / Sort modal
+        if *show_filter_modal.read() {
+            div { class: "modal-backdrop",
+                onclick: move |_| show_filter_modal.set(false),
+                div { class: "modal",
+                    onclick: move |e| e.stop_propagation(),
+                    div { class: "modal-header",
+                        span { class: "modal-title", "Filters & Sort" }
+                    }
+                    div { class: "modal-body",
+                        div { class: "form-group",
+                            label { class: "form-label", "Search" }
+                            input {
+                                class: "form-input",
+                                r#type: "text",
+                                placeholder: "Search channels…",
+                                value: "{search_input.read()}",
+                                oninput: move |e| search_input.set(e.value()),
+                                onkeydown: move |e| {
+                                    if e.key() == Key::Enter {
+                                        do_search();
+                                        show_filter_modal.set(false);
+                                    }
+                                },
+                            }
+                        }
+                        div { class: "form-group",
+                            label { class: "form-label", "Sort by" }
+                            select {
+                                class: "form-input",
+                                value: "{sort_mode.read()}",
+                                onchange: move |e| { sort_mode.set(e.value()); page.set(0); },
+                                option { value: "order", "Order" }
+                                option { value: "name", "Name" }
+                            }
+                        }
+                        div { class: "form-group",
+                            label { class: "form-label", "Status" }
+                            select {
+                                class: "form-input",
+                                value: "{enabled_filter.read()}",
+                                onchange: move |e| { enabled_filter.set(e.value()); page.set(0); },
+                                option { value: "all", "All" }
+                                option { value: "true", "Enabled" }
+                                option { value: "false", "Disabled" }
+                            }
+                        }
+                        if !countries.read().is_empty() {
+                            div { class: "form-group",
+                                label { class: "form-label", "Country" }
+                                select {
+                                    class: "form-input",
+                                    value: "{country_filter.read()}",
+                                    onchange: move |e| { country_filter.set(e.value()); page.set(0); },
+                                    option { value: "", "All countries" }
+                                    for c in countries.read().clone() {
+                                        option { value: "{c}", "{c}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "modal-footer",
+                        button {
+                            class: "btn btn-ghost",
+                            onclick: move |_| {
+                                search_input.set(String::new());
+                                search_committed.set(String::new());
+                                enabled_filter.set("all".to_string());
+                                country_filter.set(String::new());
+                                sort_mode.set("order".to_string());
+                                page.set(0);
+                            },
+                            "Reset"
+                        }
+                        button {
+                            class: "btn btn-primary",
+                            onclick: move |_| {
+                                do_search();
+                                show_filter_modal.set(false);
+                            },
+                            "Done"
                         }
                     }
                 }

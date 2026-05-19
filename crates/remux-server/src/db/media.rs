@@ -659,6 +659,8 @@ pub struct MediaFilter {
     pub filter_rules: Vec<remux_sdks::remux::FilterRule>,
     /// Whether all rules must match (AND) or any rule (OR). Defaults to All.
     pub filter_match: remux_sdks::remux::FilterMatchMode,
+    /// Filter TvChannels by country code (ISO 3166-1 alpha-2, case-insensitive).
+    pub country_filter: Option<String>,
     /// For TvProgram: None = all, Some(true) = live_end < now, Some(false) = live_end >= now
     pub has_aired: Option<bool>,
     /// EPG window: live_end >= this value (program hasn't ended before window start)
@@ -1678,6 +1680,10 @@ impl Media {
                 qb.push(" AND enabled = ").push_bind(*enabled);
             }
 
+            if let Some(c) = &filter.country_filter {
+                qb.push(" AND country = ").push_bind(c.to_uppercase());
+            }
+
             if let Some(parent_enabled) = &filter.parent_enabled {
                 qb.push(" AND parent_id IN (SELECT id FROM media WHERE kind = 'tv_channel' AND enabled = ")
                     .push_bind(*parent_enabled)
@@ -1765,6 +1771,9 @@ impl Media {
                             format!("COALESCE(runtime, 0) {}", dir)
                         }
                         api::ItemSortBy::Random => "RANDOM()".to_string(),
+                        api::ItemSortBy::ChannelOrder => {
+                            format!("(sort_order IS NULL), COALESCE(sort_order, channel_number, 999999) {dir}, title COLLATE NOCASE")
+                        }
                         // Default fallback
                         _ => format!("title COLLATE NOCASE {}", dir),
                     };
@@ -1779,7 +1788,7 @@ impl Media {
             );
         } else if is_channel_query {
             records_qb.push(
-                " ORDER BY COALESCE(sort_order, channel_number, 999999), title COLLATE NOCASE",
+                " ORDER BY (sort_order IS NULL), COALESCE(sort_order, channel_number, 999999), title COLLATE NOCASE",
             );
         }
 
