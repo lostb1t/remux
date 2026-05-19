@@ -115,7 +115,7 @@ hunch = "2"
 log = "0.4"
 env_logger = "0.11"
 nutype = { version = "0.6", features = ["serde"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 imageproc = { version = "0.26", default-features = false, features = ["text"] }
 ab_glyph = "0.2"
 
