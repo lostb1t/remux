@@ -1906,6 +1906,10 @@ pub struct UserPolicy {
     pub allowed_tags: Vec<String>,
     /// Per-user filter rules applied on every item query (same engine as smart collections).
     pub filter_rules: Option<CollectionFilter>,
+    /// When false, search falls back to local DB only (no addon/remote sources).
+    #[serde(default = "default_true")]
+    #[default(true)]
+    pub enable_remote_search: bool,
     #[default(true)]
     pub enable_user_preference_access: bool,
     #[serde(default)]
@@ -1954,7 +1958,8 @@ pub struct UserPolicy {
     pub invalid_login_attempt_count: i64,
     #[default(-1)]
     pub login_attempts_before_lockout: i64,
-    pub max_active_sessions: i64,
+    #[serde(default, deserialize_with = "deserialize_max_sessions")]
+    pub max_active_sessions: Option<i64>,
     #[default(true)]
     pub enable_public_sharing: bool,
     #[serde(default)]
@@ -1971,6 +1976,18 @@ pub struct UserPolicy {
     #[serde(default, deserialize_with = "deserialize_optional_with_default")]
     #[default(SyncPlayUserAccessType::CreateAndJoinGroups)]
     pub sync_play_access: SyncPlayUserAccessType,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn deserialize_max_sessions<'de, D>(d: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let n: Option<i64> = Option::deserialize(d)?;
+    Ok(n.filter(|&v| v > 0))
 }
 
 fn default_authentication_provider_id() -> String {

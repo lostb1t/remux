@@ -100,6 +100,21 @@ impl PlaybackSessionManager {
         self.sessions.iter().map(|e| e.value().clone()).collect()
     }
 
+    /// Count active sessions for a user, optionally excluding sessions from a
+    /// specific device. Excluding the caller's device is correct when checking
+    /// before `insert()`, since insert() replaces any existing session for that
+    /// device and it shouldn't count toward the limit.
+    pub fn count_for_user(&self, user_id: Uuid, exclude_device: Option<&str>) -> usize {
+        self.sessions
+            .iter()
+            .filter(|e| {
+                let s = e.value();
+                s.user_id == user_id
+                    && exclude_device.map_or(true, |d| s.device_id != d)
+            })
+            .count()
+    }
+
     /// Update a session in-place via a closure.
     pub fn update<F: FnOnce(&mut PlaybackSession)>(&self, id: &str, f: F) {
         if let Some(mut entry) = self.sessions.get_mut(id) {

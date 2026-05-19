@@ -36,7 +36,7 @@ use crate::profile::DeviceProfileExt;
 use crate::sdks;
 use crate::torrent;
 use crate::transcode::session::{TranscodeSession, TranscodeState};
-use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
+use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 
 /// Some Stremio addons expose `aiostreams` as an internal hostname not
 /// resolvable from the Remux process. If the user has at least one
@@ -973,6 +973,26 @@ pub async fn report_playback_start(
         .play_session_id
         .clone()
         .unwrap_or_else(|| common::get_uuid().as_simple().to_string());
+
+    if let Some(max) = session
+        .user
+        .policy
+        .as_ref()
+        .and_then(|p| p.max_active_sessions)
+    {
+        // Exclude the caller's own device: insert() will replace any existing
+        // session for that device, so it doesn't consume an extra slot.
+        let current = state
+            .ctx
+            .sessions
+            .count_for_user(session.user.id, Some(&session.device.id));
+        if current >= max as usize {
+            return Err(anyhow::anyhow!("Stream limit reached").context_forbidden(
+                "StreamLimitReached",
+                "Maximum concurrent streams reached",
+            ));
+        }
+    }
 
     let item_id = data.item_id.unwrap_or_default();
 

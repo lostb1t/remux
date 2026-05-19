@@ -3873,6 +3873,14 @@ fn UserForm(
             .map(|f| f.rules.clone())
             .unwrap_or_default()
     });
+    let mut enable_remote_search = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| u.policy.enable_remote_search)
+            .unwrap_or(true)
+    });
+    let mut max_active_sessions: Signal<Option<i64>> =
+        use_signal(|| existing.as_ref().and_then(|u| u.policy.max_active_sessions));
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
@@ -3893,6 +3901,8 @@ fn UserForm(
         let user_dto = existing.clone();
         let rules_snapshot = fr_rules.peek().clone();
         let match_snapshot = fr_match.peek().clone();
+        let remote_search_snapshot = *enable_remote_search.peek();
+        let max_sessions_snapshot = *max_active_sessions.peek();
 
         saving.set(true);
         err.set(None);
@@ -3921,6 +3931,8 @@ fn UserForm(
                     let mut policy = user.policy.clone();
                     policy.is_administrator = admin;
                     policy.filter_rules = filter_rules.clone();
+                    policy.enable_remote_search = remote_search_snapshot;
+                    policy.max_active_sessions = max_sessions_snapshot;
                     client
                         .execute(UpdateUserPolicy {
                             user_id: user.id,
@@ -3940,10 +3952,16 @@ fn UserForm(
                     // Create user
                     let new_user =
                         client.execute(CreateUser { name, password: pw }).await?;
-                    if admin || filter_rules.is_some() {
+                    if admin
+                        || filter_rules.is_some()
+                        || !remote_search_snapshot
+                        || max_sessions_snapshot.is_some()
+                    {
                         let mut policy = new_user.policy.clone();
                         policy.is_administrator = admin;
                         policy.filter_rules = filter_rules.clone();
+                        policy.enable_remote_search = remote_search_snapshot;
+                        policy.max_active_sessions = max_sessions_snapshot;
                         client
                             .execute(UpdateUserPolicy {
                                 user_id: new_user.id,
@@ -4026,6 +4044,39 @@ fn UserForm(
                     }
                     span { class: "toggle-track" }
                 }
+            }
+
+            div { class: "toggle-row",
+                span { class: "toggle-label", "Allow Remote Search" }
+                label { class: "toggle",
+                    input {
+                        r#type: "checkbox",
+                        checked: *enable_remote_search.read(),
+                        onchange: move |e| enable_remote_search.set(e.checked()),
+                    }
+                    span { class: "toggle-track" }
+                }
+            }
+
+            div { class: "field",
+                label { class: "field-label", r#for: "u-max-streams", "Max Concurrent Streams" }
+                input {
+                    id: "u-max-streams",
+                    r#type: "number",
+                    class: "field-input",
+                    min: "1",
+                    placeholder: "Unlimited",
+                    value: (*max_active_sessions.read()).map(|n| n.to_string()).unwrap_or_default(),
+                    oninput: move |e| {
+                        let v = e.value();
+                        max_active_sessions.set(if v.is_empty() {
+                            None
+                        } else {
+                            v.parse::<i64>().ok().map(|n| n.max(1))
+                        });
+                    },
+                }
+                span { class: "field-hint", "Leave blank for unlimited" }
             }
 
             FilterRuleEditor {

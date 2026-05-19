@@ -167,9 +167,19 @@ pub async fn get_items(
                     .collect()
             };
 
-            let (remote_kinds, local_kinds): (Vec<_>, Vec<_>) = requested_kinds
+            let (mut remote_kinds, mut local_kinds): (Vec<_>, Vec<_>) = requested_kinds
                 .into_iter()
                 .partition(|k| is_remote_enabled(&cfg, k));
+
+            let user_remote_enabled = session
+                .user
+                .policy
+                .as_ref()
+                .map(|p| p.enable_remote_search)
+                .unwrap_or(true);
+            if !user_remote_enabled {
+                local_kinds.extend(remote_kinds.drain(..));
+            }
 
             let search_start = std::time::Instant::now();
 
