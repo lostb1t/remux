@@ -974,19 +974,20 @@ pub async fn report_playback_start(
         .clone()
         .unwrap_or_else(|| common::get_uuid().as_simple().to_string());
 
-    if let Some(max) = session
+    let max_sessions = session
         .user
         .policy
         .as_ref()
-        .and_then(|p| p.max_active_sessions)
-    {
+        .map(|p| p.max_active_sessions)
+        .unwrap_or(0);
+    if max_sessions > 0 {
         // Exclude the caller's own device: insert() will replace any existing
         // session for that device, so it doesn't consume an extra slot.
         let current = state
             .ctx
             .sessions
             .count_for_user(session.user.id, Some(&session.device.id));
-        if current >= max as usize {
+        if current >= max_sessions as usize {
             return Err(anyhow::anyhow!("Stream limit reached").context_forbidden(
                 "StreamLimitReached",
                 "Maximum concurrent streams reached",

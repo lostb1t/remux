@@ -292,7 +292,7 @@ pub struct QuickConnectResult {
     pub secret: String,
     pub code: String,
     pub authenticated: bool,
-    pub date_added: Option<DateTime<Utc>>,
+    pub date_added: DateTime<Utc>,
     pub authentication_token: Option<String>,
     pub device_id: Option<String>,
     pub device_name: Option<String>,
@@ -1959,7 +1959,7 @@ pub struct UserPolicy {
     #[default(-1)]
     pub login_attempts_before_lockout: i64,
     #[serde(default, deserialize_with = "deserialize_max_sessions")]
-    pub max_active_sessions: Option<i64>,
+    pub max_active_sessions: i64,
     #[default(true)]
     pub enable_public_sharing: bool,
     #[serde(default)]
@@ -1982,12 +1982,12 @@ fn default_true() -> bool {
     true
 }
 
-fn deserialize_max_sessions<'de, D>(d: D) -> Result<Option<i64>, D::Error>
+fn deserialize_max_sessions<'de, D>(d: D) -> Result<i64, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let n: Option<i64> = Option::deserialize(d)?;
-    Ok(n.filter(|&v| v > 0))
+    Ok(n.unwrap_or(0).max(0))
 }
 
 fn default_authentication_provider_id() -> String {

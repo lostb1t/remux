@@ -233,6 +233,7 @@ pub struct QuickConnectEntry {
     pub device_name: String,
     pub app_name: String,
     pub app_version: String,
+    pub date_added: chrono::DateTime<chrono::Utc>,
 }
 
 #[post("/quickconnect/initiate")]
@@ -254,6 +255,7 @@ pub async fn quickconnect_initiate(
     let app_name = auth_header.client.unwrap_or_default();
     let app_version = auth_header.version.unwrap_or_default();
 
+    let date_added = chrono::Utc::now();
     let entry = QuickConnectEntry {
         code: code.clone(),
         authenticated: false,
@@ -262,6 +264,7 @@ pub async fn quickconnect_initiate(
         device_name: device_name.clone(),
         app_name: app_name.clone(),
         app_version: app_version.clone(),
+        date_added,
     };
     state
         .ctx
@@ -277,7 +280,7 @@ pub async fn quickconnect_initiate(
         secret,
         code,
         authenticated: false,
-        date_added: Some(chrono::Utc::now()),
+        date_added,
         authentication_token: None,
         device_id: Some(device_id),
         device_name: Some(device_name),
@@ -318,7 +321,7 @@ pub async fn quickconnect_connect(
         } else {
             None
         },
-        date_added: None,
+        date_added: entry.date_added,
         device_id: Some(entry.device_id),
         device_name: Some(entry.device_name),
         app_name: Some(entry.app_name),

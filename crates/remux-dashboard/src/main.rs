@@ -3879,8 +3879,12 @@ fn UserForm(
             .map(|u| u.policy.enable_remote_search)
             .unwrap_or(true)
     });
-    let mut max_active_sessions: Signal<Option<i64>> =
-        use_signal(|| existing.as_ref().and_then(|u| u.policy.max_active_sessions));
+    let mut max_active_sessions: Signal<i64> = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|u| u.policy.max_active_sessions)
+            .unwrap_or(0)
+    });
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
@@ -3955,7 +3959,7 @@ fn UserForm(
                     if admin
                         || filter_rules.is_some()
                         || !remote_search_snapshot
-                        || max_sessions_snapshot.is_some()
+                        || max_sessions_snapshot > 0
                     {
                         let mut policy = new_user.policy.clone();
                         policy.is_administrator = admin;
@@ -4066,14 +4070,12 @@ fn UserForm(
                     class: "field-input",
                     min: "1",
                     placeholder: "Unlimited",
-                    value: (*max_active_sessions.read()).map(|n| n.to_string()).unwrap_or_default(),
+                    value: if *max_active_sessions.read() > 0 { max_active_sessions.read().to_string() } else { String::new() },
                     oninput: move |e| {
                         let v = e.value();
-                        max_active_sessions.set(if v.is_empty() {
-                            None
-                        } else {
-                            v.parse::<i64>().ok().map(|n| n.max(1))
-                        });
+                        max_active_sessions.set(
+                            v.parse::<i64>().map(|n| n.max(1)).unwrap_or(0)
+                        );
                     },
                 }
                 span { class: "field-hint", "Leave blank for unlimited" }
