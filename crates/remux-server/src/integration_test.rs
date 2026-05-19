@@ -37,7 +37,7 @@ impl Drop for TestGuard {
 /// carries the `AppContext` and shuts down background services on drop).
 pub async fn new_test_server() -> Result<(TestServer, TestGuard)> {
     let config = Config {
-        database_url: "sqlite::memory:".into(),
+        database_url: Some("sqlite::memory:".into()),
         torrent_http_port: None, // OS picks a free ephemeral port
         disable_dht: true,       // no DHT needed in tests; avoids socket conflicts
         ..Default::default()
