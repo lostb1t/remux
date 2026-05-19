@@ -754,6 +754,8 @@ pub struct Media {
     #[sqlx(skip)]
     pub child_count: Option<i64>,
     #[sqlx(skip)]
+    pub recursive_item_count: Option<i64>,
+    #[sqlx(skip)]
     pub album_count: Option<i64>,
     #[sqlx(skip)]
     pub song_count: Option<i64>,
@@ -1993,6 +1995,34 @@ impl Media {
                     }
                     Err(e) => {
                         tracing::warn!("failed to load playlist child counts: {e}");
+                    }
+                }
+            }
+
+            // For series: populate recursive_item_count with total episode count
+            let series_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| m.kind == MediaKind::Series)
+                .map(|m| m.id)
+                .collect();
+            if !series_ids.is_empty() {
+                let mut ep_qb = sqlx::QueryBuilder::new(
+                    "SELECT grandparent_id, COUNT(*) as cnt FROM media WHERE kind = 'episode' AND grandparent_id IN (",
+                );
+                let mut sep = ep_qb.separated(", ");
+                for id in &series_ids {
+                    sep.push_bind(id);
+                }
+                ep_qb.push(") GROUP BY grandparent_id");
+                if let Ok(rows) = ep_qb.build().fetch_all(db).await {
+                    let mut map: HashMap<Uuid, i64> = HashMap::new();
+                    for row in rows {
+                        map.insert(row.get(0), row.get(1));
+                    }
+                    for media in &mut records {
+                        if media.kind == MediaKind::Series {
+                            media.recursive_item_count = map.get(&media.id).copied();
+                        }
                     }
                 }
             }

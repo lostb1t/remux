@@ -410,6 +410,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             })
             .unwrap_or_default(),
         child_count: media.child_count,
+        recursive_item_count: media.recursive_item_count,
         album_count: media.album_count,
         song_count: media.song_count,
         // Music track fields: album name, album id, artist name
