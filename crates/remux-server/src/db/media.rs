@@ -3101,7 +3101,7 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                     format!("certification_age = {value}")
                 }
                 NumericOp::Gt => format!("certification_age > {value}"),
-                NumericOp::Lt => format!("certification_age < {value}"),
+                NumericOp::Lt => format!("certification_age <= {value}"),
             };
             Some((sql, negated))
         }

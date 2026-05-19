@@ -103,20 +103,11 @@ pub async fn shows_episodes(
 #[get("/userviews")]
 pub async fn userviews(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let policy_rules: Vec<remux_sdks::remux::FilterRule> = session
-        .user
-        .policy
-        .as_ref()
-        .and_then(|p| p.0.filter_rules.as_ref())
-        .map(|f| f.rules.clone())
-        .unwrap_or_default();
-
     let library_filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
         promoted: Some(true),
-        filter_rules: policy_rules,
         include_child_count: true,
         ..Default::default()
     };
@@ -152,20 +143,11 @@ pub async fn userviews(
 #[get("/userviews/groupingoptions")]
 pub async fn userviews_groupingoptions(
     State(state): State<AppState>,
-    session: auth::AuthSession,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let policy_rules: Vec<remux_sdks::remux::FilterRule> = session
-        .user
-        .policy
-        .as_ref()
-        .and_then(|p| p.0.filter_rules.as_ref())
-        .map(|f| f.rules.clone())
-        .unwrap_or_default();
-
     let filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
         promoted: Some(true),
-        filter_rules: policy_rules,
         ..Default::default()
     };
     let items = db::Media::get_by_filter(&state.ctx.db, &filter)

@@ -2184,7 +2184,7 @@ fn field_label(key: &str) -> &'static str {
         "year" => "Year",
         "rating_audience" => "Audience Rating",
         "rating_critic" => "Critic Rating",
-        "parental_rating" => "Parental Rating",
+        "parental_rating" => "Max Parental Rating",
         "certification" => "Certification",
         "tag" => "Tag",
         "studio" => "Studio",
@@ -2199,10 +2199,10 @@ fn field_label(key: &str) -> &'static str {
 /// Returns valid operators for a field key as (value, label) pairs.
 fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
     match field_key {
-        "year" | "rating_audience" | "rating_critic" | "parental_rating" => {
+        "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "has_trailer" => vec![],
+        "parental_rating" | "has_trailer" => vec![],
         _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
@@ -2327,7 +2327,7 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
             value: value_str.parse().unwrap_or(0.0),
         },
         "parental_rating" => FilterRule::ParentalRating {
-            op: num_op,
+            op: NumericOp::Lt,
             value: value_str.parse().unwrap_or(0),
         },
         "certification" => FilterRule::Certification {
@@ -2621,9 +2621,22 @@ fn FilterRuleRow(
     rules: Signal<Vec<FilterRule>>,
     #[props(default = true)] collection_mode: bool,
 ) -> Element {
+    let app_state = use_context::<AppState>();
+    let mut parental_ratings: Signal<Vec<ParentalRating>> = use_signal(Vec::new);
+    use_effect(move || {
+        let client = app_state.client.clone();
+        spawn(async move {
+            if let Ok(ratings) = client.execute(GetParentalRatings).await {
+                parental_ratings.set(ratings);
+            }
+        });
+    });
+
     let (field_val, op_val, value_val) = rule_to_raw(&rule);
     let ops = ops_for_field(&field_val);
     let is_trailer = field_val == "has_trailer";
+    let is_parental_rating = field_val == "parental_rating";
+    let hide_operator = is_trailer || is_parental_rating;
 
     // Clones for closures that capture by move
     let fv1 = field_val.clone();
@@ -2659,7 +2672,6 @@ fn FilterRuleRow(
                     option { value: "rating_critic",   selected: field_val == "rating_critic",   { field_label("rating_critic") } }
                 }
                 option { value: "parental_rating", selected: field_val == "parental_rating", { field_label("parental_rating") } }
-                option { value: "certification",   selected: field_val == "certification",   { field_label("certification") } }
                 option { value: "tag",             selected: field_val == "tag",             { field_label("tag") } }
                 if collection_mode {
                     option { value: "studio",          selected: field_val == "studio",          { field_label("studio") } }
@@ -2678,7 +2690,7 @@ fn FilterRuleRow(
                 }
             }
             // Operator selector (hidden for has_trailer which has no operator)
-            if !is_trailer {
+            if !hide_operator {
                 select {
                     class: "select-input",
                     style: "flex:1",
@@ -2693,7 +2705,7 @@ fn FilterRuleRow(
                     }
                 }
             }
-            // Value input — dropdown for has_trailer, chip input for set fields, text for numeric
+            // Value input — dropdown for has_trailer/parental_rating, chip input for set fields, text for numeric
             if is_trailer {
                 select {
                     class: "select-input",
@@ -2706,6 +2718,25 @@ fn FilterRuleRow(
                     },
                     option { value: "true",  selected: value_val == "true",  "Yes" }
                     option { value: "false", selected: value_val == "false", "No" }
+                }
+            } else if is_parental_rating {
+                select {
+                    class: "select-input",
+                    style: "flex:1.5",
+                    value: "{value_val}",
+                    onchange: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule(&fv2, "lt", &e.value());
+                        }
+                    },
+                    option { value: "", selected: value_val.is_empty(), disabled: true, "Select rating" }
+                    for rating in parental_ratings.read().iter().filter(|r| r.value.is_some()) {
+                        option {
+                            value: "{rating.value.unwrap_or_default()}",
+                            selected: value_val == rating.value.unwrap_or_default().to_string(),
+                            "{rating.name}"
+                        }
+                    }
                 }
             } else if is_set_field(&field_val) {
                 ChipInput {
@@ -3693,25 +3724,6 @@ fn UserForm(
     let mut password2 = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
-    let mut parental_ratings: Signal<Vec<ParentalRating>> = use_signal(Vec::new);
-    let mut max_parental_rating = use_signal(|| {
-        existing
-            .as_ref()
-            .and_then(|u| u.policy.max_parental_rating)
-            .map(|v| v.to_string())
-            .unwrap_or_default()
-    });
-
-    let app_state_ratings = app_state.clone();
-    use_effect(move || {
-        let client = app_state_ratings.client.clone();
-        spawn(async move {
-            if let Ok(ratings) = client.execute(GetParentalRatings).await {
-                parental_ratings.set(ratings);
-            }
-        });
-    });
-
     let fr_match: Signal<FilterMatchMode> = use_signal(|| {
         existing
             .as_ref()
@@ -3746,7 +3758,6 @@ fn UserForm(
         let user_dto = existing.clone();
         let rules_snapshot = fr_rules.peek().clone();
         let match_snapshot = fr_match.peek().clone();
-        let max_parental_snapshot = max_parental_rating.peek().parse::<i32>().ok();
 
         saving.set(true);
         err.set(None);
@@ -3775,8 +3786,6 @@ fn UserForm(
                     let mut policy = user.policy.clone();
                     policy.is_administrator = admin;
                     policy.filter_rules = filter_rules.clone();
-                    policy.max_parental_rating = max_parental_snapshot;
-                    policy.max_parental_sub_rating = None;
                     client
                         .execute(UpdateUserPolicy {
                             user_id: user.id,
@@ -3796,15 +3805,10 @@ fn UserForm(
                     // Create user
                     let new_user =
                         client.execute(CreateUser { name, password: pw }).await?;
-                    if admin
-                        || max_parental_snapshot.is_some()
-                        || filter_rules.is_some()
-                    {
+                    if admin || filter_rules.is_some() {
                         let mut policy = new_user.policy.clone();
                         policy.is_administrator = admin;
                         policy.filter_rules = filter_rules.clone();
-                        policy.max_parental_rating = max_parental_snapshot;
-                        policy.max_parental_sub_rating = None;
                         client
                             .execute(UpdateUserPolicy {
                                 user_id: new_user.id,
@@ -3886,24 +3890,6 @@ fn UserForm(
                         onchange: move |e| is_admin.set(e.checked()),
                     }
                     span { class: "toggle-track" }
-                }
-            }
-
-            div { class: "field",
-                label { class: "field-label", r#for: "u-parental", "Maximum Parental Rating" }
-                select {
-                    id: "u-parental",
-                    class: "select-input",
-                    value: "{max_parental_rating}",
-                    onchange: move |e| max_parental_rating.set(e.value()),
-                    option { value: "", selected: max_parental_rating.read().is_empty(), "No limit" }
-                    for rating in parental_ratings.read().iter().filter(|r| r.value.is_some()) {
-                        option {
-                            value: "{rating.value.unwrap_or_default()}",
-                            selected: max_parental_rating.read().as_str() == rating.value.unwrap_or_default().to_string(),
-                            "{rating.name}"
-                        }
-                    }
                 }
             }
 

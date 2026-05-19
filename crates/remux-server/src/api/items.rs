@@ -403,7 +403,6 @@ pub async fn get_items(
 
     let want_total = q.enable_total_record_count.unwrap_or(true);
     let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
-    //trace!(?q, "get_items");
     let mut result = db::Media::get_by_jellyfin_filter(
         &state.ctx.db,
         &q,
