@@ -510,6 +510,11 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         item.parent_backdrop_item_id = series_uuid.map(|id| id.to_string());
         item.parent_backdrop_image_tags =
             media.series_backdrop.clone().map(|b| vec![b]);
+        item.parent_thumb_item_id = series_uuid.map(|id| id.to_string());
+        item.parent_thumb_image_tag = media
+            .series_thumb
+            .clone()
+            .or_else(|| media.series_backdrop.clone());
         if media.kind == db::MediaKind::Episode {
             item.season_name = media.parent_title.clone();
         }

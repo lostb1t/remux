@@ -779,6 +779,9 @@ pub struct Media {
     /// Series backdrop hash for episodes/seasons, populated post-query.
     #[sqlx(skip)]
     pub series_backdrop: Option<String>,
+    /// Series thumb hash for episodes/seasons, populated post-query.
+    #[sqlx(skip)]
+    pub series_thumb: Option<String>,
     #[sqlx(skip)]
     pub unplayed_item_count: Option<i64>,
     #[sqlx(skip)]
@@ -881,6 +884,12 @@ impl Media {
             return;
         }
 
+        // Batch-load images for parent series/season items.
+        let mut parent_images =
+            super::image::MediaImage::get_for_media_ids(db, &ids_needed)
+                .await
+                .unwrap_or_default();
+
         for media in records.iter_mut() {
             match media.kind {
                 MediaKind::Track => {
@@ -900,17 +909,40 @@ impl Media {
                     media.parent_title = media
                         .parent_id
                         .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
-                    if let Some(row) =
-                        media.grandparent_id.and_then(|id| parent_map.get(&id))
-                    {
-                        media.series_title = Some(row.title.clone());
+                    let series_id = media.grandparent_id.or(media.parent_id);
+                    if let Some(id) = series_id {
+                        if let Some(row) = parent_map.get(&id) {
+                            media.series_title = Some(row.title.clone());
+                        }
+                        if let Some(imgs) = parent_images.get(&id) {
+                            media.series_poster = imgs
+                                .get(super::image::ImageKind::Primary)
+                                .map(|i| i.path.clone());
+                            media.series_backdrop = imgs
+                                .get(super::image::ImageKind::Backdrop)
+                                .map(|i| i.path.clone());
+                            media.series_thumb = imgs
+                                .get(super::image::ImageKind::Thumb)
+                                .map(|i| i.path.clone());
+                        }
                     }
                 }
                 MediaKind::Season => {
-                    if let Some(row) =
-                        media.parent_id.and_then(|id| parent_map.get(&id))
-                    {
-                        media.series_title = Some(row.title.clone());
+                    if let Some(id) = media.parent_id {
+                        if let Some(row) = parent_map.get(&id) {
+                            media.series_title = Some(row.title.clone());
+                        }
+                        if let Some(imgs) = parent_images.get(&id) {
+                            media.series_poster = imgs
+                                .get(super::image::ImageKind::Primary)
+                                .map(|i| i.path.clone());
+                            media.series_backdrop = imgs
+                                .get(super::image::ImageKind::Backdrop)
+                                .map(|i| i.path.clone());
+                            media.series_thumb = imgs
+                                .get(super::image::ImageKind::Thumb)
+                                .map(|i| i.path.clone());
+                        }
                     }
                 }
                 MediaKind::TvProgram => {

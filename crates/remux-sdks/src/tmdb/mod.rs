@@ -112,6 +112,20 @@ impl Images {
             .or_else(|| self.logos.iter().next())
             .map(|e| e.file_path.as_str())
     }
+
+    /// Best English-language backdrop (title card with text overlay).
+    /// Returns None if no English-tagged backdrop exists.
+    pub fn best_thumb(&self) -> Option<&str> {
+        self.backdrops
+            .iter()
+            .filter(|e| e.iso_639_1.as_deref() == Some("en"))
+            .max_by(|a, b| {
+                a.vote_average
+                    .partial_cmp(&b.vote_average)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|e| e.file_path.as_str())
+    }
 }
 
 #[derive(

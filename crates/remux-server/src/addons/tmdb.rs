@@ -356,6 +356,11 @@ async fn fetch_tmdb_meta(
                     .as_ref()
                     .and_then(|i| i.best_logo())
                     .and_then(|p| tmdb_image(Some(p)));
+                let thumb = movie_details
+                    .images
+                    .as_ref()
+                    .and_then(|i| i.best_thumb())
+                    .and_then(|p| tmdb_image(Some(p)));
                 let rating =
                     movie_details
                         .release_dates
@@ -422,6 +427,9 @@ async fn fetch_tmdb_meta(
                 if let Some(url) = logo {
                     patch.set_image(db::ImageKind::Logo, url);
                 }
+                if let Some(url) = thumb {
+                    patch.set_image(db::ImageKind::Thumb, url);
+                }
                 let mut relations = vec![];
                 if let Some(genres) = &movie_details.genres {
                     relations.extend(build_genre_relations(media.id, genres));
@@ -478,6 +486,11 @@ async fn fetch_tmdb_meta(
                     .as_ref()
                     .and_then(|i| i.best_logo())
                     .and_then(|p| tmdb_image(Some(p)));
+                let thumb = tv_details
+                    .images
+                    .as_ref()
+                    .and_then(|i| i.best_thumb())
+                    .and_then(|p| tmdb_image(Some(p)));
                 let rating =
                     tv_details
                         .content_ratings
@@ -518,6 +531,9 @@ async fn fetch_tmdb_meta(
                 }
                 if let Some(url) = logo {
                     patch.set_image(db::ImageKind::Logo, url);
+                }
+                if let Some(url) = thumb {
+                    patch.set_image(db::ImageKind::Thumb, url);
                 }
                 let mut relations = vec![];
                 if let Some(genres) = &tv_details.genres {
