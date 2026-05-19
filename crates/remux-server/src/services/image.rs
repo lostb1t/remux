@@ -7,7 +7,6 @@ use imageproc::drawing::draw_text_mut;
 use uuid::Uuid;
 
 use crate::api::image::detect_content_type;
-use crate::base_data_dir;
 use crate::db;
 use crate::db::ImageKind;
 
@@ -112,26 +111,28 @@ pub struct ImageService;
 
 impl ImageService {
     /// Returns the directory for a library item's local images.
-    pub fn image_dir(id: Uuid) -> PathBuf {
-        base_data_dir()
-            .join("meta")
-            .join("library")
-            .join(id.to_string())
+    pub fn image_dir(data_dir: &std::path::Path, id: Uuid) -> PathBuf {
+        data_dir.join("meta").join("library").join(id.to_string())
     }
 
     /// Returns the local path for a specific image type (e.g. `primary.jpg`).
-    pub fn image_path(id: Uuid, image_type: &str) -> PathBuf {
-        Self::image_dir(id).join(format!("{}.jpg", image_type.to_lowercase()))
+    pub fn image_path(
+        data_dir: &std::path::Path,
+        id: Uuid,
+        image_type: &str,
+    ) -> PathBuf {
+        Self::image_dir(data_dir, id).join(format!("{}.jpg", image_type.to_lowercase()))
     }
 
     /// Generate the library placeholder image, write it to disk, save the path
     /// to `media_images` in the DB, and return the JPEG bytes.
     pub async fn library_image(
+        data_dir: &std::path::Path,
         id: Uuid,
         name: &str,
         db: &sqlx::SqlitePool,
     ) -> anyhow::Result<Vec<u8>> {
-        let path = Self::image_path(id, "primary");
+        let path = Self::image_path(data_dir, id, "primary");
 
         if path.exists() {
             return Ok(tokio::fs::read(&path).await?);
@@ -156,12 +157,13 @@ impl ImageService {
 
     /// Save an uploaded image for `id`/`image_type`, write to disk, update DB.
     pub async fn save_image(
+        data_dir: &std::path::Path,
         id: Uuid,
         kind: ImageKind,
         bytes: &[u8],
         db: &sqlx::SqlitePool,
     ) -> anyhow::Result<()> {
-        let path = Self::image_path(id, &kind.to_string());
+        let path = Self::image_path(data_dir, id, &kind.to_string());
         Self::write_image_to_disk(&path, bytes).await?;
         let (img_w, img_h) = image::load_from_memory(bytes)
             .map(|img| (img.width() as i64, img.height() as i64))
@@ -182,11 +184,12 @@ impl ImageService {
 
     /// Delete the local image for `id`/`kind` and remove from media_images.
     pub async fn delete_image(
+        data_dir: &std::path::Path,
         id: Uuid,
         kind: ImageKind,
         db: &sqlx::SqlitePool,
     ) -> anyhow::Result<()> {
-        let path = Self::image_path(id, &kind.to_string());
+        let path = Self::image_path(data_dir, id, &kind.to_string());
         if path.exists() {
             tokio::fs::remove_file(&path).await?;
         }
@@ -206,8 +209,8 @@ impl ImageService {
     }
 
     /// Directory for processed image cache.
-    pub fn cache_dir() -> PathBuf {
-        base_data_dir().join("cache").join("images")
+    pub fn cache_dir(data_dir: &std::path::Path) -> PathBuf {
+        data_dir.join("cache").join("images")
     }
 
     /// Apply image transformations described by `opts`, returning (bytes, content_type).
@@ -215,6 +218,7 @@ impl ImageService {
     /// * If no processing is needed, the raw bytes are returned as-is.
     /// * Processed results are cached at `cache_dir()/{uuid_key}.{ext}`.
     pub async fn process_image(
+        data_dir: &std::path::Path,
         bytes: Vec<u8>,
         opts: &ImageProcessOptions,
         source_key: &str,
@@ -225,7 +229,7 @@ impl ImageService {
         }
 
         let cache_key = opts.cache_key(source_key);
-        let cache_dir = Self::cache_dir();
+        let cache_dir = Self::cache_dir(data_dir);
 
         // Check both extensions — alpha auto-detection may produce PNG even when opts say JPEG.
         for (ext, ct) in [("png", "image/png"), ("jpg", "image/jpeg")] {

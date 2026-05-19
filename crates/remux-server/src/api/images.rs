@@ -99,12 +99,14 @@ async fn items_images_inner(
                 media.kind,
                 db::MediaKind::Collection | db::MediaKind::Folder
             ) {
-                let b = ImageService::library_image(id, &media.title, &state.ctx.db)
-                    .await
-                    .context_not_found(
-                        "Not Found",
-                        "no backdrop available for library",
-                    )?;
+                let b = ImageService::library_image(
+                    &state.ctx.config.data_dir,
+                    id,
+                    &media.title,
+                    &state.ctx.db,
+                )
+                .await
+                .context_not_found("Not Found", "no backdrop available for library")?;
                 // Reload the newly-inserted image row to get its stable UUID
                 let img_row = db::MediaImage::get_for_media(&state.ctx.db, &id)
                     .await
@@ -160,11 +162,15 @@ async fn items_images_inner(
     };
 
     // Apply resize/quality/blur/format transforms (cached).
-    let (final_bytes, content_type) =
-        ImageService::process_image(bytes, &opts, &source_key)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
-            .context_internal("processing failed", "image processing failed")?;
+    let (final_bytes, content_type) = ImageService::process_image(
+        &state.ctx.config.data_dir,
+        bytes,
+        &opts,
+        &source_key,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))
+    .context_internal("processing failed", "image processing failed")?;
 
     Ok((
         [
@@ -262,9 +268,15 @@ async fn upload_item_image_inner(
     kind: ImageKind,
     image: api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
-    ImageService::save_image(id, kind, &image.bytes, &state.ctx.db)
-        .await
-        .context_internal("upload failed", "failed to save image")?;
+    ImageService::save_image(
+        &state.ctx.config.data_dir,
+        id,
+        kind,
+        &image.bytes,
+        &state.ctx.db,
+    )
+    .await
+    .context_internal("upload failed", "failed to save image")?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -295,7 +307,7 @@ async fn delete_item_image_inner(
     id: Uuid,
     kind: ImageKind,
 ) -> Result<impl IntoResponse> {
-    ImageService::delete_image(id, kind, &state.ctx.db)
+    ImageService::delete_image(&state.ctx.config.data_dir, id, kind, &state.ctx.db)
         .await
         .context_internal("delete failed", "failed to delete image")?;
     Ok(StatusCode::NO_CONTENT)

@@ -121,7 +121,7 @@ pub fn db_media_kind_to_collection_type(
     }
 }
 
-pub fn db_user_to_dto(user: db::User) -> UserDto {
+pub fn db_user_to_dto(data_dir: &std::path::Path, user: db::User) -> UserDto {
     let config = user.configuration.map(|c| c.0).unwrap_or_default();
     let mut policy = user.policy.map(|p| p.0).unwrap_or_default();
     policy.is_administrator = user.is_admin;
@@ -135,7 +135,7 @@ pub fn db_user_to_dto(user: db::User) -> UserDto {
     }
     default_if_empty!(authentication_provider_id);
     default_if_empty!(password_reset_provider_id);
-    let primary_image_tag = if crate::api::users::user_has_avatar(&user.id) {
+    let primary_image_tag = if crate::api::users::user_has_avatar(data_dir, &user.id) {
         Some(user.id.to_string())
     } else {
         None

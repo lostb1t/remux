@@ -15,6 +15,7 @@ ENV DASHBOARD_PATH=/app/dashboard
 ENV DATABASE_URL=sqlite:///data/db.sqlite?mode=rwc
 ENV LOG_FILE=/data/logs/remux.jsonl
 ENV TORRENT_DATA_DIR=/data/torrents
+ENV DATA_DIR=/data
 ENV FFMPEG_PATH=/usr/lib/jellyfin-ffmpeg/ffmpeg
 ENV FFPROBE_PATH=/usr/lib/jellyfin-ffmpeg/ffprobe
 ENV PATH="/usr/lib/jellyfin-ffmpeg:${PATH}"

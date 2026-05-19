@@ -1379,9 +1379,13 @@ pub async fn update_virtual_folder(
     .await?;
 
     // Library name is baked into the generated placeholder — clear it so it regenerates.
-    let _ =
-        ImageService::delete_image(payload.id, db::ImageKind::Primary, &state.ctx.db)
-            .await;
+    let _ = ImageService::delete_image(
+        &state.ctx.config.data_dir,
+        payload.id,
+        db::ImageKind::Primary,
+        &state.ctx.db,
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -176,7 +176,13 @@ pub async fn init_app(
     info!("starting remux {}", env!("CARGO_PKG_VERSION"));
     info!("config: {}", serde_json::to_string_pretty(&config).unwrap());
 
-    let conn = db::connect(&config.database_url).await?;
+    let conn = db::connect(
+        config
+            .database_url
+            .as_deref()
+            .expect("Config::resolve() must be called before init_app"),
+    )
+    .await?;
 
     info!("running database migrations…");
     db::migrate(&conn).await?;
@@ -215,7 +221,12 @@ pub async fn init_app(
 
     let torrent_mgr = Arc::new(
         torrent::TorrentManager::new(
-            std::path::PathBuf::from(&config.torrent_data_dir),
+            std::path::PathBuf::from(
+                config
+                    .torrent_data_dir
+                    .as_deref()
+                    .expect("Config::resolve() must be called before init_app"),
+            ),
             config.torrent_http_port,
             config.disable_dht,
             config.torrent_peer_port,
@@ -315,16 +326,14 @@ pub struct AppState {
     pub tasks: tasks::TaskService,
 }
 
-/// Returns the base data directory for remux: `~/.local/share/remux` on Linux,
-/// or `/data` as a fallback (used in Docker / production deployments).
-pub fn base_data_dir() -> std::path::PathBuf {
+fn default_data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .map(|d| d.join("remux"))
         .unwrap_or_else(|| std::path::PathBuf::from("/data"))
 }
 
 fn default_web_path() -> String {
-    base_data_dir()
+    default_data_dir()
         .join("jellyfin-web")
         .to_str()
         .map(str::to_owned)
@@ -332,28 +341,11 @@ fn default_web_path() -> String {
 }
 
 fn default_dashboard_path() -> String {
-    base_data_dir()
+    default_data_dir()
         .join("dashboard")
         .to_str()
         .map(str::to_owned)
         .unwrap_or_else(|| "/data/dashboard".to_string())
-}
-
-fn default_database_url() -> String {
-    let path = base_data_dir()
-        .join("db.sqlite")
-        .to_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| "/data/db.sqlite".to_string());
-    format!("sqlite://{}?mode=rwc", path)
-}
-
-fn default_torrent_data_dir() -> String {
-    base_data_dir()
-        .join("torrents")
-        .to_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| "/data/torrents".to_string())
 }
 
 fn default_port() -> u16 {
@@ -366,10 +358,12 @@ fn default_torrent_http_port() -> u16 {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Config {
-    #[serde(default = "default_database_url")]
-    pub database_url: String,
-    #[serde(default = "default_torrent_data_dir")]
-    pub torrent_data_dir: String,
+    #[serde(default = "default_data_dir")]
+    pub data_dir: std::path::PathBuf,
+    /// `None` means derive from `data_dir` — call `resolve()` after loading.
+    pub database_url: Option<String>,
+    /// `None` means derive from `data_dir` — call `resolve()` after loading.
+    pub torrent_data_dir: Option<String>,
     #[serde(default = "default_port")]
     pub port: u16,
     /// Explicit port for the internal torrent HTTP server.
@@ -396,16 +390,39 @@ fn default_torrent_peer_port() -> Option<u16> {
     Some(6881)
 }
 
+impl Config {
+    /// Fill in `None` fields that derive from `data_dir`. Call once after loading.
+    pub fn resolve(mut self) -> Self {
+        if self.database_url.is_none() {
+            self.database_url = Some(format!(
+                "sqlite://{}?mode=rwc",
+                self.data_dir.join("db.sqlite").display()
+            ));
+        }
+        if self.torrent_data_dir.is_none() {
+            self.torrent_data_dir = Some(
+                self.data_dir
+                    .join("torrents")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        self
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
-            database_url: default_database_url(),
-            torrent_data_dir: default_torrent_data_dir(),
+            data_dir: default_data_dir(),
+            database_url: None,
+            torrent_data_dir: None,
             port: default_port(),
             torrent_http_port: default_torrent_http_port_opt(),
             disable_dht: false,
             torrent_peer_port: default_torrent_peer_port(),
         }
+        .resolve()
     }
 }
 

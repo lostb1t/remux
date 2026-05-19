@@ -19,12 +19,11 @@ fn data_dir() -> PathBuf {
 
 fn build_config() -> remux_server::Config {
     let base = data_dir();
-    let db_path = base.join("db.sqlite");
     remux_server::Config {
-        database_url: format!("sqlite://{}?mode=rwc", db_path.display()),
-        torrent_data_dir: base.join("torrents").to_string_lossy().into_owned(),
+        data_dir: base,
         ..Default::default()
     }
+    .resolve()
 }
 
 fn server_url() -> String {
@@ -33,7 +32,7 @@ fn server_url() -> String {
 }
 
 fn ensure_data_dirs(config: &remux_server::Config) -> Result<()> {
-    std::fs::create_dir_all(&config.torrent_data_dir)?;
+    std::fs::create_dir_all(config.torrent_data_dir.as_deref().unwrap_or_default())?;
     Ok(())
 }
 

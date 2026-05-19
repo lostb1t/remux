@@ -6,7 +6,6 @@ use chrono::Utc;
 use http::StatusCode;
 use remux_macros::post;
 use serde_json::json;
-use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
 use crate::AppState;
@@ -14,10 +13,6 @@ use crate::db::auth;
 use axum_anyhow::ApiResult as Result;
 
 const MAX_DOCUMENT_SIZE: usize = 1_000_000;
-
-fn client_log_dir() -> PathBuf {
-    crate::base_data_dir().join("logs")
-}
 
 /// Upload a client log document.
 /// POST /clientlog/document
@@ -42,7 +37,7 @@ pub async fn log_document(
     let file_name =
         format!("upload_{client_name}_{client_version}_{timestamp}_{id}.log");
 
-    let log_dir = client_log_dir();
+    let log_dir = state.ctx.config.data_dir.join("logs");
     tokio::fs::create_dir_all(&log_dir)
         .await
         .map_err(|e| anyhow::anyhow!("failed to create log dir: {e}"))?;

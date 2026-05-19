@@ -143,7 +143,7 @@ pub async fn users_authenticatebyname(
     };
 
     let now = chrono::Utc::now();
-    let mut user_dto = api::db_user_to_dto(user);
+    let mut user_dto = api::db_user_to_dto(&state.ctx.config.data_dir, user);
     user_dto.last_login_date = Some(now);
     user_dto.last_activity_date = Some(now);
 
@@ -227,7 +227,7 @@ pub async fn authenticate_with_quickconnect(
     };
 
     let now = chrono::Utc::now();
-    let mut user_dto = api::db_user_to_dto(user);
+    let mut user_dto = api::db_user_to_dto(&state.ctx.config.data_dir, user);
     user_dto.last_login_date = Some(now);
     user_dto.last_activity_date = Some(now);
 
@@ -254,7 +254,7 @@ pub async fn users(
     .records
     .into_iter()
     .map(|x| {
-        let mut item = api::db_user_to_dto(x);
+        let mut item = api::db_user_to_dto(&state.ctx.config.data_dir, x);
         //item.type_ = api::MediaType::CollectionFolder;
         //item.collection_type = Some(api::CollectionType::Movies);
         item
@@ -269,7 +269,11 @@ pub async fn users_me(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(api::db_user_to_dto(session.user)).into_response())
+    Ok(Json(api::db_user_to_dto(
+        &state.ctx.config.data_dir,
+        session.user,
+    ))
+    .into_response())
 }
 
 #[post("/users/{user_id}/favoriteitems/{id}")]
@@ -373,7 +377,11 @@ pub async fn create_user(
     )?;
     user.save(&state.ctx.db).await?;
     let _ = state.ctx.ws_tx.send(WsEvent::UserUpdated(user.id));
-    Ok((StatusCode::OK, Json(api::db_user_to_dto(user))).into_response())
+    Ok((
+        StatusCode::OK,
+        Json(api::db_user_to_dto(&state.ctx.config.data_dir, user)),
+    )
+        .into_response())
 }
 
 #[delete("/users/{user_id}")]
@@ -485,7 +493,11 @@ pub async fn users_get_by_id(
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     if user_id == session.user.id {
-        return Ok(Json(api::db_user_to_dto(session.user)).into_response());
+        return Ok(Json(api::db_user_to_dto(
+            &state.ctx.config.data_dir,
+            session.user,
+        ))
+        .into_response());
     }
     if !session.user.is_admin {
         return Err(
@@ -498,7 +510,7 @@ pub async fn users_get_by_id(
             anyhow::anyhow!("User not found")
                 .context_not_found("not found", "user not found")
         })?;
-    Ok(Json(api::db_user_to_dto(user)).into_response())
+    Ok(Json(api::db_user_to_dto(&state.ctx.config.data_dir, user)).into_response())
 }
 
 #[get("/users/{user_id}/items/{id}")]
@@ -624,22 +636,23 @@ pub async fn forgot_password() -> impl IntoResponse {
 
 // ===== User avatar endpoints =====
 
-fn avatar_path(user_id: &Uuid) -> std::path::PathBuf {
-    crate::base_data_dir()
+fn avatar_path(data_dir: &std::path::Path, user_id: &Uuid) -> std::path::PathBuf {
+    data_dir
         .join("meta")
         .join("avatars")
         .join(user_id.to_string())
 }
 
-pub fn user_has_avatar(user_id: &Uuid) -> bool {
-    avatar_path(user_id).exists()
+pub fn user_has_avatar(data_dir: &std::path::Path, user_id: &Uuid) -> bool {
+    avatar_path(data_dir, user_id).exists()
 }
 
 async fn upload_avatar_for(
+    data_dir: &std::path::Path,
     user_id: &Uuid,
     image: crate::api::image::JellyfinImage,
 ) -> anyhow::Result<()> {
-    let path = avatar_path(user_id);
+    let path = avatar_path(data_dir, user_id);
     tokio::fs::create_dir_all(path.parent().unwrap())
         .await
         .context("failed to create avatars directory")?;
@@ -649,8 +662,11 @@ async fn upload_avatar_for(
     Ok(())
 }
 
-async fn delete_avatar_for(user_id: &Uuid) -> anyhow::Result<()> {
-    let path = avatar_path(user_id);
+async fn delete_avatar_for(
+    data_dir: &std::path::Path,
+    user_id: &Uuid,
+) -> anyhow::Result<()> {
+    let path = avatar_path(data_dir, user_id);
     if path.exists() {
         tokio::fs::remove_file(&path)
             .await
@@ -659,8 +675,11 @@ async fn delete_avatar_for(user_id: &Uuid) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn serve_avatar_for(user_id: Uuid) -> Result<impl IntoResponse> {
-    let path = avatar_path(&user_id);
+async fn serve_avatar_for(
+    data_dir: std::path::PathBuf,
+    user_id: Uuid,
+) -> Result<impl IntoResponse> {
+    let path = avatar_path(&data_dir, &user_id);
     let bytes = tokio::fs::read(&path).await.map_err(|_| {
         anyhow::anyhow!("avatar not found")
             .context_not_found("not found", "avatar not found")
@@ -680,27 +699,30 @@ struct UserImageQuery {
 
 #[get("/userimage")]
 pub async fn get_user_image(
+    State(state): State<AppState>,
     Query(q): Query<UserImageQuery>,
 ) -> Result<impl IntoResponse> {
     let uid = q
         .user_id
         .or_else(|| q.tag.as_deref().and_then(|t| Uuid::parse_str(t).ok()))
         .context_bad_request("missing", "userId required")?;
-    serve_avatar_for(uid).await
+    serve_avatar_for(state.ctx.config.data_dir.clone(), uid).await
 }
 
 #[get("/users/{user_id}/images/{image_type}")]
 pub async fn get_user_image_by_id(
+    State(state): State<AppState>,
     Path((user_id, _image_type)): Path<(Uuid, String)>,
 ) -> Result<impl IntoResponse> {
-    serve_avatar_for(user_id).await
+    serve_avatar_for(state.ctx.config.data_dir.clone(), user_id).await
 }
 
 #[get("/users/{user_id}/images/{image_type}/{index}")]
 pub async fn get_user_image_by_id_indexed(
+    State(state): State<AppState>,
     Path((user_id, _image_type, _index)): Path<(Uuid, String, usize)>,
 ) -> Result<impl IntoResponse> {
-    serve_avatar_for(user_id).await
+    serve_avatar_for(state.ctx.config.data_dir.clone(), user_id).await
 }
 
 // --- POST (upload) ---
@@ -711,7 +733,7 @@ pub async fn upload_user_image(
     session: auth::AuthSession,
     image: crate::api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
-    upload_avatar_for(&session.user.id, image)
+    upload_avatar_for(&state.ctx.config.data_dir, &session.user.id, image)
         .await
         .context_internal("upload failed", "failed to save avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -724,7 +746,7 @@ pub async fn upload_user_image_legacy(
     Path((user_id, _image_type)): Path<(Uuid, String)>,
     image: crate::api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
-    upload_avatar_for(&user_id, image)
+    upload_avatar_for(&state.ctx.config.data_dir, &user_id, image)
         .await
         .context_internal("upload failed", "failed to save avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -737,7 +759,7 @@ pub async fn upload_user_image_indexed(
     Path((user_id, _image_type, _index)): Path<(Uuid, String, usize)>,
     image: crate::api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
-    upload_avatar_for(&user_id, image)
+    upload_avatar_for(&state.ctx.config.data_dir, &user_id, image)
         .await
         .context_internal("upload failed", "failed to save avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -750,7 +772,7 @@ pub async fn delete_user_image(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    delete_avatar_for(&session.user.id)
+    delete_avatar_for(&state.ctx.config.data_dir, &session.user.id)
         .await
         .context_internal("delete failed", "failed to delete avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -762,7 +784,7 @@ pub async fn delete_user_image_legacy(
     session: auth::AuthSession,
     Path((user_id, _image_type)): Path<(Uuid, String)>,
 ) -> Result<impl IntoResponse> {
-    delete_avatar_for(&user_id)
+    delete_avatar_for(&state.ctx.config.data_dir, &user_id)
         .await
         .context_internal("delete failed", "failed to delete avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -774,7 +796,7 @@ pub async fn delete_user_image_indexed(
     session: auth::AuthSession,
     Path((user_id, _image_type, _index)): Path<(Uuid, String, usize)>,
 ) -> Result<impl IntoResponse> {
-    delete_avatar_for(&user_id)
+    delete_avatar_for(&state.ctx.config.data_dir, &user_id)
         .await
         .context_internal("delete failed", "failed to delete avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
