@@ -759,6 +759,10 @@ pub struct Media {
     pub album_count: Option<i64>,
     #[sqlx(skip)]
     pub song_count: Option<i64>,
+    #[sqlx(skip)]
+    pub movie_count: Option<i64>,
+    #[sqlx(skip)]
+    pub series_count: Option<i64>,
     /// Season/album title (parent item's title), populated post-query.
     #[sqlx(skip)]
     pub parent_title: Option<String>,
@@ -2023,6 +2027,72 @@ impl Media {
                         if media.kind == MediaKind::Series {
                             media.recursive_item_count = map.get(&media.id).copied();
                         }
+                    }
+                }
+            }
+
+            // For persons: count movies and series they appear in
+            let person_ids: Vec<Uuid> = records
+                .iter()
+                .filter(|m| m.kind == MediaKind::Person)
+                .map(|m| m.id)
+                .collect();
+            if !person_ids.is_empty() {
+                // movie_count
+                let mut movie_qb = sqlx::QueryBuilder::new(
+                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+                     FROM media_relations mr \
+                     JOIN media m ON m.id = mr.left_media_id AND m.kind = 'movie' \
+                     WHERE mr.right_media_id IN (",
+                );
+                let mut sep = movie_qb.separated(", ");
+                for id in &person_ids {
+                    sep.push_bind(id);
+                }
+                movie_qb.push(") GROUP BY mr.right_media_id");
+                if let Ok(rows) = movie_qb.build().fetch_all(db).await {
+                    let mut map: HashMap<Uuid, i64> = HashMap::new();
+                    for row in rows {
+                        map.insert(row.get(0), row.get(1));
+                    }
+                    for media in &mut records {
+                        if media.kind == MediaKind::Person {
+                            media.movie_count = map.get(&media.id).copied();
+                        }
+                    }
+                }
+
+                // series_count
+                let mut series_qb = sqlx::QueryBuilder::new(
+                    "SELECT mr.right_media_id, COUNT(DISTINCT mr.left_media_id) \
+                     FROM media_relations mr \
+                     JOIN media m ON m.id = mr.left_media_id AND m.kind = 'series' \
+                     WHERE mr.right_media_id IN (",
+                );
+                let mut sep = series_qb.separated(", ");
+                for id in &person_ids {
+                    sep.push_bind(id);
+                }
+                series_qb.push(") GROUP BY mr.right_media_id");
+                if let Ok(rows) = series_qb.build().fetch_all(db).await {
+                    let mut map: HashMap<Uuid, i64> = HashMap::new();
+                    for row in rows {
+                        map.insert(row.get(0), row.get(1));
+                    }
+                    for media in &mut records {
+                        if media.kind == MediaKind::Person {
+                            media.series_count = map.get(&media.id).copied();
+                        }
+                    }
+                }
+
+                // child_count = movie_count + series_count
+                for media in &mut records {
+                    if media.kind == MediaKind::Person {
+                        media.child_count = Some(
+                            media.movie_count.unwrap_or(0)
+                                + media.series_count.unwrap_or(0),
+                        );
                     }
                 }
             }

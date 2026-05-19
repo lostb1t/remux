@@ -328,4 +328,34 @@ impl Endpoint for PersonSearchEndpoint {
     }
 }
 
+/// TMDB person details response.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PersonDetails {
+    pub id: i64,
+    pub name: String,
+    pub biography: Option<String>,
+    pub birthday: Option<String>,
+    pub place_of_birth: Option<String>,
+    pub imdb_id: Option<String>,
+    pub profile_path: Option<String>,
+}
+
+/// `GET /person/{person_id}`
+#[derive(Debug, Clone, Serialize)]
+pub struct PersonDetailsEndpoint {
+    pub person_id: i64,
+}
+
+impl Endpoint for PersonDetailsEndpoint {
+    type Output = PersonDetails;
+
+    fn path(&self) -> String {
+        format!("person/{}", self.person_id)
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+}
+
 //https://files.tmdb.org/p/exports/movie_ids_05_15_2024.json.gz

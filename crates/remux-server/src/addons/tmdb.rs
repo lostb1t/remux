@@ -74,6 +74,7 @@ impl AddonKind for TmdbAddon {
                 | db::MediaKind::Series
                 | db::MediaKind::Season
                 | db::MediaKind::Episode
+                | db::MediaKind::Person
         )
     }
 
@@ -197,6 +198,10 @@ fn build_person_relations(
             title: name.clone(),
             kind: db::MediaKind::Person,
             media_id: Some(format!("person:{}", name.to_lowercase())),
+            external_ids: db::ExternalIds {
+                tmdb: Some(member.id),
+                ..Default::default()
+            },
             ..Default::default()
         };
         if let Some(url) = tmdb_image(member.profile_path.as_deref()) {
@@ -232,6 +237,10 @@ fn build_person_relations(
                 title: name.clone(),
                 kind: db::MediaKind::Person,
                 media_id: Some(format!("person:{}", name.to_lowercase())),
+                external_ids: db::ExternalIds {
+                    tmdb: Some(member.id),
+                    ..Default::default()
+                },
                 ..Default::default()
             };
             if let Some(url) = tmdb_image(member.profile_path.as_deref()) {
@@ -529,6 +538,10 @@ async fn fetch_tmdb_meta(
                             title: name.clone(),
                             kind: db::MediaKind::Person,
                             media_id: Some(format!("person:{}", name.to_lowercase())),
+                            external_ids: db::ExternalIds {
+                                tmdb: Some(creator.id as i64),
+                                ..Default::default()
+                            },
                             ..Default::default()
                         };
                         if let Some(url) = tmdb_image(creator.profile_path.as_deref()) {
@@ -639,6 +652,10 @@ async fn fetch_tmdb_meta(
                             title: name.clone(),
                             kind: db::MediaKind::Person,
                             media_id: Some(format!("person:{}", name.to_lowercase())),
+                            external_ids: db::ExternalIds {
+                                tmdb: Some(member.id),
+                                ..Default::default()
+                            },
                             ..Default::default()
                         };
                         if let Some(url) = tmdb_image(member.profile_path.as_deref()) {
@@ -698,6 +715,48 @@ async fn fetch_tmdb_meta(
         }
         db::MediaKind::Season => {
             return fetch_tmdb_season_meta(media, ctx, &client).await;
+        }
+        db::MediaKind::Person => {
+            let tmdb_id = if let Some(id) = media.external_ids.tmdb {
+                id
+            } else {
+                // No stored TMDB ID — search by name to resolve it.
+                let resp = client
+                    .execute(sdks::tmdb::PersonSearchEndpoint {
+                        query: media.title.clone(),
+                    })
+                    .await?;
+                let Some(hit) = resp.results.into_iter().next() else {
+                    return Ok(None);
+                };
+                hit.id
+            };
+            let details = client
+                .execute(
+                    sdks::tmdb::PersonDetailsEndpoint { person_id: tmdb_id }
+                        .with_cache(Duration::from_secs(86400)),
+                )
+                .await?;
+            let released_at = details.birthday.as_deref().and_then(|b| {
+                chrono::NaiveDate::parse_from_str(b, "%Y-%m-%d")
+                    .ok()
+                    .and_then(|d| d.and_hms_opt(0, 0, 0))
+            });
+            let mut patch = db::Media {
+                description: details.biography.filter(|b| !b.is_empty()),
+                released_at,
+                country: details.place_of_birth.filter(|p| !p.is_empty()),
+                external_ids: db::ExternalIds {
+                    tmdb: Some(tmdb_id),
+                    imdb: details.imdb_id,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            if let Some(url) = tmdb_image(details.profile_path.as_deref()) {
+                patch.set_image(db::ImageKind::Primary, url);
+            }
+            return Ok(Some(patch));
         }
         _ => {}
     }

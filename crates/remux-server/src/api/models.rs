@@ -413,6 +413,8 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         recursive_item_count: media.recursive_item_count,
         album_count: media.album_count,
         song_count: media.song_count,
+        movie_count: media.movie_count,
+        series_count: media.series_count,
         // Music track fields: album name, album id, artist name
         album: (media.kind == db::MediaKind::Track)
             .then(|| media.parent_title.clone())
@@ -485,6 +487,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             digital_release_date: media.digital_released_at.map(|d| d.and_utc()),
         }),
         date_created: Some(media.created_at.and_utc().to_rfc3339()),
+        production_locations: (media.kind == db::MediaKind::Person)
+            .then(|| media.country.clone().map(|c| vec![c]))
+            .flatten(),
         ..Default::default()
     };
 
