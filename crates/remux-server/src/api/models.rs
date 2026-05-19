@@ -556,6 +556,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
 
     if media.kind == db::MediaKind::TvProgram {
         item.channel_id = media.parent_id.map(|id| id.to_string());
+        item.channel_name = media.parent_title.clone();
         item.channel_primary_image_tag = media.series_poster.clone();
         item.location_type = LocationType::Remote;
         item.can_delete = Some(false);

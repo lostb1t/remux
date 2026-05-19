@@ -139,14 +139,43 @@ pub async fn livetv_channel(
 // GET /livetv/programs/recommended
 // --------------------------------------------------------------------------
 
+#[derive(Debug, Default, Deserialize)]
+pub struct GetRecommendedQuery {
+    #[serde(rename = "limit", alias = "Limit")]
+    pub limit: Option<u32>,
+}
+
 #[get("/livetv/programs/recommended")]
 pub async fn livetv_programs_recommended(
+    State(state): State<AppState>,
     _session: AuthSession,
+    Query(q): Query<GetRecommendedQuery>,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(api::QueryResult::<api::BaseItemDto> {
-        total_record_count: 0,
+    let now = Utc::now().naive_utc();
+    let result = db::Media::get_by_filter(
+        &state.ctx.db,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::TvProgram]),
+            parent_enabled: Some(true),
+            min_end_date: Some(now),
+            max_start_date: Some(now),
+            sort_by_channel_order: true,
+            limit: Some(q.limit.unwrap_or(20)),
+            total_count: false,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let dtos: Vec<_> = result
+        .records
+        .into_iter()
+        .map(api::db_media_to_item)
+        .collect();
+    Ok(Json(api::QueryResult {
+        total_record_count: dtos.len() as i64,
         start_index: 0,
-        items: vec![],
+        items: dtos,
     }))
 }
 
@@ -156,8 +185,10 @@ pub async fn livetv_programs_recommended(
 
 #[derive(Debug, Default, Deserialize)]
 pub struct GetProgramsQuery {
+    /// Accepts both repeated params (`channelIds=a&channelIds=b`) and a
+    /// single comma-separated value (`channelIds=a,b`) for client compat.
     #[serde(rename = "channelIds", alias = "ChannelIds", default)]
-    pub channel_ids: Vec<Uuid>,
+    pub channel_ids_raw: Option<String>,
     #[serde(rename = "startIndex", alias = "StartIndex")]
     pub start_index: Option<u32>,
     // Jellyfin sends lowercase "limit" on this endpoint (unlike most others)
@@ -189,7 +220,14 @@ pub async fn livetv_programs(
     _session: AuthSession,
     Query(q): Query<GetProgramsQuery>,
 ) -> Result<impl IntoResponse> {
-    let channel_ids = q.channel_ids;
+    let channel_ids: Vec<Uuid> = q
+        .channel_ids_raw
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| Uuid::parse_str(s.trim()).ok())
+        .collect();
 
     let parse_dt = |s: &str| {
         chrono::DateTime::parse_from_rfc3339(s)
@@ -263,6 +301,8 @@ pub struct GetProgramsBody {
     pub limit: Option<u32>,
     pub has_aired: Option<bool>,
     pub enable_total_record_count: Option<bool>,
+    pub min_end_date: Option<String>,
+    pub max_start_date: Option<String>,
 }
 
 #[post("/livetv/programs")]
@@ -271,6 +311,12 @@ pub async fn livetv_programs_post(
     _session: AuthSession,
     Json(body): Json<GetProgramsBody>,
 ) -> Result<impl IntoResponse> {
+    let parse_dt = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|dt| dt.naive_utc())
+    };
+
     let mut filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::TvProgram]),
         limit: Some(body.limit.unwrap_or(500)),
@@ -278,6 +324,8 @@ pub async fn livetv_programs_post(
         total_count: body.enable_total_record_count.unwrap_or(true),
         has_aired: body.has_aired,
         parent_enabled: Some(true),
+        min_end_date: body.min_end_date.as_deref().and_then(parse_dt),
+        max_start_date: body.max_start_date.as_deref().and_then(parse_dt),
         ..Default::default()
     };
 
@@ -342,6 +390,93 @@ pub async fn livetv_recording_folders(
         start_index: 0,
         items: vec![],
     }))
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/recordings
+// --------------------------------------------------------------------------
+
+#[get("/livetv/recordings")]
+pub async fn livetv_recordings(_session: AuthSession) -> Result<impl IntoResponse> {
+    Ok(Json(api::QueryResult::<api::BaseItemDto> {
+        total_record_count: 0,
+        start_index: 0,
+        items: vec![],
+    }))
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/recordings/groups
+// --------------------------------------------------------------------------
+
+#[get("/livetv/recordings/groups")]
+pub async fn livetv_recording_groups(
+    _session: AuthSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(api::QueryResult::<api::BaseItemDto> {
+        total_record_count: 0,
+        start_index: 0,
+        items: vec![],
+    }))
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/recordings/groups/{groupId}
+// --------------------------------------------------------------------------
+
+#[get("/livetv/recordings/groups/{group_id}")]
+pub async fn livetv_recording_group(
+    _session: AuthSession,
+    Path(_group_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(StatusCode::NOT_FOUND)
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/recordings/series
+// --------------------------------------------------------------------------
+
+#[get("/livetv/recordings/series")]
+pub async fn livetv_recordings_series(
+    _session: AuthSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(api::QueryResult::<api::BaseItemDto> {
+        total_record_count: 0,
+        start_index: 0,
+        items: vec![],
+    }))
+}
+
+// --------------------------------------------------------------------------
+// GET + DELETE /livetv/recordings/{recordingId}
+// --------------------------------------------------------------------------
+
+#[get("/livetv/recordings/{recording_id}")]
+pub async fn livetv_recording(
+    _session: AuthSession,
+    Path(_recording_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(StatusCode::NOT_FOUND)
+}
+
+#[delete("/livetv/recordings/{recording_id}")]
+pub async fn livetv_delete_recording(
+    _session: AuthSession,
+    Path(_recording_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(StatusCode::NOT_FOUND)
+}
+
+// --------------------------------------------------------------------------
+// GET /livetv/liverecordings/{recordingId}/stream
+// --------------------------------------------------------------------------
+
+#[get("/livetv/liverecordings/{recording_id}/stream")]
+pub async fn livetv_live_recording_stream(
+    _session: AuthSession,
+    Path(_recording_id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(StatusCode::NOT_FOUND)
 }
 
 // --------------------------------------------------------------------------

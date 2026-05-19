@@ -653,6 +653,8 @@ pub struct MediaFilter {
     /// Sort order for results. Mapped from Jellyfin's ItemSortBy.
     pub sort_by: Vec<api::ItemSortBy>,
     pub sort_order: Vec<api::SortOrder>,
+    /// For TvProgram queries: order by the parent channel's sort_order / channel_number.
+    pub sort_by_channel_order: bool,
     /// Structured filter rules (from smart collections). Evaluated with `filter_match`.
     pub filter_rules: Vec<remux_sdks::remux::FilterRule>,
     /// Whether all rules must match (AND) or any rule (OR). Defaults to All.
@@ -908,6 +910,11 @@ impl Media {
                     {
                         media.series_title = Some(row.title.clone());
                     }
+                }
+                MediaKind::TvProgram => {
+                    media.parent_title = media
+                        .parent_id
+                        .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
                 }
                 _ => {}
             }
@@ -1766,6 +1773,10 @@ impl Media {
                 .collect();
             records_qb.push(" ORDER BY ");
             records_qb.push(order_clauses.join(", "));
+        } else if filter.sort_by_channel_order {
+            records_qb.push(
+                " ORDER BY (SELECT COALESCE(c.sort_order, c.channel_number, 999999) FROM media c WHERE c.id = media.parent_id)",
+            );
         } else if is_channel_query {
             records_qb.push(
                 " ORDER BY COALESCE(sort_order, channel_number, 999999), title COLLATE NOCASE",
