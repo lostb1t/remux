@@ -1,5 +1,6 @@
 #![allow(warnings)]
 
+pub mod deezer;
 pub mod introdb;
 pub mod remux;
 pub mod stremio;

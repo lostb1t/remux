@@ -735,14 +735,6 @@ impl AddonKind for YtDlpAddon {
         }
     }
 
-    async fn search_persist(
-        &self,
-        _id: Uuid,
-        _ctx: &AppContext,
-    ) -> Result<Option<db::Media>> {
-        Ok(None)
-    }
-
     fn stream_supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::Track
     }

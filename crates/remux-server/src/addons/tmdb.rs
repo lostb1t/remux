@@ -113,20 +113,6 @@ impl AddonKind for TmdbAddon {
         }
         Ok(Some(search_tmdb_person(query, limit, ctx).await?))
     }
-
-    async fn search_persist(
-        &self,
-        id: Uuid,
-        ctx: &AppContext,
-    ) -> Result<Option<db::Media>> {
-        let mut media = match ctx.store.get::<db::Media>(id.to_string()) {
-            Some(m) => m,
-            None => return Ok(None),
-        };
-        media.save(&ctx.db).await.ok();
-        ctx.store.delete(id.to_string());
-        Ok(Some(media))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +336,7 @@ async fn fetch_tmdb_meta(
                     tmdb: Some(movie_details.id),
                     imdb: movie_details.imdb_id.clone().or(ids.imdb.clone()),
                     tvdb: ids.tvdb,
+                    ..Default::default()
                 };
                 let logo = movie_details
                     .images
@@ -479,6 +466,7 @@ async fn fetch_tmdb_meta(
                     tmdb: Some(tv_details.id),
                     imdb: ids.imdb.clone(),
                     tvdb: ids.tvdb,
+                    ..Default::default()
                 };
                 let country = tv_details.origin_country.into_iter().next();
                 let logo = tv_details
@@ -624,6 +612,7 @@ async fn fetch_tmdb_meta(
                         .and_then(|e| e.imdb_id)
                         .or(ids.imdb.clone()),
                     tvdb: ids.tvdb,
+                    ..Default::default()
                 };
                 let best_still = ep_details
                     .images
@@ -869,8 +858,6 @@ async fn search_tmdb_person(
             if let Some(url) = profile_url {
                 media.set_image(db::ImageKind::Primary, url);
             }
-            ctx.store
-                .insert(id.to_string(), media.clone(), Duration::from_secs(360));
             media
         })
         .collect();

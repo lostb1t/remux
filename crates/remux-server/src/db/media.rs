@@ -519,6 +519,8 @@ pub struct ExternalIds {
     pub imdb: Option<String>,
     pub tmdb: Option<i64>,
     pub tvdb: Option<i64>,
+    pub deezer_artist: Option<i64>,
+    pub deezer_album: Option<i64>,
 }
 
 impl ExternalIds {

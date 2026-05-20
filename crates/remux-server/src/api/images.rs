@@ -6,11 +6,9 @@ use remux_macros::{delete, get, post};
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::addons::MusicSearchResult;
 use crate::api;
 use crate::db;
 use crate::db::{ImageKind, auth};
-use crate::sdks;
 use crate::services::image::{ImageProcessOptions, ImageService};
 use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
@@ -128,35 +126,19 @@ async fn items_images_inner(
             }
         } else {
             // Not in DB — cached search result.
-            let url = state
-                .ctx
-                .store
-                .get::<MusicSearchResult>(key.clone())
-                .and_then(|r| match image_type {
+            let url = state.ctx.store.get::<db::Media>(key.clone()).and_then(|m| {
+                match image_type {
                     api::ImageType::Primary | api::ImageType::Thumb => {
-                        r.media.get_image(ImageKind::Primary).map(str::to_owned)
+                        m.get_image(ImageKind::Primary).map(str::to_owned)
                     }
                     api::ImageType::Backdrop => {
-                        r.media.get_image(ImageKind::Backdrop).map(str::to_owned)
+                        m.get_image(ImageKind::Backdrop).map(str::to_owned)
                     }
                     api::ImageType::Logo | api::ImageType::LogoImageAspectRatio => {
-                        r.media.get_image(ImageKind::Logo).map(str::to_owned)
+                        m.get_image(ImageKind::Logo).map(str::to_owned)
                     }
-                })
-                .or_else(|| {
-                    state
-                        .ctx
-                        .store
-                        .get::<sdks::stremio::Meta>(key)
-                        .and_then(|m| match image_type {
-                            api::ImageType::Primary | api::ImageType::Thumb => {
-                                m.poster.clone().or(m.thumbnail.clone())
-                            }
-                            api::ImageType::Backdrop => m.background.clone(),
-                            api::ImageType::Logo
-                            | api::ImageType::LogoImageAspectRatio => m.logo.clone(),
-                        })
-                });
+                }
+            });
             let url = url.context_not_found("Not Found", "media image not found")?;
             let (b, ct) = fetch_upstream(&url)
                 .await

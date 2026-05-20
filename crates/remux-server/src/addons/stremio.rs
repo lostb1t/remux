@@ -14,8 +14,7 @@ use uuid::Uuid;
 
 use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, CatalogInfo, MediaKind, MusicSearchResult, ResourceType,
-    addon,
+    AddonPresetRegistration, CatalogInfo, MediaKind, ResourceType, addon,
 };
 use crate::sdks::CachedEndpoint;
 use crate::services::stremio as stremio_service;
@@ -301,18 +300,6 @@ impl AddonKind for StremioAddon {
         let svc = self.service()?;
         let results = stremio_search(&svc, kind, query, limit, ctx).await?;
         Ok(Some(results))
-    }
-
-    async fn search_persist(
-        &self,
-        id: Uuid,
-        ctx: &AppContext,
-    ) -> Result<Option<db::Media>> {
-        let svc = match self.service() {
-            Ok(a) => a,
-            Err(_) => return Ok(None),
-        };
-        stremio_persist(&svc, id, ctx).await
     }
 
     fn subtitle_supports(&self, media: &db::Media) -> bool {
@@ -877,8 +864,6 @@ async fn stremio_search(
             let mut m = db::Media::try_from(meta.clone()).ok()?;
             let rels = build_relations(&m, &meta);
             m.relations = Some(rels);
-            ctx.store
-                .insert(m.id.to_string(), meta, Duration::from_secs(3600));
             Some(m)
         })
         .collect();
@@ -886,40 +871,6 @@ async fn stremio_search(
     db::Media::enrich_parents(&ctx.db, &mut media).await;
 
     Ok(media)
-}
-
-async fn stremio_persist(
-    svc: &stremio_service::StremioService,
-    id: Uuid,
-    ctx: &AppContext,
-) -> Result<Option<db::Media>> {
-    let meta = match ctx.store.get::<sdks::stremio::Meta>(id.to_string()) {
-        Some(m) => m,
-        None => return Ok(None),
-    };
-
-    let mut media: db::Media = svc
-        .get_meta(meta.media_type.clone(), meta.id.clone())
-        .await?
-        .try_into()?;
-
-    media.save(&ctx.db).await.ok();
-    ctx.store.delete(id.to_string());
-
-    let saved = db::Media::get_by_filter(
-        &ctx.db,
-        &db::MediaFilter {
-            media_id: media.media_id.clone(),
-            ..Default::default()
-        },
-    )
-    .await?
-    .records
-    .into_iter()
-    .next()
-    .ok_or_else(|| anyhow::anyhow!("media not found after save"))?;
-
-    Ok(Some(saved))
 }
 
 // ---------------------------------------------------------------------------

@@ -19,7 +19,7 @@ use futures::Stream;
 use sqlx::SqlitePool;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
@@ -67,13 +67,6 @@ pub trait RemoteMediaStream: Send + Sync {
         &self,
         ctx: &AppContext,
     ) -> Result<Pin<Box<dyn Stream<Item = db::Media> + Send>>>;
-}
-
-#[derive(Clone)]
-pub struct MusicSearchResult {
-    pub media: db::Media,
-    pub album: Option<db::Media>,
-    pub artist: Option<db::Media>,
 }
 
 #[derive(Debug)]
@@ -307,14 +300,6 @@ pub trait AddonKind: Send + Sync {
     ) -> Result<Option<Vec<db::Media>>> {
         Ok(None)
     }
-    async fn search_persist(
-        &self,
-        _id: Uuid,
-        _ctx: &AppContext,
-    ) -> Result<Option<db::Media>> {
-        Ok(None)
-    }
-
     async fn available_resources(&self) -> Vec<ResourceType> {
         vec![]
     }
@@ -686,7 +671,7 @@ impl AddonService {
         Ok(batch)
     }
 
-    async fn process_meta_item(
+    pub(crate) async fn process_meta_item(
         &self,
         mut media: db::Media,
         ctx: &AppContext,
@@ -735,7 +720,16 @@ impl AddonService {
                 continue;
             }
             match addon.search(kind, query, limit, ctx).await {
-                Ok(Some(results)) => return Ok(results),
+                Ok(Some(results)) => {
+                    for m in &results {
+                        ctx.store.save(
+                            m.id.to_string(),
+                            m.clone(),
+                            Duration::from_secs(3600),
+                        );
+                    }
+                    return Ok(results);
+                }
                 Ok(None) => continue,
                 Err(e) => {
                     tracing::warn!(addon = %name, error = %e, "search addon error")
@@ -743,26 +737,6 @@ impl AddonService {
             }
         }
         Ok(vec![])
-    }
-
-    pub async fn persist_search_result(
-        &self,
-        id: Uuid,
-        ctx: &AppContext,
-    ) -> Result<Option<db::Media>> {
-        let guard = self.inner.read().await;
-        let addons: Vec<Arc<dyn AddonKind>> = guard
-            .iter()
-            .filter(|r| r.supports(ResourceType::Search))
-            .map(|r| r.kind.clone())
-            .collect();
-        drop(guard);
-        for addon in addons {
-            if let Some(media) = addon.search_persist(id, ctx).await? {
-                return Ok(Some(media));
-            }
-        }
-        Ok(None)
     }
 
     pub async fn get_remote_images(
