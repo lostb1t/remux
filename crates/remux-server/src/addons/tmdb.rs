@@ -830,11 +830,22 @@ async fn search_tmdb_person(
     let client = sdks::RestClient::new("https://api.themoviedb.org/3/")?
         .with_auth(sdks::BearerAuth { token: api_key });
 
-    let resp = client
+    let resp = match client
         .execute(sdks::tmdb::PersonSearchEndpoint {
             query: query.to_string(),
         })
-        .await?;
+        .await
+    {
+        Ok(r) => r,
+        // TMDB occasionally returns a non-JSON body (HTML rate-limit/CDN page) with
+        // status 200 for person searches. Treat as zero results rather than surfacing
+        // a spurious WARN on every general search that includes the Person type.
+        Err(ClientError::Json { ref source, .. }) => {
+            tracing::debug!(error = %source, query, "tmdb person search returned non-JSON body");
+            return Ok(vec![]);
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     let media = resp
         .results

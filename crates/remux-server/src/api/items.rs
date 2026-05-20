@@ -1,55 +1,20 @@
 use crate::services::image::ImageService;
+use crate::services::resolve::{resolve_item, wait_for_persist};
 use anyhow::Context;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum_extra::extract::Query;
-use dashmap::DashMap;
 use http::StatusCode;
 use itertools::Itertools;
 use remux_macros::{delete, get, patch, post};
 use serde::Deserialize;
-use std::sync::{Arc, OnceLock};
-use tokio::sync::Mutex;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
-
-static PERSIST_LOCKS: OnceLock<DashMap<Uuid, Arc<Mutex<()>>>> = OnceLock::new();
-
-fn persist_locks() -> &'static DashMap<Uuid, Arc<Mutex<()>>> {
-    PERSIST_LOCKS.get_or_init(DashMap::new)
-}
-
-/// For each candidate ID: if not in DB, create/acquire its persist lock and persist if still
-/// missing; if in DB but lock is held, wait for it. Returns true if a query retry is warranted.
-async fn wait_for_persist(
-    ids: &[Uuid],
-    ctx: &crate::AppContext,
-) -> anyhow::Result<bool> {
-    for &id in ids {
-        let in_db = db::Media::get_by_id(&ctx.db, &id).await?.is_some();
-        if !in_db {
-            let lock = persist_locks()
-                .entry(id)
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone();
-            let _guard = lock.lock().await;
-            if db::Media::get_by_id(&ctx.db, &id).await?.is_none() {
-                ctx.addons.persist_search_result(id, ctx).await.ok();
-            }
-            persist_locks().remove(&id);
-            return Ok(true);
-        } else if let Some(lock) = persist_locks().get(&id).map(|e| Arc::clone(&e)) {
-            let _guard = lock.lock().await;
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
 
 use crate::AppState;
 use crate::api;
@@ -944,49 +909,10 @@ pub async fn item(
     .next()
     {
         Some(m) => m,
-        None => {
-            // Two concurrent requests for the same id (Jellyfin web UI bug):
-            // serialise here so only one triggers the expensive persist.
-            let lock = persist_locks()
-                .entry(id)
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone();
-            let _guard = lock.lock().await;
-
-            // Re-check under lock — first waiter may have just saved it.
-            match db::Media::get_by_filter(
-                &state.ctx.db,
-                &db::MediaFilter {
-                    id: Some(vec![id]),
-                    include_user_state: true,
-                    include_child_count: true,
-                    user_id: Some(session.user.id),
-                    ..Default::default()
-                },
-            )
-            .await?
-            .records
-            .into_iter()
-            .next()
-            {
-                Some(m) => m,
-                None => match state
-                    .ctx
-                    .addons
-                    .persist_search_result(id, &state.ctx)
-                    .await?
-                {
-                    Some(m) => {
-                        persist_locks().remove(&id);
-                        m
-                    }
-                    None => {
-                        persist_locks().remove(&id);
-                        return Ok(None);
-                    }
-                },
-            }
-        }
+        None => match resolve_item(id, &state.ctx).await? {
+            Some(m) => m,
+            None => return Ok(None),
+        },
     };
 
     let need_refresh = media.refreshed_at.is_none()

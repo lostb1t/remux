@@ -34,6 +34,7 @@ use crate::db::auth;
 use crate::playback_session::{PlaybackSession, PlaybackSessionManager};
 use crate::profile::DeviceProfileExt;
 use crate::sdks;
+use crate::services::resolve::resolve_item;
 use crate::torrent;
 use crate::transcode::session::{TranscodeSession, TranscodeState};
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
@@ -75,7 +76,7 @@ async fn items_playbackinfo_inner(
 
     let device_profile = q.device_profile;
 
-    let mut media = db::Media::get_by_id(&state.ctx.db, &media_source_id.unwrap_or(id))
+    let mut media = resolve_item(media_source_id.unwrap_or(id), &state.ctx)
         .await?
         .context_not_found("not found", "not found")?;
 

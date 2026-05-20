@@ -30,6 +30,10 @@ async fn fetch_upstream(url: &str) -> anyhow::Result<(Vec<u8>, String)> {
         delay: 500,
         { IMAGE_CLIENT.get(url).send().await.map_err(|e| anyhow::anyhow!("image fetch failed: {e}")) }
     }?;
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!("upstream image returned {status}");
+    }
     let ct = resp
         .headers()
         .get(header::CONTENT_TYPE)
