@@ -265,11 +265,11 @@ impl AddonKind for StremioAddon {
         stremio_meta_fetch(&svc, media, ctx).await
     }
 
-    fn tree_supports(&self, root: &db::Media) -> bool {
+    fn supports_children(&self, root: &db::Media) -> bool {
         root.kind == db::MediaKind::Series
     }
 
-    async fn tree_sync_children(
+    async fn get_children(
         &self,
         root: &db::Media,
         ctx: &AppContext,
@@ -596,7 +596,10 @@ async fn stremio_sync_children(
             } else if x.kind == db::MediaKind::Episode {
                 if let Some(season_idx) = x.parent_idx {
                     let season_media_id = format!("{}:{}", imdb_id, season_idx);
-                    x.parent_id = Some(crate::common::get_stable_uuid(season_media_id));
+                    x.parent_id = Some(crate::common::get_stable_uuid(format!(
+                        "season:{}",
+                        season_media_id
+                    )));
                 }
                 x.grandparent_id = Some(root.id);
                 if let Some(episode_num) = x.idx {

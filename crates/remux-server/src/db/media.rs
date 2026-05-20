@@ -3020,8 +3020,13 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                     .collect::<Vec<String>>()
             }),
 
-            //tmdb_id: Some(imdb_id.clone()),
-            id: crate::common::get_stable_uuid(meta.id.clone()),
+            id: meta
+                .imdb_id
+                .as_ref()
+                .map(|mid| {
+                    crate::common::get_stable_uuid(format!("{}:{}", media_kind, mid))
+                })
+                .unwrap_or_else(|| crate::common::get_stable_uuid(meta.id.clone())),
             ..Default::default()
         };
 
@@ -3044,7 +3049,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
     let imdb_id = meta.imdb_id.clone().context("imdb_id is missing")?;
 
     let mut media: Media = meta.clone().try_into()?;
-    media.id = crate::common::get_stable_uuid(imdb_id.clone());
+    media.id = crate::common::get_stable_uuid(format!("{}:{}", media.kind, imdb_id));
 
     let mut media_instances = Vec::new();
     media_instances.push(media.clone());
@@ -3068,7 +3073,10 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                 let season_media_id = format!("{}:{}", imdb_id, season_idx);
 
                 let mut season = Media {
-                    id: crate::common::get_stable_uuid(season_media_id.clone()),
+                    id: crate::common::get_stable_uuid(format!(
+                        "season:{}",
+                        season_media_id
+                    )),
                     title: format!("Season {}", season_idx),
                     kind: MediaKind::Season,
                     idx: Some(season_idx),
@@ -3097,7 +3105,8 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                 for ep in episodes {
                     let mut episode: Media = ep.clone().try_into()?;
 
-                    episode.id = crate::common::get_stable_uuid(ep.id.clone());
+                    episode.id =
+                        crate::common::get_stable_uuid(format!("episode:{}", ep.id));
                     episode.idx = ep.episode;
                     episode.media_id = Some(ep.id.clone());
                     episode.grandparent_media_id = media.media_id.clone();

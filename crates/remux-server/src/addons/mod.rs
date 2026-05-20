@@ -276,10 +276,10 @@ pub trait AddonKind: Send + Sync {
     }
 
     // tree
-    fn tree_supports(&self, _root: &db::Media) -> bool {
+    fn supports_children(&self, _root: &db::Media) -> bool {
         false
     }
-    async fn tree_sync_children(
+    async fn get_children(
         &self,
         _root: &db::Media,
         _ctx: &AppContext,
@@ -603,52 +603,35 @@ impl AddonService {
         Ok(())
     }
 
-    pub async fn sync_tree(
-        &self,
-        root: &mut db::Media,
-        ctx: &AppContext,
-        force_refresh: bool,
-    ) -> Result<Vec<db::Media>> {
-        let guard = self.inner.read().await;
-        let applicable: Vec<Arc<dyn AddonKind>> = guard
-            .iter()
-            .filter(|r| r.kind.tree_supports(root))
-            .map(|r| r.kind.clone())
-            .collect();
-        drop(guard);
+    /// Returns all descendants depth-first as minimal stubs — no DB writes, no enrichment.
+    pub async fn get_tree(&self, root: &db::Media, ctx: &AppContext) -> Vec<db::Media> {
+        let mut all = Vec::new();
+        let mut queue = vec![root.clone()];
+        while let Some(node) = queue.pop() {
+            let guard = self.inner.read().await;
+            let applicable: Vec<Arc<dyn AddonKind>> = guard
+                .iter()
+                .filter(|r| r.kind.supports_children(&node))
+                .map(|r| r.kind.clone())
+                .collect();
+            drop(guard);
 
-        for addon in &applicable {
-            let mut children = match addon.tree_sync_children(root, ctx).await {
-                Ok(Some(c)) => c,
-                Ok(None) => continue,
-                Err(e) => {
-                    tracing::warn!(id = %root.id, error = %e, "failed to sync tree");
-                    continue;
-                }
-            };
-            if children.is_empty() {
-                continue;
-            }
-            // Persist root first so children can look up its external IDs (e.g. TMDB
-            // ID) via get_by_id when fetching their own metadata.
-            if let Err(e) = db::Media::upsert(&ctx.db, &[root.clone()]).await {
-                tracing::warn!(id = %root.id, error = %e, "failed to pre-persist root before children");
-            }
-            // Persist children so FK constraints are satisfied when apply_meta
-            // writes media_relations with left_media_id = child.id.
-            if let Err(e) = db::Media::upsert(&ctx.db, &children).await {
-                tracing::warn!(id = %root.id, error = %e, "failed to pre-persist children");
-            }
-            for child in &mut children {
-                if force_refresh || child.refreshed_at.is_none() {
-                    if let Err(e) = self.refresh_meta(child, ctx, force_refresh).await {
-                        tracing::warn!(id = %child.id, error = %e, "failed to refresh child meta");
+            for addon in &applicable {
+                match addon.get_children(&node, ctx).await {
+                    Ok(Some(children)) if !children.is_empty() => {
+                        queue.extend(children.iter().cloned());
+                        all.extend(children);
+                        break;
+                    }
+                    Ok(_) => continue,
+                    Err(e) => {
+                        tracing::warn!(id = %node.id, error = %e, "get_children failed");
+                        continue;
                     }
                 }
             }
-            return Ok(children);
         }
-        Ok(vec![])
+        all
     }
 
     pub async fn process_meta_batch(
@@ -677,27 +660,28 @@ impl AddonService {
         ctx: &AppContext,
         force_refresh: bool,
     ) -> Vec<db::Media> {
-        let mut batch = vec![];
         if let Err(e) = self.refresh_meta(&mut media, ctx, force_refresh).await {
             tracing::warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
-            batch.push(media);
-            return batch;
+            return vec![media];
         }
-        let guard = self.inner.read().await;
-        let any_tree = guard.iter().any(|r| r.kind.tree_supports(&media));
-        drop(guard);
-        if any_tree {
-            batch.push(media.clone());
-            match self.sync_tree(&mut media, ctx, force_refresh).await {
-                Ok(children) => batch.extend(children),
-                Err(e) => {
-                    tracing::warn!(id = %media.id, error = %e, "failed to sync tree")
+
+        let tree = self.get_tree(&media, ctx).await;
+        if tree.is_empty() {
+            return vec![media];
+        }
+
+        // Pre-persist all stubs so FK constraints are satisfied when children
+        // reference parents that are in the same batch.
+        let mut items = vec![media.clone()];
+        for mut item in tree {
+            if force_refresh || item.refreshed_at.is_none() {
+                if let Err(e) = self.refresh_meta(&mut item, ctx, force_refresh).await {
+                    tracing::warn!(id = %item.id, error = %e, "failed to refresh child meta");
                 }
             }
-        } else {
-            batch.push(media);
+            items.push(item);
         }
-        batch
+        items
     }
 
     pub async fn search(

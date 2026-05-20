@@ -40,10 +40,7 @@ async fn persist_from_store(
             return Ok(None);
         };
         db::Media {
-            id: crate::common::get_stable_uuid(format!(
-                "deezer-artist:{}",
-                deezer_artist_id
-            )),
+            id: crate::common::get_stable_uuid(format!("artist:{}", deezer_artist_id)),
             title: media.series_title.clone().unwrap_or_default(),
             kind: db::MediaKind::Artist,
             media_id: Some(deezer_artist_id.to_string()),
