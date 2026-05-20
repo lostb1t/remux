@@ -1,17 +1,14 @@
-use std::sync::{Arc, OnceLock};
-
 use axum::extract::FromRequestParts;
 use axum::extract::Path;
 use axum::http::request::Parts;
 use axum_anyhow::{ApiError, ApiResult as Result};
-use dashmap::DashMap;
 use http::StatusCode;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::AppContext;
 use crate::AppState;
 use crate::db;
+use crate::keyed_lock::KeyedLock;
 
 /// Resolves a cached search result from the store into a persisted `db::Media`.
 ///
@@ -34,16 +31,29 @@ async fn persist_from_store(
         }
     }
 
+    if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album) {
+        if !crate::services::deezer::resolve_music_deezer(&mut media, ctx).await {
+            tracing::warn!(%id, kind = ?media.kind, title = %media.title,
+                "persist_from_store: Deezer ID resolution failed");
+        }
+    }
+
     let root = if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album) {
         let Some(deezer_artist_id) = media.external_ids.deezer_artist else {
             tracing::debug!(%id, kind = ?media.kind, "persist_from_store: no deezer_artist id on music child");
             return Ok(None);
         };
         db::Media {
-            id: crate::common::get_stable_uuid(format!("artist:{}", deezer_artist_id)),
+            id: crate::common::stable_media_uuid(
+                &db::MediaKind::Artist,
+                &deezer_artist_id.to_string(),
+            ),
             title: media.series_title.clone().unwrap_or_default(),
             kind: db::MediaKind::Artist,
-            media_id: Some(deezer_artist_id.to_string()),
+            external_ids: db::ExternalIds {
+                deezer_artist: Some(deezer_artist_id),
+                ..Default::default()
+            },
             ..Default::default()
         }
     } else {
@@ -61,11 +71,7 @@ async fn persist_from_store(
     Ok(db::Media::get_by_id(&ctx.db, &id).await?)
 }
 
-static PERSIST_LOCKS: OnceLock<DashMap<Uuid, Arc<Mutex<()>>>> = OnceLock::new();
-
-fn persist_locks() -> &'static DashMap<Uuid, Arc<Mutex<()>>> {
-    PERSIST_LOCKS.get_or_init(DashMap::new)
-}
+static PERSIST_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
 
 /// For each candidate ID: if not in DB, acquire its persist lock and persist if still missing;
 /// if in DB but lock is held, wait for it. Returns true if a query retry is warranted.
@@ -76,18 +82,12 @@ pub(crate) async fn wait_for_persist(
     for &id in ids {
         let in_db = db::Media::get_by_id(&ctx.db, &id).await?.is_some();
         if !in_db {
-            let lock = persist_locks()
-                .entry(id)
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone();
-            let _guard = lock.lock().await;
+            let _guard = PERSIST_LOCKS.lock(id).await;
             if db::Media::get_by_id(&ctx.db, &id).await?.is_none() {
                 persist_from_store(id, ctx).await.ok();
             }
-            persist_locks().remove(&id);
             return Ok(true);
-        } else if let Some(lock) = persist_locks().get(&id).map(|e| Arc::clone(&e)) {
-            let _guard = lock.lock().await;
+        } else if let Some(_guard) = PERSIST_LOCKS.lock_if_exists(&id).await {
             return Ok(true);
         }
     }
@@ -114,13 +114,8 @@ where
         return Ok(Some(media));
     }
 
-    let lock = persist_locks()
-        .entry(id)
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone();
-
     let result = {
-        let _guard = lock.lock().await;
+        let _guard = PERSIST_LOCKS.lock(id).await;
         if let Some(media) = lookup().await? {
             Ok(Some(media))
         } else {
@@ -129,7 +124,6 @@ where
         // _guard dropped here — waiters unblock and hit the re-check above
     };
 
-    persist_locks().remove(&id);
     result
 }
 
@@ -195,6 +189,7 @@ impl FromRequestParts<AppState> for ResolvedItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Barrier;
 
@@ -289,7 +284,7 @@ mod tests {
         .await;
 
         assert!(
-            !persist_locks().contains_key(&id),
+            !PERSIST_LOCKS.contains_key(&id),
             "lock must be removed even after error"
         );
     }

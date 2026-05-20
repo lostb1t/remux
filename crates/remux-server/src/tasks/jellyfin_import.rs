@@ -1,15 +1,12 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use remux_sdks::remux::JellyfinItem;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::{AppContext, db};
-use remux_sdks::remux::{
-    GetJellyfinItemsByIds, GetJellyfinUserItems, GetJellyfinUsers, JellyfinUserDto,
-};
+use remux_sdks::remux::{GetJellyfinUserItems, GetJellyfinUsers, JellyfinUserDto};
 use remux_sdks::{JellyfinApiKeyAuth, RestClient};
 
 pub struct JellyfinImportTask;
@@ -142,41 +139,6 @@ impl Task for JellyfinImportTask {
                 .collect();
             info!("got {} items for '{username}', importing", items.len());
 
-            // Collect series IDs for episodes missing series_provider_ids
-            let series_ids: Vec<String> = items
-                .iter()
-                .filter(|it| it.item_type.as_deref() == Some("Episode"))
-                .filter(|it| {
-                    it.series_provider_ids
-                        .as_ref()
-                        .and_then(|p| p.get("Imdb"))
-                        .is_none()
-                })
-                .filter_map(|it| it.series_id.clone())
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
-
-            let series_map: HashMap<String, String> = if series_ids.is_empty() {
-                HashMap::new()
-            } else {
-                debug!(
-                    "fetching {} series for episode resolution",
-                    series_ids.len()
-                );
-                client
-                    .execute(GetJellyfinItemsByIds { ids: series_ids })
-                    .await?
-                    .items
-                    .into_iter()
-                    .filter_map(|s| {
-                        let id = s.id?;
-                        let imdb = s.provider_ids?.get("Imdb")?.clone();
-                        Some((id, imdb))
-                    })
-                    .collect()
-            };
-
             for item in items {
                 let Some(ud) = &item.user_data else {
                     continue;
@@ -198,32 +160,23 @@ impl Task for JellyfinImportTask {
                     .and_then(|p| p.get("Tvdb"))
                     .and_then(|v| v.parse::<i64>().ok());
 
-                let media_key = match resolve_from_index(&index, imdb, tmdb, tvdb) {
-                    Some(k) => k,
-                    None => match stremio_key(&item, &series_map) {
-                        Some(k) => k,
-                        None => {
-                            let item_type = item.item_type.as_deref();
-                            let series_imdb = series_map
-                                .get(item.series_id.as_deref().unwrap_or(""))
-                                .map(String::as_str);
-                            let season = item.parent_index_number;
-                            let episode = item.index_number;
-                            warn!(
-                                name = item.name.as_deref().unwrap_or("?"),
-                                item_type,
-                                imdb,
-                                tmdb,
-                                tvdb,
-                                series_imdb,
-                                season,
-                                episode,
-                                "could not resolve item to local media"
-                            );
-                            states_unresolved += 1;
-                            continue;
-                        }
-                    },
+                let Some(media_key) = resolve_from_index(&index, imdb, tmdb, tvdb)
+                else {
+                    let item_type = item.item_type.as_deref();
+                    let season = item.parent_index_number;
+                    let episode = item.index_number;
+                    warn!(
+                        name = item.name.as_deref().unwrap_or("?"),
+                        item_type,
+                        imdb,
+                        tmdb,
+                        tvdb,
+                        season,
+                        episode,
+                        "could not resolve item to local media"
+                    );
+                    states_unresolved += 1;
+                    continue;
                 };
 
                 let state = db::UserMediaState {
@@ -260,7 +213,7 @@ struct MediaIndex {
 async fn build_media_index(db: &sqlx::SqlitePool) -> Result<MediaIndex> {
     use sqlx::Row as _;
     let rows = sqlx::query(
-        "SELECT media_id, json_extract(external_ids, '$.imdb') as imdb, \
+        "SELECT id, json_extract(external_ids, '$.imdb') as imdb, \
          json_extract(external_ids, '$.tmdb') as tmdb, \
          json_extract(external_ids, '$.tvdb') as tvdb \
          FROM media WHERE external_ids IS NOT NULL AND external_ids != '{}'",
@@ -275,14 +228,15 @@ async fn build_media_index(db: &sqlx::SqlitePool) -> Result<MediaIndex> {
     };
 
     for row in rows {
-        let media_id: Option<String> = row.try_get("media_id").ok().flatten();
+        let id: uuid::Uuid = row.try_get("id").ok().flatten().unwrap_or_default();
+        let key = id.as_simple().to_string();
         let imdb: Option<String> = row.try_get("imdb").ok().flatten();
         let tmdb: Option<i64> = row.try_get("tmdb").ok().flatten();
         let tvdb: Option<i64> = row.try_get("tvdb").ok().flatten();
 
-        let Some(key) = media_id.or_else(|| imdb.clone()) else {
+        if imdb.is_none() && tmdb.is_none() && tvdb.is_none() {
             continue;
-        };
+        }
         if let Some(id) = imdb {
             index.by_imdb.insert(id, key.clone());
         }
@@ -295,31 +249,6 @@ async fn build_media_index(db: &sqlx::SqlitePool) -> Result<MediaIndex> {
     }
 
     Ok(index)
-}
-
-fn stremio_key(
-    item: &JellyfinItem,
-    series_map: &HashMap<String, String>,
-) -> Option<String> {
-    match item.item_type.as_deref() {
-        Some("Movie") => {
-            let imdb = item.provider_ids.as_ref()?.get("Imdb")?;
-            Some(imdb.clone())
-        }
-        Some("Episode") => {
-            let series_imdb = item
-                .series_provider_ids
-                .as_ref()
-                .and_then(|p| p.get("Imdb"))
-                .or_else(|| {
-                    item.series_id.as_ref().and_then(|id| series_map.get(id))
-                })?;
-            let season = item.parent_index_number?;
-            let episode = item.index_number?;
-            Some(format!("{series_imdb}:{season}:{episode}"))
-        }
-        _ => None,
-    }
 }
 
 fn resolve_from_index(

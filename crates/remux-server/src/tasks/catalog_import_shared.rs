@@ -50,24 +50,13 @@ where
         }
 
         if let Some((addon_uuid, local_cat_id)) = membership {
-            // Note: after upsert the stored `id` may differ from `item.id` when
-            // the row was matched by the (kind, media_id) unique index instead of
-            // the primary key.  We resolve the real id via a subquery so the FK
-            // on media_catalog_items is never violated.
             for item in items.iter().filter(|m| m.parent_id.is_none()) {
                 if let Err(e) = sqlx::query(
                     "INSERT OR IGNORE INTO media_catalog_items (media_id, addon_id, catalog_id) \
-                     SELECT id, ?1, ?2 FROM media \
-                     WHERE CASE WHEN ?3 IS NOT NULL \
-                                THEN (kind = ?4 AND media_id = ?3) \
-                                ELSE id = ?5 \
-                           END \
-                     LIMIT 1",
+                     SELECT id, ?1, ?2 FROM media WHERE id = ?3 LIMIT 1",
                 )
                 .bind(addon_uuid)
                 .bind(local_cat_id)
-                .bind(&item.media_id)
-                .bind(&item.kind)
                 .bind(item.id)
                 .execute(db)
                 .await

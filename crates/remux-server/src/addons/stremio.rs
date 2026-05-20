@@ -635,8 +635,10 @@ pub(crate) fn build_relations(
 
     if let Some(genres) = meta.genre.as_ref().or(meta.genres.as_ref()) {
         for genre_name in genres {
-            let genre_id =
-                common::get_stable_uuid(format!("genre:{}", genre_name.to_lowercase()));
+            let genre_id = common::stable_media_uuid(
+                &db::MediaKind::Genre,
+                &genre_name.to_lowercase(),
+            );
             relations.push((
                 db::MediaRelation {
                     left_media_id: media.id,
@@ -648,7 +650,6 @@ pub(crate) fn build_relations(
                     id: genre_id,
                     title: genre_name.clone(),
                     kind: db::MediaKind::Genre,
-                    media_id: Some(format!("genre:{}", genre_name.to_lowercase())),
                     ..Default::default()
                 },
             ));
@@ -727,15 +728,14 @@ fn build_person_relations(
                     if name.is_empty() {
                         continue;
                     }
-                    let person_id = common::get_stable_uuid(format!(
-                        "person:{}",
-                        name.to_lowercase()
-                    ));
+                    let person_id = common::stable_media_uuid(
+                        &db::MediaKind::Person,
+                        &name.to_lowercase(),
+                    );
                     let mut person = db::Media {
                         id: person_id,
                         title: name.clone(),
                         kind: db::MediaKind::Person,
-                        media_id: Some(format!("person:{}", name.to_lowercase())),
                         ..Default::default()
                     };
                     if let Some(url) = member.photo.clone() {
@@ -763,7 +763,7 @@ fn build_person_relations(
 
     for (i, name) in split_names(cast_names).into_iter().enumerate() {
         let person_id =
-            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+            common::stable_media_uuid(&db::MediaKind::Person, &name.to_lowercase());
         relations.push((
             db::MediaRelation {
                 left_media_id,
@@ -776,7 +776,6 @@ fn build_person_relations(
                 id: person_id,
                 title: name.clone(),
                 kind: db::MediaKind::Person,
-                media_id: Some(format!("person:{}", name.to_lowercase())),
                 ..Default::default()
             },
         ));
@@ -784,7 +783,7 @@ fn build_person_relations(
 
     for (i, name) in split_names(directors).into_iter().enumerate() {
         let person_id =
-            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+            common::stable_media_uuid(&db::MediaKind::Person, &name.to_lowercase());
         relations.push((
             db::MediaRelation {
                 left_media_id,
@@ -799,7 +798,6 @@ fn build_person_relations(
                 id: person_id,
                 title: name.clone(),
                 kind: db::MediaKind::Person,
-                media_id: Some(format!("person:{}", name.to_lowercase())),
                 ..Default::default()
             },
         ));
@@ -807,7 +805,7 @@ fn build_person_relations(
 
     for (i, name) in split_names(writers).into_iter().enumerate() {
         let person_id =
-            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+            common::stable_media_uuid(&db::MediaKind::Person, &name.to_lowercase());
         relations.push((
             db::MediaRelation {
                 left_media_id,
@@ -820,7 +818,6 @@ fn build_person_relations(
                 id: person_id,
                 title: name.clone(),
                 kind: db::MediaKind::Person,
-                media_id: Some(format!("person:{}", name.to_lowercase())),
                 ..Default::default()
             },
         ));
@@ -956,14 +953,9 @@ async fn stremio_streams(
             )
         }
         _ => {
-            let id = media
-                .external_ids
-                .imdb
-                .clone()
-                .or_else(|| media.media_id.clone())
-                .ok_or_else(|| {
-                    anyhow!("media has no identifiable ID for Stremio stream lookup")
-                })?;
+            let id = media.external_ids.imdb.clone().ok_or_else(|| {
+                anyhow!("media has no identifiable ID for Stremio stream lookup")
+            })?;
             (sdks::stremio::MediaType::from(&media.kind), id)
         }
     };

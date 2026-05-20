@@ -101,17 +101,20 @@ pub async fn insert_track(
         media_id.clone()
     };
 
-    let stable_id = crate::common::get_stable_uuid(format!("ytdlp:{}", video_id));
+    let stable_id = crate::common::stable_media_uuid(&db::MediaKind::Track, &video_id);
 
     let mut media = db::Media {
         id: stable_id,
         title: body.title.unwrap_or_else(|| video_id.clone()),
         kind: db::MediaKind::Track,
-        media_id: Some(video_id.clone()),
         stream_info: Some(crate::stream::StreamInfo {
             descriptor: crate::stream::StreamDescriptor::http(url.clone()),
             ..Default::default()
         }),
+        external_ids: db::ExternalIds {
+            youtube_id: Some(video_id.clone()),
+            ..Default::default()
+        },
         ..Default::default()
     };
 

@@ -521,6 +521,9 @@ pub struct ExternalIds {
     pub tvdb: Option<i64>,
     pub deezer_artist: Option<i64>,
     pub deezer_album: Option<i64>,
+    pub deezer_track: Option<i64>,
+    pub youtube_id: Option<String>,
+    pub iptv_source_id: Option<String>,
 }
 
 impl ExternalIds {
@@ -615,7 +618,6 @@ pub struct MediaFilter {
     pub parent_id: Option<Uuid>,
     /// Filter by multiple parent IDs (OR). Used for programs by channel.
     pub parent_ids: Option<Vec<Uuid>>,
-    pub media_id: Option<String>,
     pub promoted: Option<bool>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -750,8 +752,6 @@ pub struct Media {
     #[sqlx(default)]
     #[sqlx(json)]
     pub external_ids: ExternalIds,
-    pub media_id: Option<String>,
-    //pub media_key: Option<String>,
     pub grandparent_id: Option<Uuid>,
     //pub season_id: Option<Uuid>,
     //pub description: Option<String>,
@@ -1030,23 +1030,39 @@ impl Media {
     }
 
     pub fn validate(&self) -> Result<(), MediaError> {
-        match self.kind {
-            MediaKind::Season | MediaKind::Episode if self.idx.is_none() => {
-                Err(MediaError::ValidationError(format!(
-                    "{:?} requires an index number",
-                    self.kind
-                )))
-            }
-            _ => Ok(()),
-        }?;
+        if matches!(self.kind, MediaKind::Season | MediaKind::Episode)
+            && self.idx.is_none()
+        {
+            return Err(MediaError::ValidationError(format!(
+                "{:?} requires an index number",
+                self.kind
+            )));
+        }
 
-        if self.kind == MediaKind::Movie || self.kind == MediaKind::Series {
-            if self.external_ids.imdb.is_none() {
-                return Err(MediaError::ValidationError(format!(
-                    "{:?} requires an imdb id",
-                    self.kind
-                )));
-            }
+        let missing = match self.kind {
+            MediaKind::Movie
+            | MediaKind::Series
+            | MediaKind::Season
+            | MediaKind::Episode => self.external_ids.imdb.is_none().then_some("imdb"),
+            MediaKind::Artist => self
+                .external_ids
+                .deezer_artist
+                .is_none()
+                .then_some("deezer_artist"),
+            MediaKind::Album => (self.external_ids.deezer_album.is_none()
+                && self.external_ids.youtube_id.is_none())
+            .then_some("deezer_album or youtube_id"),
+            MediaKind::Track => (self.external_ids.deezer_track.is_none()
+                && self.external_ids.youtube_id.is_none())
+            .then_some("deezer_track or youtube_id"),
+            _ => None,
+        };
+
+        if let Some(field) = missing {
+            return Err(MediaError::ValidationError(format!(
+                "{:?} requires {field}",
+                self.kind
+            )));
         }
 
         Ok(())
@@ -1061,11 +1077,11 @@ impl Media {
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
-            grandparent_media_id, media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
+            grandparent_media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -1085,7 +1101,6 @@ impl Media {
             grandparent_media_id = excluded.grandparent_media_id,
             grandparent_id = excluded.grandparent_id,
             external_ids = excluded.external_ids,
-            media_id = excluded.media_id,
             promoted = excluded.promoted,
             collection_kind = excluded.collection_kind,
             collection_media_kind = excluded.collection_media_kind,
@@ -1126,7 +1141,6 @@ impl Media {
         .bind(&self.collection_media_kind)
         .bind(self.collection_max_items)
         .bind(&self.grandparent_media_id)
-        .bind(&self.media_id)
         .bind(sqlx::types::Json(&self.external_ids))
         .bind(self.created_at)
         .bind(updated_at)
@@ -1195,7 +1209,7 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
-                grandparent_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
+                grandparent_media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind
             )",
         );
@@ -1221,7 +1235,6 @@ impl Media {
                     .push_bind(&item.collection_media_kind)
                     .push_bind(&item.grandparent_media_id)
                     .push_bind(sqlx::types::Json(&item.external_ids))
-                    .push_bind(&item.media_id)
                     .push_bind(&item.created_at)
                     .push_bind(Utc::now())
                     .push_bind(&item.certification)
@@ -1266,7 +1279,7 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
-                grandparent_media_id, external_ids, media_id, created_at, updated_at, certification, certification_age, parent_idx,
+                grandparent_media_id, external_ids, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind
             )",
         );
@@ -1290,7 +1303,6 @@ impl Media {
                     .push_bind(&item.collection_media_kind)
                     .push_bind(&item.grandparent_media_id)
                     .push_bind(sqlx::types::Json(&item.external_ids))
-                    .push_bind(&item.media_id)
                     .push_bind(&item.created_at)
                     .push_bind(Utc::now())
                     .push_bind(&item.certification)
@@ -1323,7 +1335,6 @@ impl Media {
                 description = excluded.description,
                 trailers = excluded.trailers,
                 stream_info = excluded.stream_info,
-                media_id = excluded.media_id,
                 external_ids = excluded.external_ids,
                 probe_data = CASE
                 WHEN excluded.stream_info IS NOT media.stream_info THEN NULL
@@ -1510,9 +1521,6 @@ impl Media {
             if let Some(grandparent_id) = &filter.grandparent_id {
                 qb.push(" AND grandparent_id = ").push_bind(grandparent_id);
             }
-            if let Some(media_id) = &filter.media_id {
-                qb.push(" AND media_id = ").push_bind(media_id);
-            }
             if let Some(promoted) = &filter.promoted {
                 qb.push(" AND promoted = ").push_bind(promoted);
             }
@@ -1553,7 +1561,7 @@ impl Media {
             if let Some(user_state_filter) = &filter.user_state {
                 // favorite — always uses EXISTS
                 if let Some(favorite) = &user_state_filter.favorite {
-                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = media.media_id");
+                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = CAST(media.id AS TEXT)");
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ").push_bind(user_id);
                     }
@@ -1564,7 +1572,7 @@ impl Media {
 
                 // played=true — EXISTS with play_count > 0
                 if user_state_filter.played == Some(true) {
-                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = media.media_id");
+                    qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = CAST(media.id AS TEXT)");
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ").push_bind(user_id);
                     }
@@ -1573,7 +1581,7 @@ impl Media {
 
                 // played=false (unplayed) — NOT EXISTS with play_count > 0
                 if user_state_filter.played == Some(false) {
-                    qb.push(" AND NOT EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = media.media_id");
+                    qb.push(" AND NOT EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_key = CAST(media.id AS TEXT)");
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ").push_bind(user_id);
                     }
@@ -1583,7 +1591,7 @@ impl Media {
                 // resumable — use IN subquery so SQLite materialises the (small) in-progress
                 // set once rather than running a correlated EXISTS for every media row.
                 if user_state_filter.resumable == Some(true) {
-                    qb.push(" AND media.media_id IN (SELECT ums.media_key FROM user_media_state ums WHERE ums.playback_position > 0 AND ums.play_count = 0");
+                    qb.push(" AND CAST(media.id AS TEXT) IN (SELECT ums.media_key FROM user_media_state ums WHERE ums.playback_position > 0 AND ums.play_count = 0");
                     if let Some(user_id) = &user_state_filter.user_id {
                         qb.push(" AND ums.user_id = ").push_bind(user_id);
                     }
@@ -2207,8 +2215,10 @@ impl Media {
                 .user_id
                 .or_else(|| filter.user_state.as_ref().and_then(|s| s.user_id));
             if let Some(user_id) = uid {
-                let media_keys: Vec<String> =
-                    records.iter().filter_map(|m| m.media_id.clone()).collect();
+                let media_keys: Vec<String> = records
+                    .iter()
+                    .map(|m| m.id.as_simple().to_string())
+                    .collect();
 
                 let states = super::UserMediaState::get_by_filter(
                     db,
@@ -2227,10 +2237,9 @@ impl Media {
                     .collect();
 
                 for media in &mut records {
-                    if let Some(ref mk) = media.media_id {
-                        if let Some(state) = states_map.get(mk) {
-                            media.user_state = Some(state.clone());
-                        }
+                    let mk = media.id.as_simple().to_string();
+                    if let Some(state) = states_map.get(&mk) {
+                        media.user_state = Some(state.clone());
                     }
                 }
 
@@ -2254,7 +2263,7 @@ impl Media {
                     qb.push(
                         ") AND NOT EXISTS (\
                            SELECT 1 FROM user_media_state ums \
-                           WHERE ums.media_key = e.media_id \
+                           WHERE ums.media_key = CAST(e.id AS TEXT) \
                            AND ums.user_id = ",
                     );
                     qb.push_bind(user_id);
@@ -2854,7 +2863,6 @@ impl From<sdks::stremio::Catalog> for Media {
         Media {
             title: source.name,
             kind: MediaKind::Collection,
-            media_id: Some(source.id.clone()),
             ..Default::default()
         }
     }
@@ -3002,11 +3010,8 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 .country
                 .and_then(|v| v.into_iter().next())
                 .map(|c| normalize_country_alpha2(&c)),
-            media_id: meta.imdb_id.clone(),
             external_ids: {
-                // Start by parsing the AIO id for any provider prefix
                 let mut ids = ExternalIds::from_stremio_id(&meta.id);
-                // imdb_id from meta is more authoritative — override if present
                 if let Some(ref imdb) = meta.imdb_id {
                     ids.imdb = Some(imdb.clone());
                 }
@@ -3019,14 +3024,11 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                     .map(|t| t.source)
                     .collect::<Vec<String>>()
             }),
-
             id: meta
                 .imdb_id
                 .as_ref()
-                .map(|mid| {
-                    crate::common::get_stable_uuid(format!("{}:{}", media_kind, mid))
-                })
-                .unwrap_or_else(|| crate::common::get_stable_uuid(meta.id.clone())),
+                .map(|mid| crate::common::stable_media_uuid(&media_kind, mid))
+                .unwrap_or_else(uuid::Uuid::new_v4),
             ..Default::default()
         };
 
@@ -3049,14 +3051,14 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
     let imdb_id = meta.imdb_id.clone().context("imdb_id is missing")?;
 
     let mut media: Media = meta.clone().try_into()?;
-    media.id = crate::common::get_stable_uuid(format!("{}:{}", media.kind, imdb_id));
+    // TryFrom already sets id via stable_media_uuid(kind, imdb_id); reaffirm for clarity.
+    media.id = crate::common::stable_media_uuid(&media.kind, &imdb_id);
 
     let mut media_instances = Vec::new();
     media_instances.push(media.clone());
 
     if let MediaKind::Series = media.kind {
         if let Some(ref episodes) = meta.videos {
-            //info!("Found {} episodes", episodes.len());
             let seasons: std::collections::BTreeMap<i64, Vec<sdks::stremio::Episode>> =
                 episodes
                     .iter()
@@ -3068,33 +3070,32 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                             acc
                         },
                     );
-            //info!("Seasons map: {:?}", seasons);
             for (season_idx, episodes) in seasons {
-                let season_media_id = format!("{}:{}", imdb_id, season_idx);
+                let season_canonical = format!("{}:{}", imdb_id, season_idx);
 
                 let mut season = Media {
-                    id: crate::common::get_stable_uuid(format!(
-                        "season:{}",
-                        season_media_id
-                    )),
+                    id: crate::common::stable_media_uuid(
+                        &MediaKind::Season,
+                        &season_canonical,
+                    ),
                     title: format!("Season {}", season_idx),
                     kind: MediaKind::Season,
                     idx: Some(season_idx),
-                    grandparent_media_id: media.media_id.clone(),
+                    grandparent_media_id: Some(imdb_id.clone()),
                     grandparent_id: Some(media.id),
-                    media_id: Some(season_media_id.clone()),
+                    external_ids: ExternalIds {
+                        imdb: Some(imdb_id.clone()),
+                        ..Default::default()
+                    },
                     parent_id: Some(media.id),
                     released_at: episodes
-                        .get(0)
-                        .unwrap()
-                        .released
+                        .first()
+                        .and_then(|e| e.released)
                         .map(|x| x.naive_utc()),
                     digital_released_at: episodes
-                        .get(0)
-                        .unwrap()
-                        .released
+                        .first()
+                        .and_then(|e| e.released)
                         .map(|x| x.naive_utc()),
-
                     ..Default::default()
                 };
                 if let Some(url) = meta.get_season_poster(season_idx) {
@@ -3104,32 +3105,25 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
 
                 for ep in episodes {
                     let mut episode: Media = ep.clone().try_into()?;
+                    let ep_idx = ep.episode.unwrap_or(0);
+                    let ep_canonical = format!("{}:{}:{}", imdb_id, season_idx, ep_idx);
 
-                    episode.id =
-                        crate::common::get_stable_uuid(format!("episode:{}", ep.id));
+                    episode.id = crate::common::stable_media_uuid(
+                        &MediaKind::Episode,
+                        &ep_canonical,
+                    );
                     episode.idx = ep.episode;
-                    episode.media_id = Some(ep.id.clone());
-                    episode.grandparent_media_id = media.media_id.clone();
+                    episode.external_ids = ExternalIds {
+                        imdb: Some(imdb_id.clone()),
+                        ..Default::default()
+                    };
+                    episode.grandparent_media_id = Some(imdb_id.clone());
                     episode.grandparent_id = Some(media.id);
                     episode.parent_id = Some(season.id);
                     episode.parent_idx = Some(season_idx);
                     episode.released_at = ep.released.map(|x| x.naive_utc());
                     episode.digital_released_at = ep.released.map(|x| x.naive_utc());
-                    // AIO episode ids look like `tt0944947:1:2` (series imdb,
-                    // season, episode). Surface the series IMDB on the episode
-                    // so clients (TMDB lookups, etc.) can
-                    // hop to the right metadata without a separate query.
-                    let ep_external_ids = ExternalIds {
-                        imdb: meta
-                            .imdb_id
-                            .clone()
-                            .or_else(|| ep.id.split(':').next().map(|s| s.to_string()))
-                            .filter(|s| s.starts_with("tt")),
-                        ..Default::default()
-                    };
-                    episode.external_ids = ep_external_ids;
 
-                    // Populate relations (Cast, Directors, Writers) for the episode
                     let rels = build_episode_relations_from_ep(&episode, &ep);
                     if !rels.is_empty() {
                         episode.relations = Some(rels);
@@ -3446,10 +3440,10 @@ fn build_episode_relations_from_ep(
             .filter(|s| !s.is_empty())
             .collect();
         for (i, name) in names.into_iter().enumerate() {
-            let person_id = crate::common::get_stable_uuid(format!(
-                "person:{}",
-                name.to_lowercase()
-            ));
+            let person_id = crate::common::stable_media_uuid(
+                &MediaKind::Person,
+                &name.to_lowercase(),
+            );
             relations.push((
                 MediaRelation {
                     left_media_id: media.id,
@@ -3462,7 +3456,6 @@ fn build_episode_relations_from_ep(
                     id: person_id,
                     title: name.clone(),
                     kind: MediaKind::Person,
-                    media_id: Some(format!("person:{}", name.to_lowercase())),
                     ..Default::default()
                 },
             ));

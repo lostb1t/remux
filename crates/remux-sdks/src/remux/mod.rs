@@ -2115,7 +2115,6 @@ pub struct ProviderIds {
     pub imdb: Option<String>,
     pub tmdb: Option<String>,
     pub tvdb: Option<String>,
-    pub aio: Option<String>,
 }
 
 #[skip_serializing_none]

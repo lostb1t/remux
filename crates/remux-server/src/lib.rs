@@ -62,6 +62,7 @@ use uuid::Uuid;
 
 mod conversions;
 mod errors;
+mod keyed_lock;
 pub mod profile;
 pub mod sdks {
     pub use remux_sdks::*;

@@ -108,7 +108,10 @@ impl Task for IptvRefreshTask {
                         }),
                         tvg_id: ch.tvg_id.clone(),
                         channel_number: ch.channel_number,
-                        media_id: Some(source_id.clone()),
+                        external_ids: db::ExternalIds {
+                            iptv_source_id: Some(source_id.clone()),
+                            ..Default::default()
+                        },
                         enabled: false,
                         program_kind: ch.program_kind.clone(),
                         ..Default::default()

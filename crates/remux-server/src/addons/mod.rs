@@ -21,6 +21,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+
+use crate::keyed_lock::KeyedLock;
 use tracing::info;
 use uuid::Uuid;
 
@@ -267,7 +269,7 @@ pub trait AddonKind: Send + Sync {
     }
 
     // remote images (for manual image selection in the UI)
-    async fn remote_images_fetch(
+    async fn images_fetch(
         &self,
         _media: &db::Media,
         _ctx: &AppContext,
@@ -670,8 +672,6 @@ impl AddonService {
             return vec![media];
         }
 
-        // Pre-persist all stubs so FK constraints are satisfied when children
-        // reference parents that are in the same batch.
         let mut items = vec![media.clone()];
         for mut item in tree {
             if force_refresh || item.refreshed_at.is_none() {
@@ -723,7 +723,7 @@ impl AddonService {
         Ok(vec![])
     }
 
-    pub async fn get_remote_images(
+    pub async fn fetch_images(
         &self,
         media: &db::Media,
         ctx: &AppContext,
@@ -738,10 +738,10 @@ impl AddonService {
 
         let mut out = Vec::new();
         for (name, addon) in addons {
-            match addon.remote_images_fetch(media, ctx).await {
+            match addon.images_fetch(media, ctx).await {
                 Ok(images) => out.extend(images),
                 Err(e) => {
-                    tracing::warn!(addon = %name, error = %e, "remote_images_fetch failed")
+                    tracing::warn!(addon = %name, error = %e, "images_fetch failed")
                 }
             }
         }
@@ -857,11 +857,33 @@ impl AddonService {
         ctx: &AppContext,
     ) -> Result<()> {
         const STREAMS_TTL_SECS: i64 = 360;
-        if let Some(refreshed) = media.streams_refreshed_at {
-            let age = chrono::Utc::now().naive_utc() - refreshed;
-            if age.num_seconds() < STREAMS_TTL_SECS {
-                return Ok(());
-            }
+        static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
+
+        // Fast path: TTL not expired — skip the lock entirely.
+        let is_fresh = |refreshed: Option<chrono::NaiveDateTime>| {
+            refreshed.is_some_and(|r| {
+                (chrono::Utc::now().naive_utc() - r).num_seconds() < STREAMS_TTL_SECS
+            })
+        };
+        if is_fresh(media.streams_refreshed_at) {
+            return Ok(());
+        }
+
+        // Acquire per-media lock to prevent concurrent refreshes.
+        let _guard = STREAM_LOCKS.lock(media.id).await;
+
+        // Re-check after acquiring lock — another task may have just refreshed.
+        let refreshed_at = sqlx::query_scalar::<_, Option<chrono::NaiveDateTime>>(
+            "SELECT streams_refreshed_at FROM media WHERE id = ?",
+        )
+        .bind(media.id)
+        .fetch_optional(&ctx.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
+        if is_fresh(refreshed_at) {
+            return Ok(());
         }
 
         let instant = Instant::now();
@@ -918,7 +940,7 @@ impl AddonService {
         Ok(())
     }
 
-    pub async fn get_segments(
+    pub async fn fetch_segments(
         &self,
         media: &db::Media,
         ctx: &AppContext,

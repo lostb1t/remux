@@ -327,7 +327,7 @@ impl YtDlpAddon {
         {
             return Ok(url.to_owned());
         }
-        if let Some(id) = &media.media_id {
+        if let Some(id) = &media.external_ids.youtube_id {
             if id.len() == 11
                 && id
                     .chars()
@@ -403,12 +403,13 @@ impl YtDlpAddon {
             .and_then(|si| si.descriptor.as_http_url().map(str::to_owned))
             .or_else(|| {
                 media
-                    .media_id
+                    .external_ids
+                    .youtube_id
                     .as_deref()
                     .map(|id| format!("https://www.youtube.com/watch?v={}", id))
             })
             .ok_or_else(|| {
-                anyhow::anyhow!("track has no URL or media_id for metadata fetch")
+                anyhow::anyhow!("track has no URL or youtube_id for metadata fetch")
             })?;
 
         let (cookie_args, _cookie_file) = self.cookies_args()?;
@@ -484,15 +485,21 @@ impl YtDlpAddon {
                     }
                 });
                 let mut media = db::Media {
-                    id: crate::common::get_stable_uuid(format!("ytdlp:{}", entry.id)),
+                    id: crate::common::stable_media_uuid(
+                        &db::MediaKind::Track,
+                        &entry.id,
+                    ),
                     title: entry.title,
                     kind: db::MediaKind::Track,
-                    media_id: Some(entry.id.clone()),
                     stream_info: watch_url.map(|u| crate::stream::StreamInfo {
                         descriptor: crate::stream::StreamDescriptor::http(u),
                         ..Default::default()
                     }),
                     runtime: entry.duration.map(|d| d as i64),
+                    external_ids: db::ExternalIds {
+                        youtube_id: Some(entry.id.clone()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 };
                 if let Some(url) = entry.thumbnail {
@@ -607,17 +614,20 @@ impl YtDlpAddon {
                     playlist.entries.first().and_then(|e| e.thumbnail.clone())
                 });
                 let mut media = db::Media {
-                    id: crate::common::get_stable_uuid(format!(
-                        "ytdlp-album:{}",
-                        playlist.id
-                    )),
+                    id: crate::common::stable_media_uuid(
+                        &db::MediaKind::Album,
+                        &playlist.id,
+                    ),
                     title: playlist.title,
                     kind: db::MediaKind::Album,
-                    media_id: Some(playlist.id.clone()),
                     stream_info: Some(crate::stream::StreamInfo {
                         descriptor: crate::stream::StreamDescriptor::http(url),
                         ..Default::default()
                     }),
+                    external_ids: db::ExternalIds {
+                        youtube_id: Some(playlist.id.clone()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 };
                 if let Some(url) = thumbnail {

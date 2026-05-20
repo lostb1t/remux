@@ -1823,6 +1823,10 @@ mod tests {
         let mut movie = db::Media {
             title: "Test Track".to_string(),
             kind: db::MediaKind::Track,
+            external_ids: db::ExternalIds {
+                youtube_id: Some("test_track_id".to_string()),
+                ..Default::default()
+            },
             created_at: now,
             updated_at: now,
             ..Default::default()
@@ -3600,15 +3604,7 @@ async fn apply_user_playback_prefs(
         .await
         .ok()
         .flatten()
-        .and_then(|m| {
-            // We only have an async get_or_new, so do a sync-compatible lookup inline
-            // via the aio_id key used by UserMediaState.
-            m.media_id.map(|key| (key, m.kind))
-        })
-        .and_then(|(key, _kind)| {
-            // We can't `.await` inside an `and_then`, so capture key and fetch below.
-            Some(key)
-        });
+        .map(|m| m.id.as_simple().to_string());
 
     let saved_audio: Option<i64>;
     let saved_subtitle: Option<i64>;

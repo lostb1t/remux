@@ -779,7 +779,7 @@ pub async fn items_remote_images(
 
     if provider.is_none() || provider == Some("TheMovieDb") {
         queried_providers.push("TheMovieDb".to_string());
-        match state.ctx.addons.get_remote_images(&media, &state.ctx).await {
+        match state.ctx.addons.fetch_images(&media, &state.ctx).await {
             Ok(v) => images.extend(v),
             Err(e) => warn!(id = %id, error = %e, "tmdb remote images lookup failed"),
         }
@@ -1525,7 +1525,7 @@ fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
     let ctx = ctx.clone();
     tokio::spawn(async move {
         let _ = ctx.addons.fetch_subtitles(&media, &ctx.db).await;
-        let _ = ctx.addons.get_segments(&media, &ctx).await;
+        let _ = ctx.addons.fetch_segments(&media, &ctx).await;
     });
 }
 
@@ -1587,7 +1587,7 @@ pub async fn media_segments(
             ..Default::default()
         });
 
-    let segs = state.ctx.addons.get_segments(&media, &state.ctx).await;
+    let segs = state.ctx.addons.fetch_segments(&media, &state.ctx).await;
     let dtos = segments_to_dtos(id, id, &segs, filter_ref);
 
     let count = dtos.len();

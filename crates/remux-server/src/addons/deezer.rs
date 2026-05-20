@@ -114,11 +114,11 @@ impl DeezerAddon {
     // --- Meta ---
 
     fn meta_can_refresh(&self, media: &db::Media) -> bool {
-        matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            && media
-                .media_id
-                .as_deref()
-                .is_some_and(|id| id.parse::<u64>().is_ok())
+        match media.kind {
+            db::MediaKind::Track => media.external_ids.deezer_track.is_some(),
+            db::MediaKind::Album => media.external_ids.deezer_album.is_some(),
+            _ => false,
+        }
     }
 
     async fn fetch_track_meta(
@@ -155,10 +155,14 @@ impl DeezerAddon {
                             id: base.id,
                             title: track.title.clone(),
                             kind: db::MediaKind::Track,
-                            media_id: Some(track.id.to_string()),
                             runtime: track.duration.map(|s| s as i64),
                             released_at,
                             description: Some(format!("by {}", track_artist)),
+                            external_ids: db::ExternalIds {
+                                deezer_track: Some(track.id as i64),
+                                deezer_album: Some(album_id as i64),
+                                ..Default::default()
+                            },
                             ..Default::default()
                         };
                         if let Some(url) = album.cover_xl {
@@ -197,10 +201,15 @@ impl DeezerAddon {
                     id: base.id,
                     title: t.title,
                     kind: db::MediaKind::Track,
-                    media_id: Some(t.id.to_string()),
                     runtime: t.duration.map(|s| s as i64),
                     released_at,
                     description: Some(format!("by {}", t.artist.name)),
+                    external_ids: db::ExternalIds {
+                        deezer_track: Some(t.id as i64),
+                        deezer_album: Some(t.album.id as i64),
+                        deezer_artist: Some(t.artist.id as i64),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 };
                 if let Some(url) = t.album.cover_xl {
@@ -265,9 +274,13 @@ impl DeezerAddon {
             id: base.id,
             title: a.title,
             kind: db::MediaKind::Album,
-            media_id: Some(a.id.to_string()),
             released_at,
             description: Some(desc_parts.join(" · ")),
+            external_ids: db::ExternalIds {
+                deezer_album: Some(a.id as i64),
+                deezer_artist: a.artist.as_ref().map(|ar| ar.id as i64),
+                ..Default::default()
+            },
             ..Default::default()
         };
         if let Some(url) = a.cover_xl {
@@ -316,10 +329,12 @@ impl DeezerAddon {
                     track.artist.name
                 };
                 let mut t = db::Media {
-                    id: common::get_stable_uuid(format!("track:{}", track.id)),
+                    id: common::stable_media_uuid(
+                        &db::MediaKind::Track,
+                        &track.id.to_string(),
+                    ),
                     title: track.title,
                     kind: db::MediaKind::Track,
-                    media_id: Some(track.id.to_string()),
                     runtime: track.duration.map(|s| s as i64),
                     released_at,
                     description: Some(format!("by {}", track_artist)),
@@ -330,6 +345,7 @@ impl DeezerAddon {
                     parent_title: Some(album_title.clone()),
                     series_title: Some(artist_title.clone()),
                     external_ids: db::ExternalIds {
+                        deezer_track: Some(track.id as i64),
                         deezer_album: Some(deezer_album_id as i64),
                         ..Default::default()
                     },
@@ -345,12 +361,11 @@ impl DeezerAddon {
 
     /// Returns minimal Album stubs for an Artist — direct children only, no track fetching.
     async fn list_artist_albums(&self, root: &db::Media) -> Result<Vec<db::Media>> {
-        let Some(artist_id) = root.media_id.as_deref() else {
+        let Some(artist_id_raw) = root.external_ids.deezer_artist else {
             return Ok(vec![]);
         };
-        let Ok(artist_id_num) = artist_id.parse::<u64>() else {
-            return Ok(vec![]);
-        };
+        let artist_id = artist_id_raw.to_string();
+        let artist_id_num = artist_id_raw as u64;
 
         let albums = match self
             .client
@@ -374,20 +389,22 @@ impl DeezerAddon {
             }
         };
 
-        let deezer_artist_id = artist_id.parse::<i64>().ok();
         Ok(albums
             .into_iter()
             .map(|album| {
                 let mut m = db::Media {
-                    id: common::get_stable_uuid(format!("album:{}", album.id)),
+                    id: common::stable_media_uuid(
+                        &db::MediaKind::Album,
+                        &album.id.to_string(),
+                    ),
                     title: album.title.unwrap_or_default(),
                     kind: db::MediaKind::Album,
-                    media_id: Some(album.id.to_string()),
                     parent_id: Some(root.id),
                     grandparent_id: Some(root.id),
                     series_title: Some(root.title.clone()),
                     external_ids: db::ExternalIds {
-                        deezer_artist: deezer_artist_id,
+                        deezer_album: Some(album.id as i64),
+                        deezer_artist: Some(artist_id_raw),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -401,12 +418,11 @@ impl DeezerAddon {
     }
 
     async fn sync_artist_children(&self, root: &db::Media) -> Result<Vec<db::Media>> {
-        let Some(artist_id) = root.media_id.as_deref() else {
+        let Some(artist_id_raw) = root.external_ids.deezer_artist else {
             return Ok(vec![]);
         };
-        let Ok(artist_id_num) = artist_id.parse::<u64>() else {
-            return Ok(vec![]);
-        };
+        let artist_id = artist_id_raw.to_string();
+        let artist_id_num = artist_id_raw as u64;
 
         let artist = match self
             .client
@@ -486,15 +502,22 @@ impl DeezerAddon {
                 }
 
                 let mut album_media = db::Media {
-                    id: common::get_stable_uuid(format!("album:{}", detail.id)),
+                    id: common::stable_media_uuid(
+                        &db::MediaKind::Album,
+                        &detail.id.to_string(),
+                    ),
                     title: detail.title.clone(),
                     kind: db::MediaKind::Album,
-                    media_id: Some(detail.id.to_string()),
                     released_at,
                     description: Some(desc_parts.join(" · ")),
                     parent_id: Some(root_id),
                     grandparent_id: Some(root_id),
                     series_title: Some(artist_title.clone()),
+                    external_ids: db::ExternalIds {
+                        deezer_album: Some(detail.id as i64),
+                        deezer_artist: Some(artist_id_raw),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 };
                 if let Some(url) = detail.cover_xl.clone().or(artist_poster.clone()) {
@@ -529,12 +552,10 @@ impl DeezerAddon {
     }
 
     async fn sync_album_children(&self, root: &db::Media) -> Result<Vec<db::Media>> {
-        let Some(album_id) = root.media_id.as_deref() else {
+        let Some(album_id_raw) = root.external_ids.deezer_album else {
             return Ok(vec![]);
         };
-        let Ok(album_id_num) = album_id.parse::<u64>() else {
-            return Ok(vec![]);
-        };
+        let album_id_num = album_id_raw as u64;
 
         let Some(detail) = self.fetch_full_album_detail(album_id_num).await else {
             return Ok(vec![]);
@@ -672,10 +693,16 @@ impl DeezerAddon {
             .into_iter()
             .map(|a| {
                 let mut artist = db::Media {
-                    id: common::get_stable_uuid(format!("artist:{}", a.id)),
+                    id: common::stable_media_uuid(
+                        &db::MediaKind::Artist,
+                        &a.id.to_string(),
+                    ),
                     title: a.name,
                     kind: db::MediaKind::Artist,
-                    media_id: Some(a.id.to_string()),
+                    external_ids: db::ExternalIds {
+                        deezer_artist: Some(a.id as i64),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 };
                 if let Some(url) = a.picture_xl {
@@ -732,13 +759,21 @@ impl DeezerAddon {
                     .as_deref()
                     .and_then(parse_release_date);
                 let mut media = db::Media {
-                    id: common::get_stable_uuid(format!("track:{}", track.id)),
+                    id: common::stable_media_uuid(
+                        &db::MediaKind::Track,
+                        &track.id.to_string(),
+                    ),
                     title: track.title,
                     kind: db::MediaKind::Track,
-                    media_id: Some(track.id.to_string()),
                     runtime: Some(track.duration as i64),
                     released_at,
                     description: Some(format!("by {}", track.artist.name)),
+                    external_ids: db::ExternalIds {
+                        deezer_track: Some(track.id as i64),
+                        deezer_album: Some(track.album.id as i64),
+                        deezer_artist: Some(track.artist.id as i64),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 };
                 if let Some(url) = track.album.cover_xl {
@@ -790,13 +825,19 @@ impl AddonKind for DeezerAddon {
         media: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Option<db::Media>> {
-        let deezer_id = match &media.media_id {
-            Some(id) => id.clone(),
-            None => return Ok(None),
-        };
         match media.kind {
-            db::MediaKind::Track => self.fetch_track_meta(&deezer_id, media).await,
-            db::MediaKind::Album => self.fetch_album_meta(&deezer_id, media).await,
+            db::MediaKind::Track => {
+                let Some(id) = media.external_ids.deezer_track else {
+                    return Ok(None);
+                };
+                self.fetch_track_meta(&id.to_string(), media).await
+            }
+            db::MediaKind::Album => {
+                let Some(id) = media.external_ids.deezer_album else {
+                    return Ok(None);
+                };
+                self.fetch_album_meta(&id.to_string(), media).await
+            }
             _ => Ok(None),
         }
     }
@@ -876,18 +917,19 @@ fn extract_playlist_id(input: &str) -> Option<String> {
 }
 
 fn track_to_result(t: dz::SearchTrack) -> db::Media {
-    let album_id = common::get_stable_uuid(format!("album:{}", t.album.id));
+    let album_id =
+        common::stable_media_uuid(&db::MediaKind::Album, &t.album.id.to_string());
     let mut track = db::Media {
-        id: common::get_stable_uuid(format!("track:{}", t.id)),
+        id: common::stable_media_uuid(&db::MediaKind::Track, &t.id.to_string()),
         title: t.title,
         kind: db::MediaKind::Track,
-        media_id: Some(t.id.to_string()),
         runtime: t.duration.map(|s| s as i64),
         description: Some(format!("by {}", t.artist.name)),
         parent_id: Some(album_id),
         parent_title: Some(t.album.title),
         series_title: Some(t.artist.name.clone()),
         external_ids: db::ExternalIds {
+            deezer_track: Some(t.id as i64),
             deezer_artist: Some(t.artist.id as i64),
             deezer_album: Some(t.album.id as i64),
             ..Default::default()
@@ -902,13 +944,13 @@ fn track_to_result(t: dz::SearchTrack) -> db::Media {
 
 fn album_to_result(a: dz::SearchAlbum) -> db::Media {
     let mut album = db::Media {
-        id: common::get_stable_uuid(format!("album:{}", a.id)),
+        id: common::stable_media_uuid(&db::MediaKind::Album, &a.id.to_string()),
         title: a.title,
         kind: db::MediaKind::Album,
-        media_id: Some(a.id.to_string()),
         description: Some(format!("by {}", a.artist.name)),
         series_title: Some(a.artist.name.clone()),
         external_ids: db::ExternalIds {
+            deezer_album: Some(a.id as i64),
             deezer_artist: Some(a.artist.id as i64),
             ..Default::default()
         },

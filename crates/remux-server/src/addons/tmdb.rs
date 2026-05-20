@@ -89,7 +89,7 @@ impl AddonKind for TmdbAddon {
         }
     }
 
-    async fn remote_images_fetch(
+    async fn images_fetch(
         &self,
         media: &db::Media,
         ctx: &AppContext,
@@ -178,12 +178,11 @@ fn build_person_relations(
     for (i, member) in credits.cast.iter().enumerate() {
         let name = &member.name;
         let person_id =
-            common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+            common::stable_media_uuid(&db::MediaKind::Person, &member.id.to_string());
         let mut person = db::Media {
             id: person_id,
             title: name.clone(),
             kind: db::MediaKind::Person,
-            media_id: Some(format!("person:{}", name.to_lowercase())),
             external_ids: db::ExternalIds {
                 tmdb: Some(member.id),
                 ..Default::default()
@@ -216,13 +215,14 @@ fn build_person_relations(
         };
         if let Some(role) = role {
             let name = &member.name;
-            let person_id =
-                common::get_stable_uuid(format!("person:{}", name.to_lowercase()));
+            let person_id = common::stable_media_uuid(
+                &db::MediaKind::Person,
+                &member.id.to_string(),
+            );
             let mut person = db::Media {
                 id: person_id,
                 title: name.clone(),
                 kind: db::MediaKind::Person,
-                media_id: Some(format!("person:{}", name.to_lowercase())),
                 external_ids: db::ExternalIds {
                     tmdb: Some(member.id),
                     ..Default::default()
@@ -256,7 +256,7 @@ fn build_genre_relations(
         .map(|genre| {
             let name = &genre.name;
             let genre_id =
-                common::get_stable_uuid(format!("genre:{}", name.to_lowercase()));
+                common::stable_media_uuid(&db::MediaKind::Genre, &name.to_lowercase());
             (
                 db::MediaRelation {
                     left_media_id,
@@ -267,7 +267,6 @@ fn build_genre_relations(
                     id: genre_id,
                     title: name.clone(),
                     kind: db::MediaKind::Genre,
-                    media_id: Some(format!("genre:{}", name.to_lowercase())),
                     ..Default::default()
                 },
             )
@@ -533,17 +532,17 @@ async fn fetch_tmdb_meta(
                 if let Some(creators) = &tv_details.created_by {
                     for (i, creator) in creators.iter().enumerate() {
                         let name = &creator.name;
-                        let person_id = common::get_stable_uuid(format!(
-                            "person:{}",
-                            name.to_lowercase()
-                        ));
+                        let tmdb_id = creator.id as i64;
+                        let person_id = common::stable_media_uuid(
+                            &db::MediaKind::Person,
+                            &tmdb_id.to_string(),
+                        );
                         let mut creator_media = db::Media {
                             id: person_id,
                             title: name.clone(),
                             kind: db::MediaKind::Person,
-                            media_id: Some(format!("person:{}", name.to_lowercase())),
                             external_ids: db::ExternalIds {
-                                tmdb: Some(creator.id as i64),
+                                tmdb: Some(tmdb_id),
                                 ..Default::default()
                             },
                             ..Default::default()
@@ -648,15 +647,14 @@ async fn fetch_tmdb_meta(
                 if let Some(guest_stars) = &ep_details.guest_stars {
                     for (i, member) in guest_stars.iter().enumerate() {
                         let name = &member.name;
-                        let person_id = common::get_stable_uuid(format!(
-                            "person:{}",
-                            name.to_lowercase()
-                        ));
+                        let person_id = common::stable_media_uuid(
+                            &db::MediaKind::Person,
+                            &member.id.to_string(),
+                        );
                         let mut person = db::Media {
                             id: person_id,
                             title: name.clone(),
                             kind: db::MediaKind::Person,
-                            media_id: Some(format!("person:{}", name.to_lowercase())),
                             external_ids: db::ExternalIds {
                                 tmdb: Some(member.id),
                                 ..Default::default()
@@ -841,8 +839,8 @@ async fn search_tmdb_person(
         .into_iter()
         .take(limit)
         .map(|p| {
-            let media_id = format!("person:{}", p.name.to_lowercase());
-            let id = common::get_stable_uuid(media_id.clone());
+            let id =
+                common::stable_media_uuid(&db::MediaKind::Person, &p.id.to_string());
             let profile_url = p
                 .profile_path
                 .as_deref()
@@ -852,7 +850,10 @@ async fn search_tmdb_person(
                 id,
                 title: p.name,
                 kind: db::MediaKind::Person,
-                media_id: Some(media_id),
+                external_ids: db::ExternalIds {
+                    tmdb: Some(p.id),
+                    ..Default::default()
+                },
                 ..Default::default()
             };
             if let Some(url) = profile_url {

@@ -1,16 +1,15 @@
 use crate::{AppContext, db};
 
-/// Resolves `media.media_id` (IMDB ID) if it is not already set.
+/// Resolves `media.external_ids.imdb` if it is not already set.
 ///
 /// Uses the media's existing `external_ids` (TMDB, TVDB, etc.) to look up the
 /// IMDB ID via TMDB. Returns `true` if an IMDB ID is present or was resolved,
-/// `false` if it could not be determined. Used at insert time for search results
-/// and by catalog import after converting stremio meta to `db::Media`.
+/// `false` if it could not be determined.
 pub(crate) async fn resolve_media_imdb(
     media: &mut db::Media,
     ctx: &AppContext,
 ) -> bool {
-    if media.media_id.is_some() {
+    if media.external_ids.imdb.is_some() {
         return true;
     }
 
@@ -26,7 +25,6 @@ pub(crate) async fn resolve_media_imdb(
         return false;
     };
 
-    media.media_id = Some(imdb.clone());
     media.external_ids.imdb = Some(imdb);
     true
 }

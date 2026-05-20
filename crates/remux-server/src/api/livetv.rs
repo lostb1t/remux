@@ -597,14 +597,14 @@ pub async fn livetv_delete_tuner_host(
          WHERE kind = 'tv_program'
            AND parent_id IN (
                SELECT id FROM media
-               WHERE kind = 'tv_channel' AND media_id = $1
+               WHERE kind = 'tv_channel' AND JSON_EXTRACT(external_ids, '$.iptv_source_id') = $1
            )",
     )
     .bind(&source_id)
     .execute(&state.ctx.db)
     .await?;
 
-    sqlx::query("DELETE FROM media WHERE kind = 'tv_channel' AND media_id = $1")
+    sqlx::query("DELETE FROM media WHERE kind = 'tv_channel' AND JSON_EXTRACT(external_ids, '$.iptv_source_id') = $1")
         .bind(&source_id)
         .execute(&state.ctx.db)
         .await?;
@@ -904,7 +904,7 @@ fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
         sort_order: m.sort_order,
         enabled: m.enabled,
         logo: m.images.get_path(db::ImageKind::Primary).map(str::to_owned),
-        group: m.media_id.clone(),
+        group: m.external_ids.iptv_source_id.clone(),
         country: m.country.clone(),
     }
 }

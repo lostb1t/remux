@@ -330,7 +330,6 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             }),
             tmdb: media.external_ids.tmdb.map(|id| id.to_string()),
             tvdb: media.external_ids.tvdb.map(|id| id.to_string()),
-            aio: media.media_id.clone(),
             ..Default::default()
         }),
         run_time_ticks: media

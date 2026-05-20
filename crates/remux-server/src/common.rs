@@ -278,6 +278,49 @@ pub fn get_uuid() -> Uuid {
     uuid::Uuid::new_v4()
 }
 
+/// Derives the canonical external ID string for a media item.
+/// Returns `None` for items that don't yet have a canonical external ID.
+pub fn canonical_external_id(media: &crate::db::Media) -> Option<String> {
+    use crate::db::MediaKind;
+    match media.kind {
+        MediaKind::Movie | MediaKind::Series => media.external_ids.imdb.clone(),
+        MediaKind::Season => Some(format!(
+            "{}:{}",
+            media.external_ids.imdb.as_ref()?,
+            media.idx?
+        )),
+        MediaKind::Episode => Some(format!(
+            "{}:{}:{}",
+            media.external_ids.imdb.as_ref()?,
+            media.parent_idx?,
+            media.idx?
+        )),
+        MediaKind::Artist => media.external_ids.deezer_artist.map(|id| id.to_string()),
+        MediaKind::Album => media
+            .external_ids
+            .deezer_album
+            .map(|id| id.to_string())
+            .or_else(|| media.external_ids.youtube_id.clone()),
+        MediaKind::Track => media
+            .external_ids
+            .deezer_track
+            .map(|id| id.to_string())
+            .or_else(|| media.external_ids.youtube_id.clone()),
+        MediaKind::Genre => Some(media.title.to_lowercase()),
+        MediaKind::Person => media
+            .external_ids
+            .tmdb
+            .map(|id| id.to_string())
+            .or_else(|| Some(media.title.to_lowercase())),
+        _ => None,
+    }
+}
+
+/// Computes the stable UUID for a media item from its kind and canonical external ID.
+pub fn stable_media_uuid(kind: &crate::db::MediaKind, canonical: &str) -> Uuid {
+    get_stable_uuid(format!("{}:{}", kind, canonical))
+}
+
 pub async fn tmdb_client(
     db: &sqlx::SqlitePool,
 ) -> Option<sdks::RestClient<sdks::BearerAuth>> {
