@@ -10,6 +10,7 @@ bin/
 jellyfin-openapi-stable.json
 db.sqlite
 db.sqlite*
+*.big
 config.toml
 .git
 .env
