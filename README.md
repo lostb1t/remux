@@ -16,7 +16,7 @@ Stream content from Stremio add-ons, local files, or WebDAV sources all through 
 
 Movies and shows come from Stremio add-ons or your own files. Music is handled separately through its own streaming pipeline.
 
-Use your existing Jellyfin clients as-is: browse, search, and play. No library scans, no file management, no traditional backend.
+Use your existing Jellyfin clients as-is: browse, search, and play.
 
 Built in Rust for performance and low resource usage.
 
