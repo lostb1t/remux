@@ -185,7 +185,7 @@ pub async fn init_app(
     )
     .await?;
 
-    info!("running database migrations…");
+    info!("Running database migrations. Do not interrupt!");
     db::migrate(&conn).await?;
     info!("migrations complete");
     crate::common::init_server_id(&conn).await?;
