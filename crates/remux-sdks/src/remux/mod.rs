@@ -1352,6 +1352,17 @@ pub struct BaseItemDtoQueryResult {
     pub total_record_count: i64,
 }
 
+#[skip_serializing_none]
+#[derive(Default, Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct ThemeMediaResult {
+    pub owner_id: String,
+    #[serde(default)]
+    pub items: Vec<BaseItemDto>,
+    pub start_index: u32,
+    pub total_record_count: i64,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum TranscodeReason {
     ContainerNotSupported(String),

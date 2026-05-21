@@ -726,16 +726,30 @@ pub async fn items_external_id_infos(
 pub async fn items_theme_videos(
     _state: State<AppState>,
     _session: auth::AuthSession,
-    _path: Path<Uuid>,
+    Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(api::BaseItemDtoQueryResult::default()))
+    Ok(Json(api::ThemeMediaResult {
+        owner_id: id.to_string(),
+        ..Default::default()
+    }))
 }
 
 #[get("/items/{id}/themesongs")]
 pub async fn items_theme_songs(
     _state: State<AppState>,
     _session: auth::AuthSession,
-    _path: Path<Uuid>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse> {
+    Ok(Json(api::ThemeMediaResult {
+        owner_id: id.to_string(),
+        ..Default::default()
+    }))
+}
+
+#[get("/items/{id}/intros")]
+pub async fn items_intros(
+    _state: State<AppState>,
+    _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json(api::BaseItemDtoQueryResult::default()))
 }
