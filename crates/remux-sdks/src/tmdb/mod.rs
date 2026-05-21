@@ -198,6 +198,7 @@ pub struct Credits {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ExternalIds {
     pub imdb_id: Option<String>,
+    pub tvdb_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

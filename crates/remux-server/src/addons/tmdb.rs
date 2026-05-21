@@ -461,10 +461,11 @@ async fn fetch_tmdb_meta(
                             .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
+                let tmdb_ext = tv_details.external_ids.as_ref();
                 let external_ids = db::ExternalIds {
                     tmdb: Some(tv_details.id),
-                    imdb: ids.imdb.clone(),
-                    tvdb: ids.tvdb,
+                    imdb: tmdb_ext.and_then(|e| e.imdb_id.clone()),
+                    tvdb: tmdb_ext.and_then(|e| e.tvdb_id),
                     ..Default::default()
                 };
                 let country = tv_details.origin_country.into_iter().next();
@@ -604,13 +605,11 @@ async fn fetch_tmdb_meta(
                             .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
+                let tmdb_ext = ep_details.external_ids.as_ref();
                 let external_ids = db::ExternalIds {
                     tmdb: Some(ep_details.id),
-                    imdb: ep_details
-                        .external_ids
-                        .and_then(|e| e.imdb_id)
-                        .or(ids.imdb.clone()),
-                    tvdb: ids.tvdb,
+                    imdb: tmdb_ext.and_then(|e| e.imdb_id.clone()),
+                    tvdb: tmdb_ext.and_then(|e| e.tvdb_id),
                     ..Default::default()
                 };
                 let best_still = ep_details
