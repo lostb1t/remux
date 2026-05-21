@@ -242,18 +242,6 @@ async fn import_epg_programs(
         .filter_map(|ch| ch.tvg_id.as_ref().map(|t| (t.clone(), ch.id)))
         .collect();
 
-    for chunk in channels.chunks(500) {
-        let mut qb =
-            sqlx::QueryBuilder::new("DELETE FROM media WHERE kind = 'tv_program'");
-        qb.push(" AND parent_id IN (");
-        let mut separated = qb.separated(", ");
-        for channel in chunk {
-            separated.push_bind(channel.id);
-        }
-        qb.push(")");
-        qb.build().execute(&ctx.db).await?;
-    }
-
     let media_programs: Vec<db::Media> = programs
         .iter()
         .filter_map(|prog| {
@@ -286,6 +274,42 @@ async fn import_epg_programs(
         .collect();
 
     db::Media::upsert(&ctx.db, &media_programs).await?;
+
+    // Delete programs that are no longer in the EPG feed for these channels.
+    if !channels.is_empty() {
+        let mut tx = ctx.db.begin().await?;
+        sqlx::query(
+            "CREATE TEMPORARY TABLE IF NOT EXISTS _epg_kept (id BLOB NOT NULL PRIMARY KEY)",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM _epg_kept")
+            .execute(&mut *tx)
+            .await?;
+
+        for chunk in media_programs.chunks(500) {
+            let mut qb =
+                sqlx::QueryBuilder::new("INSERT OR IGNORE INTO _epg_kept (id) ");
+            qb.push_values(chunk.iter(), |mut b, p| {
+                b.push_bind(p.id);
+            });
+            qb.build().execute(&mut *tx).await?;
+        }
+
+        for chunk in channels.chunks(500) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "DELETE FROM media WHERE kind = 'tv_program' AND id NOT IN (SELECT id FROM _epg_kept) AND parent_id IN (",
+            );
+            let mut separated = qb.separated(", ");
+            for ch in chunk {
+                separated.push_bind(ch.id);
+            }
+            qb.push(")");
+            qb.build().execute(&mut *tx).await?;
+        }
+
+        tx.commit().await?;
+    }
 
     // Inherit program_kind from parent channel for programs that have none
     // (covers the case where EPG has no <category> tags but channels are categorised)
