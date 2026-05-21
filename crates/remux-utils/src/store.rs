@@ -5,6 +5,7 @@ use std::{any::Any, sync::Arc, time::Duration};
 pub struct StoreEntry {
     pub item: Arc<dyn Any + Send + Sync>,
     pub ttl: Duration,
+    pub weight: u32,
 }
 
 impl Clone for StoreEntry {
@@ -12,6 +13,7 @@ impl Clone for StoreEntry {
         StoreEntry {
             item: Arc::clone(&self.item),
             ttl: self.ttl,
+            weight: self.weight,
         }
     }
 }
@@ -30,6 +32,17 @@ impl Store {
         Self { inner }
     }
 
+    /// Byte-limited cache. `max_bytes` is the total weight cap; items must be
+    /// saved via `save_with_weight` to count correctly against this limit.
+    pub fn new_weighted(max_bytes: u64) -> Self {
+        let inner = Cache::builder()
+            .weigher(|_, entry: &Arc<StoreEntry>| entry.weight)
+            .max_capacity(max_bytes)
+            .expire_after(PerEntryExpiry)
+            .build();
+        Self { inner }
+    }
+
     pub fn with_cache(cache: Cache<String, Arc<StoreEntry>>) -> Self {
         Self { inner: cache }
     }
@@ -43,6 +56,22 @@ impl Store {
         let entry = Arc::new(StoreEntry {
             item: Arc::new(item),
             ttl,
+            weight: 1,
+        });
+        self.inner.insert(key.into(), entry);
+    }
+
+    pub fn save_with_weight<T: Any + Send + Sync + 'static>(
+        &self,
+        key: impl Into<String>,
+        item: T,
+        weight: u32,
+        ttl: Duration,
+    ) {
+        let entry = Arc::new(StoreEntry {
+            item: Arc::new(item),
+            ttl,
+            weight,
         });
         self.inner.insert(key.into(), entry);
     }
@@ -60,6 +89,7 @@ impl Store {
         let entry = Arc::new(StoreEntry {
             item: Arc::new(item),
             ttl,
+            weight: 1,
         });
         self.inner.insert(key, entry);
         true

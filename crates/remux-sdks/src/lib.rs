@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 static HTTP_CACHE: std::sync::LazyLock<Store> =
-    std::sync::LazyLock::new(|| Store::new(1000));
+    std::sync::LazyLock::new(|| Store::new_weighted(64 * 1024 * 1024)); // 64 MB cap
 
 static SHARED_HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(reqwest::Client::new);
@@ -288,7 +288,12 @@ impl<A: Auth + Clone> RestClient<A> {
                     });
                 if result.is_ok() {
                     if let Some(ttl) = endpoint.cache_ttl() {
-                        HTTP_CACHE.save(cache_key, text.clone(), ttl);
+                        HTTP_CACHE.save_with_weight(
+                            cache_key,
+                            text.clone(),
+                            text.len().min(u32::MAX as usize) as u32,
+                            ttl,
+                        );
                     }
                 }
                 result
