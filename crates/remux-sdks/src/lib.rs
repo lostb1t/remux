@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 static HTTP_CACHE: std::sync::LazyLock<Store> =
-    std::sync::LazyLock::new(|| Store::new_weighted(64 * 1024 * 1024)); // 64 MB cap
+    std::sync::LazyLock::new(|| Store::new_weighted(64 * 1024 * 1024)); // 64 MB weight cap
 
 static SHARED_HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(reqwest::Client::new);
@@ -158,7 +158,7 @@ impl Default for Body {
 }
 
 pub trait Endpoint {
-    type Output: DeserializeOwned + Clone + Serialize;
+    type Output: DeserializeOwned + Clone + Serialize + Send + Sync + 'static;
     fn method(&self) -> Method {
         Method::GET
     }
@@ -225,15 +225,8 @@ impl<A: Auth + Clone> RestClient<A> {
         let cache_key = hash_key(&url.to_string());
 
         if endpoint.cache_ttl().is_some() {
-            if let Some(body) = HTTP_CACHE.get::<String>(&cache_key) {
-                return Ok(serde_json::from_str(&body).map_err(|e| {
-                    ClientError::Json {
-                        status: 0,
-                        source: e,
-                        endpoint: Some(url.to_string()),
-                        body: None,
-                    }
-                })?);
+            if let Some(cached) = HTTP_CACHE.get::<EP::Output>(&cache_key) {
+                return Ok(cached);
             }
         }
 
@@ -286,11 +279,11 @@ impl<A: Auth + Clone> RestClient<A> {
                             body: Some(text.clone()),
                         }
                     });
-                if result.is_ok() {
+                if let Ok(ref value) = result {
                     if let Some(ttl) = endpoint.cache_ttl() {
                         HTTP_CACHE.save_with_weight(
                             cache_key,
-                            text.clone(),
+                            value.clone(),
                             text.len().min(u32::MAX as usize) as u32,
                             ttl,
                         );

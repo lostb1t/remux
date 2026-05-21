@@ -1,5 +1,12 @@
 use moka::{Expiry, sync::Cache};
-use std::{any::Any, sync::Arc, time::Duration};
+use std::{
+    any::Any,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 #[derive(Debug)]
 pub struct StoreEntry {
@@ -21,6 +28,7 @@ impl Clone for StoreEntry {
 #[derive(Clone, Debug)]
 pub struct Store {
     inner: Cache<String, Arc<StoreEntry>>,
+    count: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -29,22 +37,33 @@ impl Store {
             .max_capacity(max_capacity)
             .expire_after(PerEntryExpiry)
             .build();
-        Self { inner }
+        Self {
+            inner,
+            count: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// Byte-limited cache. `max_bytes` is the total weight cap; items must be
     /// saved via `save_with_weight` to count correctly against this limit.
     pub fn new_weighted(max_bytes: u64) -> Self {
+        let count = Arc::new(AtomicU64::new(0));
         let inner = Cache::builder()
             .weigher(|_, entry: &Arc<StoreEntry>| entry.weight)
             .max_capacity(max_bytes)
             .expire_after(PerEntryExpiry)
             .build();
-        Self { inner }
+        Self { inner, count }
     }
 
     pub fn with_cache(cache: Cache<String, Arc<StoreEntry>>) -> Self {
-        Self { inner: cache }
+        Self {
+            inner: cache,
+            count: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn entry_count(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
     }
 
     pub fn save<T: Any + Send + Sync + 'static>(
@@ -58,6 +77,7 @@ impl Store {
             ttl,
             weight: 1,
         });
+        self.count.fetch_add(1, Ordering::Relaxed);
         self.inner.insert(key.into(), entry);
     }
 
@@ -73,6 +93,7 @@ impl Store {
             ttl,
             weight,
         });
+        self.count.fetch_add(1, Ordering::Relaxed);
         self.inner.insert(key.into(), entry);
     }
 
