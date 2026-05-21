@@ -3600,21 +3600,20 @@ async fn apply_user_playback_prefs(
         .unwrap_or_default();
 
     // Load saved stream selections (best-effort; failure means no recall)
-    let user_state = crate::db::Media::get_by_id(db, media_id)
+    let resolved_media = crate::db::Media::get_by_id(db, media_id)
         .await
         .ok()
-        .flatten()
-        .map(|m| m.id.as_simple().to_string());
+        .flatten();
 
     let saved_audio: Option<i64>;
     let saved_subtitle: Option<i64>;
 
-    if let Some(media_key) = user_state {
+    if let Some(media) = resolved_media {
         match sqlx::query_as::<_, crate::db::UserMediaState>(
-            "SELECT * FROM user_media_state WHERE user_id = ?1 AND media_key = ?2",
+            "SELECT * FROM user_media_state WHERE user_id = ?1 AND media_id = ?2",
         )
         .bind(user.id)
-        .bind(&media_key)
+        .bind(media.id)
         .fetch_optional(db)
         .await
         {

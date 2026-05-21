@@ -473,7 +473,8 @@ async fn stremio_meta_fetch(
     ctx: &AppContext,
 ) -> Result<Option<db::Media>> {
     let imdb_id = media
-        .grandparent_media_id
+        .external_ids
+        .series_imdb
         .clone()
         .or(media.external_ids.imdb.clone());
 
@@ -894,9 +895,10 @@ async fn stremio_subtitles(
         ),
         db::MediaKind::Episode => (
             media
-                .grandparent_media_id
+                .external_ids
+                .series_imdb
                 .as_deref()
-                .ok_or_else(|| anyhow!("no grandparent_media_id"))?,
+                .ok_or_else(|| anyhow!("no series_imdb"))?,
             sdks::stremio::MediaType::Series,
             media.parent_idx,
             media.idx,
@@ -942,9 +944,10 @@ async fn stremio_streams(
 ) -> Result<Vec<crate::stream::StreamInfo>> {
     let (media_type, id) = match media.kind {
         db::MediaKind::Episode => {
-            let series_id = media.grandparent_media_id.as_deref().ok_or_else(|| {
-                anyhow!("episode has no grandparent_media_id for stream lookup")
-            })?;
+            let series_id =
+                media.external_ids.series_imdb.as_deref().ok_or_else(|| {
+                    anyhow!("episode has no series_imdb for stream lookup")
+                })?;
             let season = media.parent_idx.unwrap_or(1);
             let episode = media.idx.unwrap_or(1);
             (

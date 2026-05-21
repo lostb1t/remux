@@ -160,7 +160,7 @@ impl Task for JellyfinImportTask {
                     .and_then(|p| p.get("Tvdb"))
                     .and_then(|v| v.parse::<i64>().ok());
 
-                let Some(media_key) = resolve_from_index(&index, imdb, tmdb, tvdb)
+                let Some(media_uuid) = resolve_from_index(&index, imdb, tmdb, tvdb)
                 else {
                     let item_type = item.item_type.as_deref();
                     let season = item.parent_index_number;
@@ -179,9 +179,40 @@ impl Task for JellyfinImportTask {
                     continue;
                 };
 
+                let kind = match item.item_type.as_deref() {
+                    Some("Movie") => db::MediaKind::Movie,
+                    Some("Series") => db::MediaKind::Series,
+                    Some("Season") => db::MediaKind::Season,
+                    Some("Episode") => db::MediaKind::Episode,
+                    _ => db::MediaKind::Movie,
+                };
+                let raw = db::MediaIdRaw {
+                    kind: kind.clone(),
+                    external_ids: db::ExternalIds {
+                        imdb: matches!(
+                            kind,
+                            db::MediaKind::Movie | db::MediaKind::Series
+                        )
+                        .then(|| imdb.map(String::from))
+                        .flatten(),
+                        series_imdb: matches!(
+                            kind,
+                            db::MediaKind::Season | db::MediaKind::Episode
+                        )
+                        .then(|| imdb.map(String::from))
+                        .flatten(),
+                        tmdb,
+                        tvdb,
+                        ..Default::default()
+                    },
+                    season: item.parent_index_number,
+                    episode: item.index_number,
+                };
+
                 let state = db::UserMediaState {
                     user_id: local_user.id,
-                    media_key,
+                    media_id: media_uuid,
+                    media_raw: serde_json::to_string(&raw).ok(),
                     favorite,
                     play_count,
                     played_at: ud.last_played_date.map(|dt| dt.naive_utc()),
@@ -205,9 +236,9 @@ impl Task for JellyfinImportTask {
 }
 
 struct MediaIndex {
-    by_imdb: HashMap<String, String>,
-    by_tmdb: HashMap<i64, String>,
-    by_tvdb: HashMap<i64, String>,
+    by_imdb: HashMap<String, uuid::Uuid>,
+    by_tmdb: HashMap<i64, uuid::Uuid>,
+    by_tvdb: HashMap<i64, uuid::Uuid>,
 }
 
 async fn build_media_index(db: &sqlx::SqlitePool) -> Result<MediaIndex> {
@@ -229,7 +260,6 @@ async fn build_media_index(db: &sqlx::SqlitePool) -> Result<MediaIndex> {
 
     for row in rows {
         let id: uuid::Uuid = row.try_get("id").ok().flatten().unwrap_or_default();
-        let key = id.as_simple().to_string();
         let imdb: Option<String> = row.try_get("imdb").ok().flatten();
         let tmdb: Option<i64> = row.try_get("tmdb").ok().flatten();
         let tvdb: Option<i64> = row.try_get("tvdb").ok().flatten();
@@ -237,14 +267,14 @@ async fn build_media_index(db: &sqlx::SqlitePool) -> Result<MediaIndex> {
         if imdb.is_none() && tmdb.is_none() && tvdb.is_none() {
             continue;
         }
-        if let Some(id) = imdb {
-            index.by_imdb.insert(id, key.clone());
+        if let Some(imdb_id) = imdb {
+            index.by_imdb.insert(imdb_id, id);
         }
-        if let Some(id) = tmdb {
-            index.by_tmdb.insert(id, key.clone());
+        if let Some(tmdb_id) = tmdb {
+            index.by_tmdb.insert(tmdb_id, id);
         }
-        if let Some(id) = tvdb {
-            index.by_tvdb.insert(id, key.clone());
+        if let Some(tvdb_id) = tvdb {
+            index.by_tvdb.insert(tvdb_id, id);
         }
     }
 
@@ -256,20 +286,20 @@ fn resolve_from_index(
     imdb: Option<&str>,
     tmdb: Option<i64>,
     tvdb: Option<i64>,
-) -> Option<String> {
+) -> Option<uuid::Uuid> {
     if let Some(id) = imdb {
-        if let Some(key) = index.by_imdb.get(id) {
-            return Some(key.clone());
+        if let Some(&uuid) = index.by_imdb.get(id) {
+            return Some(uuid);
         }
     }
     if let Some(id) = tmdb {
-        if let Some(key) = index.by_tmdb.get(&id) {
-            return Some(key.clone());
+        if let Some(&uuid) = index.by_tmdb.get(&id) {
+            return Some(uuid);
         }
     }
     if let Some(id) = tvdb {
-        if let Some(key) = index.by_tvdb.get(&id) {
-            return Some(key.clone());
+        if let Some(&uuid) = index.by_tvdb.get(&id) {
+            return Some(uuid);
         }
     }
     None

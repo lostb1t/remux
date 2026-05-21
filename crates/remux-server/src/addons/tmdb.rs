@@ -578,7 +578,7 @@ async fn fetch_tmdb_meta(
                 None
             };
             if series_tmdb_id.is_none() {
-                if let Some(ref series_imdb) = media.grandparent_media_id {
+                if let Some(ref series_imdb) = media.external_ids.series_imdb {
                     let find = client
                         .execute(
                             sdks::tmdb::FindByIdEndpoint {
@@ -890,8 +890,8 @@ async fn tmdb_remote_images(
         if let Some(ref imdb) = ids.imdb {
             return Some((imdb.clone(), "imdb_id"));
         }
-        if let Some(ref gp_media_id) = media.grandparent_media_id {
-            return Some((gp_media_id.clone(), "imdb_id"));
+        if let Some(ref series_imdb) = ids.series_imdb {
+            return Some((series_imdb.clone(), "imdb_id"));
         }
         if let Some(tvdb_id) = ids.tvdb {
             return Some((tvdb_id.to_string(), "tvdb_id"));
@@ -1025,7 +1025,7 @@ async fn tmdb_remote_images(
                 None
             };
             if series_tmdb_id.is_none() {
-                if let Some(ref series_imdb) = media.grandparent_media_id {
+                if let Some(ref series_imdb) = media.external_ids.series_imdb {
                     let find = client
                         .execute(
                             sdks::tmdb::FindByIdEndpoint {

@@ -310,17 +310,64 @@ pub struct CustomData {
     //pub data: Option<HashMap<String, Option<String>>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaIdRaw {
+    pub kind: super::MediaKind,
+    pub external_ids: super::ExternalIds,
+    pub season: Option<i64>,
+    pub episode: Option<i64>,
+}
+
+impl From<&MediaIdRaw> for Uuid {
+    fn from(raw: &MediaIdRaw) -> Uuid {
+        use super::MediaKind;
+        let canonical = match raw.kind {
+            MediaKind::Movie | MediaKind::Series => {
+                raw.external_ids.imdb.as_deref().unwrap_or("").to_string()
+            }
+            MediaKind::Season => format!(
+                "{}:{}",
+                raw.external_ids.series_imdb.as_deref().unwrap_or(""),
+                raw.season.unwrap_or(0)
+            ),
+            MediaKind::Episode => format!(
+                "{}:{}:{}",
+                raw.external_ids.series_imdb.as_deref().unwrap_or(""),
+                raw.season.unwrap_or(0),
+                raw.episode.unwrap_or(0)
+            ),
+            MediaKind::Artist => raw
+                .external_ids
+                .deezer_artist
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            MediaKind::Album => raw
+                .external_ids
+                .deezer_album
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            MediaKind::Track => raw
+                .external_ids
+                .deezer_track
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            _ => raw.external_ids.imdb.as_deref().unwrap_or("").to_string(),
+        };
+        crate::common::stable_media_uuid(&raw.kind, &canonical)
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct UserMediaState {
     pub user_id: Uuid,
+    pub media_id: Uuid,
+    pub media_raw: Option<String>,
     pub stream_id: Option<Uuid>,
-    pub media_key: String,
     pub favorite: bool,
     pub play_count: i64,
     pub played_at: Option<NaiveDateTime>,
     pub playback_position: i64,
     pub last_played_at: Option<NaiveDateTime>,
-    //pub stream_id: Option<Uuid>,
     pub subtitle_idx: Option<i64>,
     pub audio_idx: Option<i64>,
 }
@@ -328,7 +375,7 @@ pub struct UserMediaState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserMediaStateFilter {
     pub user_id: Option<Uuid>,
-    pub media_key: Option<Vec<String>>,
+    pub media_id: Option<Vec<Uuid>>,
     pub played: Option<bool>,
     pub favorite: Option<bool>,
     pub resumable: Option<bool>,
@@ -343,14 +390,10 @@ impl UserMediaState {
         media: &super::Media,
     ) -> Result<Option<Self>> {
         let row = sqlx::query_as::<_, Self>(
-            r#"
-        SELECT *
-        FROM user_media_state
-        WHERE user_id = ?1 AND media_key = ?2
-        "#,
+            "SELECT * FROM user_media_state WHERE user_id = ?1 AND media_id = ?2",
         )
         .bind(user.id)
-        .bind(media.id.as_simple().to_string())
+        .bind(media.id)
         .fetch_optional(db)
         .await?;
 
@@ -363,18 +406,18 @@ impl UserMediaState {
         media: &super::Media,
     ) -> Result<Self> {
         let row = Self::get_by_user_and_media(db, user, media).await?;
-        let media_key = media.id.as_simple().to_string();
         Ok(row.unwrap_or_else(|| Self {
             user_id: user.id,
-            media_key,
+            media_id: media.id,
+            media_raw: serde_json::to_string(&media.media_id_raw()).ok(),
             ..Default::default()
         }))
     }
 
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
         debug!(
-            "Saving user media state for user {} and media key {}",
-            self.user_id, self.media_key
+            "Saving user media state for user {} and media_id {}",
+            self.user_id, self.media_id
         );
 
         let now = chrono::Utc::now().naive_utc();
@@ -382,8 +425,9 @@ impl UserMediaState {
             r#"
             INSERT INTO user_media_state (
                 user_id,
+                media_id,
+                media_raw,
                 stream_id,
-                media_key,
                 favorite,
                 play_count,
                 played_at,
@@ -392,9 +436,10 @@ impl UserMediaState {
                 subtitle_idx,
                 audio_idx
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            ON CONFLICT(user_id, media_key)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ON CONFLICT(user_id, media_id)
             DO UPDATE SET
+                media_raw = excluded.media_raw,
                 stream_id = excluded.stream_id,
                 favorite = excluded.favorite,
                 play_count = excluded.play_count,
@@ -406,8 +451,9 @@ impl UserMediaState {
             "#,
         )
         .bind(self.user_id)
+        .bind(self.media_id)
+        .bind(&self.media_raw)
         .bind(self.stream_id)
-        .bind(&self.media_key)
         .bind(self.favorite)
         .bind(self.play_count)
         .bind(self.played_at)
@@ -435,8 +481,8 @@ impl UserMediaState {
             if let Some(user_id) = &filter.user_id {
                 qb.push(" AND user_id = ").push_bind(user_id);
             }
-            if let Some(media_keys) = &filter.media_key {
-                qb.push_in("media_key", &media_keys);
+            if let Some(media_ids) = &filter.media_id {
+                qb.push_in("media_id", &media_ids);
             }
             if let Some(played) = &filter.played {
                 qb.push(" AND play_count > 0");

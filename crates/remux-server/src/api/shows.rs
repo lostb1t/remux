@@ -196,32 +196,28 @@ pub async fn shows_nextup(
     }
 
     // Batch-load play states for this user
-    let media_keys: Vec<String> = episodes
-        .iter()
-        .map(|e| e.id.as_simple().to_string())
-        .collect();
+    let media_ids: Vec<Uuid> = episodes.iter().map(|e| e.id).collect();
 
-    let states: HashMap<String, db::UserMediaState> = if media_keys.is_empty() {
+    let states: HashMap<Uuid, db::UserMediaState> = if media_ids.is_empty() {
         HashMap::new()
     } else {
         db::UserMediaState::get_by_filter(
             &state.ctx.db,
             &db::UserMediaStateFilter {
                 user_id: Some(user_id),
-                media_key: Some(media_keys),
+                media_id: Some(media_ids),
                 ..Default::default()
             },
         )
         .await?
         .records
         .into_iter()
-        .map(|s| (s.media_key.clone(), s))
+        .map(|s| (s.media_id, s))
         .collect()
     };
 
-    let state_for = |e: &db::Media| -> Option<&db::UserMediaState> {
-        states.get(&e.id.as_simple().to_string())
-    };
+    let state_for =
+        |e: &db::Media| -> Option<&db::UserMediaState> { states.get(&e.id) };
 
     // 1. Resumable: partially-watched episode
     let mut next_ep: Option<&db::Media> = None;
@@ -292,7 +288,7 @@ async fn shows_nextup_all(
     let active_series: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT DISTINCT e.grandparent_id \
          FROM media e \
-         JOIN user_media_state ums ON ums.media_key = CAST(e.id AS TEXT) \
+         JOIN user_media_state ums ON ums.media_id = e.id \
          WHERE e.kind = 'episode' \
            AND e.grandparent_id IS NOT NULL \
            AND ums.user_id = ? \
@@ -324,31 +320,27 @@ async fn shows_nextup_all(
             continue;
         }
 
-        let media_keys: Vec<String> = episodes
-            .iter()
-            .map(|e| e.id.as_simple().to_string())
-            .collect();
-        let states: HashMap<String, db::UserMediaState> = if media_keys.is_empty() {
+        let media_ids: Vec<Uuid> = episodes.iter().map(|e| e.id).collect();
+        let states: HashMap<Uuid, db::UserMediaState> = if media_ids.is_empty() {
             HashMap::new()
         } else {
             db::UserMediaState::get_by_filter(
                 &state.ctx.db,
                 &db::UserMediaStateFilter {
                     user_id: Some(user_id),
-                    media_key: Some(media_keys),
+                    media_id: Some(media_ids),
                     ..Default::default()
                 },
             )
             .await?
             .records
             .into_iter()
-            .map(|s| (s.media_key.clone(), s))
+            .map(|s| (s.media_id, s))
             .collect()
         };
 
-        let state_for = |e: &db::Media| -> Option<&db::UserMediaState> {
-            states.get(&e.id.as_simple().to_string())
-        };
+        let state_for =
+            |e: &db::Media| -> Option<&db::UserMediaState> { states.get(&e.id) };
 
         // Resumable first
         let mut next_ep: Option<&db::Media> = None;

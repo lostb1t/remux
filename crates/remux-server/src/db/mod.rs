@@ -34,53 +34,8 @@ pub async fn connect(url: &str) -> Result<SqlitePool> {
 }
 
 pub async fn migrate(pool: &SqlitePool) -> Result<()> {
-    // Must run before SQL migrations so media_id column is still available.
-    migrate_user_state_keys(pool).await?;
     sqlx::migrate!("./migrations").run(pool).await?;
     backfill_certification_age(pool).await?;
-    Ok(())
-}
-
-/// Migrates `user_media_state.media_key` from old `media.media_id` strings to
-/// UUID simple strings (e.g., "tt1234567" → "a1b2c3d4...").
-///
-/// Only runs when the `media_id` column still exists (i.e., before the SQL
-/// migration that drops it). Safe to call on already-migrated databases.
-async fn migrate_user_state_keys(pool: &SqlitePool) -> Result<()> {
-    let has_media_id: bool = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM pragma_table_info('media') WHERE name = 'media_id'",
-    )
-    .fetch_one(pool)
-    .await
-    .map(|n| n > 0)
-    .unwrap_or(false);
-
-    if !has_media_id {
-        return Ok(());
-    }
-
-    // Find user_media_state rows whose media_key matches a media.media_id,
-    // and update them to use the media's UUID simple string instead.
-    let to_update: Vec<(String, uuid::Uuid)> = sqlx::query_as(
-        "SELECT ums.media_key, m.id
-         FROM user_media_state ums
-         JOIN media m ON m.media_id = ums.media_key",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    for (old_key, new_id) in to_update {
-        let new_key = new_id.as_simple().to_string();
-        if old_key == new_key {
-            continue;
-        }
-        sqlx::query("UPDATE user_media_state SET media_key = ?1 WHERE media_key = ?2")
-            .bind(&new_key)
-            .bind(&old_key)
-            .execute(pool)
-            .await?;
-    }
-
     Ok(())
 }
 

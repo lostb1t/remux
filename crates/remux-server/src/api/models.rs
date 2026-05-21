@@ -178,7 +178,7 @@ pub fn db_state_to_dto(
         is_favorite: state.favorite,
         played_percentage,
         unplayed_item_count: media.unplayed_item_count,
-        key: state.media_key,
+        key: state.media_raw.unwrap_or_default(),
         item_id: media.id,
         ..Default::default()
     }
@@ -320,10 +320,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             imdb: media.external_ids.imdb.clone().or_else(|| {
                 if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season)
                 {
-                    media
-                        .grandparent_media_id
-                        .clone()
-                        .filter(|s| s.starts_with("tt"))
+                    media.external_ids.series_imdb.clone()
                 } else {
                     None
                 }
