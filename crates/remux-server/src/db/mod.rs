@@ -1,10 +1,12 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use sqlx::ConnectOptions as _;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
 };
 use std::str::FromStr;
+use std::time::Duration;
 pub mod api_key;
 pub mod auth;
 pub mod image;
@@ -23,10 +25,14 @@ pub use stream_group::*;
 pub use task::*;
 pub use user::*;
 
-pub async fn connect(url: &str) -> Result<SqlitePool> {
+pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(url)?
         .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal);
+        .synchronous(SqliteSynchronous::Normal)
+        .log_slow_statements(
+            log::LevelFilter::Warn,
+            Duration::from_millis(slow_query_threshold_ms),
+        );
     Ok(SqlitePoolOptions::new()
         .max_connections(10)
         .connect_with(opts)

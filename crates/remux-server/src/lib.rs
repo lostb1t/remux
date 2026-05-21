@@ -182,6 +182,7 @@ pub async fn init_app(
             .database_url
             .as_deref()
             .expect("Config::resolve() must be called before init_app"),
+        config.slow_query_threshold_ms,
     )
     .await?;
 
@@ -371,6 +372,9 @@ pub struct Config {
     /// When absent the OS picks a free ephemeral port.
     #[serde(default = "default_torrent_http_port_opt")]
     pub torrent_http_port: Option<u16>,
+    /// Log queries that exceed this threshold in milliseconds. Defaults to 10 000 ms.
+    #[serde(default = "default_slow_query_threshold_ms")]
+    pub slow_query_threshold_ms: u64,
     /// Disable the DHT gossip socket. Useful when no Torznab sources are
     /// configured or when running in a restricted network environment.
     #[serde(default)]
@@ -381,6 +385,10 @@ pub struct Config {
     /// (not 0) or many trackers will reject the announce.
     #[serde(default = "default_torrent_peer_port")]
     pub torrent_peer_port: Option<u16>,
+}
+
+fn default_slow_query_threshold_ms() -> u64 {
+    10_000
 }
 
 fn default_torrent_http_port_opt() -> Option<u16> {
@@ -420,6 +428,7 @@ impl Default for Config {
             torrent_data_dir: None,
             port: default_port(),
             torrent_http_port: default_torrent_http_port_opt(),
+            slow_query_threshold_ms: default_slow_query_threshold_ms(),
             disable_dht: false,
             torrent_peer_port: default_torrent_peer_port(),
         }

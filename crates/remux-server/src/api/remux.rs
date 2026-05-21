@@ -394,7 +394,7 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
                         .map(|v| v.label())
                         .collect::<Vec<_>>()
                         .join("/"),
-                    StreamRule::Source { values, .. } => values
+                    StreamRule::Quality { values, .. } => values
                         .iter()
                         .map(|v| v.label())
                         .collect::<Vec<_>>()

@@ -4837,7 +4837,7 @@ impl StreamResolution {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum StreamSource {
+pub enum StreamQuality {
     BluRayRemux,
     BluRay,
     WebDl,
@@ -4848,7 +4848,7 @@ pub enum StreamSource {
     Unknown,
 }
 
-impl StreamSource {
+impl StreamQuality {
     pub fn label(&self) -> &'static str {
         match self {
             Self::BluRayRemux => "Blu-ray Remux",
@@ -4930,9 +4930,9 @@ pub enum StreamRule {
         op: SetOp,
         values: Vec<StreamResolution>,
     },
-    Source {
+    Quality {
         op: SetOp,
-        values: Vec<StreamSource>,
+        values: Vec<StreamQuality>,
     },
     Codec {
         op: SetOp,

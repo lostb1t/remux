@@ -20,7 +20,7 @@ use remux_sdks::remux::{
     PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
     SaveEpgSource, ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
     StartupConfiguration, StartupUser, StopTask, StreamCodec, StreamFilter,
-    StreamGroupDto, StreamGroupPreviewDto, StreamResolution, StreamRule, StreamSource,
+    StreamGroupDto, StreamGroupPreviewDto, StreamQuality, StreamResolution, StreamRule,
     TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo, UpdateAddon,
     UpdateAddonCatalogRequest, UpdateAddonCatalogs, UpdateAddonRequest,
     UpdateBrandingConfiguration, UpdateEncodingConfiguration, UpdateStreamGroup,
@@ -6002,12 +6002,12 @@ fn StreamRuleRow(
 ) -> Element {
     let field_val = match &rule {
         StreamRule::Resolution { .. } => "resolution",
-        StreamRule::Source { .. } => "source",
+        StreamRule::Quality { .. } => "quality",
         StreamRule::Codec { .. } => "codec",
     };
     let op_not_in = match &rule {
         StreamRule::Resolution { op, .. }
-        | StreamRule::Source { op, .. }
+        | StreamRule::Quality { op, .. }
         | StreamRule::Codec { op, .. } => matches!(op, SetOp::NotIn),
     };
 
@@ -6021,14 +6021,14 @@ fn StreamRuleRow(
                 onchange: move |e| {
                     if let Some(r) = rules.write().get_mut(idx) {
                         *r = match e.value().as_str() {
-                            "source" => StreamRule::Source { op: SetOp::In, values: vec![] },
+                            "quality" => StreamRule::Quality { op: SetOp::In, values: vec![] },
                             "codec"  => StreamRule::Codec  { op: SetOp::In, values: vec![] },
                             _        => StreamRule::Resolution { op: SetOp::In, values: vec![] },
                         };
                     }
                 },
                 option { value: "resolution", selected: field_val == "resolution", "Resolution" }
-                option { value: "source",     selected: field_val == "source",     "Source" }
+                option { value: "quality",     selected: field_val == "quality",     "Quality" }
                 option { value: "codec",      selected: field_val == "codec",      "Codec" }
             }
             // Operator selector
@@ -6040,7 +6040,7 @@ fn StreamRuleRow(
                     if let Some(r) = rules.write().get_mut(idx) {
                         *r = match r.clone() {
                             StreamRule::Resolution { values, .. } => StreamRule::Resolution { op: new_op, values },
-                            StreamRule::Source { values, .. }     => StreamRule::Source { op: new_op, values },
+                            StreamRule::Quality { values, .. }     => StreamRule::Quality { op: new_op, values },
                             StreamRule::Codec { values, .. }      => StreamRule::Codec  { op: new_op, values },
                         };
                     }
@@ -6072,18 +6072,18 @@ fn StreamRuleRow(
                             }
                         }
                     }
-                } else if field_val == "source" {
-                    for src in StreamSource::all() {
+                } else if field_val == "quality" {
+                    for src in StreamQuality::all() {
                         {
                             let src = src.clone();
-                            let checked = match &rule { StreamRule::Source { values, .. } => values.contains(&src), _ => false };
+                            let checked = match &rule { StreamRule::Quality { values, .. } => values.contains(&src), _ => false };
                             rsx! {
                                 label { style: "display:flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer",
                                     input {
                                         r#type: "checkbox",
                                         checked,
                                         onchange: move |e| {
-                                            if let Some(StreamRule::Source { values, .. }) = rules.write().get_mut(idx) {
+                                            if let Some(StreamRule::Quality { values, .. }) = rules.write().get_mut(idx) {
                                                 if e.checked() { if !values.contains(&src) { values.push(src.clone()); } }
                                                 else { values.retain(|s| s != &src); }
                                             }
@@ -6358,7 +6358,7 @@ fn StreamGroupsCard(app_state: AppState) -> Element {
                                                                 let lbl = values.iter().map(|v| v.label()).collect::<Vec<_>>().join("/");
                                                                 (lbl, matches!(op, SetOp::NotIn), "background:var(--accent-subtle,rgba(99,102,241,.12));color:var(--accent,#6366f1);padding:1px 6px;border-radius:4px")
                                                             }
-                                                            StreamRule::Source { op, values } => {
+                                                            StreamRule::Quality { op, values } => {
                                                                 let lbl = values.iter().map(|v| v.label()).collect::<Vec<_>>().join("/");
                                                                 (lbl, matches!(op, SetOp::NotIn), "background:rgba(0,0,0,0.06);padding:1px 6px;border-radius:4px")
                                                             }

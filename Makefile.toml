@@ -13,7 +13,7 @@ DASHBOARD_PATH="./target/dx/remux-dashboard/debug/web/public"
 DB_URL = "sqlite://db.sqlite?mode=rwc"
 DATABASE_URL = "sqlite://db.sqlite?mode=rwc"
 DB="db.sqlite"
-
+SLOW_QUERY_THRESHOLD_MS=1000
 
 [tasks.db-prepare]
 command = "cargo"

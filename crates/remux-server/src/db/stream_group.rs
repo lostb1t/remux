@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::Utc;
 use remux_sdks::remux::{
-    FilterMatchMode, SetOp, StreamCodec, StreamFilter, StreamResolution, StreamRule,
-    StreamSource,
+    FilterMatchMode, SetOp, StreamCodec, StreamFilter, StreamQuality, StreamResolution,
+    StreamRule,
 };
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -296,7 +296,7 @@ impl StreamGroup {
             .unwrap_or(StreamResolution::Unknown);
         let source = {
             let s = canonical_source(&parsed);
-            if s == StreamSource::Unknown {
+            if s == StreamQuality::Unknown {
                 fallback_source(raw)
             } else {
                 s
@@ -319,7 +319,7 @@ impl StreamGroup {
                 let hit = values.contains(&resolution);
                 matches!(op, SetOp::In | SetOp::Is) == hit
             }
-            StreamRule::Source { op, values } => {
+            StreamRule::Quality { op, values } => {
                 let hit = values.contains(&source);
                 matches!(op, SetOp::In | SetOp::Is) == hit
             }
@@ -406,7 +406,7 @@ fn auto_name(filter: &StreamFilter) -> String {
                 StreamRule::Resolution { values, .. } => {
                     values.iter().map(|v| v.label()).collect()
                 }
-                StreamRule::Source { values, .. } => {
+                StreamRule::Quality { values, .. } => {
                     values.iter().map(|v| v.label()).collect()
                 }
                 StreamRule::Codec { values, .. } => {
@@ -427,48 +427,48 @@ fn auto_name(filter: &StreamFilter) -> String {
     }
 }
 
-fn canonical_source(parsed: &hunch::HunchResult) -> StreamSource {
+fn canonical_source(parsed: &hunch::HunchResult) -> StreamQuality {
     let other = parsed.other();
     let is_remux = other.contains(&"Remux");
     let is_rip = other.contains(&"Rip");
     let Some(source) = parsed.source() else {
         // No source keyword — remux is always Blu-ray regardless
         return if is_remux {
-            StreamSource::BluRayRemux
+            StreamQuality::BluRayRemux
         } else {
-            StreamSource::Unknown
+            StreamQuality::Unknown
         };
     };
     match source {
-        "Web" if is_rip => StreamSource::WebRip,
-        "Web" => StreamSource::WebDl,
-        "Blu-ray" | "Ultra HD Blu-ray" if is_remux => StreamSource::BluRayRemux,
-        "Blu-ray" | "Ultra HD Blu-ray" => StreamSource::BluRay,
-        "HDTV" => StreamSource::Hdtv,
-        "DVD" => StreamSource::Dvd,
-        "TV" => StreamSource::Tv,
-        _ => StreamSource::Unknown,
+        "Web" if is_rip => StreamQuality::WebRip,
+        "Web" => StreamQuality::WebDl,
+        "Blu-ray" | "Ultra HD Blu-ray" if is_remux => StreamQuality::BluRayRemux,
+        "Blu-ray" | "Ultra HD Blu-ray" => StreamQuality::BluRay,
+        "HDTV" => StreamQuality::Hdtv,
+        "DVD" => StreamQuality::Dvd,
+        "TV" => StreamQuality::Tv,
+        _ => StreamQuality::Unknown,
     }
 }
 
 /// Fallback source detection via case-insensitive substring search.
 /// Used when hunch fails to identify the source (e.g. "WEBRip-AVC" or
 /// space-delimited multi-language filenames where hunch loses the token).
-fn fallback_source(raw: &str) -> StreamSource {
+fn fallback_source(raw: &str) -> StreamQuality {
     let lower = raw.to_lowercase();
     if lower.contains("webrip") || lower.contains("web-rip") {
-        StreamSource::WebRip
+        StreamQuality::WebRip
     } else if lower.contains("web-dl") || lower.contains("webdl") {
-        StreamSource::WebDl
+        StreamQuality::WebDl
     } else if lower.contains("remux") {
-        StreamSource::BluRayRemux
+        StreamQuality::BluRayRemux
     } else if lower.contains("bluray") || lower.contains("blu-ray") {
-        StreamSource::BluRay
+        StreamQuality::BluRay
     } else if lower.contains("hdtv") {
-        StreamSource::Hdtv
+        StreamQuality::Hdtv
     } else if lower.contains("dvdrip") {
-        StreamSource::Dvd
+        StreamQuality::Dvd
     } else {
-        StreamSource::Unknown
+        StreamQuality::Unknown
     }
 }
