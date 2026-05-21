@@ -565,8 +565,12 @@ fn trigger_label(t: &TaskTriggerInfo) -> String {
             format!("Weekly on {} at {:02}:{:02}", day, hour, min)
         }
         Some(TaskTriggerInfoType::IntervalTrigger) => {
-            let hours = t.interval_ticks.unwrap_or(0) / 36_000_000_000;
-            format!("Every {} hour(s)", hours)
+            let ticks = t.interval_ticks.unwrap_or(0);
+            if ticks % 36_000_000_000 == 0 {
+                format!("Every {} hour(s)", ticks / 36_000_000_000)
+            } else {
+                format!("Every {} minute(s)", ticks / 600_000_000)
+            }
         }
         None => "Unknown".into(),
     }
@@ -584,7 +588,8 @@ fn TaskTriggersModal(
     let mut new_hour = use_signal(|| "0".to_string());
     let mut new_min = use_signal(|| "0".to_string());
     let mut new_day = use_signal(|| "Sunday".to_string());
-    let mut new_interval_hours = use_signal(|| "24".to_string());
+    let mut new_interval_value = use_signal(|| "24".to_string());
+    let mut new_interval_unit = use_signal(|| "hours".to_string());
     let mut saving = use_signal(|| false);
     let mut error: Signal<Option<String>> = use_signal(|| None);
 
@@ -695,14 +700,25 @@ fn TaskTriggersModal(
                 }
             }
         } else if *new_type.read() == TaskTriggerInfoType::IntervalTrigger {
-            div { class: "field",
-                label { class: "field-label", "Every (hours)" }
-                input {
-                    class: "field-input",
-                    r#type: "number",
-                    min: "1",
-                    value: "{new_interval_hours.read()}",
-                    oninput: move |evt| new_interval_hours.set(evt.value()),
+            div { style: "display: flex; gap: 1rem; align-items: flex-end;",
+                div { class: "field",
+                    label { class: "field-label", "Every" }
+                    input {
+                        class: "field-input",
+                        r#type: "number",
+                        min: "1",
+                        value: "{new_interval_value.read()}",
+                        oninput: move |evt| new_interval_value.set(evt.value()),
+                    }
+                }
+                div { class: "field",
+                    label { class: "field-label", "Unit" }
+                    select {
+                        class: "select-input",
+                        onchange: move |evt| new_interval_unit.set(evt.value()),
+                        option { value: "minutes", selected: *new_interval_unit.read() == "minutes", "Minutes" }
+                        option { value: "hours", selected: *new_interval_unit.read() == "hours", "Hours" }
+                    }
                 }
             }
         }
@@ -716,10 +732,15 @@ fn TaskTriggersModal(
                         ..Default::default()
                     },
                     TaskTriggerInfoType::IntervalTrigger => {
-                        let hours: i64 = new_interval_hours.read().parse().unwrap_or(24).max(1);
+                        let val: i64 = new_interval_value.read().parse().unwrap_or(24).max(1);
+                        let ticks_per_unit: i64 = if *new_interval_unit.read() == "minutes" {
+                            600_000_000
+                        } else {
+                            36_000_000_000
+                        };
                         TaskTriggerInfo {
                             r#type: Some(kind.to_string()),
-                            interval_ticks: Some(hours * 36_000_000_000),
+                            interval_ticks: Some(val * ticks_per_unit),
                             ..Default::default()
                         }
                     }

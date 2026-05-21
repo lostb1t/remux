@@ -21,8 +21,7 @@ fn db_trigger_to_jellyfin(trigger: &api::db::TaskTrigger) -> api::TaskTriggerInf
     let (time_of_day_ticks, interval_ticks, day_of_week) = match trigger.kind {
         TaskTriggerInfoType::StartupTrigger => (None, None, None),
         TaskTriggerInfoType::IntervalTrigger => {
-            let hours = cron.and_then(cron_to_interval_hours);
-            (None, hours.map(|h| h * TICKS_PER_HOUR), None)
+            (None, cron.and_then(cron_to_interval_ticks), None)
         }
         TaskTriggerInfoType::WeeklyTrigger => {
             let ticks = cron.and_then(cron_to_time_of_day_ticks);
@@ -53,14 +52,24 @@ fn cron_to_time_of_day_ticks(cron: &str) -> Option<i64> {
     Some(hour * TICKS_PER_HOUR + min * TICKS_PER_MINUTE)
 }
 
-/// Parse `0 0 */HOURS * * *` interval cron into hours.
-fn cron_to_interval_hours(cron: &str) -> Option<i64> {
-    let mut parts = cron.split_whitespace();
-    parts.next(); // sec
-    parts.next(); // min
-    let hour_part = parts.next()?;
-    let hours: i64 = hour_part.strip_prefix("*/")?.parse().ok()?;
-    Some(hours)
+/// Parse `0 */MIN * * * *` or `0 0 */HOURS * * *` interval cron into ticks.
+fn cron_to_interval_ticks(cron: &str) -> Option<i64> {
+    let parts: Vec<&str> = cron.split_whitespace().collect();
+    if let Some(min) = parts
+        .get(1)
+        .and_then(|s| s.strip_prefix("*/"))
+        .and_then(|s| s.parse::<i64>().ok())
+    {
+        return Some(min * TICKS_PER_MINUTE);
+    }
+    if let Some(hours) = parts
+        .get(2)
+        .and_then(|s| s.strip_prefix("*/"))
+        .and_then(|s| s.parse::<i64>().ok())
+    {
+        return Some(hours * TICKS_PER_HOUR);
+    }
+    None
 }
 
 /// Parse `0 MIN HOUR * * DAY_NUM` cron into day name.
@@ -233,8 +242,14 @@ fn trigger_to_cron(t: &api::TaskTriggerInfo) -> Option<String> {
     match kind {
         TaskTriggerInfoType::StartupTrigger => None,
         TaskTriggerInfoType::IntervalTrigger => {
-            let hours = t.interval_ticks? / TICKS_PER_HOUR;
-            Some(format!("0 0 */{hours} * * *"))
+            let ticks = t.interval_ticks?;
+            if ticks % TICKS_PER_HOUR == 0 {
+                let hours = ticks / TICKS_PER_HOUR;
+                Some(format!("0 0 */{hours} * * *"))
+            } else {
+                let minutes = (ticks / TICKS_PER_MINUTE).max(1);
+                Some(format!("0 */{minutes} * * * *"))
+            }
         }
         TaskTriggerInfoType::DailyTrigger | TaskTriggerInfoType::WeeklyTrigger => {
             let ticks = t.time_of_day_ticks?;

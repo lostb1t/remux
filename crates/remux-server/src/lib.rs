@@ -269,6 +269,7 @@ pub async fn init_app(
 
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
 
+    task_service.start().await?;
     task_service.run_startup_tasks().await?;
 
     let state = AppState {

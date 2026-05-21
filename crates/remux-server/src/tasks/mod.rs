@@ -235,7 +235,7 @@ impl TaskService {
         let tasks = self.tasks.clone();
         let ctx = self.ctx.clone();
         let task_service = self.clone();
-        let task_id = trigger.task_id.clone();
+        let task_id = trigger.task_id.to_lowercase();
 
         let job = Job::new_async(cron.as_str(), move |_uuid, _l| {
             let tasks = tasks.clone();
