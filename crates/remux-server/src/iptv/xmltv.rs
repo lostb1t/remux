@@ -20,20 +20,26 @@ pub struct EpgProgram {
     pub poster: Option<String>,
 }
 
-/// Parse XMLTV content. Returns a list of programs.
-/// Large files are parsed with a SAX-style reader to avoid loading everything into memory.
-pub fn parse_xmltv(content: &str) -> Result<Vec<EpgProgram>> {
-    let mut reader = Reader::from_str(content);
+/// Parse XMLTV from any buffered reader, calling `on_program` for each
+/// complete programme element. The full XML is never held in memory.
+pub fn parse_xmltv<R: std::io::BufRead, F: FnMut(EpgProgram)>(
+    input: R,
+    mut on_program: F,
+) -> Result<()> {
+    let mut reader = Reader::from_reader(input);
     reader.config_mut().trim_text(true);
 
-    let mut programs: Vec<EpgProgram> = Vec::new();
     let mut current: Option<EpgProgram> = None;
     let mut in_title = false;
     let mut in_desc = false;
     let mut in_category = false;
+    let mut buf = Vec::new();
+    let mut total = 0usize;
+    let mut with_kind = 0usize;
 
     loop {
-        match reader.read_event() {
+        buf.clear();
+        match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().as_ref() {
                 b"programme" => {
                     let mut prog = EpgProgram::default();
@@ -87,7 +93,11 @@ pub fn parse_xmltv(content: &str) -> Result<Vec<EpgProgram>> {
                 b"programme" => {
                     if let Some(prog) = current.take() {
                         if !prog.channel_id.is_empty() && !prog.title.is_empty() {
-                            programs.push(prog);
+                            if prog.program_kind.is_some() {
+                                with_kind += 1;
+                            }
+                            total += 1;
+                            on_program(prog);
                         }
                     }
                 }
@@ -116,14 +126,8 @@ pub fn parse_xmltv(content: &str) -> Result<Vec<EpgProgram>> {
         }
     }
 
-    let with_kind = programs.iter().filter(|p| p.program_kind.is_some()).count();
-    tracing::debug!(
-        total = programs.len(),
-        with_program_kind = with_kind,
-        "xmltv parse complete"
-    );
-
-    Ok(programs)
+    tracing::debug!(total, with_program_kind = with_kind, "xmltv parse complete");
+    Ok(())
 }
 
 /// Parse XMLTV datetime format: `20240101120000 +0000` or `20240101120000`
