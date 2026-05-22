@@ -45,6 +45,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.semantic-release.outputs.new_release_version }}
+      cargo_version: ${{ needs.semantic-release.outputs.new_release_version }}
       docker_tags: >-
         -t ghcr.io/lostb1t/remux-server:${{ needs.semantic-release.outputs.new_release_version }}
         -t ghcr.io/lostb1t/remux-server:latest
