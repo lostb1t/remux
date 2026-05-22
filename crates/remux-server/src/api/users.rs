@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Context;
 use axum::Json;
 use axum::body::Bytes;
@@ -9,6 +11,7 @@ use axum_extra::extract::Query;
 use http::StatusCode;
 use remux_macros::{delete, get, post};
 use serde::Deserialize;
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -24,7 +27,7 @@ use remux_sdks::remux::Username;
 
 use super::items::{item, items, items_flat};
 use super::mock_items;
-use super::shows::userviews;
+use super::shows::livetv_view_item;
 
 #[post("/users/{user_id}/configuration")]
 pub async fn user_configuration_update(
@@ -541,6 +544,103 @@ pub async fn users_items_latest(
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     items_flat(State(state), session, Query(q)).await
+}
+
+#[get("/userviews")]
+pub async fn userviews(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    let library_filter = db::MediaFilter {
+        kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
+        promoted: Some(true),
+        include_child_count: true,
+        ..Default::default()
+    };
+    let channel_filter = db::MediaFilter {
+        kind: Some(vec![db::MediaKind::TvChannel]),
+        enabled: Some(true),
+        ..Default::default()
+    };
+    let (library_result, channel_result) = tokio::join!(
+        db::Media::get_by_filter(&state.ctx.db, &library_filter),
+        db::Media::get_by_filter(&state.ctx.db, &channel_filter),
+    );
+
+    let mut libraries = library_result?.records;
+
+    // Hide libraries/collections that contain zero items visible to this user.
+    if let Some(pf) = session
+        .user
+        .policy
+        .as_ref()
+        .and_then(|p| p.filter_rules.as_ref())
+        .filter(|pf| !pf.rules.is_empty())
+    {
+        let ids: Vec<Uuid> = libraries.iter().map(|m| m.id).collect();
+        if !ids.is_empty() {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT parent_id, COUNT(*) FROM media WHERE parent_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in &ids {
+                sep.push_bind(*id);
+            }
+            qb.push(
+                ") AND kind NOT IN ('collection', 'folder', 'playlist', 'tv_channel')",
+            );
+            db::apply_filter_rules(&mut qb, &pf.rules, &pf.match_mode);
+            qb.push(" GROUP BY parent_id");
+
+            if let Ok(rows) = qb.build().fetch_all(&state.ctx.db).await {
+                let counts: HashMap<Uuid, i64> = rows
+                    .into_iter()
+                    .map(|r| (r.get::<Uuid, _>(0), r.get::<i64, _>(1)))
+                    .collect();
+                libraries.retain(|m| counts.get(&m.id).copied().unwrap_or(0) > 0);
+            }
+        }
+    }
+
+    let mut items = libraries
+        .into_iter()
+        .map(api::db_media_to_item)
+        .collect::<Vec<api::BaseItemDto>>();
+
+    // Inject a synthetic Live TV view if any enabled channels exist
+    if !channel_result?.records.is_empty() {
+        items.push(livetv_view_item());
+    }
+
+    let count = items.len() as i64;
+    Ok(Json(api::BaseItemDtoQueryResult {
+        items,
+        total_record_count: count,
+        ..Default::default()
+    }))
+}
+
+#[get("/userviews/groupingoptions")]
+pub async fn userviews_groupingoptions(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    let filter = db::MediaFilter {
+        kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
+        promoted: Some(true),
+        ..Default::default()
+    };
+    let items = db::Media::get_by_filter(&state.ctx.db, &filter)
+        .await?
+        .records
+        .into_iter()
+        .map(|m| remux_sdks::remux::SpecialViewOptionDto {
+            name: Some(m.title.clone()),
+            id: Some(m.id.to_string()),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(items))
 }
 
 #[get("/users/{user_id}/views")]

@@ -2389,42 +2389,30 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
 fn FilterRuleEditor(
     match_mode: Signal<FilterMatchMode>,
     rules: Signal<Vec<FilterRule>>,
-    /// When true: show all fields. When false (user mode): only Tag + Certification.
-    #[props(default = true)]
-    collection_mode: bool,
 ) -> Element {
-    let default_new_rule = if collection_mode {
-        FilterRule::Genre {
-            op: SetOp::In,
-            values: vec![],
-        }
-    } else {
-        FilterRule::Tag {
-            op: SetOp::In,
-            values: vec![],
-        }
+    let default_new_rule = FilterRule::Genre {
+        op: SetOp::In,
+        values: vec![],
     };
     rsx! {
         div { class: "field",
             div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px",
                 label { class: "field-label", style: "margin:0", "Filters" }
-                if collection_mode {
-                    div { style: "display:flex;align-items:center;gap:8px",
-                        span { style: "font-size:0.8rem;color:var(--text-muted)", "Match" }
-                        select {
-                            class: "select-input",
-                            style: "padding:2px 6px;font-size:0.8rem",
-                            value: if *match_mode.read() == FilterMatchMode::All { "all" } else { "any" },
-                            onchange: move |e| {
-                                match_mode.set(if e.value() == "any" {
-                                    FilterMatchMode::Any
-                                } else {
-                                    FilterMatchMode::All
-                                });
-                            },
-                            option { value: "all", "All (AND)" }
-                            option { value: "any", "Any (OR)" }
-                        }
+                div { style: "display:flex;align-items:center;gap:8px",
+                    span { style: "font-size:0.8rem;color:var(--text-muted)", "Match" }
+                    select {
+                        class: "select-input",
+                        style: "padding:2px 6px;font-size:0.8rem",
+                        value: if *match_mode.read() == FilterMatchMode::All { "all" } else { "any" },
+                        onchange: move |e| {
+                            match_mode.set(if e.value() == "any" {
+                                FilterMatchMode::Any
+                            } else {
+                                FilterMatchMode::All
+                            });
+                        },
+                        option { value: "all", "All (AND)" }
+                        option { value: "any", "Any (OR)" }
                     }
                 }
             }
@@ -2436,7 +2424,6 @@ fn FilterRuleEditor(
                         idx,
                         rule: rule.clone(),
                         rules,
-                        collection_mode,
                     }
                 }
             }
@@ -2640,7 +2627,6 @@ fn FilterRuleRow(
     idx: usize,
     rule: FilterRule,
     rules: Signal<Vec<FilterRule>>,
-    #[props(default = true)] collection_mode: bool,
 ) -> Element {
     let app_state = use_context::<AppState>();
     let mut parental_ratings: Signal<Vec<ParentalRating>> = use_signal(Vec::new);
@@ -2680,35 +2666,17 @@ fn FilterRuleRow(
                         *row = raw_to_rule(&new_field, default_op, "");
                     }
                 },
-                if collection_mode {
-                    option { value: "genre",           selected: field_val == "genre",           { field_label("genre") } }
-                }
-                if collection_mode {
-                    option { value: "year",            selected: field_val == "year",            { field_label("year") } }
-                }
-                if collection_mode {
-                    option { value: "rating_audience", selected: field_val == "rating_audience", { field_label("rating_audience") } }
-                }
-                if collection_mode {
-                    option { value: "rating_critic",   selected: field_val == "rating_critic",   { field_label("rating_critic") } }
-                }
+                option { value: "genre",           selected: field_val == "genre",           { field_label("genre") } }
+                option { value: "year",            selected: field_val == "year",            { field_label("year") } }
+                option { value: "rating_audience", selected: field_val == "rating_audience", { field_label("rating_audience") } }
+                option { value: "rating_critic",   selected: field_val == "rating_critic",   { field_label("rating_critic") } }
                 option { value: "parental_rating", selected: field_val == "parental_rating", { field_label("parental_rating") } }
                 option { value: "tag",             selected: field_val == "tag",             { field_label("tag") } }
-                if collection_mode {
-                    option { value: "studio",          selected: field_val == "studio",          { field_label("studio") } }
-                }
-                if collection_mode {
-                    option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
-                }
-                if collection_mode {
-                    option { value: "country",         selected: field_val == "country",         { field_label("country") } }
-                }
-                if collection_mode {
-                    option { value: "person",          selected: field_val == "person",          { field_label("person") } }
-                }
-                if collection_mode {
-                    option { value: "collection",      selected: field_val == "collection",      { field_label("collection") } }
-                }
+                option { value: "studio",          selected: field_val == "studio",          { field_label("studio") } }
+                option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
+                option { value: "country",         selected: field_val == "country",         { field_label("country") } }
+                option { value: "person",          selected: field_val == "person",          { field_label("person") } }
+                option { value: "collection",      selected: field_val == "collection",      { field_label("collection") } }
             }
             // Operator selector (hidden for has_trailer which has no operator)
             if !hide_operator {
@@ -4105,7 +4073,6 @@ fn UserForm(
             FilterRuleEditor {
                 match_mode: fr_match,
                 rules: fr_rules,
-                collection_mode: false,
             }
 
             if let Some(e) = err.read().as_ref() {

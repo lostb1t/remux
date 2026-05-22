@@ -2585,7 +2585,16 @@ impl Media {
 
         let has_tv_channel = kinds.contains(&MediaKind::TvChannel);
         let has_playlist = kinds.contains(&MediaKind::Playlist);
-        Ok(Self::get_by_filter(
+        // True only when the query exclusively targets container kinds (no content mixed in).
+        // Used to skip content filter rules on container queries and to hide empty containers.
+        let targeting_containers = !kinds.is_empty()
+            && kinds
+                .iter()
+                .all(|k| matches!(k, MediaKind::Collection | MediaKind::Folder));
+
+        let user_policy_filter = user_policy.and_then(|p| p.filter_rules.as_ref());
+
+        let mut result = Self::get_by_filter(
             db,
             &MediaFilter {
                 kind: Some(kinds),
@@ -2634,11 +2643,12 @@ impl Media {
                 filter_rules: {
                     let mut rules =
                         smart_filter.map(|sf| sf.rules.clone()).unwrap_or_default();
-                    // Append user policy filter rules (AND semantics — all must match).
-                    if let Some(policy_filter) =
-                        user_policy.and_then(|p| p.filter_rules.as_ref())
-                    {
-                        rules.extend(policy_filter.rules.clone());
+                    // Content filter rules must not apply to container queries — only
+                    // to content (movies, episodes, etc.). See CLAUDE.md.
+                    if !targeting_containers {
+                        if let Some(pf) = user_policy_filter {
+                            rules.extend(pf.rules.clone());
+                        }
                     }
                     rules
                 },
@@ -2654,7 +2664,43 @@ impl Media {
                 ..Default::default()
             },
         )
-        .await?)
+        .await?;
+
+        // Hide containers that contain zero items visible to the user after applying
+        // their content filter rules.
+        if targeting_containers && !result.records.is_empty() {
+            if let Some(pf) = user_policy_filter {
+                if !pf.rules.is_empty() {
+                    let container_ids: Vec<uuid::Uuid> =
+                        result.records.iter().map(|m| m.id).collect();
+                    let mut qb = sqlx::QueryBuilder::new(
+                        "SELECT parent_id, COUNT(*) FROM media WHERE parent_id IN (",
+                    );
+                    let mut sep = qb.separated(", ");
+                    for id in &container_ids {
+                        sep.push_bind(*id);
+                    }
+                    qb.push(
+                        ") AND kind NOT IN ('collection', 'folder', 'playlist', 'tv_channel')",
+                    );
+                    apply_filter_rules(&mut qb, &pf.rules, &pf.match_mode);
+                    qb.push(" GROUP BY parent_id");
+
+                    if let Ok(rows) = qb.build().fetch_all(db).await {
+                        let counts: HashMap<uuid::Uuid, i64> = rows
+                            .into_iter()
+                            .map(|r| (r.get::<uuid::Uuid, _>(0), r.get::<i64, _>(1)))
+                            .collect();
+                        result
+                            .records
+                            .retain(|m| counts.get(&m.id).copied().unwrap_or(0) > 0);
+                        result.total_count = result.records.len();
+                    }
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     pub async fn into_base_item(
