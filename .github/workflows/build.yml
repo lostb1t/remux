@@ -42,6 +42,8 @@ jobs:
   build-jellyfin-web:
     name: Build jellyfin-web
     runs-on: ubuntu-latest
+    outputs:
+      cache-hit: ${{ steps.cache.outputs.cache-hit }}
     steps:
       - name: Cache jellyfin-web dist
         id: cache
@@ -73,11 +75,12 @@ jobs:
         run: npm run build:production
 
       - name: Upload artifact
+        if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: jellyfin-web-dist
           path: dist/
-          retention-days: 90
+          retention-days: 1
 
   build-dashboard:
     name: Build dashboard
@@ -302,7 +305,15 @@ jobs:
           name: dashboard-dist
           path: dashboard/
 
+      - name: Restore jellyfin-web from cache
+        if: needs.build-jellyfin-web.outputs.cache-hit == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: jellyfin-web/
+          key: jellyfin-web-v10.11.9
+
       - name: Download jellyfin-web artifact
+        if: needs.build-jellyfin-web.outputs.cache-hit != 'true'
         uses: actions/download-artifact@v4
         with:
           name: jellyfin-web-dist
