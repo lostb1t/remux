@@ -278,12 +278,9 @@ pub fn apply_stream_filter(filter: &StreamFilter, sources: Vec<Media>) -> Vec<Me
     sources
         .into_iter()
         .filter(|s| {
-            let keep = s.stream_info.as_ref().map_or(true, |info| temp.matches(info));
-            let name = s.stream_info.as_ref()
-                .and_then(|si| si.filename.as_deref().or(si.name.as_deref()))
-                .unwrap_or("<no name>");
-            tracing::debug!(title = %s.title, stream_name = %name, keep, "apply_stream_filter");
-            keep
+            s.stream_info
+                .as_ref()
+                .map_or(true, |info| temp.matches(info))
         })
         .collect()
 }
