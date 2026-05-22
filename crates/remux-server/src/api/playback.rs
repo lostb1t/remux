@@ -133,7 +133,35 @@ async fn items_playbackinfo_inner(
         } else {
             sources
         };
-        db::StreamGroup::filter_sources(&state.ctx.db, raw).await
+        {
+            let sources = db::StreamGroup::filter_sources(&state.ctx.db, raw).await;
+            if let Some(sf) = session
+                .user
+                .policy
+                .as_ref()
+                .and_then(|p| p.stream_filter.as_ref())
+                .filter(|sf| !sf.rules.is_empty())
+            {
+                let before = sources.len();
+                let filtered = db::apply_stream_filter(sf, sources);
+                tracing::debug!(
+                    user = %session.user.username,
+                    sources_before = before,
+                    sources_after = filtered.len(),
+                    rules = sf.rules.len(),
+                    "stream filter applied"
+                );
+                filtered
+            } else {
+                tracing::debug!(
+                    user = %session.user.username,
+                    has_policy = session.user.policy.is_some(),
+                    has_stream_filter = session.user.policy.as_ref().and_then(|p| p.stream_filter.as_ref()).is_some(),
+                    "stream filter skipped"
+                );
+                sources
+            }
+        }
     } else {
         vec![media]
     };

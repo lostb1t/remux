@@ -2395,9 +2395,10 @@ fn FilterRuleEditor(
         values: vec![],
     };
     rsx! {
-        div { class: "field",
+        div {
+            style: "background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--info);border-radius:8px;padding:12px 14px",
             div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px",
-                label { class: "field-label", style: "margin:0", "Filters" }
+                label { class: "field-label", style: "margin:0", "Media Filters" }
                 div { style: "display:flex;align-items:center;gap:8px",
                     span { style: "font-size:0.8rem;color:var(--text-muted)", "Match" }
                     select {
@@ -3862,6 +3863,20 @@ fn UserForm(
             .map(|f| f.rules.clone())
             .unwrap_or_default()
     });
+    let sf_stream_match: Signal<FilterMatchMode> = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|u| u.policy.stream_filter.as_ref())
+            .map(|f| f.match_mode.clone())
+            .unwrap_or(FilterMatchMode::All)
+    });
+    let sf_stream_rules: Signal<Vec<StreamRule>> = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|u| u.policy.stream_filter.as_ref())
+            .map(|f| f.rules.clone())
+            .unwrap_or_default()
+    });
     let mut enable_remote_search = use_signal(|| {
         existing
             .as_ref()
@@ -3894,6 +3909,8 @@ fn UserForm(
         let user_dto = existing.clone();
         let rules_snapshot = fr_rules.peek().clone();
         let match_snapshot = fr_match.peek().clone();
+        let stream_rules_snapshot = sf_stream_rules.peek().clone();
+        let stream_match_snapshot = sf_stream_match.peek().clone();
         let remote_search_snapshot = *enable_remote_search.peek();
         let max_sessions_snapshot = *max_active_sessions.peek();
 
@@ -3906,6 +3923,14 @@ fn UserForm(
                 Some(CollectionFilter {
                     match_mode: match_snapshot,
                     rules: rules_snapshot,
+                })
+            };
+            let stream_filter = if stream_rules_snapshot.is_empty() {
+                None
+            } else {
+                Some(StreamFilter {
+                    match_mode: stream_match_snapshot,
+                    rules: stream_rules_snapshot,
                 })
             };
             let result: Result<(), remux_sdks::ClientError> = async {
@@ -3924,6 +3949,7 @@ fn UserForm(
                     let mut policy = user.policy.clone();
                     policy.is_administrator = admin;
                     policy.filter_rules = filter_rules.clone();
+                    policy.stream_filter = stream_filter.clone();
                     policy.enable_remote_search = remote_search_snapshot;
                     policy.max_active_sessions = max_sessions_snapshot;
                     client
@@ -3947,12 +3973,14 @@ fn UserForm(
                         client.execute(CreateUser { name, password: pw }).await?;
                     if admin
                         || filter_rules.is_some()
+                        || stream_filter.is_some()
                         || !remote_search_snapshot
                         || max_sessions_snapshot > 0
                     {
                         let mut policy = new_user.policy.clone();
                         policy.is_administrator = admin;
                         policy.filter_rules = filter_rules.clone();
+                        policy.stream_filter = stream_filter.clone();
                         policy.enable_remote_search = remote_search_snapshot;
                         policy.max_active_sessions = max_sessions_snapshot;
                         client
@@ -4073,6 +4101,13 @@ fn UserForm(
             FilterRuleEditor {
                 match_mode: fr_match,
                 rules: fr_rules,
+            }
+
+            div { style: "margin-top:10px",
+                StreamFilterEditor {
+                    match_mode: sf_stream_match,
+                    rules: sf_stream_rules,
+                }
             }
 
             if let Some(e) = err.read().as_ref() {
@@ -6129,20 +6164,24 @@ fn StreamFilterEditor(
     let rule_count = rules.read().len();
     rsx! {
         div {
-            if rule_count > 1 {
-                div { style: "display:flex;align-items:center;gap:6px;margin-bottom:10px",
-                    span { style: "font-size:.78rem;color:var(--text-muted)", "Match:" }
-                    button {
-                        style: "font-size:.72rem;height:26px;padding:0 10px",
-                        class: if *match_mode.read() == FilterMatchMode::All { "btn btn-primary" } else { "btn btn-ghost" },
-                        onclick: move |_| match_mode.set(FilterMatchMode::All),
-                        "All (AND)"
-                    }
-                    button {
-                        style: "font-size:.72rem;height:26px;padding:0 10px",
-                        class: if *match_mode.read() == FilterMatchMode::Any { "btn btn-primary" } else { "btn btn-ghost" },
-                        onclick: move |_| match_mode.set(FilterMatchMode::Any),
-                        "Any (OR)"
+            style: "background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--warning);border-radius:8px;padding:12px 14px",
+            div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px",
+                label { class: "field-label", style: "margin:0", "Stream Filters" }
+                if rule_count > 1 {
+                    div { style: "display:flex;align-items:center;gap:6px",
+                        span { style: "font-size:.78rem;color:var(--text-muted)", "Match:" }
+                        button {
+                            style: "font-size:.72rem;height:26px;padding:0 10px",
+                            class: if *match_mode.read() == FilterMatchMode::All { "btn btn-primary" } else { "btn btn-ghost" },
+                            onclick: move |_| match_mode.set(FilterMatchMode::All),
+                            "All (AND)"
+                        }
+                        button {
+                            style: "font-size:.72rem;height:26px;padding:0 10px",
+                            class: if *match_mode.read() == FilterMatchMode::Any { "btn btn-primary" } else { "btn btn-ghost" },
+                            onclick: move |_| match_mode.set(FilterMatchMode::Any),
+                            "Any (OR)"
+                        }
                     }
                 }
             }
@@ -6155,7 +6194,7 @@ fn StreamFilterEditor(
                 onclick: move |_| {
                     rules.write().push(StreamRule::Resolution { op: SetOp::In, values: vec![] });
                 },
-                "+ Add rule"
+                "+ Add Filter"
             }
         }
     }

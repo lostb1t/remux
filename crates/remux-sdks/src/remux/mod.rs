@@ -1917,6 +1917,8 @@ pub struct UserPolicy {
     pub allowed_tags: Vec<String>,
     /// Per-user filter rules applied on every item query (same engine as smart collections).
     pub filter_rules: Option<CollectionFilter>,
+    /// Per-user stream filter applied during playback. Restricts which streams are offered.
+    pub stream_filter: Option<StreamFilter>,
     /// When false, search falls back to local DB only (no addon/remote sources).
     #[serde(default = "default_true")]
     #[default(true)]

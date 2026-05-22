@@ -257,7 +257,38 @@ impl StreamGroup {
 
         result
     }
+}
 
+/// Filter a list of source Media items using a `StreamFilter`.
+/// Sources without `stream_info` (unparseable filename) are kept unchanged.
+/// An empty filter (no rules) is a no-op.
+pub fn apply_stream_filter(filter: &StreamFilter, sources: Vec<Media>) -> Vec<Media> {
+    if filter.rules.is_empty() {
+        return sources;
+    }
+    let temp = StreamGroup {
+        id: Uuid::nil(),
+        name: String::new(),
+        filter: filter.clone(),
+        priority: 0,
+        enabled: true,
+        hidden: false,
+        created_at: String::new(),
+    };
+    sources
+        .into_iter()
+        .filter(|s| {
+            let keep = s.stream_info.as_ref().map_or(true, |info| temp.matches(info));
+            let name = s.stream_info.as_ref()
+                .and_then(|si| si.filename.as_deref().or(si.name.as_deref()))
+                .unwrap_or("<no name>");
+            tracing::debug!(title = %s.title, stream_name = %name, keep, "apply_stream_filter");
+            keep
+        })
+        .collect()
+}
+
+impl StreamGroup {
     /// Returns true if the given StreamInfo matches this group's filter.
     /// An empty filter (no rules) matches everything.
     pub fn matches(&self, info: &StreamInfo) -> bool {

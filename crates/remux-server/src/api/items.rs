@@ -971,15 +971,34 @@ pub async fn item(
         }
     );
 
+    let user_stream_filter = session
+        .user
+        .policy
+        .as_ref()
+        .and_then(|p| p.stream_filter.as_ref())
+        .filter(|sf| !sf.rules.is_empty())
+        .cloned();
     if media.kind == db::MediaKind::Stream {
         media.sources = Some(vec![media.clone()]);
     } else if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
         let raw = media.streams(&state.ctx.db).await?;
-        media.sources = Some(db::StreamGroup::filter_sources(&state.ctx.db, raw).await);
+        let grouped = db::StreamGroup::filter_sources(&state.ctx.db, raw).await;
+        let filtered = if let Some(ref sf) = user_stream_filter {
+            db::apply_stream_filter(sf, grouped)
+        } else {
+            grouped
+        };
+        media.sources = Some(filtered);
         media.user_state(&state.ctx.db, &session.user).await?;
     } else if media.kind == db::MediaKind::Track {
         let raw = media.streams(&state.ctx.db).await?;
-        media.sources = Some(db::StreamGroup::filter_sources(&state.ctx.db, raw).await);
+        let grouped = db::StreamGroup::filter_sources(&state.ctx.db, raw).await;
+        let filtered = if let Some(ref sf) = user_stream_filter {
+            db::apply_stream_filter(sf, grouped)
+        } else {
+            grouped
+        };
+        media.sources = Some(filtered);
         media.user_state(&state.ctx.db, &session.user).await?;
     }
     // info!("Seasons length: {:?}", media.seasons(&state.ctx.db).await?.len());
