@@ -1527,6 +1527,53 @@ impl Media {
             records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
         }
 
+        // Pre-fetch in-progress media IDs — JOIN media so kind and date filters are applied
+        // here rather than in the main query. The main query then contains only
+        // `WHERE media.id IN (ids)` which forces SQLite to use individual PK lookups
+        // (O(n_ids)) instead of scanning the entire kind-filtered media table (O(total_media)).
+        let resumable_ids: Option<Vec<uuid::Uuid>> = if let Some(usf) =
+            &filter.user_state
+        {
+            if usf.resumable == Some(true) {
+                let ids: Vec<uuid::Uuid> = if let Some(user_id) = &usf.user_id {
+                    let mut pre_qb = sqlx::QueryBuilder::new(
+                        "SELECT ums.media_id FROM user_media_state ums \
+                         JOIN media m ON m.id = ums.media_id \
+                         WHERE ums.user_id = ",
+                    );
+                    pre_qb.push_bind(user_id);
+                    pre_qb
+                        .push(" AND ums.playback_position > 0 AND ums.play_count = 0");
+                    if let Some(kinds) = &filter.kind {
+                        if !kinds.is_empty() {
+                            pre_qb.push(" AND m.kind IN (");
+                            let mut sep = pre_qb.separated(", ");
+                            for k in kinds {
+                                sep.push_bind(k);
+                            }
+                            pre_qb.push(")");
+                        }
+                    }
+                    if let Some(threshold) = &filter.digital_released_before {
+                        pre_qb
+                            .push(" AND COALESCE(m.digital_released_at, m.released_at) <= ")
+                            .push_bind(threshold);
+                    }
+                    pre_qb
+                        .build_query_scalar::<uuid::Uuid>()
+                        .fetch_all(db)
+                        .await?
+                } else {
+                    vec![]
+                };
+                Some(ids)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         for qb in [&mut count_qb, &mut records_qb] {
             if !use_recursive {
                 if let Some(parent_id) = &filter.parent_id {
@@ -1550,7 +1597,9 @@ impl Media {
                 qb.push(" AND promoted = ").push_bind(promoted);
             }
             if let Some(kind) = &filter.kind {
-                qb.push_in("kind", &kind);
+                if resumable_ids.is_none() {
+                    qb.push_in("kind", &kind);
+                }
             }
             if let Some(id) = &filter.id {
                 qb.push_in("id", &id);
@@ -1613,14 +1662,21 @@ impl Media {
                     qb.push(" AND ums.play_count > 0)");
                 }
 
-                // resumable — use IN subquery so SQLite materialises the (small) in-progress
-                // set once rather than running a correlated EXISTS for every media row.
+                // resumable — IDs pre-fetched above; bind directly so SQLite uses PK
+                // lookups instead of scanning all kind-matching media rows.
                 if user_state_filter.resumable == Some(true) {
-                    qb.push(" AND media.id IN (SELECT ums.media_id FROM user_media_state ums WHERE ums.playback_position > 0 AND ums.play_count = 0");
-                    if let Some(user_id) = &user_state_filter.user_id {
-                        qb.push(" AND ums.user_id = ").push_bind(user_id);
+                    if let Some(ref ids) = resumable_ids {
+                        if ids.is_empty() {
+                            qb.push(" AND 1=0");
+                        } else {
+                            qb.push(" AND media.id IN (");
+                            let mut sep = qb.separated(", ");
+                            for id in ids {
+                                sep.push_bind(*id);
+                            }
+                            qb.push(")");
+                        }
                     }
-                    qb.push(")");
                 }
             }
 
@@ -1785,8 +1841,10 @@ impl Media {
             }
 
             if let Some(threshold) = &filter.digital_released_before {
-                qb.push(" AND COALESCE(digital_released_at, released_at) <= ")
-                    .push_bind(threshold);
+                if resumable_ids.is_none() {
+                    qb.push(" AND COALESCE(digital_released_at, released_at) <= ")
+                        .push_bind(threshold);
+                }
             }
 
             if !filter.filter_rules.is_empty() {
@@ -3407,17 +3465,17 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                 SetOp::Is | SetOp::IsNot => {
                     let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
                     format!(
-                        "EXISTS (SELECT 1 FROM media_relations mr \
-                         JOIN media g ON g.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND lower(g.title) = lower('{v}') AND g.kind = 'genre')"
+                        "media.id IN (SELECT mr.left_media_id FROM media_relations mr \
+                         WHERE mr.right_media_id IN \
+                         (SELECT id FROM media WHERE kind = 'genre' AND lower(title) = lower('{v}')))"
                     )
                 }
                 SetOp::In | SetOp::NotIn => {
                     let list = in_list(values)?;
                     format!(
-                        "EXISTS (SELECT 1 FROM media_relations mr \
-                         JOIN media g ON g.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND g.kind = 'genre' AND lower(g.title) IN ({list}))"
+                        "media.id IN (SELECT mr.left_media_id FROM media_relations mr \
+                         WHERE mr.right_media_id IN \
+                         (SELECT id FROM media WHERE kind = 'genre' AND lower(title) IN ({list})))"
                     )
                 }
             };
@@ -3429,17 +3487,17 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                 SetOp::Is | SetOp::IsNot => {
                     let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
                     format!(
-                        "EXISTS (SELECT 1 FROM media_relations mr \
-                         JOIN media s ON s.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND lower(s.title) = lower('{v}') AND s.kind = 'studio')"
+                        "media.id IN (SELECT mr.left_media_id FROM media_relations mr \
+                         WHERE mr.right_media_id IN \
+                         (SELECT id FROM media WHERE kind = 'studio' AND lower(title) = lower('{v}')))"
                     )
                 }
                 SetOp::In | SetOp::NotIn => {
                     let list = in_list(values)?;
                     format!(
-                        "EXISTS (SELECT 1 FROM media_relations mr \
-                         JOIN media s ON s.id = mr.right_media_id \
-                         WHERE mr.left_media_id = media.id AND s.kind = 'studio' AND lower(s.title) IN ({list}))"
+                        "media.id IN (SELECT mr.left_media_id FROM media_relations mr \
+                         WHERE mr.right_media_id IN \
+                         (SELECT id FROM media WHERE kind = 'studio' AND lower(title) IN ({list})))"
                     )
                 }
             };
