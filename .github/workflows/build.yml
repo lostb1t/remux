@@ -118,7 +118,7 @@ jobs:
         with:
           name: dashboard-dist
           path: target/dx/remux-dashboard/release/web/public/
-          retention-days: 1
+          retention-days: 2
 
   build-server:
     name: Build server (${{ matrix.arch }})
