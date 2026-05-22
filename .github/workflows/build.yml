@@ -48,14 +48,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dist/
-          key: jellyfin-web-v10.11.6
+          key: jellyfin-web-v10.11.9
 
       - name: Checkout jellyfin-web
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: jellyfin/jellyfin-web
-          ref: v10.11.6
+          ref: v10.11.9
 
       - name: Setup Node
         if: steps.cache.outputs.cache-hit != 'true'
