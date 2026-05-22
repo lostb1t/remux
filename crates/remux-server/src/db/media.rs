@@ -525,6 +525,7 @@ pub struct ExternalIds {
     pub deezer_track: Option<i64>,
     pub youtube_id: Option<String>,
     pub iptv_source_id: Option<String>,
+    pub iptv_group: Option<String>,
 }
 
 impl ExternalIds {
@@ -672,6 +673,8 @@ pub struct MediaFilter {
     pub filter_match: remux_sdks::remux::FilterMatchMode,
     /// Filter TvChannels by country code (ISO 3166-1 alpha-2, case-insensitive).
     pub country_filter: Option<String>,
+    /// Filter TvChannels by group (M3U group-title / Xtream category).
+    pub iptv_group_filter: Option<String>,
     /// For TvProgram: None = all, Some(true) = live_end < now, Some(false) = live_end >= now
     pub has_aired: Option<bool>,
     /// EPG window: live_end >= this value (program hasn't ended before window start)
@@ -1746,6 +1749,11 @@ impl Media {
 
             if let Some(c) = &filter.country_filter {
                 qb.push(" AND country = ").push_bind(c.to_uppercase());
+            }
+
+            if let Some(g) = &filter.iptv_group_filter {
+                qb.push(" AND json_extract(external_ids, '$.iptv_group') = ")
+                    .push_bind(g);
             }
 
             if let Some(parent_enabled) = &filter.parent_enabled {

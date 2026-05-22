@@ -118,6 +118,7 @@ impl Task for IptvRefreshTask {
                             channel_number: ch.channel_number,
                             external_ids: db::ExternalIds {
                                 iptv_source_id: Some(source_id.clone()),
+                                iptv_group: ch.group.clone(),
                                 ..Default::default()
                             },
                             enabled: false,

@@ -4548,6 +4548,7 @@ pub struct GetIptvChannels {
     pub search: String,
     pub enabled: Option<bool>,
     pub country: String,
+    pub group: String,
     pub sort: String,
 }
 
@@ -4570,6 +4571,9 @@ impl Endpoint for GetIptvChannels {
         if !self.country.is_empty() {
             q.push(("country".into(), self.country.clone()));
         }
+        if !self.group.is_empty() {
+            q.push(("group".into(), self.group.clone()));
+        }
         if !self.sort.is_empty() {
             q.push(("sort".into(), self.sort.clone()));
         }
@@ -4580,10 +4584,20 @@ impl Endpoint for GetIptvChannels {
 #[derive(Debug, Clone, Default)]
 pub struct GetIptvChannelCountries;
 
+#[derive(Debug, Clone, Default)]
+pub struct GetIptvChannelGroups;
+
 impl Endpoint for GetIptvChannelCountries {
     type Output = Vec<String>;
     fn path(&self) -> String {
         "/remux/iptv/channels/countries".into()
+    }
+}
+
+impl Endpoint for GetIptvChannelGroups {
+    type Output = Vec<String>;
+    fn path(&self) -> String {
+        "/remux/iptv/channels/groups".into()
     }
 }
 

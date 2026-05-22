@@ -11,8 +11,8 @@ use remux_sdks::remux::{
     DeleteVirtualFolder, EncodingOptions, EpgSourceInfo, FilterMatchMode, FilterRule,
     GetAddonCatalogs, GetApiKeys, GetBrandingConfiguration,
     GetCertificationSuggestions, GetCountries, GetEncodingConfiguration, GetEpgSources,
-    GetIptvChannelCountries, GetIptvChannels, GetItemCounts, GetItems,
-    GetLocalSuggestions, GetParentalRatings, GetScheduledTasks, GetSessions,
+    GetIptvChannelCountries, GetIptvChannelGroups, GetIptvChannels, GetItemCounts,
+    GetItems, GetLocalSuggestions, GetParentalRatings, GetScheduledTasks, GetSessions,
     GetStartupConfiguration, GetStreamGroupPreview, GetSystemConfiguration,
     GetTagSuggestions, GetTunerHosts, GetUsers, HardwareAccelerationType, ItemCounts,
     JellyfinAuth, ListAddonKinds, ListAddons, ListStreamGroups, NumericOp,
@@ -3296,17 +3296,22 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
     let mut enabled_filter = use_signal(|| "all".to_string());
     let mut country_filter = use_signal(String::new);
     let mut countries: Signal<Vec<String>> = use_signal(Vec::new);
+    let mut group_filter = use_signal(String::new);
+    let mut groups: Signal<Vec<String>> = use_signal(Vec::new);
     // "order" | "name"
     let mut sort_mode = use_signal(|| "order".to_string());
     let mut show_filter_modal = use_signal(|| false);
 
-    // Load distinct country codes once on mount
+    // Load distinct country codes and groups once on mount
     let app_state_countries = app_state.clone();
     use_effect(move || {
         let client = app_state_countries.client.clone();
         spawn(async move {
             if let Ok(cs) = client.execute(GetIptvChannelCountries).await {
                 countries.set(cs);
+            }
+            if let Ok(gs) = client.execute(GetIptvChannelGroups).await {
+                groups.set(gs);
             }
         });
     });
@@ -3317,6 +3322,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
         let s = search_committed.read().clone();
         let ef = enabled_filter.read().clone();
         let cf = country_filter.read().clone();
+        let gf = group_filter.read().clone();
         let sm = sort_mode.read().clone();
         loading.set(true);
         let client = app_state_effect.client.clone();
@@ -3333,6 +3339,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                     search: s,
                     enabled,
                     country: cf,
+                    group: gf,
                     sort: sm,
                 })
                 .await
@@ -3370,6 +3377,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                     {
                         let filters_active = enabled_filter.read().as_str() != "all"
                             || !country_filter.read().is_empty()
+                            || !group_filter.read().is_empty()
                             || sort_mode.read().as_str() != "order"
                             || !search_committed.read().is_empty();
                         rsx! {
@@ -3402,6 +3410,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                     let p = *page.peek();
                                     let ef = enabled_filter.peek().clone();
                                     let cf = country_filter.peek().clone();
+                                    let gf = group_filter.peek().clone();
                                     let sm = sort_mode.peek().clone();
                                     let enabled = match ef.as_str() {
                                         "true" => Some(true),
@@ -3409,7 +3418,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                         _ => None,
                                     };
                                     loading.set(true);
-                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s, enabled, country: cf, sort: sm }).await {
+                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
                                         total.set(r.total_record_count);
                                         channels.set(r.items);
                                     }
@@ -3438,6 +3447,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                     let p = *page.peek();
                                     let ef = enabled_filter.peek().clone();
                                     let cf = country_filter.peek().clone();
+                                    let gf = group_filter.peek().clone();
                                     let sm = sort_mode.peek().clone();
                                     let enabled = match ef.as_str() {
                                         "true" => Some(true),
@@ -3445,7 +3455,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                         _ => None,
                                     };
                                     loading.set(true);
-                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s, enabled, country: cf, sort: sm }).await {
+                                    if let Ok(r) = c.execute(GetIptvChannels { limit: PAGE_SIZE, offset: p * PAGE_SIZE, search: s, enabled, country: cf, group: gf, sort: sm }).await {
                                         total.set(r.total_record_count);
                                         channels.set(r.items);
                                     }
@@ -3469,6 +3479,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                             && search_committed.read().is_empty()
                             && enabled_filter.read().as_str() == "all"
                             && country_filter.read().is_empty()
+                            && group_filter.read().is_empty()
                         {
                             "No channels yet. Run a refresh after adding channel sources."
                         } else {
@@ -3482,6 +3493,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                             style: "font-size:.72rem;opacity:.5;font-weight:600;gap:8px",
                             div { style: "width:32px", "On" }
                             div { class: "flex-1", "Name / Display Name" }
+                            div { style: "width:140px", "Group" }
                             div { style: "width:80px;text-align:right", "Ch#" }
                         }
                         div { class: "row-list",
@@ -3552,6 +3564,9 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                                         }
                                                     },
                                                 }
+                                            }
+                                            div { style: "width:140px;font-size:.75rem;opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0",
+                                                {ch.group.as_deref().unwrap_or("–")}
                                             }
                                             input {
                                                 class: "form-input",
@@ -3671,6 +3686,20 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                 }
                             }
                         }
+                        if !groups.read().is_empty() {
+                            div { class: "form-group",
+                                label { class: "form-label", "Group" }
+                                select {
+                                    class: "form-input",
+                                    value: "{group_filter.read()}",
+                                    onchange: move |e| { group_filter.set(e.value()); page.set(0); },
+                                    option { value: "", "All groups" }
+                                    for g in groups.read().clone() {
+                                        option { value: "{g}", "{g}" }
+                                    }
+                                }
+                            }
+                        }
                     }
                     div { class: "modal-footer",
                         button {
@@ -3680,6 +3709,7 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
                                 search_committed.set(String::new());
                                 enabled_filter.set("all".to_string());
                                 country_filter.set(String::new());
+                                group_filter.set(String::new());
                                 sort_mode.set("order".to_string());
                                 page.set(0);
                             },

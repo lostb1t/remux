@@ -713,6 +713,7 @@ pub struct GetAllChannelsQuery {
     pub search: Option<String>,
     pub enabled: Option<bool>,
     pub country: Option<String>,
+    pub group: Option<String>,
     pub sort: Option<String>,
 }
 
@@ -735,6 +736,7 @@ pub async fn remux_iptv_channels(
             title_contains: q.search.filter(|s| !s.is_empty()),
             enabled: q.enabled,
             country_filter: q.country.filter(|s| !s.is_empty()),
+            iptv_group_filter: q.group.filter(|s| !s.is_empty()),
             sort_by,
             sort_order: vec![api::SortOrder::Ascending],
             total_count: true,
@@ -768,6 +770,25 @@ pub async fn remux_iptv_channel_countries(
         "SELECT DISTINCT country FROM media \
          WHERE kind = 'tv_channel' AND country IS NOT NULL AND country != '' \
          ORDER BY country",
+    )
+    .fetch_all(&state.ctx.db)
+    .await?;
+    Ok(Json(rows))
+}
+
+// --------------------------------------------------------------------------
+// GET /remux/iptv/channels/groups  (distinct group values for TvChannels)
+// --------------------------------------------------------------------------
+
+#[get("/remux/iptv/channels/groups")]
+pub async fn remux_iptv_channel_groups(
+    State(state): State<AppState>,
+    _session: AdminSession,
+) -> Result<impl IntoResponse> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT json_extract(external_ids, '$.iptv_group') AS grp FROM media \
+         WHERE kind = 'tv_channel' AND grp IS NOT NULL AND grp != '' \
+         ORDER BY grp",
     )
     .fetch_all(&state.ctx.db)
     .await?;
@@ -904,7 +925,7 @@ fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
         sort_order: m.sort_order,
         enabled: m.enabled,
         logo: m.images.get_path(db::ImageKind::Primary).map(str::to_owned),
-        group: m.external_ids.iptv_source_id.clone(),
+        group: m.external_ids.iptv_group.clone(),
         country: m.country.clone(),
     }
 }
