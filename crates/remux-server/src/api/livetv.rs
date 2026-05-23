@@ -212,6 +212,8 @@ pub struct GetProgramsQuery {
     pub is_kids: Option<bool>,
     #[serde(rename = "isSports", alias = "IsSports")]
     pub is_sports: Option<bool>,
+    #[serde(rename = "LibrarySeriesId")]
+    pub library_series_id: Option<String>,
 }
 
 #[get("/livetv/programs")]
@@ -220,6 +222,14 @@ pub async fn livetv_programs(
     _session: AuthSession,
     Query(q): Query<GetProgramsQuery>,
 ) -> Result<impl IntoResponse> {
+    if q.library_series_id.is_some() {
+        return Ok(Json(api::QueryResult {
+            total_record_count: 0,
+            start_index: 0,
+            items: vec![],
+        }));
+    }
+
     let channel_ids: Vec<Uuid> = q
         .channel_ids_raw
         .as_deref()

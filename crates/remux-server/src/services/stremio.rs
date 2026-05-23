@@ -116,13 +116,12 @@ impl StremioService {
 
     pub async fn get_catalog_stream(
         &self,
-        cat: &sdks::stremio::Catalog,
+        kind: String,
+        id: String,
     ) -> Result<Pin<Box<dyn Stream<Item = sdks::stremio::Meta> + Send>>> {
         let client = self.client.clone();
-        let kind = cat.kind.clone();
-        let id = cat.id.clone();
 
-        let page_size = client
+        let first_page = client
             .execute(sdks::stremio::CatalogEndpoint {
                 kind: kind.clone(),
                 id: id.clone(),
@@ -130,11 +129,16 @@ impl StremioService {
                 genre: None,
                 skip: None,
             })
-            .await?
-            .metas
-            .len() as u32;
+            .await?;
 
-        let pages = stream::iter(0..999)
+        let page_size = first_page.metas.len() as u32;
+        if page_size == 0 {
+            return Ok(Box::pin(stream::empty()));
+        }
+
+        let first = stream::once(future::ready(Ok(first_page)));
+
+        let rest = stream::iter(1..999u32)
             .map(move |page| {
                 let client = client.clone();
                 let kind = kind.clone();
@@ -151,7 +155,10 @@ impl StremioService {
                         .await
                 }
             })
-            .buffered(10)
+            .buffered(3);
+
+        let pages = first
+            .chain(rest)
             .take_while(|result| {
                 future::ready(
                     result

@@ -471,6 +471,13 @@ html, body {
   line-height: 1.3;
 }
 
+.task-short-desc {
+  font-size: .73rem;
+  color: var(--text-dim);
+  margin-top: 2px;
+  line-height: 1.3;
+}
+
 .task-category {
   font-family: var(--font-mono);
   font-size: .65rem;

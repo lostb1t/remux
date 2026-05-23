@@ -14,7 +14,6 @@ use tracing::{error, info};
 use crate::{AppContext, db, ws};
 use remux_sdks::remux::TaskTriggerInfoType;
 
-mod catalog_import;
 mod catalog_import_shared;
 mod clean_transcode_folder;
 mod iptv_refresh;
@@ -25,7 +24,6 @@ mod refresh_library;
 mod series_sync;
 
 pub use crate::common::ProgressReporter;
-use catalog_import::CatalogImportTask;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use iptv_refresh::IptvRefreshTask;
 use jellyfin_import::JellyfinImportTask;
@@ -51,6 +49,9 @@ pub trait Task: Send + Sync + 'static {
     fn key(&self) -> &str;
     fn name(&self) -> &str;
     fn description(&self) -> &str {
+        ""
+    }
+    fn short_description(&self) -> &str {
         ""
     }
     fn category(&self) -> &str {
@@ -205,7 +206,6 @@ impl TaskService {
             .await?;
         service.register_task(Arc::new(RefreshLibraryTask)).await?;
         service.register_task(Arc::new(RefreshAllMetaTask)).await?;
-        service.register_task(Arc::new(CatalogImportTask)).await?;
         // service.register_task(Arc::new(SeriesSyncTask)).await?;
         service.register_task(Arc::new(IptvRefreshTask)).await?;
         service.register_task(Arc::new(PurgeMediaTask)).await?;

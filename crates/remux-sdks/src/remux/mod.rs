@@ -736,6 +736,7 @@ pub struct CreateVirtualFolderPayload {
     pub collection_type: Option<String>,
     pub collection_kind: Option<String>,
     pub promoted: Option<bool>,
+    pub sort_order: Option<i64>,
 }
 
 /// A single catalog discovered from a user-configured Stremio manifest.
@@ -823,6 +824,7 @@ pub struct PatchItemPayload {
     pub smart_filter: Option<CollectionFilter>,
     pub promoted: Option<bool>,
     pub tags: Option<Vec<String>>,
+    pub sort_order: Option<i64>,
 }
 
 #[skip_serializing_none]
@@ -3140,6 +3142,7 @@ pub struct TaskInfo {
     pub last_execution_result: Option<TaskResult>,
     pub triggers: Option<Vec<TaskTriggerInfo>>,
     pub description: Option<String>,
+    pub short_description: Option<String>,
     pub category: Option<String>,
     pub is_hidden: Option<bool>,
     pub is_enabled: Option<bool>,
@@ -3891,6 +3894,8 @@ impl Endpoint for UpdateCatalogPlaylistSettings {
 pub struct GetItems {
     pub include_item_types: Vec<String>,
     pub recursive: bool,
+    pub sort_by: Option<Vec<ItemSortBy>>,
+    pub sort_order: Option<Vec<SortOrder>>,
 }
 
 impl Endpoint for GetItems {
@@ -3907,6 +3912,24 @@ impl Endpoint for GetItems {
         }
         if self.recursive {
             q.push(("Recursive".into(), "true".into()));
+        }
+        if let Some(sb) = &self.sort_by {
+            q.push((
+                "SortBy".into(),
+                sb.iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+        }
+        if let Some(so) = &self.sort_order {
+            q.push((
+                "SortOrder".into(),
+                so.iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
         }
         q
     }

@@ -18,6 +18,9 @@ impl Task for RefreshAllMetaTask {
     fn description(&self) -> &str {
         "Fetches metadata (artwork, ratings, etc.) for all library items."
     }
+    fn short_description(&self) -> &str {
+        "Re-fetches artwork and info for all items"
+    }
     fn category(&self) -> &str {
         "Library"
     }

@@ -24,7 +24,9 @@ impl Task for JellyfinImportTask {
     fn description(&self) -> &str {
         "Imports the media library from a connected Jellyfin server."
     }
-
+    fn short_description(&self) -> &str {
+        "Imports watch history from Jellyfin"
+    }
     fn category(&self) -> &str {
         "Import"
     }

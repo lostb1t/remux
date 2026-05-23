@@ -18,6 +18,9 @@ impl Task for SeriesSyncTask {
     fn description(&self) -> &str {
         "Syncs series episode data across configured sources."
     }
+    fn short_description(&self) -> &str {
+        "Updates episode lists for all series"
+    }
     fn category(&self) -> &str {
         "Library"
     }

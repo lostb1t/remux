@@ -1260,6 +1260,7 @@ struct VirtualFolderRequest {
     collection_type: Option<String>,
     collection_kind: Option<String>,
     promoted: Option<bool>,
+    sort_order: Option<i64>,
 }
 
 #[post("/library/virtualfolders")]
@@ -1287,6 +1288,7 @@ pub async fn create_virtual_folder(
         collection_kind: Some(collection_kind.clone()),
         collection_media_kind,
         promoted,
+        idx: payload.sort_order,
         ..Default::default()
     };
 
@@ -1304,6 +1306,7 @@ struct UpdateVirtualFolderRequest {
     collection_kind: Option<String>,
     promoted: Option<bool>,
     collection_max_items: Option<i64>,
+    sort_order: Option<i64>,
 }
 
 #[post("/library/virtualfolders/LibraryOptions")]
@@ -1335,7 +1338,7 @@ pub async fn update_virtual_folder(
     let updated_at = Utc::now().naive_utc();
 
     sqlx::query(
-        "UPDATE media SET title = $1, promoted = $2, collection_media_kind = $3, collection_kind = $4, collection_max_items = $5, updated_at = $6 WHERE id = $7",
+        "UPDATE media SET title = $1, promoted = $2, collection_media_kind = $3, collection_kind = $4, collection_max_items = $5, updated_at = $6, idx = $8 WHERE id = $7",
     )
     .bind(&payload.name)
     .bind(promoted)
@@ -1344,6 +1347,7 @@ pub async fn update_virtual_folder(
     .bind(payload.collection_max_items)
     .bind(updated_at)
     .bind(payload.id)
+    .bind(payload.sort_order)
     .execute(&state.ctx.db)
     .await?;
 
@@ -1501,6 +1505,7 @@ struct PatchItemRequest {
     promoted: Option<bool>,
     tags: Option<Vec<String>>,
     digital_released_at: Option<chrono::DateTime<chrono::Utc>>,
+    sort_order: Option<i64>,
 }
 
 #[patch("/items/{id}")]
@@ -1536,6 +1541,9 @@ pub async fn patch_item(
     if let Some(dra) = payload.digital_released_at {
         qb.push(", digital_released_at = ")
             .push_bind(dra.naive_utc());
+    }
+    if let Some(so) = payload.sort_order {
+        qb.push(", idx = ").push_bind(so);
     }
 
     qb.push(" WHERE id = ").push_bind(id);

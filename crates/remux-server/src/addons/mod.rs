@@ -79,6 +79,24 @@ pub struct LyricSearchRequest {
     pub duration_secs: Option<f64>,
 }
 
+/// Save relation links that were deferred onto `media.relations` by `apply_meta`.
+/// Must be called after `db::Media::upsert` so `left_media_id` FK constraints are satisfied.
+pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]) {
+    for item in items {
+        let Some(relations) = &item.relations else {
+            continue;
+        };
+        if relations.is_empty() {
+            continue;
+        }
+        let rels: Vec<db::MediaRelation> =
+            relations.iter().map(|(r, _)| r.clone()).collect();
+        if let Err(e) = db::MediaRelation::upsert(&ctx.db, &rels).await {
+            tracing::warn!(id = %item.id, error = %e, "failed to save pending relations");
+        }
+    }
+}
+
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     macro_rules! fill {
         ($field:ident) => {
@@ -135,15 +153,27 @@ pub(crate) fn apply_title_format(media: &mut db::Media) {
 
 async fn apply_meta(
     media: &mut db::Media,
-    patch: db::Media,
+    mut patch: db::Media,
     replace: bool,
     ctx: &AppContext,
 ) {
-    // Save images from the patch before merging (media.id is the target's id).
+    // Merge images onto the in-memory struct; db::Media::upsert persists them via
+    // sync_from_media after the media row is committed, avoiding FK violations.
     if !patch.images.is_empty() {
-        db::MediaImage::sync_from_media(&ctx.db, media.id, &patch.images)
-            .await
-            .ok();
+        let patch_images = std::mem::take(&mut patch.images);
+        let imgs = &mut media.images;
+        if replace || imgs.primary.is_empty() {
+            imgs.primary = patch_images.primary;
+        }
+        if replace || imgs.backdrop.is_empty() {
+            imgs.backdrop = patch_images.backdrop;
+        }
+        if replace || imgs.logo.is_empty() {
+            imgs.logo = patch_images.logo;
+        }
+        if replace || imgs.thumb.is_empty() {
+            imgs.thumb = patch_images.thumb;
+        }
     }
 
     merge_media(media, &patch, replace);
@@ -162,11 +192,19 @@ async fn apply_meta(
                     .await
                     .ok();
             }
-            if let Err(e) = db::Media::upsert(&ctx.db, &rel_media)
-                .await
-                .and(db::MediaRelation::upsert(&ctx.db, &rels).await)
-            {
-                tracing::warn!(id = %media.id, error = %e, "failed to persist relations");
+            // Upsert relation media (persons/genres) immediately — they have stable IDs
+            // independent of the current media row, so no FK constraint is violated.
+            if let Err(e) = db::Media::upsert(&ctx.db, &rel_media).await {
+                tracing::warn!(id = %media.id, error = %e, "failed to upsert relation media");
+                return;
+            }
+            // Defer the relation link inserts onto media.relations; the caller must call
+            // save_pending_relations after db::Media::upsert so left_media_id exists first.
+            let pending: Vec<(db::MediaRelation, db::Media)> =
+                rels.into_iter().zip(rel_media).collect();
+            match &mut media.relations {
+                Some(existing) => existing.extend(pending),
+                None => media.relations = Some(pending),
             }
         }
     }
@@ -646,12 +684,13 @@ impl AddonService {
         use futures::stream::{self, StreamExt};
         let results: Vec<Vec<db::Media>> = stream::iter(media)
             .map(|m| self.process_meta_item(m, ctx, force_refresh))
-            .buffer_unordered(10)
+            .buffer_unordered(25)
             .collect()
             .await;
         let batch: Vec<db::Media> = results.into_iter().flatten().collect();
         if save && !batch.is_empty() {
             db::Media::upsert(&ctx.db, &batch).await?;
+            save_pending_relations(ctx, &batch).await;
         }
         Ok(batch)
     }

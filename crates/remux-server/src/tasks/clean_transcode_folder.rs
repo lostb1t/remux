@@ -20,6 +20,9 @@ impl Task for CleanTranscodeFolderTask {
     fn description(&self) -> &str {
         "Deletes temporary files left over from transcoding sessions."
     }
+    fn short_description(&self) -> &str {
+        "Deletes leftover temp transcode files"
+    }
     fn category(&self) -> &str {
         "Maintenance"
     }

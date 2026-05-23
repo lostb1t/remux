@@ -134,6 +134,7 @@ fn task_info(
         last_execution_date,
         triggers: Some(triggers.iter().map(db_trigger_to_jellyfin).collect()),
         description: Some(task.description().to_string()),
+        short_description: Some(task.short_description().to_string()),
         category: Some(task.category().to_string()),
         is_hidden: Some(false),
         is_enabled: Some(true),

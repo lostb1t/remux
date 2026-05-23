@@ -568,6 +568,12 @@ pub async fn userviews(
     );
 
     let mut libraries = library_result?.records;
+    libraries.sort_by(|a, b| {
+        a.idx
+            .unwrap_or(i64::MAX)
+            .cmp(&b.idx.unwrap_or(i64::MAX))
+            .then_with(|| a.title.cmp(&b.title))
+    });
 
     // Hide libraries/collections that contain zero items visible to this user.
     if let Some(pf) = session

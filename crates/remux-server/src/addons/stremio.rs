@@ -201,21 +201,14 @@ impl AddonKind for StremioAddon {
         local_id: &str,
     ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>> {
         let svc = self.service()?;
-        let manifest = svc.get_manifest().await?;
 
-        let cat = manifest
-            .catalogs
-            .into_iter()
-            .find(|c| format!("{}:{}", c.kind.to_lowercase(), c.id) == local_id)
-            .ok_or_else(|| {
-                anyhow!(
-                    "catalog '{}' not found in Stremio manifest {}",
-                    local_id,
-                    self.manifest_url
-                )
-            })?;
+        let (kind, id) = local_id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("invalid stremio catalog id: '{}'", local_id))?;
 
-        let stream = svc.get_catalog_stream(&cat).await?;
+        let stream = svc
+            .get_catalog_stream(kind.to_string(), id.to_string())
+            .await?;
         let tmdb_client = crate::common::tmdb_client(&ctx.db).await;
 
         let stream = stream

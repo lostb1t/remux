@@ -20,6 +20,9 @@ impl Task for PurgeMediaTask {
     fn description(&self) -> &str {
         "Removes media items that are no longer available from any source."
     }
+    fn short_description(&self) -> &str {
+        "Wipes all imported media from the database"
+    }
     fn category(&self) -> &str {
         "Library"
     }
@@ -30,24 +33,27 @@ impl Task for PurgeMediaTask {
         _tasks: Arc<TaskService>,
         _progress: ProgressReporter,
     ) -> Result<()> {
-        let mut tx = ctx.db.begin().await?;
+        // Checkpoint the WAL before bulk deletes to reduce WAL traversal overhead.
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&ctx.db)
+            .await
+            .ok();
 
-        // Pre-delete from child tables in bulk before touching `media`.
-        // Relying on ON DELETE CASCADE fires one delete per parent row into these
-        // tables, which is very slow for large libraries even with indexes.
-        // Doing it explicitly here is a single bulk scan each.
+        // Each pre-delete runs in its own auto-commit transaction so the write lock
+        // is released between steps — other writers (devices heartbeat, etc.) can
+        // proceed rather than waiting for the full 10-second purge.
         sqlx::query(&format!(
             "DELETE FROM media_tags WHERE media_id IN \
              (SELECT id FROM media WHERE kind IN ({PURGE_KINDS}))"
         ))
-        .execute(&mut *tx)
+        .execute(&ctx.db)
         .await?;
 
         sqlx::query(&format!(
             "DELETE FROM media_images WHERE media_id IN \
              (SELECT id FROM media WHERE kind IN ({PURGE_KINDS}))"
         ))
-        .execute(&mut *tx)
+        .execute(&ctx.db)
         .await?;
 
         sqlx::query(&format!(
@@ -55,16 +61,19 @@ impl Task for PurgeMediaTask {
              left_media_id  IN (SELECT id FROM media WHERE kind IN ({PURGE_KINDS})) OR \
              right_media_id IN (SELECT id FROM media WHERE kind IN ({PURGE_KINDS}))"
         ))
-        .execute(&mut *tx)
+        .execute(&ctx.db)
         .await?;
 
-        // Now the cascade machinery (parent_id self-ref, grandparent_id check) has
-        // almost no child-table work left — this runs fast.
-        sqlx::query(&format!("DELETE FROM media WHERE kind IN ({PURGE_KINDS})"))
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(&format!(
+            "DELETE FROM media_catalog_items WHERE media_id IN \
+             (SELECT id FROM media WHERE kind IN ({PURGE_KINDS}))"
+        ))
+        .execute(&ctx.db)
+        .await?;
 
-        tx.commit().await?;
+        sqlx::query(&format!("DELETE FROM media WHERE kind IN ({PURGE_KINDS})"))
+            .execute(&ctx.db)
+            .await?;
 
         ctx.addons.purge_indexes(&ctx).await?;
 

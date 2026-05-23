@@ -15,11 +15,11 @@ use remux_sdks::remux::{
     GetItems, GetLocalSuggestions, GetParentalRatings, GetScheduledTasks, GetSessions,
     GetStartupConfiguration, GetStreamGroupPreview, GetSystemConfiguration,
     GetTagSuggestions, GetTunerHosts, GetUsers, HardwareAccelerationType, ItemCounts,
-    JellyfinAuth, ListAddonKinds, ListAddons, ListStreamGroups, NumericOp,
+    ItemSortBy, JellyfinAuth, ListAddonKinds, ListAddons, ListStreamGroups, NumericOp,
     ParentalRating, PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
     PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
-    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetOp, SourceUrl, StartTask,
-    StartupConfiguration, StartupUser, StopTask, StreamCodec, StreamFilter,
+    SaveEpgSource, ServerConfiguration, SessionInfoDto, SetOp, SortOrder, SourceUrl,
+    StartTask, StartupConfiguration, StartupUser, StopTask, StreamCodec, StreamFilter,
     StreamGroupDto, StreamGroupPreviewDto, StreamQuality, StreamResolution, StreamRule,
     TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, TunerHostInfo, UpdateAddon,
     UpdateAddonCatalogRequest, UpdateAddonCatalogs, UpdateAddonRequest,
@@ -1020,6 +1020,9 @@ fn TaskRow(
             onclick: move |_| { if let Some(ref h) = on_click { h.call(()); } },
             div { class: "flex-1 min-w-0 px-3 py-[10px]",
                 div { class: "task-name", "{task.name}" }
+                if let Some(sd) = task.short_description.as_deref().filter(|s| !s.is_empty()) {
+                    div { class: "task-short-desc", "{sd}" }
+                }
                 if show_category {
                     if let Some(cat) = &task.category {
                         div { class: "task-category", "{cat}" }
@@ -1520,6 +1523,8 @@ fn CollectionsPage(app_state: AppState) -> Element {
                 .execute(GetItems {
                     include_item_types: vec!["BoxSet".to_string()],
                     recursive: false,
+                    sort_by: Some(vec![ItemSortBy::IndexNumber]),
+                    sort_order: Some(vec![SortOrder::Ascending]),
                 })
                 .await
             {
@@ -1709,6 +1714,7 @@ fn CollectionForm(
             .map(|f| f.tags.clone())
             .unwrap_or_default()
     });
+    let mut sort_order = use_signal(|| existing.as_ref().and_then(|f| f.index_number));
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
 
@@ -1736,6 +1742,7 @@ fn CollectionForm(
         let ct = col_type.peek().clone();
         let ck = col_kind.peek().clone();
         let prm = *promoted.peek();
+        let so = *sort_order.peek();
         let current_tags = tags.peek().clone();
         let smart_filter_payload = if ck == "smart" {
             Some(CollectionFilter {
@@ -1760,6 +1767,7 @@ fn CollectionForm(
                             smart_filter: smart_filter_payload,
                             promoted: Some(prm),
                             tags: Some(current_tags),
+                            sort_order: so,
                         },
                     })
                     .await;
@@ -1785,6 +1793,7 @@ fn CollectionForm(
                             collection_type: Some(ct),
                             collection_kind: Some(ck),
                             promoted: Some(prm),
+                            sort_order: so,
                         },
                     })
                     .await
@@ -1818,6 +1827,18 @@ fn CollectionForm(
                     required: true,
                     value: "{title}",
                     oninput: move |e| title.set(e.value()),
+                }
+            }
+
+            div { class: "field",
+                label { class: "field-label", r#for: "col-sort-order", "Sort Order" }
+                input {
+                    id: "col-sort-order",
+                    r#type: "number",
+                    class: "field-input",
+                    placeholder: "0",
+                    value: sort_order.read().as_ref().map(|n| n.to_string()).unwrap_or_default(),
+                    oninput: move |e| sort_order.set(e.value().parse::<i64>().ok()),
                 }
             }
 

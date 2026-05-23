@@ -60,13 +60,10 @@ async fn persist_from_store(
         media
     };
 
-    // Save the root stub before process_meta_item so apply_meta's MediaRelation::upsert
-    // can write media_relations rows without hitting the left_media_id FK constraint.
-    db::Media::upsert(&ctx.db, &[root.clone()]).await.ok();
-
     let processed = ctx.addons.process_meta_item(root, ctx, false).await;
     if !processed.is_empty() {
         db::Media::upsert(&ctx.db, &processed).await.ok();
+        crate::addons::save_pending_relations(ctx, &processed).await;
     }
     Ok(db::Media::get_by_id(&ctx.db, &id).await?)
 }

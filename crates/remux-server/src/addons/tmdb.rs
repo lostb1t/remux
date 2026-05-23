@@ -771,6 +771,7 @@ async fn fetch_tmdb_season_meta(
     ctx: &AppContext,
     client: &sdks::RestClient<sdks::BearerAuth>,
 ) -> Result<Option<db::Media>> {
+    // Try to get the series TMDB ID from the parent row in DB.
     let series_tmdb_id = if let Some(sid) = media.grandparent_id.or(media.parent_id) {
         db::Media::get_by_id(&ctx.db, &sid)
             .await?
@@ -778,6 +779,29 @@ async fn fetch_tmdb_season_meta(
     } else {
         None
     };
+
+    // On first import the series may not yet be flushed to DB with its TMDB ID.
+    // Fall back to resolving via the season's series_imdb field.
+    let series_tmdb_id = if series_tmdb_id.is_none() {
+        if let Some(ref imdb) = media.external_ids.series_imdb {
+            client
+                .execute(
+                    sdks::tmdb::FindByIdEndpoint {
+                        external_id: imdb.clone(),
+                        external_source: "imdb_id".to_string(),
+                    }
+                    .with_cache(Duration::from_secs(86400)),
+                )
+                .await
+                .ok()
+                .and_then(|r| r.tv_results.into_iter().next().map(|s| s.id))
+        } else {
+            None
+        }
+    } else {
+        series_tmdb_id
+    };
+
     let (Some(tmdb_id), Some(season_idx)) = (series_tmdb_id, media.idx) else {
         return Ok(None);
     };
