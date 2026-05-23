@@ -18,10 +18,10 @@ impl Task for PurgeMediaTask {
         "Purge Library"
     }
     fn description(&self) -> &str {
-        "Removes media items that are no longer available from any source."
+        "Wipes all imported media from the database."
     }
     fn short_description(&self) -> &str {
-        "Wipes all imported media from the database"
+        "Wipes all imported media from the database (no physical files are deleted)."
     }
     fn category(&self) -> &str {
         "Library"
