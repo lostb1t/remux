@@ -119,10 +119,13 @@ pub async fn insert_track(
     };
 
     // Enrich with yt-dlp metadata (title, thumbnail, duration, description).
+    let meta_config = crate::db::Settings::get_config(&state.ctx.db)
+        .await
+        .unwrap_or_default();
     if let Err(e) = state
         .ctx
         .addons
-        .refresh_meta(&mut media, &state.ctx, true)
+        .refresh_meta(&mut media, &state.ctx, true, &meta_config)
         .await
     {
         tracing::warn!(id = %media.id, error = %e, "yt-dlp metadata enrichment failed during track insert");

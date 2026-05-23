@@ -723,6 +723,7 @@ impl AddonKind for YtDlpAddon {
         &self,
         media: &db::Media,
         _ctx: &AppContext,
+        _config: &crate::api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
         self.fetch_meta(media).await
     }

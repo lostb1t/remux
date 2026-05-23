@@ -423,6 +423,25 @@ impl MediaRelation {
         Ok(())
     }
 
+    pub async fn delete_by_left_ids(db: &SqlitePool, ids: &[Uuid]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        const CHUNK: usize = 999;
+        for chunk in ids.chunks(CHUNK) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "DELETE FROM media_relations WHERE left_media_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
+            qb.push(")");
+            qb.build().execute(db).await?;
+        }
+        Ok(())
+    }
+
     pub async fn get_playlist_items(
         db: &SqlitePool,
         playlist_id: &Uuid,
@@ -811,6 +830,8 @@ pub struct Media {
     pub user_state: Option<super::UserMediaState>,
     #[sqlx(skip)]
     pub relations: Option<Vec<(MediaRelation, Media)>>,
+    #[sqlx(skip)]
+    pub grandparent: Option<Box<Media>>,
 
     // stream
     #[sqlx(json(nullable))]
@@ -1296,13 +1317,13 @@ impl Media {
             return Ok(());
         }
 
-        let mut tx = db.begin().await?;
-        sqlx::query("PRAGMA defer_foreign_keys = ON")
-            .execute(&mut *tx)
-            .await?;
         const BATCH_SIZE: usize = 500;
 
         for chunk in items.chunks(BATCH_SIZE) {
+            let mut tx = db.begin().await?;
+            sqlx::query("PRAGMA defer_foreign_keys = ON")
+                .execute(&mut *tx)
+                .await?;
             let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
@@ -1390,31 +1411,30 @@ impl Media {
             );
 
             query_builder.build().execute(&mut *tx).await?;
-        }
 
-        // Insert images inside the same transaction — avoids N individual round-trips.
-        let all_images: Vec<(Uuid, &MediaImage)> = items
-            .iter()
-            .flat_map(|m| m.images.iter().map(move |img| (m.id, img)))
-            .collect();
-        for chunk in all_images.chunks(500) {
-            let mut qb = sqlx::QueryBuilder::new(
-                "INSERT OR IGNORE INTO media_images \
-                 (id, media_id, image_type, image_index, path, width, height) ",
-            );
-            qb.push_values(chunk.iter(), |mut b, (media_id, img)| {
-                b.push_bind(Uuid::new_v4())
-                    .push_bind(media_id)
-                    .push_bind(&img.image_type)
-                    .push_bind(img.image_index)
-                    .push_bind(&img.path)
-                    .push_bind(img.width)
-                    .push_bind(img.height);
-            });
-            qb.build().execute(&mut *tx).await?;
-        }
+            let chunk_images: Vec<(Uuid, &MediaImage)> = chunk
+                .iter()
+                .flat_map(|m| m.images.iter().map(move |img| (m.id, img)))
+                .collect();
+            for img_chunk in chunk_images.chunks(500) {
+                let mut qb = sqlx::QueryBuilder::new(
+                    "INSERT OR IGNORE INTO media_images \
+                     (id, media_id, image_type, image_index, path, width, height) ",
+                );
+                qb.push_values(img_chunk.iter(), |mut b, (media_id, img)| {
+                    b.push_bind(Uuid::new_v4())
+                        .push_bind(media_id)
+                        .push_bind(&img.image_type)
+                        .push_bind(img.image_index)
+                        .push_bind(&img.path)
+                        .push_bind(img.width)
+                        .push_bind(img.height);
+                });
+                qb.build().execute(&mut *tx).await?;
+            }
 
-        tx.commit().await?;
+            tx.commit().await?;
+        }
 
         Ok(())
     }

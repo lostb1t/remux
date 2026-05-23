@@ -1,11 +1,10 @@
 use anyhow::Result;
-use futures::stream::{self, StreamExt};
+use futures::stream::StreamExt;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::ProgressReporter;
-use crate::addons::save_pending_relations;
 use crate::{AppContext, db};
 
 /// Consume `stream`, fetching metadata + full tree for new items and upserting everything.
@@ -68,31 +67,22 @@ where
             "processing chunk"
         );
 
-        // For new items: fetch metadata + full tree concurrently, then flatten.
-        let concurrency = db::Settings::get_config(&ctx.db)
+        // New items: fetch meta + save via process_meta_batch (handles upsert + relations).
+        if let Err(e) = ctx
+            .addons
+            .process_meta_batch(new_items, ctx, false, true)
             .await
-            .ok()
-            .and_then(|c| c.meta_concurrency)
-            .unwrap_or(50) as usize;
-        let new_trees: Vec<Vec<db::Media>> = stream::iter(new_items)
-            .map(|item| ctx.addons.process_meta_item(item, ctx, false))
-            .buffer_unordered(concurrency)
-            .collect()
-            .await;
-
-        // Build the full upsert set: existing (raw update) + new item trees.
-        let mut to_upsert: Vec<db::Media> = existing_items;
-        to_upsert.extend(new_trees.into_iter().flatten());
-
-        if !to_upsert.is_empty() {
-            if let Err(e) = db::Media::upsert(&ctx.db, &to_upsert).await {
-                error!(catalog = media_id, error = %e, "failed to upsert chunk");
-                continue;
-            }
+        {
+            error!(catalog = media_id, error = %e, "failed to process new items chunk");
+            continue;
         }
 
-        if !to_upsert.is_empty() {
-            save_pending_relations(ctx, &to_upsert).await;
+        // Existing items: already have metadata, just ensure they're current in DB.
+        if !existing_items.is_empty() {
+            if let Err(e) = db::Media::upsert(&ctx.db, &existing_items).await {
+                error!(catalog = media_id, error = %e, "failed to upsert existing chunk");
+                continue;
+            }
         }
 
         // Checkpoint the WAL after each chunk so it doesn't balloon to hundreds of MB

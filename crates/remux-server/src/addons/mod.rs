@@ -27,7 +27,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::sdks;
-use crate::{AppContext, common::ProgressReporter, db};
+use crate::{AppContext, api, common::ProgressReporter, db};
 pub use addon::{Addon, CatalogState};
 pub use remux_sdks::remux::AddonPresetRef;
 use remux_sdks::remux::{LyricDto, MediaSegments, RemoteLyricInfoDto};
@@ -82,17 +82,42 @@ pub struct LyricSearchRequest {
 /// Save relation links that were deferred onto `media.relations` by `apply_meta`.
 /// Must be called after `db::Media::upsert` so `left_media_id` FK constraints are satisfied.
 pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]) {
-    for item in items {
-        let Some(relations) = &item.relations else {
-            continue;
-        };
-        if relations.is_empty() {
-            continue;
+    // One batched upsert for all relation media (persons/genres) across the whole slice —
+    // avoids opening a separate transaction per item (N items → N transactions otherwise).
+    let all_rel_media: Vec<db::Media> = items
+        .iter()
+        .filter_map(|m| m.relations.as_ref())
+        .flatten()
+        .map(|(_, m)| m.clone())
+        .collect();
+    if !all_rel_media.is_empty() {
+        if let Err(e) = db::Media::upsert(&ctx.db, &all_rel_media).await {
+            tracing::warn!(error = %e, "failed to upsert relation media batch");
         }
-        let rels: Vec<db::MediaRelation> =
-            relations.iter().map(|(r, _)| r.clone()).collect();
-        if let Err(e) = db::MediaRelation::upsert(&ctx.db, &rels).await {
-            tracing::warn!(id = %item.id, error = %e, "failed to save pending relations");
+    }
+
+    // Collect items that have relations, then batch delete + batch upsert
+    // (replaces N×delete + N×upsert with 1 delete + 1 upsert).
+    let items_with_rels: Vec<&db::Media> = items
+        .iter()
+        .filter(|m| m.relations.as_ref().map_or(false, |r| !r.is_empty()))
+        .collect();
+    if items_with_rels.is_empty() {
+        return;
+    }
+
+    let all_ids: Vec<uuid::Uuid> = items_with_rels.iter().map(|m| m.id).collect();
+    db::MediaRelation::delete_by_left_ids(&ctx.db, &all_ids)
+        .await
+        .ok();
+
+    let all_rels: Vec<db::MediaRelation> = items_with_rels
+        .iter()
+        .flat_map(|m| m.relations.as_ref().unwrap().iter().map(|(r, _)| r.clone()))
+        .collect();
+    if !all_rels.is_empty() {
+        if let Err(e) = db::MediaRelation::upsert(&ctx.db, &all_rels).await {
+            tracing::warn!(error = %e, "failed to upsert relations batch");
         }
     }
 }
@@ -151,12 +176,7 @@ pub(crate) fn apply_title_format(media: &mut db::Media) {
     }
 }
 
-async fn apply_meta(
-    media: &mut db::Media,
-    mut patch: db::Media,
-    replace: bool,
-    ctx: &AppContext,
-) {
+fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
     // Merge images onto the in-memory struct; db::Media::upsert persists them via
     // sync_from_media after the media row is committed, avoiding FK violations.
     if !patch.images.is_empty() {
@@ -186,22 +206,8 @@ async fn apply_meta(
                 db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
             )
         {
-            let (rels, rel_media): (Vec<_>, Vec<_>) = relations.into_iter().unzip();
-            if replace {
-                db::MediaRelation::delete_by_left_id(&ctx.db, &media.id)
-                    .await
-                    .ok();
-            }
-            // Upsert relation media (persons/genres) immediately — they have stable IDs
-            // independent of the current media row, so no FK constraint is violated.
-            if let Err(e) = db::Media::upsert(&ctx.db, &rel_media).await {
-                tracing::warn!(id = %media.id, error = %e, "failed to upsert relation media");
-                return;
-            }
-            // Defer the relation link inserts onto media.relations; the caller must call
-            // save_pending_relations after db::Media::upsert so left_media_id exists first.
             let pending: Vec<(db::MediaRelation, db::Media)> =
-                rels.into_iter().zip(rel_media).collect();
+                relations.into_iter().collect();
             match &mut media.relations {
                 Some(existing) => existing.extend(pending),
                 None => media.relations = Some(pending),
@@ -302,6 +308,7 @@ pub trait AddonKind: Send + Sync {
         &self,
         _media: &db::Media,
         _ctx: &AppContext,
+        _config: &api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
         Ok(None)
     }
@@ -605,6 +612,7 @@ impl AddonService {
         media: &mut db::Media,
         ctx: &AppContext,
         force_refresh: bool,
+        config: &api::ServerConfiguration,
     ) -> Result<()> {
         let guard = self.inner.read().await;
         let applicable: Vec<(String, Arc<dyn AddonKind>)> = {
@@ -625,13 +633,13 @@ impl AddonService {
         let results = futures::future::join_all(
             applicable
                 .iter()
-                .map(|(_, addon)| addon.meta_fetch(media, ctx)),
+                .map(|(_, addon)| addon.meta_fetch(media, ctx, config)),
         )
         .await;
 
         for ((name, _), result) in applicable.iter().zip(results) {
             match result {
-                Ok(Some(patch)) => apply_meta(media, patch, force_refresh, ctx).await,
+                Ok(Some(patch)) => apply_meta(media, patch, force_refresh),
                 Ok(None) => {}
                 Err(e) => {
                     tracing::error!(addon = %name, error = %e, "meta addon error")
@@ -682,17 +690,24 @@ impl AddonService {
         save: bool,
     ) -> Result<Vec<db::Media>> {
         use futures::stream::{self, StreamExt};
-        let results: Vec<Vec<db::Media>> = stream::iter(media)
-            .map(|m| self.process_meta_item(m, ctx, force_refresh))
-            .buffer_unordered(25)
-            .collect()
-            .await;
-        let batch: Vec<db::Media> = results.into_iter().flatten().collect();
-        if save && !batch.is_empty() {
-            db::Media::upsert(&ctx.db, &batch).await?;
-            save_pending_relations(ctx, &batch).await;
+        let config = db::Settings::get_config(&ctx.db).await.unwrap_or_default();
+        let concurrency = config.meta_concurrency.unwrap_or(50) as usize;
+        let config = Arc::new(config);
+        let mut all = Vec::with_capacity(media.len());
+        let mut stream = stream::iter(media)
+            .map(|m| {
+                let cfg = Arc::clone(&config);
+                self.process_meta_item(m, ctx, force_refresh, cfg)
+            })
+            .buffer_unordered(concurrency);
+        while let Some(items) = stream.next().await {
+            if save && !items.is_empty() {
+                db::Media::upsert(&ctx.db, &items).await?;
+                save_pending_relations(ctx, &items).await;
+            }
+            all.extend(items);
         }
-        Ok(batch)
+        Ok(all)
     }
 
     pub(crate) async fn process_meta_item(
@@ -700,8 +715,12 @@ impl AddonService {
         mut media: db::Media,
         ctx: &AppContext,
         force_refresh: bool,
+        config: Arc<api::ServerConfiguration>,
     ) -> Vec<db::Media> {
-        if let Err(e) = self.refresh_meta(&mut media, ctx, force_refresh).await {
+        if let Err(e) = self
+            .refresh_meta(&mut media, ctx, force_refresh, &config)
+            .await
+        {
             tracing::warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
             return vec![media];
         }
@@ -711,10 +730,15 @@ impl AddonService {
             return vec![media];
         }
 
+        let grandparent = Some(Box::new(media.clone()));
         let mut items = vec![media.clone()];
         for mut item in tree {
+            item.grandparent = grandparent.clone();
             if force_refresh || item.refreshed_at.is_none() {
-                if let Err(e) = self.refresh_meta(&mut item, ctx, force_refresh).await {
+                if let Err(e) = self
+                    .refresh_meta(&mut item, ctx, force_refresh, &config)
+                    .await
+                {
                     tracing::warn!(id = %item.id, error = %e, "failed to refresh child meta");
                 }
             }

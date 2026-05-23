@@ -29,19 +29,23 @@ impl Task for RefreshAllMetaTask {
         &self,
         ctx: AppContext,
         _tasks: Arc<TaskService>,
-        _progress: ProgressReporter,
+        progress: ProgressReporter,
     ) -> Result<()> {
         const CHUNK_SIZE: u32 = 100;
+
+        let total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE kind IN (?, ?)")
+                .bind(db::MediaKind::Movie)
+                .bind(db::MediaKind::Series)
+                .fetch_one(&ctx.db)
+                .await?;
+        let total = total as usize;
+
+        let mut processed = 0usize;
         let mut offset = 0u32;
         loop {
             let batch = sqlx::query_as::<_, db::Media>(
-                r#"
-        SELECT *
-        FROM media
-        WHERE kind IN (?, ?, ?, ?)
-        ORDER BY id
-        LIMIT ? OFFSET ?
-        "#,
+                "SELECT * FROM media WHERE kind IN (?, ?) ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(db::MediaKind::Movie)
             .bind(db::MediaKind::Series)
@@ -53,11 +57,13 @@ impl Task for RefreshAllMetaTask {
             if batch.is_empty() {
                 break;
             }
-            let fetched = batch.len() as u32;
+            let fetched = batch.len();
             ctx.addons
                 .process_meta_batch(batch, &ctx, false, true)
                 .await?;
-            if fetched < CHUNK_SIZE {
+            processed += fetched;
+            progress.report(processed, total.max(1));
+            if fetched < CHUNK_SIZE as usize {
                 break;
             }
             offset += CHUNK_SIZE;

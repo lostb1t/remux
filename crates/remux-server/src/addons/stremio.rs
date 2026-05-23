@@ -253,6 +253,7 @@ impl AddonKind for StremioAddon {
         &self,
         media: &db::Media,
         ctx: &AppContext,
+        _config: &crate::api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
         let svc = self.service()?;
         stremio_meta_fetch(&svc, media, ctx).await
@@ -533,10 +534,6 @@ async fn stremio_meta_fetch(
                 vec![]
             };
 
-        let mut medias = vec![found_media];
-        db::Media::enrich_parents(&ctx.db, &mut medias).await;
-        found_media = medias.remove(0);
-
         if !relations.is_empty() {
             found_media.relations = Some(relations);
         }
@@ -610,9 +607,13 @@ async fn stremio_sync_children(
                 None
             }
         })
-        .collect();
+        .collect::<Vec<db::Media>>();
 
-    db::Media::enrich_parents(&ctx.db, &mut children).await;
+    for child in &mut children {
+        if child.series_title.is_none() {
+            child.series_title = Some(root.title.clone());
+        }
+    }
 
     Ok(children)
 }

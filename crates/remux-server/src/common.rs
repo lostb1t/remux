@@ -327,6 +327,12 @@ pub async fn tmdb_client(
     let cfg = crate::db::Settings::get_config(db)
         .await
         .unwrap_or_default();
+    tmdb_client_from_config(&cfg)
+}
+
+pub fn tmdb_client_from_config(
+    cfg: &crate::api::ServerConfiguration,
+) -> Option<sdks::RestClient<sdks::BearerAuth>> {
     let key = cfg.get_tmdb_key().to_string();
     sdks::RestClient::new("https://api.themoviedb.org/3/")
         .ok()

@@ -60,7 +60,12 @@ async fn persist_from_store(
         media
     };
 
-    let processed = ctx.addons.process_meta_item(root, ctx, false).await;
+    let config = std::sync::Arc::new(
+        crate::db::Settings::get_config(&ctx.db)
+            .await
+            .unwrap_or_default(),
+    );
+    let processed = ctx.addons.process_meta_item(root, ctx, false, config).await;
     if !processed.is_empty() {
         db::Media::upsert(&ctx.db, &processed).await.ok();
         crate::addons::save_pending_relations(ctx, &processed).await;

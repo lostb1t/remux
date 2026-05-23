@@ -824,6 +824,7 @@ impl AddonKind for DeezerAddon {
         &self,
         media: &db::Media,
         _ctx: &AppContext,
+        _config: &crate::api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
         match media.kind {
             db::MediaKind::Track => {

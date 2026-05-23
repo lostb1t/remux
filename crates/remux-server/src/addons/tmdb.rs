@@ -82,8 +82,9 @@ impl AddonKind for TmdbAddon {
         &self,
         media: &db::Media,
         ctx: &AppContext,
+        config: &crate::api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
-        match fetch_tmdb_meta(media, ctx).await {
+        match fetch_tmdb_meta(media, ctx, config).await {
             Err(e) if is_404(&e) => Ok(None),
             other => other,
         }
@@ -284,8 +285,8 @@ fn is_404(e: &anyhow::Error) -> bool {
 async fn fetch_tmdb_meta(
     media: &db::Media,
     ctx: &AppContext,
+    config: &crate::api::ServerConfiguration,
 ) -> Result<Option<db::Media>> {
-    let config = crate::db::Settings::get_config(&ctx.db).await?;
     let api_key = config.get_tmdb_key().to_string();
     let metadata_country = config
         .metadata_country_code
@@ -570,7 +571,11 @@ async fn fetch_tmdb_meta(
             }
         }
         db::MediaKind::Episode => {
-            let mut series_tmdb_id = if let Some(sid) = media.grandparent_id {
+            let mut series_tmdb_id = if let Some(tmdb) =
+                media.grandparent.as_ref().and_then(|g| g.external_ids.tmdb)
+            {
+                Some(tmdb)
+            } else if let Some(sid) = media.grandparent_id {
                 db::Media::get_by_id(&ctx.db, &sid)
                     .await?
                     .filter(|m| m.kind == db::MediaKind::Series)
@@ -688,8 +693,21 @@ async fn fetch_tmdb_meta(
                     }
                     relations.extend(ep_relations);
                 }
-                if let Some(grandparent_id) = media.grandparent_id {
-                    let series_genres = sqlx::query_as::<_, db::Media>(
+                let series_genres: Vec<db::Media> = if let Some(genres) = media
+                    .grandparent
+                    .as_ref()
+                    .and_then(|g| g.relations.as_ref())
+                    .map(|rels| {
+                        rels.iter()
+                            .filter(|(_, m)| m.kind == db::MediaKind::Genre)
+                            .map(|(_, m)| m.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|v: &Vec<_>| !v.is_empty())
+                {
+                    genres
+                } else if let Some(grandparent_id) = media.grandparent_id {
+                    sqlx::query_as::<_, db::Media>(
                         "SELECT m.* FROM media m
                          JOIN media_relations r ON m.id = r.right_media_id
                          WHERE r.left_media_id = ? AND m.kind = 'genre'",
@@ -697,17 +715,19 @@ async fn fetch_tmdb_meta(
                     .bind(grandparent_id)
                     .fetch_all(&ctx.db)
                     .await
-                    .unwrap_or_default();
-                    for genre in series_genres {
-                        relations.push((
-                            db::MediaRelation {
-                                left_media_id: media.id,
-                                right_media_id: genre.id,
-                                ..Default::default()
-                            },
-                            genre,
-                        ));
-                    }
+                    .unwrap_or_default()
+                } else {
+                    vec![]
+                };
+                for genre in series_genres {
+                    relations.push((
+                        db::MediaRelation {
+                            left_media_id: media.id,
+                            right_media_id: genre.id,
+                            ..Default::default()
+                        },
+                        genre,
+                    ));
                 }
                 if !relations.is_empty() {
                     patch.relations = Some(relations);
@@ -771,8 +791,12 @@ async fn fetch_tmdb_season_meta(
     ctx: &AppContext,
     client: &sdks::RestClient<sdks::BearerAuth>,
 ) -> Result<Option<db::Media>> {
-    // Try to get the series TMDB ID from the parent row in DB.
-    let series_tmdb_id = if let Some(sid) = media.grandparent_id.or(media.parent_id) {
+    // Try to get the series TMDB ID — prefer in-memory grandparent, fall back to DB.
+    let series_tmdb_id = if let Some(tmdb) =
+        media.grandparent.as_ref().and_then(|g| g.external_ids.tmdb)
+    {
+        Some(tmdb)
+    } else if let Some(sid) = media.grandparent_id.or(media.parent_id) {
         db::Media::get_by_id(&ctx.db, &sid)
             .await?
             .and_then(|m| m.external_ids.tmdb)
