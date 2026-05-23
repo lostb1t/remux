@@ -1571,6 +1571,7 @@ fn CollectionsPage(app_state: AppState) -> Element {
                                             remux_sdks::remux::CollectionType::Movies  => "Movies",
                                             remux_sdks::remux::CollectionType::Tvshows => "Shows",
                                             remux_sdks::remux::CollectionType::Music   => "Music",
+                                            remux_sdks::remux::CollectionType::Boxsets => "Collections",
                                             _ => "Unknown",
                                         },
                                         None => "Unknown",
@@ -1679,6 +1680,7 @@ fn CollectionForm(
                 remux_sdks::remux::CollectionType::Movies => "movies".to_string(),
                 remux_sdks::remux::CollectionType::Tvshows => "tvshows".to_string(),
                 remux_sdks::remux::CollectionType::Music => "music".to_string(),
+                remux_sdks::remux::CollectionType::Boxsets => "collections".to_string(),
                 _ => "movies".to_string(),
             })
             .unwrap_or_else(|| "movies".to_string())
@@ -1843,28 +1845,31 @@ fn CollectionForm(
             }
 
             div { class: "field",
-                label { class: "field-label", r#for: "col-type", "Content Type" }
+                label { class: "field-label", r#for: "col-type", "Media Kind" }
                 select {
                     id: "col-type",
                     class: "select-input",
                     value: "{col_type}",
                     onchange: move |e| col_type.set(e.value()),
-                    option { value: "movies",  "Movies"   }
-                    option { value: "tvshows", "TV Shows" }
-                    option { value: "music",   "Music"    }
+                    option { value: "movies",      "Movies"      }
+                    option { value: "tvshows",     "TV Shows"    }
+                    option { value: "music",       "Music"       }
+                    option { value: "collections", "Collections" }
                 }
             }
 
-            div { class: "field",
-                label { class: "field-label", r#for: "col-kind", "Collection Kind" }
-                select {
-                    id: "col-kind",
-                    class: "select-input",
-                    value: "{col_kind}",
-                    disabled: is_edit,
-                    onchange: move |e| col_kind.set(e.value()),
-                    option { value: "smart",  "Smart"  }
-                    option { value: "manual", "Manual" }
+            if col_type.read().as_str() != "collections" {
+                div { class: "field",
+                    label { class: "field-label", r#for: "col-kind", "Collection Kind" }
+                    select {
+                        id: "col-kind",
+                        class: "select-input",
+                        value: "{col_kind}",
+                        disabled: is_edit,
+                        onchange: move |e| col_kind.set(e.value()),
+                        option { value: "smart",  "Smart"  }
+                        option { value: "manual", "Manual" }
+                    }
                 }
             }
 
@@ -1888,6 +1893,7 @@ fn CollectionForm(
                                 img {
                                     src: "{url}",
                                     style: "width:100%;max-height:180px;object-fit:cover;border-radius:6px;border:1px solid var(--border)",
+                                    onerror: move |_| has_image.set(false),
                                 }
                             }
                         }
@@ -1965,7 +1971,7 @@ fn CollectionForm(
                 }
             }
 
-            if col_kind.read().as_str() == "smart" {
+            if col_kind.read().as_str() == "smart" && col_type.read().as_str() != "collections" {
                 FilterRuleEditor { match_mode: sf_match, rules: sf_rules }
             }
 

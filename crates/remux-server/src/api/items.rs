@@ -14,7 +14,7 @@ use tracing::error;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
-use uuid::Uuid;
+use uuid::{Uuid, uuid};
 
 use crate::AppState;
 use crate::api;
@@ -245,17 +245,6 @@ pub async fn get_items(
     //let manifest = aio.get_manifest().await?;
 
     if let Some(parent) = &parent {
-        if parent.id == db::collection_uuid() {
-            // Virtual collections root — clear parent_id (collections have no parent in DB)
-            // and ensure we only return non-promoted collections. Promoted collections
-            // are libraries and should not be listed in the collections view.
-            q.parent_id = None;
-            q.promoted = Some(false);
-            if q.include_item_types.is_none() {
-                q.include_item_types = Some(vec![api::MediaType::BoxSet]);
-            }
-        }
-
         // playlist browse
         if parent.kind == db::MediaKind::Playlist {
             let relations =
@@ -302,6 +291,10 @@ pub async fn get_items(
                             db::MediaKind::Album,
                             db::MediaKind::Artist,
                         ],
+                        db::CollectionMediaKind::Collection => {
+                            q.promoted = Some(false);
+                            vec![db::MediaKind::Collection]
+                        }
                     }
                 } else {
                     vec![db::MediaKind::Movie, db::MediaKind::Series]
@@ -478,7 +471,7 @@ pub async fn items_root(
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     Ok(Json(api::BaseItemDto {
-        id: db::collection_uuid(),
+        id: uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
         name: Some("Media Library".to_string()),
         type_: api::MediaType::CollectionFolder,
         is_folder: true,
@@ -1398,6 +1391,7 @@ fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
         "movies" => Some(db::CollectionMediaKind::Movie),
         "tvshows" => Some(db::CollectionMediaKind::Series),
         "music" => Some(db::CollectionMediaKind::Music),
+        "collections" => Some(db::CollectionMediaKind::Collection),
         _ => None,
     }
 }

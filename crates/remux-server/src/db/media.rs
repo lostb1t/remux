@@ -320,6 +320,7 @@ pub enum CollectionMediaKind {
     Movie,
     Series,
     Music,
+    Collection,
 }
 
 impl TryFrom<String> for CollectionMediaKind {
@@ -3556,23 +3557,6 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             Some((sql, negated))
         }
     }
-}
-
-pub fn collection_uuid() -> Uuid {
-    uuid!("f47ac10b-58cc-4372-a567-0e02b2c3d479")
-}
-
-pub async fn ensure_collection_folder(db: &SqlitePool) -> Result<()> {
-    Media {
-        id: collection_uuid(),
-        title: "Collections".to_string(),
-        kind: MediaKind::Folder,
-        promoted: true,
-        ..Default::default()
-    }
-    .save(db)
-    .await?;
-    Ok(())
 }
 
 fn build_episode_relations_from_ep(

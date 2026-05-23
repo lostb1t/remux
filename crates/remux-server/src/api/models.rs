@@ -118,6 +118,7 @@ pub fn db_media_kind_to_collection_type(
         db::CollectionMediaKind::Movie => CollectionType::Movies,
         db::CollectionMediaKind::Series => CollectionType::Tvshows,
         db::CollectionMediaKind::Music => CollectionType::Music,
+        db::CollectionMediaKind::Collection => CollectionType::Boxsets,
     }
 }
 

@@ -210,8 +210,6 @@ pub async fn init_app(
         db::Settings::set_encoding_config(&conn, &enc_opts).await?;
     }
 
-    db::ensure_collection_folder(&conn).await?;
-
     let saved_config = db::Settings::get_config(&conn).await?;
     let default_web_client = Arc::new(tokio::sync::RwLock::new(
         web_client::normalize_web_client(saved_config.default_web_client)

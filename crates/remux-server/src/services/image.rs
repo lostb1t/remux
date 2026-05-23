@@ -315,6 +315,9 @@ async fn find_backdrop_url(
                 Some(db::CollectionMediaKind::Music) => {
                     vec![db::MediaKind::Album, db::MediaKind::Artist]
                 }
+                Some(db::CollectionMediaKind::Collection) => {
+                    vec![db::MediaKind::Collection]
+                }
                 None => vec![db::MediaKind::Movie, db::MediaKind::Series],
             };
             db::MediaFilter {
