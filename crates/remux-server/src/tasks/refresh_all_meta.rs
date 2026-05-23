@@ -45,8 +45,6 @@ impl Task for RefreshAllMetaTask {
             )
             .bind(db::MediaKind::Movie)
             .bind(db::MediaKind::Series)
-            .bind(db::MediaKind::Season)
-            .bind(db::MediaKind::Episode)
             .bind(CHUNK_SIZE)
             .bind(offset)
             .fetch_all(&ctx.db)
