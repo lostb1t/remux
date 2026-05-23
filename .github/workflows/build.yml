@@ -49,7 +49,7 @@ jobs:
         id: cache
         uses: actions/cache@v4
         with:
-          path: dist/
+          path: jellyfin-web/
           key: jellyfin-web-v10.11.9
 
       - name: Checkout jellyfin-web
@@ -74,12 +74,16 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: npm run build:production
 
+      - name: Rename dist to jellyfin-web
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: mv dist jellyfin-web
+
       - name: Upload artifact
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: jellyfin-web-dist
-          path: dist/
+          path: jellyfin-web/
           retention-days: 1
 
   build-dashboard:
