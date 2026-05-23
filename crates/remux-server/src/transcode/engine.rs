@@ -4,7 +4,7 @@ use libc;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -133,8 +133,8 @@ fn send_signal(_pid: u32, _sig: i32) {}
 fn spawn_buffer_monitor(
     output_dir: PathBuf,
     segment_length: u32,
-    playback_offset_secs: Arc<std::sync::atomic::AtomicU32>,
-    ffmpeg_pid: u32,
+    playback_offset_secs: Arc<AtomicU32>,
+    ffmpeg_pid: Arc<AtomicU32>,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     tokio::spawn(async move {
@@ -147,6 +147,7 @@ fn spawn_buffer_monitor(
             }
             ticks += 1;
 
+            let pid = ffmpeg_pid.load(Ordering::Relaxed);
             let produced = count_segments(&output_dir);
             let buffered_secs = produced * segment_length;
             // playback_offset_secs is how far the client has actually played
@@ -155,17 +156,18 @@ fn spawn_buffer_monitor(
 
             let ahead = buffered_secs.saturating_sub(playback_secs);
 
-            if !paused && ahead >= MAX_BUFFER_SECS {
-                debug!(pid = ffmpeg_pid, ahead, "Buffer full — pausing ffmpeg");
+            if pid != 0 && !paused && ahead >= MAX_BUFFER_SECS {
+                debug!(pid, ahead, "Buffer full — pausing ffmpeg");
                 #[cfg(unix)]
-                send_signal(ffmpeg_pid, libc::SIGSTOP);
+                send_signal(pid, libc::SIGSTOP);
                 paused = true;
-            } else if paused
+            } else if pid != 0
+                && paused
                 && ahead < MAX_BUFFER_SECS.saturating_sub(segment_length * 2)
             {
-                debug!(pid = ffmpeg_pid, ahead, "Buffer drained — resuming ffmpeg");
+                debug!(pid, ahead, "Buffer drained — resuming ffmpeg");
                 #[cfg(unix)]
-                send_signal(ffmpeg_pid, libc::SIGCONT);
+                send_signal(pid, libc::SIGCONT);
                 paused = false;
             }
 
@@ -179,8 +181,11 @@ fn spawn_buffer_monitor(
 
         // Ensure ffmpeg isn't left paused when we stop monitoring.
         if paused {
-            #[cfg(unix)]
-            send_signal(ffmpeg_pid, libc::SIGCONT);
+            let pid = ffmpeg_pid.load(Ordering::Relaxed);
+            if pid != 0 {
+                #[cfg(unix)]
+                send_signal(pid, libc::SIGCONT);
+            }
         }
     });
 }
@@ -899,7 +904,7 @@ async fn run_ffmpeg(
     env_overrides: Vec<(String, String)>,
     kill_rx: tokio::sync::oneshot::Receiver<()>,
     monitor_stop_tx: tokio::sync::oneshot::Sender<()>,
-    ffmpeg_pid_out: &mut u32,
+    ffmpeg_pid_out: Arc<AtomicU32>,
 ) -> (
     Option<std::result::Result<std::process::ExitStatus, std::io::Error>>,
     String,
@@ -919,7 +924,7 @@ async fn run_ffmpeg(
         }
     };
 
-    *ffmpeg_pid_out = child.id().unwrap_or(0);
+    ffmpeg_pid_out.store(child.id().unwrap_or(0), Ordering::Relaxed);
     let stderr = child.stderr.take();
 
     let (stderr_tx, stderr_rx) = tokio::sync::oneshot::channel::<String>();
@@ -941,10 +946,11 @@ async fn run_ffmpeg(
         let _ = stderr_tx.send(String::new());
     }
 
-    let pid = *ffmpeg_pid_out;
+    let pid = ffmpeg_pid_out.load(Ordering::Relaxed);
     let result = tokio::select! {
         r = child.wait() => Some(r),
         _ = kill_rx => {
+            // Resume if the buffer monitor paused ffmpeg so kill() can land.
             #[cfg(unix)]
             send_signal(pid, libc::SIGCONT);
             let _ = child.kill().await;
@@ -987,7 +993,7 @@ pub async fn start_transcode(
             let (monitor_stop_tx, monitor_stop_rx) =
                 tokio::sync::oneshot::channel::<()>();
 
-            let mut ffmpeg_pid: u32 = 0;
+            let ffmpeg_pid = Arc::new(AtomicU32::new(0));
             {
                 let mut s = session_clone.write().await;
                 s.start_time_secs = params
@@ -999,7 +1005,7 @@ pub async fn start_transcode(
                     s.output_dir.clone(),
                     s.segment_length,
                     s.playback_offset_secs.clone(),
-                    0, // updated below once child spawns
+                    ffmpeg_pid.clone(),
                     monitor_stop_rx,
                 );
             }
@@ -1008,14 +1014,9 @@ pub async fn start_transcode(
                 params.hardware_acceleration_type,
                 &params.vaapi_driver,
             );
-            let (result, stderr_out) = run_ffmpeg(
-                args,
-                env_overrides,
-                kill_rx,
-                monitor_stop_tx,
-                &mut ffmpeg_pid,
-            )
-            .await;
+            let (result, stderr_out) =
+                run_ffmpeg(args, env_overrides, kill_rx, monitor_stop_tx, ffmpeg_pid)
+                    .await;
 
             let using_hw = !matches!(
                 params.hardware_acceleration_type,

@@ -2531,18 +2531,22 @@ pub async fn master_hls_video(
         let runtime_ticks = if is_live {
             0
         } else {
-            // Try: resolved source runtime → parent item runtime → cached probe data → parent item DB lookup.
-            let rt = resolved_media
+            // Take the maximum of stored runtime and probe data so a stale/short
+            // metadata value can't truncate the playlist for a longer file.
+            let stored_ticks = resolved_media
                 .runtime
                 .or(media.runtime)
                 .filter(|&r| r > 0)
-                .map(|r| r * 10_000_000)
-                .or_else(|| {
-                    resolved_media
-                        .probe_data
-                        .as_ref()
-                        .and_then(|p| p.run_time_ticks)
-                });
+                .map(|r| r * 10_000_000);
+            let probe_ticks = resolved_media
+                .probe_data
+                .as_ref()
+                .and_then(|p| p.run_time_ticks)
+                .filter(|&t| t > 0);
+            let rt = match (stored_ticks, probe_ticks) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
             match rt {
                 Some(t) if t > 0 => t,
                 _ => db::Media::get_by_id(&state.ctx.db, &id)
