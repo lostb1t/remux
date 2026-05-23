@@ -2,7 +2,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tracing::{debug, error, warn};
+use std::time::Instant;
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::catalog_import_shared::{
@@ -123,6 +124,7 @@ impl Task for RefreshLibraryTask {
                     }
                 };
 
+                let cat_start = Instant::now();
                 let counts = import_catalog_items(
                     &ctx,
                     Uuid::nil(),
@@ -133,7 +135,12 @@ impl Task for RefreshLibraryTask {
                 )
                 .await?;
 
-                debug!(catalog = %full_id, ?counts, "import complete");
+                info!(
+                    catalog = %full_id,
+                    ?counts,
+                    elapsed_ms = cat_start.elapsed().as_millis(),
+                    "catalog import complete"
+                );
             }
         }
 

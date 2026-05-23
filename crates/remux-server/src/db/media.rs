@@ -1392,13 +1392,29 @@ impl Media {
             query_builder.build().execute(&mut *tx).await?;
         }
 
-        tx.commit().await?;
-
-        for item in items {
-            MediaImage::sync_from_media(db, item.id, &item.images)
-                .await
-                .ok();
+        // Insert images inside the same transaction — avoids N individual round-trips.
+        let all_images: Vec<(Uuid, &MediaImage)> = items
+            .iter()
+            .flat_map(|m| m.images.iter().map(move |img| (m.id, img)))
+            .collect();
+        for chunk in all_images.chunks(500) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "INSERT OR IGNORE INTO media_images \
+                 (id, media_id, image_type, image_index, path, width, height) ",
+            );
+            qb.push_values(chunk.iter(), |mut b, (media_id, img)| {
+                b.push_bind(Uuid::new_v4())
+                    .push_bind(media_id)
+                    .push_bind(&img.image_type)
+                    .push_bind(img.image_index)
+                    .push_bind(&img.path)
+                    .push_bind(img.width)
+                    .push_bind(img.height);
+            });
+            qb.build().execute(&mut *tx).await?;
         }
+
+        tx.commit().await?;
 
         Ok(())
     }
