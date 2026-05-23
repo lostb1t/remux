@@ -4469,7 +4469,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut metadata_country = use_signal(|| "US".to_string());
     let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
-    let mut meta_concurrency = use_signal(|| 50_i64);
+    let mut meta_concurrency = use_signal(|| 25_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
@@ -4492,7 +4492,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             .unwrap_or_else(|| "US".to_string()),
                     );
                     catalog_max_items.set(cfg.catalog_max_items.unwrap_or(100));
-                    meta_concurrency.set(cfg.meta_concurrency.unwrap_or(50));
+                    meta_concurrency.set(cfg.meta_concurrency.unwrap_or(25));
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
