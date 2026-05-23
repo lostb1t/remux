@@ -856,7 +856,7 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<()> {
-        const STREAMS_TTL_SECS: i64 = 360;
+        const STREAMS_TTL_SECS: i64 = 60;
         static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
 
         // Fast path: TTL not expired — skip the lock entirely.
