@@ -4469,6 +4469,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut metadata_country = use_signal(|| "US".to_string());
     let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
+    let mut meta_concurrency = use_signal(|| 50_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
@@ -4491,6 +4492,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             .unwrap_or_else(|| "US".to_string()),
                     );
                     catalog_max_items.set(cfg.catalog_max_items.unwrap_or(100));
+                    meta_concurrency.set(cfg.meta_concurrency.unwrap_or(50));
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
@@ -4518,6 +4520,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         let name = server_name.peek().clone();
         let country = metadata_country.peek().clone();
         let max = *catalog_max_items.peek();
+        let concurrency = *meta_concurrency.peek();
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages.peek().clone();
@@ -4528,6 +4531,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.metadata_country_code = Some(country);
         cfg.quick_connect_available = Some(qc_enabled);
         cfg.catalog_max_items = Some(max);
+        cfg.meta_concurrency = Some(concurrency);
         cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
         cfg.subtitle_languages = Some(
@@ -4610,6 +4614,26 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             }
                             p { class: "field-hint",
                                 "Maximum number of items imported per collection."
+                            }
+                        }
+
+                        div { class: "field",
+                            label { class: "field-label", r#for: "s-concurrency", "Metadata Concurrency" }
+                            input {
+                                id: "s-concurrency",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "1",
+                                max: "200",
+                                value: "{meta_concurrency}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        meta_concurrency.set(n);
+                                    }
+                                },
+                            }
+                            p { class: "field-hint",
+                                "Number of items to enrich with metadata concurrently during library import. Higher values are faster but may trigger rate limits on metadata sources. Default: 50."
                             }
                         }
 

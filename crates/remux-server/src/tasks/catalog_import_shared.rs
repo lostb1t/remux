@@ -1,7 +1,6 @@
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -47,8 +46,6 @@ where
             break;
         }
 
-        let chunk_start = Instant::now();
-
         // Separate top-level items (series/movies) from any sub-items in the stream.
         let top_level: Vec<db::Media> = items
             .iter()
@@ -58,9 +55,7 @@ where
         let top_ids: Vec<Uuid> = top_level.iter().map(|m| m.id).collect();
 
         // One batch query: which of these are already in DB with metadata?
-        let t = Instant::now();
         let already_refreshed = fetch_already_refreshed_ids(&ctx.db, &top_ids).await;
-        let t_db_check = t.elapsed();
 
         let (new_items, existing_items): (Vec<db::Media>, Vec<db::Media>) = top_level
             .into_iter()
@@ -74,53 +69,38 @@ where
         );
 
         // For new items: fetch metadata + full tree concurrently, then flatten.
-        let t = Instant::now();
+        let concurrency = db::Settings::get_config(&ctx.db)
+            .await
+            .ok()
+            .and_then(|c| c.meta_concurrency)
+            .unwrap_or(50) as usize;
         let new_trees: Vec<Vec<db::Media>> = stream::iter(new_items)
             .map(|item| ctx.addons.process_meta_item(item, ctx, false))
-            .buffer_unordered(25)
+            .buffer_unordered(concurrency)
             .collect()
             .await;
-        let t_meta = t.elapsed();
 
         // Build the full upsert set: existing (raw update) + new item trees.
         let mut to_upsert: Vec<db::Media> = existing_items;
         to_upsert.extend(new_trees.into_iter().flatten());
 
-        let t = Instant::now();
         if !to_upsert.is_empty() {
             if let Err(e) = db::Media::upsert(&ctx.db, &to_upsert).await {
                 error!(catalog = media_id, error = %e, "failed to upsert chunk");
                 continue;
             }
         }
-        let t_upsert = t.elapsed();
 
-        let t = Instant::now();
         if !to_upsert.is_empty() {
             save_pending_relations(ctx, &to_upsert).await;
         }
-        let t_relations = t.elapsed();
 
         // Checkpoint the WAL after each chunk so it doesn't balloon to hundreds of MB
         // during large imports, which would make concurrent reads increasingly slow.
-        let t = Instant::now();
         sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
             .execute(&ctx.db)
             .await
             .ok();
-        let t_wal = t.elapsed();
-
-        info!(
-            catalog = media_id,
-            chunk_items = top_ids.len(),
-            db_check_ms = t_db_check.as_millis(),
-            meta_ms = t_meta.as_millis(),
-            upsert_ms = t_upsert.as_millis(),
-            relations_ms = t_relations.as_millis(),
-            wal_ms = t_wal.as_millis(),
-            total_ms = chunk_start.elapsed().as_millis(),
-            "chunk complete"
-        );
 
         // Record catalog membership for the original top-level IDs.
         if let Some((addon_uuid, local_cat_id)) = membership {
