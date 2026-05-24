@@ -189,6 +189,16 @@ pub async fn init_app(
     info!("Running database migrations. Do not interrupt!");
     db::migrate(&conn).await?;
     info!("migrations complete");
+
+    // Checkpoint the WAL before accepting any requests. At this point no
+    // other readers exist, so TRUNCATE is guaranteed to succeed and the WAL
+    // is cleared to zero — preventing large WALs left over from previous
+    // write-heavy tasks (metadata refresh, library scan) from slowing down
+    // the first queries after a restart.
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&conn)
+        .await
+        .ok();
     crate::common::init_server_id(&conn).await?;
 
     // Probe hardware and persist results at startup.

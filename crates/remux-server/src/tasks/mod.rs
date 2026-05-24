@@ -141,6 +141,13 @@ impl TaskHandler {
             let result = task.run(ctx.clone(), task_service, progress).await;
             let elapsed = instant.elapsed();
 
+            // Flush WAL after every task so write bursts don't accumulate into
+            // a large WAL that degrades subsequent read performance.
+            sqlx::query("PRAGMA wal_checkpoint(FULL)")
+                .execute(&ctx.db)
+                .await
+                .ok();
+
             let (new_status, db_status) = match &result {
                 Ok(_) => {
                     info!(task = %task.name(), elapsed = ?elapsed, "completed");
