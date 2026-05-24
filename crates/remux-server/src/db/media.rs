@@ -539,6 +539,7 @@ pub struct ExternalIds {
     pub imdb: Option<String>,
     pub series_imdb: Option<String>,
     pub tmdb: Option<i64>,
+    pub series_tmdb: Option<i64>,
     pub tvdb: Option<i64>,
     pub deezer_artist: Option<i64>,
     pub deezer_album: Option<i64>,
@@ -631,6 +632,9 @@ impl ExternalIds {
         }
         if other.tmdb.is_some() {
             self.tmdb = other.tmdb;
+        }
+        if other.series_tmdb.is_some() {
+            self.series_tmdb = other.series_tmdb;
         }
         if other.tvdb.is_some() {
             self.tvdb = other.tvdb;
@@ -3323,6 +3327,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     episode.idx = ep.episode;
                     episode.external_ids = ExternalIds {
                         series_imdb: Some(imdb_id.clone()),
+                        series_tmdb: media.external_ids.tmdb,
                         ..Default::default()
                     };
                     episode.grandparent_id = Some(media.id);

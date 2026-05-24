@@ -16,7 +16,7 @@ use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
     AddonPresetRegistration, CatalogInfo, MediaKind, ResourceType, addon,
 };
-use crate::sdks::CachedEndpoint;
+use crate::sdks::{CachedEndpoint, ClientError};
 use crate::services::stremio as stremio_service;
 use crate::{AppContext, common, db, sdks};
 
@@ -457,6 +457,13 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
     true
 }
 
+fn is_404(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<ClientError>(),
+        Some(ClientError::Http { status: 404, .. })
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Meta helpers
 // ---------------------------------------------------------------------------
@@ -482,8 +489,19 @@ async fn stremio_meta_fetch(
     {
         cached_meta
     } else {
-        svc.get_meta(sdks::stremio::MediaType::from(&media.kind), imdb_id.clone())
-            .await?
+        let media_type = sdks::stremio::MediaType::from(&media.kind);
+        match svc.get_meta(media_type.clone(), imdb_id.clone()).await {
+            Ok(m) => m,
+            Err(e) if is_404(&e) => {
+                if let Some(tmdb_id) = media.external_ids.tmdb {
+                    svc.get_meta(media_type, format!("tmdb:{}", tmdb_id))
+                        .await?
+                } else {
+                    return Err(e);
+                }
+            }
+            Err(e) => return Err(e),
+        }
     };
 
     if meta.imdb_id.is_none() {
@@ -936,7 +954,7 @@ async fn stremio_streams(
     manifest_url: &StremioManifestUrl,
     media: &db::Media,
 ) -> Result<Vec<crate::stream::StreamInfo>> {
-    let (media_type, id) = match media.kind {
+    let (media_type, id, tmdb_fallback_id) = match media.kind {
         db::MediaKind::Episode => {
             let series_id =
                 media.external_ids.series_imdb.as_deref().ok_or_else(|| {
@@ -944,20 +962,36 @@ async fn stremio_streams(
                 })?;
             let season = media.parent_idx.unwrap_or(1);
             let episode = media.idx.unwrap_or(1);
+            let tmdb_fb = media
+                .external_ids
+                .series_tmdb
+                .map(|tid| format!("tmdb:{}:{}:{}", tid, season, episode));
             (
                 sdks::stremio::MediaType::Series,
                 format!("{}:{}:{}", series_id, season, episode),
+                tmdb_fb,
             )
         }
         _ => {
             let id = media.external_ids.imdb.clone().ok_or_else(|| {
                 anyhow!("media has no identifiable ID for Stremio stream lookup")
             })?;
-            (sdks::stremio::MediaType::from(&media.kind), id)
+            let tmdb_fb = media.external_ids.tmdb.map(|tid| format!("tmdb:{}", tid));
+            (sdks::stremio::MediaType::from(&media.kind), id, tmdb_fb)
         }
     };
 
-    let streams = svc.get_streams(media_type, id).await?;
+    let streams = match svc.get_streams(media_type.clone(), id).await {
+        Ok(s) => s,
+        Err(e) if is_404(&e) => {
+            if let Some(fb_id) = tmdb_fallback_id {
+                svc.get_streams(media_type, fb_id).await?
+            } else {
+                return Err(e);
+            }
+        }
+        Err(e) => return Err(e),
+    };
 
     Ok(streams
         .into_iter()
