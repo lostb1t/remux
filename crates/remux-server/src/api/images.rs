@@ -16,7 +16,7 @@ static IMAGE_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(|| {
         reqwest::Client::builder()
             .user_agent("remux-server/1.0")
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(5))
             .build()
             .expect("failed to build image proxy client")
     });
@@ -26,8 +26,9 @@ async fn fetch_upstream(url: &str) -> anyhow::Result<(Vec<u8>, String)> {
     let resp = remux_utils::retry! {
         attempts: 3,
         delay: 500,
-        { IMAGE_CLIENT.get(url).send().await.map_err(|e| anyhow::anyhow!("image fetch failed: {e}")) }
-    }?;
+        { IMAGE_CLIENT.get(url).send().await }
+    }
+    .map_err(|e| anyhow::anyhow!("image fetch failed: {e}"))?;
     let status = resp.status();
     if !status.is_success() {
         anyhow::bail!("upstream image returned {status}");
@@ -89,10 +90,10 @@ async fn items_images_inner(
                         .context_not_found("Not Found", "image file not found")?;
                     (b, ct.to_string(), source_key)
                 } else {
-                    let (b, ct) = fetch_upstream(&img.path)
-                        .await
-                        .context_not_found("Not Found", "image fetch failed")?;
-                    (b, ct, source_key)
+                    // External URL: redirect the client so it fetches directly.
+                    return Ok(
+                        axum::response::Redirect::temporary(&img.path).into_response()
+                    );
                 }
             } else if matches!(
                 image_type,

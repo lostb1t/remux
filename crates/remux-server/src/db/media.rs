@@ -872,6 +872,7 @@ impl Media {
     pub async fn enrich_parents(db: &SqlitePool, records: &mut Vec<Self>) {
         struct ParentRow {
             title: String,
+            channel_number: Option<i64>,
         }
 
         let ids_needed: Vec<Uuid> = records
@@ -897,8 +898,9 @@ impl Media {
 
         let mut parent_map: HashMap<Uuid, ParentRow> = HashMap::new();
         for chunk in ids_needed.chunks(500) {
-            let mut qb =
-                sqlx::QueryBuilder::new("SELECT id, title FROM media WHERE id IN (");
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT id, title, channel_number FROM media WHERE id IN (",
+            );
             let mut sep = qb.separated(", ");
             for id in chunk {
                 sep.push_bind(id);
@@ -908,7 +910,16 @@ impl Media {
                 parent_map.extend(rows.into_iter().filter_map(|r| {
                     let id: Option<Uuid> = r.get(0);
                     let title: Option<String> = r.get(1);
-                    id.zip(title).map(|(id, title)| (id, ParentRow { title }))
+                    let channel_number: Option<i64> = r.get(2);
+                    id.zip(title).map(|(id, title)| {
+                        (
+                            id,
+                            ParentRow {
+                                title,
+                                channel_number,
+                            },
+                        )
+                    })
                 }));
             }
         }
@@ -950,13 +961,13 @@ impl Media {
                         if let Some(imgs) = parent_images.get(&id) {
                             media.series_poster = imgs
                                 .get(super::image::ImageKind::Primary)
-                                .map(|i| i.path.clone());
+                                .map(|i| i.id.to_string());
                             media.series_backdrop = imgs
                                 .get(super::image::ImageKind::Backdrop)
-                                .map(|i| i.path.clone());
+                                .map(|i| i.id.to_string());
                             media.series_thumb = imgs
                                 .get(super::image::ImageKind::Thumb)
-                                .map(|i| i.path.clone());
+                                .map(|i| i.id.to_string());
                         }
                     }
                 }
@@ -968,25 +979,26 @@ impl Media {
                         if let Some(imgs) = parent_images.get(&id) {
                             media.series_poster = imgs
                                 .get(super::image::ImageKind::Primary)
-                                .map(|i| i.path.clone());
+                                .map(|i| i.id.to_string());
                             media.series_backdrop = imgs
                                 .get(super::image::ImageKind::Backdrop)
-                                .map(|i| i.path.clone());
+                                .map(|i| i.id.to_string());
                             media.series_thumb = imgs
                                 .get(super::image::ImageKind::Thumb)
-                                .map(|i| i.path.clone());
+                                .map(|i| i.id.to_string());
                         }
                     }
                 }
                 MediaKind::TvProgram => {
-                    media.parent_title = media
-                        .parent_id
-                        .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
                     if let Some(id) = media.parent_id {
+                        if let Some(row) = parent_map.get(&id) {
+                            media.parent_title = Some(row.title.clone());
+                            media.channel_number = row.channel_number;
+                        }
                         if let Some(imgs) = parent_images.get(&id) {
                             media.series_poster = imgs
                                 .get(super::image::ImageKind::Primary)
-                                .map(|i| i.path.clone());
+                                .map(|i| i.id.to_string());
                         }
                     }
                 }

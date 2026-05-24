@@ -388,6 +388,44 @@ pub async fn livetv_timers(_session: AuthSession) -> Result<impl IntoResponse> {
 }
 
 // --------------------------------------------------------------------------
+// GET /livetv/timers/defaults
+// --------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct TimerDefaultsQuery {
+    #[serde(rename = "programId")]
+    program_id: Option<Uuid>,
+}
+
+#[get("/livetv/timers/defaults")]
+pub async fn livetv_timer_defaults(
+    _session: AuthSession,
+    Query(q): Query<TimerDefaultsQuery>,
+) -> Result<impl IntoResponse> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct TimerDefaults {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        program_id: Option<String>,
+        pre_padding_seconds: i32,
+        post_padding_seconds: i32,
+        is_pre_padding_required: bool,
+        is_post_padding_required: bool,
+        priority: i32,
+    }
+    Ok(Json(TimerDefaults {
+        id: String::new(),
+        program_id: q.program_id.map(|id| id.to_string()),
+        pre_padding_seconds: 0,
+        post_padding_seconds: 0,
+        is_pre_padding_required: false,
+        is_post_padding_required: false,
+        priority: 0,
+    }))
+}
+
+// --------------------------------------------------------------------------
 // GET /livetv/recordings/folders
 // --------------------------------------------------------------------------
 
@@ -502,7 +540,9 @@ pub async fn livetv_program(
     let media = db::Media::get_by_id(&state.ctx.db, &program_id)
         .await?
         .context_not_found("not found", "program not found")?;
-    Ok(Json(api::db_media_to_item(media)))
+    let mut records = vec![media];
+    db::Media::enrich_parents(&state.ctx.db, &mut records).await;
+    Ok(Json(api::db_media_to_item(records.remove(0))))
 }
 
 // --------------------------------------------------------------------------
