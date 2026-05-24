@@ -610,8 +610,8 @@ async fn stremio_sync_children(
         .collect::<Vec<db::Media>>();
 
     for child in &mut children {
-        if child.series_title.is_none() {
-            child.series_title = Some(root.title.clone());
+        if child.grandparent_title.is_none() {
+            child.grandparent_title = Some(root.title.clone());
         }
     }
 

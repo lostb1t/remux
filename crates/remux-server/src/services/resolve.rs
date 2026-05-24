@@ -48,7 +48,7 @@ async fn persist_from_store(
                 &db::MediaKind::Artist,
                 &deezer_artist_id.to_string(),
             ),
-            title: media.series_title.clone().unwrap_or_default(),
+            title: media.grandparent_title.clone().unwrap_or_default(),
             kind: db::MediaKind::Artist,
             external_ids: db::ExternalIds {
                 deezer_artist: Some(deezer_artist_id),

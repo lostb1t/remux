@@ -801,18 +801,18 @@ pub struct Media {
     /// Season/album title (parent item's title), populated post-query.
     #[sqlx(skip)]
     pub parent_title: Option<String>,
-    /// Series/artist title (series item's title), populated post-query.
+    /// Grandparent title (series/artist), populated post-query.
     #[sqlx(skip)]
-    pub series_title: Option<String>,
-    /// Series poster hash for episodes/seasons, populated post-query.
+    pub grandparent_title: Option<String>,
+    /// Grandparent primary image UUID, populated post-query.
     #[sqlx(skip)]
-    pub series_poster: Option<String>,
-    /// Series backdrop hash for episodes/seasons, populated post-query.
+    pub grandparent_primary_image: Option<String>,
+    /// Grandparent backdrop image UUID, populated post-query.
     #[sqlx(skip)]
-    pub series_backdrop: Option<String>,
-    /// Series thumb hash for episodes/seasons, populated post-query.
+    pub grandparent_backdrop: Option<String>,
+    /// Grandparent thumb image UUID, populated post-query.
     #[sqlx(skip)]
-    pub series_thumb: Option<String>,
+    pub grandparent_thumb: Option<String>,
     #[sqlx(skip)]
     pub unplayed_item_count: Option<i64>,
     #[sqlx(skip)]
@@ -940,12 +940,12 @@ impl Media {
                     media.parent_title = media
                         .parent_id
                         .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
-                    media.series_title = media
+                    media.grandparent_title = media
                         .grandparent_id
                         .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
                 }
                 MediaKind::Album => {
-                    media.series_title = media
+                    media.grandparent_title = media
                         .grandparent_id
                         .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
                 }
@@ -956,16 +956,16 @@ impl Media {
                     let series_id = media.grandparent_id.or(media.parent_id);
                     if let Some(id) = series_id {
                         if let Some(row) = parent_map.get(&id) {
-                            media.series_title = Some(row.title.clone());
+                            media.grandparent_title = Some(row.title.clone());
                         }
                         if let Some(imgs) = parent_images.get(&id) {
-                            media.series_poster = imgs
+                            media.grandparent_primary_image = imgs
                                 .get(super::image::ImageKind::Primary)
                                 .map(|i| i.id.to_string());
-                            media.series_backdrop = imgs
+                            media.grandparent_backdrop = imgs
                                 .get(super::image::ImageKind::Backdrop)
                                 .map(|i| i.id.to_string());
-                            media.series_thumb = imgs
+                            media.grandparent_thumb = imgs
                                 .get(super::image::ImageKind::Thumb)
                                 .map(|i| i.id.to_string());
                         }
@@ -974,16 +974,16 @@ impl Media {
                 MediaKind::Season => {
                     if let Some(id) = media.parent_id {
                         if let Some(row) = parent_map.get(&id) {
-                            media.series_title = Some(row.title.clone());
+                            media.grandparent_title = Some(row.title.clone());
                         }
                         if let Some(imgs) = parent_images.get(&id) {
-                            media.series_poster = imgs
+                            media.grandparent_primary_image = imgs
                                 .get(super::image::ImageKind::Primary)
                                 .map(|i| i.id.to_string());
-                            media.series_backdrop = imgs
+                            media.grandparent_backdrop = imgs
                                 .get(super::image::ImageKind::Backdrop)
                                 .map(|i| i.id.to_string());
-                            media.series_thumb = imgs
+                            media.grandparent_thumb = imgs
                                 .get(super::image::ImageKind::Thumb)
                                 .map(|i| i.id.to_string());
                         }
@@ -996,7 +996,7 @@ impl Media {
                             media.channel_number = row.channel_number;
                         }
                         if let Some(imgs) = parent_images.get(&id) {
-                            media.series_poster = imgs
+                            media.grandparent_primary_image = imgs
                                 .get(super::image::ImageKind::Primary)
                                 .map(|i| i.id.to_string());
                         }

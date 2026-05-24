@@ -343,7 +343,7 @@ impl DeezerAddon {
                     parent_id: Some(album_id),
                     grandparent_id: artist_id,
                     parent_title: Some(album_title.clone()),
-                    series_title: Some(artist_title.clone()),
+                    grandparent_title: Some(artist_title.clone()),
                     external_ids: db::ExternalIds {
                         deezer_track: Some(track.id as i64),
                         deezer_album: Some(deezer_album_id as i64),
@@ -401,7 +401,7 @@ impl DeezerAddon {
                     kind: db::MediaKind::Album,
                     parent_id: Some(root.id),
                     grandparent_id: Some(root.id),
-                    series_title: Some(root.title.clone()),
+                    grandparent_title: Some(root.title.clone()),
                     external_ids: db::ExternalIds {
                         deezer_album: Some(album.id as i64),
                         deezer_artist: Some(artist_id_raw),
@@ -512,7 +512,7 @@ impl DeezerAddon {
                     description: Some(desc_parts.join(" · ")),
                     parent_id: Some(root_id),
                     grandparent_id: Some(root_id),
-                    series_title: Some(artist_title.clone()),
+                    grandparent_title: Some(artist_title.clone()),
                     external_ids: db::ExternalIds {
                         deezer_album: Some(detail.id as i64),
                         deezer_artist: Some(artist_id_raw),
@@ -566,7 +566,7 @@ impl DeezerAddon {
         } else {
             root.title.clone()
         };
-        let artist_title = root.series_title.clone().unwrap_or_else(|| {
+        let artist_title = root.grandparent_title.clone().unwrap_or_else(|| {
             detail
                 .artist
                 .as_ref()
@@ -928,7 +928,7 @@ fn track_to_result(t: dz::SearchTrack) -> db::Media {
         description: Some(format!("by {}", t.artist.name)),
         parent_id: Some(album_id),
         parent_title: Some(t.album.title),
-        series_title: Some(t.artist.name.clone()),
+        grandparent_title: Some(t.artist.name.clone()),
         external_ids: db::ExternalIds {
             deezer_track: Some(t.id as i64),
             deezer_artist: Some(t.artist.id as i64),
@@ -949,7 +949,7 @@ fn album_to_result(a: dz::SearchAlbum) -> db::Media {
         title: a.title,
         kind: db::MediaKind::Album,
         description: Some(format!("by {}", a.artist.name)),
-        series_title: Some(a.artist.name.clone()),
+        grandparent_title: Some(a.artist.name.clone()),
         external_ids: db::ExternalIds {
             deezer_album: Some(a.id as i64),
             deezer_artist: Some(a.artist.id as i64),

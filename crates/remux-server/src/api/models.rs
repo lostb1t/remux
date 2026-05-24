@@ -435,7 +435,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             .then(|| media_image_tag(&media, db::ImageKind::Primary))
             .flatten(),
         album_artist: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            .then(|| media.series_title.clone())
+            .then(|| media.grandparent_title.clone())
             .flatten(),
         album_artists: matches!(
             media.kind,
@@ -444,18 +444,18 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         .then(|| {
             media
                 .grandparent_id
-                .zip(media.series_title.clone())
+                .zip(media.grandparent_title.clone())
                 .map(|(id, name)| vec![NameIdPair { id, name }])
         })
         .flatten(),
         artists: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            .then(|| media.series_title.clone().map(|name| vec![name]))
+            .then(|| media.grandparent_title.clone().map(|name| vec![name]))
             .flatten(),
         artist_items: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
                 media
                     .grandparent_id
-                    .zip(media.series_title.clone())
+                    .zip(media.grandparent_title.clone())
                     .map(|(id, name)| vec![NameIdPair { id, name }])
             })
             .flatten(),
@@ -508,8 +508,8 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     }
 
     if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season) {
-        item.series_name = media.series_title.clone();
-        item.series_primary_image_tag = media.series_poster.clone();
+        item.series_name = media.grandparent_title.clone();
+        item.series_primary_image_tag = media.grandparent_primary_image.clone();
         // The series item is where backdrop images live.
         let series_uuid = if media.kind == db::MediaKind::Episode {
             media.grandparent_id.or(media.parent_id)
@@ -518,12 +518,12 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         };
         item.parent_backdrop_item_id = series_uuid.map(|id| id.to_string());
         item.parent_backdrop_image_tags =
-            media.series_backdrop.clone().map(|b| vec![b]);
+            media.grandparent_backdrop.clone().map(|b| vec![b]);
         item.parent_thumb_item_id = series_uuid.map(|id| id.to_string());
         item.parent_thumb_image_tag = media
-            .series_thumb
+            .grandparent_thumb
             .clone()
-            .or_else(|| media.series_backdrop.clone());
+            .or_else(|| media.grandparent_backdrop.clone());
         if media.kind == db::MediaKind::Episode {
             item.season_name = media.parent_title.clone();
         }
@@ -571,7 +571,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     if media.kind == db::MediaKind::TvProgram {
         item.channel_id = media.parent_id.map(|id| id.to_string());
         item.channel_name = media.parent_title.clone();
-        item.channel_primary_image_tag = media.series_poster.clone();
+        item.channel_primary_image_tag = media.grandparent_primary_image.clone();
         item.location_type = LocationType::Remote;
         item.can_delete = Some(false);
         item.can_download = Some(false);
