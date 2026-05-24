@@ -348,13 +348,6 @@ impl StreamSource for LocalSource {
 #[async_trait]
 impl StreamSource for TorrentSource {
     async fn serve(&self, state: &AppState, headers: &HeaderMap) -> Result<Response> {
-        let cfg = crate::db::Settings::get_config(&state.ctx.db).await?;
-        if !cfg.p2p_enabled.unwrap_or(true) {
-            return Err(anyhow::anyhow!("P2P disabled")).context_bad_request(
-                "stream",
-                "P2P streams are disabled by the server administrator",
-            );
-        }
         let resolved = state
             .ctx
             .torrent

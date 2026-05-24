@@ -58,9 +58,7 @@ impl Task for RefreshAllMetaTask {
                 break;
             }
             let fetched = batch.len();
-            ctx.addons
-                .process_meta_batch(batch, &ctx, false, true)
-                .await?;
+            ctx.addons.process_meta_batch(batch, &ctx, false).await?;
             processed += fetched;
             progress.report(processed, total.max(1));
             if fetched < CHUNK_SIZE as usize {

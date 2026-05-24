@@ -687,13 +687,11 @@ impl AddonService {
         media: Vec<db::Media>,
         ctx: &AppContext,
         force_refresh: bool,
-        save: bool,
-    ) -> Result<Vec<db::Media>> {
+    ) -> Result<()> {
         use futures::stream::{self, StreamExt};
         let config = db::Settings::get_config(&ctx.db).await.unwrap_or_default();
-        let concurrency = config.meta_concurrency.unwrap_or(10) as usize;
+        let concurrency = config.meta_concurrency.unwrap_or(5) as usize;
         let config = Arc::new(config);
-        let mut all = Vec::with_capacity(media.len());
         let mut stream = stream::iter(media)
             .map(|m| {
                 let cfg = Arc::clone(&config);
@@ -701,13 +699,12 @@ impl AddonService {
             })
             .buffer_unordered(concurrency);
         while let Some(items) = stream.next().await {
-            if save && !items.is_empty() {
+            if !items.is_empty() {
                 db::Media::upsert(&ctx.db, &items).await?;
                 save_pending_relations(ctx, &items).await;
             }
-            all.extend(items);
         }
-        Ok(all)
+        Ok(())
     }
 
     pub(crate) async fn process_meta_item(
@@ -730,7 +727,10 @@ impl AddonService {
             return vec![media];
         }
 
+        // Keep a reference to the series so child items (episodes/seasons) can
+        // resolve the series TMDB ID in-memory without hitting the DB.
         let grandparent = Some(Box::new(media.clone()));
+
         let mut items = vec![media.clone()];
         for mut item in tree {
             item.grandparent = grandparent.clone();
@@ -742,6 +742,7 @@ impl AddonService {
                     tracing::warn!(id = %item.id, error = %e, "failed to refresh child meta");
                 }
             }
+            item.grandparent = None; // drop before pushing — not persisted, no reason to hold
             items.push(item);
         }
         items

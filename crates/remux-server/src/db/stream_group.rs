@@ -199,7 +199,11 @@ impl StreamGroup {
     /// match by priority order), plus any unmatched sources when
     /// `show_ungrouped` is true.  When no groups are enabled the original
     /// list is returned unchanged.
-    pub async fn filter_sources(db: &SqlitePool, sources: Vec<Media>) -> Vec<Media> {
+    pub async fn filter_sources(
+        db: &SqlitePool,
+        sources: Vec<Media>,
+        show_ungrouped: bool,
+    ) -> Vec<Media> {
         let groups = match Self::list(db).await {
             Ok(g) => g,
             Err(_) => return sources,
@@ -208,12 +212,6 @@ impl StreamGroup {
         if enabled.is_empty() {
             return sources;
         }
-
-        let show_ungrouped = Settings::get_config(db)
-            .await
-            .ok()
-            .and_then(|c| c.stream_groups_show_ungrouped)
-            .unwrap_or(true);
 
         let mut result: Vec<Media> = vec![];
         let mut matched_ids: HashSet<Uuid> = HashSet::new();

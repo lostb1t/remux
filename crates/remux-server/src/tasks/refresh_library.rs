@@ -160,9 +160,7 @@ impl Task for RefreshLibraryTask {
                 break;
             }
             let fetched = batch.len() as u32;
-            ctx.addons
-                .process_meta_batch(batch, &ctx, false, true)
-                .await?;
+            ctx.addons.process_meta_batch(batch, &ctx, false).await?;
             processed += fetched;
             if let Some(t) = total {
                 meta_progress.report(processed as usize, t as usize);

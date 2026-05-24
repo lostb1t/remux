@@ -77,6 +77,12 @@ pub async fn get_items(
         None
     };
 
+    let server_config = db::Settings::get_config(&state.ctx.db).await.ok();
+    let show_ungrouped = server_config
+        .as_ref()
+        .and_then(|c| c.stream_groups_show_ungrouped)
+        .unwrap_or(true);
+
     let search = q.search_term.clone();
     let skip = q.start_index.unwrap_or(0) as u32;
 
@@ -91,8 +97,7 @@ pub async fn get_items(
     {
         let types = q.get_requested_item_types();
         let raw_types = q.include_item_types.as_deref().unwrap_or(&[]);
-        let cfg = db::Settings::get_config(&state.ctx.db).await?;
-        let server_config = db::Settings::get_config(&state.ctx.db).await.ok();
+        let cfg = server_config.clone().unwrap_or_default();
 
         if let Some(ref s) = search {
             let limit = q.limit.unwrap_or(800) as usize;
@@ -335,8 +340,6 @@ pub async fn get_items(
                     None
                 };
 
-            let server_config =
-                crate::db::Settings::get_config(&state.ctx.db).await.ok();
             let result = db::Media::get_by_jellyfin_filter(
                 &state.ctx.db,
                 &q,
@@ -370,7 +373,6 @@ pub async fn get_items(
     }
 
     let want_total = q.enable_total_record_count.unwrap_or(true);
-    let server_config = crate::db::Settings::get_config(&state.ctx.db).await.ok();
     let mut result = db::Media::get_by_jellyfin_filter(
         &state.ctx.db,
         &q,
@@ -552,7 +554,7 @@ pub async fn refresh_item(
         state
             .ctx
             .addons
-            .process_meta_batch(vec![media], &state.ctx, force_refresh, true)
+            .process_meta_batch(vec![media], &state.ctx, force_refresh)
             .await?;
     }
 
@@ -900,6 +902,11 @@ pub async fn item(
     let want_streams = fields
         .map(|f| f.contains(&api::ItemFields::MediaSources))
         .unwrap_or(true);
+    let server_config = db::Settings::get_config(&state.ctx.db).await.ok();
+    let show_ungrouped = server_config
+        .as_ref()
+        .and_then(|c| c.stream_groups_show_ungrouped)
+        .unwrap_or(true);
     let mut media = match db::Media::get_by_filter(
         &state.ctx.db,
         &db::MediaFilter {
@@ -939,11 +946,11 @@ pub async fn item(
                 state
                     .ctx
                     .addons
-                    .process_meta_batch(vec![media.clone()], &state.ctx, false, true)
+                    .process_meta_batch(vec![media.clone()], &state.ctx, false)
                     .await
                     .log_err("failed to refresh metadata")
             } else {
-                Ok(vec![])
+                Ok(())
             }
         },
         async {
@@ -975,7 +982,8 @@ pub async fn item(
         media.sources = Some(vec![media.clone()]);
     } else if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
         let raw = media.streams(&state.ctx.db).await?;
-        let grouped = db::StreamGroup::filter_sources(&state.ctx.db, raw).await;
+        let grouped =
+            db::StreamGroup::filter_sources(&state.ctx.db, raw, show_ungrouped).await;
         let filtered = if let Some(ref sf) = user_stream_filter {
             db::apply_stream_filter(sf, grouped)
         } else {
@@ -985,7 +993,8 @@ pub async fn item(
         media.user_state(&state.ctx.db, &session.user).await?;
     } else if media.kind == db::MediaKind::Track {
         let raw = media.streams(&state.ctx.db).await?;
-        let grouped = db::StreamGroup::filter_sources(&state.ctx.db, raw).await;
+        let grouped =
+            db::StreamGroup::filter_sources(&state.ctx.db, raw, show_ungrouped).await;
         let filtered = if let Some(ref sf) = user_stream_filter {
             db::apply_stream_filter(sf, grouped)
         } else {
@@ -1083,12 +1092,17 @@ pub async fn item(
     if enable_subtitles_detail {
         if let Some(ref mut sources) = base_item.media_sources {
             if !sources.is_empty() {
+                let sub_langs = server_config
+                    .as_ref()
+                    .and_then(|c| c.subtitle_languages.clone())
+                    .unwrap_or_default();
                 super::playback::inject_external_subtitles(
                     &state.ctx,
                     &media,
                     sources,
                     media.id,
                     &session.device.access_token,
+                    sub_langs,
                 )
                 .await;
             }

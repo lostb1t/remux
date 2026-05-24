@@ -42,7 +42,7 @@ impl Task for SeriesSyncTask {
         .records;
 
         ctx.addons
-            .process_meta_batch(media_list, &ctx, false, true)
+            .process_meta_batch(media_list, &ctx, false)
             .await?;
 
         Ok(())

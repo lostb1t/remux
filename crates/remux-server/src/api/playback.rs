@@ -76,6 +76,11 @@ async fn items_playbackinfo_inner(
 
     let device_profile = q.device_profile;
 
+    let probe_cfg = db::Settings::get_config(&state.ctx.db)
+        .await
+        .unwrap_or_default();
+    let show_ungrouped = probe_cfg.stream_groups_show_ungrouped.unwrap_or(true);
+
     let mut media = resolve_item(media_source_id.unwrap_or(id), &state.ctx)
         .await?
         .context_not_found("not found", "not found")?;
@@ -134,7 +139,9 @@ async fn items_playbackinfo_inner(
             sources
         };
         {
-            let sources = db::StreamGroup::filter_sources(&state.ctx.db, raw).await;
+            let sources =
+                db::StreamGroup::filter_sources(&state.ctx.db, raw, show_ungrouped)
+                    .await;
             if let Some(sf) = session
                 .user
                 .policy
@@ -210,9 +217,6 @@ async fn items_playbackinfo_inner(
 
     let play_session_id = common::get_uuid().as_simple().to_string();
 
-    let probe_cfg = crate::db::Settings::get_config(&state.ctx.db)
-        .await
-        .unwrap_or_default();
     let probe_timeout_secs = probe_cfg.probe_timeout_secs.unwrap_or(20) as u64;
     let probe_timeout_p2p_secs = probe_cfg.probe_timeout_p2p_secs.unwrap_or(60) as u64;
     let auto_next_stream = probe_cfg.auto_next_stream_on_probe_fail.unwrap_or(true);
@@ -523,12 +527,14 @@ async fn items_playbackinfo_inner(
 
     // Inject external subtitles from AIO (cache-backed)
     if let Some(ref sm) = subtitle_media {
+        let sub_langs = probe_cfg.subtitle_languages.clone().unwrap_or_default();
         inject_external_subtitles(
             &state.ctx,
             sm,
             &mut media_sources,
             id,
             &session.device.access_token,
+            sub_langs,
         )
         .await;
     }
@@ -3533,17 +3539,12 @@ pub(super) async fn inject_external_subtitles(
     media_sources: &mut Vec<api::MediaSourceInfo>,
     item_id: Uuid,
     api_key: &str,
+    sub_langs: Vec<String>,
 ) {
     let subs = ctx.addons.fetch_subtitles(subtitle_media, &ctx.db).await;
     if subs.is_empty() {
         return;
     }
-
-    let sub_langs: Vec<String> = crate::db::Settings::get_config(&ctx.db)
-        .await
-        .ok()
-        .and_then(|c| c.subtitle_languages)
-        .unwrap_or_default();
 
     let filtered: Vec<_> = if sub_langs.is_empty() {
         subs

@@ -3,10 +3,11 @@ use axum::response::IntoResponse;
 use remux_macros::get;
 use uuid::Uuid;
 
-use axum_anyhow::{ApiResult as Result, OptionExt};
+use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 
 use crate::AppState;
 use crate::db;
+use crate::stream::StreamDescriptor;
 
 /// Proxy any stream stored in `db::Media.stream_info` to the caller.
 ///
@@ -36,6 +37,18 @@ pub async fn stream_proxy(
             .await
             .context_not_found("stream", "addon not found")?;
         return addon.kind.serve_stream(&descriptor, &headers).await;
+    }
+
+    if matches!(descriptor, StreamDescriptor::Torrent { .. }) {
+        let cfg = db::Settings::get_config(&state.ctx.db)
+            .await
+            .unwrap_or_default();
+        if !cfg.p2p_enabled.unwrap_or(true) {
+            return Err(anyhow::anyhow!("P2P disabled")).context_bad_request(
+                "stream",
+                "P2P streams are disabled by the server administrator",
+            );
+        }
     }
 
     descriptor.into_source().serve(&state, &headers).await
