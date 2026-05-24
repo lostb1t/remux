@@ -555,6 +555,9 @@ async fn items_playbackinfo_inner(
             source.read_at_native_framerate = true;
             source.buffer_ms = Some(1500);
             source.run_time_ticks = None;
+            // Route through our proxy so clients don't hit the raw IPTV URL directly
+            // (which may redirect and confuse players that don't follow 302 on streams).
+            source.is_remote = false;
         }
     }
 
@@ -807,18 +810,22 @@ async fn videos_stream_inner(
             .await?
             .context_not_found("not found", "not found")?;
 
-    // IPTV channels: redirect directly to the stream URL.
+    // IPTV channels: proxy the stream so redirects are handled server-side.
     if media.kind == db::MediaKind::TvChannel {
         let url = media
             .stream_info
             .as_ref()
             .and_then(|si| si.descriptor.as_http_url().map(str::to_owned))
             .context_not_found("missing url", "channel has no stream url")?;
-        return Ok(Response::builder()
-            .status(StatusCode::FOUND)
-            .header(http::header::LOCATION, url)
-            .body(Body::empty())
-            .unwrap());
+        let upstream = reqwest::get(&url).await.map_err(anyhow::Error::from)?;
+        let status = upstream.status();
+        let content_type = upstream.headers().get(http::header::CONTENT_TYPE).cloned();
+        let body = Body::from_stream(upstream.bytes_stream());
+        let mut resp = Response::builder().status(status);
+        if let Some(ct) = content_type {
+            resp = resp.header(http::header::CONTENT_TYPE, ct);
+        }
+        return Ok(resp.body(body).unwrap());
     }
 
     if media.kind == db::MediaKind::Movie

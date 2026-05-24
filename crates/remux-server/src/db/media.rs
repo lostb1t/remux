@@ -982,6 +982,13 @@ impl Media {
                     media.parent_title = media
                         .parent_id
                         .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+                    if let Some(id) = media.parent_id {
+                        if let Some(imgs) = parent_images.get(&id) {
+                            media.series_poster = imgs
+                                .get(super::image::ImageKind::Primary)
+                                .map(|i| i.path.clone());
+                        }
+                    }
                 }
                 _ => {}
             }

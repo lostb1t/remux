@@ -100,8 +100,8 @@ impl Into<MediaType> for db::MediaKind {
             db::MediaKind::Genre => MediaType::Genre,
             db::MediaKind::Person => MediaType::Person,
             db::MediaKind::Studio => MediaType::Studio,
-            db::MediaKind::TvChannel => MediaType::TvChannel,
-            db::MediaKind::TvProgram => MediaType::Program,
+            db::MediaKind::TvChannel => MediaType::LiveTvChannel,
+            db::MediaKind::TvProgram => MediaType::LiveTvProgram,
             db::MediaKind::Track => MediaType::Audio,
             db::MediaKind::Album => MediaType::MusicAlbum,
             db::MediaKind::Artist => MediaType::MusicArtist,
@@ -332,7 +332,19 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         }),
         run_time_ticks: media
             .runtime
-            .map(|r| r.to_ticks(common::TickUnit::Seconds).unwrap()),
+            .map(|r| r.to_ticks(common::TickUnit::Seconds).unwrap())
+            .or_else(|| {
+                if let (Some(start), Some(end)) = (media.live_start, media.live_end) {
+                    let secs = (end - start).num_seconds();
+                    if secs > 0 {
+                        Some(secs * 10_000_000)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }),
         genres: media
             .relations
             .as_ref()

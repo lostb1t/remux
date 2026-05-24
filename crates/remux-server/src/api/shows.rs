@@ -24,8 +24,9 @@ pub fn livetv_view_item() -> api::BaseItemDto {
     api::BaseItemDto {
         id: livetv_view_id(),
         name: Some("Live TV".to_string()),
-        type_: api::MediaType::CollectionFolder,
+        type_: api::MediaType::UserView,
         collection_type: Some(api::CollectionType::Livetv),
+        is_folder: true,
         ..Default::default()
     }
 }
