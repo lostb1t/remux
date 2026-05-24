@@ -27,7 +27,9 @@ pub async fn import_catalog_items<S>(
 where
     S: futures::Stream<Item = db::Media> + Unpin,
 {
-    let mut chunks = stream.chunks(250);
+    // Stop pulling from the underlying paginated stream once we have enough items.
+    // Without this, the stream fetches ALL pages until empty even when max=50.
+    let mut chunks = stream.take(max).chunks(250);
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut total = 0usize;
     let membership = catalog_membership(media_id);

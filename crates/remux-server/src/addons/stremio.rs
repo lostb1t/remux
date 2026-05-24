@@ -9,6 +9,7 @@ use sqlx::SqlitePool;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -379,6 +380,8 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
     svc: Option<&stremio_service::StremioService>,
     tmdb_client: Option<&sdks::RestClient<A>>,
 ) -> bool {
+    let t = Instant::now();
+
     if meta.imdb_id.is_none() {
         if let Some(imdb) = db::ExternalIds::from_stremio_id(&meta.id).imdb {
             meta.imdb_id = Some(imdb);
@@ -391,6 +394,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                 Ok(()) => {}
                 Err(e) => warn!(id = %meta.id, error = %e, "AIO resolve failed"),
             }
+            tracing::debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after AIO resolve");
         }
     }
 
@@ -405,6 +409,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                 meta.imdb_id =
                     crate::addons::tmdb::resolve_imdb_from_ids(&ids, is_tv, client)
                         .await;
+                tracing::debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after TMDB id resolve");
             }
         }
     }
@@ -451,6 +456,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                     }
                 }
             }
+            tracing::debug!(id = %meta.id, elapsed = ?t.elapsed(), "after release date fetch");
         }
     }
 

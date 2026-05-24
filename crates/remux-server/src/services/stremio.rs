@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use futures::future;
 use futures::stream::{self, Stream, StreamExt};
 use std::pin::Pin;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub struct StremioService {
@@ -121,6 +121,7 @@ impl StremioService {
     ) -> Result<Pin<Box<dyn Stream<Item = sdks::stremio::Meta> + Send>>> {
         let client = self.client.clone();
 
+        let t0 = Instant::now();
         let first_page = client
             .execute(sdks::stremio::CatalogEndpoint {
                 kind: kind.clone(),
@@ -132,6 +133,7 @@ impl StremioService {
             .await?;
 
         let page_size = first_page.metas.len() as u32;
+        tracing::debug!(kind = %kind, id = %id, page_size, elapsed = ?t0.elapsed(), "catalog first page");
         if page_size == 0 {
             return Ok(Box::pin(stream::empty()));
         }
@@ -144,15 +146,19 @@ impl StremioService {
                 let kind = kind.clone();
                 let id = id.clone();
                 async move {
-                    client
+                    let t = Instant::now();
+                    let result = client
                         .execute(sdks::stremio::CatalogEndpoint {
-                            kind,
-                            id,
+                            kind: kind.clone(),
+                            id: id.clone(),
                             search: None,
                             genre: None,
                             skip: Some(page * page_size),
                         })
-                        .await
+                        .await;
+                    let n = result.as_ref().map(|r| r.metas.len()).unwrap_or(0);
+                    tracing::debug!(kind = %kind, id = %id, page, items = n, elapsed = ?t.elapsed(), "catalog page");
+                    result
                 }
             })
             .buffered(3);
