@@ -691,7 +691,7 @@ impl AddonService {
     ) -> Result<Vec<db::Media>> {
         use futures::stream::{self, StreamExt};
         let config = db::Settings::get_config(&ctx.db).await.unwrap_or_default();
-        let concurrency = config.meta_concurrency.unwrap_or(25) as usize;
+        let concurrency = config.meta_concurrency.unwrap_or(10) as usize;
         let config = Arc::new(config);
         let mut all = Vec::with_capacity(media.len());
         let mut stream = stream::iter(media)
