@@ -2448,6 +2448,7 @@ pub async fn user_unmark_played(
 #[get("/videos/{id}/master.m3u8")]
 pub async fn master_hls_video(
     State(state): State<AppState>,
+    auth: auth::AuthSession,
     Path(id): Path<Uuid>,
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
@@ -2498,6 +2499,15 @@ pub async fn master_hls_video(
             .context_not_found("not found", "media not found")?;
 
         let mut resolved_media = media.clone();
+        if resolved_media.kind == db::MediaKind::StreamGroup {
+            let gid = resolved_media.id;
+            let candidates =
+                db::StreamGroup::streams_for(&state.ctx.db, &gid, &id).await?;
+            resolved_media = candidates.into_iter().next().context_not_found(
+                "not found",
+                "no streams available for this group",
+            )?;
+        }
         if matches!(
             resolved_media.kind,
             db::MediaKind::Movie | db::MediaKind::Episode
@@ -2691,8 +2701,8 @@ pub async fn master_hls_video(
         // Spawn the transcode task with proper error handling
         let media_title_for_log = resolved_media.title.clone();
         let transcode_reasons_for_log = q.transcode_reasons.clone();
-        // Pull user/client from the PlaybackSession created by report_playback_start
-        let ps_for_log = state.ctx.sessions.get(&play_session_id);
+        let log_user = auth.user.username.clone();
+        let log_client = auth.device.app_name.clone();
         let session_clone = session.clone();
         tokio::spawn(async move {
             let start_secs = params.start_time_ticks.unwrap_or(0) / 10_000_000;
@@ -2705,8 +2715,8 @@ pub async fn master_hls_video(
             info!(
                 play_session_id = %play_session_id,
                 title = %media_title_for_log,
-                user = ps_for_log.as_ref().map(|ps| ps.user_id.to_string()).unwrap_or_default(),
-                client = ps_for_log.as_ref().map(|ps| ps.client_name.as_str()).unwrap_or(""),
+                user = %log_user,
+                client = %log_client,
                 video_codec = %params.video_codec,
                 audio_codec = %params.audio_codec,
                 resolution,
