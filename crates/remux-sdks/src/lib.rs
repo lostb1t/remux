@@ -27,6 +27,10 @@ static HTTP_CACHE: std::sync::LazyLock<Store> =
 static SHARED_HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(reqwest::Client::new);
 
+pub fn clear_http_cache() {
+    HTTP_CACHE.clear();
+}
+
 fn hash_key(key: &str) -> String {
     let result = md5::compute(key.as_bytes());
     format!("{:x}", result)

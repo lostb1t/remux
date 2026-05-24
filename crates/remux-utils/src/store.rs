@@ -109,6 +109,10 @@ impl Store {
         })
     }
 
+    pub fn clear(&self) {
+        self.inner.invalidate_all();
+    }
+
     pub fn delete(&self, key: impl Into<String>) {
         self.inner.invalidate(&key.into());
     }

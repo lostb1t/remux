@@ -16,6 +16,7 @@ use remux_sdks::remux::TaskTriggerInfoType;
 
 mod catalog_import_shared;
 mod clean_transcode_folder;
+mod clear_cache;
 mod iptv_refresh;
 mod jellyfin_import;
 mod purge_media;
@@ -25,6 +26,7 @@ mod series_sync;
 
 pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
+use clear_cache::ClearCacheTask;
 use iptv_refresh::IptvRefreshTask;
 use jellyfin_import::JellyfinImportTask;
 use purge_media::PurgeMediaTask;
@@ -201,6 +203,7 @@ impl TaskService {
             ctx: ctx.clone(),
         };
 
+        service.register_task(Arc::new(ClearCacheTask)).await?;
         service
             .register_task(Arc::new(CleanTranscodeFolderTask))
             .await?;

@@ -24,7 +24,7 @@ impl Task for PurgeMediaTask {
         "Wipes all imported media from the database (no physical files are deleted)."
     }
     fn category(&self) -> &str {
-        "Library"
+        "Maintenance"
     }
 
     async fn run(
