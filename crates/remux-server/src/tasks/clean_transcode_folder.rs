@@ -1,5 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
+#[cfg(unix)]
+use libc;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::info;
@@ -43,6 +45,20 @@ impl Task for CleanTranscodeFolderTask {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if !active.contains(&name) {
+                    // Kill any orphaned ffmpeg process before removing the dir.
+                    #[cfg(unix)]
+                    if let Ok(pid_str) =
+                        std::fs::read_to_string(entry.path().join(".pid"))
+                    {
+                        if let Ok(pid) = pid_str.trim().parse::<libc::pid_t>() {
+                            if pid > 0 {
+                                unsafe {
+                                    libc::kill(pid, libc::SIGCONT);
+                                    libc::kill(pid, libc::SIGKILL);
+                                }
+                            }
+                        }
+                    }
                     if let Err(e) = std::fs::remove_dir_all(entry.path()) {
                         tracing::warn!(
                             "failed to remove transcode dir {}: {e:#}",

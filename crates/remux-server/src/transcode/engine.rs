@@ -905,6 +905,7 @@ async fn run_ffmpeg(
     kill_rx: tokio::sync::oneshot::Receiver<()>,
     monitor_stop_tx: tokio::sync::oneshot::Sender<()>,
     ffmpeg_pid_out: Arc<AtomicU32>,
+    output_dir: std::path::PathBuf,
 ) -> (
     Option<std::result::Result<std::process::ExitStatus, std::io::Error>>,
     String,
@@ -924,7 +925,11 @@ async fn run_ffmpeg(
         }
     };
 
-    ffmpeg_pid_out.store(child.id().unwrap_or(0), Ordering::Relaxed);
+    let pid = child.id().unwrap_or(0);
+    ffmpeg_pid_out.store(pid, Ordering::Relaxed);
+    if pid > 0 {
+        let _ = std::fs::write(output_dir.join(".pid"), pid.to_string());
+    }
     let stderr = child.stderr.take();
 
     let (stderr_tx, stderr_rx) = tokio::sync::oneshot::channel::<String>();
@@ -994,7 +999,7 @@ pub async fn start_transcode(
                 tokio::sync::oneshot::channel::<()>();
 
             let ffmpeg_pid = Arc::new(AtomicU32::new(0));
-            {
+            let output_dir = {
                 let mut s = session_clone.write().await;
                 s.start_time_secs = params
                     .start_time_ticks
@@ -1008,15 +1013,22 @@ pub async fn start_transcode(
                     ffmpeg_pid.clone(),
                     monitor_stop_rx,
                 );
-            }
+                s.output_dir.clone()
+            };
 
             let env_overrides = ffmpeg_env_overrides(
                 params.hardware_acceleration_type,
                 &params.vaapi_driver,
             );
-            let (result, stderr_out) =
-                run_ffmpeg(args, env_overrides, kill_rx, monitor_stop_tx, ffmpeg_pid)
-                    .await;
+            let (result, stderr_out) = run_ffmpeg(
+                args,
+                env_overrides,
+                kill_rx,
+                monitor_stop_tx,
+                ffmpeg_pid,
+                output_dir,
+            )
+            .await;
 
             let using_hw = !matches!(
                 params.hardware_acceleration_type,
