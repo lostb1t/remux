@@ -136,6 +136,7 @@ fn spawn_buffer_monitor(
     playback_offset_secs: Arc<AtomicU32>,
     ffmpeg_pid: Arc<AtomicU32>,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
+    play_session_id: String,
 ) {
     tokio::spawn(async move {
         let mut paused = false;
@@ -157,7 +158,7 @@ fn spawn_buffer_monitor(
             let ahead = buffered_secs.saturating_sub(playback_secs);
 
             if pid != 0 && !paused && ahead >= MAX_BUFFER_SECS {
-                debug!(pid, ahead, "Buffer full — pausing ffmpeg");
+                debug!(play_session_id, pid, ahead, "Buffer full — pausing ffmpeg");
                 #[cfg(unix)]
                 send_signal(pid, libc::SIGSTOP);
                 paused = true;
@@ -165,7 +166,10 @@ fn spawn_buffer_monitor(
                 && paused
                 && ahead < MAX_BUFFER_SECS.saturating_sub(segment_length * 2)
             {
-                debug!(pid, ahead, "Buffer drained — resuming ffmpeg");
+                debug!(
+                    play_session_id,
+                    pid, ahead, "Buffer drained — resuming ffmpeg"
+                );
                 #[cfg(unix)]
                 send_signal(pid, libc::SIGCONT);
                 paused = false;
@@ -1012,6 +1016,7 @@ pub async fn start_transcode(
                     s.playback_offset_secs.clone(),
                     ffmpeg_pid.clone(),
                     monitor_stop_rx,
+                    s.id.clone(),
                 );
                 s.output_dir.clone()
             };

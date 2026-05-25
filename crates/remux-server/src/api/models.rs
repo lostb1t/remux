@@ -467,20 +467,24 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             db::MediaStatus::Released | db::MediaStatus::Unknown => Status::Released,
         }),
         sort_name: Some(media.title.to_ascii_lowercase()),
-        primary_image_aspect_ratio: media
-            .images
-            .get(db::ImageKind::Primary)
-            .and_then(|i| {
-                let (w, h) = (i.width?, i.height?);
-                if h == 0 {
-                    return None;
-                }
-                Some(w as f32 / h as f32)
-            })
-            .unwrap_or_else(|| match media.kind {
-                db::MediaKind::Collection | db::MediaKind::Folder => 16.0 / 9.0,
-                _ => 0.6,
-            }),
+        primary_image_aspect_ratio: Some(
+            media
+                .images
+                .get(db::ImageKind::Primary)
+                .and_then(|i| {
+                    let (w, h) = (i.width?, i.height?);
+                    if h == 0 {
+                        return None;
+                    }
+                    Some(w as f32 / h as f32)
+                })
+                .unwrap_or_else(|| match media.kind {
+                    db::MediaKind::Episode
+                    | db::MediaKind::Collection
+                    | db::MediaKind::Folder => 16.0 / 9.0,
+                    _ => 0.6,
+                }),
+        ),
         remux: Some(RemuxInfo {
             collection_kind: media
                 .collection_kind

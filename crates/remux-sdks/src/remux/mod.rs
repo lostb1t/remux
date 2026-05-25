@@ -2492,8 +2492,8 @@ pub struct BaseItemDto {
 
     // this is fucking weird. And its used.
     // anyway we set it to poster format by default
-    #[default(0.6)]
-    pub primary_image_aspect_ratio: f32,
+    #[default(Some(0.6))]
+    pub primary_image_aspect_ratio: Option<f32>,
     //pub artists: Option<Vec<String>>,
     //pub artist_items: Option<Vec<NameIdPair>>,
     pub artists: Option<Vec<String>>,

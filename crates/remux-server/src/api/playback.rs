@@ -21,7 +21,7 @@ use serde_with::{DurationSeconds, serde_as};
 use std::io;
 use std::time::Duration;
 use tokio_util::io::ReaderStream;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 use url::Url;
 use uuid::Uuid;
 
@@ -1037,7 +1037,10 @@ pub async fn report_playback_start(
         }
     }
 
-    let item_id = data.item_id.unwrap_or_default();
+    let item_id = data.item_id.unwrap_or_else(|| {
+        warn!(client = %session.device.app_name, "PlaybackStart missing item_id");
+        Uuid::default()
+    });
 
     // If the client selected a StreamGroup source, record its group UUID.
     let group_id: Option<Uuid> = if let Some(ref sid) = data.media_source_id {
