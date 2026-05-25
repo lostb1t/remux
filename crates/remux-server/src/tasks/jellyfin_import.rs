@@ -6,7 +6,10 @@ use tracing::{debug, info, warn};
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::{AppContext, db};
-use remux_sdks::remux::{GetJellyfinUserItems, GetJellyfinUsers, JellyfinUserDto};
+use remux_sdks::remux::{
+    GetJellyfinItemsByIds, GetJellyfinUserItems, GetJellyfinUsers, JellyfinItem,
+    JellyfinUserDto,
+};
 use remux_sdks::{JellyfinApiKeyAuth, RestClient};
 
 pub struct JellyfinImportTask;
@@ -63,6 +66,7 @@ impl Task for JellyfinImportTask {
             tvdb = index.by_tvdb.len(),
             "media index built"
         );
+
         info!("syncing {} Jellyfin users", jf_users.len());
         progress.set(5.0);
 
@@ -101,11 +105,17 @@ impl Task for JellyfinImportTask {
             };
             local_users.push((jf_user, local_user));
         }
-        progress.set(20.0);
+        progress.set(10.0);
 
-        // Import watch states per user sequentially
-        let mut states_imported = 0u32;
-        let mut states_unresolved = 0u32;
+        // Pass 1: fetch all user items, collect unique series IDs needed for episode resolution
+        let mut user_items: Vec<(
+            usize,
+            &JellyfinUserDto,
+            &db::User,
+            Vec<JellyfinItem>,
+        )> = Vec::new();
+        let mut needed_series_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for (i, (jf_user, local_user)) in local_users.iter().enumerate() {
             let Some(jf_id) = jf_user.id.as_deref() else {
@@ -132,14 +142,68 @@ impl Task for JellyfinImportTask {
                 }),
             );
             let mut seen = std::collections::HashSet::new();
-            let mut items: Vec<_> = played?
+            let items: Vec<_> = played?
                 .items
                 .into_iter()
                 .chain(resumable?.items)
                 .chain(favorited?.items)
                 .filter(|it| seen.insert(it.id.clone()))
                 .collect();
-            info!("got {} items for '{username}', importing", items.len());
+            info!("got {} items for '{username}'", items.len());
+
+            for item in &items {
+                if matches!(item.item_type.as_deref(), Some("Episode") | Some("Season"))
+                {
+                    // Only need series lookup when SeriesProviderIds didn't give us IMDB
+                    let has_series_imdb = item
+                        .series_provider_ids
+                        .as_ref()
+                        .and_then(|p| p.get("Imdb"))
+                        .is_some();
+                    if !has_series_imdb {
+                        if let Some(sid) = &item.series_id {
+                            needed_series_ids.insert(sid.clone());
+                        }
+                    }
+                }
+            }
+
+            user_items.push((i, jf_user, local_user, items));
+        }
+        progress.set(50.0);
+
+        // Pass 2: batch-fetch only the series we actually need
+        info!(
+            count = needed_series_ids.len(),
+            "fetching series provider IDs for episode resolution"
+        );
+        let series_imdb_map: HashMap<String, String> = if needed_series_ids.is_empty() {
+            HashMap::new()
+        } else {
+            let ids = needed_series_ids.into_iter().collect::<Vec<_>>();
+            client
+                .execute(GetJellyfinItemsByIds { ids })
+                .await?
+                .items
+                .into_iter()
+                .filter_map(|it| {
+                    let id = it.id?;
+                    let imdb = it.provider_ids?.get("Imdb")?.clone();
+                    Some((id, imdb))
+                })
+                .collect()
+        };
+        info!(count = series_imdb_map.len(), "series index built");
+        progress.set(60.0);
+
+        // Pass 3: import watch states
+        let mut states_imported = 0u32;
+        let mut states_unresolved = 0u32;
+        let user_count = user_items.len();
+
+        for (i, jf_user, local_user, items) in user_items {
+            let username = jf_user.name.as_deref().unwrap_or("?");
+            info!("importing {} items for '{username}'", items.len());
 
             for item in items {
                 let Some(ud) = &item.user_data else {
@@ -178,12 +242,26 @@ impl Task for JellyfinImportTask {
                         )
                         .then(|| imdb.map(String::from))
                         .flatten(),
-                        // For episodes/seasons, Jellyfin's "Imdb" provider ID is the series IMDB
+                        // For episodes/seasons, resolve series IMDB via:
+                        // 1. SeriesProviderIds["Imdb"] (authoritative when set)
+                        // 2. series_imdb_map[SeriesId] (look up series item by Jellyfin UUID)
+                        // ProviderIds["Imdb"] is NOT used — it can be the episode's own IMDB.
                         series_imdb: matches!(
                             kind,
                             db::MediaKind::Season | db::MediaKind::Episode
                         )
-                        .then(|| imdb.map(String::from))
+                        .then(|| {
+                            item.series_provider_ids
+                                .as_ref()
+                                .and_then(|p| p.get("Imdb"))
+                                .map(String::from)
+                                .or_else(|| {
+                                    item.series_id
+                                        .as_deref()
+                                        .and_then(|sid| series_imdb_map.get(sid))
+                                        .cloned()
+                                })
+                        })
                         .flatten(),
                         tmdb,
                         tvdb,
@@ -251,7 +329,7 @@ impl Task for JellyfinImportTask {
                 states_imported += 1;
             }
 
-            progress.report(i + 1, local_users.len());
+            progress.report(i + 1, user_count);
         }
 
         progress.set(100.0);

@@ -3739,7 +3739,10 @@ impl Endpoint for GetJellyfinUserItems {
     fn query(&self) -> Vec<(String, String)> {
         vec![
             ("Recursive".into(), "true".into()),
-            ("Fields".into(), "ProviderIds,UserData,SeriesId".into()),
+            (
+                "Fields".into(),
+                "ProviderIds,SeriesProviderIds,UserData,SeriesId".into(),
+            ),
             ("IncludeItemTypes".into(), "Movie,Episode".into()),
             ("Filters".into(), self.filter.into()),
         ]
