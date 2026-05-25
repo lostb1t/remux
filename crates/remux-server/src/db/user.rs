@@ -318,42 +318,43 @@ pub struct MediaIdRaw {
     pub episode: Option<i64>,
 }
 
+impl MediaIdRaw {
+    pub fn canonical(&self) -> Option<String> {
+        use super::MediaKind;
+        match self.kind {
+            MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => {
+                self.external_ids.imdb.clone()
+            }
+            MediaKind::Season => {
+                let series_imdb = self.external_ids.series_imdb.as_deref()?;
+                Some(format!("{}:{}", series_imdb, self.season.unwrap_or(0)))
+            }
+            MediaKind::Episode => {
+                let series_imdb = self.external_ids.series_imdb.as_deref()?;
+                Some(format!(
+                    "{}:{}:{}",
+                    series_imdb,
+                    self.season.unwrap_or(0),
+                    self.episode.unwrap_or(0)
+                ))
+            }
+            MediaKind::Artist => {
+                self.external_ids.deezer_artist.map(|id| id.to_string())
+            }
+            MediaKind::Album => self.external_ids.deezer_album.map(|id| id.to_string()),
+            MediaKind::Track => self.external_ids.deezer_track.map(|id| id.to_string()),
+            MediaKind::Person => self.external_ids.tmdb.map(|id| id.to_string()),
+            _ => None,
+        }
+    }
+}
+
 impl From<&MediaIdRaw> for Uuid {
     fn from(raw: &MediaIdRaw) -> Uuid {
-        use super::MediaKind;
-        let canonical = match raw.kind {
-            MediaKind::Movie | MediaKind::Series => {
-                raw.external_ids.imdb.as_deref().unwrap_or("").to_string()
-            }
-            MediaKind::Season => format!(
-                "{}:{}",
-                raw.external_ids.series_imdb.as_deref().unwrap_or(""),
-                raw.season.unwrap_or(0)
-            ),
-            MediaKind::Episode => format!(
-                "{}:{}:{}",
-                raw.external_ids.series_imdb.as_deref().unwrap_or(""),
-                raw.season.unwrap_or(0),
-                raw.episode.unwrap_or(0)
-            ),
-            MediaKind::Artist => raw
-                .external_ids
-                .deezer_artist
-                .map(|id| id.to_string())
-                .unwrap_or_default(),
-            MediaKind::Album => raw
-                .external_ids
-                .deezer_album
-                .map(|id| id.to_string())
-                .unwrap_or_default(),
-            MediaKind::Track => raw
-                .external_ids
-                .deezer_track
-                .map(|id| id.to_string())
-                .unwrap_or_default(),
-            _ => raw.external_ids.imdb.as_deref().unwrap_or("").to_string(),
-        };
-        crate::common::stable_media_uuid(&raw.kind, &canonical)
+        crate::common::stable_media_uuid(
+            &raw.kind,
+            &raw.canonical().unwrap_or_default(),
+        )
     }
 }
 
@@ -405,13 +406,92 @@ impl UserMediaState {
         user: &User,
         media: &super::Media,
     ) -> Result<Self> {
-        let row = Self::get_by_user_and_media(db, user, media).await?;
-        Ok(row.unwrap_or_else(|| Self {
+        if let Some(row) = Self::get_by_user_and_media(db, user, media).await? {
+            return Ok(row);
+        }
+
+        let raw = media.media_id_raw();
+
+        // Content-based fallback: catches legacy rows stored under a different UUID
+        // (e.g. pre-fix random UUID) for the same content, matched via media_raw JSON.
+        let fallback: Option<Self> = match media.kind {
+            super::MediaKind::Movie | super::MediaKind::Series => {
+                if let Some(imdb) = &raw.external_ids.imdb {
+                    sqlx::query_as(
+                        "SELECT * FROM user_media_state \
+                         WHERE user_id = ? \
+                           AND json_extract(media_raw, '$.kind') = ? \
+                           AND json_extract(media_raw, '$.external_ids.imdb') = ? \
+                         LIMIT 1",
+                    )
+                    .bind(user.id)
+                    .bind(media.kind.to_string())
+                    .bind(imdb)
+                    .fetch_optional(db)
+                    .await?
+                } else {
+                    None
+                }
+            }
+            super::MediaKind::Season => {
+                if let (Some(series_imdb), Some(season)) =
+                    (&raw.external_ids.series_imdb, raw.season)
+                {
+                    sqlx::query_as(
+                        "SELECT * FROM user_media_state \
+                         WHERE user_id = ? \
+                           AND json_extract(media_raw, '$.kind') = ? \
+                           AND json_extract(media_raw, '$.external_ids.series_imdb') = ? \
+                           AND json_extract(media_raw, '$.season') = ? \
+                         LIMIT 1",
+                    )
+                    .bind(user.id)
+                    .bind(media.kind.to_string())
+                    .bind(series_imdb)
+                    .bind(season)
+                    .fetch_optional(db)
+                    .await?
+                } else {
+                    None
+                }
+            }
+            super::MediaKind::Episode => {
+                if let (Some(series_imdb), Some(season), Some(episode)) =
+                    (&raw.external_ids.series_imdb, raw.season, raw.episode)
+                {
+                    sqlx::query_as(
+                        "SELECT * FROM user_media_state \
+                         WHERE user_id = ? \
+                           AND json_extract(media_raw, '$.kind') = ? \
+                           AND json_extract(media_raw, '$.external_ids.series_imdb') = ? \
+                           AND json_extract(media_raw, '$.season') = ? \
+                           AND json_extract(media_raw, '$.episode') = ? \
+                         LIMIT 1",
+                    )
+                    .bind(user.id)
+                    .bind(media.kind.to_string())
+                    .bind(series_imdb)
+                    .bind(season)
+                    .bind(episode)
+                    .fetch_optional(db)
+                    .await?
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(row) = fallback {
+            return Ok(row);
+        }
+
+        Ok(Self {
             user_id: user.id,
             media_id: media.id,
-            media_raw: serde_json::to_string(&media.media_id_raw()).ok(),
+            media_raw: serde_json::to_string(&raw).ok(),
             ..Default::default()
-        }))
+        })
     }
 
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {

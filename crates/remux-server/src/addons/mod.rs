@@ -647,6 +647,16 @@ impl AddonService {
             }
         }
 
+        // Recompute stable UUID for Person once TMDB ID is resolved.
+        if media.kind == db::MediaKind::Person {
+            if let Some(tmdb_id) = media.external_ids.tmdb {
+                media.id = crate::common::stable_media_uuid(
+                    &db::MediaKind::Person,
+                    &tmdb_id.to_string(),
+                );
+            }
+        }
+
         media.refreshed_at = Some(chrono::Utc::now().naive_utc());
         Ok(())
     }

@@ -1158,6 +1158,21 @@ impl Media {
             }
         }
 
+        if self.kind == MediaKind::Person {
+            if let Some(tmdb_id) = self.external_ids.tmdb {
+                let expected = crate::common::stable_media_uuid(
+                    &MediaKind::Person,
+                    &tmdb_id.to_string(),
+                );
+                if expected != self.id {
+                    return Err(MediaError::ValidationError(format!(
+                        "Person '{}' UUID mismatch: id={} expected={}",
+                        self.title, self.id, expected
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 
