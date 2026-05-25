@@ -29,10 +29,10 @@ async fn persist_from_store(
         if !crate::services::imdb::resolve_media_imdb(&mut media, ctx).await {
             tracing::warn!(%id, kind = ?media.kind, "persist_from_store: IMDB resolution failed, saving without IMDB ID");
         }
-        // Recompute the stable UUID now that we have the IMDB ID. TryFrom<Meta> may
-        // have fallen back to new_v4() when imdb_id was absent from the search result.
-        if let Some(canonical) = crate::common::canonical_external_id(&media) {
-            media.id = crate::common::stable_media_uuid(&media.kind, &canonical);
+        // Recompute the stable UUID now that we have the IMDB ID. Use the authoritative
+        // path (media_id_raw → From<MediaIdRaw>) which correctly handles all kinds.
+        if media.external_ids.imdb.is_some() {
+            media.id = uuid::Uuid::from(&media.media_id_raw());
         }
     }
 

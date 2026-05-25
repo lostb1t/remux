@@ -286,12 +286,12 @@ pub fn canonical_external_id(media: &crate::db::Media) -> Option<String> {
         MediaKind::Movie | MediaKind::Series => media.external_ids.imdb.clone(),
         MediaKind::Season => Some(format!(
             "{}:{}",
-            media.external_ids.imdb.as_ref()?,
+            media.external_ids.series_imdb.as_ref()?,
             media.idx?
         )),
         MediaKind::Episode => Some(format!(
             "{}:{}:{}",
-            media.external_ids.imdb.as_ref()?,
+            media.external_ids.series_imdb.as_ref()?,
             media.parent_idx?,
             media.idx?
         )),

@@ -3268,7 +3268,13 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                             episode: None,
                         })
                     })
-                    .unwrap_or_else(uuid::Uuid::new_v4)
+                    .unwrap_or_else(|| {
+                        // No IMDB ID extractable yet — use a deterministic UUID from
+                        // the raw Stremio ID as a temporary store key. persist_from_store
+                        // will recompute the correct stable UUID after IMDB resolution.
+                        // If this ever reaches upsert unresolved, validate() rejects it.
+                        crate::common::stable_media_uuid(&media_kind, &meta.id)
+                    })
             },
             ..Default::default()
         };
