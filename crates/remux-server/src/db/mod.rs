@@ -34,6 +34,7 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
         // prevent the WAL from growing into the tens/hundreds of MB which
         // degrades all read performance while it stays large.
         .pragma("wal_autocheckpoint", "200")
+        .pragma("auto_vacuum", "incremental")
         // Allow up to 10s of retrying when blocked by another connection's
         // write lock. This is what makes wal_checkpoint(TRUNCATE) actually
         // wait for in-flight reads to finish instead of giving up immediately.
@@ -51,6 +52,22 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
 pub async fn migrate(pool: &SqlitePool) -> Result<()> {
     sqlx::migrate!("./migrations").run(pool).await?;
     backfill_certification_age(pool).await?;
+    vacuum_if_needed(pool).await?;
+    Ok(())
+}
+
+async fn vacuum_if_needed(pool: &SqlitePool) -> Result<()> {
+    let freelist: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    if freelist > 100 {
+        tracing::info!(
+            freelist_pages = freelist,
+            "vacuuming database to apply auto_vacuum mode and reclaim freed pages"
+        );
+        sqlx::query("VACUUM").execute(pool).await?;
+    }
     Ok(())
 }
 

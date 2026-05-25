@@ -363,5 +363,13 @@ async fn stream_import_epg(
     .execute(&ctx.db)
     .await?;
 
+    // Reap past programs (already aired) and return freed pages to the OS.
+    sqlx::query("DELETE FROM media WHERE kind = 'tv_program' AND live_end < datetime('now', '-1 day')")
+        .execute(&ctx.db)
+        .await?;
+    sqlx::query("PRAGMA incremental_vacuum(500)")
+        .execute(&ctx.db)
+        .await?;
+
     Ok(total)
 }

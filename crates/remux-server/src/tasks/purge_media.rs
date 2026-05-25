@@ -187,6 +187,11 @@ impl Task for PurgeMediaTask {
         ctx.addons.purge_indexes(&ctx).await?;
         tracing::debug!(elapsed = ?t.elapsed(), "purge_indexes done");
 
+        sqlx::query("PRAGMA incremental_vacuum")
+            .execute(&ctx.db)
+            .await
+            .ok();
+
         Ok(())
     }
 }
