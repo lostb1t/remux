@@ -1140,6 +1140,24 @@ impl Media {
             )));
         }
 
+        // Verify the UUID is the stable deterministic value for this item's external IDs.
+        // Random UUIDs break user state (favorites, continue watching) across purge+reimport.
+        if matches!(
+            self.kind,
+            MediaKind::Movie
+                | MediaKind::Series
+                | MediaKind::Season
+                | MediaKind::Episode
+        ) {
+            let expected = Uuid::from(&self.media_id_raw());
+            if expected != self.id {
+                return Err(MediaError::ValidationError(format!(
+                    "{:?} '{}' UUID mismatch: id={} expected={}",
+                    self.kind, self.title, self.id, expected
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -1336,6 +1354,22 @@ impl Media {
     }
 
     pub async fn upsert(db: &sqlx::SqlitePool, items: &[Self]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        let items: Vec<Self> = items
+            .iter()
+            .filter(|item| match item.validate() {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::error!(error = %e, "skipping media item with invalid UUID");
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
         if items.is_empty() {
             return Ok(());
         }
@@ -3214,21 +3248,28 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                     .map(|t| t.source)
                     .collect::<Vec<String>>()
             }),
-            id: meta
-                .imdb_id
-                .as_ref()
-                .map(|mid| {
-                    Uuid::from(&super::MediaIdRaw {
-                        kind: media_kind.clone(),
-                        external_ids: ExternalIds {
-                            imdb: Some(mid.to_string()),
-                            ..Default::default()
-                        },
-                        season: None,
-                        episode: None,
+            id: {
+                // Prefer the explicit imdb_id field; fall back to extracting it from
+                // meta.id (e.g. Cinemeta returns id="tt0076759" without imdb_id set).
+                let imdb_id = meta
+                    .imdb_id
+                    .clone()
+                    .or_else(|| ExternalIds::from_stremio_id(&meta.id).imdb);
+                imdb_id
+                    .as_ref()
+                    .map(|mid| {
+                        Uuid::from(&super::MediaIdRaw {
+                            kind: media_kind.clone(),
+                            external_ids: ExternalIds {
+                                imdb: Some(mid.to_string()),
+                                ..Default::default()
+                            },
+                            season: None,
+                            episode: None,
+                        })
                     })
-                })
-                .unwrap_or_else(uuid::Uuid::new_v4),
+                    .unwrap_or_else(uuid::Uuid::new_v4)
+            },
             ..Default::default()
         };
 

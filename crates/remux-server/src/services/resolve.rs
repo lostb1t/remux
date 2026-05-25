@@ -29,6 +29,11 @@ async fn persist_from_store(
         if !crate::services::imdb::resolve_media_imdb(&mut media, ctx).await {
             tracing::warn!(%id, kind = ?media.kind, "persist_from_store: IMDB resolution failed, saving without IMDB ID");
         }
+        // Recompute the stable UUID now that we have the IMDB ID. TryFrom<Meta> may
+        // have fallen back to new_v4() when imdb_id was absent from the search result.
+        if let Some(canonical) = crate::common::canonical_external_id(&media) {
+            media.id = crate::common::stable_media_uuid(&media.kind, &canonical);
+        }
     }
 
     if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album) {
@@ -60,6 +65,9 @@ async fn persist_from_store(
         media
     };
 
+    // Save the (possibly recomputed stable) ID before root is consumed by process_meta_item.
+    let resolved_id = root.id;
+
     let config = std::sync::Arc::new(
         crate::db::Settings::get_config(&ctx.db)
             .await
@@ -70,7 +78,7 @@ async fn persist_from_store(
         db::Media::upsert(&ctx.db, &processed).await.ok();
         crate::addons::save_pending_relations(ctx, &processed).await;
     }
-    Ok(db::Media::get_by_id(&ctx.db, &id).await?)
+    Ok(db::Media::get_by_id(&ctx.db, &resolved_id).await?)
 }
 
 static PERSIST_LOCKS: KeyedLock<Uuid> = KeyedLock::new();

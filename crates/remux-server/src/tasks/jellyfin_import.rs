@@ -162,25 +162,6 @@ impl Task for JellyfinImportTask {
                     .and_then(|p| p.get("Tvdb"))
                     .and_then(|v| v.parse::<i64>().ok());
 
-                let Some(media_uuid) = resolve_from_index(&index, imdb, tmdb, tvdb)
-                else {
-                    let item_type = item.item_type.as_deref();
-                    let season = item.parent_index_number;
-                    let episode = item.index_number;
-                    warn!(
-                        name = item.name.as_deref().unwrap_or("?"),
-                        item_type,
-                        imdb,
-                        tmdb,
-                        tvdb,
-                        season,
-                        episode,
-                        "could not resolve item to local media"
-                    );
-                    states_unresolved += 1;
-                    continue;
-                };
-
                 let kind = match item.item_type.as_deref() {
                     Some("Movie") => db::MediaKind::Movie,
                     Some("Series") => db::MediaKind::Series,
@@ -197,6 +178,7 @@ impl Task for JellyfinImportTask {
                         )
                         .then(|| imdb.map(String::from))
                         .flatten(),
+                        // For episodes/seasons, Jellyfin's "Imdb" provider ID is the series IMDB
                         series_imdb: matches!(
                             kind,
                             db::MediaKind::Season | db::MediaKind::Episode
@@ -211,6 +193,26 @@ impl Task for JellyfinImportTask {
                     episode: item.index_number,
                 };
 
+                let has_ids = raw.external_ids.imdb.is_some()
+                    || raw.external_ids.series_imdb.is_some()
+                    || raw.external_ids.tmdb.is_some()
+                    || raw.external_ids.tvdb.is_some();
+                if !has_ids {
+                    warn!(
+                        name = item.name.as_deref().unwrap_or("?"),
+                        item_type = item.item_type.as_deref(),
+                        "no external IDs, skipping"
+                    );
+                    states_unresolved += 1;
+                    continue;
+                }
+
+                // Use the local DB UUID when the item is already imported; otherwise
+                // compute the stable UUID from external IDs so the state is ready
+                // when the item gets imported later.
+                let media_uuid = resolve_from_index(&index, imdb, tmdb, tvdb)
+                    .unwrap_or_else(|| uuid::Uuid::from(&raw));
+
                 let state = db::UserMediaState {
                     user_id: local_user.id,
                     media_id: media_uuid,
@@ -221,7 +223,31 @@ impl Task for JellyfinImportTask {
                     playback_position: position / 10_000_000,
                     ..Default::default()
                 };
-                state.save(&ctx.db).await?;
+                sqlx::query(
+                    "INSERT INTO user_media_state \
+                     (user_id, media_id, media_raw, favorite, play_count, played_at, \
+                      playback_position, last_played_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+                     ON CONFLICT(user_id, media_id) DO UPDATE SET \
+                       media_raw = excluded.media_raw, \
+                       favorite = excluded.favorite, \
+                       play_count = excluded.play_count, \
+                       played_at = excluded.played_at, \
+                       playback_position = excluded.playback_position, \
+                       last_played_at = excluded.last_played_at \
+                     WHERE excluded.last_played_at > user_media_state.last_played_at \
+                        OR user_media_state.last_played_at IS NULL",
+                )
+                .bind(state.user_id)
+                .bind(state.media_id)
+                .bind(&state.media_raw)
+                .bind(state.favorite)
+                .bind(state.play_count)
+                .bind(state.played_at)
+                .bind(state.playback_position)
+                .bind(state.played_at)
+                .execute(&ctx.db)
+                .await?;
                 states_imported += 1;
             }
 

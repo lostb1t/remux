@@ -17,6 +17,7 @@ use remux_sdks::remux::TaskTriggerInfoType;
 mod catalog_import_shared;
 mod clean_transcode_folder;
 mod clear_cache;
+mod fix_user_state;
 mod iptv_refresh;
 mod jellyfin_import;
 mod purge_media;
@@ -27,6 +28,7 @@ mod series_sync;
 pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
+use fix_user_state::FixUserStateTask;
 use iptv_refresh::IptvRefreshTask;
 use jellyfin_import::JellyfinImportTask;
 use purge_media::PurgeMediaTask;
@@ -219,6 +221,7 @@ impl TaskService {
         // service.register_task(Arc::new(SeriesSyncTask)).await?;
         service.register_task(Arc::new(IptvRefreshTask)).await?;
         service.register_task(Arc::new(PurgeMediaTask)).await?;
+        service.register_task(Arc::new(FixUserStateTask)).await?;
         service.register_task(Arc::new(JellyfinImportTask)).await?;
 
         let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
