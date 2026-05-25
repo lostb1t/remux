@@ -817,6 +817,9 @@ pub struct Media {
     /// Grandparent thumb image UUID, populated post-query.
     #[sqlx(skip)]
     pub grandparent_thumb: Option<String>,
+    /// Parent (season) thumb image UUID for episodes, populated post-query.
+    #[sqlx(skip)]
+    pub parent_thumb: Option<String>,
     #[sqlx(skip)]
     pub unplayed_item_count: Option<i64>,
     #[sqlx(skip)]
@@ -970,6 +973,14 @@ impl Media {
                                 .get(super::image::ImageKind::Backdrop)
                                 .map(|i| i.id.to_string());
                             media.grandparent_thumb = imgs
+                                .get(super::image::ImageKind::Thumb)
+                                .map(|i| i.id.to_string());
+                        }
+                    }
+                    // Season thumb (direct parent)
+                    if let Some(season_id) = media.parent_id {
+                        if let Some(imgs) = parent_images.get(&season_id) {
+                            media.parent_thumb = imgs
                                 .get(super::image::ImageKind::Thumb)
                                 .map(|i| i.id.to_string());
                         }

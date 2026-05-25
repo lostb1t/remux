@@ -190,7 +190,10 @@ pub async fn shows_nextup(
 
     let mut enriched = vec![ep.clone()];
     db::Media::enrich_parents(&state.ctx.db, &mut enriched).await;
-    let ep = enriched.remove(0);
+    let mut ep = enriched.remove(0);
+    ep.images = db::MediaImage::get_for_media(&state.ctx.db, &ep.id)
+        .await
+        .unwrap_or_default();
 
     let mut item = api::db_media_to_item(ep.clone());
     if let Some(s) = state_for(&ep) {
@@ -300,7 +303,10 @@ async fn shows_nextup_all(
         if let Some(ep) = next_ep {
             let mut enriched = vec![ep.clone()];
             db::Media::enrich_parents(&state.ctx.db, &mut enriched).await;
-            let ep = enriched.remove(0);
+            let mut ep = enriched.remove(0);
+            ep.images = db::MediaImage::get_for_media(&state.ctx.db, &ep.id)
+                .await
+                .unwrap_or_default();
             let mut item = api::db_media_to_item(ep.clone());
             if let Some(s) = state_for(&ep) {
                 item.user_data = Some(api::db_state_to_dto(s.clone(), &ep));

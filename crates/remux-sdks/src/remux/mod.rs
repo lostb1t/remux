@@ -1834,7 +1834,6 @@ pub enum ImageType {
     Logo,
     #[strum(serialize = "logo")]
     LogoImageAspectRatio,
-    #[strum(serialize = "primary")]
     Thumb,
 }
 

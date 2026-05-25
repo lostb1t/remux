@@ -523,11 +523,18 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         item.parent_backdrop_item_id = series_uuid.map(|id| id.to_string());
         item.parent_backdrop_image_tags =
             media.grandparent_backdrop.clone().map(|b| vec![b]);
-        item.parent_thumb_item_id = series_uuid.map(|id| id.to_string());
-        item.parent_thumb_image_tag = media
-            .grandparent_thumb
-            .clone()
-            .or_else(|| media.grandparent_backdrop.clone());
+        // Thumb: prefer season (direct parent) when it has a thumb image;
+        // fall back to series thumb/backdrop so the field is never empty.
+        if media.kind == db::MediaKind::Episode && media.parent_thumb.is_some() {
+            item.parent_thumb_item_id = media.parent_id.map(|id| id.to_string());
+            item.parent_thumb_image_tag = media.parent_thumb.clone();
+        } else {
+            item.parent_thumb_item_id = series_uuid.map(|id| id.to_string());
+            item.parent_thumb_image_tag = media
+                .grandparent_thumb
+                .clone()
+                .or_else(|| media.grandparent_backdrop.clone());
+        }
         if media.kind == db::MediaKind::Episode {
             item.season_name = media.parent_title.clone();
         }

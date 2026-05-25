@@ -79,7 +79,14 @@ async fn items_images_inner(
         if let Some(media) = db::Media::get_by_id(&state.ctx.db, &id).await? {
             let kind: ImageKind =
                 image_type.to_string().parse().unwrap_or(ImageKind::Primary);
-            let img_row = media.images.get(kind);
+            // If Thumb is requested but not stored, fall back to Primary.
+            let img_row = media.images.get(kind).or_else(|| {
+                if kind == ImageKind::Thumb {
+                    media.images.get(ImageKind::Primary)
+                } else {
+                    None
+                }
+            });
 
             if let Some(img) = img_row {
                 let source_key = img.id.to_string();
