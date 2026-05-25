@@ -420,6 +420,7 @@ impl UserMediaState {
                     sqlx::query_as(
                         "SELECT * FROM user_media_state \
                          WHERE user_id = ? \
+                           AND json_valid(media_raw) \
                            AND json_extract(media_raw, '$.kind') = ? \
                            AND json_extract(media_raw, '$.external_ids.imdb') = ? \
                          LIMIT 1",
@@ -440,6 +441,7 @@ impl UserMediaState {
                     sqlx::query_as(
                         "SELECT * FROM user_media_state \
                          WHERE user_id = ? \
+                           AND json_valid(media_raw) \
                            AND json_extract(media_raw, '$.kind') = ? \
                            AND json_extract(media_raw, '$.external_ids.series_imdb') = ? \
                            AND json_extract(media_raw, '$.season') = ? \
@@ -462,6 +464,7 @@ impl UserMediaState {
                     sqlx::query_as(
                         "SELECT * FROM user_media_state \
                          WHERE user_id = ? \
+                           AND json_valid(media_raw) \
                            AND json_extract(media_raw, '$.kind') = ? \
                            AND json_extract(media_raw, '$.external_ids.series_imdb') = ? \
                            AND json_extract(media_raw, '$.season') = ? \
