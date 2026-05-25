@@ -21,17 +21,17 @@ impl Task for JellyfinImportTask {
     }
 
     fn name(&self) -> &str {
-        "Import user history"
+        "Import from Jellyfin"
     }
 
     fn description(&self) -> &str {
-        "Imports the media library from a connected Jellyfin server."
+        "Imports users and watch history from Jellyfin."
     }
     fn short_description(&self) -> &str {
-        "Imports watch history from Jellyfin"
+        "Imports users and watch history from Jellyfin"
     }
     fn category(&self) -> &str {
-        "Import"
+        "Users"
     }
 
     async fn run(
