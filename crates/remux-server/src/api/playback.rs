@@ -881,7 +881,13 @@ async fn videos_stream_inner(
     let wants_stream_selection =
         q.audio_stream_index.is_some() || q.subtitle_stream_index.is_some();
     let container = q.container.as_deref().unwrap_or("mp4").to_string();
-    let video_codec = q.video_codec.unwrap_or_else(|| "copy".to_string());
+    let video_codec = q.video_codec.as_deref().unwrap_or("copy");
+    let video_codec = if video_codec == "copy" {
+        "copy"
+    } else {
+        "h264"
+    }
+    .to_string();
     let audio_codec = q.audio_codec.unwrap_or_else(|| "aac".to_string());
     // Keep a copy before the video_codec is moved into params (needed for Content-Type logic)
     let is_copy_video = video_codec == "copy";
@@ -2476,7 +2482,13 @@ pub async fn master_hls_video(
 
     tracing::debug!("Using play session ID: {}", play_session_id);
 
-    let video_codec = q.video_codec.unwrap_or_else(|| "copy".to_string());
+    let video_codec = q.video_codec.as_deref().unwrap_or("copy");
+    let video_codec = if video_codec == "copy" {
+        "copy"
+    } else {
+        "h264"
+    }
+    .to_string();
     let audio_codec = q.audio_codec.unwrap_or_else(|| "aac".to_string());
     let segment_length = q.segment_length.unwrap_or(6) as u32;
 

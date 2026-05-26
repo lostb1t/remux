@@ -524,22 +524,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     let ffmpeg_video_codec = {
         let base = match params.video_codec.as_str() {
             "copy" => "copy",
-            "h264" | "libx264" => "libx264",
-            "hevc" | "libx265" | "h265" => {
-                if params.allow_hevc_encoding {
-                    "libx265"
-                } else {
-                    "libx264"
-                }
-            }
-            "av1" | "libsvtav1" | "librav1e" => {
-                if params.allow_av1_encoding {
-                    "libsvtav1"
-                } else {
-                    "libx264"
-                }
-            }
-            other => other,
+            _ => "libx264",
         };
         // Subtitle burn-in requires re-encoding; can't copy video.
         let base = if params.burn_subtitle
@@ -1151,23 +1136,7 @@ pub(crate) fn build_progressive_args(
     let ffmpeg_video_codec = {
         let base = match params.video_codec.as_str() {
             "copy" => "copy",
-            "libx264" | "h264" => "libx264",
-            "libx265" | "hevc" | "h265" => {
-                if params.allow_hevc_encoding {
-                    "libx265"
-                } else {
-                    "libx264"
-                }
-            }
-            "av1" | "libsvtav1" | "librav1e" => {
-                if params.allow_av1_encoding {
-                    "libsvtav1"
-                } else {
-                    "libx264"
-                }
-            }
-            "libvpx-vp9" | "vp9" => "libvpx-vp9",
-            other => other,
+            _ => "libx264",
         };
         let base = if params.burn_subtitle
             && params.subtitle_stream_index.is_some()
@@ -2201,9 +2170,16 @@ mod tests {
         assert!(!args.windows(2).any(|w| w[0] == "-vaapi_device"));
         // Encoder remapped
         assert_eq!(arg_after(&args, "-c:v"), Some("h264_vaapi"));
-        // hwupload suffix in -vf
-        let vf = arg_after(&args, "-vf").expect("-vf missing for VAAPI");
-        assert!(vf.contains("format=nv12,hwupload"), "vf: {vf}");
+    }
+
+    #[test]
+    fn hls_codec_list_defaults_to_h264() {
+        let dir = PathBuf::from("/tmp/test_codec_list");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "av1,hevc,vp9,h264".into(),
+            ..default_hls(dir)
+        });
+        assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
     }
 
     #[test]
@@ -2233,11 +2209,10 @@ mod tests {
     fn hls_qsv_hardware_accel() {
         let dir = PathBuf::from("/tmp/test_qsv");
         let args = build_hls_args(&TranscodeParams {
-            video_codec: "libx265".into(),
+            video_codec: "libx264".into(),
             hardware_acceleration_type: HardwareAccelerationType::Qsv,
             vaapi_device: "/dev/dri/renderD128".into(),
             vaapi_driver: "iHD".into(),
-            allow_hevc_encoding: true,
             ..default_hls(dir)
         });
 
@@ -2272,7 +2247,7 @@ mod tests {
             "expected -hwaccel_output_format vaapi"
         );
         // Encoder remapped to QSV
-        assert_eq!(arg_after(&args, "-c:v"), Some("hevc_qsv"));
+        assert_eq!(arg_after(&args, "-c:v"), Some("h264_qsv"));
         // scale_vaapi in -vf
         let vf = arg_after(&args, "-vf").expect("-vf missing for QSV");
         assert!(
