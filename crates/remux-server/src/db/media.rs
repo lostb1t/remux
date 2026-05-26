@@ -784,6 +784,8 @@ pub struct Media {
     pub parent_id: Option<Uuid>,
     #[sqlx(default)]
     #[sqlx(json)]
+    // NOTE: SQLx requires this to be valid JSON in the DB. Empty strings ('')
+    // will cause decoding to fail with EOF. Use migration to fix existing rows.
     pub external_ids: ExternalIds,
     pub grandparent_id: Option<Uuid>,
     //pub season_id: Option<Uuid>,
