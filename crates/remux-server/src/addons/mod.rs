@@ -82,6 +82,21 @@ pub struct LyricSearchRequest {
 /// Save relation links that were deferred onto `media.relations` by `apply_meta`.
 /// Must be called after `db::Media::upsert` so `left_media_id` FK constraints are satisfied.
 pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]) {
+    // TMDB ID is the canonical key for person rows.  Name-keyed person stubs
+    // (produced by Stremio/Jellyfin addons when no TMDB ID is available) must NOT
+    // be persisted — the TMDB addon will insert them with the correct TMDB-keyed UUID
+    // when it enriches the parent movie/series.  Storing them now would create
+    // duplicate rows alongside any existing TMDB-keyed row for the same person.
+    let name_keyed_person_ids: std::collections::HashSet<Uuid> = items
+        .iter()
+        .filter_map(|m| m.relations.as_ref())
+        .flatten()
+        .filter(|(_, m)| {
+            m.kind == db::MediaKind::Person && m.external_ids.tmdb.is_none()
+        })
+        .map(|(_, m)| m.id)
+        .collect();
+
     // One batched upsert for all relation media (persons/genres) across the whole slice —
     // avoids opening a separate transaction per item (N items → N transactions otherwise).
     let all_rel_media: Vec<db::Media> = items
@@ -89,6 +104,7 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         .filter_map(|m| m.relations.as_ref())
         .flatten()
         .map(|(_, m)| m.clone())
+        .filter(|m| !name_keyed_person_ids.contains(&m.id))
         .collect();
     if !all_rel_media.is_empty() {
         if let Err(e) = db::Media::upsert(&ctx.db, &all_rel_media).await {
@@ -114,6 +130,8 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
     let all_rels: Vec<db::MediaRelation> = items_with_rels
         .iter()
         .flat_map(|m| m.relations.as_ref().unwrap().iter().map(|(r, _)| r.clone()))
+        // Don't link relations that point to name-keyed person stubs.
+        .filter(|r| !name_keyed_person_ids.contains(&r.right_media_id))
         .collect();
     if !all_rels.is_empty() {
         if let Err(e) = db::MediaRelation::upsert(&ctx.db, &all_rels).await {
@@ -724,12 +742,27 @@ impl AddonService {
         force_refresh: bool,
         config: Arc<api::ServerConfiguration>,
     ) -> Vec<db::Media> {
+        let original_id = media.id;
+
         if let Err(e) = self
             .refresh_meta(&mut media, ctx, force_refresh, &config)
             .await
         {
             tracing::warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
             return vec![media];
+        }
+
+        // If this Person's ID was rewritten (name-keyed → tmdb-keyed) by refresh_meta,
+        // delete the stale name-keyed row so it doesn't linger as a duplicate.
+        if media.kind == db::MediaKind::Person && media.id != original_id {
+            if let Err(e) = db::Media::delete(&ctx.db, &original_id).await {
+                tracing::warn!(
+                    old_id = %original_id,
+                    new_id = %media.id,
+                    error = %e,
+                    "failed to delete stale name-keyed person row"
+                );
+            }
         }
 
         let tree = self.get_tree(&media, ctx).await;
