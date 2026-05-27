@@ -526,16 +526,28 @@ impl UserMediaState {
             ms.subtitle_idx = Some(idx);
         }
 
+        // Persist the position + stream preferences first.
+        ms.save(db).await?;
+
         // Apply the "mark as watched" threshold only on stop events.
+        // Delegate to `media.mark_played` so that finishing an episode also
+        // propagates to the parent season / series.
         if let Some(runtime) = runtime_seconds {
             if runtime > 0 && position_seconds >= (runtime * 90 / 100) {
-                ms.play_count += 1;
-                ms.played_at = Some(chrono::Local::now().naive_local());
-                ms.playback_position = 0;
+                media.mark_played(db, user, true).await?;
+                // Reset playback position now that the item is fully watched.
+                sqlx::query(
+                    "UPDATE user_media_state SET playback_position = 0 \
+                     WHERE user_id = ? AND media_id = ?",
+                )
+                .bind(user.id)
+                .bind(media.id)
+                .execute(db)
+                .await?;
             }
         }
 
-        ms.save(db).await
+        Ok(())
     }
 
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {

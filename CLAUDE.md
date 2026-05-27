@@ -29,8 +29,32 @@ If a field's default depends on another field (e.g. `database_url` derived from 
 ## Coding conventions
 
 - Prefer `strum`-derived enums over raw strings for any value that has a fixed set of variants (media kinds, image types, codec names, etc.). Use `#[derive(EnumString, Display, ...)]` so the enum round-trips cleanly through serde and DB layers without stringly-typed branches.
-- API handler paths must always be lowercase (e.g. `#[get("/useritems/{id}")]`, not `/UserItems/{Id}`).
+
 
 ## Policy filter rules
 
 Filter rules must **not** apply to collection/folder container queries — only to content items. See `get_by_filter` in the db layer.
+
+## API conventions
+
+- API handler paths must always be lowercase (e.g. `#[get("/useritems/{id}")]`, not `/UserItems/{Id}`).
+- The API MUST remain fully compatible with Jellyfin’s public API shape and behavior.
+- All endpoints in `remux-server/src/api` should mimic Jellyfin’s API exactly in:
+  - route paths
+  - request/response structure
+  - field names
+  - field semantics
+
+### Extension rules (remux namespace)
+
+- Custom fields are allowed only as **additive extensions**.
+- All custom fields MUST live under a `remux` namespace object.
+  Example:
+  ```json
+  {
+    "Id": "abc",
+    "Name": "Movie",
+    "remux": {
+      "custom_field": "value"
+    }
+  }

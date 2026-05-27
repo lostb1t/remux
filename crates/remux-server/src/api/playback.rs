@@ -2225,7 +2225,9 @@ pub async fn user_mark_played(
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .context_not_found("not found", "not found")?;
-    let ms = media.mark_played(&state.ctx.db, &session.user).await?;
+    let ms = media
+        .mark_played(&state.ctx.db, &session.user, true)
+        .await?;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 
@@ -2238,7 +2240,9 @@ pub async fn user_unmark_played(
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .context_not_found("not found", "not found")?;
-    let ms = media.mark_unplayed(&state.ctx.db, &session.user).await?;
+    let ms = media
+        .mark_unplayed(&state.ctx.db, &session.user, true)
+        .await?;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
 

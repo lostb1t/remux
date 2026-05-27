@@ -70,9 +70,17 @@ where
         );
 
         // New items: fetch meta + save via process_meta_batch (handles upsert + relations).
+        let new_series_ids: Vec<Uuid> = new_items
+            .iter()
+            .filter(|m| m.kind == db::MediaKind::Series)
+            .map(|m| m.id)
+            .collect();
         if let Err(e) = ctx.addons.process_meta_batch(new_items, ctx, false).await {
             error!(catalog = media_id, error = %e, "failed to process new items chunk");
             continue;
+        }
+        for id in new_series_ids {
+            db::reconcile_series_played_state(&ctx.db, id).await;
         }
 
         // Existing items: already have metadata, just ensure they're current in DB.

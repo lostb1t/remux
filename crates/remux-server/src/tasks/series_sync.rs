@@ -41,9 +41,17 @@ impl Task for SeriesSyncTask {
         .await?
         .records;
 
+        let series_ids: Vec<uuid::Uuid> = media_list.iter().map(|m| m.id).collect();
+
         ctx.addons
             .process_meta_batch(media_list, &ctx, false)
             .await?;
+
+        // After syncing, un-mark any series that a user had marked played but now
+        // has new unplayed episodes (new episodes imported during this sync).
+        for id in series_ids {
+            db::reconcile_series_played_state(&ctx.db, id).await;
+        }
 
         Ok(())
     }

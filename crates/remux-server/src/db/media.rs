@@ -2931,19 +2931,22 @@ impl Media {
         }
     }
 
-    pub async fn mark_played(
+    /// Set only this item's played state — no propagation.
+    async fn apply_played(
         &self,
         db: &SqlitePool,
         user: &super::User,
+        now: chrono::NaiveDateTime,
     ) -> Result<super::UserMediaState> {
         let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
-        state.play_count = 1;
-        state.played_at = Some(Local::now().naive_local());
+        state.play_count = state.play_count.max(1);
+        state.played_at = Some(now);
         state.save(db).await?;
         Ok(state)
     }
 
-    pub async fn mark_unplayed(
+    /// Clear only this item's played state — no propagation.
+    async fn apply_unplayed(
         &self,
         db: &SqlitePool,
         user: &super::User,
@@ -2953,6 +2956,216 @@ impl Media {
         state.played_at = None;
         state.playback_position = 0;
         state.save(db).await?;
+        Ok(state)
+    }
+
+    pub async fn mark_played(
+        &self,
+        db: &SqlitePool,
+        user: &super::User,
+        recursive: bool,
+    ) -> Result<super::UserMediaState> {
+        let now = Local::now().naive_local();
+        let state = self.apply_played(db, user, now).await?;
+
+        if !recursive {
+            return Ok(state);
+        }
+
+        match self.kind {
+            MediaKind::Episode => {
+                if let Some(season_id) = self.parent_id {
+                    let unplayed: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM media e \
+                         WHERE e.parent_id = ? AND e.kind = 'episode' \
+                         AND NOT EXISTS (\
+                           SELECT 1 FROM user_media_state ums \
+                           WHERE ums.media_id = e.id \
+                           AND ums.user_id = ? \
+                           AND ums.play_count > 0\
+                         )",
+                    )
+                    .bind(season_id)
+                    .bind(user.id)
+                    .fetch_one(db)
+                    .await
+                    .unwrap_or(1);
+
+                    if unplayed == 0 {
+                        if let Ok(Some(season)) = Self::get_by_id(db, &season_id).await
+                        {
+                            season.apply_played(db, user, now).await?;
+
+                            if let Some(series_id) = season.parent_id {
+                                let unplayed_seasons: i64 = sqlx::query_scalar(
+                                    "SELECT COUNT(*) FROM media s \
+                                     WHERE s.parent_id = ? AND s.kind = 'season' \
+                                     AND NOT EXISTS (\
+                                       SELECT 1 FROM user_media_state ums \
+                                       WHERE ums.media_id = s.id \
+                                       AND ums.user_id = ? \
+                                       AND ums.play_count > 0\
+                                     )",
+                                )
+                                .bind(series_id)
+                                .bind(user.id)
+                                .fetch_one(db)
+                                .await
+                                .unwrap_or(1);
+
+                                if unplayed_seasons == 0 {
+                                    if let Ok(Some(series)) =
+                                        Self::get_by_id(db, &series_id).await
+                                    {
+                                        series.apply_played(db, user, now).await?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            MediaKind::Season => {
+                let episode_ids: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM media WHERE parent_id = ? AND kind = 'episode'",
+                )
+                .bind(self.id)
+                .fetch_all(db)
+                .await
+                .unwrap_or_default();
+                bulk_mark_played(db, user.id, &episode_ids, now).await;
+
+                if let Some(series_id) = self.parent_id {
+                    let unplayed_seasons: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM media s \
+                         WHERE s.parent_id = ? AND s.kind = 'season' \
+                         AND NOT EXISTS (\
+                           SELECT 1 FROM user_media_state ums \
+                           WHERE ums.media_id = s.id \
+                           AND ums.user_id = ? \
+                           AND ums.play_count > 0\
+                         )",
+                    )
+                    .bind(series_id)
+                    .bind(user.id)
+                    .fetch_one(db)
+                    .await
+                    .unwrap_or(1);
+
+                    if unplayed_seasons == 0 {
+                        if let Ok(Some(series)) = Self::get_by_id(db, &series_id).await
+                        {
+                            series.apply_played(db, user, now).await?;
+                        }
+                    }
+                }
+            }
+
+            MediaKind::Series => {
+                let season_ids: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM media WHERE parent_id = ? AND kind = 'season'",
+                )
+                .bind(self.id)
+                .fetch_all(db)
+                .await
+                .unwrap_or_default();
+                bulk_mark_played(db, user.id, &season_ids, now).await;
+
+                let episode_ids: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM media WHERE grandparent_id = ? AND kind = 'episode'",
+                )
+                .bind(self.id)
+                .fetch_all(db)
+                .await
+                .unwrap_or_default();
+                bulk_mark_played(db, user.id, &episode_ids, now).await;
+            }
+
+            _ => {} // other kinds: no propagation
+        }
+
+        Ok(state)
+    }
+
+    pub async fn mark_unplayed(
+        &self,
+        db: &SqlitePool,
+        user: &super::User,
+        recursive: bool,
+    ) -> Result<super::UserMediaState> {
+        let state = self.apply_unplayed(db, user).await?;
+
+        if !recursive {
+            return Ok(state);
+        }
+
+        match self.kind {
+            MediaKind::Episode => {
+                if let Some(season_id) = self.parent_id {
+                    if let Ok(Some(season)) = Self::get_by_id(db, &season_id).await {
+                        let ss = super::UserMediaState::get_or_new(db, user, &season)
+                            .await?;
+                        if ss.play_count > 0 {
+                            season.apply_unplayed(db, user).await?;
+                        }
+                    }
+                }
+                if let Some(series_id) = self.grandparent_id {
+                    if let Ok(Some(series)) = Self::get_by_id(db, &series_id).await {
+                        let ss = super::UserMediaState::get_or_new(db, user, &series)
+                            .await?;
+                        if ss.play_count > 0 {
+                            series.apply_unplayed(db, user).await?;
+                        }
+                    }
+                }
+            }
+
+            MediaKind::Season => {
+                let episode_ids: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM media WHERE parent_id = ? AND kind = 'episode'",
+                )
+                .bind(self.id)
+                .fetch_all(db)
+                .await
+                .unwrap_or_default();
+                bulk_mark_unplayed(db, user.id, &episode_ids).await;
+
+                if let Some(series_id) = self.parent_id {
+                    if let Ok(Some(series)) = Self::get_by_id(db, &series_id).await {
+                        let ss = super::UserMediaState::get_or_new(db, user, &series)
+                            .await?;
+                        if ss.play_count > 0 {
+                            series.apply_unplayed(db, user).await?;
+                        }
+                    }
+                }
+            }
+
+            MediaKind::Series => {
+                let season_ids: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM media WHERE parent_id = ? AND kind = 'season'",
+                )
+                .bind(self.id)
+                .fetch_all(db)
+                .await
+                .unwrap_or_default();
+                bulk_mark_unplayed(db, user.id, &season_ids).await;
+
+                let episode_ids: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM media WHERE grandparent_id = ? AND kind = 'episode'",
+                )
+                .bind(self.id)
+                .fetch_all(db)
+                .await
+                .unwrap_or_default();
+                bulk_mark_unplayed(db, user.id, &episode_ids).await;
+            }
+
+            _ => {} // other kinds: no propagation
+        }
+
         Ok(state)
     }
 
@@ -3107,6 +3320,166 @@ impl Media {
                 .fetch_one(db)
                 .await?;
         Ok(count)
+    }
+}
+
+/// Bulk-upsert `user_media_state` rows for `media_ids` as played (play_count = 1, played_at = `now`).
+/// Existing rows with `play_count > 0` are left untouched (we only bump rows at zero).
+/// New rows are inserted; existing played rows are not regressed.
+async fn bulk_mark_played(
+    db: &SqlitePool,
+    user_id: Uuid,
+    media_ids: &[Uuid],
+    now: chrono::NaiveDateTime,
+) {
+    if media_ids.is_empty() {
+        return;
+    }
+    const CHUNK: usize = 500;
+    for chunk in media_ids.chunks(CHUNK) {
+        // Build the media_raw JSON for each id by querying the media table, then upsert.
+        // For efficiency we do a single INSERT OR REPLACE per chunk using a VALUES list.
+        // We use INSERT OR REPLACE so that rows with play_count=0 are overwritten.
+        // Rows that already have play_count > 0 are left alone via the CASE expression.
+        let mut qb = sqlx::QueryBuilder::new(
+            "INSERT INTO user_media_state \
+             (user_id, media_id, media_raw, stream_id, favorite, play_count, played_at, \
+              playback_position, last_played_at, subtitle_idx, audio_idx) \
+             SELECT \
+               um.user_id, m.id, NULL, NULL, \
+               COALESCE((SELECT favorite FROM user_media_state WHERE user_id = um.user_id AND media_id = m.id), 0), \
+               CASE WHEN COALESCE((SELECT play_count FROM user_media_state WHERE user_id = um.user_id AND media_id = m.id), 0) > 0 \
+                    THEN (SELECT play_count FROM user_media_state WHERE user_id = um.user_id AND media_id = m.id) \
+                    ELSE 1 END, \
+               CASE WHEN COALESCE((SELECT play_count FROM user_media_state WHERE user_id = um.user_id AND media_id = m.id), 0) > 0 \
+                    THEN (SELECT played_at FROM user_media_state WHERE user_id = um.user_id AND media_id = m.id) \
+                    ELSE ",
+        );
+        qb.push_bind(now);
+        qb.push(
+            " END, \
+               0, \
+               ",
+        );
+        qb.push_bind(now);
+        qb.push(
+            ", \
+               (SELECT subtitle_idx FROM user_media_state WHERE user_id = um.user_id AND media_id = m.id), \
+               (SELECT audio_idx FROM user_media_state WHERE user_id = um.user_id AND media_id = m.id) \
+             FROM (SELECT ",
+        );
+        qb.push_bind(user_id);
+        qb.push(" AS user_id) um CROSS JOIN media m WHERE m.id IN (");
+        let mut sep = qb.separated(", ");
+        for id in chunk {
+            sep.push_bind(*id);
+        }
+        qb.push(") ON CONFLICT(user_id, media_id) DO UPDATE SET \
+               play_count = CASE WHEN user_media_state.play_count > 0 THEN user_media_state.play_count ELSE excluded.play_count END, \
+               played_at  = CASE WHEN user_media_state.play_count > 0 THEN user_media_state.played_at  ELSE excluded.played_at  END, \
+               last_played_at = excluded.last_played_at");
+        if let Err(e) = qb.build().execute(db).await {
+            tracing::warn!(error = %e, "bulk_mark_played failed for chunk");
+        }
+    }
+}
+
+/// Bulk-reset `user_media_state` rows for `media_ids` to unplayed state
+/// (play_count = 0, played_at = NULL, playback_position = 0).
+/// Only existing rows are updated; missing rows are already "unplayed" by definition.
+async fn bulk_mark_unplayed(db: &SqlitePool, user_id: Uuid, media_ids: &[Uuid]) {
+    if media_ids.is_empty() {
+        return;
+    }
+    const CHUNK: usize = 999;
+    for chunk in media_ids.chunks(CHUNK) {
+        let mut qb = sqlx::QueryBuilder::new(
+            "UPDATE user_media_state SET play_count = 0, played_at = NULL, playback_position = 0 \
+             WHERE user_id = ",
+        );
+        qb.push_bind(user_id);
+        qb.push(" AND media_id IN (");
+        let mut sep = qb.separated(", ");
+        for id in chunk {
+            sep.push_bind(*id);
+        }
+        qb.push(")");
+        if let Err(e) = qb.build().execute(db).await {
+            tracing::warn!(error = %e, "bulk_mark_unplayed failed for chunk");
+        }
+    }
+}
+
+/// After importing episodes for a series, ensure users who had the series marked played
+/// still have a consistent state. If new episodes exist that aren't yet played, clear the
+/// played flag on the series (and any affected seasons) for those users.
+pub async fn reconcile_series_played_state(db: &SqlitePool, series_id: Uuid) {
+    // Users who have the series played but have at least one unplayed episode.
+    let stale_users: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT ums.user_id \
+         FROM user_media_state ums \
+         WHERE ums.media_id = ? AND ums.play_count > 0 \
+         AND EXISTS (\
+           SELECT 1 FROM media e \
+           WHERE e.grandparent_id = ? AND e.kind = 'episode' \
+           AND NOT EXISTS (\
+             SELECT 1 FROM user_media_state u2 \
+             WHERE u2.media_id = e.id AND u2.user_id = ums.user_id AND u2.play_count > 0\
+           )\
+         )",
+    )
+    .bind(series_id)
+    .bind(series_id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    for user_id in stale_users {
+        // Unmark the series.
+        sqlx::query(
+            "UPDATE user_media_state SET play_count = 0, played_at = NULL \
+             WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(user_id)
+        .bind(series_id)
+        .execute(db)
+        .await
+        .ok();
+
+        // Unmark any seasons that are played but contain unplayed episodes.
+        let stale_seasons: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT s.id FROM media s \
+             WHERE s.parent_id = ? AND s.kind = 'season' \
+             AND EXISTS (\
+               SELECT 1 FROM user_media_state ums WHERE ums.media_id = s.id \
+               AND ums.user_id = ? AND ums.play_count > 0\
+             ) \
+             AND EXISTS (\
+               SELECT 1 FROM media e WHERE e.parent_id = s.id AND e.kind = 'episode' \
+               AND NOT EXISTS (\
+                 SELECT 1 FROM user_media_state u2 \
+                 WHERE u2.media_id = e.id AND u2.user_id = ? AND u2.play_count > 0\
+               )\
+             )",
+        )
+        .bind(series_id)
+        .bind(user_id)
+        .bind(user_id)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
+
+        for season_id in stale_seasons {
+            sqlx::query(
+                "UPDATE user_media_state SET play_count = 0, played_at = NULL \
+                 WHERE user_id = ? AND media_id = ?",
+            )
+            .bind(user_id)
+            .bind(season_id)
+            .execute(db)
+            .await
+            .ok();
+        }
     }
 }
 
