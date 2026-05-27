@@ -2671,31 +2671,12 @@ pub struct SessionInfoDto {
 #[skip_serializing_none]
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
-pub struct PlaybackStartInfo {
-    pub can_seek: bool,
-    pub item_id: Option<Uuid>,
-    pub session_id: Option<String>,
-    pub media_source_id: Option<String>,
-    pub audio_stream_index: Option<i32>,
-    pub subtitle_stream_index: Option<i32>,
-    pub is_paused: bool,
-    pub is_muted: bool,
-    pub position_ticks: Option<i64>,
-    pub volume_level: Option<i32>,
-    #[serde(default, deserialize_with = "deserialize_optional")]
-    pub play_method: Option<PlayMethod>,
-    pub live_stream_id: Option<String>,
-    pub play_session_id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional")]
-    pub repeat_mode: Option<RepeatMode>,
-    pub now_playing_queue: Option<Vec<QueueItem>>,
-    pub playlist_item_id: Option<String>,
-}
+pub struct PlaybackInfo {
+    /// Optional event kind; when absent (legacy payloads) this will be None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "EventType", default)]
+    pub event_type: Option<PlaybackEventKind>,
 
-#[skip_serializing_none]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
-pub struct PlaybackProgressInfo {
     pub can_seek: bool,
     pub item_id: Option<Uuid>,
     pub session_id: Option<String>,
@@ -2717,22 +2698,26 @@ pub struct PlaybackProgressInfo {
     pub repeat_mode: Option<RepeatMode>,
     pub now_playing_queue: Option<Vec<QueueItem>>,
     pub playlist_item_id: Option<String>,
+    pub next_media_type: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
-pub struct PlaybackStopInfo {
-    pub item_id: Option<Uuid>,
-    pub session_id: Option<String>,
-    pub media_source_id: Option<String>,
-    pub position_ticks: Option<i64>,
-    pub live_stream_id: Option<String>,
-    pub play_session_id: Option<String>,
-    pub next_media_type: Option<String>,
-    pub playlist_item_id: Option<String>,
-    pub now_playing_queue: Option<Vec<QueueItem>>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaybackEventKind {
+    Start,
+    Progress,
+    Stop,
 }
+
+// Backwards-compatibility type aliases so other crates referring to the old
+// names continue to compile until callers are updated. These are deprecated
+// but harmless and allow a single type to replace the three legacy structs.
+#[deprecated(note = "Use PlaybackInfo instead")]
+pub type PlaybackStartInfo = PlaybackInfo;
+#[deprecated(note = "Use PlaybackInfo instead")]
+pub type PlaybackProgressInfo = PlaybackInfo;
+#[deprecated(note = "Use PlaybackInfo instead")]
+pub type PlaybackStopInfo = PlaybackInfo;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]

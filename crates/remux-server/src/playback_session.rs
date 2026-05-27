@@ -4,11 +4,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::common;
+use crate::db;
+use crate::db::auth;
 use crate::transcode::session::TranscodeSession;
-use remux_sdks::remux::QueueItem;
+use remux_sdks::remux::{PlayMethod, PlaybackInfo, QueueItem};
 
 #[derive(Clone)]
 pub struct PlaybackSession {
@@ -52,6 +55,294 @@ impl PlaybackSessionManager {
             base_dir,
         }
     }
+
+    // -------------------------------------------------------------------------
+    // High-level session lifecycle methods (called by API handlers)
+    // -------------------------------------------------------------------------
+
+    /// Handle a `POST /sessions/playing` report.
+    ///
+    /// Enforces the per-user session limit, resolves the optional StreamGroup
+    /// source, builds and inserts the `PlaybackSession`, and emits the playback-
+    /// start log line (skipped for transcode — the HLS handler logs that after
+    /// it has codec/bitrate/reason details).
+    pub async fn start(
+        &self,
+        db: &sqlx::SqlitePool,
+        auth_session: &auth::AuthSession,
+        data: &PlaybackInfo,
+    ) -> anyhow::Result<()> {
+        let play_session_id = data
+            .play_session_id
+            .clone()
+            .unwrap_or_else(|| common::get_uuid().as_simple().to_string());
+
+        // Enforce per-user concurrent-stream limit.
+        let max_sessions = auth_session
+            .user
+            .policy
+            .as_ref()
+            .map(|p| p.max_active_sessions)
+            .unwrap_or(0);
+        if max_sessions > 0 {
+            // Exclude the caller's own device: insert() will replace any existing
+            // session for that device, so it doesn't consume an extra slot.
+            let current = self
+                .count_for_user(auth_session.user.id, Some(&auth_session.device.id));
+            if current >= max_sessions as usize {
+                return Err(anyhow::anyhow!("Stream limit reached")
+                    .context("Maximum concurrent streams reached"));
+            }
+        }
+
+        let item_id = data.item_id.unwrap_or_else(|| {
+            warn!(
+                client = %auth_session.device.app_name,
+                "PlaybackStart missing item_id"
+            );
+            Uuid::default()
+        });
+
+        // If the client selected a StreamGroup source, record its group UUID.
+        let group_id: Option<Uuid> = if let Some(ref sid) = data.media_source_id {
+            if let Ok(uid) = sid.parse::<Uuid>() {
+                db::Media::get_by_id(db, &uid)
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|m| m.kind == db::MediaKind::StreamGroup)
+                    .map(|_| uid)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let ps = PlaybackSession {
+            play_session_id: play_session_id.clone(),
+            user_id: auth_session.user.id,
+            item_id,
+            media_source_id: data.media_source_id.clone(),
+            device_id: auth_session.device.id.clone(),
+            client_name: auth_session.device.app_name.clone(),
+            position_ticks: data.position_ticks.unwrap_or(0),
+            can_seek: data.can_seek,
+            is_paused: data.is_paused,
+            last_paused_at: if data.is_paused {
+                Some(Utc::now())
+            } else {
+                None
+            },
+            is_muted: data.is_muted,
+            volume_level: data.volume_level,
+            audio_stream_index: data.audio_stream_index,
+            subtitle_stream_index: data.subtitle_stream_index,
+            play_method: data.play_method.as_ref().map(|m| m.to_string()),
+            now_playing_queue: data.now_playing_queue.clone(),
+            playlist_item_id: data.playlist_item_id.clone(),
+            started_at: Utc::now(),
+            last_activity: Utc::now(),
+            transcode: None,
+            group_id,
+        };
+
+        self.insert(ps);
+
+        // For transcode sessions, master_hls_video fires the info log once it
+        // has full codec/bitrate/reasons info. For direct play/stream, log here.
+        let is_transcode = matches!(data.play_method, Some(PlayMethod::Transcode));
+        if !is_transcode {
+            // Best-effort: fetch media title and source path for the log line.
+            let media_title = db::Media::get_by_id(db, &item_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|m| m.title)
+                .unwrap_or_default();
+
+            let (source_title, source_path) = if let Some(ref sid) =
+                data.media_source_id
+            {
+                if let Ok(source_uuid) = sid.parse::<Uuid>() {
+                    let m = db::Media::get_by_id(db, &source_uuid).await.ok().flatten();
+                    (
+                        m.as_ref().map(|m| m.title.clone()),
+                        m.and_then(|m| m.stream_info.map(|si| si.descriptor)),
+                    )
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
+            let log_session_id = play_session_id
+                .trim_start_matches("audio-")
+                .trim_start_matches("video-");
+            let position_secs = data.position_ticks.unwrap_or(0) / 10_000_000;
+            info!(
+                play_session_id = log_session_id,
+                %item_id,
+                title = %media_title,
+                source = ?source_title,
+                path = ?source_path,
+                user = %auth_session.user.username,
+                client = %auth_session.device.app_name,
+                play_method = ?data.play_method,
+                audio_stream = ?data.audio_stream_index,
+                subtitle_stream = ?data.subtitle_stream_index,
+                position_secs,
+                "▶ Playback started"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Handle a `POST /sessions/playing/progress` report.
+    ///
+    /// Updates the in-memory session state, notifies the transcode buffer
+    /// monitor, persists the playback position to the DB, and logs stream-
+    /// selection changes.
+    pub async fn progress(
+        &self,
+        db: &sqlx::SqlitePool,
+        user: &db::User,
+        psid: &str,
+        data: &PlaybackInfo,
+    ) -> anyhow::Result<()> {
+        let ps_snapshot = self.get(psid);
+        let ps = match ps_snapshot.as_ref() {
+            Some(ps) => ps,
+            None => return Ok(()),
+        };
+
+        let item_id = data.item_id.unwrap_or(ps.item_id);
+
+        // Detect encode-parameter changes and log them once.
+        // We ignore pause/unpause — those are not encode changes.
+        let audio_changed = data.audio_stream_index.is_some()
+            && data.audio_stream_index != ps.audio_stream_index;
+        let subtitle_changed = data.subtitle_stream_index.is_some()
+            && data.subtitle_stream_index != ps.subtitle_stream_index;
+        let method_changed = data.play_method.is_some()
+            && data.play_method.as_ref().map(|m| m.to_string()) != ps.play_method;
+        if audio_changed || subtitle_changed || method_changed {
+            info!(
+                play_session_id = psid.trim_start_matches("audio-").trim_start_matches("video-"),
+                item_id = %item_id,
+                user = %user.username,
+                audio_stream = if audio_changed {
+                    format!("{:?} → {:?}", ps.audio_stream_index, data.audio_stream_index)
+                } else {
+                    format!("{:?}", ps.audio_stream_index)
+                },
+                subtitle_stream = if subtitle_changed {
+                    format!("{:?} → {:?}", ps.subtitle_stream_index, data.subtitle_stream_index)
+                } else {
+                    format!("{:?}", ps.subtitle_stream_index)
+                },
+                play_method = if method_changed {
+                    format!("{:?} → {:?}", ps.play_method, data.play_method)
+                } else {
+                    format!("{:?}", ps.play_method)
+                },
+                "⟳ Playback params changed"
+            );
+        }
+
+        self.update(psid, |ps| {
+            ps.position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
+            if data.is_paused && !ps.is_paused {
+                ps.last_paused_at = Some(Utc::now());
+            } else if !data.is_paused {
+                ps.last_paused_at = None;
+            }
+            ps.is_paused = data.is_paused;
+            ps.is_muted = data.is_muted;
+            ps.volume_level = data.volume_level.or(ps.volume_level);
+            ps.audio_stream_index = data.audio_stream_index.or(ps.audio_stream_index);
+            ps.subtitle_stream_index =
+                data.subtitle_stream_index.or(ps.subtitle_stream_index);
+            ps.last_activity = Utc::now();
+        });
+
+        // Update transcode buffer monitor with actual playback position.
+        if let Some(position_ticks) = data.position_ticks {
+            if let Some(ref ts_lock) = ps.transcode {
+                if let Ok(ts) = ts_lock.try_read() {
+                    let position_secs = (position_ticks / 10_000_000) as u32;
+                    let offset = position_secs.saturating_sub(ts.start_time_secs);
+                    ts.playback_offset_secs
+                        .store(offset, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+
+        // Persist position to DB (no watched-threshold check on progress).
+        let position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
+        if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
+            db::UserMediaState::update_playback(
+                db,
+                user,
+                &media,
+                position_ticks,
+                data.audio_stream_index
+                    .or(ps.audio_stream_index)
+                    .map(|x| x as i64),
+                data.subtitle_stream_index
+                    .or(ps.subtitle_stream_index)
+                    .map(|x| x as i64),
+                None, // no watched-threshold check on progress
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Handle a `POST /sessions/playing/stopped` report.
+    ///
+    /// Removes the playback session (stopping any active transcode), persists
+    /// the final position to the DB (with the 90 % watched-mark check), and
+    /// emits a debug log line.
+    pub async fn stopped(
+        &self,
+        db: &sqlx::SqlitePool,
+        user: &db::User,
+        psid: &str,
+        data: &PlaybackInfo,
+    ) -> anyhow::Result<()> {
+        let ps = self.stop(psid).await;
+
+        let item_id = data.item_id.or_else(|| ps.as_ref().map(|s| s.item_id));
+        let final_ticks = data
+            .position_ticks
+            .or_else(|| ps.as_ref().map(|s| s.position_ticks));
+
+        if let Some(item_id) = item_id {
+            if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
+                db::UserMediaState::update_playback(
+                    db,
+                    user,
+                    &media,
+                    final_ticks.unwrap_or(0),
+                    None, // don't overwrite stream selections on stop
+                    None,
+                    media.runtime, // Some(runtime) triggers watched-threshold check
+                )
+                .await?;
+            }
+        }
+
+        debug!(play_session_id = psid, "Playback stopped");
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Low-level session management (unchanged public API)
+    // -------------------------------------------------------------------------
 
     /// Insert (or replace) a playback session, preserving any transcode that was
     /// pre-attached before `report_playback_start` fired.

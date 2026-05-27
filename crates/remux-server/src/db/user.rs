@@ -497,6 +497,47 @@ impl UserMediaState {
         })
     }
 
+    /// Persist playback position (and optionally stream-selection preferences)
+    /// for a user/media pair.
+    ///
+    /// * `position_ticks` – current playback position in 100-nanosecond ticks.
+    /// * `audio_idx` / `subtitle_idx` – stream selections to remember; pass
+    ///   `None` to leave existing values unchanged.
+    /// * `runtime_seconds` – when `Some`, the 90 % "mark as watched" threshold
+    ///   is applied. Pass `None` for progress updates (no watched-check) and
+    ///   `Some(media.runtime)` for stop events.
+    pub async fn update_playback(
+        db: &SqlitePool,
+        user: &User,
+        media: &super::Media,
+        position_ticks: i64,
+        audio_idx: Option<i64>,
+        subtitle_idx: Option<i64>,
+        runtime_seconds: Option<i64>,
+    ) -> Result<()> {
+        let mut ms = Self::get_or_new(db, user, media).await?;
+        let position_seconds = position_ticks / 10_000_000;
+        ms.playback_position = position_seconds;
+
+        if let Some(idx) = audio_idx {
+            ms.audio_idx = Some(idx);
+        }
+        if let Some(idx) = subtitle_idx {
+            ms.subtitle_idx = Some(idx);
+        }
+
+        // Apply the "mark as watched" threshold only on stop events.
+        if let Some(runtime) = runtime_seconds {
+            if runtime > 0 && position_seconds >= (runtime * 90 / 100) {
+                ms.play_count += 1;
+                ms.played_at = Some(chrono::Local::now().naive_local());
+                ms.playback_position = 0;
+            }
+        }
+
+        ms.save(db).await
+    }
+
     pub async fn save(&self, db: &SqlitePool) -> Result<()> {
         debug!(
             "Saving user media state for user {} and media_id {}",

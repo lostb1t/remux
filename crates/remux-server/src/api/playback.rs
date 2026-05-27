@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum_extra::extract::Query;
-use chrono::{Local, Utc};
+use chrono::Utc;
 use futures_util::StreamExt;
 use futures_util::TryStreamExt;
 use headers;
@@ -21,7 +21,7 @@ use serde_with::{DurationSeconds, serde_as};
 use std::io;
 use std::time::Duration;
 use tokio_util::io::ReaderStream;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 use url::Url;
 use uuid::Uuid;
 
@@ -31,7 +31,7 @@ use crate::api::MediaSourceInfoExt;
 use crate::common;
 use crate::db;
 use crate::db::auth;
-use crate::playback_session::{PlaybackSession, PlaybackSessionManager};
+
 use crate::profile::DeviceProfileExt;
 use crate::sdks;
 use crate::services::resolve::resolve_item;
@@ -1015,130 +1015,24 @@ pub async fn sessions_capabilities_by_id(
 pub async fn report_playback_start(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Json(data): Json<api::PlaybackStartInfo>,
+    Json(data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
-    let play_session_id = data
-        .play_session_id
-        .clone()
-        .unwrap_or_else(|| common::get_uuid().as_simple().to_string());
-
-    let max_sessions = session
-        .user
-        .policy
-        .as_ref()
-        .map(|p| p.max_active_sessions)
-        .unwrap_or(0);
-    if max_sessions > 0 {
-        // Exclude the caller's own device: insert() will replace any existing
-        // session for that device, so it doesn't consume an extra slot.
-        let current = state
-            .ctx
-            .sessions
-            .count_for_user(session.user.id, Some(&session.device.id));
-        if current >= max_sessions as usize {
-            return Err(anyhow::anyhow!("Stream limit reached").context_forbidden(
-                "StreamLimitReached",
-                "Maximum concurrent streams reached",
-            ));
-        }
-    }
-
-    let item_id = data.item_id.unwrap_or_else(|| {
-        warn!(client = %session.device.app_name, "PlaybackStart missing item_id");
-        Uuid::default()
-    });
-
-    // If the client selected a StreamGroup source, record its group UUID.
-    let group_id: Option<Uuid> = if let Some(ref sid) = data.media_source_id {
-        if let Ok(uid) = sid.parse::<Uuid>() {
-            db::Media::get_by_id(&state.ctx.db, &uid)
-                .await
-                .ok()
-                .flatten()
-                .filter(|m| m.kind == db::MediaKind::StreamGroup)
-                .map(|_| uid)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let ps = PlaybackSession {
-        play_session_id: play_session_id.clone(),
-        user_id: session.user.id,
-        item_id,
-        media_source_id: data.media_source_id.clone(),
-        device_id: session.device.id.clone(),
-        client_name: session.device.app_name.clone(),
-        position_ticks: data.position_ticks.unwrap_or(0),
-        can_seek: data.can_seek,
-        is_paused: data.is_paused,
-        last_paused_at: if data.is_paused {
-            Some(Utc::now())
-        } else {
-            None
-        },
-        is_muted: data.is_muted,
-        volume_level: data.volume_level,
-        audio_stream_index: data.audio_stream_index,
-        subtitle_stream_index: data.subtitle_stream_index,
-        play_method: data.play_method.as_ref().map(|m| m.to_string()),
-        now_playing_queue: data.now_playing_queue.clone(),
-        playlist_item_id: data.playlist_item_id.clone(),
-        started_at: Utc::now(),
-        last_activity: Utc::now(),
-        transcode: None,
-        group_id,
-    };
-
-    state.ctx.sessions.insert(ps);
-    let media_title = db::Media::get_by_id(&state.ctx.db, &item_id)
+    state
+        .ctx
+        .sessions
+        .start(&state.ctx.db, &session, &data)
         .await
-        .ok()
-        .flatten()
-        .map(|m| m.title)
-        .unwrap_or_default();
-    let (source_title, source_path) = if let Some(ref sid) = data.media_source_id {
-        if let Ok(source_uuid) = sid.parse::<Uuid>() {
-            let m = db::Media::get_by_id(&state.ctx.db, &source_uuid)
-                .await
-                .ok()
-                .flatten();
-            (
-                m.as_ref().map(|m| m.title.clone()),
-                m.and_then(|m| m.stream_info.map(|si| si.descriptor)),
-            )
-        } else {
-            (None, None)
-        }
-    } else {
-        (None, None)
-    };
-    let log_session_id = play_session_id
-        .trim_start_matches("audio-")
-        .trim_start_matches("video-");
-    let position_secs = data.position_ticks.unwrap_or(0) / 10_000_000;
-    // For transcode sessions, master_hls_video fires the info log once it has
-    // full codec/bitrate/reasons info. For direct play/stream, log here.
-    let is_transcode = matches!(data.play_method, Some(api::PlayMethod::Transcode));
-    if !is_transcode {
-        info!(
-            play_session_id = log_session_id,
-            %item_id,
-            title = %media_title,
-            source = ?source_title,
-            path = ?source_path,
-            user = %session.user.username,
-            client = %session.device.app_name,
-            play_method = ?data.play_method,
-            audio_stream = ?data.audio_stream_index,
-            subtitle_stream = ?data.subtitle_stream_index,
-            position_secs,
-            "▶ Playback started"
-        );
-    }
-
+        .map_err(|e| {
+            // Re-raise stream-limit errors as 403 Forbidden; everything else as 500.
+            if e.to_string().contains("Stream limit reached") {
+                e.context_forbidden(
+                    "StreamLimitReached",
+                    "Maximum concurrent streams reached",
+                )
+            } else {
+                e.context_internal("playback_start", "failed to start session")
+            }
+        })?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1974,97 +1868,15 @@ mod tests {
 pub async fn report_playback_progress(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Json(data): Json<api::PlaybackProgressInfo>,
+    Json(data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
     if let Some(ref psid) = data.play_session_id {
-        let ps_snapshot = state.ctx.sessions.get(psid);
-        if let Some(ref ps) = ps_snapshot {
-            let item_id = data.item_id.unwrap_or(ps.item_id);
-
-            // Detect encode-parameter changes and log them once.
-            // We ignore pause/unpause — those are not encode changes.
-            let audio_changed = data.audio_stream_index.is_some()
-                && data.audio_stream_index != ps.audio_stream_index;
-            let subtitle_changed = data.subtitle_stream_index.is_some()
-                && data.subtitle_stream_index != ps.subtitle_stream_index;
-            let method_changed = data.play_method.is_some()
-                && data.play_method.as_ref().map(|m| m.to_string()) != ps.play_method;
-            if audio_changed || subtitle_changed || method_changed {
-                info!(
-                    play_session_id = psid.trim_start_matches("audio-").trim_start_matches("video-"),
-                    item_id = %item_id,
-                    user = %session.user.username,
-                    audio_stream = if audio_changed {
-                        format!("{:?} → {:?}", ps.audio_stream_index, data.audio_stream_index)
-                    } else {
-                        format!("{:?}", ps.audio_stream_index)
-                    },
-                    subtitle_stream = if subtitle_changed {
-                        format!("{:?} → {:?}", ps.subtitle_stream_index, data.subtitle_stream_index)
-                    } else {
-                        format!("{:?}", ps.subtitle_stream_index)
-                    },
-                    play_method = if method_changed {
-                        format!("{:?} → {:?}", ps.play_method, data.play_method)
-                    } else {
-                        format!("{:?}", ps.play_method)
-                    },
-                    "⟳ Playback params changed"
-                );
-            }
-
-            state.ctx.sessions.update(psid, |ps| {
-                ps.position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
-                if data.is_paused && !ps.is_paused {
-                    ps.last_paused_at = Some(Utc::now());
-                } else if !data.is_paused {
-                    ps.last_paused_at = None;
-                }
-                ps.is_paused = data.is_paused;
-                ps.is_muted = data.is_muted;
-                ps.volume_level = data.volume_level.or(ps.volume_level);
-                ps.audio_stream_index =
-                    data.audio_stream_index.or(ps.audio_stream_index);
-                ps.subtitle_stream_index =
-                    data.subtitle_stream_index.or(ps.subtitle_stream_index);
-                ps.last_activity = Utc::now();
-            });
-
-            // Update transcode buffer monitor with actual playback position.
-            if let Some(position_ticks) = data.position_ticks {
-                if let Some(ref ts_lock) = ps.transcode {
-                    if let Ok(ts) = ts_lock.try_read() {
-                        let position_secs = (position_ticks / 10_000_000) as u32;
-                        let offset = position_secs.saturating_sub(ts.start_time_secs);
-                        ts.playback_offset_secs
-                            .store(offset, std::sync::atomic::Ordering::Relaxed);
-                    }
-                }
-            }
-
-            // persist position to db
-            let position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
-            if let Ok(Some(media)) = db::Media::get_by_id(&state.ctx.db, &item_id).await
-            {
-                let position_seconds = position_ticks / 10_000_000;
-                let mut ms = db::UserMediaState::get_or_new(
-                    &state.ctx.db,
-                    &session.user,
-                    &media,
-                )
-                .await?;
-                ms.playback_position = position_seconds;
-                ms.audio_idx = data
-                    .audio_stream_index
-                    .or(ps.audio_stream_index)
-                    .map(|x| x as i64);
-                ms.subtitle_idx = data
-                    .subtitle_stream_index
-                    .or(ps.subtitle_stream_index)
-                    .map(|x| x as i64);
-                ms.save(&state.ctx.db).await?;
-            }
-        }
+        state
+            .ctx
+            .sessions
+            .progress(&state.ctx.db, &session.user, psid, &data)
+            .await
+            .context_internal("playback_progress", "failed to update progress")?;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -2073,43 +1885,15 @@ pub async fn report_playback_progress(
 pub async fn report_playback_stopped(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    Json(data): Json<api::PlaybackStopInfo>,
+    Json(data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
     if let Some(ref psid) = data.play_session_id {
-        let ps = state.ctx.sessions.stop(psid).await;
-
-        let item_id = data.item_id.or(ps.as_ref().map(|s| s.item_id));
-        let final_ticks = data
-            .position_ticks
-            .or(ps.as_ref().map(|s| s.position_ticks));
-
-        if let Some(item_id) = item_id {
-            if let Ok(Some(media)) = db::Media::get_by_id(&state.ctx.db, &item_id).await
-            {
-                let position_seconds = final_ticks.unwrap_or(0) / 10_000_000;
-                let mut ms = db::UserMediaState::get_or_new(
-                    &state.ctx.db,
-                    &session.user,
-                    &media,
-                )
-                .await?;
-                ms.playback_position = position_seconds;
-                // If watched to near the end (>= 90%), mark as played
-                if let Some(runtime) = media.runtime {
-                    let runtime_seconds = runtime;
-                    if runtime_seconds > 0
-                        && position_seconds >= (runtime_seconds * 90 / 100)
-                    {
-                        ms.play_count += 1;
-                        ms.played_at = Some(Local::now().naive_local());
-                        ms.playback_position = 0;
-                    }
-                }
-                ms.save(&state.ctx.db).await?;
-            }
-        }
-
-        debug!(play_session_id = psid, "Playback stopped");
+        state
+            .ctx
+            .sessions
+            .stopped(&state.ctx.db, &session.user, psid, &data)
+            .await
+            .context_internal("playback_stopped", "failed to record stop")?;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
