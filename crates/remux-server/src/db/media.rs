@@ -804,24 +804,6 @@ pub struct Media {
     pub movie_count: Option<i64>,
     #[sqlx(skip)]
     pub series_count: Option<i64>,
-    /// Season/album title (parent item's title), populated post-query.
-    #[sqlx(skip)]
-    pub parent_title: Option<String>,
-    /// Grandparent title (series/artist), populated post-query.
-    #[sqlx(skip)]
-    pub grandparent_title: Option<String>,
-    /// Grandparent primary image UUID, populated post-query.
-    #[sqlx(skip)]
-    pub grandparent_primary_image: Option<String>,
-    /// Grandparent backdrop image UUID, populated post-query.
-    #[sqlx(skip)]
-    pub grandparent_backdrop: Option<String>,
-    /// Grandparent thumb image UUID, populated post-query.
-    #[sqlx(skip)]
-    pub grandparent_thumb: Option<String>,
-    /// Parent (season) thumb image UUID for episodes, populated post-query.
-    #[sqlx(skip)]
-    pub parent_thumb: Option<String>,
     #[sqlx(skip)]
     pub unplayed_item_count: Option<i64>,
     #[sqlx(skip)]
@@ -839,6 +821,10 @@ pub struct Media {
     pub user_state: Option<super::UserMediaState>,
     #[sqlx(skip)]
     pub relations: Option<Vec<(MediaRelation, Media)>>,
+    /// Preloaded direct parent (season, album, channel, etc.).
+    #[sqlx(skip)]
+    pub parent: Option<Box<Media>>,
+    /// Preloaded grandparent (series, artist, etc.).
     #[sqlx(skip)]
     pub grandparent: Option<Box<Media>>,
 
@@ -877,13 +863,11 @@ pub struct Media {
 }
 
 impl Media {
-    /// Batch-populate parent/series title fields for tracks, albums, episodes, seasons.
-    pub async fn enrich_parents(db: &SqlitePool, records: &mut Vec<Self>) {
-        struct ParentRow {
-            title: String,
-            channel_number: Option<i64>,
-        }
-
+    /// Batch-load parent and grandparent `Media` records (with images) for tracks,
+    /// albums, episodes, seasons, and TV programs, storing them as `self.parent` /
+    /// `self.grandparent`. The API layer reads titles and image tags from those
+    /// preloaded records instead of from flat denormalised fields.
+    pub async fn preload_parents(db: &SqlitePool, records: &mut Vec<Self>) {
         let ids_needed: Vec<Uuid> = records
             .iter()
             .filter(|m| {
@@ -905,6 +889,13 @@ impl Media {
             return;
         }
 
+        // Lightweight fetch: only the columns the API layer needs from parent records.
+        struct ParentRow {
+            id: Uuid,
+            title: String,
+            channel_number: Option<i64>,
+        }
+
         let mut parent_map: HashMap<Uuid, ParentRow> = HashMap::new();
         for chunk in ids_needed.chunks(500) {
             let mut qb = sqlx::QueryBuilder::new(
@@ -924,6 +915,7 @@ impl Media {
                         (
                             id,
                             ParentRow {
+                                id,
                                 title,
                                 channel_number,
                             },
@@ -937,91 +929,64 @@ impl Media {
             return;
         }
 
-        // Batch-load images for parent series/season items.
+        // Batch-load images for all parent records.
         let mut parent_images =
             super::image::MediaImage::get_for_media_ids(db, &ids_needed)
                 .await
                 .unwrap_or_default();
 
+        // Build a synthetic Media stub from a ParentRow + its images.
+        let make_stub =
+            |row: &ParentRow, images: super::image::MediaImages| -> Box<Media> {
+                let mut m = Media::default();
+                m.id = row.id;
+                m.title = row.title.clone();
+                m.channel_number = row.channel_number;
+                m.images = images;
+                Box::new(m)
+            };
+
         for media in records.iter_mut() {
-            match media.kind {
-                MediaKind::Track => {
-                    media.parent_title = media
-                        .parent_id
-                        .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
-                    media.grandparent_title = media
-                        .grandparent_id
-                        .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+            if !matches!(
+                media.kind,
+                MediaKind::Track
+                    | MediaKind::Album
+                    | MediaKind::Episode
+                    | MediaKind::Season
+                    | MediaKind::TvProgram
+            ) {
+                continue;
+            }
+
+            if let Some(pid) = media.parent_id {
+                if let Some(row) = parent_map.get(&pid) {
+                    let imgs = parent_images.remove(&pid).unwrap_or_default();
+                    media.parent = Some(make_stub(row, imgs));
                 }
-                MediaKind::Album => {
-                    media.grandparent_title = media
-                        .grandparent_id
-                        .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
+            }
+
+            // For episodes grandparent_id points to the series;
+            // fall back to parent_id for episodes with a flat hierarchy.
+            let gp_id = match media.kind {
+                MediaKind::Episode => media.grandparent_id.or(media.parent_id),
+                _ => media.grandparent_id,
+            };
+            if let Some(gid) = gp_id {
+                if let Some(row) = parent_map.get(&gid) {
+                    let imgs = parent_images.remove(&gid).unwrap_or_default();
+                    media.grandparent = Some(make_stub(row, imgs));
                 }
-                MediaKind::Episode => {
-                    media.parent_title = media
-                        .parent_id
-                        .and_then(|id| parent_map.get(&id).map(|r| r.title.clone()));
-                    let series_id = media.grandparent_id.or(media.parent_id);
-                    if let Some(id) = series_id {
-                        if let Some(row) = parent_map.get(&id) {
-                            media.grandparent_title = Some(row.title.clone());
-                        }
-                        if let Some(imgs) = parent_images.get(&id) {
-                            media.grandparent_primary_image = imgs
-                                .get(super::image::ImageKind::Primary)
-                                .map(|i| i.id.to_string());
-                            media.grandparent_backdrop = imgs
-                                .get(super::image::ImageKind::Backdrop)
-                                .map(|i| i.id.to_string());
-                            media.grandparent_thumb = imgs
-                                .get(super::image::ImageKind::Thumb)
-                                .map(|i| i.id.to_string());
-                        }
-                    }
-                    // Season thumb (direct parent)
-                    if let Some(season_id) = media.parent_id {
-                        if let Some(imgs) = parent_images.get(&season_id) {
-                            media.parent_thumb = imgs
-                                .get(super::image::ImageKind::Thumb)
-                                .map(|i| i.id.to_string());
-                        }
-                    }
-                }
-                MediaKind::Season => {
-                    if let Some(id) = media.parent_id {
-                        if let Some(row) = parent_map.get(&id) {
-                            media.grandparent_title = Some(row.title.clone());
-                        }
-                        if let Some(imgs) = parent_images.get(&id) {
-                            media.grandparent_primary_image = imgs
-                                .get(super::image::ImageKind::Primary)
-                                .map(|i| i.id.to_string());
-                            media.grandparent_backdrop = imgs
-                                .get(super::image::ImageKind::Backdrop)
-                                .map(|i| i.id.to_string());
-                            media.grandparent_thumb = imgs
-                                .get(super::image::ImageKind::Thumb)
-                                .map(|i| i.id.to_string());
-                        }
-                    }
-                }
-                MediaKind::TvProgram => {
-                    if let Some(id) = media.parent_id {
-                        if let Some(row) = parent_map.get(&id) {
-                            media.parent_title = Some(row.title.clone());
-                            media.channel_number = row.channel_number;
-                        }
-                        if let Some(imgs) = parent_images.get(&id) {
-                            media.grandparent_primary_image = imgs
-                                .get(super::image::ImageKind::Primary)
-                                .map(|i| i.id.to_string());
-                        }
-                    }
-                }
-                _ => {}
             }
         }
+    }
+
+    /// Build a minimal Media stub with just id and title — used when preloaded
+    /// parent/grandparent data is constructed inline rather than fetched from DB.
+    pub fn stub(id: Uuid, title: impl Into<String>) -> Box<Self> {
+        let mut m = Self::default();
+        m.id = id;
+        m.title = title.into();
+        Box::new(m)
     }
 
     pub fn parse_smart_filter(&self) -> Option<&remux_sdks::remux::CollectionFilter> {
@@ -2418,7 +2383,7 @@ impl Media {
             }
         }
 
-        Self::enrich_parents(db, &mut records).await;
+        Self::preload_parents(db, &mut records).await;
 
         if filter.include_user_state {
             let uid = filter

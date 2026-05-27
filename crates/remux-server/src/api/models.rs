@@ -160,6 +160,10 @@ fn media_image_tag(media: &db::Media, kind: db::ImageKind) -> Option<String> {
     media.images.get(kind).map(|i| i.id.to_string())
 }
 
+fn parent_image_tag(parent: Option<&db::Media>, kind: db::ImageKind) -> Option<String> {
+    parent?.images.get(kind).map(|i| i.id.to_string())
+}
+
 pub fn db_state_to_dto(
     state: db::UserMediaState,
     media: &db::Media,
@@ -302,7 +306,10 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         } else {
             None
         },
-        channel_number: media.channel_number.map(|n| n.to_string()),
+        channel_number: media
+            .channel_number
+            .or_else(|| media.parent.as_ref().and_then(|p| p.channel_number))
+            .map(|n| n.to_string()),
         start_date: media.live_start.map(|d| d.and_utc().to_rfc3339()),
         end_date: media.live_end.map(|d| d.and_utc().to_rfc3339()),
         is_live: if media.kind == db::MediaKind::TvChannel {
@@ -426,7 +433,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         series_count: media.series_count,
         // Music track fields: album name, album id, artist name
         album: (media.kind == db::MediaKind::Track)
-            .then(|| media.parent_title.clone())
+            .then(|| media.parent.as_ref().map(|p| p.title.clone()))
             .flatten(),
         album_id: (media.kind == db::MediaKind::Track)
             .then(|| media.parent_id.map(|id| id.to_string()))
@@ -435,7 +442,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             .then(|| media_image_tag(&media, db::ImageKind::Primary))
             .flatten(),
         album_artist: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            .then(|| media.grandparent_title.clone())
+            .then(|| media.grandparent.as_ref().map(|gp| gp.title.clone()))
             .flatten(),
         album_artists: matches!(
             media.kind,
@@ -444,18 +451,18 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         .then(|| {
             media
                 .grandparent_id
-                .zip(media.grandparent_title.clone())
+                .zip(media.grandparent.as_ref().map(|gp| gp.title.clone()))
                 .map(|(id, name)| vec![NameIdPair { id, name }])
         })
         .flatten(),
         artists: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
-            .then(|| media.grandparent_title.clone().map(|name| vec![name]))
+            .then(|| media.grandparent.as_ref().map(|gp| vec![gp.title.clone()]))
             .flatten(),
         artist_items: matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
             .then(|| {
                 media
                     .grandparent_id
-                    .zip(media.grandparent_title.clone())
+                    .zip(media.grandparent.as_ref().map(|gp| gp.title.clone()))
                     .map(|(id, name)| vec![NameIdPair { id, name }])
             })
             .flatten(),
@@ -512,8 +519,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     }
 
     if matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Season) {
-        item.series_name = media.grandparent_title.clone();
-        item.series_primary_image_tag = media.grandparent_primary_image.clone();
+        item.series_name = media.grandparent.as_ref().map(|gp| gp.title.clone());
+        item.series_primary_image_tag =
+            parent_image_tag(media.grandparent.as_deref(), db::ImageKind::Primary);
         // The series item is where backdrop images live.
         let series_uuid = if media.kind == db::MediaKind::Episode {
             media.grandparent_id.or(media.parent_id)
@@ -522,21 +530,29 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         };
         item.parent_backdrop_item_id = series_uuid.map(|id| id.to_string());
         item.parent_backdrop_image_tags =
-            media.grandparent_backdrop.clone().map(|b| vec![b]);
+            parent_image_tag(media.grandparent.as_deref(), db::ImageKind::Backdrop)
+                .map(|b| vec![b]);
         // Thumb: prefer season (direct parent) when it has a thumb image;
         // fall back to series thumb/backdrop so the field is never empty.
-        if media.kind == db::MediaKind::Episode && media.parent_thumb.is_some() {
+        let season_thumb = (media.kind == db::MediaKind::Episode)
+            .then(|| parent_image_tag(media.parent.as_deref(), db::ImageKind::Thumb))
+            .flatten();
+        if season_thumb.is_some() {
             item.parent_thumb_item_id = media.parent_id.map(|id| id.to_string());
-            item.parent_thumb_image_tag = media.parent_thumb.clone();
+            item.parent_thumb_image_tag = season_thumb;
         } else {
             item.parent_thumb_item_id = series_uuid.map(|id| id.to_string());
-            item.parent_thumb_image_tag = media
-                .grandparent_thumb
-                .clone()
-                .or_else(|| media.grandparent_backdrop.clone());
+            item.parent_thumb_image_tag =
+                parent_image_tag(media.grandparent.as_deref(), db::ImageKind::Thumb)
+                    .or_else(|| {
+                        parent_image_tag(
+                            media.grandparent.as_deref(),
+                            db::ImageKind::Backdrop,
+                        )
+                    });
         }
         if media.kind == db::MediaKind::Episode {
-            item.season_name = media.parent_title.clone();
+            item.season_name = media.parent.as_ref().map(|p| p.title.clone());
         }
     }
 
@@ -581,8 +597,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
 
     if media.kind == db::MediaKind::TvProgram {
         item.channel_id = media.parent_id.map(|id| id.to_string());
-        item.channel_name = media.parent_title.clone();
-        item.channel_primary_image_tag = media.grandparent_primary_image.clone();
+        item.channel_name = media.parent.as_ref().map(|p| p.title.clone());
+        item.channel_primary_image_tag =
+            parent_image_tag(media.parent.as_deref(), db::ImageKind::Primary);
         item.location_type = LocationType::Remote;
         item.can_delete = Some(false);
         item.can_download = Some(false);

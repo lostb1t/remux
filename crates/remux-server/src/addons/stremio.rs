@@ -634,8 +634,11 @@ async fn stremio_sync_children(
         .collect::<Vec<db::Media>>();
 
     for child in &mut children {
-        if child.grandparent_title.is_none() {
-            child.grandparent_title = Some(root.title.clone());
+        if child.grandparent.is_none() {
+            let mut gp = db::Media::default();
+            gp.id = root.id;
+            gp.title = root.title.clone();
+            child.grandparent = Some(Box::new(gp));
         }
     }
 
@@ -887,7 +890,7 @@ async fn stremio_search(
         })
         .collect();
 
-    db::Media::enrich_parents(&ctx.db, &mut media).await;
+    db::Media::preload_parents(&ctx.db, &mut media).await;
 
     Ok(media)
 }

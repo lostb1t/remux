@@ -342,8 +342,6 @@ impl DeezerAddon {
                     parent_idx: track.disk_number,
                     parent_id: Some(album_id),
                     grandparent_id: artist_id,
-                    parent_title: Some(album_title.clone()),
-                    grandparent_title: Some(artist_title.clone()),
                     external_ids: db::ExternalIds {
                         deezer_track: Some(track.id as i64),
                         deezer_album: Some(deezer_album_id as i64),
@@ -351,6 +349,10 @@ impl DeezerAddon {
                     },
                     ..Default::default()
                 };
+                t.parent = Some(db::Media::stub(album_id, album_title.clone()));
+                if let Some(gid) = artist_id {
+                    t.grandparent = Some(db::Media::stub(gid, artist_title.clone()));
+                }
                 if let Some(url) = detail.cover_xl.clone() {
                     t.set_image(db::ImageKind::Primary, url);
                 }
@@ -401,7 +403,6 @@ impl DeezerAddon {
                     kind: db::MediaKind::Album,
                     parent_id: Some(root.id),
                     grandparent_id: Some(root.id),
-                    grandparent_title: Some(root.title.clone()),
                     external_ids: db::ExternalIds {
                         deezer_album: Some(album.id as i64),
                         deezer_artist: Some(artist_id_raw),
@@ -409,6 +410,7 @@ impl DeezerAddon {
                     },
                     ..Default::default()
                 };
+                m.grandparent = Some(db::Media::stub(root.id, root.title.clone()));
                 if let Some(url) = album.cover_medium {
                     m.set_image(db::ImageKind::Primary, url);
                 }
@@ -512,7 +514,6 @@ impl DeezerAddon {
                     description: Some(desc_parts.join(" · ")),
                     parent_id: Some(root_id),
                     grandparent_id: Some(root_id),
-                    grandparent_title: Some(artist_title.clone()),
                     external_ids: db::ExternalIds {
                         deezer_album: Some(detail.id as i64),
                         deezer_artist: Some(artist_id_raw),
@@ -520,6 +521,8 @@ impl DeezerAddon {
                     },
                     ..Default::default()
                 };
+                album_media.grandparent =
+                    Some(db::Media::stub(root_id, artist_title.clone()));
                 if let Some(url) = detail.cover_xl.clone().or(artist_poster.clone()) {
                     album_media.set_image(db::ImageKind::Primary, url);
                 }
@@ -566,13 +569,17 @@ impl DeezerAddon {
         } else {
             root.title.clone()
         };
-        let artist_title = root.grandparent_title.clone().unwrap_or_else(|| {
-            detail
-                .artist
-                .as_ref()
-                .map(|a| a.name.clone())
-                .unwrap_or_default()
-        });
+        let artist_title = root
+            .grandparent
+            .as_ref()
+            .map(|gp| gp.title.clone())
+            .unwrap_or_else(|| {
+                detail
+                    .artist
+                    .as_ref()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default()
+            });
 
         Ok(Self::build_album_children(
             detail,
@@ -920,6 +927,8 @@ fn extract_playlist_id(input: &str) -> Option<String> {
 fn track_to_result(t: dz::SearchTrack) -> db::Media {
     let album_id =
         common::stable_media_uuid(&db::MediaKind::Album, &t.album.id.to_string());
+    let artist_id =
+        common::stable_media_uuid(&db::MediaKind::Artist, &t.artist.id.to_string());
     let mut track = db::Media {
         id: common::stable_media_uuid(&db::MediaKind::Track, &t.id.to_string()),
         title: t.title,
@@ -927,8 +936,7 @@ fn track_to_result(t: dz::SearchTrack) -> db::Media {
         runtime: t.duration.map(|s| s as i64),
         description: Some(format!("by {}", t.artist.name)),
         parent_id: Some(album_id),
-        parent_title: Some(t.album.title),
-        grandparent_title: Some(t.artist.name.clone()),
+        grandparent_id: Some(artist_id),
         external_ids: db::ExternalIds {
             deezer_track: Some(t.id as i64),
             deezer_artist: Some(t.artist.id as i64),
@@ -937,6 +945,8 @@ fn track_to_result(t: dz::SearchTrack) -> db::Media {
         },
         ..Default::default()
     };
+    track.parent = Some(db::Media::stub(album_id, t.album.title));
+    track.grandparent = Some(db::Media::stub(artist_id, t.artist.name.clone()));
     if let Some(url) = t.album.cover_medium {
         track.set_image(db::ImageKind::Primary, url);
     }
@@ -944,12 +954,14 @@ fn track_to_result(t: dz::SearchTrack) -> db::Media {
 }
 
 fn album_to_result(a: dz::SearchAlbum) -> db::Media {
+    let artist_id =
+        common::stable_media_uuid(&db::MediaKind::Artist, &a.artist.id.to_string());
     let mut album = db::Media {
         id: common::stable_media_uuid(&db::MediaKind::Album, &a.id.to_string()),
         title: a.title,
         kind: db::MediaKind::Album,
         description: Some(format!("by {}", a.artist.name)),
-        grandparent_title: Some(a.artist.name.clone()),
+        grandparent_id: Some(artist_id),
         external_ids: db::ExternalIds {
             deezer_album: Some(a.id as i64),
             deezer_artist: Some(a.artist.id as i64),
@@ -957,6 +969,7 @@ fn album_to_result(a: dz::SearchAlbum) -> db::Media {
         },
         ..Default::default()
     };
+    album.grandparent = Some(db::Media::stub(artist_id, a.artist.name.clone()));
     if let Some(url) = a.cover_medium {
         album.set_image(db::ImageKind::Primary, url);
     }

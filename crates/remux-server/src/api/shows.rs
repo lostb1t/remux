@@ -189,7 +189,7 @@ pub async fn shows_nextup(
     };
 
     let mut enriched = vec![ep.clone()];
-    db::Media::enrich_parents(&state.ctx.db, &mut enriched).await;
+    db::Media::preload_parents(&state.ctx.db, &mut enriched).await;
     let mut ep = enriched.remove(0);
     ep.images = db::MediaImage::get_for_media(&state.ctx.db, &ep.id)
         .await
@@ -302,7 +302,7 @@ async fn shows_nextup_all(
 
         if let Some(ep) = next_ep {
             let mut enriched = vec![ep.clone()];
-            db::Media::enrich_parents(&state.ctx.db, &mut enriched).await;
+            db::Media::preload_parents(&state.ctx.db, &mut enriched).await;
             let mut ep = enriched.remove(0);
             ep.images = db::MediaImage::get_for_media(&state.ctx.db, &ep.id)
                 .await

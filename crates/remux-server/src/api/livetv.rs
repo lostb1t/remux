@@ -541,7 +541,7 @@ pub async fn livetv_program(
         .await?
         .context_not_found("not found", "program not found")?;
     let mut records = vec![media];
-    db::Media::enrich_parents(&state.ctx.db, &mut records).await;
+    db::Media::preload_parents(&state.ctx.db, &mut records).await;
     Ok(Json(api::db_media_to_item(records.remove(0))))
 }
 
