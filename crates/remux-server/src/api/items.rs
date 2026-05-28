@@ -943,6 +943,7 @@ pub async fn item(
     tokio::join!(
         async {
             if need_refresh {
+                Ok(())
                 // state
                 //    .ctx
                 //    .addons
