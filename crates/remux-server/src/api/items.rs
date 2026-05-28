@@ -929,11 +929,13 @@ pub async fn item(
         },
     };
 
-    let need_refresh = media.refreshed_at.is_none()
+    let mut need_refresh = media.refreshed_at.is_none()
         && matches!(
             media.kind,
             db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
         );
+    // disable for now
+    need_refresh = false;
     let needs_streams = want_streams
         && matches!(
             media.kind,
@@ -943,13 +945,12 @@ pub async fn item(
     tokio::join!(
         async {
             if need_refresh {
-                Ok(())
-                // state
-                //    .ctx
-                //    .addons
-                //    .process_meta_batch(vec![media.clone()], &state.ctx, false)
-                //    .await
-                //    .log_err("failed to refresh metadata")
+                state
+                    .ctx
+                    .addons
+                    .process_meta_batch(vec![media.clone()], &state.ctx, false)
+                    .await
+                    .log_err("failed to refresh metadata")
             } else {
                 Ok(())
             }
