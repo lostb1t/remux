@@ -686,7 +686,9 @@ pub struct PublicSystemInfo {
 #[serde(rename_all = "PascalCase")]
 pub struct SystemInfo {
     pub operating_system_display_name: Option<String>,
-    pub product_name: Option<String>,
+    pub product_name: String,
+    pub version: String,
+    pub remux_version: String,
     #[default(false)]
     pub has_pending_restart: bool,
     #[default(false)]
@@ -710,7 +712,6 @@ pub struct SystemInfo {
     pub system_architecture: Option<String>,
     pub local_address: Option<String>,
     pub server_name: Option<String>,
-    pub version: Option<String>,
     pub operating_system: Option<String>,
     pub id: Option<String>,
 }

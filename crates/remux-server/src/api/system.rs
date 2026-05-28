@@ -544,7 +544,9 @@ pub async fn system_info(
     Ok(Json(api::SystemInfo {
         id: Some(server_id()),
         server_name: config.server_name,
-        product_name: Some("Jellyfin Server".to_string()),
+        product_name: "Jellyfin Server".to_string(),
+        version: "10.11.8".to_string(),
+        remux_version: env!("CARGO_PKG_VERSION").to_string(),
         can_self_restart: Some(true),
         has_pending_restart: false,
         is_shutting_down: false,
