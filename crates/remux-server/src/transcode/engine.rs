@@ -1343,7 +1343,9 @@ pub(crate) fn build_progressive_args(
                 args.extend(["-map".into(), "0:a?".into()]);
             }
             if let Some(sub_idx) = params.subtitle_stream_index {
-                args.extend(["-map".into(), format!("0:{}?", sub_idx)]);
+                if sub_idx >= 0 {
+                    args.extend(["-map".into(), format!("0:{}?", sub_idx)]);
+                }
             }
         }
     }

@@ -14,12 +14,24 @@ pub trait DeviceProfileExt {
 
 impl DeviceProfileExt for DeviceProfile {
     fn video_transcoding_profile(&self) -> Option<&TranscodingProfile> {
-        self.transcoding_profiles.iter().find(|p| {
+        let is_video = |p: &&TranscodingProfile| {
             p.type_
                 .as_deref()
                 .map(|t| t.eq_ignore_ascii_case("Video"))
                 .unwrap_or(false)
-        })
+        };
+        // Prefer HTTP progressive over HLS: clients like Streamyfin hardcode
+        // contentType "video/mp4", so an HLS URL causes the Chromecast to reject.
+        self.transcoding_profiles
+            .iter()
+            .find(|p| {
+                is_video(p)
+                    && p.protocol
+                        .as_deref()
+                        .map(|pr| pr.eq_ignore_ascii_case("http"))
+                        .unwrap_or(false)
+            })
+            .or_else(|| self.transcoding_profiles.iter().find(|p| is_video(p)))
     }
 
     fn audio_transcoding_profile(&self) -> Option<&TranscodingProfile> {

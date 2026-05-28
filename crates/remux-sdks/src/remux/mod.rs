@@ -681,6 +681,13 @@ pub struct PublicSystemInfo {
     pub operating_system: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CastReceiverApplication {
+    pub id: String,
+    pub name: String,
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize, default2::Default)]
 #[serde(rename_all = "PascalCase")]
@@ -714,6 +721,11 @@ pub struct SystemInfo {
     pub server_name: Option<String>,
     pub operating_system: Option<String>,
     pub id: Option<String>,
+    #[default(vec![
+        CastReceiverApplication { id: "F007D354".to_string(), name: "Stable".to_string() },
+        CastReceiverApplication { id: "6F511C87".to_string(), name: "Unstable".to_string() },
+    ])]
+    pub cast_receiver_applications: Vec<CastReceiverApplication>,
 }
 
 #[skip_serializing_none]

@@ -469,21 +469,42 @@ async fn items_playbackinfo_inner(
                     .unwrap_or_default();
 
                 source.supports_transcoding = true;
-                source.transcoding_url = Some(format!(
-                    "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
-                    id,
-                    play_session_id,
-                    source.id,
-                    video_codec,
-                    audio_codec,
-                    bitrate_param,
-                    reasons_param,
-                    audio_stream_param,
-                    subtitle_stream_param,
-                    subtitle_method_param,
-                    start_time_param,
-                    session.device.access_token,
-                ));
+                source.transcoding_url = Some(
+                    if trans_protocol.eq_ignore_ascii_case("hls") {
+                        format!(
+                            "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
+                            id,
+                            play_session_id,
+                            source.id,
+                            video_codec,
+                            audio_codec,
+                            bitrate_param,
+                            reasons_param,
+                            audio_stream_param,
+                            subtitle_stream_param,
+                            subtitle_method_param,
+                            start_time_param,
+                            session.device.access_token,
+                        )
+                    } else {
+                        format!(
+                            "/videos/{}/stream.{}?PlaySessionId={}&MediaSourceId={}&VideoCodec={}&AudioCodec={}{}{}{}{}{}{}&ApiKey={}",
+                            id,
+                            trans_container,
+                            play_session_id,
+                            source.id,
+                            video_codec,
+                            audio_codec,
+                            bitrate_param,
+                            reasons_param,
+                            audio_stream_param,
+                            subtitle_stream_param,
+                            subtitle_method_param,
+                            start_time_param,
+                            session.device.access_token,
+                        )
+                    },
+                );
                 source.transcoding_container = Some(trans_container);
                 source.transcoding_sub_protocol = trans_protocol;
                 source.supports_direct_play = false;
