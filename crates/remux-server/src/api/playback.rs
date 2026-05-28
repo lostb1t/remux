@@ -21,7 +21,7 @@ use serde_with::{DurationSeconds, serde_as};
 use std::io;
 use std::time::Duration;
 use tokio_util::io::ReaderStream;
-use tracing::{debug, info, trace};
+use tracing::{debug, error, info, trace};
 use url::Url;
 use uuid::Uuid;
 
@@ -132,6 +132,12 @@ async fn items_playbackinfo_inner(
         media.kind,
         db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
     ) {
+        state
+            .ctx
+            .addons
+            .refresh_streams(&media, &state.ctx)
+            .await
+            .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
         let sources = media.streams(&state.ctx.db).await?;
         let raw = if sources.is_empty() {
             vec![media]

@@ -2,7 +2,7 @@
 default_to_workspace = false
 
 [env]
-RUST_LOG = "warn,remux=info,remux_server=info,axum=info,tower_http=info,hyper=warn,sqlx=warn"
+RUST_LOG = "warn,remux=info,remux_server=debug,axum=info,tower_http=info,hyper=warn,sqlx=warn"
 RUST_BACKTRACE = 0
 CONFIG = "./config"
 AXUM_ANYHOW_EXPOSE_ERRORS=1
@@ -48,7 +48,7 @@ cwd = "crates/remux-dashboard"
 
 [tasks.dev-build-dash]
 command = "dx"
-args = ["build"]
+args = ["build", "--package", "remux-dashboard"]
 cwd = "crates/remux-dashboard"
 watch = {watch = ["${PWD}/crates/remux-dashboard/src", "${PWD}/crates/remux-dashboard/assets"]}
 
