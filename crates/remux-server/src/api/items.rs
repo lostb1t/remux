@@ -943,12 +943,12 @@ pub async fn item(
     tokio::join!(
         async {
             if need_refresh {
-                state
-                    .ctx
-                    .addons
-                    .process_meta_batch(vec![media.clone()], &state.ctx, false)
-                    .await
-                    .log_err("failed to refresh metadata")
+                // state
+                //    .ctx
+                //    .addons
+                //    .process_meta_batch(vec![media.clone()], &state.ctx, false)
+                //    .await
+                //    .log_err("failed to refresh metadata")
             } else {
                 Ok(())
             }
