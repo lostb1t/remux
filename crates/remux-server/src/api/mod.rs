@@ -9,6 +9,7 @@ pub mod client_log;
 pub mod devices;
 pub mod image;
 pub mod images;
+pub mod instantmix;
 pub mod items;
 pub mod livetv;
 pub mod localization;
