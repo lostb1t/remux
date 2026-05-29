@@ -17,7 +17,6 @@ use remux_sdks::remux::TaskTriggerInfoType;
 mod catalog_import_shared;
 mod clean_transcode_folder;
 mod clear_cache;
-mod fix_user_state;
 mod iptv_refresh;
 mod jellyfin_import;
 mod purge_media;
