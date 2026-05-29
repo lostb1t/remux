@@ -54,9 +54,14 @@ jobs:
           VERSION="0.0.1-nightly.$(date -u '+%Y%m%d').${SHORT_SHA}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+  test:
+    name: Test
+    needs: version
+    uses: ./.github/workflows/test.yml
+
   build:
     name: Build
-    needs: version
+    needs: [version, test]
     uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.version.outputs.version }}

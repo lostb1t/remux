@@ -38,9 +38,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: "not-publishing-to-crates-io"
 
+  test:
+    name: Test
+    needs: semantic-release
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    uses: ./.github/workflows/test.yml
+
   build:
     name: Build
-    needs: semantic-release
+    needs: [semantic-release, test]
     if: needs.semantic-release.outputs.new_release_published == 'true'
     uses: ./.github/workflows/build.yml
     with:
