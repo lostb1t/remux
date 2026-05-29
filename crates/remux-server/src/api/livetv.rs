@@ -12,7 +12,6 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::api;
 use crate::db;
-use crate::db::IptvSourceType;
 use crate::db::auth::{AdminSession, AuthSession};
 
 // --------------------------------------------------------------------------
@@ -546,21 +545,19 @@ pub async fn livetv_program(
 }
 
 // --------------------------------------------------------------------------
-// GET /livetv/tunerhosts
+// GET /livetv/tunerhosts  (stub — sources now managed as addons)
 // --------------------------------------------------------------------------
 
 #[get("/livetv/tunerhosts")]
 pub async fn livetv_tuner_hosts(
-    State(state): State<AppState>,
+    _state: State<AppState>,
     _session: AdminSession,
 ) -> Result<impl IntoResponse> {
-    let sources = db::IptvSource::get_all(&state.ctx.db).await?;
-    let hosts: Vec<_> = sources.iter().map(iptv_source_to_tuner_host).collect();
-    Ok(Json(hosts))
+    Ok(Json(serde_json::json!([])))
 }
 
 // --------------------------------------------------------------------------
-// POST /livetv/tunerhosts  (create or update by Id)
+// POST /livetv/tunerhosts  (stub)
 // --------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -578,56 +575,15 @@ pub struct TunerHostInfo {
 
 #[post("/livetv/tunerhosts")]
 pub async fn livetv_add_tuner_host(
-    State(state): State<AppState>,
+    _state: State<AppState>,
     _session: AdminSession,
-    Json(body): Json<TunerHostInfo>,
+    _body: Json<TunerHostInfo>,
 ) -> Result<impl IntoResponse> {
-    let source_type = body
-        .type_
-        .as_deref()
-        .and_then(|s| s.parse::<IptvSourceType>().ok())
-        .unwrap_or(IptvSourceType::M3u);
-    let url = body
-        .url
-        .context_bad_request("bad request", "url is required")?;
-
-    // If Id is present and parses as UUID, update existing; otherwise create new.
-    let id = body
-        .id
-        .as_deref()
-        .and_then(|s| Uuid::parse_str(s).ok())
-        .unwrap_or_else(crate::common::get_uuid);
-
-    // For Xtream updates, preserve existing password if new one is blank.
-    let password = if source_type == IptvSourceType::Xtream {
-        let provided = body.password.filter(|p| !p.is_empty());
-        if provided.is_none() {
-            // Fetch existing to keep password
-            db::IptvSource::get_by_id(&state.ctx.db, &id)
-                .await?
-                .and_then(|s| s.xtream_password)
-        } else {
-            provided
-        }
-    } else {
-        None
-    };
-
-    let source = db::IptvSource {
-        id,
-        name: body.friendly_name.unwrap_or_else(|| "IPTV".to_string()),
-        m3u_url: url,
-        source_type,
-        xtream_username: body.username,
-        xtream_password: password,
-        ..Default::default()
-    };
-    source.save(&state.ctx.db).await?;
-    Ok((StatusCode::OK, Json(iptv_source_to_tuner_host(&source))))
+    Ok(StatusCode::NOT_IMPLEMENTED)
 }
 
 // --------------------------------------------------------------------------
-// DELETE /livetv/tunerhosts  (?id=...)
+// DELETE /livetv/tunerhosts  (stub)
 // --------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -637,31 +593,11 @@ pub struct DeleteTunerQuery {
 
 #[delete("/livetv/tunerhosts")]
 pub async fn livetv_delete_tuner_host(
-    State(state): State<AppState>,
+    _state: State<AppState>,
     _session: AdminSession,
-    Query(q): Query<DeleteTunerQuery>,
+    _q: Query<DeleteTunerQuery>,
 ) -> Result<impl IntoResponse> {
-    let source_id = q.id.simple().to_string();
-    sqlx::query(
-        "DELETE FROM media
-         WHERE kind = 'tv_program'
-           AND parent_id IN (
-               SELECT id FROM media
-               WHERE kind = 'tv_channel' AND JSON_EXTRACT(external_ids, '$.iptv_source_id') = $1
-           )",
-    )
-    .bind(&source_id)
-    .execute(&state.ctx.db)
-    .await?;
-
-    sqlx::query("DELETE FROM media WHERE kind = 'tv_channel' AND JSON_EXTRACT(external_ids, '$.iptv_source_id') = $1")
-        .bind(&source_id)
-        .execute(&state.ctx.db)
-        .await?;
-
-    db::IptvSource::delete(&state.ctx.db, &q.id).await?;
-    state.tasks.run_task("RefreshIptv").await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(StatusCode::NOT_IMPLEMENTED)
 }
 
 // --------------------------------------------------------------------------
@@ -670,7 +606,7 @@ pub async fn livetv_delete_tuner_host(
 
 #[get("/livetv/tunerhosts/default")]
 pub async fn livetv_tuner_host_default(
-    State(state): State<AppState>,
+    _state: State<AppState>,
     _session: AdminSession,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse> {
@@ -920,21 +856,6 @@ pub async fn remux_patch_channel(
     .await?;
 
     Ok(StatusCode::NO_CONTENT)
-}
-
-// --------------------------------------------------------------------------
-// Conversion helpers
-// --------------------------------------------------------------------------
-
-fn iptv_source_to_tuner_host(source: &db::IptvSource) -> serde_json::Value {
-    serde_json::json!({
-        "Id": source.id.simple().to_string(),
-        "Url": source.m3u_url,
-        "FriendlyName": source.name,
-        "Type": source.source_type.to_string(),
-        "Username": source.xtream_username,
-        "Status": "Online",
-    })
 }
 
 #[derive(Debug, Serialize)]

@@ -30,6 +30,7 @@ pub enum MediaType {
     Movie,
     Series,
     Tv,
+    Channel,
     Events,
 
     // custom

@@ -2265,7 +2265,8 @@ impl From<stremio::MediaType> for MediaKind {
     fn from(t: stremio::MediaType) -> Self {
         match t {
             stremio::MediaType::Movie => Self::Movie,
-            stremio::MediaType::Series | stremio::MediaType::Tv => Self::Series,
+            stremio::MediaType::Series => Self::Series,
+            stremio::MediaType::Tv | stremio::MediaType::Channel => Self::TvChannel,
             stremio::MediaType::Album => Self::Album,
             stremio::MediaType::Artist => Self::Artist,
             stremio::MediaType::Track => Self::Track,

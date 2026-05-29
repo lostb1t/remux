@@ -163,8 +163,9 @@ impl TryFrom<sdks::stremio::MediaType> for MediaKind {
     fn try_from(t: sdks::stremio::MediaType) -> Result<Self, Self::Error> {
         match t {
             sdks::stremio::MediaType::Movie => Ok(MediaKind::Movie),
-            sdks::stremio::MediaType::Series | sdks::stremio::MediaType::Tv => {
-                Ok(MediaKind::Series)
+            sdks::stremio::MediaType::Series => Ok(MediaKind::Series),
+            sdks::stremio::MediaType::Tv | sdks::stremio::MediaType::Channel => {
+                Ok(MediaKind::TvChannel)
             }
             sdks::stremio::MediaType::Album => Ok(MediaKind::Album),
             sdks::stremio::MediaType::Artist => Ok(MediaKind::Artist),
@@ -187,6 +188,7 @@ impl From<&MediaKind> for sdks::stremio::MediaType {
             MediaKind::Series | MediaKind::Season | MediaKind::Episode => {
                 sdks::stremio::MediaType::Series
             }
+            MediaKind::TvChannel | MediaKind::TvProgram => sdks::stremio::MediaType::Tv,
             _ => sdks::stremio::MediaType::Movie,
         }
     }

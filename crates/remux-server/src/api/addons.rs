@@ -217,9 +217,17 @@ pub async fn delete_addon(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
-    Addon::get(&state.ctx.db, id)
+    let addon_row = Addon::get(&state.ctx.db, id)
         .await?
         .context_not_found("Not Found", "Addon not found")?;
+
+    // Purge the addon's index (removes e.g. IPTV channels) before deleting.
+    if let Some(runtime) = state.ctx.addons.get(id).await {
+        if let Err(e) = runtime.kind.purge_index(&state.ctx, &addon_row).await {
+            tracing::warn!(addon = %id, error = %e, "purge_index failed on addon delete");
+        }
+    }
+
     Addon::delete(&state.ctx.db, id).await?;
     state.ctx.addons.reload(&state.ctx.db).await?;
 

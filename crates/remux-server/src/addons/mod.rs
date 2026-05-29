@@ -4,6 +4,7 @@
 pub mod addon;
 pub mod deezer;
 pub mod introdb;
+pub mod iptv;
 pub mod lrclib;
 pub mod opendal;
 pub mod probe;

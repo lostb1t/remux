@@ -42,12 +42,12 @@ watch = true
 #cwd = "crates/server"
 
 [tasks.dev-serve-dash]
-command = "dx"
+command = "${HOME}/.cargo/bin/dx"
 args = ["serve", "--addr", "0.0.0.0", "--port", "8888"]
 cwd = "crates/remux-dashboard"
 
 [tasks.dev-build-dash]
-command = "dx"
+command = "${HOME}/.cargo/bin/dx"
 args = ["build", "--package", "remux-dashboard"]
 cwd = "crates/remux-dashboard"
 watch = {watch = ["${PWD}/crates/remux-dashboard/src", "${PWD}/crates/remux-dashboard/assets"]}
@@ -66,7 +66,7 @@ args = ["bundle", "--release", "-p", "remux-desktop"]
 
 [tasks.build-desktop-dash]
 description = "Build the dashboard WASM assets required by remux-desktop"
-command = "dx"
+command = "${HOME}/.cargo/bin/dx"
 args = ["build", "--release"]
 cwd = "crates/remux-dashboard"
 
