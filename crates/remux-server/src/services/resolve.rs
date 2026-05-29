@@ -72,6 +72,16 @@ async fn persist_from_store(
     // Save the (possibly recomputed stable) ID before root is consumed by process_meta_item.
     let resolved_id = root.id;
 
+    // If the caller's fake UUID differs from the resolved real UUID, keep an alias so
+    // future lookups for the fake ID still resolve to the persisted row.
+    if id != resolved_id {
+        ctx.store.save(
+            id.to_string(),
+            resolved_id,
+            std::time::Duration::from_secs(7 * 24 * 3600),
+        );
+    }
+
     let config = std::sync::Arc::new(
         crate::db::Settings::get_config(&ctx.db)
             .await
@@ -150,7 +160,15 @@ pub(crate) async fn resolve_item(
 ) -> anyhow::Result<Option<db::Media>> {
     resolve_item_core(
         id,
-        || async { Ok(db::Media::get_by_id(&ctx.db, &id).await?) },
+        || async {
+            if let Some(media) = db::Media::get_by_id(&ctx.db, &id).await? {
+                return Ok(Some(media));
+            }
+            if let Some(real_id) = ctx.store.get::<Uuid>(id.to_string()) {
+                return Ok(db::Media::get_by_id(&ctx.db, &real_id).await?);
+            }
+            Ok(None)
+        },
         || persist_from_store(id, ctx),
     )
     .await
