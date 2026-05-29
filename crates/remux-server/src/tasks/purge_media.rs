@@ -53,7 +53,7 @@ impl Task for PurgeMediaTask {
             .ok();
 
         let result: Result<()> = async {
-            sqlx::query("BEGIN").execute(&mut *conn).await?;
+            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
             let t2 = Instant::now();
 
             // --- Save survivors (non-purge rows) for every table we'll truncate.
