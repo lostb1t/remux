@@ -1,3 +1,29 @@
+# [0.4.0](https://github.com/lostb1t/remux-server/compare/v0.3.0...v0.4.0) (2026-05-30)
+
+
+### Bug Fixes
+
+* duplicate persons ([ad35109](https://github.com/lostb1t/remux-server/commit/ad35109491ffa9898eab56d63f4994626672e35d))
+* fix corrupted external_ids case ([15a7e40](https://github.com/lostb1t/remux-server/commit/15a7e4023bc6dee6db48038c9ec27b39f88e098f))
+* force h264 for encoding ([2619ead](https://github.com/lostb1t/remux-server/commit/2619eadf21c1b28e3fd3f693500627de73bd5897))
+* libraries not showing when a user has filters ([4422031](https://github.com/lostb1t/remux-server/commit/44220316fe388a7fb20b5c132bf3a92d6093cd86))
+* missing intro endpoint ([11cf16d](https://github.com/lostb1t/remux-server/commit/11cf16dfdfed9e67614fae707b9ae25d75a50377))
+* nextup images ([3426268](https://github.com/lostb1t/remux-server/commit/342626865242c7a4c337912a3730d751fba14b05))
+* people metadata ([80738ab](https://github.com/lostb1t/remux-server/commit/80738ab1952faa1a601e3a461e4179dd1bd5303d))
+* scheduler not triggering ([2d00040](https://github.com/lostb1t/remux-server/commit/2d000401c36a40d6317bc95a42ffa04739a178a5))
+* several EPG fixes ([42ce21c](https://github.com/lostb1t/remux-server/commit/42ce21cb14b3acc81cb5971ebc73fd6ce672faab))
+
+
+### Features
+
+* add clear cache task ([afcff08](https://github.com/lostb1t/remux-server/commit/afcff08512c25d1c5b03b2105ee38885b4414c1b))
+* add Deezer SDK to remux-sdks ([ae90995](https://github.com/lostb1t/remux-server/commit/ae9099517fca0ea478b2dfac0ad1d72429b8f8a5))
+* add max stream and remote search settings to user ([cdfeb90](https://github.com/lostb1t/remux-server/commit/cdfeb90b571f124ec55b5e7f715f73452dc558b8))
+* extend user filters form ([95bbc5a](https://github.com/lostb1t/remux-server/commit/95bbc5a762b081cda1addf49fc7e67f14c196375))
+* fallback to tmdb id if imdb does not resolve for stremio ([12c6ac4](https://github.com/lostb1t/remux-server/commit/12c6ac47cf63c289bdd08f2ce64febc48f6a5aa7))
+* Mark parents played if all episodes are played and vice versa ([#71](https://github.com/lostb1t/remux-server/issues/71)) ([9e515d4](https://github.com/lostb1t/remux-server/commit/9e515d42ec195103d5311148dbc6df54357e93e9))
+* per user stream filter ([718135b](https://github.com/lostb1t/remux-server/commit/718135bd449a0397e5534e414e8a9735f9b2f0d8))
+
 # [0.3.0](https://github.com/lostb1t/remux-server/compare/v0.2.0...v0.3.0) (2026-05-19)
 
 
