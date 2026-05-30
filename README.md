@@ -95,3 +95,7 @@ run
 ```
 cargo make dev
 ```
+
+## Where code?
+
+This software will be 100% open source. Probaply for the 1.0 release. For now its closed source untill im happy with it.
