@@ -879,6 +879,8 @@ pub struct PatchItemPayload {
     pub promoted: Option<bool>,
     pub tags: Option<Vec<String>>,
     pub sort_order: Option<i64>,
+    pub latest_auto_unplayed: Option<bool>,
+    pub latest_sort_digital: Option<bool>,
 }
 
 #[skip_serializing_none]
@@ -2406,6 +2408,8 @@ pub struct RemuxInfo {
     pub smart_filter: Option<CollectionFilter>,
     pub promoted: Option<bool>,
     pub digital_release_date: Option<DateTime<Utc>>,
+    pub latest_auto_unplayed: Option<bool>,
+    pub latest_sort_digital: Option<bool>,
 }
 
 #[skip_serializing_none]
@@ -2864,6 +2868,7 @@ pub enum ItemSortBy {
     OfficialRating,
     DatePlayed,
     PremiereDate,
+    DigitalReleaseDate,
     StartDate,
     SortName,
     Name,

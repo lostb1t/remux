@@ -1716,6 +1716,20 @@ fn CollectionForm(
             .unwrap_or_default()
     });
     let mut sort_order = use_signal(|| existing.as_ref().and_then(|f| f.index_number));
+    let mut latest_auto_unplayed = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|f| f.remux.as_ref())
+            .and_then(|r| r.latest_auto_unplayed)
+            .unwrap_or(false)
+    });
+    let mut latest_sort_digital = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|f| f.remux.as_ref())
+            .and_then(|r| r.latest_sort_digital)
+            .unwrap_or(false)
+    });
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
 
@@ -1744,6 +1758,8 @@ fn CollectionForm(
         let ck = col_kind.peek().clone();
         let prm = *promoted.peek();
         let so = *sort_order.peek();
+        let auto_unplayed = *latest_auto_unplayed.peek();
+        let sort_digital = *latest_sort_digital.peek();
         let current_tags = tags.peek().clone();
         let smart_filter_payload = if ck == "smart" {
             Some(CollectionFilter {
@@ -1769,6 +1785,8 @@ fn CollectionForm(
                             promoted: Some(prm),
                             tags: Some(current_tags),
                             sort_order: so,
+                            latest_auto_unplayed: Some(auto_unplayed),
+                            latest_sort_digital: Some(sort_digital),
                         },
                     })
                     .await;
@@ -1965,6 +1983,30 @@ fn CollectionForm(
                         r#type: "checkbox",
                         checked: *promoted.read(),
                         onchange: move |e| promoted.set(e.checked()),
+                    }
+                    span { class: "toggle-track" }
+                }
+            }
+
+            div { class: "toggle-row",
+                span { class: "toggle-label", "Latest: Unplayed Only" }
+                label { class: "toggle",
+                    input {
+                        r#type: "checkbox",
+                        checked: *latest_auto_unplayed.read(),
+                        onchange: move |e| latest_auto_unplayed.set(e.checked()),
+                    }
+                    span { class: "toggle-track" }
+                }
+            }
+
+            div { class: "toggle-row",
+                span { class: "toggle-label", "Latest: Sort by Digital Release" }
+                label { class: "toggle",
+                    input {
+                        r#type: "checkbox",
+                        checked: *latest_sort_digital.read(),
+                        onchange: move |e| latest_sort_digital.set(e.checked()),
                     }
                     span { class: "toggle-track" }
                 }

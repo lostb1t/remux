@@ -508,6 +508,8 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             smart_filter: media.parse_smart_filter().cloned(),
             promoted: Some(media.promoted),
             digital_release_date: media.digital_released_at.map(|d| d.and_utc()),
+            latest_auto_unplayed: media.collection_latest_auto_unplayed,
+            latest_sort_digital: media.collection_latest_sort_digital,
         }),
         date_created: Some(media.created_at.and_utc().to_rfc3339()),
         production_locations: (media.kind == db::MediaKind::Person)

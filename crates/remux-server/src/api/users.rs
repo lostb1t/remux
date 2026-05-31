@@ -686,6 +686,7 @@ async fn resume_items(
         Some(&session.user),
         server_config.as_ref(),
         None,
+        None,
     )
     .await?;
     Ok(Json(api::BaseItemDtoQueryResult {

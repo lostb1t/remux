@@ -855,6 +855,10 @@ pub struct MediaFilter {
     pub program_kinds: Option<Vec<ProgramKind>>,
     /// Filter episodes/seasons/tracks by their grandparent (series, artist, etc.).
     pub grandparent_id: Option<Uuid>,
+    /// Pre-fetched parent item. When set, `get_by_filter` uses it to detect
+    /// manual collections and switches to a JOIN on media_relations.
+    /// If `parent_id` is set but this is `None`, the non-JOIN path is used.
+    pub parent: Option<Media>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -987,6 +991,8 @@ pub struct Media {
     pub promoted: bool,
     // CollectionKind
     pub collection_kind: Option<CollectionKind>,
+    pub collection_latest_auto_unplayed: Option<bool>,
+    pub collection_latest_sort_digital: Option<bool>,
     // CollectionMediaKind
     pub collection_media_kind: Option<CollectionMediaKind>,
     pub collection_max_items: Option<i64>,
@@ -1311,9 +1317,9 @@ impl Media {
             rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
             external_ids, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
-            collection_smart_filter, country, program_kind
+            collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -1337,6 +1343,8 @@ impl Media {
             collection_media_kind = excluded.collection_media_kind,
             collection_max_items = excluded.collection_max_items,
             collection_smart_filter = excluded.collection_smart_filter,
+            collection_latest_auto_unplayed = excluded.collection_latest_auto_unplayed,
+            collection_latest_sort_digital = excluded.collection_latest_sort_digital,
             country = excluded.country,
             updated_at = excluded.updated_at,
             certification = excluded.certification,
@@ -1391,6 +1399,8 @@ impl Media {
         .bind(sqlx::types::Json(&self.collection_smart_filter))
         .bind(self.country.as_deref().map(normalize_country_alpha2))
         .bind(&self.program_kind)
+        .bind(self.collection_latest_auto_unplayed)
+        .bind(self.collection_latest_sort_digital)
         .execute(db)
         .await?;
 
@@ -1440,7 +1450,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
                 external_ids, created_at, updated_at, certification, certification_age, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital
             )",
         );
             for item in chunk {
@@ -1480,7 +1490,9 @@ impl Media {
                     .push_bind(&item.status)
                     .push_bind(&item.grandparent_id)
                     .push_bind(item.country.as_deref().map(normalize_country_alpha2))
-                    .push_bind(&item.program_kind);
+                    .push_bind(&item.program_kind)
+                    .push_bind(&item.collection_latest_auto_unplayed)
+                    .push_bind(&item.collection_latest_sort_digital);
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -1525,7 +1537,7 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
                 external_ids, created_at, updated_at, certification, certification_age, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital
             )",
         );
 
@@ -1564,7 +1576,9 @@ impl Media {
                     .push_bind(&item.refreshed_at)
                     .push_bind(&item.grandparent_id)
                     .push_bind(item.country.as_deref().map(normalize_country_alpha2))
-                    .push_bind(&item.program_kind);
+                    .push_bind(&item.program_kind)
+                    .push_bind(&item.collection_latest_auto_unplayed)
+                    .push_bind(&item.collection_latest_sort_digital);
             });
 
             query_builder.push(
@@ -1728,7 +1742,14 @@ impl Media {
         db: &SqlitePool,
         filter: &MediaFilter,
     ) -> Result<FilterResult<Media>> {
-        let use_recursive = filter.recursive && filter.parent_id.is_some();
+        let is_manual_collection = filter
+            .parent
+            .as_ref()
+            .map(|p| p.collection_kind == Some(CollectionKind::Manual))
+            .unwrap_or(false);
+
+        let use_recursive =
+            filter.recursive && filter.parent_id.is_some() && !is_manual_collection;
 
         let mut count_qb;
         let mut records_qb;
@@ -1753,6 +1774,24 @@ impl Media {
                 " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
                 ) SELECT * FROM media WHERE id IN (SELECT id FROM subtree) AND 1=1",
             );
+        } else if is_manual_collection {
+            let collection_id = filter.parent_id.as_ref().unwrap();
+
+            count_qb = sqlx::QueryBuilder::new(
+                "SELECT COUNT(*) as count FROM media \
+                 JOIN media_relations mr ON mr.right_media_id = media.id \
+                 AND mr.role = 'collection' AND mr.left_media_id = ",
+            );
+            count_qb.push_bind(collection_id);
+            count_qb.push(" WHERE 1=1");
+
+            records_qb = sqlx::QueryBuilder::new(
+                "SELECT media.* FROM media \
+                 JOIN media_relations mr ON mr.right_media_id = media.id \
+                 AND mr.role = 'collection' AND mr.left_media_id = ",
+            );
+            records_qb.push_bind(collection_id);
+            records_qb.push(" WHERE 1=1");
         } else {
             count_qb = sqlx::QueryBuilder::new(
                 "SELECT COUNT(*) as count FROM media WHERE 1=1",
@@ -1808,7 +1847,7 @@ impl Media {
         };
 
         for qb in [&mut count_qb, &mut records_qb] {
-            if !use_recursive {
+            if !use_recursive && !is_manual_collection {
                 if let Some(parent_id) = &filter.parent_id {
                     qb.push(" AND parent_id = ").push_bind(parent_id);
                 }
@@ -1886,13 +1925,31 @@ impl Media {
                     qb.push(" AND ums.play_count > 0)");
                 }
 
-                // played=false (unplayed) — NOT EXISTS with play_count > 0
+                // played=false (unplayed)
+                // Series: show if at least one episode has not been played.
+                //   Series rows only get play_count > 0 via explicit mark-played,
+                //   not from normal episode playback, so we must check episodes.
+                // Other kinds: standard NOT EXISTS on the item's own play_count.
                 if user_state_filter.played == Some(false) {
-                    qb.push(" AND NOT EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_id = media.id");
+                    qb.push(
+                        " AND CASE WHEN media.kind = 'series' THEN \
+                         EXISTS (SELECT 1 FROM media e \
+                                 WHERE e.grandparent_id = media.id AND e.kind = 'episode' \
+                                 AND NOT EXISTS (SELECT 1 FROM user_media_state ums \
+                                                WHERE ums.media_id = e.id",
+                    );
                     if let Some(user_id) = &user_state_filter.user_id {
-                        qb.push(" AND ums.user_id = ").push_bind(user_id);
+                        qb.push(" AND ums.user_id = ").push_bind(user_id.clone());
                     }
-                    qb.push(" AND ums.play_count > 0)");
+                    qb.push(
+                        " AND ums.play_count > 0)) \
+                         ELSE NOT EXISTS (SELECT 1 FROM user_media_state ums \
+                                          WHERE ums.media_id = media.id",
+                    );
+                    if let Some(user_id) = &user_state_filter.user_id {
+                        qb.push(" AND ums.user_id = ").push_bind(user_id.clone());
+                    }
+                    qb.push(" AND ums.play_count > 0) END");
                 }
 
                 // resumable — IDs pre-fetched above; bind directly so SQLite uses PK
@@ -2121,6 +2178,9 @@ impl Media {
                                 dir
                             )
                         }
+                        api::ItemSortBy::DigitalReleaseDate => {
+                            format!("COALESCE(digital_released_at, released_at) {}", dir)
+                        }
                         api::ItemSortBy::CommunityRating => {
                             format!("COALESCE(rating_audience, rating_critic) {}", dir)
                         }
@@ -2145,6 +2205,8 @@ impl Media {
                 .collect();
             records_qb.push(" ORDER BY ");
             records_qb.push(order_clauses.join(", "));
+        } else if is_manual_collection {
+            records_qb.push(" ORDER BY mr.weight ASC");
         } else if filter.sort_by_channel_order {
             records_qb.push(
                 " ORDER BY (SELECT COALESCE(c.sort_order, c.channel_number, 999999) FROM media c WHERE c.id = media.parent_id)",
@@ -2668,6 +2730,7 @@ impl Media {
         user: Option<&super::User>,
         server_config: Option<&api::ServerConfiguration>,
         smart_filter: Option<&remux_sdks::remux::CollectionFilter>,
+        parent: Option<&Media>,
     ) -> Result<FilterResult<Media>> {
         let user_policy = user.and_then(|u| u.policy.as_ref()).map(|p| &p.0);
         // Map media_types (Video, Book, ...) to MediaKind constraints
@@ -2960,6 +3023,7 @@ impl Media {
                     .or_else(|| filter.contributing_artist_ids.clone())
                     .or_else(|| filter.album_artist_ids.clone()),
                 grandparent_id: filter.series_id,
+                parent: parent.cloned(),
                 ..Default::default()
             },
         )

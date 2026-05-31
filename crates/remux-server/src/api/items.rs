@@ -207,6 +207,7 @@ pub async fn get_items(
                     Some(&session.user),
                     server_config.as_ref(),
                     None,
+                    None,
                 )
                 .await
                 {
@@ -283,34 +284,29 @@ pub async fn get_items(
 
         // collection browse
         if parent.kind == db::MediaKind::Collection {
-            // Manual collections: items are stored in media_relations ordered by weight.
+            // Manual collections: route through get_by_jellyfin_filter with the
+            // pre-fetched parent so get_by_filter detects collection_kind=manual
+            // and uses a JOIN on media_relations instead of parent_id = ?.
+            // All filters (IsUnplayed, sort, pagination) work automatically.
             if parent.collection_kind == Some(db::CollectionKind::Manual) {
-                let relations =
-                    db::MediaRelation::get_collection_items(&state.ctx.db, &parent.id)
-                        .await?;
-                let total = relations.len() as i64;
-                let start = q.start_index.unwrap_or(0) as usize;
-                let remaining = relations.len().saturating_sub(start);
-                let slice = match q.limit {
-                    Some(limit) => {
-                        &relations[start.min(relations.len())..]
-                            [..(limit as usize).min(remaining)]
-                    }
-                    None => &relations[start.min(relations.len())..],
-                };
-                let mut items = Vec::with_capacity(slice.len());
-                for rel in slice {
-                    if let Some(media) =
-                        db::Media::get_by_id(&state.ctx.db, &rel.right_media_id).await?
-                    {
-                        let mut dto = api::db_media_to_item(media);
-                        dto.playlist_item_id = Some(rel.relation_id.to_string());
-                        items.push(dto);
-                    }
-                }
+                q.user_id = Some(session.user.id);
+                let result = db::Media::get_by_jellyfin_filter(
+                    &state.ctx.db,
+                    &q,
+                    true,
+                    Some(&session.user),
+                    server_config.as_ref(),
+                    None,
+                    Some(&parent),
+                )
+                .await?;
                 return Ok(ItemsQueryResult {
-                    total_count: total,
-                    items,
+                    total_count: result.total_count as i64,
+                    items: result
+                        .records
+                        .into_iter()
+                        .map(api::db_media_to_item)
+                        .collect(),
                 });
             }
 
@@ -381,6 +377,7 @@ pub async fn get_items(
                 Some(&session.user),
                 server_config.as_ref(),
                 smart_filter,
+                Some(&parent),
             )
             .await?;
 
@@ -414,6 +411,7 @@ pub async fn get_items(
         Some(&session.user),
         server_config.as_ref(),
         None,
+        parent.as_ref(),
     )
     .await?;
 
@@ -437,6 +435,7 @@ pub async fn get_items(
                 Some(&session.user),
                 server_config.as_ref(),
                 None,
+                parent.as_ref(),
             )
             .await?;
         }
@@ -471,6 +470,23 @@ pub async fn items_flat(
     session: auth::AuthSession,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
+    if let Some(parent_id) = q.parent_id.clone() {
+        if let Ok(Some(parent)) = db::Media::get_by_id(&state.ctx.db, &parent_id).await
+        {
+            if parent.collection_latest_auto_unplayed == Some(true) {
+                let mut filters = q.filters.clone().unwrap_or_default();
+                if !filters.contains(&api::ItemFilter::IsUnplayed) {
+                    filters.push(api::ItemFilter::IsUnplayed);
+                }
+                q.filters = Some(filters);
+                q.user_id = Some(session.user.id.clone());
+            }
+            if parent.collection_latest_sort_digital == Some(true) {
+                q.sort_by = Some(vec![api::ItemSortBy::DigitalReleaseDate]);
+                q.sort_order = Some(vec![api::SortOrder::Descending]);
+            }
+        }
+    }
     if q.sort_by.is_none() {
         q.sort_by = Some(vec![api::ItemSortBy::DateCreated]);
         q.sort_order = Some(vec![api::SortOrder::Descending]);
@@ -1551,6 +1567,8 @@ struct PatchItemRequest {
     tags: Option<Vec<String>>,
     digital_released_at: Option<chrono::DateTime<chrono::Utc>>,
     sort_order: Option<i64>,
+    latest_auto_unplayed: Option<bool>,
+    latest_sort_digital: Option<bool>,
 }
 
 #[patch("/items/{id}")]
@@ -1589,6 +1607,12 @@ pub async fn patch_item(
     }
     if let Some(so) = payload.sort_order {
         qb.push(", idx = ").push_bind(so);
+    }
+    if let Some(v) = payload.latest_auto_unplayed {
+        qb.push(", collection_latest_auto_unplayed = ").push_bind(v);
+    }
+    if let Some(v) = payload.latest_sort_digital {
+        qb.push(", collection_latest_sort_digital = ").push_bind(v);
     }
 
     qb.push(" WHERE id = ").push_bind(id);
