@@ -2398,9 +2398,7 @@ pub struct BaseItemDto {
     pub airs_before_season_number: Option<i64>,
     pub airs_after_season_number: Option<i64>,
     pub airs_before_episode_number: Option<i64>,
-    #[default(Some(false))]
     pub can_delete: Option<bool>,
-    #[default(Some(true))]
     pub can_download: Option<bool>,
     pub has_subtitles: Option<bool>,
     pub has_lyrics: Option<bool>,
@@ -2413,7 +2411,7 @@ pub struct BaseItemDto {
     pub video_3d_format: Option<String>,
     //#[serde_as(as = "Option<DisplayFromStr>")]
     pub premiere_date: Option<DateTime<Utc>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_urls: Vec<ExternalUrl>,
     pub media_sources: Option<Vec<MediaSourceInfo>>,
     pub critic_rating: Option<f64>,
@@ -2424,9 +2422,9 @@ pub struct BaseItemDto {
     pub channel_id: Option<String>,
     pub channel_name: Option<String>,
     pub overview: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub taglines: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub genres: Vec<String>,
     pub community_rating: Option<f64>,
     pub cumulative_run_time_ticks: Option<i64>,
@@ -2446,18 +2444,17 @@ pub struct BaseItemDto {
     pub parent_id: Option<Uuid>,
     #[default(MediaType::Movie)]
     pub type_: MediaType,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub people: Vec<BaseItemPerson>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub studios: Vec<NameIdPair>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub genre_items: Vec<NameIdPair>,
     pub parent_logo_item_id: Option<String>,
     pub parent_backdrop_item_id: Option<String>,
     pub parent_backdrop_image_tags: Option<Vec<String>>,
-    #[serde(default)]
-    pub local_trailer_count: i64,
-    #[serde(default)]
+    pub local_trailer_count: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_trailers: Vec<ExternalUrl>,
     pub user_data: Option<UserItemDataDto>,
     pub recursive_item_count: Option<i64>,
@@ -2465,18 +2462,15 @@ pub struct BaseItemDto {
     pub series_name: Option<String>,
     pub series_id: Option<Uuid>,
     pub season_id: Option<Uuid>,
-    #[serde(default)]
-    pub special_feature_count: i64,
+    pub special_feature_count: Option<i64>,
     pub display_preferences_id: Option<String>,
     pub status: Option<Status>,
     pub air_time: Option<String>,
     pub air_days: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 
-    // this is fucking weird. And its used.
-    // anyway we set it to poster format by default
-    #[default(Some(0.6))]
+    // TODO: compute from actual image dimensions rather than a hardcoded default
     pub primary_image_aspect_ratio: Option<f32>,
     //pub artists: Option<Vec<String>>,
     //pub artist_items: Option<Vec<NameIdPair>>,
@@ -2513,7 +2507,7 @@ pub struct BaseItemDto {
     #[default(MediaType::Unknown)]
     pub media_type: MediaType,
     pub end_date: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub locked_fields: Vec<String>,
     pub trailer_count: Option<i64>,
     pub movie_count: Option<i64>,
@@ -2524,9 +2518,8 @@ pub struct BaseItemDto {
     pub album_count: Option<i64>,
     pub artist_count: Option<i64>,
     pub music_video_count: Option<i64>,
-    pub lock_data: bool,
-    #[default(true)]
-    pub enable_media_source_display: bool,
+    pub lock_data: Option<bool>,
+    pub enable_media_source_display: Option<bool>,
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub camera_make: Option<String>,

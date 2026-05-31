@@ -201,9 +201,16 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         etag: Some(media.id),
         server_id: common::server_id(),
         name: Some(media.title.clone()),
-        original_title: Some(media.title.clone()),
         overview: media.description.clone(),
-        play_access: Some("Full".to_string()),
+        play_access: matches!(
+            media.kind,
+            db::MediaKind::Movie
+                | db::MediaKind::Episode
+                | db::MediaKind::Track
+                | db::MediaKind::TvChannel
+                | db::MediaKind::TvProgram
+        )
+        .then(|| "Full".to_string()),
         has_lyrics: (media.kind == db::MediaKind::Track).then_some(true),
         type_,
         parent_id: media.parent_id.clone(),
@@ -250,14 +257,12 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             },
             _ => MediaType::Unknown,
         },
-        is_movie: Some(
-            media.kind == db::MediaKind::Movie
-                || matches!(media.program_kind, Some(db::ProgramKind::Movie)),
-        ),
-        is_series: Some(
-            media.kind == db::MediaKind::Series
-                || matches!(media.program_kind, Some(db::ProgramKind::Series)),
-        ),
+        is_movie: (media.kind == db::MediaKind::Movie
+            || matches!(media.program_kind, Some(db::ProgramKind::Movie)))
+        .then_some(true),
+        is_series: (media.kind == db::MediaKind::Series
+            || matches!(media.program_kind, Some(db::ProgramKind::Series)))
+        .then_some(true),
         is_news: media
             .program_kind
             .as_ref()
@@ -601,14 +606,14 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         item.location_type = LocationType::Remote;
         item.can_delete = Some(false);
         item.can_download = Some(false);
-        item.lock_data = false;
+        item.lock_data = Some(false);
     }
 
     if media.kind == db::MediaKind::TvChannel {
         item.location_type = LocationType::Remote;
         item.can_delete = Some(false);
         item.can_download = Some(false);
-        item.lock_data = false;
+        item.lock_data = Some(false);
         item.is_place_holder = Some(false);
         // Channels use direct-play passthrough — no GStreamer probe needed.
         item.media_sources = Some(vec![MediaSourceInfo {
