@@ -150,6 +150,21 @@ pub enum MediaKind {
     StreamGroup,
 }
 
+impl MediaKind {
+    pub fn is_folder(&self) -> bool {
+        matches!(
+            self,
+            Self::Series
+                | Self::Collection
+                | Self::Season
+                | Self::Folder
+                | Self::Playlist
+                | Self::Album
+                | Self::Artist
+        )
+    }
+}
+
 impl TryFrom<String> for MediaKind {
     type Error = strum::ParseError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
@@ -323,6 +338,7 @@ pub enum CollectionMediaKind {
     Series,
     Music,
     Collection,
+    Playlist,
 }
 
 impl TryFrom<String> for CollectionMediaKind {
@@ -355,6 +371,7 @@ pub enum RelationRole {
     Creator,
     Catalog,
     Playlist,
+    Collection,
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -486,7 +503,9 @@ impl MediaRelation {
                 item
             })
             .collect();
-        Self::upsert(db, &items).await
+        Self::upsert(db, &items).await?;
+        sync_playlist_media_kind(db, playlist_id).await;
+        Ok(())
     }
 
     pub async fn delete_by_relation_ids(
@@ -532,6 +551,101 @@ impl MediaRelation {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    // ---------------------------------------------------------------------------
+    // Manual collection item helpers (same pattern as playlist, role = 'collection')
+    // ---------------------------------------------------------------------------
+
+    pub async fn get_collection_items(
+        db: &SqlitePool,
+        collection_id: &Uuid,
+    ) -> Result<Vec<Self>> {
+        Ok(sqlx::query_as::<_, Self>(
+            "SELECT * FROM media_relations \
+             WHERE left_media_id = ? AND role = 'collection' ORDER BY weight ASC",
+        )
+        .bind(collection_id)
+        .fetch_all(db)
+        .await?)
+    }
+
+    pub async fn add_collection_items(
+        db: &SqlitePool,
+        collection_id: &Uuid,
+        media_ids: &[Uuid],
+    ) -> Result<()> {
+        if media_ids.is_empty() {
+            return Ok(());
+        }
+        let max_weight: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(weight) FROM media_relations \
+             WHERE left_media_id = ? AND role = 'collection'",
+        )
+        .bind(collection_id)
+        .fetch_one(db)
+        .await?;
+        let mut next_weight = max_weight.map(|w| w + 1).unwrap_or(0);
+        let items: Vec<Self> = media_ids
+            .iter()
+            .map(|&media_id| {
+                let item = Self {
+                    left_media_id: *collection_id,
+                    right_media_id: media_id,
+                    weight: Some(next_weight),
+                    role: Some(RelationRole::Collection),
+                    ..Default::default()
+                };
+                next_weight += 1;
+                item
+            })
+            .collect();
+        Self::upsert(db, &items).await
+    }
+
+    pub async fn move_collection_item(
+        db: &SqlitePool,
+        collection_id: &Uuid,
+        relation_id: &Uuid,
+        new_index: usize,
+    ) -> Result<()> {
+        let mut items = Self::get_collection_items(db, collection_id).await?;
+        let Some(pos) = items.iter().position(|r| &r.relation_id == relation_id) else {
+            return Ok(());
+        };
+        let item = items.remove(pos);
+        let insert_at = new_index.min(items.len());
+        items.insert(insert_at, item);
+
+        let mut tx = db.begin().await?;
+        for (i, r) in items.iter().enumerate() {
+            sqlx::query("UPDATE media_relations SET weight = ? WHERE relation_id = ?")
+                .bind(i as i64)
+                .bind(r.relation_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Replace all items in a manual collection with the given ordered list.
+    /// Used by catalog import — clears existing items and inserts fresh ones.
+    pub async fn replace_collection_items(
+        db: &SqlitePool,
+        collection_id: &Uuid,
+        media_ids: &[Uuid],
+    ) -> Result<()> {
+        let mut tx = db.begin().await?;
+        sqlx::query(
+            "DELETE FROM media_relations WHERE left_media_id = ? AND role = 'collection'",
+        )
+        .bind(collection_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        Self::add_collection_items(db, collection_id, media_ids).await
     }
 }
 
@@ -643,6 +757,36 @@ impl ExternalIds {
         }
         self
     }
+}
+
+/// Update a playlist's `collection_media_kind` based on its first item's kind.
+/// Called after items are added or removed so the playlist's `MediaType` stays accurate.
+pub async fn sync_playlist_media_kind(db: &SqlitePool, playlist_id: &Uuid) {
+    let kind: Option<String> = sqlx::query_scalar(
+        "SELECT m.kind FROM media_relations mr \
+         JOIN media m ON m.id = mr.right_media_id \
+         WHERE mr.left_media_id = ? AND mr.role = 'playlist' \
+         ORDER BY mr.weight ASC LIMIT 1",
+    )
+    .bind(playlist_id)
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+
+    let media_kind = match kind.as_deref() {
+        Some("track") | Some("album") | Some("artist") => "music",
+        Some(_) => "movie",
+        None => return,
+    };
+
+    sqlx::query(
+        "UPDATE media SET collection_media_kind = ? WHERE id = ? AND kind = 'playlist'",
+    )
+    .bind(media_kind)
+    .bind(playlist_id)
+    .execute(db)
+    .await
+    .ok();
 }
 
 #[derive(Debug, Clone, default2::Default, Serialize, Deserialize, sqlx::FromRow)]
@@ -3986,28 +4130,6 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                 "(trailers IS NULL OR json_array_length(trailers) = 0)".to_string()
             };
             Some((sql, false))
-        }
-        R::Collection { op, values } => {
-            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
-            let sql = match op {
-                SetOp::Is | SetOp::IsNot => {
-                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
-                    format!(
-                        "EXISTS (SELECT 1 FROM media_catalog_items mci \
-                         WHERE mci.media_id = media.id \
-                         AND lower(mci.addon_id || ':' || mci.catalog_id) = lower('{v}'))"
-                    )
-                }
-                SetOp::In | SetOp::NotIn => {
-                    let list = in_list(values)?;
-                    format!(
-                        "EXISTS (SELECT 1 FROM media_catalog_items mci \
-                         WHERE mci.media_id = media.id \
-                         AND lower(mci.addon_id || ':' || mci.catalog_id) IN ({list}))"
-                    )
-                }
-            };
-            Some((sql, negated))
         }
         R::Person { op, values } => {
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);

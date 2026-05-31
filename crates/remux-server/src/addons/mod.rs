@@ -606,6 +606,27 @@ impl AddonService {
         }
     }
 
+    /// Return the tags configured for a specific catalog within an addon.
+    /// `addon_uuid` is the simple (no-dashes) UUID string stored in `media_catalog_items.addon_id`.
+    pub async fn catalog_tags(
+        &self,
+        addon_uuid: &str,
+        local_cat_id: &str,
+    ) -> Vec<String> {
+        let Ok(id) = Uuid::parse_str(addon_uuid) else {
+            return vec![];
+        };
+        let guard = self.inner.read().await;
+        let Some(r) = guard.iter().find(|r| r.row.id == id) else {
+            return vec![];
+        };
+        r.row
+            .catalog_states()
+            .get(local_cat_id)
+            .map(|s| s.tags.clone())
+            .unwrap_or_default()
+    }
+
     pub async fn make_catalog_stream(
         &self,
         media_id: &str,

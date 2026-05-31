@@ -283,7 +283,38 @@ pub async fn get_items(
 
         // collection browse
         if parent.kind == db::MediaKind::Collection {
-            // All collection types: items float freely (no parent_id constraint).
+            // Manual collections: items are stored in media_relations ordered by weight.
+            if parent.collection_kind == Some(db::CollectionKind::Manual) {
+                let relations =
+                    db::MediaRelation::get_collection_items(&state.ctx.db, &parent.id)
+                        .await?;
+                let total = relations.len() as i64;
+                let start = q.start_index.unwrap_or(0) as usize;
+                let remaining = relations.len().saturating_sub(start);
+                let slice = match q.limit {
+                    Some(limit) => {
+                        &relations[start.min(relations.len())..]
+                            [..(limit as usize).min(remaining)]
+                    }
+                    None => &relations[start.min(relations.len())..],
+                };
+                let mut items = Vec::with_capacity(slice.len());
+                for rel in slice {
+                    if let Some(media) =
+                        db::Media::get_by_id(&state.ctx.db, &rel.right_media_id).await?
+                    {
+                        let mut dto = api::db_media_to_item(media);
+                        dto.playlist_item_id = Some(rel.relation_id.to_string());
+                        items.push(dto);
+                    }
+                }
+                return Ok(ItemsQueryResult {
+                    total_count: total,
+                    items,
+                });
+            }
+
+            // Smart collections: items float freely (no parent_id constraint).
             q.parent_id = None;
 
             let media_kind_filter =
@@ -299,6 +330,9 @@ pub async fn get_items(
                         db::CollectionMediaKind::Collection => {
                             q.promoted = Some(false);
                             vec![db::MediaKind::Collection]
+                        }
+                        db::CollectionMediaKind::Playlist => {
+                            vec![db::MediaKind::Playlist]
                         }
                     }
                 } else {
@@ -1408,6 +1442,7 @@ fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
         "tvshows" => Some(db::CollectionMediaKind::Series),
         "music" => Some(db::CollectionMediaKind::Music),
         "collections" => Some(db::CollectionMediaKind::Collection),
+        "playlists" => Some(db::CollectionMediaKind::Playlist),
         _ => None,
     }
 }

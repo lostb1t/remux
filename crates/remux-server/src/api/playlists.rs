@@ -199,6 +199,26 @@ pub struct RemoveItemsQuery {
     pub entry_ids: CommaSeparatedList<Uuid>,
 }
 
+/// GET /Playlists/{id}/Users/{userId}
+/// Returns edit permissions for the given user on this playlist.
+/// remux grants CanEdit to every authenticated user for now.
+#[get("/playlists/{id}/users/{user_id}")]
+pub async fn get_playlist_user(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Path((id, user_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    db::Media::get_by_id(&state.ctx.db, &id)
+        .await?
+        .filter(|m| m.kind == db::MediaKind::Playlist)
+        .context_not_found("GetPlaylistUser", "Playlist not found")?;
+
+    Ok(Json(serde_json::json!({
+        "UserId": user_id.to_string(),
+        "CanEdit": true
+    })))
+}
+
 #[delete("/playlists/{id}/items")]
 pub async fn remove_playlist_items(
     State(state): State<AppState>,
@@ -213,6 +233,7 @@ pub async fn remove_playlist_items(
         .context_not_found("RemovePlaylistItems", "Playlist not found")?;
 
     db::MediaRelation::delete_by_relation_ids(&state.ctx.db, &q.entry_ids).await?;
+    db::sync_playlist_media_kind(&state.ctx.db, &id).await;
 
     Ok(StatusCode::NO_CONTENT)
 }

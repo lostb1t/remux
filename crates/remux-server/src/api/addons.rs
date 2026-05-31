@@ -281,6 +281,8 @@ pub async fn get_addon_catalogs(
                 crate::addons::CatalogState {
                     enabled: cat_info.default_enabled,
                     max_items: cat_info.default_max_items,
+                    tags: vec![],
+                    create_collection: false,
                 }
             });
             AddonCatalogDto {
@@ -288,6 +290,8 @@ pub async fn get_addon_catalogs(
                 name: cat_info.name.clone(),
                 enabled: state_entry.enabled,
                 max_items: state_entry.max_items,
+                tags: state_entry.tags.clone(),
+                create_collection: state_entry.create_collection,
             }
         })
         .collect();
@@ -316,13 +320,103 @@ pub async fn update_addon_catalogs(
             .strip_prefix(&prefix)
             .unwrap_or(&req.catalog_id)
             .to_string();
+        let new_tags = req.tags.clone().unwrap_or_else(|| {
+            states
+                .get(&local_id)
+                .map(|s| s.tags.clone())
+                .unwrap_or_default()
+        });
+        let new_create_collection = req.create_collection.unwrap_or_else(|| {
+            states
+                .get(&local_id)
+                .map(|s| s.create_collection)
+                .unwrap_or(false)
+        });
         states.insert(
-            local_id,
+            local_id.clone(),
             crate::addons::CatalogState {
                 enabled: req.enabled,
                 max_items: req.max_items,
+                tags: new_tags.clone(),
+                create_collection: new_create_collection,
             },
         );
+
+        // addon_id in media_catalog_items uses the hyphenated UUID string.
+        let addon_id_str = id.to_string();
+
+        // Apply tags immediately to all media already in this catalog.
+        for tag in &new_tags {
+            if let Err(e) = sqlx::query(
+                "INSERT OR IGNORE INTO media_tags (media_id, tag) \
+                 SELECT mci.media_id, ? FROM media_catalog_items mci \
+                 WHERE mci.addon_id = ? AND mci.catalog_id = ?",
+            )
+            .bind(tag)
+            .bind(&addon_id_str)
+            .bind(&local_id)
+            .execute(&state.ctx.db)
+            .await
+            {
+                tracing::warn!(addon = %id, catalog = %local_id, tag = %tag, error = %e, "failed to apply catalog tag");
+            }
+        }
+
+        // Create/repopulate the manual collection for this catalog.
+        if new_create_collection {
+            // Deterministic collection ID: stable per addon+catalog.
+            let collection_id = Uuid::new_v5(&id, local_id.as_bytes());
+
+            // Get the catalog name (fall back to local_id if addon isn't loaded yet).
+            let catalog_name =
+                if let Some(kind) = state.ctx.addons.get_catalog(id).await {
+                    kind.catalog_list(&state.ctx)
+                        .await
+                        .ok()
+                        .and_then(|list| {
+                            list.into_iter()
+                                .find(|c| c.provider_catalog_id == local_id)
+                                .map(|c| c.name)
+                        })
+                        .unwrap_or_else(|| local_id.clone())
+                } else {
+                    local_id.clone()
+                };
+
+            // Upsert the collection media row.
+            let collection = crate::db::Media {
+                id: collection_id,
+                title: catalog_name,
+                kind: crate::db::MediaKind::Collection,
+                collection_kind: Some(crate::db::CollectionKind::Manual),
+                ..Default::default()
+            };
+            if let Err(e) = crate::db::Media::upsert(&state.ctx.db, &[collection]).await
+            {
+                tracing::warn!(addon = %id, catalog = %local_id, error = %e, "failed to upsert catalog collection");
+            }
+
+            // Populate collection items from indexed catalog membership.
+            let media_ids: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT media_id FROM media_catalog_items \
+                 WHERE addon_id = ? AND catalog_id = ?",
+            )
+            .bind(&addon_id_str)
+            .bind(&local_id)
+            .fetch_all(&state.ctx.db)
+            .await
+            .unwrap_or_default();
+
+            if let Err(e) = crate::db::MediaRelation::replace_collection_items(
+                &state.ctx.db,
+                &collection_id,
+                &media_ids,
+            )
+            .await
+            {
+                tracing::warn!(addon = %id, catalog = %local_id, error = %e, "failed to populate catalog collection");
+            }
+        }
     }
 
     addon.set_catalog_states(states);

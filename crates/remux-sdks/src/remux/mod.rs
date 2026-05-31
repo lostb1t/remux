@@ -207,6 +207,11 @@ pub struct AddonCatalogDto {
     pub enabled: bool,
     /// Per-catalog item limit override.
     pub max_items: Option<i64>,
+    /// Tags applied to all media in this catalog.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Whether a manual collection backed by this catalog is maintained.
+    pub create_collection: bool,
 }
 
 /// Per-catalog settings update — one entry in `POST /addons/{id}/catalogs`.
@@ -218,6 +223,10 @@ pub struct UpdateAddonCatalogRequest {
     pub catalog_id: String,
     pub enabled: bool,
     pub max_items: Option<i64>,
+    /// Tags to assign to all media in this catalog.
+    pub tags: Option<Vec<String>>,
+    /// When true, a manual collection is created/repopulated from this catalog's indexed items.
+    pub create_collection: Option<bool>,
 }
 
 fn deserialize_optional<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
@@ -2312,55 +2321,17 @@ pub enum SetOp {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "field", rename_all = "snake_case")]
 pub enum FilterRule {
-    Genre {
-        op: SetOp,
-        values: Vec<String>,
-    },
-    Year {
-        op: NumericOp,
-        value: i64,
-    },
-    RatingAudience {
-        op: NumericOp,
-        value: f64,
-    },
-    RatingCritic {
-        op: NumericOp,
-        value: f64,
-    },
-    ParentalRating {
-        op: NumericOp,
-        value: i64,
-    },
-    Certification {
-        op: SetOp,
-        values: Vec<String>,
-    },
-    Tag {
-        op: SetOp,
-        values: Vec<String>,
-    },
-    Studio {
-        op: SetOp,
-        values: Vec<String>,
-    },
-    HasTrailer {
-        value: bool,
-    },
-    Country {
-        op: SetOp,
-        values: Vec<String>,
-    },
-    Person {
-        op: SetOp,
-        values: Vec<String>,
-    },
-    /// Kept for backward compatibility with rows stored before the catalog→collection rename.
-    #[serde(alias = "catalog")]
-    Collection {
-        op: SetOp,
-        values: Vec<String>,
-    },
+    Genre { op: SetOp, values: Vec<String> },
+    Year { op: NumericOp, value: i64 },
+    RatingAudience { op: NumericOp, value: f64 },
+    RatingCritic { op: NumericOp, value: f64 },
+    ParentalRating { op: NumericOp, value: i64 },
+    Certification { op: SetOp, values: Vec<String> },
+    Tag { op: SetOp, values: Vec<String> },
+    Studio { op: SetOp, values: Vec<String> },
+    HasTrailer { value: bool },
+    Country { op: SetOp, values: Vec<String> },
+    Person { op: SetOp, values: Vec<String> },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).

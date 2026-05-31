@@ -1470,10 +1470,13 @@ html, body {
 
 .catalog-table .catalog-name {
   min-width: 120px;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.catalog-table input[type="text"],
+.catalog-table input:not([type]) {
+  min-width: 160px;
 }
 
 .catalog-table input[type="number"] {

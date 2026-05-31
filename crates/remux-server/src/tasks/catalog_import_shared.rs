@@ -98,8 +98,12 @@ where
             .await
             .ok();
 
-        // Record catalog membership for the original top-level IDs.
+        // Record catalog membership and apply catalog tags for the original top-level IDs.
         if let Some((addon_uuid, local_cat_id)) = membership {
+            // Fetch tags configured for this catalog.
+            let catalog_tags: Vec<String> =
+                ctx.addons.catalog_tags(addon_uuid, local_cat_id).await;
+
             for id in &top_ids {
                 if let Err(e) = sqlx::query(
                     "INSERT OR IGNORE INTO media_catalog_items (media_id, addon_id, catalog_id) \
@@ -112,6 +116,19 @@ where
                 .await
                 {
                     error!(catalog = media_id, error = %e, "failed to record catalog membership");
+                }
+
+                for tag in &catalog_tags {
+                    if let Err(e) = sqlx::query(
+                        "INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)",
+                    )
+                    .bind(id)
+                    .bind(tag)
+                    .execute(&ctx.db)
+                    .await
+                    {
+                        warn!(catalog = media_id, tag = %tag, error = %e, "failed to apply catalog tag");
+                    }
                 }
             }
         }

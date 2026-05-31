@@ -119,6 +119,7 @@ pub fn db_media_kind_to_collection_type(
         db::CollectionMediaKind::Series => CollectionType::Tvshows,
         db::CollectionMediaKind::Music => CollectionType::Music,
         db::CollectionMediaKind::Collection => CollectionType::Boxsets,
+        db::CollectionMediaKind::Playlist => CollectionType::Playlists,
     }
 }
 
@@ -242,6 +243,11 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             | db::MediaKind::TvChannel
             | db::MediaKind::TvProgram => MediaType::Video,
             db::MediaKind::Track => MediaType::Audio,
+            db::MediaKind::Playlist => match media.collection_media_kind {
+                Some(db::CollectionMediaKind::Music) => MediaType::Audio,
+                Some(_) => MediaType::Video,
+                None => MediaType::Unknown,
+            },
             _ => MediaType::Unknown,
         },
         is_movie: Some(
@@ -289,15 +295,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             ..Default::default()
         }),
         index_number: media.idx,
-        is_folder: matches!(
-            media.kind,
-            db::MediaKind::Series
-                | db::MediaKind::Collection
-                | db::MediaKind::Season
-                | db::MediaKind::Folder
-                | db::MediaKind::Album
-                | db::MediaKind::Artist
-        ),
+        is_folder: media.kind.is_folder(),
         channel_type: if matches!(
             media.kind,
             db::MediaKind::TvChannel | db::MediaKind::TvProgram
@@ -393,9 +391,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                             db::RelationRole::Writer => Some("Writer".to_string()),
                             db::RelationRole::Producer => Some("Producer".to_string()),
                             db::RelationRole::Creator => Some("Creator".to_string()),
-                            db::RelationRole::Catalog | db::RelationRole::Playlist => {
-                                None
-                            }
+                            db::RelationRole::Catalog
+                            | db::RelationRole::Playlist
+                            | db::RelationRole::Collection => None,
                         }),
                         type_: rel.role.as_ref().and_then(|r| match r {
                             db::RelationRole::Actor => Some("Actor".to_string()),
@@ -403,9 +401,9 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                             db::RelationRole::Writer => Some("Writer".to_string()),
                             db::RelationRole::Producer => Some("Producer".to_string()),
                             db::RelationRole::Creator => Some("Creator".to_string()),
-                            db::RelationRole::Catalog | db::RelationRole::Playlist => {
-                                None
-                            }
+                            db::RelationRole::Catalog
+                            | db::RelationRole::Playlist
+                            | db::RelationRole::Collection => None,
                         }),
                         primary_image_tag: media_image_tag(m, db::ImageKind::Primary),
                     })
