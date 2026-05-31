@@ -289,6 +289,45 @@ pub async fn get_items(
             // and uses a JOIN on media_relations instead of parent_id = ?.
             // All filters (IsUnplayed, sort, pagination) work automatically.
             if parent.collection_kind == Some(db::CollectionKind::Manual) {
+                // "Collections index" (collection_media_kind='collection'): children
+                // are promoted collection items with parent_id=NULL, not linked via
+                // media_relations. Query all Collection-type items directly.
+                if parent.collection_media_kind
+                    == Some(db::CollectionMediaKind::Collection)
+                {
+                    let result = db::Media::get_by_filter(
+                        &state.ctx.db,
+                        &db::MediaFilter {
+                            kind: Some(vec![db::MediaKind::Collection]),
+                            promoted: Some(false),
+                            limit: q.limit,
+                            offset: q.start_index,
+                            total_count: true,
+                            include_user_state: q.enable_user_data.is_none(),
+                            user_id: Some(session.user.id),
+                            include_child_count: q
+                                .fields
+                                .as_deref()
+                                .map(|f| f.contains(&api::ItemFields::ChildCount))
+                                .unwrap_or(false),
+                            sort_by: q.sort_by.clone().unwrap_or_default(),
+                            sort_order: q.sort_order.clone().unwrap_or_default(),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                    return Ok(ItemsQueryResult {
+                        total_count: result.total_count as i64,
+                        items: result
+                            .records
+                            .into_iter()
+                            .map(api::db_media_to_item)
+                            .collect(),
+                    });
+                }
+
+                // Regular manual collection (catalog-backed, etc.) — use
+                // media_relations JOIN via the pre-fetched parent.
                 q.user_id = Some(session.user.id);
                 let result = db::Media::get_by_jellyfin_filter(
                     &state.ctx.db,
