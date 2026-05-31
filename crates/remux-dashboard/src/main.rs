@@ -1977,7 +1977,7 @@ fn CollectionForm(
             }
 
             div { class: "toggle-row",
-                span { class: "toggle-label", "Promoted to Library" }
+                span { class: "toggle-label", "Promote to Library" }
                 label { class: "toggle",
                     input {
                         r#type: "checkbox",
