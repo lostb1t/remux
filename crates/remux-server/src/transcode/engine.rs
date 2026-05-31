@@ -1969,7 +1969,7 @@ mod tests {
 
         assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
         assert_eq!(arg_after(&args, "-crf"), Some("23"));
-        assert_eq!(arg_after(&args, "-preset"), Some("fast"));
+        assert_eq!(arg_after(&args, "-preset"), Some("ultrafast"));
         assert_eq!(arg_after(&args, "-profile:v"), Some("high"));
         assert_eq!(arg_after(&args, "-tune"), Some("zerolatency"));
         assert_eq!(arg_after(&args, "-pix_fmt"), Some("yuv420p"));
