@@ -448,12 +448,41 @@ pub enum HardwareAccelerationType {
     Rkmpp,
 }
 
+/// FFmpeg encoding speed preset (valid for libx264, libx265, and most software encoders).
+/// Ordered from fastest (lowest quality) to slowest (highest quality).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Default,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum EncodingPreset {
+    #[default]
+    Ultrafast,
+    Superfast,
+    Veryfast,
+    Faster,
+    Fast,
+    Medium,
+    Slow,
+    Slower,
+    Slowest,
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct EncodingOptions {
-    #[default(Some("fast".to_string()))]
-    pub encoding_preset: Option<String>,
+    #[default(Some(EncodingPreset::Ultrafast))]
+    pub encoding_preset: Option<EncodingPreset>,
     #[default(Some(HardwareAccelerationType::None))]
     pub hardware_acceleration_type: Option<HardwareAccelerationType>,
     /// VAAPI render device path (used when hardware_acceleration_type is vaapi or qsv).

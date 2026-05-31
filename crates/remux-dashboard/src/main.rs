@@ -4154,7 +4154,7 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
 
 #[component]
 fn PlaybackSettingsCard(app_state: AppState) -> Element {
-    let mut encoding_preset = use_signal(|| "fast".to_string());
+    let mut encoding_preset = use_signal(|| "ultrafast".to_string());
     let mut hw_accel = use_signal(|| "none".to_string());
     let mut auto_detect = use_signal(|| true);
     let mut enable_tonemapping = use_signal(|| false);
@@ -4177,9 +4177,8 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
         spawn(async move {
             match client.execute(GetEncodingConfiguration).await {
                 Ok(opts) => {
-                    encoding_preset.set(
-                        opts.encoding_preset.unwrap_or_else(|| "fast".to_string()),
-                    );
+                    encoding_preset
+                        .set(opts.encoding_preset.unwrap_or_default().to_string());
                     auto_detect
                         .set(opts.auto_detect_hardware_acceleration.unwrap_or(true));
                     let accel_str =
@@ -4228,7 +4227,7 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
             _ => HardwareAccelerationType::None,
         };
         let opts = EncodingOptions {
-            encoding_preset: Some(encoding_preset.peek().clone()),
+            encoding_preset: encoding_preset.peek().parse().ok(),
             hardware_acceleration_type: Some(accel_type),
             vaapi_device: None,
             vaapi_driver: None,
@@ -4311,15 +4310,15 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
                                 class: "select-input",
                                 value: "{encoding_preset}",
                                 onchange: move |e| encoding_preset.set(e.value()),
-                                option { value: "ultrafast", "Ultra Fast" }
-                                option { value: "superfast", "Super Fast" }
-                                option { value: "veryfast", "Very Fast" }
+                                option { value: "ultrafast", "Ultrafast (default)" }
+                                option { value: "superfast", "Superfast" }
+                                option { value: "veryfast", "Veryfast" }
                                 option { value: "faster", "Faster" }
-                                option { value: "fast", "Fast (default)" }
+                                option { value: "fast", "Fast" }
                                 option { value: "medium", "Medium" }
                                 option { value: "slow", "Slow" }
                                 option { value: "slower", "Slower" }
-                                option { value: "veryslow", "Very Slow" }
+                                option { value: "slowest", "Slowest" }
                             }
                         }
 

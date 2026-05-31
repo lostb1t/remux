@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use remux_sdks::remux::{HardwareAccelerationType, VideoRangeType};
+use remux_sdks::remux::{EncodingPreset, HardwareAccelerationType, VideoRangeType};
 
 use super::session::{TranscodeSession, TranscodeState};
 
@@ -251,7 +251,7 @@ pub struct TranscodeParams {
     /// scale the subtitle to match the output video resolution.
     pub subtitle_width: Option<u32>,
     pub subtitle_height: Option<u32>,
-    pub encoding_preset: Option<String>,
+    pub encoding_preset: Option<EncodingPreset>,
     /// Codec of the source video stream (e.g. "hevc", "h264"), used to apply
     /// codec-specific output flags such as `-tag:v hvc1` for HEVC in HLS.
     pub source_video_codec: Option<String>,
@@ -763,7 +763,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             args.extend(["-b:v".into(), bitrate.to_string()]);
         }
     } else if ffmpeg_video_codec == "libx264" {
-        let preset = params.encoding_preset.as_deref().unwrap_or("fast");
+        let preset = params.encoding_preset.unwrap_or_default().to_string();
         args.extend([
             "-profile:v".into(),
             "high".into(),
@@ -772,7 +772,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             "-crf".into(),
             params.h264_crf.to_string(),
             "-preset".into(),
-            preset.to_string(),
+            preset,
             "-tune".into(),
             "zerolatency".into(),
         ]);
@@ -786,14 +786,14 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             ]);
         }
     } else if ffmpeg_video_codec == "libx265" {
-        let preset = params.encoding_preset.as_deref().unwrap_or("fast");
+        let preset = params.encoding_preset.unwrap_or_default().to_string();
         args.extend([
             "-pix_fmt".into(),
             "yuv420p".into(),
             "-crf".into(),
             params.h265_crf.to_string(),
             "-preset".into(),
-            preset.to_string(),
+            preset,
         ]);
         if let Some(bitrate) = params.video_bitrate {
             args.extend([
@@ -1099,7 +1099,7 @@ pub struct ProgressiveTranscodeParams {
     pub burn_subtitle: bool,
     pub subtitle_width: Option<u32>,
     pub subtitle_height: Option<u32>,
-    pub encoding_preset: Option<String>,
+    pub encoding_preset: Option<EncodingPreset>,
     pub source_video_codec: Option<String>,
     pub hardware_acceleration_type: HardwareAccelerationType,
     pub vaapi_device: String,
@@ -1365,7 +1365,7 @@ pub(crate) fn build_progressive_args(
             args.extend(["-b:v".into(), bitrate.to_string()]);
         }
     } else if ffmpeg_video_codec == "libx264" {
-        let preset = params.encoding_preset.as_deref().unwrap_or("fast");
+        let preset = params.encoding_preset.unwrap_or_default().to_string();
         args.extend([
             "-profile:v".into(),
             "high".into(),
@@ -1374,7 +1374,7 @@ pub(crate) fn build_progressive_args(
             "-crf".into(),
             params.h264_crf.to_string(),
             "-preset".into(),
-            preset.to_string(),
+            preset,
         ]);
         if let Some(bitrate) = params.video_bitrate {
             args.extend([
@@ -1385,14 +1385,14 @@ pub(crate) fn build_progressive_args(
             ]);
         }
     } else if ffmpeg_video_codec == "libx265" {
-        let preset = params.encoding_preset.as_deref().unwrap_or("fast");
+        let preset = params.encoding_preset.unwrap_or_default().to_string();
         args.extend([
             "-pix_fmt".into(),
             "yuv420p".into(),
             "-crf".into(),
             params.h265_crf.to_string(),
             "-preset".into(),
-            preset.to_string(),
+            preset,
         ]);
         if let Some(bitrate) = params.video_bitrate {
             args.extend([
@@ -1980,7 +1980,7 @@ mod tests {
         let dir = PathBuf::from("/tmp/test_x264_br");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx264".into(),
-            encoding_preset: Some("veryfast".into()),
+            encoding_preset: Some(EncodingPreset::Veryfast),
             video_bitrate: Some(4_000_000),
             ..default_hls(dir)
         });
