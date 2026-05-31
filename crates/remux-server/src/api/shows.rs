@@ -220,21 +220,22 @@ async fn shows_nextup_all(
     let limit = q.limit.unwrap_or(50) as i64;
     let enable_resumable = q.enable_resumable.unwrap_or(true);
 
-    // Find series the user has interacted with: at least one played or in-progress episode.
-    // For each such series, find the next episode to watch (same logic as per-series nextup).
-    // We do this in SQL: for each series, find the first episode after the last played one.
-    //
-    // Step 1: Get distinct grandparent_ids where user has play state
+    // Drive from user_media_state (small, indexed by user_id) via a UNION subquery
+    // to avoid a full media table scan. The OR on play_count/playback_position prevents
+    // a single index range scan, so we split it into two index-friendly legs.
     let active_series: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT DISTINCT e.grandparent_id \
-         FROM media e \
-         JOIN user_media_state ums ON ums.media_id = e.id \
-         WHERE e.kind = 'episode' \
-           AND e.grandparent_id IS NOT NULL \
-           AND ums.user_id = ? \
-           AND (ums.play_count > 0 OR ums.playback_position > 0) \
+        "SELECT DISTINCT m.grandparent_id \
+         FROM media m \
+         WHERE m.id IN ( \
+           SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count > 0 \
+           UNION \
+           SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count = 0 AND playback_position > 0 \
+         ) \
+         AND m.kind = 'episode' \
+         AND m.grandparent_id IS NOT NULL \
          LIMIT ?",
     )
+    .bind(user_id)
     .bind(user_id)
     .bind(limit)
     .fetch_all(&state.ctx.db)
@@ -244,45 +245,60 @@ async fn shows_nextup_all(
         return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
     }
 
-    let mut items: Vec<api::BaseItemDto> = Vec::new();
+    let series_ids: Vec<Uuid> = active_series.into_iter().map(|(id,)| id).collect();
 
-    for (grandparent_id,) in active_series {
-        let episodes: Vec<db::Media> = sqlx::query_as(
-            "SELECT * FROM media \
-             WHERE grandparent_id = ? AND kind = 'episode' \
-             ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
-        )
-        .bind(grandparent_id)
-        .fetch_all(&state.ctx.db)
-        .await?;
-
-        if episodes.is_empty() {
-            continue;
+    // Batch-load all episodes for all active series in one query.
+    let mut ep_qb =
+        sqlx::QueryBuilder::new("SELECT * FROM media WHERE grandparent_id IN (");
+    {
+        let mut sep = ep_qb.separated(", ");
+        for id in &series_ids {
+            sep.push_bind(id);
         }
+    }
+    ep_qb.push(
+        ") AND kind = 'episode' \
+         ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
+    );
+    let all_episodes: Vec<db::Media> =
+        ep_qb.build_query_as().fetch_all(&state.ctx.db).await?;
 
-        let media_ids: Vec<Uuid> = episodes.iter().map(|e| e.id).collect();
-        let states: HashMap<Uuid, db::UserMediaState> = if media_ids.is_empty() {
-            HashMap::new()
-        } else {
-            db::UserMediaState::get_by_filter(
-                &state.ctx.db,
-                &db::UserMediaStateFilter {
-                    user_id: Some(user_id),
-                    media_id: Some(media_ids),
-                    ..Default::default()
-                },
-            )
-            .await?
-            .records
-            .into_iter()
-            .map(|s| (s.media_id, s))
-            .collect()
+    // Batch-load all user states for all those episodes in one query (chunked to stay
+    // within SQLite's 999-variable limit).
+    let all_ep_ids: Vec<Uuid> = all_episodes.iter().map(|e| e.id).collect();
+    let mut states_map: HashMap<Uuid, db::UserMediaState> = HashMap::new();
+    for chunk in all_ep_ids.chunks(900) {
+        let mut s_qb =
+            sqlx::QueryBuilder::new("SELECT * FROM user_media_state WHERE user_id = ");
+        s_qb.push_bind(user_id);
+        s_qb.push(" AND media_id IN (");
+        let mut sep = s_qb.separated(", ");
+        for id in chunk {
+            sep.push_bind(id);
+        }
+        s_qb.push(")");
+        let chunk_states: Vec<db::UserMediaState> =
+            s_qb.build_query_as().fetch_all(&state.ctx.db).await?;
+        states_map.extend(chunk_states.into_iter().map(|s| (s.media_id, s)));
+    }
+
+    // Group episodes by grandparent_id (order within each group preserved from query).
+    let mut episodes_by_series: HashMap<Uuid, Vec<db::Media>> = HashMap::new();
+    for ep in all_episodes {
+        if let Some(gid) = ep.grandparent_id {
+            episodes_by_series.entry(gid).or_default().push(ep);
+        }
+    }
+
+    // Find the next episode per series in memory — same logic as the single-series path.
+    let mut next_eps: Vec<db::Media> = Vec::new();
+    for series_id in &series_ids {
+        let Some(episodes) = episodes_by_series.get(series_id) else {
+            continue;
         };
 
-        let state_for =
-            |e: &db::Media| -> Option<&db::UserMediaState> { states.get(&e.id) };
+        let state_for = |e: &db::Media| states_map.get(&e.id);
 
-        // Resumable first
         let mut next_ep: Option<&db::Media> = None;
         if enable_resumable {
             next_ep = episodes.iter().find(|e| {
@@ -290,7 +306,6 @@ async fn shows_nextup_all(
                     .map_or(false, |s| s.play_count == 0 && s.playback_position > 0)
             });
         }
-        // Then next after last played
         if next_ep.is_none() {
             let last_played_pos = episodes
                 .iter()
@@ -301,19 +316,34 @@ async fn shows_nextup_all(
         }
 
         if let Some(ep) = next_ep {
-            let mut enriched = vec![ep.clone()];
-            db::Media::preload_parents(&state.ctx.db, &mut enriched).await;
-            let mut ep = enriched.remove(0);
-            ep.images = db::MediaImage::get_for_media(&state.ctx.db, &ep.id)
-                .await
-                .unwrap_or_default();
-            let mut item = api::db_media_to_item(ep.clone());
-            if let Some(s) = state_for(&ep) {
-                item.user_data = Some(api::db_state_to_dto(s.clone(), &ep));
-            }
-            items.push(item);
+            next_eps.push(ep.clone());
         }
     }
+
+    if next_eps.is_empty() {
+        return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
+    }
+
+    // Batch-load parents and images for all next episodes in two queries.
+    db::Media::preload_parents(&state.ctx.db, &mut next_eps).await;
+    let next_ep_ids: Vec<Uuid> = next_eps.iter().map(|e| e.id).collect();
+    let mut images_map = db::MediaImage::get_for_media_ids(&state.ctx.db, &next_ep_ids)
+        .await
+        .unwrap_or_default();
+    for ep in &mut next_eps {
+        ep.images = images_map.remove(&ep.id).unwrap_or_default();
+    }
+
+    let items: Vec<api::BaseItemDto> = next_eps
+        .into_iter()
+        .map(|ep| {
+            let mut item = api::db_media_to_item(ep.clone());
+            if let Some(s) = states_map.get(&ep.id) {
+                item.user_data = Some(api::db_state_to_dto(s.clone(), &ep));
+            }
+            item
+        })
+        .collect();
 
     let total = items.len() as i64;
     Ok(Json(api::BaseItemDtoQueryResult {

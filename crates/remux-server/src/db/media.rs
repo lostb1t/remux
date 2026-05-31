@@ -1808,28 +1808,42 @@ impl Media {
         {
             if usf.resumable == Some(true) {
                 let ids: Vec<uuid::Uuid> = if let Some(user_id) = &usf.user_id {
+                    // Drive from user_media_state (small, indexed by user_id) and
+                    // check media conditions via a correlated EXISTS so SQLite does
+                    // one PK lookup per in-progress item instead of materialising
+                    // the entire kind/date-filtered media set.
                     let mut pre_qb = sqlx::QueryBuilder::new(
-                        "SELECT ums.media_id FROM user_media_state ums \
-                         JOIN media m ON m.id = ums.media_id \
-                         WHERE ums.user_id = ",
+                        "SELECT media_id FROM user_media_state \
+                         WHERE user_id = ",
                     );
                     pre_qb.push_bind(user_id);
-                    pre_qb
-                        .push(" AND ums.playback_position > 0 AND ums.play_count = 0");
-                    if let Some(kinds) = &filter.kind {
-                        if !kinds.is_empty() {
-                            pre_qb.push(" AND m.kind IN (");
-                            let mut sep = pre_qb.separated(", ");
-                            for k in kinds {
-                                sep.push_bind(k);
+                    pre_qb.push(" AND playback_position > 0 AND play_count = 0");
+                    let needs_media_filter =
+                        filter.kind.as_ref().map(|k| !k.is_empty()).unwrap_or(false)
+                            || filter.digital_released_before.is_some();
+                    if needs_media_filter {
+                        pre_qb.push(
+                            " AND EXISTS (SELECT 1 FROM media \
+                             WHERE id = media_id AND 1=1",
+                        );
+                        if let Some(kinds) = &filter.kind {
+                            if !kinds.is_empty() {
+                                pre_qb.push(" AND kind IN (");
+                                let mut sep = pre_qb.separated(", ");
+                                for k in kinds {
+                                    sep.push_bind(k);
+                                }
+                                pre_qb.push(")");
                             }
-                            pre_qb.push(")");
                         }
-                    }
-                    if let Some(threshold) = &filter.digital_released_before {
-                        pre_qb
-                            .push(" AND COALESCE(m.digital_released_at, m.released_at) <= ")
-                            .push_bind(threshold);
+                        if let Some(threshold) = &filter.digital_released_before {
+                            pre_qb
+                                .push(
+                                    " AND COALESCE(digital_released_at, released_at) <= ",
+                                )
+                                .push_bind(threshold);
+                        }
+                        pre_qb.push(")");
                     }
                     pre_qb
                         .build_query_scalar::<uuid::Uuid>()
