@@ -134,6 +134,34 @@ impl Task for RefreshLibraryTask {
                 .await?;
 
                 info!(catalog = %full_id, ?counts, "catalog import complete");
+
+                // Sync collection relations if this catalog has a linked collection.
+                if catalog_states
+                    .get(local_id)
+                    .map(|s| s.create_collection)
+                    .unwrap_or(false)
+                {
+                    let collection_id = Uuid::new_v5(&addon_id, local_id.as_bytes());
+                    let addon_id_str = addon_id.to_string();
+                    let media_ids: Vec<Uuid> = sqlx::query_scalar(
+                        "SELECT media_id FROM media_catalog_items WHERE addon_id = ? AND catalog_id = ?",
+                    )
+                    .bind(&addon_id_str)
+                    .bind(local_id)
+                    .fetch_all(&ctx.db)
+                    .await
+                    .unwrap_or_default();
+
+                    if let Err(e) = db::MediaRelation::replace_collection_items(
+                        &ctx.db,
+                        &collection_id,
+                        &media_ids,
+                    )
+                    .await
+                    {
+                        warn!(catalog = %full_id, error = %e, "failed to sync catalog collection relations");
+                    }
+                }
             }
         }
 

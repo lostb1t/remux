@@ -383,17 +383,23 @@ pub async fn update_addon_catalogs(
                     local_id.clone()
                 };
 
-            // Upsert the collection media row.
-            let collection = crate::db::Media {
-                id: collection_id,
-                title: catalog_name,
-                kind: crate::db::MediaKind::Collection,
-                collection_kind: Some(crate::db::CollectionKind::Manual),
-                ..Default::default()
-            };
-            if let Err(e) = crate::db::Media::upsert(&state.ctx.db, &[collection]).await
+            // Insert the collection row only if it doesn't exist yet.
+            // Using INSERT OR IGNORE so user edits (description, images, etc.)
+            // are never overwritten on subsequent saves.
+            let now = Utc::now().naive_utc();
+            if let Err(e) = sqlx::query(
+                "INSERT OR IGNORE INTO media \
+                 (id, title, kind, collection_kind, external_ids, created_at, updated_at) \
+                 VALUES (?, ?, 'collection', 'manual', '{}', ?, ?)",
+            )
+            .bind(collection_id)
+            .bind(&catalog_name)
+            .bind(now)
+            .bind(now)
+            .execute(&state.ctx.db)
+            .await
             {
-                tracing::warn!(addon = %id, catalog = %local_id, error = %e, "failed to upsert catalog collection");
+                tracing::warn!(addon = %id, catalog = %local_id, error = %e, "failed to create catalog collection");
             }
 
             // Populate collection items from indexed catalog membership.

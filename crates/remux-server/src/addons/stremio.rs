@@ -188,9 +188,24 @@ impl AddonKind for StremioAddon {
             .into_iter()
             .filter(|c| !c.id.contains("search"))
             .map(|c| {
+                let kind_label = {
+                    let k = c.kind.trim();
+                    let mut chars = k.chars();
+                    match chars.next() {
+                        Some(first) => {
+                            first.to_uppercase().collect::<String>() + chars.as_str()
+                        }
+                        None => String::new(),
+                    }
+                };
                 CatalogInfo::new(
                     format!("{}:{}", c.kind.to_lowercase(), c.id),
-                    format!("{} — {}", manifest.name.trim(), c.name.trim()),
+                    format!(
+                        "{} — {} — {}",
+                        manifest.name.trim(),
+                        c.name.trim(),
+                        kind_label
+                    ),
                 )
             })
             .collect())
