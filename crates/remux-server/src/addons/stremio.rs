@@ -198,15 +198,22 @@ impl AddonKind for StremioAddon {
                         None => String::new(),
                     }
                 };
-                CatalogInfo::new(
-                    format!("{}:{}", c.kind.to_lowercase(), c.id),
-                    format!(
-                        "{} — {} — {}",
-                        manifest.name.trim(),
-                        c.name.trim(),
-                        kind_label
-                    ),
-                )
+                CatalogInfo {
+                    collection_media_kind: matches!(
+                        c.kind.trim().to_lowercase().as_str(),
+                        "movie" | "series" | "episode" | "album" | "artist" | "track"
+                    )
+                    .then(|| c.kind.as_str().into()),
+                    ..CatalogInfo::new(
+                        format!("{}:{}", c.kind.to_lowercase(), c.id),
+                        format!(
+                            "{} — {} — {}",
+                            manifest.name.trim(),
+                            c.name.trim(),
+                            kind_label
+                        ),
+                    )
+                }
             })
             .collect())
     }

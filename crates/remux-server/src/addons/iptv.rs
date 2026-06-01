@@ -224,6 +224,7 @@ impl AddonKind for IptvAddon {
             name: "All Channels".to_string(),
             default_enabled: true,
             default_max_items: Some(999999999),
+            collection_media_kind: None,
         }];
 
         for group in groups {
@@ -232,6 +233,7 @@ impl AddonKind for IptvAddon {
                 name: group,
                 default_enabled: false,
                 default_max_items: Some(999999999),
+                collection_media_kind: None,
             });
         }
 

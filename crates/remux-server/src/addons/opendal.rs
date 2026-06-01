@@ -258,6 +258,7 @@ impl AddonKind for OpendalAddon {
             name: "files".to_string(),
             default_enabled: true,
             default_max_items: Some(999999999),
+            collection_media_kind: Some(self.media_kind.as_str().into()),
         }])
     }
 

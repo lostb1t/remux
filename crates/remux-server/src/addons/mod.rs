@@ -48,6 +48,8 @@ pub struct CatalogInfo {
     pub default_enabled: bool,
     /// Default per-catalog item limit (before the user changes it).
     pub default_max_items: Option<i64>,
+    /// Media kind for auto-created collections backed by this catalog.
+    pub collection_media_kind: Option<db::CollectionMediaKind>,
 }
 
 impl CatalogInfo {
@@ -60,6 +62,7 @@ impl CatalogInfo {
             name: name.into(),
             default_enabled: false,
             default_max_items: None,
+            collection_media_kind: None,
         }
     }
 }

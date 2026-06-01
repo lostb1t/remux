@@ -367,8 +367,8 @@ pub async fn update_addon_catalogs(
             // Deterministic collection ID: stable per addon+catalog.
             let collection_id = Uuid::new_v5(&id, local_id.as_bytes());
 
-            // Get the catalog name (fall back to local_id if addon isn't loaded yet).
-            let catalog_name =
+            // Get catalog name and media kind (fall back to local_id if addon isn't loaded yet).
+            let (catalog_name, catalog_media_kind) =
                 if let Some(kind) = state.ctx.addons.get_catalog(id).await {
                     kind.catalog_list(&state.ctx)
                         .await
@@ -376,11 +376,11 @@ pub async fn update_addon_catalogs(
                         .and_then(|list| {
                             list.into_iter()
                                 .find(|c| c.provider_catalog_id == local_id)
-                                .map(|c| c.name)
+                                .map(|c| (c.name, c.collection_media_kind))
                         })
-                        .unwrap_or_else(|| local_id.clone())
+                        .unwrap_or_else(|| (local_id.clone(), None))
                 } else {
-                    local_id.clone()
+                    (local_id.clone(), None)
                 };
 
             // Insert the collection row only if it doesn't exist yet.
@@ -389,11 +389,12 @@ pub async fn update_addon_catalogs(
             let now = Utc::now().naive_utc();
             if let Err(e) = sqlx::query(
                 "INSERT OR IGNORE INTO media \
-                 (id, title, kind, collection_kind, external_ids, created_at, updated_at) \
-                 VALUES (?, ?, 'collection', 'manual', '{}', ?, ?)",
+                 (id, title, kind, collection_kind, collection_media_kind, external_ids, created_at, updated_at) \
+                 VALUES (?, ?, 'collection', 'manual', ?, '{}', ?, ?)",
             )
             .bind(collection_id)
             .bind(&catalog_name)
+            .bind(catalog_media_kind)
             .bind(now)
             .bind(now)
             .execute(&state.ctx.db)

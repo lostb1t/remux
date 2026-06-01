@@ -320,7 +320,6 @@ impl TryFrom<String> for CollectionKind {
 /// Stored as TEXT in the DB (snake_case).
 #[derive(
     Default,
-    strum_macros::EnumString,
     strum_macros::Display,
     Debug,
     Clone,
@@ -330,7 +329,7 @@ impl TryFrom<String> for CollectionKind {
     sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
+#[strum(serialize_all = "snake_case")]
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
 pub enum CollectionMediaKind {
     #[default]
@@ -341,10 +340,19 @@ pub enum CollectionMediaKind {
     Playlist,
 }
 
-impl TryFrom<String> for CollectionMediaKind {
-    type Error = strum::ParseError;
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        Self::try_from(s.as_str())
+impl From<&str> for CollectionMediaKind {
+    fn from(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "series" | "episode" => Self::Series,
+            "album" | "artist" | "track" => Self::Music,
+            _ => Self::Movie,
+        }
+    }
+}
+
+impl From<String> for CollectionMediaKind {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
     }
 }
 

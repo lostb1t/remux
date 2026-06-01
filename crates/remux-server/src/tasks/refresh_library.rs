@@ -161,6 +161,19 @@ impl Task for RefreshLibraryTask {
                     {
                         warn!(catalog = %full_id, error = %e, "failed to sync catalog collection relations");
                     }
+
+                    // Backfill collection_media_kind for collections created before this field existed.
+                    if let Some(kind) = &cat_info.collection_media_kind {
+                        sqlx::query(
+                            "UPDATE media SET collection_media_kind = ? \
+                             WHERE id = ? AND collection_media_kind IS NULL",
+                        )
+                        .bind(kind)
+                        .bind(collection_id)
+                        .execute(&ctx.db)
+                        .await
+                        .ok();
+                    }
                 }
             }
         }
