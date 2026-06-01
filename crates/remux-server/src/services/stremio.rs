@@ -156,8 +156,6 @@ impl StremioService {
                             skip: Some(page * page_size),
                         })
                         .await;
-                    let n = result.as_ref().map(|r| r.metas.len()).unwrap_or(0);
-                    tracing::debug!(kind = %kind, id = %id, page, items = n, elapsed = ?t.elapsed(), "catalog page");
                     result
                 }
             })

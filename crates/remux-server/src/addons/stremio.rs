@@ -478,7 +478,6 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                     }
                 }
             }
-            tracing::debug!(id = %meta.id, elapsed = ?t.elapsed(), "after release date fetch");
         }
     }
 
