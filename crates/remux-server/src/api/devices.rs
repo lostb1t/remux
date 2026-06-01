@@ -2,8 +2,7 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use http::StatusCode;
-use remux_macros::{delete, get};
-use serde::Deserialize;
+use remux_macros::{api_query, delete, get};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -11,7 +10,7 @@ use crate::api;
 use crate::db::auth;
 use axum_anyhow::ApiResult as Result;
 
-#[derive(Deserialize)]
+#[api_query]
 struct DeleteDeviceQuery {
     id: String,
 }
@@ -27,9 +26,8 @@ pub async fn delete_device(
 }
 
 /// Query parameters for devices endpoint
-#[derive(Deserialize)]
+#[api_query]
 pub struct GetDevicesQuery {
-    #[serde(alias = "userId")]
     pub user_id: Option<uuid::Uuid>,
 }
 

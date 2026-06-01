@@ -3,9 +3,8 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum_extra::extract::Query;
 use http::StatusCode;
-use remux_macros::{delete, get, post};
+use remux_macros::{api_query, delete, get, post};
 use remux_sdks::CommaSeparatedList;
-use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -15,8 +14,7 @@ use crate::db;
 use crate::db::auth;
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[api_query]
 pub struct CreatePlaylistQuery {
     pub name: Option<String>,
     #[serde(default)]
@@ -117,8 +115,8 @@ pub async fn update_playlist(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[api_query]
+#[derive(Default)]
 pub struct PlaylistItemsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
@@ -167,8 +165,7 @@ pub async fn get_playlist_items(
     }))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[api_query]
 pub struct AddItemsQuery {
     #[serde(default)]
     pub ids: CommaSeparatedList<Uuid>,
@@ -192,8 +189,7 @@ pub async fn add_playlist_items(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[api_query]
 pub struct RemoveItemsQuery {
     #[serde(default)]
     pub entry_ids: CommaSeparatedList<Uuid>,

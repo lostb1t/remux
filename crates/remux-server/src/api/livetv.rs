@@ -5,7 +5,7 @@ use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 use axum_extra::extract::Query;
 use chrono::{Duration, Utc};
 use http::StatusCode;
-use remux_macros::{delete, get, patch, post};
+use remux_macros::{api_query, delete, get, patch, post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -80,8 +80,8 @@ pub async fn livetv_guide_info(
 // GET /livetv/channels
 // --------------------------------------------------------------------------
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[api_query]
+#[derive(Debug, Default)]
 pub struct GetChannelsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
@@ -138,7 +138,8 @@ pub async fn livetv_channel(
 // GET /livetv/programs/recommended
 // --------------------------------------------------------------------------
 
-#[derive(Debug, Default, Deserialize)]
+#[api_query]
+#[derive(Debug, Default)]
 pub struct GetRecommendedQuery {
     #[serde(rename = "limit", alias = "Limit")]
     pub limit: Option<u32>,
@@ -182,7 +183,8 @@ pub async fn livetv_programs_recommended(
 // GET /livetv/programs
 // --------------------------------------------------------------------------
 
-#[derive(Debug, Default, Deserialize)]
+#[api_query]
+#[derive(Debug, Default)]
 pub struct GetProgramsQuery {
     /// Accepts both repeated params (`channelIds=a&channelIds=b`) and a
     /// single comma-separated value (`channelIds=a,b`) for client compat.
@@ -390,7 +392,7 @@ pub async fn livetv_timers(_session: AuthSession) -> Result<impl IntoResponse> {
 // GET /livetv/timers/defaults
 // --------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[api_query]
 pub struct TimerDefaultsQuery {
     #[serde(rename = "programId")]
     program_id: Option<Uuid>,
@@ -586,7 +588,8 @@ pub async fn livetv_add_tuner_host(
 // DELETE /livetv/tunerhosts  (stub)
 // --------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[api_query]
+#[derive(Debug)]
 pub struct DeleteTunerQuery {
     pub id: Uuid,
 }
@@ -673,7 +676,8 @@ pub async fn remux_save_epg_source(
 // DELETE /remux/iptv/epgsources  (?id=...)
 // --------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[api_query]
+#[derive(Debug)]
 pub struct DeleteEpgQuery {
     pub id: Uuid,
 }
@@ -692,7 +696,8 @@ pub async fn remux_delete_epg_source(
 // GET /remux/iptv/channels  (all channels, including disabled)
 // --------------------------------------------------------------------------
 
-#[derive(Debug, Default, Deserialize)]
+#[api_query]
+#[derive(Debug, Default)]
 pub struct GetAllChannelsQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,

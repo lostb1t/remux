@@ -14,7 +14,7 @@ use futures_util::TryStreamExt;
 use headers;
 use http::Response;
 use http::StatusCode;
-use remux_macros::{delete, get, post};
+use remux_macros::{api_query, delete, get, post};
 use serde::Deserialize;
 use serde_json::json;
 use serde_with::{DurationSeconds, serde_as};
@@ -1925,9 +1925,8 @@ pub async fn report_playback_stopped(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-#[derive(Deserialize)]
+#[api_query]
 pub struct PingQuery {
-    #[serde(alias = "playSessionId", alias = "PlaySessionId")]
     pub play_session_id: String,
 }
 
@@ -1969,7 +1968,8 @@ pub async fn sessions_capabilities_full_by_id(
 }
 
 #[serde_as]
-#[derive(Deserialize, Default)]
+#[api_query]
+#[derive(Default)]
 struct SessionsQuery {
     #[serde(rename = "activeWithinSeconds", alias = "ActiveWithinSeconds")]
     #[serde_as(as = "Option<DurationSeconds<u64>>")]
@@ -3131,9 +3131,8 @@ pub async fn playback_bitratetest_sized(
         .unwrap())
 }
 
-#[derive(Deserialize)]
+#[api_query]
 pub struct BitrateTestQuery {
-    #[serde(alias = "Size", alias = "size")]
     pub size: Option<u64>,
 }
 

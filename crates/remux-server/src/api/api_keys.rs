@@ -2,8 +2,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use http::StatusCode;
-use remux_macros::{delete, get, post};
-use serde::Deserialize;
+use remux_macros::{api_query, delete, get, post};
 
 use crate::AppState;
 use crate::api;
@@ -11,7 +10,7 @@ use crate::db::ApiKey;
 use crate::db::auth;
 use axum_anyhow::{ApiResult as Result, IntoApiError};
 
-#[derive(Deserialize)]
+#[api_query]
 pub struct CreateKeyQuery {
     pub app: String,
 }

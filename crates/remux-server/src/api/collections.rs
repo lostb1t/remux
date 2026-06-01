@@ -5,7 +5,7 @@ use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
 use axum_extra::extract::Query;
 use futures::StreamExt;
 use http::StatusCode;
-use remux_macros::{delete, get, post};
+use remux_macros::{api_query, delete, get, post};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -18,8 +18,8 @@ use crate::db::auth::AdminSession;
 // GET /collections/{id}/items
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[api_query]
+#[derive(Debug)]
 pub struct CollectionItemsQuery {
     pub start_index: Option<u32>,
     pub limit: Option<u32>,
@@ -71,8 +71,8 @@ pub async fn get_collection_items(
 // POST /collections/{id}/items  (add items by id list)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[api_query]
+#[derive(Debug)]
 pub struct AddCollectionItemsQuery {
     pub ids: Option<String>,
 }
@@ -107,8 +107,8 @@ pub async fn add_collection_items(
 // DELETE /collections/{id}/items  (?ids=relation_id,...)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[api_query]
+#[derive(Debug)]
 pub struct RemoveCollectionItemsQuery {
     pub ids: Option<String>,
 }

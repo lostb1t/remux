@@ -4,7 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Duration, Utc};
-use remux_macros::{delete, get, post};
+use remux_macros::{api_query, delete, get, post};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -16,7 +16,8 @@ use uuid::Uuid;
 
 const CACHE_KEY_PREFIX: &str = "remux:cache:";
 
-#[derive(Debug, Deserialize, Default)]
+#[api_query]
+#[derive(Debug, Default)]
 pub struct NamespaceQuery {
     #[serde(default)]
     pub ns: String,

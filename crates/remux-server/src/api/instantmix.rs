@@ -3,8 +3,7 @@ use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum_anyhow::{ApiResult as Result, OptionExt};
 use axum_extra::extract::Query;
-use remux_macros::get;
-use serde::Deserialize;
+use remux_macros::{api_query, get};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -12,8 +11,8 @@ use crate::api;
 use crate::db;
 use crate::db::auth::AuthSession;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[api_query]
+#[derive(Debug)]
 pub struct InstantMixQuery {
     pub user_id: Option<Uuid>,
     pub limit: Option<u32>,

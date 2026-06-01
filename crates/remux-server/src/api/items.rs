@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 use axum_extra::extract::Query;
 use http::StatusCode;
 use itertools::Itertools;
-use remux_macros::{delete, get, patch, post};
+use remux_macros::{api_query, delete, get, patch, post};
 use serde::Deserialize;
 use tracing::debug;
 use tracing::error;
@@ -832,8 +832,8 @@ pub async fn items_intros(
     Ok(Json(api::BaseItemDtoQueryResult::default()))
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[api_query]
+#[derive(Debug, Default)]
 pub struct RemoteImagesQuery {
     #[serde(rename = "type", alias = "Type")]
     pub kind: Option<String>,
@@ -1455,7 +1455,8 @@ pub async fn update_virtual_folder(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Debug, Deserialize)]
+#[api_query]
+#[derive(Debug)]
 struct DeleteVirtualFolderQuery {
     name: String,
 }
@@ -1672,7 +1673,8 @@ fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
     });
 }
 
-#[derive(Deserialize, Default)]
+#[api_query]
+#[derive(Default)]
 pub struct SegmentQuery {
     #[serde(rename = "includeSegmentTypes", default)]
     include_segment_types: Vec<remux_sdks::remux::MediaSegmentType>,

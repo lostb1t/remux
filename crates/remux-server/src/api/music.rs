@@ -2,7 +2,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum_extra::extract::Query;
-use remux_macros::{get, post};
+use remux_macros::{api_query, get, post};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -11,7 +11,8 @@ use crate::db;
 use crate::db::auth;
 use axum_anyhow::ApiResult as Result;
 
-#[derive(Debug, Deserialize)]
+#[api_query]
+#[derive(Debug)]
 pub struct MusicSearchQuery {
     pub q: Option<String>,
     pub limit: Option<usize>,
