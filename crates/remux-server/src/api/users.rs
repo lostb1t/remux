@@ -71,7 +71,7 @@ pub async fn get_display_preferences(
     )
     .await?;
 
-    let prefs = if let Some(record) = result.records.first() {
+    let mut prefs = if let Some(record) = result.records.first() {
         record.clone()
     } else {
         db::JellyfinDisplayPrefs {
@@ -79,6 +79,18 @@ pub async fn get_display_preferences(
             ..Default::default()
         }
     };
+
+    if !prefs
+        .data
+        .custom_prefs
+        .keys()
+        .any(|k| k.starts_with("homesection"))
+    {
+        prefs
+            .data
+            .custom_prefs
+            .extend(db::default_homescreen_custom_prefs());
+    }
 
     Ok(Json(api::db_display_prefs_to_dto(prefs)))
 }

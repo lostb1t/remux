@@ -684,6 +684,24 @@ pub struct JellyfinDisplayPrefsData {
     pub home_sections: Option<Vec<HomeSection>>,
 }
 
+pub fn default_homescreen_custom_prefs() -> HashMap<String, Option<String>> {
+    [
+        ("homesection0", "smalllibrarytiles"),
+        ("homesection1", "resume"),
+        ("homesection2", "nextup"),
+        ("homesection3", "latestmedia"),
+        ("homesection4", "livetv"),
+        ("homesection5", "none"),
+        ("homesection6", "none"),
+        ("homesection7", "none"),
+        ("homesection8", "none"),
+        ("homesection9", "none"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), Some(v.to_string())))
+    .collect()
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct JellyfinDisplayPrefs {
     pub id: String,
