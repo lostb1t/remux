@@ -633,15 +633,15 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             let main_scale_part = build_scale_filter(params)
                 .map(|s| format!("{s}"))
                 .unwrap_or_default();
-            let overlay = "[main][sub]overlay=eof_action=pass:repeatlast=0";
+            let overlay = "overlay=eof_action=pass:repeatlast=0";
             let filter = if main_scale_part.is_empty() {
-                let base =
-                    format!("[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{overlay}[v]");
                 match &hw_suffix {
                     Some(suf) => format!(
-                        "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{overlay}[vraw];[vraw]{suf}[v]"
+                        "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]{overlay}[vraw];[vraw]{suf}[v]"
                     ),
-                    None => base,
+                    None => format!(
+                        "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0][sub]{overlay}[v]"
+                    ),
                 }
             } else {
                 match &hw_suffix {
@@ -1255,7 +1255,7 @@ pub(crate) fn build_progressive_args(
             } else {
                 format!("scale,{sub_scale}")
             };
-            let overlay = "[main][sub]overlay=eof_action=pass:repeatlast=0";
+            let overlay = "overlay=eof_action=pass:repeatlast=0";
             let filter = match (&scale_filter, &hw_suffix) {
                 (Some(main_scale), Some(suf)) => format!(
                     "[0:{sub_idx}]{sub_preproc}[sub];[0:v:0]{main_scale}[main];[main][sub]{overlay}[vraw];[vraw]{suf}[v]"

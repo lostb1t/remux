@@ -271,16 +271,39 @@ impl ImageService {
         name: &str,
         db: &sqlx::SqlitePool,
     ) -> anyhow::Result<Vec<u8>> {
-        let backdrop_url = find_backdrop_url(id, db).await?;
-        let img = Self::fetch_and_resize(&backdrop_url).await?;
-        let img = apply_dark_overlay(img);
-        let img = draw_label(img, name)?;
+        let bg = match find_backdrop_url(id, db).await {
+            Err(_) => solid_background(),
+            Ok(src) => {
+                let result = if src.contains("://") {
+                    Self::fetch_and_resize(&src).await
+                } else {
+                    Self::read_local_and_resize(&src).await
+                };
+                match result {
+                    Ok(img) => apply_dark_overlay(img),
+                    Err(_) => solid_background(),
+                }
+            }
+        };
+        let img = draw_label(bg, name)?;
         encode_jpeg(img)
     }
 
     async fn fetch_and_resize(url: &str) -> anyhow::Result<RgbImage> {
         let resp = HTTP_CLIENT.get(url).send().await?;
         let bytes = resp.bytes().await?;
+        let decoded = image::load_from_memory(&bytes)?.into_rgb8();
+        let resized = image::imageops::resize(
+            &decoded,
+            OUT_W,
+            OUT_H,
+            image::imageops::FilterType::Lanczos3,
+        );
+        Ok(resized)
+    }
+
+    async fn read_local_and_resize(path: &str) -> anyhow::Result<RgbImage> {
+        let bytes = tokio::fs::read(path).await?;
         let decoded = image::load_from_memory(&bytes)?.into_rgb8();
         let resized = image::imageops::resize(
             &decoded,
@@ -355,6 +378,10 @@ async fn find_backdrop_url(
                 "no backdrop or poster found for collection {collection_id}"
             )
         })
+}
+
+fn solid_background() -> RgbImage {
+    RgbImage::from_pixel(OUT_W, OUT_H, image::Rgb([30, 30, 30]))
 }
 
 /// Blend a semi-transparent black overlay over the image to darken it,
