@@ -523,6 +523,11 @@ pub struct EncodingOptions {
     /// CRF quality level for software H.265 (libx265). Lower = better quality.
     #[default(Some(28u32))]
     pub h265_crf: Option<u32>,
+    /// Allow video codec re-encoding during transcoding. When false, the video
+    /// stream is always copied (remux). Remuxing and audio transcoding are
+    /// unaffected by this setting.
+    #[default(Some(true))]
+    pub enable_video_transcoding: Option<bool>,
 }
 
 // --- Jellyfin import models (used to consume a remote Jellyfin server) ---

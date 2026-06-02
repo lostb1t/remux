@@ -303,7 +303,18 @@ pub async fn init_app(
 
     let router = router
         .layer(on_error(log_api_error))
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http().make_span_with(
+                |request: &axum::http::Request<axum::body::Body>| {
+                    tracing::info_span!(
+                        "request",
+                        method = %request.method(),
+                        uri = %request.uri().path(),
+                        user = tracing::field::Empty,
+                    )
+                },
+            ),
+        )
         .layer(cors);
 
     Ok((router, ctx))

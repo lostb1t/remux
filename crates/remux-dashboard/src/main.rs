@@ -4208,6 +4208,7 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
     let mut allow_av1_encoding = use_signal(|| false);
     let mut h264_crf = use_signal(|| 23_u32);
     let mut h265_crf = use_signal(|| 28_u32);
+    let mut enable_video_transcoding = use_signal(|| true);
     let mut loading = use_signal(|| true);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(|| Option::<String>::None);
@@ -4248,6 +4249,8 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
                     allow_av1_encoding.set(opts.allow_av1_encoding.unwrap_or(false));
                     h264_crf.set(opts.h264_crf.unwrap_or(23));
                     h265_crf.set(opts.h265_crf.unwrap_or(28));
+                    enable_video_transcoding
+                        .set(opts.enable_video_transcoding.unwrap_or(true));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
             }
@@ -4283,6 +4286,7 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
             allow_av1_encoding: Some(*allow_av1_encoding.peek()),
             h264_crf: Some(*h264_crf.peek()),
             h265_crf: Some(*h265_crf.peek()),
+            enable_video_transcoding: Some(*enable_video_transcoding.peek()),
         };
         saving.set(true);
         error.set(None);
@@ -4309,6 +4313,21 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
                     span { class: "loading-text", "Loading…" }
                 } else {
                     form { onsubmit: on_submit, style: "display:flex;flex-direction:column;gap:14px",
+                        div { class: "field",
+                            label { class: "field-label", "Video Transcoding" }
+                            div { class: "field-hint",
+                                "Allow the server to re-encode video streams. When disabled, the video track is always copied as-is (remux). Remuxing and audio transcoding are always available regardless of this setting."
+                            }
+                            label { style: "display:flex;align-items:center;gap:8px",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: *enable_video_transcoding.read(),
+                                    onchange: move |e| enable_video_transcoding.set(e.checked()),
+                                }
+                                "Enable video transcoding"
+                            }
+                        }
+
                         div { class: "field",
                             label { class: "field-label", "Hardware Acceleration" }
                             div { class: "field-hint",

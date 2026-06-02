@@ -340,6 +340,7 @@ impl FromRequestParts<AppState> for AuthSession {
             let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
                 .await?
                 .context_unauthorized("forbidden", "forbidden")?;
+            tracing::Span::current().record("user", user.username.as_str());
             return Ok(AuthSession { device, user });
         }
 
@@ -367,6 +368,7 @@ impl FromRequestParts<AppState> for AuthSession {
             remote_ip: None,
         };
 
+        tracing::Span::current().record("user", user.username.as_str());
         Ok(AuthSession {
             device: synthetic_device,
             user,

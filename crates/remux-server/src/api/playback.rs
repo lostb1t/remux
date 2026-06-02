@@ -80,6 +80,9 @@ async fn items_playbackinfo_inner(
         .await
         .unwrap_or_default();
     let show_ungrouped = probe_cfg.stream_groups_show_ungrouped.unwrap_or(true);
+    let encoding_cfg = db::Settings::get_encoding_config(&state.ctx.db)
+        .await
+        .unwrap_or_default();
 
     let mut media = resolve_item(media_source_id.unwrap_or(id), &state.ctx)
         .await?
@@ -399,6 +402,28 @@ async fn items_playbackinfo_inner(
                                 String::new(),
                             ),
                         );
+
+                let video_transcode_allowed =
+                    encoding_cfg.enable_video_transcoding.unwrap_or(true)
+                        && session
+                            .user
+                            .policy
+                            .as_ref()
+                            .map(|p| p.enable_video_playback_transcoding)
+                            .unwrap_or(true);
+
+                if needs_video_transcode && !video_transcode_allowed {
+                    info!(
+                        user = %session.user.username,
+                        source_id = %sm.id,
+                        "video transcoding required but not allowed — marking source as not transcodable"
+                    );
+                    source.supports_transcoding = false;
+                    source.supports_direct_play = false;
+                    source.supports_direct_stream = false;
+                    continue;
+                }
+
                 let mut video_codec = if needs_video_transcode {
                     "h264"
                 } else {
@@ -909,7 +934,12 @@ async fn videos_stream_inner(
         q.audio_stream_index.is_some() || q.subtitle_stream_index.is_some();
     let container = q.container.as_deref().unwrap_or("mp4").to_string();
     let video_codec = q.video_codec.as_deref().unwrap_or("copy");
-    let video_codec = if video_codec == "copy" {
+    let encoding_opts = crate::db::Settings::get_encoding_config(&state.ctx.db)
+        .await
+        .unwrap_or_default();
+    let video_transcode_enabled =
+        encoding_opts.enable_video_transcoding.unwrap_or(true);
+    let video_codec = if video_codec == "copy" || !video_transcode_enabled {
         "copy"
     } else {
         "h264"
@@ -2297,13 +2327,17 @@ pub async fn master_hls_video(
 
     tracing::debug!("Using play session ID: {}", play_session_id);
 
-    let video_codec = q.video_codec.as_deref().unwrap_or("copy");
-    let video_codec = if video_codec == "copy" {
-        "copy"
+    let encoding_opts_hls = crate::db::Settings::get_encoding_config(&state.ctx.db)
+        .await
+        .unwrap_or_default();
+    let video_transcode_enabled_hls =
+        encoding_opts_hls.enable_video_transcoding.unwrap_or(true);
+    let video_codec_raw = q.video_codec.as_deref().unwrap_or("copy");
+    let video_codec = if video_codec_raw == "copy" || !video_transcode_enabled_hls {
+        "copy".to_string()
     } else {
-        "h264"
-    }
-    .to_string();
+        "h264".to_string()
+    };
     let audio_codec = q.audio_codec.unwrap_or_else(|| "aac".to_string());
     let segment_length = q.segment_length.unwrap_or(6) as u32;
 
@@ -2480,9 +2514,7 @@ pub async fn master_hls_video(
 
         // Start transcoding in background
         let session_clone = session.clone();
-        let encoding_opts = crate::db::Settings::get_encoding_config(&state.ctx.db)
-            .await
-            .unwrap_or_default();
+        let encoding_opts = encoding_opts_hls.clone();
         let params = crate::transcode::engine::TranscodeParams {
             input_url,
             output_dir: session.read().await.output_dir.clone(),
