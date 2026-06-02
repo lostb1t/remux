@@ -2683,6 +2683,11 @@ async fn variant_hls_video_inner(
         .await
         .unwrap_or_default();
 
+        // For non-live fMP4 VOD: once ffmpeg finishes it appends #EXT-X-ENDLIST and the
+        // playlist type stays as EVENT. Upgrade EVENT→VOD so hls.js treats the stream as
+        // a completed VOD rather than a live feed; leave live streams untouched.
+        let is_complete = !is_live && content.contains("#EXT-X-ENDLIST");
+
         // Inject ?PlaySessionId=... into segment/map lines so hls_segment_inner can find the session.
         let content = content
             .lines()
@@ -2700,6 +2705,8 @@ async fn variant_hls_video_inner(
                         "\"init.mp4\"",
                         &format!("\"init.mp4?PlaySessionId={}\"", psid),
                     )
+                } else if is_complete && line == "#EXT-X-PLAYLIST-TYPE:EVENT" {
+                    "#EXT-X-PLAYLIST-TYPE:VOD".to_string()
                 } else {
                     line.to_string()
                 }
