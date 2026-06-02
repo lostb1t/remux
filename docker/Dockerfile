@@ -40,11 +40,15 @@ RUN apt-get update \
         libfontconfig1 \
         libfreetype6 \
         libssl3 \
-    && pip3 install --break-system-packages yt-dlp "curl-cffi>=0.10,<0.15" yt-dlp-get-pot \
+    && pip3 install --break-system-packages yt-dlp "curl-cffi>=0.10,<0.15" \
     && if [ "${TARGETARCH}" = "amd64" ]; then BGUTIL_ARCH="x86_64"; else BGUTIL_ARCH="aarch64"; fi \
     && curl -fsSL "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/v${BGUTIL_POT_VER}/bgutil-pot-linux-${BGUTIL_ARCH}" \
         -o /usr/local/bin/bgutil-pot \
     && chmod +x /usr/local/bin/bgutil-pot \
+    && curl -fsSL "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/v${BGUTIL_POT_VER}/bgutil-ytdlp-pot-provider-rs.zip" \
+        -o /tmp/bgutil-plugin.zip \
+    && python3 -c "import zipfile, sysconfig; zipfile.ZipFile('/tmp/bgutil-plugin.zip').extractall(sysconfig.get_path('purelib'))" \
+    && rm /tmp/bgutil-plugin.zip \
     && apt-get remove -y --autoremove gnupg \
     && rm -rf /var/lib/apt/lists/*
 

@@ -283,6 +283,17 @@ pub trait AddonPreset: Send + Sync {
         cfg: &serde_json::Value,
         config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>>;
+
+    /// Transform the config before it is persisted to the DB.
+    /// Use this to convert inline secrets into file references, strip write-only fields, etc.
+    /// The default is a no-op.
+    fn normalize_cfg(
+        &self,
+        cfg: serde_json::Value,
+        _config: &crate::Config,
+    ) -> Result<serde_json::Value> {
+        Ok(cfg)
+    }
 }
 
 // ---------------------------------------------------------------------------

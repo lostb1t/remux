@@ -102,7 +102,7 @@ pub async fn get_addon(
 pub async fn create_addon(
     State(state): State<AppState>,
     _session: auth::AdminSession,
-    Json(payload): Json<CreateAddonRequest>,
+    Json(mut payload): Json<CreateAddonRequest>,
 ) -> Result<(StatusCode, Json<AddonDto>)> {
     let presets = registered_presets();
     let preset = presets
@@ -112,6 +112,10 @@ pub async fn create_addon(
         .context_bad_request("Bad Request", "Unknown addon kind")?;
 
     let addon_id = Uuid::new_v4();
+    let normalized_config = preset
+        .normalize_cfg(payload.preset.config, &state.ctx.config)
+        .context_bad_request("Bad Request", "Invalid addon configuration")?;
+    payload.preset.config = normalized_config;
     let kind = preset
         .from_cfg(addon_id, &payload.preset.config, &state.ctx.config)
         .context_bad_request("Bad Request", "Invalid addon configuration")?;
@@ -188,9 +192,6 @@ pub async fn update_addon(
     if let Some(name) = payload.name {
         addon.name = name;
     }
-    if let Some(config) = payload.config {
-        addon.preset.config = config;
-    }
     if let Some(resources) = payload.resources {
         addon.resources = resources;
     }
@@ -211,6 +212,11 @@ pub async fn update_addon(
         .find(|p| p.id() == addon.preset.kind)
         .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", addon.preset.kind))
         .context_bad_request("Bad Request", "Unknown addon kind")?;
+    if let Some(config) = payload.config {
+        addon.preset.config = preset
+            .normalize_cfg(config, &state.ctx.config)
+            .context_bad_request("Bad Request", "Invalid addon configuration")?;
+    }
     preset
         .from_cfg(addon.id, &addon.preset.config, &state.ctx.config)
         .context_bad_request("Bad Request", "Invalid addon configuration")?;

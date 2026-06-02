@@ -2,10 +2,8 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
 use sqlx::types::Json;
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tempfile::NamedTempFile;
 use tokio::process::Command;
 use uuid::Uuid;
 
@@ -49,7 +47,7 @@ impl AddonPreset for YtDlpPreset {
                     id: "cookies_content".to_string(),
                     name: "Cookies content".to_string(),
                     description: Some(
-                        "Raw Netscape-format cookie text. Written to a temporary file \
+                        "Raw Netscape-format cookie text. Saved to the data directory \
                          and passed to yt-dlp via --cookies. Ignored when 'Cookies \
                          file' is set."
                             .to_string(),
@@ -72,18 +70,49 @@ impl AddonPreset for YtDlpPreset {
             .get("cookies")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let cookies_content = cfg
-            .get("cookies_content")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
+            .map(str::to_string)
+            .or_else(|| {
+                // Fallback for records saved before normalize_cfg was introduced.
+                let content = cfg
+                    .get("cookies_content")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())?;
+                let path = config.data_dir.join("yt-dlp-cookies.txt");
+                std::fs::write(&path, content).ok()?;
+                Some(path.to_string_lossy().into_owned())
+            });
         Ok(Arc::new(YtDlpAddon {
             cookies,
-            cookies_content,
             executable: PathBuf::from("yt-dlp"),
             bgutil_script_path: config.bgutil_script_path.clone(),
         }))
+    }
+
+    fn normalize_cfg(
+        &self,
+        mut cfg: serde_json::Value,
+        config: &crate::Config,
+    ) -> Result<serde_json::Value> {
+        let content = cfg
+            .get("cookies_content")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+
+        if let Some(content) = content {
+            let path = config.data_dir.join("yt-dlp-cookies.txt");
+            std::fs::write(&path, content)
+                .context("failed to write cookies content to data dir")?;
+            if let Some(obj) = cfg.as_object_mut() {
+                obj.insert(
+                    "cookies".to_string(),
+                    serde_json::Value::String(path.to_string_lossy().into_owned()),
+                );
+                obj.remove("cookies_content");
+            }
+        }
+
+        Ok(cfg)
     }
 }
 
@@ -93,7 +122,6 @@ inventory::submit! {
 
 pub struct YtDlpAddon {
     cookies: Option<String>,
-    cookies_content: Option<String>,
     executable: PathBuf,
     bgutil_script_path: PathBuf,
 }
@@ -108,6 +136,9 @@ fn ytdlp_extra_args() -> Vec<String> {
 
 impl YtDlpAddon {
     fn bgutil_args(&self) -> Vec<String> {
+        if !self.bgutil_script_path.exists() {
+            return vec![];
+        }
         vec![
             "--extractor-args".to_string(),
             format!(
@@ -117,19 +148,11 @@ impl YtDlpAddon {
         ]
     }
 
-    fn cookies_args(&self) -> Result<(Vec<String>, Option<NamedTempFile>)> {
-        if let Some(path) = self.cookies.as_deref() {
-            return Ok((vec!["--cookies".to_string(), path.to_string()], None));
+    fn cookies_args(&self) -> Vec<String> {
+        match &self.cookies {
+            Some(path) => vec!["--cookies".to_string(), path.clone()],
+            None => vec![],
         }
-        if let Some(content) = self.cookies_content.as_deref() {
-            let mut tmp =
-                NamedTempFile::new().context("failed to create temp cookies file")?;
-            tmp.write_all(content.as_bytes())
-                .context("failed to write cookies content to temp file")?;
-            let path = tmp.path().to_string_lossy().to_string();
-            return Ok((vec!["--cookies".to_string(), path], Some(tmp)));
-        }
-        Ok((vec![], None))
     }
 }
 
@@ -299,7 +322,6 @@ fn normalize_codec(codec: &str) -> &str {
 
 impl YtDlpAddon {
     async fn dump_json(&self, url_or_query: &str) -> Result<YtDlpVideo> {
-        let (cookie_args, _cookie_file) = self.cookies_args()?;
         let output = Command::new(&self.executable)
             .args([
                 "--dump-json",
@@ -308,7 +330,7 @@ impl YtDlpAddon {
                 "--no-warnings",
                 url_or_query,
             ])
-            .args(cookie_args)
+            .args(self.cookies_args())
             .args(ytdlp_extra_args())
             .args(self.bgutil_args())
             .output()
@@ -373,7 +395,6 @@ impl YtDlpAddon {
         limit: usize,
     ) -> Result<YtDlpPlaylist> {
         let limit_str = limit.to_string();
-        let (cookie_args, _cookie_file) = self.cookies_args()?;
         let output = Command::new(&self.executable)
             .args([
                 "--dump-single-json",
@@ -384,7 +405,7 @@ impl YtDlpAddon {
                 &limit_str,
                 url_or_query,
             ])
-            .args(cookie_args)
+            .args(self.cookies_args())
             .args(ytdlp_extra_args())
             .args(self.bgutil_args())
             .output()
@@ -427,7 +448,6 @@ impl YtDlpAddon {
                 anyhow::anyhow!("track has no URL or youtube_id for metadata fetch")
             })?;
 
-        let (cookie_args, _cookie_file) = self.cookies_args()?;
         let output = Command::new(&self.executable)
             .args([
                 "--dump-json",
@@ -437,7 +457,7 @@ impl YtDlpAddon {
                 "--no-warnings",
                 &url,
             ])
-            .args(cookie_args)
+            .args(self.cookies_args())
             .args(ytdlp_extra_args())
             .args(self.bgutil_args())
             .output()
@@ -543,7 +563,6 @@ impl YtDlpAddon {
             urlencoding::encode(query)
         );
 
-        let (cookie_args_first, _cookie_file_first) = self.cookies_args()?;
         let output = Command::new(&self.executable)
             .args([
                 "--dump-single-json",
@@ -552,7 +571,7 @@ impl YtDlpAddon {
                 "--quiet",
                 &search_url,
             ])
-            .args(cookie_args_first)
+            .args(self.cookies_args())
             .args(ytdlp_extra_args())
             .args(self.bgutil_args())
             .output()
@@ -591,7 +610,7 @@ impl YtDlpAddon {
         }
 
         let exe = self.executable.clone();
-        let (cookies_args, _cookie_file) = self.cookies_args()?;
+        let cookies_args = self.cookies_args();
         let futures: Vec<_> = album_urls
             .into_iter()
             .map(|url| {
