@@ -605,7 +605,7 @@ impl DeezerAddon {
             .client
             .execute(dz::SearchTracksEndpoint {
                 q: query.to_string(),
-                limit: limit.min(50) as u32,
+                limit: limit.min(1000) as u32,
             })
             .await
         {

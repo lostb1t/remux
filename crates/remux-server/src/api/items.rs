@@ -104,7 +104,7 @@ pub async fn get_items(
 
             fn kind_limit(kind: &db::MediaKind, limit: usize) -> usize {
                 match kind {
-                    db::MediaKind::Track => limit.min(50),
+                    db::MediaKind::Track => limit.min(1000),
                     db::MediaKind::Artist | db::MediaKind::Album => limit.min(10),
                     db::MediaKind::Person => limit.min(20),
                     _ => limit,

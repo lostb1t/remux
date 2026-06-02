@@ -52,9 +52,12 @@ pub async fn create_playlist(
         .context_bad_request("CreatePlaylist", "Failed to create playlist")?;
 
     if !ids.is_empty() {
-        db::MediaRelation::add_playlist_items(&state.ctx.db, &media.id, &ids)
-            .await
-            .ok();
+        let resolved = crate::services::resolve::resolve_ids(&ids, &state.ctx).await;
+        if !resolved.is_empty() {
+            db::MediaRelation::add_playlist_items(&state.ctx.db, &media.id, &resolved)
+                .await
+                .ok();
+        }
     }
 
     Ok(Json(api::PlaylistCreationResult {
@@ -184,7 +187,8 @@ pub async fn add_playlist_items(
         .filter(|m| m.kind == db::MediaKind::Playlist)
         .context_not_found("AddPlaylistItems", "Playlist not found")?;
 
-    db::MediaRelation::add_playlist_items(&state.ctx.db, &id, &q.ids).await?;
+    let resolved = crate::services::resolve::resolve_ids(&q.ids, &state.ctx).await;
+    db::MediaRelation::add_playlist_items(&state.ctx.db, &id, &resolved).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

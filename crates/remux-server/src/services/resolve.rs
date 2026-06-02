@@ -174,6 +174,25 @@ pub(crate) async fn resolve_item(
     .await
 }
 
+/// Resolves a batch of possibly-transient UUIDs to their stable persisted IDs.
+/// Uses `media.id` from the resolved item (not the input ID) since `persist_from_store`
+/// may recompute a stable UUID from external IDs. Unresolvable IDs are skipped.
+pub(crate) async fn resolve_ids(ids: &[Uuid], ctx: &AppContext) -> Vec<Uuid> {
+    let mut resolved = Vec::with_capacity(ids.len());
+    for &id in ids {
+        match resolve_item(id, ctx).await {
+            Ok(Some(media)) => resolved.push(media.id),
+            Ok(None) => {
+                tracing::warn!(%id, "resolve_ids: could not resolve item, skipping")
+            }
+            Err(e) => {
+                tracing::warn!(%id, err = %e, "resolve_ids: error resolving item, skipping")
+            }
+        }
+    }
+    resolved
+}
+
 /// Axum extractor that resolves the `{id}` path parameter to a persisted `db::Media` row.
 ///
 /// Returns 404 if the ID cannot be resolved even after attempting addon persistence.
