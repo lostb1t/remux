@@ -253,6 +253,11 @@ impl PlaybackSessionManager {
         }
 
         self.update(psid, |ps| {
+            if let Some(id) = data.item_id {
+                if !id.is_nil() {
+                    ps.item_id = id;
+                }
+            }
             ps.position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
             if data.is_paused && !ps.is_paused {
                 ps.last_paused_at = Some(Utc::now());
@@ -265,6 +270,9 @@ impl PlaybackSessionManager {
             ps.audio_stream_index = data.audio_stream_index.or(ps.audio_stream_index);
             ps.subtitle_stream_index =
                 data.subtitle_stream_index.or(ps.subtitle_stream_index);
+            if let Some(ref m) = data.play_method {
+                ps.play_method = Some(m.to_string());
+            }
             ps.last_activity = Utc::now();
         });
 
