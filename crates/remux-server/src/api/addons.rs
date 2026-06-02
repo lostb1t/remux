@@ -16,14 +16,14 @@ use crate::db::{MediaKind as DbMediaKind, auth};
 use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
 use remux_sdks::remux::MediaKind;
 
-async fn addon_to_dto(addon: Addon) -> AddonDto {
+async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
     let preset = registered_presets()
         .into_iter()
         .find(|p| p.id() == addon.preset.kind);
 
     let (supported_resources, supported_types) = if let Some(ref p) = preset {
         let meta = p.metadata();
-        match p.from_cfg(addon.id, &addon.preset.config) {
+        match p.from_cfg(addon.id, &addon.preset.config, config) {
             Ok(kind) => {
                 let (resources, raw_types) = kind.available_info().await;
                 let types: Vec<MediaKind> = raw_types
@@ -77,7 +77,10 @@ pub async fn list_addons(
     _session: auth::AdminSession,
 ) -> Result<Json<Vec<AddonDto>>> {
     let addons = Addon::list(&state.ctx.db).await?;
-    let dtos = futures::future::join_all(addons.into_iter().map(addon_to_dto)).await;
+    let config = &state.ctx.config;
+    let dtos =
+        futures::future::join_all(addons.into_iter().map(|a| addon_to_dto(a, config)))
+            .await;
     Ok(Json(dtos))
 }
 
@@ -91,7 +94,7 @@ pub async fn get_addon(
     let addon = Addon::get(&state.ctx.db, id)
         .await?
         .context_not_found("Not Found", "Addon not found")?;
-    Ok(Json(addon_to_dto(addon).await))
+    Ok(Json(addon_to_dto(addon, &state.ctx.config).await))
 }
 
 /// Create a new addon instance.
@@ -110,7 +113,7 @@ pub async fn create_addon(
 
     let addon_id = Uuid::new_v4();
     let kind = preset
-        .from_cfg(addon_id, &payload.preset.config)
+        .from_cfg(addon_id, &payload.preset.config, &state.ctx.config)
         .context_bad_request("Bad Request", "Invalid addon configuration")?;
 
     // Default resources/types to the live available set (e.g. upstream manifest for
@@ -159,8 +162,15 @@ pub async fn create_addon(
     };
 
     addon.insert(&state.ctx.db).await?;
-    state.ctx.addons.reload(&state.ctx.db).await?;
-    Ok((StatusCode::CREATED, Json(addon_to_dto(addon).await)))
+    state
+        .ctx
+        .addons
+        .reload(&state.ctx.db, &state.ctx.config)
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(addon_to_dto(addon, &state.ctx.config).await),
+    ))
 }
 
 /// Update an existing addon instance. Any field omitted is left unchanged.
@@ -202,12 +212,16 @@ pub async fn update_addon(
         .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", addon.preset.kind))
         .context_bad_request("Bad Request", "Unknown addon kind")?;
     preset
-        .from_cfg(addon.id, &addon.preset.config)
+        .from_cfg(addon.id, &addon.preset.config, &state.ctx.config)
         .context_bad_request("Bad Request", "Invalid addon configuration")?;
 
     addon.update(&state.ctx.db).await?;
-    state.ctx.addons.reload(&state.ctx.db).await?;
-    Ok(Json(addon_to_dto(addon).await))
+    state
+        .ctx
+        .addons
+        .reload(&state.ctx.db, &state.ctx.config)
+        .await?;
+    Ok(Json(addon_to_dto(addon, &state.ctx.config).await))
 }
 
 /// Delete an addon instance.
@@ -229,7 +243,11 @@ pub async fn delete_addon(
     }
 
     Addon::delete(&state.ctx.db, id).await?;
-    state.ctx.addons.reload(&state.ctx.db).await?;
+    state
+        .ctx
+        .addons
+        .reload(&state.ctx.db, &state.ctx.config)
+        .await?;
 
     // Remove catalog memberships for this addon so items are no longer
     // associated with catalogs that no longer exist.
@@ -428,7 +446,11 @@ pub async fn update_addon_catalogs(
 
     addon.set_catalog_states(states);
     addon.update(&state.ctx.db).await?;
-    state.ctx.addons.reload(&state.ctx.db).await?;
+    state
+        .ctx
+        .addons
+        .reload(&state.ctx.db, &state.ctx.config)
+        .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

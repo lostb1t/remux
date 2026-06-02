@@ -244,6 +244,7 @@ pub async fn init_app(
         .await?,
     );
 
+    let addons = addons::AddonService::from_db(&conn, &config).await?;
     let ctx = AppContext {
         config,
         db: conn.clone(),
@@ -253,7 +254,7 @@ pub async fn init_app(
         ws_tx,
         default_web_client,
         web_paths,
-        addons: addons::AddonService::from_db(&conn).await?,
+        addons,
     };
 
     // Apply saved P2P speed limits on startup.
@@ -405,6 +406,13 @@ pub struct Config {
     /// (not 0) or many trackers will reject the announce.
     #[serde(default = "default_torrent_peer_port")]
     pub torrent_peer_port: Option<u16>,
+    /// Path to the bgutil-pot binary used by yt-dlp for YouTube POT token generation.
+    #[serde(default = "default_bgutil_script_path")]
+    pub bgutil_script_path: std::path::PathBuf,
+}
+
+fn default_bgutil_script_path() -> std::path::PathBuf {
+    std::path::PathBuf::from("/usr/local/bin/bgutil-pot")
 }
 
 fn default_slow_query_threshold_ms() -> u64 {
@@ -451,6 +459,7 @@ impl Default for Config {
             slow_query_threshold_ms: default_slow_query_threshold_ms(),
             disable_dht: false,
             torrent_peer_port: default_torrent_peer_port(),
+            bgutil_script_path: default_bgutil_script_path(),
         }
         .resolve()
     }

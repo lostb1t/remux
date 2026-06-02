@@ -64,6 +64,7 @@ impl AddonPreset for IptvM3uPreset {
         &self,
         addon_id: Uuid,
         cfg: &serde_json::Value,
+        _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
         let url = cfg["url"]
             .as_str()
@@ -146,6 +147,7 @@ impl AddonPreset for IptvXstreamPreset {
         &self,
         addon_id: Uuid,
         cfg: &serde_json::Value,
+        _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
         let server_url = cfg["server_url"]
             .as_str()

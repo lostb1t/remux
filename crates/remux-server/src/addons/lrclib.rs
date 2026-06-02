@@ -35,6 +35,7 @@ impl AddonPreset for LrcLibPreset {
         &self,
         _addon_id: Uuid,
         _cfg: &serde_json::Value,
+        _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
         let client = reqwest::Client::builder()
             .user_agent("remux-server/1.0")

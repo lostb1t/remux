@@ -59,6 +59,7 @@ impl AddonPreset for StremioPreset {
         &self,
         _addon_id: Uuid,
         cfg: &serde_json::Value,
+        _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
         let raw_url = cfg
             .get("manifest_url")

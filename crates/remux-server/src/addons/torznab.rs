@@ -58,6 +58,7 @@ impl AddonPreset for TorznabPreset {
         &self,
         _addon_id: Uuid,
         cfg: &serde_json::Value,
+        _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
         let url = cfg["url"]
             .as_str()

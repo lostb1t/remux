@@ -100,7 +100,7 @@ pub async fn get_items(
         let cfg = server_config.clone().unwrap_or_default();
 
         if let Some(ref s) = search {
-            let limit = q.limit.unwrap_or(800) as usize;
+            let limit = q.limit.unwrap_or(250) as usize;
 
             fn kind_limit(kind: &db::MediaKind, limit: usize) -> usize {
                 match kind {

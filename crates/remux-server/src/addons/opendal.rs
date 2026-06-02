@@ -96,6 +96,7 @@ impl AddonPreset for OpendalLocalPreset {
         &self,
         addon_id: Uuid,
         cfg: &serde_json::Value,
+        _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
         let media_kind = cfg["media_kind"].as_str().unwrap_or("movie").to_string();
         let path = cfg["path"]
@@ -179,6 +180,7 @@ impl AddonPreset for OpendalWebdavPreset {
         &self,
         addon_id: Uuid,
         cfg: &serde_json::Value,
+        _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
         let media_kind = cfg["media_kind"].as_str().unwrap_or("movie").to_string();
         let endpoint = cfg["endpoint"]

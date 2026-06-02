@@ -66,6 +66,7 @@ impl AddonPreset for YtDlpPreset {
         &self,
         _addon_id: Uuid,
         cfg: &serde_json::Value,
+        config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
         let cookies = cfg
             .get("cookies")
@@ -81,6 +82,7 @@ impl AddonPreset for YtDlpPreset {
             cookies,
             cookies_content,
             executable: PathBuf::from("yt-dlp"),
+            bgutil_script_path: config.bgutil_script_path.clone(),
         }))
     }
 }
@@ -93,6 +95,7 @@ pub struct YtDlpAddon {
     cookies: Option<String>,
     cookies_content: Option<String>,
     executable: PathBuf,
+    bgutil_script_path: PathBuf,
 }
 
 fn ytdlp_extra_args() -> Vec<String> {
@@ -104,6 +107,16 @@ fn ytdlp_extra_args() -> Vec<String> {
 }
 
 impl YtDlpAddon {
+    fn bgutil_args(&self) -> Vec<String> {
+        vec![
+            "--extractor-args".to_string(),
+            format!(
+                "youtubepot-bgutilscript:script_path={}",
+                self.bgutil_script_path.display()
+            ),
+        ]
+    }
+
     fn cookies_args(&self) -> Result<(Vec<String>, Option<NamedTempFile>)> {
         if let Some(path) = self.cookies.as_deref() {
             return Ok((vec!["--cookies".to_string(), path.to_string()], None));
@@ -297,6 +310,7 @@ impl YtDlpAddon {
             ])
             .args(cookie_args)
             .args(ytdlp_extra_args())
+            .args(self.bgutil_args())
             .output()
             .await
             .context("failed to spawn yt-dlp")?;
@@ -372,6 +386,7 @@ impl YtDlpAddon {
             ])
             .args(cookie_args)
             .args(ytdlp_extra_args())
+            .args(self.bgutil_args())
             .output()
             .await
             .context("failed to spawn yt-dlp")?;
@@ -424,6 +439,7 @@ impl YtDlpAddon {
             ])
             .args(cookie_args)
             .args(ytdlp_extra_args())
+            .args(self.bgutil_args())
             .output()
             .await
             .context("failed to spawn yt-dlp for metadata")?;
@@ -538,6 +554,7 @@ impl YtDlpAddon {
             ])
             .args(cookie_args_first)
             .args(ytdlp_extra_args())
+            .args(self.bgutil_args())
             .output()
             .await
             .context("failed to spawn yt-dlp for album search")?;
@@ -591,6 +608,7 @@ impl YtDlpAddon {
                         ])
                         .args(&cookies_args)
                         .args(ytdlp_extra_args())
+                        .args(self.bgutil_args())
                         .output()
                         .await
                         .ok()?;

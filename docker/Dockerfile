@@ -8,6 +8,7 @@ ARG NEO_VER=25.35.35096.9
 ARG IGC1_LEGACY_VER=1.0.17537.24
 ARG NEO_LEGACY_VER=24.35.30872.36
 ARG TARGETARCH
+ARG BGUTIL_POT_VER=0.8.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WEB_PATH=/app/jellyfin-web
@@ -39,7 +40,11 @@ RUN apt-get update \
         libfontconfig1 \
         libfreetype6 \
         libssl3 \
-    && pip3 install --break-system-packages yt-dlp "curl-cffi>=0.10,<0.15" \
+    && pip3 install --break-system-packages yt-dlp "curl-cffi>=0.10,<0.15" yt-dlp-get-pot \
+    && if [ "${TARGETARCH}" = "amd64" ]; then BGUTIL_ARCH="x86_64"; else BGUTIL_ARCH="aarch64"; fi \
+    && curl -fsSL "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/v${BGUTIL_POT_VER}/bgutil-pot-linux-${BGUTIL_ARCH}" \
+        -o /usr/local/bin/bgutil-pot \
+    && chmod +x /usr/local/bin/bgutil-pot \
     && apt-get remove -y --autoremove gnupg \
     && rm -rf /var/lib/apt/lists/*
 

@@ -281,6 +281,7 @@ pub trait AddonPreset: Send + Sync {
         &self,
         addon_id: Uuid,
         cfg: &serde_json::Value,
+        config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>>;
 }
 
@@ -499,7 +500,7 @@ pub struct AddonService {
 }
 
 impl AddonService {
-    pub async fn from_db(db: &SqlitePool) -> Result<Self> {
+    pub async fn from_db(db: &SqlitePool, config: &crate::Config) -> Result<Self> {
         let presets = registered_presets();
         let addons = Addon::list(db).await?;
         let mut runtimes = Vec::new();
@@ -510,7 +511,7 @@ impl AddonService {
                 tracing::warn!(addon_id = %addon.id, kind = %addon.preset.kind, "skipping addon with unknown preset kind");
                 continue;
             };
-            match preset.from_cfg(addon.id, &addon.preset.config) {
+            match preset.from_cfg(addon.id, &addon.preset.config, config) {
                 Ok(kind) => {
                     let (_, raw_types) = kind.available_info().await;
                     let manifest_types = if raw_types.is_empty() {
@@ -543,8 +544,8 @@ impl AddonService {
         })
     }
 
-    pub async fn reload(&self, db: &SqlitePool) -> Result<()> {
-        let new = Self::from_db(db).await?;
+    pub async fn reload(&self, db: &SqlitePool, config: &crate::Config) -> Result<()> {
+        let new = Self::from_db(db, config).await?;
         let mut guard = self.inner.write().await;
         *guard = new.inner.read().await.clone();
         Ok(())

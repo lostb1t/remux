@@ -35,6 +35,7 @@ impl AddonPreset for ProbePreset {
         &self,
         _addon_id: Uuid,
         _cfg: &serde_json::Value,
+        _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
         Ok(Arc::new(ProbeAddon {}))
     }
