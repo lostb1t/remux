@@ -135,11 +135,12 @@ impl DeezerAddon {
                 .await
             {
                 Ok(dz::DeezerResult::Ok(album)) => {
-                    if let Some(track) = album
+                    if let Some((list_pos, track)) = album
                         .tracks
                         .data
                         .iter()
-                        .find(|t| t.id.to_string() == deezer_id)
+                        .enumerate()
+                        .find(|(_, t)| t.id.to_string() == deezer_id)
                     {
                         let released_at =
                             album.release_date.as_deref().and_then(parse_release_date);
@@ -159,6 +160,8 @@ impl DeezerAddon {
                             runtime: track.duration.map(|s| s as i64),
                             released_at,
                             description: Some(format!("by {}", track_artist)),
+                            idx: track.track_position.or(Some(list_pos as i64 + 1)),
+                            parent_idx: track.disk_number,
                             external_ids: db::ExternalIds {
                                 deezer_track: Some(track.id as i64),
                                 deezer_album: Some(album_id as i64),
@@ -205,6 +208,8 @@ impl DeezerAddon {
                     runtime: t.duration.map(|s| s as i64),
                     released_at,
                     description: Some(format!("by {}", t.artist.name)),
+                    idx: t.track_position,
+                    parent_idx: t.disk_number,
                     external_ids: db::ExternalIds {
                         deezer_track: Some(t.id as i64),
                         deezer_album: Some(t.album.id as i64),
@@ -323,7 +328,8 @@ impl DeezerAddon {
             .tracks
             .data
             .into_iter()
-            .map(|track| {
+            .enumerate()
+            .map(|(list_pos, track)| {
                 let track_artist = if track.artist.name.is_empty() {
                     artist_title.clone()
                 } else {
@@ -339,7 +345,7 @@ impl DeezerAddon {
                     runtime: track.duration.map(|s| s as i64),
                     released_at,
                     description: Some(format!("by {}", track_artist)),
-                    idx: track.track_position,
+                    idx: track.track_position.or(Some(list_pos as i64 + 1)),
                     parent_idx: track.disk_number,
                     parent_id: Some(album_id),
                     grandparent_id: artist_id,

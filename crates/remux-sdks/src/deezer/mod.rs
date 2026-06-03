@@ -111,6 +111,8 @@ pub struct Track {
     pub release_date: Option<String>,
     pub artist: ArtistRef,
     pub album: TrackAlbumRef,
+    pub track_position: Option<i64>,
+    pub disk_number: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

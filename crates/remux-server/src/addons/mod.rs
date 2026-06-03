@@ -171,6 +171,8 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
     fill!(trailers);
     fill!(digital_released_at);
     fill!(status);
+    fill!(idx);
+    fill!(parent_idx);
 
     let mut merged_ids = target.external_ids.clone();
     if source.external_ids.imdb.is_some() && (replace || merged_ids.imdb.is_none()) {

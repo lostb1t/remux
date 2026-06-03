@@ -1334,7 +1334,7 @@ impl Media {
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
-            idx = excluded.idx,
+            idx = COALESCE(excluded.idx, media.idx),
             released_at = excluded.released_at,
             digital_released_at = excluded.digital_released_at,
             runtime = excluded.runtime,
@@ -1360,7 +1360,7 @@ impl Media {
             updated_at = excluded.updated_at,
             certification = excluded.certification,
             certification_age = excluded.certification_age,
-            parent_idx = excluded.parent_idx,
+            parent_idx = COALESCE(excluded.parent_idx, media.parent_idx),
             live_start = excluded.live_start,
             live_end = excluded.live_end,
             tvg_id = excluded.tvg_id,
@@ -1595,7 +1595,7 @@ impl Media {
             query_builder.push(
                 " ON CONFLICT DO UPDATE SET
                 title = excluded.title,
-                idx = excluded.idx,
+                idx = COALESCE(excluded.idx, media.idx),
                 released_at = excluded.released_at,
                 digital_released_at = excluded.digital_released_at,
                 runtime = excluded.runtime,
@@ -1615,7 +1615,7 @@ impl Media {
                 certification = excluded.certification,
                 certification_age = excluded.certification_age,
                 parent_id = excluded.parent_id,
-                parent_idx = excluded.parent_idx,
+                parent_idx = COALESCE(excluded.parent_idx, media.parent_idx),
                 live_start = excluded.live_start,
                 live_end = excluded.live_end,
                 tvg_id = excluded.tvg_id,
