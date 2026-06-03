@@ -663,6 +663,7 @@ impl AddonService {
         }))
     }
 
+    #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn refresh_meta(
         &self,
         media: &mut db::Media,
@@ -868,6 +869,7 @@ impl AddonService {
         Ok(vec![])
     }
 
+    #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn fetch_images(
         &self,
         media: &db::Media,
@@ -893,6 +895,7 @@ impl AddonService {
         Ok(out)
     }
 
+    #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn fetch_subtitles(
         &self,
         media: &db::Media,
@@ -996,6 +999,8 @@ impl AddonService {
         }
     }
 
+    #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
+    #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn refresh_streams(
         &self,
         media: &db::Media,
