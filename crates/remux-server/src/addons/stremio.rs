@@ -82,7 +82,7 @@ inventory::submit! {
     AddonPresetRegistration(|| Box::new(StremioPreset))
 }
 
-fn parse_manifest_info(
+pub(super) fn parse_manifest_info(
     manifest: &remux_sdks::stremio::Manifest,
 ) -> (Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>) {
     let mut resources = Vec::new();
@@ -106,6 +106,11 @@ fn parse_manifest_info(
             ResourceType::Stream => {
                 if !resources.contains(&ResourceType::Stream) {
                     resources.push(ResourceType::Stream);
+                }
+            }
+            ResourceType::Search => {
+                if !resources.contains(&ResourceType::Search) {
+                    resources.push(ResourceType::Search);
                 }
             }
             _ => {}
@@ -353,6 +358,9 @@ fn stremio_type_for_kind(kind: &db::MediaKind) -> Option<&'static str> {
         db::MediaKind::Series | db::MediaKind::Season | db::MediaKind::Episode => {
             Some("series")
         }
+        db::MediaKind::Track => Some("track"),
+        db::MediaKind::Album => Some("album"),
+        db::MediaKind::Artist => Some("artist"),
         _ => None,
     }
 }
@@ -1002,6 +1010,36 @@ async fn stremio_streams(
                 format!("{}:{}:{}", series_id, season, episode),
                 tmdb_fb,
             )
+        }
+        db::MediaKind::Track => {
+            let id = media
+                .external_ids
+                .deezer_track
+                .map(|n| format!("deezer:{n}"))
+                .ok_or_else(|| {
+                    anyhow!("track has no deezer ID for Stremio stream lookup")
+                })?;
+            (sdks::stremio::MediaType::Track, id, None)
+        }
+        db::MediaKind::Album => {
+            let id = media
+                .external_ids
+                .deezer_album
+                .map(|n| format!("deezer:{n}"))
+                .ok_or_else(|| {
+                    anyhow!("album has no deezer ID for Stremio stream lookup")
+                })?;
+            (sdks::stremio::MediaType::Album, id, None)
+        }
+        db::MediaKind::Artist => {
+            let id = media
+                .external_ids
+                .deezer_artist
+                .map(|n| format!("deezer:{n}"))
+                .ok_or_else(|| {
+                    anyhow!("artist has no deezer ID for Stremio stream lookup")
+                })?;
+            (sdks::stremio::MediaType::Artist, id, None)
         }
         _ => {
             let id = media.external_ids.imdb.clone().ok_or_else(|| {

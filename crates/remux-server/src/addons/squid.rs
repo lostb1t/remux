@@ -262,9 +262,9 @@ impl AddonPreset for SquidPreset {
     }
 }
 
-inventory::submit! {
-    AddonPresetRegistration(|| Box::new(SquidPreset))
-}
+// inventory::submit! {
+//     AddonPresetRegistration(|| Box::new(SquidPreset))
+// }
 
 // --- Addon instance ---
 

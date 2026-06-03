@@ -204,6 +204,9 @@ impl From<&MediaKind> for sdks::stremio::MediaType {
                 sdks::stremio::MediaType::Series
             }
             MediaKind::TvChannel | MediaKind::TvProgram => sdks::stremio::MediaType::Tv,
+            MediaKind::Track => sdks::stremio::MediaType::Track,
+            MediaKind::Album => sdks::stremio::MediaType::Album,
+            MediaKind::Artist => sdks::stremio::MediaType::Artist,
             _ => sdks::stremio::MediaType::Movie,
         }
     }

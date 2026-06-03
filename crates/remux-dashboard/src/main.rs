@@ -7253,7 +7253,21 @@ fn AddonOptionField(
                 },
             }
             if let Some(d) = &desc {
-                div { class: "field-hint", "{d}" }
+                div { class: "field-hint",
+                    for token in d.split_whitespace() {
+                        if token.starts_with("https://") || token.starts_with("http://") {
+                            a {
+                                href: "{token}",
+                                target: "_blank",
+                                rel: "noopener noreferrer",
+                                "{token}"
+                            }
+                            " "
+                        } else {
+                            "{token} "
+                        }
+                    }
+                }
             }
         }
     }

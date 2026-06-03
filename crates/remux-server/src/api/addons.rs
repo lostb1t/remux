@@ -121,33 +121,38 @@ pub async fn create_addon(
         .context_bad_request("Bad Request", "Invalid addon configuration")?;
 
     // Default resources/types to the live available set (e.g. upstream manifest for
-    // Stremio), falling back to the preset's static metadata if unavailable.
+    // Stremio/Eclipse). Call available_info() once — addons that fetch a manifest
+    // override this single method, not the separate available_resources/types helpers.
+    // If the caller provided explicit values those take precedence. If the live fetch
+    // returns nothing and the caller provided nothing, fail rather than silently storing
+    // preset defaults — those would persist wrong values into the DB.
     let metadata = preset.metadata();
-    let avail_resources = kind.available_resources().await;
-    let avail_types = kind.available_types().await;
+    let (avail_resources, avail_types) = kind.available_info().await;
 
     let resources = if payload.resources.is_empty() {
-        if !avail_resources.is_empty() {
-            avail_resources
-        } else {
-            metadata.supported_resources
+        if avail_resources.is_empty() && !metadata.supported_resources.is_empty() {
+            return Err(anyhow::anyhow!("addon manifest returned no resources")
+                .context_bad_request(
+                    "Bad Request",
+                    "Could not fetch addon capabilities — is the manifest URL reachable?",
+                ));
         }
+        avail_resources
     } else {
         payload.resources
     };
     let types: Vec<DbMediaKind> = if payload.types.is_empty() {
-        if !avail_types.is_empty() {
-            avail_types
-                .into_iter()
-                .filter_map(|t| DbMediaKind::try_from(t).ok())
-                .collect()
-        } else {
-            metadata
-                .supported_types
-                .into_iter()
-                .map(DbMediaKind::from)
-                .collect()
+        if avail_types.is_empty() && !metadata.supported_types.is_empty() {
+            return Err(anyhow::anyhow!("addon manifest returned no types")
+                .context_bad_request(
+                    "Bad Request",
+                    "Could not fetch addon capabilities — is the manifest URL reachable?",
+                ));
         }
+        avail_types
+            .into_iter()
+            .filter_map(|t| DbMediaKind::try_from(t).ok())
+            .collect()
     } else {
         payload.types.into_iter().map(DbMediaKind::from).collect()
     };

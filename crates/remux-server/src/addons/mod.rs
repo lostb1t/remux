@@ -3,6 +3,7 @@
 
 pub mod addon;
 pub mod deezer;
+pub mod eclipse;
 pub mod introdb;
 pub mod iptv;
 pub mod lrclib;
