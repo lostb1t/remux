@@ -139,22 +139,6 @@ fn add_common_ratings(ratings: &mut Vec<ParentalRating>) {
     if !ratings.iter().any(|r| r.rating_score.is_none()) {
         ratings.push(ParentalRating::unrated("Unrated"));
     }
-    for (name, score) in [
-        ("Approved", 0),
-        ("10", 10),
-        ("13", 13),
-        ("14", 14),
-        ("21", 21),
-        ("XXX", 1000),
-        ("Banned", 1001),
-    ] {
-        if !ratings
-            .iter()
-            .any(|r| r.rating_score.as_ref().map(|s| s.score) == Some(score))
-        {
-            ratings.push(ParentalRating::scored(name, score, None));
-        }
-    }
 }
 
 pub fn resolve_rating_score(

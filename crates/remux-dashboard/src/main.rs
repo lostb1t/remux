@@ -2723,6 +2723,32 @@ fn FilterRuleRow(
     let vv1 = value_val.clone();
     let vv2 = value_val.clone();
 
+    // Group consecutive entries with the same (score, sub_score) — mirrors how Jellyfin clients display them.
+    let grouped_ratings: Vec<(i32, String)> = {
+        let ratings = parental_ratings.read();
+        let mut groups: Vec<(i32, i32, String)> = vec![];
+        for rating in ratings.iter().filter(|r| r.value.is_some()) {
+            let score = rating.value.unwrap();
+            let sub = rating
+                .rating_score
+                .as_ref()
+                .and_then(|s| s.sub_score)
+                .unwrap_or(0);
+            if let Some(last) = groups.last_mut() {
+                if last.0 == score && last.1 == sub {
+                    last.2.push('/');
+                    last.2.push_str(&rating.name);
+                    continue;
+                }
+            }
+            groups.push((score, sub, rating.name.clone()));
+        }
+        groups
+            .into_iter()
+            .map(|(score, _, label)| (score, label))
+            .collect()
+    };
+
     rsx! {
         div { style: "display:flex;align-items:center;gap:6px",
             // Field selector
@@ -2789,11 +2815,11 @@ fn FilterRuleRow(
                         }
                     },
                     option { value: "", selected: value_val.is_empty(), disabled: true, "Select rating" }
-                    for rating in parental_ratings.read().iter().filter(|r| r.value.is_some()) {
+                    for (score, label) in grouped_ratings {
                         option {
-                            value: "{rating.value.unwrap_or_default()}",
-                            selected: value_val == rating.value.unwrap_or_default().to_string(),
-                            "{rating.name}"
+                            value: "{score}",
+                            selected: value_val == score.to_string(),
+                            "{label}"
                         }
                     }
                 }
