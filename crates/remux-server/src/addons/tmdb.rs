@@ -163,7 +163,7 @@ fn tmdb_rating_label(country: &str, rating: &str) -> String {
     {
         format!("FSK-{rating}")
     } else {
-        format!("{}-{rating}", country.to_uppercase())
+        rating.to_string()
     }
 }
 
