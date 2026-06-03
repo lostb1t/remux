@@ -304,6 +304,15 @@ async fn items_playbackinfo_inner(
             if bitrate_exceeded {
                 reasons.insert(api::TranscodeReason::ContainerBitrateExceedsLimit);
             }
+            // RTSP streams can only be served via ffmpeg — never direct-playable.
+            if matches!(
+                sm.stream_info.as_ref().map(|si| &si.descriptor),
+                Some(crate::stream::StreamDescriptor::Rtsp { .. })
+            ) {
+                reasons.insert(api::TranscodeReason::ContainerNotSupported(
+                    "rtsp".to_string(),
+                ));
+            }
             reasons
         };
 
@@ -867,24 +876,6 @@ async fn videos_stream_inner(
         db::Media::get_by_id(&state.ctx.db, &q.media_source_id.unwrap_or(id))
             .await?
             .context_not_found("not found", "not found")?;
-
-    // IPTV channels: proxy the stream so redirects are handled server-side.
-    if media.kind == db::MediaKind::TvChannel {
-        let url = media
-            .stream_info
-            .as_ref()
-            .and_then(|si| si.descriptor.as_http_url().map(str::to_owned))
-            .context_not_found("missing url", "channel has no stream url")?;
-        let upstream = reqwest::get(&url).await.map_err(anyhow::Error::from)?;
-        let status = upstream.status();
-        let content_type = upstream.headers().get(http::header::CONTENT_TYPE).cloned();
-        let body = Body::from_stream(upstream.bytes_stream());
-        let mut resp = Response::builder().status(status);
-        if let Some(ct) = content_type {
-            resp = resp.header(http::header::CONTENT_TYPE, ct);
-        }
-        return Ok(resp.body(body).unwrap());
-    }
 
     if media.kind == db::MediaKind::Movie
         || media.kind == db::MediaKind::Episode

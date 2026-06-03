@@ -1000,6 +1000,9 @@ impl AddonService {
             crate::stream::StreamDescriptor::Local(path) => {
                 Some(format!("local:{}", path.display()))
             }
+            crate::stream::StreamDescriptor::Rtsp { url } => {
+                Some(format!("rtsp:{url}"))
+            }
             crate::stream::StreamDescriptor::Opendal { addon_id, path } => {
                 Some(format!("opendal:{addon_id}:{path}"))
             }

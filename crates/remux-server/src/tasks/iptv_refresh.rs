@@ -110,9 +110,14 @@ impl Task for IptvRefreshTask {
                             title: ch.name.clone(),
                             kind: db::MediaKind::TvChannel,
                             stream_info: Some(crate::stream::StreamInfo {
-                                descriptor: crate::stream::StreamDescriptor::http(
-                                    ch.url.clone(),
-                                ),
+                                descriptor: {
+                                    let url = ch.url.clone();
+                                    if url.starts_with("rtsp://") || url.starts_with("rtsps://") {
+                                        crate::stream::StreamDescriptor::rtsp(url)
+                                    } else {
+                                        crate::stream::StreamDescriptor::http(url)
+                                    }
+                                },
                                 ..Default::default()
                             }),
                             tvg_id: ch.tvg_id.clone(),

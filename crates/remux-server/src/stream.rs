@@ -30,6 +30,9 @@ pub enum StreamDescriptor {
         response_headers: std::collections::HashMap<String, String>,
     },
     Local(PathBuf),
+    Rtsp {
+        url: String,
+    },
     Torrent {
         info_hash: String,
         /// Filename hint for multi-file torrents (matched by name).
@@ -65,12 +68,16 @@ impl StreamDescriptor {
         }
     }
 
+    pub fn rtsp(url: impl Into<String>) -> Self {
+        Self::Rtsp { url: url.into() }
+    }
+
     /// Input URL/path for ffprobe and ffmpeg (server-side tools).
     /// `Local` → raw filesystem path. `Http` → URL as-is.
     /// `Torrent`/`Opendal` → our stream proxy, which resolves them on demand.
     pub fn server_input(&self, media_id: Uuid, port: u16) -> String {
         match self {
-            Self::Http { url, .. } => url.clone(),
+            Self::Http { url, .. } | Self::Rtsp { url } => url.clone(),
             Self::Local(path) => path.to_string_lossy().into_owned(),
             Self::Torrent { .. } | Self::Opendal { .. } => {
                 format!("http://127.0.0.1:{}/stream/{}", port, media_id)
@@ -131,6 +138,9 @@ impl StreamDescriptor {
                 file_idx,
                 trackers,
             }),
+            Self::Rtsp { .. } => {
+                panic!("Rtsp descriptors must be served through the transcode path")
+            }
             Self::Opendal { .. } => {
                 panic!("Opendal descriptors must be served through their addon")
             }
