@@ -7248,9 +7248,86 @@ fn AddonOptionField(
                         }
                     }
                 },
-                AddonOptionType::MultiSelect { .. } | AddonOptionType::StringList => rsx! {
-                    div { class: "field-hint", "(complex inputs not yet supported in dashboard)" }
+                AddonOptionType::MultiSelect { .. } => rsx! {
+                    div { class: "field-hint", "(multi-select not yet supported in dashboard)" }
                 },
+                AddonOptionType::StringList => {
+                    let id_list = id.clone();
+                    let id_add = id.clone();
+                    let current_list: Vec<String> = values
+                        .read()
+                        .get(&id)
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    rsx! {
+                        div { class: "string-list-field",
+                            for (i , item) in current_list.iter().enumerate() {
+                                {
+                                    let item = item.clone();
+                                    let id_input = id_list.clone();
+                                    let id_remove = id_list.clone();
+                                    rsx! {
+                                        div {
+                                            class: "string-list-row",
+                                            style: "display:flex;gap:6px;margin-bottom:4px",
+                                            input {
+                                                class: "form-input",
+                                                r#type: "text",
+                                                value: "{item}",
+                                                oninput: move |e| {
+                                                    let mut map = values.write();
+                                                    let arr = map
+                                                        .entry(id_input.clone())
+                                                        .or_insert_with(|| serde_json::Value::Array(vec![]));
+                                                    if let Some(arr) = arr.as_array_mut() {
+                                                        if let Some(slot) = arr.get_mut(i) {
+                                                            *slot = serde_json::Value::String(e.value());
+                                                        }
+                                                    }
+                                                },
+                                            }
+                                            button {
+                                                class: "btn btn-ghost btn-sm",
+                                                r#type: "button",
+                                                onclick: move |_| {
+                                                    let mut map = values.write();
+                                                    if let Some(arr) = map.get_mut(&id_remove) {
+                                                        if let Some(arr) = arr.as_array_mut() {
+                                                            if i < arr.len() {
+                                                                arr.remove(i);
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                "×"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            button {
+                                class: "btn btn-ghost btn-sm",
+                                r#type: "button",
+                                style: "margin-top:2px",
+                                onclick: move |_| {
+                                    let mut map = values.write();
+                                    let arr = map
+                                        .entry(id_add.clone())
+                                        .or_insert_with(|| serde_json::Value::Array(vec![]));
+                                    if let Some(arr) = arr.as_array_mut() {
+                                        arr.push(serde_json::Value::String(String::new()));
+                                    }
+                                },
+                                "+ Add"
+                            }
+                        }
+                    }
+                }
             }
             if let Some(d) = &desc {
                 div { class: "field-hint",

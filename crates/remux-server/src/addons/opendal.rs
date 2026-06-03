@@ -52,6 +52,35 @@ fn media_kind_option() -> AddonOption {
     }
 }
 
+fn cfg_paths_local(cfg: &serde_json::Value) -> Result<Vec<String>> {
+    if let Some(arr) = cfg["paths"].as_array() {
+        let v: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().filter(|s| !s.is_empty()).map(str::to_string))
+            .collect();
+        if !v.is_empty() {
+            return Ok(v);
+        }
+    }
+    if let Some(p) = cfg["path"].as_str().filter(|s| !s.is_empty()) {
+        return Ok(vec![p.to_string()]);
+    }
+    anyhow::bail!("opendal-local: at least one path is required")
+}
+
+fn cfg_paths_webdav(cfg: &serde_json::Value) -> Vec<String> {
+    if let Some(arr) = cfg["paths"].as_array() {
+        let v: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().filter(|s| !s.is_empty()).map(str::to_string))
+            .collect();
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    vec!["/".to_string()]
+}
+
 // ---------------------------------------------------------------------------
 // OpendalLocalPreset
 // ---------------------------------------------------------------------------
@@ -79,14 +108,12 @@ impl AddonPreset for OpendalLocalPreset {
             options: vec![
                 media_kind_option(),
                 AddonOption {
-                    id: "path".to_string(),
-                    name: "Path".to_string(),
-                    description: Some(
-                        "Absolute path to the root directory to scan.".to_string(),
-                    ),
+                    id: "paths".to_string(),
+                    name: "Paths".to_string(),
+                    description: Some("Absolute paths to scan.".to_string()),
                     required: true,
                     default: None,
-                    kind: AddonOptionType::String,
+                    kind: AddonOptionType::StringList,
                 },
             ],
         }
@@ -99,19 +126,16 @@ impl AddonPreset for OpendalLocalPreset {
         _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
         let media_kind = cfg["media_kind"].as_str().unwrap_or("movie").to_string();
-        let path = cfg["path"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("opendal-local: path is required"))?;
-
+        let paths = cfg_paths_local(cfg)?;
+        let first = paths.first().cloned().unwrap_or_default();
         let operator =
-            opendal::Operator::new(opendal::services::Fs::default().root(path))?
+            opendal::Operator::new(opendal::services::Fs::default().root(&first))?
                 .finish();
 
         Ok(Arc::new(OpendalAddon {
             addon_id,
             operator: Arc::new(operator),
-            root: path.to_string(),
+            root: first,
             backend: "local".to_string(),
             media_kind,
         }))
@@ -171,6 +195,14 @@ impl AddonPreset for OpendalWebdavPreset {
                     required: false,
                     default: None,
                     kind: AddonOptionType::Password,
+                },
+                AddonOption {
+                    id: "paths".to_string(),
+                    name: "Paths".to_string(),
+                    description: Some("Sub-paths to scan (default: /).".to_string()),
+                    required: false,
+                    default: None,
+                    kind: AddonOptionType::StringList,
                 },
             ],
         }
@@ -425,13 +457,8 @@ impl AddonKind for OpendalAddon {
             })
             .map(|f| {
                 let descriptor = if self.backend == "local" {
-                    let full = format!(
-                        "{}/{}",
-                        self.root.trim_end_matches('/'),
-                        f.path.trim_start_matches('/')
-                    );
                     crate::stream::StreamDescriptor::Local(std::path::PathBuf::from(
-                        full,
+                        &f.path,
                     ))
                 } else {
                     crate::stream::StreamDescriptor::Opendal {
@@ -553,8 +580,7 @@ async fn scan_addon(
 ) -> Result<()> {
     let cfg = &addon.preset.config;
     let media_kind = cfg["media_kind"].as_str().unwrap_or("movie").to_string();
-
-    let operator = build_operator(cfg, &addon.preset.kind)?;
+    let is_local = addon.preset.kind == "opendal-local";
 
     info!(addon = %addon.name, kind = %addon.preset.kind, media_kind, "opendal: scanning");
 
@@ -566,173 +592,211 @@ async fn scan_addon(
 
     let track_num_re = Regex::new(r"^(\d{1,3})[.\s\-_\[\]]+").unwrap();
 
-    let mut lister = operator.lister_with("/").recursive(true).await?;
+    // Build (operator, list_from, path_prefix) for each configured path.
+    // Local: one Fs operator per root, list from "/", prefix gives absolute stored path.
+    // WebDAV: one shared operator, list from each sub-path, no prefix needed.
+    let scan_roots: Vec<(opendal::Operator, String, String)> = if is_local {
+        cfg_paths_local(cfg)?
+            .into_iter()
+            .map(|p| {
+                let op =
+                    opendal::Operator::new(opendal::services::Fs::default().root(&p))?
+                        .finish();
+                Ok((op, "/".to_string(), p))
+            })
+            .collect::<Result<_>>()?
+    } else {
+        let op = build_webdav_operator(cfg)?;
+        cfg_paths_webdav(cfg)
+            .into_iter()
+            .map(|p| (op.clone(), p, String::new()))
+            .collect()
+    };
+
     let mut seen_ids: Vec<Uuid> = Vec::new();
     let mut upserted = 0usize;
 
-    while let Some(entry) = lister.try_next().await? {
-        if entry.metadata().mode() != EntryMode::FILE {
-            continue;
-        }
+    for (operator, list_from, path_prefix) in scan_roots {
+        let mut lister = operator.lister_with(&list_from).recursive(true).await?;
 
-        let path = entry.path().to_string();
-        let name = entry.name().to_string();
-        let ext = std::path::Path::new(&name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
+        while let Some(entry) = lister.try_next().await? {
+            if entry.metadata().mode() != EntryMode::FILE {
+                continue;
+            }
 
-        if !extensions.contains(&ext.as_str()) {
-            continue;
-        }
+            let entry_rel = entry.path().to_string();
+            let path = if path_prefix.is_empty() {
+                entry_rel.clone()
+            } else {
+                format!(
+                    "{}/{}",
+                    path_prefix.trim_end_matches('/'),
+                    entry_rel.trim_start_matches('/')
+                )
+            };
+            let name = entry.name().to_string();
+            let ext = std::path::Path::new(&name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
 
-        let row_id = common::get_stable_uuid(format!("{}:{}", addon.id, path));
-        seen_ids.push(row_id);
+            if !extensions.contains(&ext.as_str()) {
+                continue;
+            }
 
-        let stored_path: String = if ext == "strm" {
-            match operator.read(&path).await {
-                Ok(buf) => {
-                    let url =
-                        String::from_utf8_lossy(&buf.to_bytes()).trim().to_string();
-                    if url.is_empty() {
-                        warn!(path, "opendal: empty strm file, skipping");
+            let row_id = common::get_stable_uuid(format!("{}:{}", addon.id, path));
+            seen_ids.push(row_id);
+
+            let stored_path: String = if ext == "strm" {
+                match operator.read(&entry_rel).await {
+                    Ok(buf) => {
+                        let url =
+                            String::from_utf8_lossy(&buf.to_bytes()).trim().to_string();
+                        if url.is_empty() {
+                            warn!(path, "opendal: empty strm file, skipping");
+                            continue;
+                        }
+                        url
+                    }
+                    Err(e) => {
+                        warn!(path, error = %e, "opendal: failed to read strm, skipping");
                         continue;
                     }
-                    url
                 }
-                Err(e) => {
-                    warn!(path, error = %e, "opendal: failed to read strm, skipping");
-                    continue;
-                }
-            }
-        } else {
-            path.clone()
-        };
+            } else {
+                path.clone()
+            };
 
-        let stem = std::path::Path::new(&name)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&name)
-            .to_string();
+            let stem = std::path::Path::new(&name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&name)
+                .to_string();
 
-        let jellyfin_ids = db::ExternalIds::from_path(&path);
+            let jellyfin_ids = db::ExternalIds::from_path(&path);
 
-        let (title, season, episode, track_number, year, imdb_id) = match media_kind
-            .as_str()
-        {
-            "track" => {
-                let track_number = track_num_re
-                    .captures(&stem)
-                    .and_then(|c| c.get(1))
-                    .and_then(|m| m.as_str().parse::<i64>().ok());
-                let clean_stem = if track_number.is_some() {
-                    track_num_re.replace(&stem, "").into_owned()
-                } else {
-                    stem.clone()
-                };
-                let parsed = hunch::hunch(&clean_stem);
-                let title = parsed.title().unwrap_or(clean_stem.as_str()).to_string();
-                (Some(title), None, None, track_number, None, None)
-            }
-            "episode" => {
-                let parsed = hunch::hunch(&stem);
-                let season = parsed.season().map(|s| s as i64);
-                let episode = parsed.episode().map(|e| e as i64);
-                let year = parsed.year().map(|y| y as i64);
-                let clean_title = parsed.title().unwrap_or(stem.as_str()).to_string();
-
-                let existing_imdb = fetch_existing_imdb(ctx, addon.id, &path).await?;
-                let imdb_id = if let Some(id) = existing_imdb {
-                    Some(id)
-                } else if !jellyfin_ids.is_empty() {
-                    if let Some(client) = tmdb {
-                        crate::addons::tmdb::resolve_imdb_from_ids(
-                            &jellyfin_ids,
-                            true,
-                            client,
-                        )
-                        .await
+            let (title, season, episode, track_number, year, imdb_id) = match media_kind
+                .as_str()
+            {
+                "track" => {
+                    let track_number = track_num_re
+                        .captures(&stem)
+                        .and_then(|c| c.get(1))
+                        .and_then(|m| m.as_str().parse::<i64>().ok());
+                    let clean_stem = if track_number.is_some() {
+                        track_num_re.replace(&stem, "").into_owned()
                     } else {
-                        jellyfin_ids.imdb.clone()
-                    }
-                } else {
-                    resolve_imdb(tmdb, &clean_title, None, true).await
-                };
-
-                if imdb_id.is_none() {
-                    debug!(path, title = %clean_title, "opendal: no IMDB id, skipping");
-                    continue;
+                        stem.clone()
+                    };
+                    let parsed = hunch::hunch(&clean_stem);
+                    let title =
+                        parsed.title().unwrap_or(clean_stem.as_str()).to_string();
+                    (Some(title), None, None, track_number, None, None)
                 }
+                "episode" => {
+                    let parsed = hunch::hunch(&stem);
+                    let season = parsed.season().map(|s| s as i64);
+                    let episode = parsed.episode().map(|e| e as i64);
+                    let year = parsed.year().map(|y| y as i64);
+                    let clean_title =
+                        parsed.title().unwrap_or(stem.as_str()).to_string();
 
-                (Some(clean_title), season, episode, None, year, imdb_id)
-            }
-            _ => {
-                // movie
-                let parsed = hunch::hunch(&stem);
-                let year = parsed.year().map(|y| y as i64);
-                let clean_title = parsed.title().unwrap_or(stem.as_str()).to_string();
-
-                let existing_imdb = fetch_existing_imdb(ctx, addon.id, &path).await?;
-                let imdb_id = if let Some(id) = existing_imdb {
-                    Some(id)
-                } else if !jellyfin_ids.is_empty() {
-                    if let Some(client) = tmdb {
-                        crate::addons::tmdb::resolve_imdb_from_ids(
-                            &jellyfin_ids,
-                            false,
-                            client,
-                        )
-                        .await
+                    let existing_imdb =
+                        fetch_existing_imdb(ctx, addon.id, &path).await?;
+                    let imdb_id = if let Some(id) = existing_imdb {
+                        Some(id)
+                    } else if !jellyfin_ids.is_empty() {
+                        if let Some(client) = tmdb {
+                            crate::addons::tmdb::resolve_imdb_from_ids(
+                                &jellyfin_ids,
+                                true,
+                                client,
+                            )
+                            .await
+                        } else {
+                            jellyfin_ids.imdb.clone()
+                        }
                     } else {
-                        jellyfin_ids.imdb.clone()
+                        resolve_imdb(tmdb, &clean_title, None, true).await
+                    };
+
+                    if imdb_id.is_none() {
+                        debug!(path, title = %clean_title, "opendal: no IMDB id, skipping");
+                        continue;
                     }
-                } else {
-                    resolve_imdb(tmdb, &clean_title, year, false).await
-                };
 
-                if imdb_id.is_none() {
-                    debug!(path, title = %clean_title, "opendal: no IMDB id, skipping");
-                    continue;
+                    (Some(clean_title), season, episode, None, year, imdb_id)
                 }
+                _ => {
+                    // movie
+                    let parsed = hunch::hunch(&stem);
+                    let year = parsed.year().map(|y| y as i64);
+                    let clean_title =
+                        parsed.title().unwrap_or(stem.as_str()).to_string();
 
-                (Some(clean_title), None, None, None, year, imdb_id)
-            }
-        };
+                    let existing_imdb =
+                        fetch_existing_imdb(ctx, addon.id, &path).await?;
+                    let imdb_id = if let Some(id) = existing_imdb {
+                        Some(id)
+                    } else if !jellyfin_ids.is_empty() {
+                        if let Some(client) = tmdb {
+                            crate::addons::tmdb::resolve_imdb_from_ids(
+                                &jellyfin_ids,
+                                false,
+                                client,
+                            )
+                            .await
+                        } else {
+                            jellyfin_ids.imdb.clone()
+                        }
+                    } else {
+                        resolve_imdb(tmdb, &clean_title, year, false).await
+                    };
 
-        let size = Some(entry.metadata().content_length() as i64);
-        let now = Utc::now().naive_utc().to_string();
+                    if imdb_id.is_none() {
+                        debug!(path, title = %clean_title, "opendal: no IMDB id, skipping");
+                        continue;
+                    }
 
-        sqlx::query(
-            "INSERT INTO opendal_files \
-             (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET \
-               path = excluded.path, \
-               name = excluded.name, media_kind = excluded.media_kind, \
-               title = excluded.title, \
-               imdb_id = COALESCE(opendal_files.imdb_id, excluded.imdb_id), \
-               season = excluded.season, episode = excluded.episode, \
-               track_number = excluded.track_number, \
-               year = excluded.year, size = excluded.size, scanned_at = excluded.scanned_at",
-        )
-        .bind(row_id)
-        .bind(addon.id)
-        .bind(&media_kind)
-        .bind(&stored_path)
-        .bind(&name)
-        .bind(title.as_deref())
-        .bind(imdb_id.as_deref())
-        .bind(season)
-        .bind(episode)
-        .bind(track_number)
-        .bind(year)
-        .bind(size)
-        .bind(&now)
-        .execute(&ctx.db)
-        .await?;
+                    (Some(clean_title), None, None, None, year, imdb_id)
+                }
+            };
 
-        upserted += 1;
+            let size = Some(entry.metadata().content_length() as i64);
+            let now = Utc::now().naive_utc().to_string();
+
+            sqlx::query(
+                "INSERT INTO opendal_files \
+                 (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                   path = excluded.path, \
+                   name = excluded.name, media_kind = excluded.media_kind, \
+                   title = excluded.title, \
+                   imdb_id = COALESCE(opendal_files.imdb_id, excluded.imdb_id), \
+                   season = excluded.season, episode = excluded.episode, \
+                   track_number = excluded.track_number, \
+                   year = excluded.year, size = excluded.size, scanned_at = excluded.scanned_at",
+            )
+            .bind(row_id)
+            .bind(addon.id)
+            .bind(&media_kind)
+            .bind(&stored_path)
+            .bind(&name)
+            .bind(title.as_deref())
+            .bind(imdb_id.as_deref())
+            .bind(season)
+            .bind(episode)
+            .bind(track_number)
+            .bind(year)
+            .bind(size)
+            .bind(&now)
+            .execute(&ctx.db)
+            .await?;
+
+            upserted += 1;
+        }
     }
 
     let deleted = prune_stale_paths(ctx, addon.id, &seen_ids).await?;
@@ -747,37 +811,19 @@ async fn scan_addon(
     Ok(())
 }
 
-fn build_operator(
-    cfg: &serde_json::Value,
-    preset_kind: &str,
-) -> Result<opendal::Operator> {
-    match preset_kind {
-        "opendal-webdav" => {
-            let endpoint = cfg["endpoint"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow::anyhow!("opendal-webdav: endpoint required"))?;
-            let mut builder = opendal::services::Webdav::default().endpoint(endpoint);
-            if let Some(u) = cfg["username"].as_str().filter(|s| !s.is_empty()) {
-                builder = builder.username(u);
-            }
-            if let Some(p) = cfg["password"].as_str().filter(|s| !s.is_empty()) {
-                builder = builder.password(p);
-            }
-            Ok(opendal::Operator::new(builder)?.finish())
-        }
-        "opendal-local" => {
-            let path = cfg["path"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow::anyhow!("opendal-local: path required"))?;
-            Ok(
-                opendal::Operator::new(opendal::services::Fs::default().root(path))?
-                    .finish(),
-            )
-        }
-        other => anyhow::bail!("opendal: unknown preset kind {:?}", other),
+fn build_webdav_operator(cfg: &serde_json::Value) -> Result<opendal::Operator> {
+    let endpoint = cfg["endpoint"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("opendal-webdav: endpoint required"))?;
+    let mut builder = opendal::services::Webdav::default().endpoint(endpoint);
+    if let Some(u) = cfg["username"].as_str().filter(|s| !s.is_empty()) {
+        builder = builder.username(u);
     }
+    if let Some(p) = cfg["password"].as_str().filter(|s| !s.is_empty()) {
+        builder = builder.password(p);
+    }
+    Ok(opendal::Operator::new(builder)?.finish())
 }
 
 async fn fetch_existing_imdb(
