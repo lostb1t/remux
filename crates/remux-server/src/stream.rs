@@ -153,6 +153,9 @@ pub struct StreamInfo {
     pub filename: Option<String>,
     pub name: Option<String>,
     pub description: Option<String>,
+    /// Addon that produced this stream (stamped by the service layer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     pub seeders: Option<i64>,
     pub size: Option<i64>,
     pub duration: Option<i64>,

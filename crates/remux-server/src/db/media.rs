@@ -3732,6 +3732,7 @@ impl From<sdks::stremio::Stream> for Media {
             duration: source.duration,
             subtitles: source.subtitles.clone(),
             probe_data: None,
+            source: None,
         });
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`

@@ -962,8 +962,15 @@ impl AddonService {
             .into_iter()
             .map(|(name, addon)| async move {
                 match addon.get_streams(media, ctx).await {
-                    Ok(streams) => {
-                        tracing::debug!(addon = %name, count = streams.len(), "addon returned streams");
+                    Ok(mut streams) => {
+                        if streams.is_empty() {
+                            tracing::debug!(addon = %name, "addon: no streams");
+                        } else {
+                            tracing::debug!(addon = %name, count = streams.len(), "addon: streams found");
+                            for s in &mut streams {
+                                s.source = Some(name.clone());
+                            }
+                        }
                         streams
                     }
                     Err(e) => {
@@ -999,7 +1006,6 @@ impl AddonService {
         }
     }
 
-    #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn refresh_streams(
         &self,
@@ -1051,7 +1057,15 @@ impl AddonService {
             })
             .collect();
 
-        info!(streams = deduped.len(), elapsed = ?instant.elapsed(), "streams synced");
+        let sources: Vec<&str> = {
+            let mut seen = std::collections::HashSet::new();
+            deduped
+                .iter()
+                .filter_map(|m| m.stream_info.as_ref()?.source.as_deref())
+                .filter(|s| seen.insert(*s))
+                .collect()
+        };
+        info!(streams = deduped.len(), ?sources, elapsed = ?instant.elapsed(), "streams synced");
         if deduped.is_empty() {
             return Ok(());
         }
