@@ -309,12 +309,26 @@ impl Task for JellyfinImportTask {
                      ON CONFLICT(user_id, media_id) DO UPDATE SET \
                        media_raw = excluded.media_raw, \
                        favorite = excluded.favorite, \
-                       play_count = excluded.play_count, \
-                       played_at = excluded.played_at, \
-                       playback_position = excluded.playback_position, \
-                       last_played_at = excluded.last_played_at \
-                     WHERE excluded.last_played_at > user_media_state.last_played_at \
-                        OR user_media_state.last_played_at IS NULL",
+                       play_count = CASE \
+                         WHEN excluded.last_played_at > user_media_state.last_played_at \
+                           OR user_media_state.last_played_at IS NULL \
+                         THEN excluded.play_count \
+                         ELSE user_media_state.play_count END, \
+                       played_at = CASE \
+                         WHEN excluded.last_played_at > user_media_state.last_played_at \
+                           OR user_media_state.last_played_at IS NULL \
+                         THEN excluded.played_at \
+                         ELSE user_media_state.played_at END, \
+                       playback_position = CASE \
+                         WHEN excluded.last_played_at > user_media_state.last_played_at \
+                           OR user_media_state.last_played_at IS NULL \
+                         THEN excluded.playback_position \
+                         ELSE user_media_state.playback_position END, \
+                       last_played_at = CASE \
+                         WHEN excluded.last_played_at > user_media_state.last_played_at \
+                           OR user_media_state.last_played_at IS NULL \
+                         THEN excluded.last_played_at \
+                         ELSE user_media_state.last_played_at END",
                 )
                 .bind(state.user_id)
                 .bind(state.media_id)
