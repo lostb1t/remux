@@ -573,6 +573,9 @@ pub struct JellyfinItem {
     pub provider_ids: Option<HashMap<String, String>>,
     pub series_provider_ids: Option<HashMap<String, String>>,
     pub user_data: Option<JellyfinUserData>,
+    pub overview: Option<String>,
+    pub production_year: Option<i64>,
+    pub run_time_ticks: Option<i64>,
 }
 
 impl ServerConfiguration {
@@ -3742,9 +3745,9 @@ impl Endpoint for GetJellyfinUserItems {
             ("Recursive".into(), "true".into()),
             (
                 "Fields".into(),
-                "ProviderIds,SeriesProviderIds,UserData,SeriesId".into(),
+                "ProviderIds,SeriesProviderIds,UserData,SeriesId,Overview,ProductionYear,RunTimeTicks".into(),
             ),
-            ("IncludeItemTypes".into(), "Movie,Episode".into()),
+            ("IncludeItemTypes".into(), "Movie,Series,Episode".into()),
             ("Filters".into(), self.filter.into()),
         ]
     }

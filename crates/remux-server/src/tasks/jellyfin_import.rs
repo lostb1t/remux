@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use chrono::NaiveDate;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -122,7 +123,7 @@ impl Task for JellyfinImportTask {
                 continue;
             };
             let username = jf_user.name.as_deref().unwrap_or("?");
-            info!(
+            debug!(
                 "fetching items for user '{username}' ({}/{})",
                 i + 1,
                 local_users.len()
@@ -149,7 +150,7 @@ impl Task for JellyfinImportTask {
                 .chain(favorited?.items)
                 .filter(|it| seen.insert(it.id.clone()))
                 .collect();
-            info!("got {} items for '{username}'", items.len());
+            debug!("got {} items for '{username}'", items.len());
 
             for item in &items {
                 if matches!(item.item_type.as_deref(), Some("Episode") | Some("Season"))
@@ -173,7 +174,7 @@ impl Task for JellyfinImportTask {
         progress.set(50.0);
 
         // Pass 2: batch-fetch only the series we actually need
-        info!(
+        debug!(
             count = needed_series_ids.len(),
             "fetching series provider IDs for episode resolution"
         );
@@ -193,8 +194,140 @@ impl Task for JellyfinImportTask {
                 })
                 .collect()
         };
-        info!(count = series_imdb_map.len(), "series index built");
+        debug!(count = series_imdb_map.len(), "series index built");
         progress.set(60.0);
+
+        // Pass 2b: seed media stubs for items not yet in the local DB.
+        // Collect unique top-level items (Movie or Series) across all users, then
+        // run process_meta_batch so they get full metadata + child tree immediately.
+        {
+            let mut stubs: HashMap<uuid::Uuid, db::Media> = HashMap::new();
+            for (_, _, _, items) in &user_items {
+                for item in items {
+                    let provider_ids = item.provider_ids.as_ref();
+                    let imdb =
+                        provider_ids.and_then(|p| p.get("Imdb")).map(String::as_str);
+                    let tmdb = provider_ids
+                        .and_then(|p| p.get("Tmdb"))
+                        .and_then(|v| v.parse::<i64>().ok());
+                    let tvdb = provider_ids
+                        .and_then(|p| p.get("Tvdb"))
+                        .and_then(|v| v.parse::<i64>().ok());
+
+                    // For episodes/seasons, derive the parent series' external IDs
+                    let (top_kind, top_imdb, top_tmdb, top_tvdb) = match item
+                        .item_type
+                        .as_deref()
+                    {
+                        Some("Movie") => {
+                            (db::MediaKind::Movie, imdb.map(String::from), tmdb, tvdb)
+                        }
+                        Some("Series") => {
+                            (db::MediaKind::Series, imdb.map(String::from), tmdb, tvdb)
+                        }
+                        Some("Episode") | Some("Season") => {
+                            let sp = item.series_provider_ids.as_ref();
+                            let s_imdb = sp
+                                .and_then(|p| p.get("Imdb"))
+                                .map(String::from)
+                                .or_else(|| {
+                                    item.series_id
+                                        .as_deref()
+                                        .and_then(|sid| series_imdb_map.get(sid))
+                                        .cloned()
+                                });
+                            let s_tmdb = sp
+                                .and_then(|p| p.get("Tmdb"))
+                                .and_then(|v| v.parse::<i64>().ok());
+                            let s_tvdb = sp
+                                .and_then(|p| p.get("Tvdb"))
+                                .and_then(|v| v.parse::<i64>().ok());
+                            (db::MediaKind::Series, s_imdb, s_tmdb, s_tvdb)
+                        }
+                        _ => continue,
+                    };
+
+                    // Nothing to key on → skip
+                    if top_imdb.is_none() && top_tmdb.is_none() && top_tvdb.is_none() {
+                        continue;
+                    }
+
+                    let ext = db::ExternalIds {
+                        imdb: top_imdb.clone(),
+                        tmdb: top_tmdb,
+                        tvdb: top_tvdb,
+                        ..Default::default()
+                    };
+                    let raw = db::MediaIdRaw {
+                        kind: top_kind.clone(),
+                        external_ids: ext.clone(),
+                        season: None,
+                        episode: None,
+                    };
+                    let uuid = uuid::Uuid::from(&raw);
+
+                    // Already in local DB or already queued → skip
+                    if resolve_from_index(
+                        &index,
+                        top_imdb.as_deref(),
+                        top_tmdb,
+                        top_tvdb,
+                    )
+                    .is_some()
+                        || stubs.contains_key(&uuid)
+                    {
+                        continue;
+                    }
+
+                    // For Series/Movie items we have the title directly;
+                    // for derived series stubs (from episodes) we may not.
+                    let title = match item.item_type.as_deref() {
+                        Some("Movie") | Some("Series") => {
+                            item.name.clone().unwrap_or_default()
+                        }
+                        _ => String::new(), // refresh_meta will fill this in
+                    };
+                    if title.is_empty() && top_imdb.is_none() && top_tmdb.is_none() {
+                        continue;
+                    }
+
+                    let released_at = item.production_year.and_then(|y| {
+                        NaiveDate::from_ymd_opt(y as i32, 1, 1)
+                            .and_then(|d| d.and_hms_opt(0, 0, 0))
+                    });
+                    let runtime = item.run_time_ticks.map(|t| t / 10_000_000);
+
+                    let mut stub = db::Media {
+                        id: uuid,
+                        kind: top_kind,
+                        title,
+                        external_ids: ext,
+                        description: item.overview.clone(),
+                        released_at,
+                        runtime,
+                        ..Default::default()
+                    };
+                    // Ensure the computed UUID matches what the DB would derive
+                    stub.id = uuid::Uuid::from(&db::MediaIdRaw {
+                        kind: stub.kind.clone(),
+                        external_ids: stub.external_ids.clone(),
+                        season: None,
+                        episode: None,
+                    });
+                    stubs.insert(stub.id, stub);
+                }
+            }
+
+            if !stubs.is_empty() {
+                let stubs: Vec<db::Media> = stubs.into_values().collect();
+                debug!(
+                    count = stubs.len(),
+                    "seeding missing media stubs from Jellyfin"
+                );
+                ctx.addons.process_meta_batch(stubs, &ctx, false).await?;
+            }
+        }
+        progress.set(70.0);
 
         // Pass 3: import watch states
         let mut states_imported = 0u32;
@@ -203,7 +336,7 @@ impl Task for JellyfinImportTask {
 
         for (i, jf_user, local_user, items) in user_items {
             let username = jf_user.name.as_deref().unwrap_or("?");
-            info!("importing {} items for '{username}'", items.len());
+            debug!("importing {} items for '{username}'", items.len());
 
             for item in items {
                 let Some(ud) = &item.user_data else {

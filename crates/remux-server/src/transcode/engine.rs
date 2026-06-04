@@ -595,7 +595,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         args.extend([
             "-rtsp_transport".into(),
             "tcp".into(),
-            "-stimeout".into(),
+            "-timeout".into(),
             "5000000".into(),
         ]);
     }
