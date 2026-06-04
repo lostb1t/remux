@@ -2313,74 +2313,48 @@ impl Media {
             .map(|m| m.id)
             .collect();
         if !rel_ids.is_empty() {
-            // Step 1: load relation rows from media_relations only — no JOIN.
-            // A JOIN to media caused the planner to drive from the media table
-            // (full scan) on databases with large media tables (e.g. many IPTV
-            // channels). Splitting into two queries guarantees each uses its index.
-            let mut mr_qb = sqlx::QueryBuilder::new(
-                "SELECT left_media_id, relation_id, right_media_id, weight, role, character \
-                 FROM media_relations WHERE left_media_id IN (",
+            let mut g_qb = sqlx::QueryBuilder::new(
+                // Drive from media_relations using the left_media_id index.
+                // Filtering g.kind in SQL caused the planner to drive from the
+                // media table (scanning all persons/genres) instead — very slow.
+                // We filter by kind in Rust after the fetch.
+                "SELECT mr.left_media_id, mr.relation_id, mr.right_media_id, mr.weight, \
+                 mr.role, mr.character, g.id, g.title, g.kind \
+                 FROM media_relations mr \
+                 JOIN media g ON g.id = mr.right_media_id \
+                 WHERE mr.left_media_id IN (",
             );
-            let mut sep = mr_qb.separated(", ");
+            let mut sep = g_qb.separated(", ");
             for id in &rel_ids {
                 sep.push_bind(id);
             }
-            mr_qb.push(") ORDER BY left_media_id, weight");
-            match mr_qb.build().fetch_all(db).await {
-                Ok(rel_rows) => {
-                    // Step 2: batch-fetch related media (persons, genres) by PK.
-                    let right_ids: Vec<Uuid> = rel_rows
-                        .iter()
-                        .map(|r| r.get::<Uuid, _>(2))
-                        .collect::<std::collections::HashSet<_>>()
-                        .into_iter()
-                        .collect();
-                    let mut media_map: HashMap<Uuid, (String, MediaKind)> =
-                        HashMap::new();
-                    if !right_ids.is_empty() {
-                        let mut g_qb = sqlx::QueryBuilder::new(
-                            "SELECT id, title, kind FROM media WHERE id IN (",
-                        );
-                        let mut sep = g_qb.separated(", ");
-                        for id in &right_ids {
-                            sep.push_bind(id);
-                        }
-                        g_qb.push(")");
-                        if let Ok(rows) = g_qb.build().fetch_all(db).await {
-                            for row in rows {
-                                let kind_str: String = row.get(2);
-                                let Ok(kind) = MediaKind::try_from(kind_str) else {
-                                    continue;
-                                };
-                                if !matches!(kind, MediaKind::Genre | MediaKind::Person)
-                                {
-                                    continue;
-                                }
-                                media_map.insert(row.get(0), (row.get(1), kind));
-                            }
-                        }
-                    }
+            g_qb.push(") ORDER BY mr.left_media_id, mr.weight");
+            match g_qb.build().fetch_all(db).await {
+                Ok(rows) => {
                     let mut rels_map: HashMap<Uuid, Vec<(MediaRelation, Media)>> =
                         HashMap::new();
-                    for row in rel_rows {
-                        let right_media_id: Uuid = row.get(2);
-                        let Some((title, kind)) = media_map.get(&right_media_id) else {
+                    for row in rows {
+                        let kind_str: String = row.get(8);
+                        let Ok(kind) = MediaKind::try_from(kind_str) else {
                             continue;
                         };
+                        if !matches!(kind, MediaKind::Genre | MediaKind::Person) {
+                            continue;
+                        }
                         let left_media_id: Uuid = row.get(0);
                         let rel = MediaRelation {
                             relation_id: row.get(1),
                             left_media_id,
-                            right_media_id,
+                            right_media_id: row.get(2),
                             weight: row.get(3),
                             role: row.get(4),
                             character: row.get(5),
                             ..Default::default()
                         };
                         let related = Media {
-                            id: right_media_id,
-                            title: title.clone(),
-                            kind: kind.clone(),
+                            id: row.get(6),
+                            title: row.get(7),
+                            kind,
                             ..Default::default()
                         };
                         rels_map
