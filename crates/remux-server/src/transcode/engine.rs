@@ -281,6 +281,8 @@ pub struct TranscodeParams {
     pub h264_crf: u32,
     /// CRF quality for software H.265 (libx265).
     pub h265_crf: u32,
+    /// True for live TV / RTSP streams — disables seeking and enables auto-restart on exit.
+    pub is_live: bool,
 }
 
 impl Default for TranscodeParams {
@@ -317,6 +319,7 @@ impl Default for TranscodeParams {
             allow_av1_encoding: false,
             h264_crf: 23,
             h265_crf: 28,
+            is_live: false,
         }
     }
 }
@@ -579,10 +582,22 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         ));
     }
 
-    // Input seek (fast, before -i)
-    if let Some(ticks) = params.start_time_ticks {
-        let secs = ticks as f64 / 10_000_000.0;
-        args.extend(["-ss".into(), format!("{:.6}", secs)]);
+    // Input seek (fast, before -i) — not applicable to live streams
+    if !params.is_live {
+        if let Some(ticks) = params.start_time_ticks {
+            let secs = ticks as f64 / 10_000_000.0;
+            args.extend(["-ss".into(), format!("{:.6}", secs)]);
+        }
+    }
+
+    // RTSP reliability: force TCP transport and set a 5 s connection timeout
+    if params.is_live && params.input_url.starts_with("rtsp://") {
+        args.extend([
+            "-rtsp_transport".into(),
+            "tcp".into(),
+            "-stimeout".into(),
+            "5000000".into(),
+        ]);
     }
 
     args.extend([
@@ -978,6 +993,8 @@ pub async fn start_transcode(
     tokio::spawn(async move {
         let mut params = params;
         let mut sw_fallback = false;
+        let mut live_restarts = 0u32;
+        const MAX_LIVE_RESTARTS: u32 = 10;
 
         loop {
             let args = build_hls_args(&params);
@@ -1045,6 +1062,46 @@ pub async fn start_transcode(
 
             let mut s = session_clone.write().await;
             s.kill_tx = None;
+
+            // Live streams: auto-restart on unexpected exit; only stop when killed.
+            if params.is_live {
+                match result {
+                    None => {
+                        debug!(session_id = %s.id, "live stream killed by session stop");
+                        s.wait_done.notify_one();
+                        break;
+                    }
+                    Some(r) => {
+                        let (status_str, stderr_str) = match &r {
+                            Ok(st) => (format!("{st}"), stderr_out.trim().to_string()),
+                            Err(e) => ("error".to_string(), e.to_string()),
+                        };
+                        if live_restarts < MAX_LIVE_RESTARTS {
+                            live_restarts += 1;
+                            warn!(
+                                session_id = %s.id,
+                                status = %status_str,
+                                restart = live_restarts,
+                                stderr = %stderr_str,
+                                "live stream ffmpeg exited unexpectedly, restarting"
+                            );
+                            drop(s);
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            continue;
+                        } else {
+                            let err_msg = format!(
+                                "live stream ffmpeg exited after {MAX_LIVE_RESTARTS} restarts \
+                                 (status {status_str}): {stderr_str}"
+                            );
+                            error!(session_id = %s.id, error = %err_msg, "Live stream failed");
+                            s.state = TranscodeState::Error(err_msg.clone());
+                            let _ = s.state_tx.send(TranscodeState::Error(err_msg));
+                            s.wait_done.notify_one();
+                            break;
+                        }
+                    }
+                }
+            }
 
             match result {
                 Some(Ok(status)) if status.success() => {

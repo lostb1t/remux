@@ -2555,6 +2555,7 @@ pub async fn master_hls_video(
             allow_av1_encoding: encoding_opts.allow_av1_encoding.unwrap_or(false),
             h264_crf: encoding_opts.h264_crf.unwrap_or(23),
             h265_crf: encoding_opts.h265_crf.unwrap_or(28),
+            is_live,
         };
 
         // Spawn the transcode task with proper error handling
@@ -3017,6 +3018,7 @@ async fn hls_segment_inner(
                             .unwrap_or(false),
                         h264_crf: encoding_opts.h264_crf.unwrap_or(23),
                         h265_crf: encoding_opts.h265_crf.unwrap_or(28),
+                        is_live: false,
                     };
 
                     // Reinitialise the session's state for the new transcode run.
