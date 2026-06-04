@@ -34,9 +34,10 @@ impl Task for RefreshAllMetaTask {
         const CHUNK_SIZE: u32 = 100;
 
         let total: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE kind IN (?, ?)")
+            sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE kind IN (?, ?, ?)")
                 .bind(db::MediaKind::Movie)
                 .bind(db::MediaKind::Series)
+                .bind(db::MediaKind::Artist)
                 .fetch_one(&ctx.db)
                 .await?;
         let total = total as usize;
@@ -45,10 +46,11 @@ impl Task for RefreshAllMetaTask {
         let mut offset = 0u32;
         loop {
             let batch = sqlx::query_as::<_, db::Media>(
-                "SELECT * FROM media WHERE kind IN (?, ?) ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT * FROM media WHERE kind IN (?, ?, ?) ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(db::MediaKind::Movie)
             .bind(db::MediaKind::Series)
+            .bind(db::MediaKind::Artist)
             .bind(CHUNK_SIZE)
             .bind(offset)
             .fetch_all(&ctx.db)
