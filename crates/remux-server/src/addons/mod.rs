@@ -238,7 +238,10 @@ pub(crate) fn apply_title_format(media: &mut db::Media) {
 fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
     // Merge images onto the in-memory struct; db::Media::upsert persists them via
     // sync_from_media after the media row is committed, avoiding FK violations.
-    if !patch.images.is_empty() {
+    if !patch
+        .images
+        .is_empty()
+    {
         use remux_utils::merge_vec;
         let patch_images = std::mem::take(&mut patch.images);
         let imgs = &mut media.images;
