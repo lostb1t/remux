@@ -107,7 +107,12 @@ impl Manifest {
     pub fn get_search_catalog(&self, kind: &String) -> Option<Catalog> {
         self.catalogs
             .iter()
-            .find(|c| &c.kind == kind && c.extra.iter().any(|e| e.name == "search"))
+            .find(|c| {
+                &c.kind == kind
+                    && c.extra
+                        .iter()
+                        .any(|e| e.name == "search")
+            })
             .cloned()
     }
 }
@@ -133,7 +138,9 @@ impl Resource {
     pub fn resource_type(&self) -> ResourceType {
         match self {
             Resource::Simple(s) => s.clone(),
-            Resource::Detailed(r) => r.name.clone(),
+            Resource::Detailed(r) => r
+                .name
+                .clone(),
         }
     }
 }
@@ -188,7 +195,11 @@ where
     D: Deserializer<'de>,
 {
     let opt: Option<Vec<Option<String>>> = Option::deserialize(deserializer)?;
-    Ok(opt.map(|v| v.into_iter().flatten().collect()))
+    Ok(opt.map(|v| {
+        v.into_iter()
+            .flatten()
+            .collect()
+    }))
 }
 
 #[skip_serializing_none]
@@ -251,13 +262,23 @@ impl Endpoint for MetaEndpoint {
     type Output = MetaResponse;
 
     fn path(&self) -> String {
-        let mut id = self.id.clone();
-        if self.season.is_some() || self.episode.is_some() {
+        let mut id = self
+            .id
+            .clone();
+        if self
+            .season
+            .is_some()
+            || self
+                .episode
+                .is_some()
+        {
             id = format!(
                 "{}:{}:{}",
                 id,
-                self.season.unwrap_or(0),
-                self.episode.unwrap_or(0)
+                self.season
+                    .unwrap_or(0),
+                self.episode
+                    .unwrap_or(0)
             );
         }
         format!("/meta/{}/{}.json", self.media_type, id)
@@ -285,7 +306,9 @@ impl Endpoint for SubtitlesEndpoint {
     fn path(&self) -> String {
         let id = match (self.season, self.episode) {
             (Some(s), Some(e)) => format!("{}:{}:{}", self.imdb_id, s, e),
-            _ => self.imdb_id.clone(),
+            _ => self
+                .imdb_id
+                .clone(),
         };
         format!("/subtitles/{}/{}.json", self.media_type, id)
     }
@@ -429,8 +452,12 @@ impl Meta {
         *self = client
             .execute(
                 MetaEndpoint {
-                    media_type: self.media_type.clone(),
-                    id: self.id.clone(),
+                    media_type: self
+                        .media_type
+                        .clone(),
+                    id: self
+                        .id
+                        .clone(),
                     season: None,
                     episode: None,
                 }
@@ -442,7 +469,12 @@ impl Meta {
     }
 
     pub fn get_name(&self) -> Option<String> {
-        self.name.clone().or_else(|| self.title.clone())
+        self.name
+            .clone()
+            .or_else(|| {
+                self.title
+                    .clone()
+            })
     }
 }
 
@@ -610,9 +642,14 @@ impl Meta {
 
     pub fn get_season_numbers(&self) -> Vec<i64> {
         // dbg!(&self);
-        if let Some(episodes) = self.videos.as_ref() {
-            let mut seasons: Vec<i64> =
-                episodes.iter().filter_map(|e| e.season).collect();
+        if let Some(episodes) = self
+            .videos
+            .as_ref()
+        {
+            let mut seasons: Vec<i64> = episodes
+                .iter()
+                .filter_map(|e| e.season)
+                .collect();
             seasons.sort_unstable();
             seasons.dedup();
             seasons
@@ -623,7 +660,9 @@ impl Meta {
 
     pub fn get_episode_by_id(&self, id: String) -> Option<&Episode> {
         if let Some(episodes) = &self.videos {
-            episodes.into_iter().find(|e| e.id == id)
+            episodes
+                .into_iter()
+                .find(|e| e.id == id)
         } else {
             None
         }
@@ -634,15 +673,26 @@ impl Meta {
             .clone()
             .unwrap_or_default()
             .into_iter()
-            .filter(|e| e.season.map_or(false, |s| s == season_idx))
+            .filter(|e| {
+                e.season
+                    .map_or(false, |s| s == season_idx)
+            })
             .collect()
     }
 
     pub fn get_season_poster(&self, idx: i64) -> Option<String> {
         self.app_extras
             .as_ref()
-            .and_then(|extras| extras.season_posters.as_ref())
-            .and_then(|posters| posters.get(idx as usize).cloned())
+            .and_then(|extras| {
+                extras
+                    .season_posters
+                    .as_ref()
+            })
+            .and_then(|posters| {
+                posters
+                    .get(idx as usize)
+                    .cloned()
+            })
             .flatten()
     }
 }
@@ -674,7 +724,12 @@ pub struct Episode {
 }
 impl Episode {
     pub fn get_name(&self) -> Option<String> {
-        self.name.clone().or_else(|| self.title.clone())
+        self.name
+            .clone()
+            .or_else(|| {
+                self.title
+                    .clone()
+            })
     }
 }
 
@@ -758,11 +813,15 @@ pub struct BehaviorHints {
 
 impl Stream {
     pub fn is_torrent(&self) -> bool {
-        self.info_hash.is_some()
+        self.info_hash
+            .is_some()
     }
 
     pub fn is_valid(&self) -> bool {
-        if self.info_hash.is_some() {
+        if self
+            .info_hash
+            .is_some()
+        {
             return true;
         }
 
@@ -771,7 +830,10 @@ impl Stream {
             None => return false,
         };
 
-        if url.trim().is_empty() {
+        if url
+            .trim()
+            .is_empty()
+        {
             return false;
         }
 
@@ -786,16 +848,25 @@ impl Stream {
     }
 
     pub fn id(&self) -> String {
-        self.info_hash.clone().unwrap()
+        self.info_hash
+            .clone()
+            .unwrap()
     }
 
     pub fn get_guid(&self) -> Uuid {
         let key = if let Some(hash) = &self.info_hash {
             hash.to_string()
         } else if let Some(filename) = &self.filename {
-            format!("{}{}", filename, self.size.unwrap_or_default())
+            format!(
+                "{}{}",
+                filename,
+                self.size
+                    .unwrap_or_default()
+            )
         } else {
-            self.url.clone().unwrap()
+            self.url
+                .clone()
+                .unwrap()
         };
 
         utils::get_stable_uuid(key)

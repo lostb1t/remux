@@ -1,3 +1,4 @@
 merge_derives = true
-chain_width = 60
+chain_width = 0
 max_width = 88
+imports_granularity = "Crate"

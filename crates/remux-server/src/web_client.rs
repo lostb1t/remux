@@ -61,7 +61,10 @@ fn normalize_spa_inner_path(path: &str) -> String {
         return "/index.html".to_string();
     }
 
-    let last_segment = path.rsplit('/').next().unwrap_or_default();
+    let last_segment = path
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
     if last_segment.contains('.') {
         path.to_string()
     } else {
@@ -152,12 +155,20 @@ impl Service<Request<Body>> for WebClientService {
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let path = req.uri().path().to_string();
-        let query = req.uri().query().map(str::to_owned);
+        let path = req
+            .uri()
+            .path()
+            .to_string();
+        let query = req
+            .uri()
+            .query()
+            .map(str::to_owned);
 
         let is_service_worker_path = path.eq_ignore_ascii_case("/serviceworker.js");
         let jellyfin_inner = strip_prefixed_path(&path, JELLYFIN_ALIAS_PREFIX);
-        let mut jellyfin = self.jellyfin.clone();
+        let mut jellyfin = self
+            .jellyfin
+            .clone();
 
         Box::pin(async move {
             if is_service_worker_path {
@@ -168,7 +179,9 @@ impl Service<Request<Body>> for WebClientService {
                 .map(|p| normalize_spa_inner_path(&p))
                 .unwrap_or_else(|| normalize_spa_inner_path(&path));
             let req = rewrite_request_path(req, &jellyfin_path);
-            jellyfin.call(req).await
+            jellyfin
+                .call(req)
+                .await
         })
     }
 }

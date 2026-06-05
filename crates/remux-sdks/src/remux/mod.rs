@@ -235,7 +235,10 @@ where
     D: serde::Deserializer<'de>,
 {
     let s: Option<String> = Option::deserialize(d)?;
-    Ok(s.and_then(|s| s.parse().ok()))
+    Ok(s.and_then(|s| {
+        s.parse()
+            .ok()
+    }))
 }
 
 fn deserialize_optional_with_default<'de, D, T>(d: D) -> Result<T, D::Error>
@@ -244,7 +247,11 @@ where
     D: serde::Deserializer<'de>,
 {
     let s: Option<String> = Option::deserialize(d)?;
-    Ok(s.and_then(|s| s.parse().ok()).unwrap_or_default())
+    Ok(s.and_then(|s| {
+        s.parse()
+            .ok()
+    })
+    .unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
@@ -695,7 +702,9 @@ impl<'de> serde::Deserialize<'de> for AuthenticateUserByName {
         }
         let raw = Raw::deserialize(d)?;
         Ok(Self {
-            pw: raw.pw.or(raw.password),
+            pw: raw
+                .pw
+                .or(raw.password),
             username: raw.username,
         })
     }
@@ -1495,7 +1504,10 @@ impl std::fmt::Debug for TranscodeReasons {
 impl serde::Serialize for TranscodeReasons {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
-        let mut seq = s.serialize_seq(Some(self.0.len()))?;
+        let mut seq = s.serialize_seq(Some(
+            self.0
+                .len(),
+        ))?;
         for r in &self.0 {
             seq.serialize_element(r.name())?;
         }
@@ -1506,17 +1518,21 @@ impl serde::Serialize for TranscodeReasons {
 impl TranscodeReasons {
     pub fn insert(&mut self, reason: TranscodeReason) {
         if !self.contains(&reason) {
-            self.0.push(reason);
+            self.0
+                .push(reason);
         }
     }
 
     pub fn contains(&self, reason: &TranscodeReason) -> bool {
         let d = std::mem::discriminant(reason);
-        self.0.iter().any(|r| std::mem::discriminant(r) == d)
+        self.0
+            .iter()
+            .any(|r| std::mem::discriminant(r) == d)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.0
+            .is_empty()
     }
 
     pub fn to_query_value(&self) -> Option<String> {
@@ -2065,7 +2081,8 @@ where
     D: serde::Deserializer<'de>,
 {
     let n: Option<i64> = Option::deserialize(d)?;
-    Ok(n.unwrap_or(0).max(0))
+    Ok(n.unwrap_or(0)
+        .max(0))
 }
 
 fn default_authentication_provider_id() -> String {
@@ -3197,7 +3214,8 @@ pub enum TaskTriggerInfoType {
 impl TryFrom<String> for TaskTriggerInfoType {
     type Error = strum::ParseError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        s.as_str().try_into()
+        s.as_str()
+            .try_into()
     }
 }
 
@@ -3555,28 +3573,52 @@ pub struct MediaSegments {
 
 impl MediaSegments {
     pub fn is_empty(&self) -> bool {
-        self.intro.is_none()
-            && self.outro.is_none()
-            && self.recap.is_none()
-            && self.preview.is_none()
-            && self.commercial.is_none()
+        self.intro
+            .is_none()
+            && self
+                .outro
+                .is_none()
+            && self
+                .recap
+                .is_none()
+            && self
+                .preview
+                .is_none()
+            && self
+                .commercial
+                .is_none()
     }
 
     /// Fill types that are `None` in `self` from `other`. Existing values are kept.
     pub fn merge_from(&mut self, other: MediaSegments) {
-        if self.intro.is_none() {
+        if self
+            .intro
+            .is_none()
+        {
             self.intro = other.intro;
         }
-        if self.outro.is_none() {
+        if self
+            .outro
+            .is_none()
+        {
             self.outro = other.outro;
         }
-        if self.recap.is_none() {
+        if self
+            .recap
+            .is_none()
+        {
             self.recap = other.recap;
         }
-        if self.preview.is_none() {
+        if self
+            .preview
+            .is_none()
+        {
             self.preview = other.preview;
         }
-        if self.commercial.is_none() {
+        if self
+            .commercial
+            .is_none()
+        {
             self.commercial = other.commercial;
         }
     }
@@ -3584,9 +3626,15 @@ impl MediaSegments {
     /// Expand into a flat list of `(type, segment)` pairs, ordered by start tick.
     pub fn to_pairs(&self) -> Vec<(MediaSegmentType, &Segment)> {
         let mut pairs: Vec<(MediaSegmentType, &Segment)> = [
-            self.intro.as_ref().map(|s| (MediaSegmentType::Intro, s)),
-            self.outro.as_ref().map(|s| (MediaSegmentType::Outro, s)),
-            self.recap.as_ref().map(|s| (MediaSegmentType::Recap, s)),
+            self.intro
+                .as_ref()
+                .map(|s| (MediaSegmentType::Intro, s)),
+            self.outro
+                .as_ref()
+                .map(|s| (MediaSegmentType::Outro, s)),
+            self.recap
+                .as_ref()
+                .map(|s| (MediaSegmentType::Recap, s)),
             self.preview
                 .as_ref()
                 .map(|s| (MediaSegmentType::Preview, s)),
@@ -3710,7 +3758,11 @@ impl Endpoint for GetJellyfinItemsByIds {
 
     fn query(&self) -> Vec<(String, String)> {
         vec![
-            ("Ids".into(), self.ids.join(",")),
+            (
+                "Ids".into(),
+                self.ids
+                    .join(","),
+            ),
             ("Fields".into(), "ProviderIds".into()),
         ]
     }
@@ -3917,8 +3969,15 @@ impl Endpoint for GetItems {
 
     fn query(&self) -> Vec<(String, String)> {
         let mut q = vec![];
-        if !self.include_item_types.is_empty() {
-            q.push(("IncludeItemTypes".into(), self.include_item_types.join(",")));
+        if !self
+            .include_item_types
+            .is_empty()
+        {
+            q.push((
+                "IncludeItemTypes".into(),
+                self.include_item_types
+                    .join(","),
+            ));
         }
         if self.recursive {
             q.push(("Recursive".into(), "true".into()));
@@ -3962,7 +4021,11 @@ impl Endpoint for GetLocalSuggestions {
 
     fn query(&self) -> Vec<(String, String)> {
         vec![
-            ("IncludeItemTypes".into(), self.kind.clone()),
+            (
+                "IncludeItemTypes".into(),
+                self.kind
+                    .clone(),
+            ),
             ("SearchTerm".into(), format!("local:{}", self.search_term)),
             ("Limit".into(), "25".into()),
         ]
@@ -3983,10 +4046,17 @@ impl Endpoint for GetTagSuggestions {
     }
 
     fn query(&self) -> Vec<(String, String)> {
-        if self.search_term.is_empty() {
+        if self
+            .search_term
+            .is_empty()
+        {
             vec![]
         } else {
-            vec![("SearchTerm".into(), self.search_term.clone())]
+            vec![(
+                "SearchTerm".into(),
+                self.search_term
+                    .clone(),
+            )]
         }
     }
 }
@@ -4005,10 +4075,17 @@ impl Endpoint for GetCertificationSuggestions {
     }
 
     fn query(&self) -> Vec<(String, String)> {
-        if self.search_term.is_empty() {
+        if self
+            .search_term
+            .is_empty()
+        {
             vec![]
         } else {
-            vec![("SearchTerm".into(), self.search_term.clone())]
+            vec![(
+                "SearchTerm".into(),
+                self.search_term
+                    .clone(),
+            )]
         }
     }
 }
@@ -4097,7 +4174,11 @@ impl Endpoint for DeleteVirtualFolder {
         Method::DELETE
     }
     fn query(&self) -> Vec<(String, String)> {
-        vec![("name".into(), self.name.clone())]
+        vec![(
+            "name".into(),
+            self.name
+                .clone(),
+        )]
     }
 }
 
@@ -4146,7 +4227,10 @@ impl Endpoint for UploadItemImage {
         map
     }
     fn body(&self) -> Body {
-        Body::Bytes(self.bytes.clone())
+        Body::Bytes(
+            self.bytes
+                .clone(),
+        )
     }
 }
 
@@ -4524,7 +4608,11 @@ impl Endpoint for DeleteTunerHost {
         Method::DELETE
     }
     fn query(&self) -> Vec<(String, String)> {
-        vec![("id".into(), self.id.clone())]
+        vec![(
+            "id".into(),
+            self.id
+                .clone(),
+        )]
     }
 }
 
@@ -4570,7 +4658,11 @@ impl Endpoint for DeleteEpgSource {
         Method::DELETE
     }
     fn query(&self) -> Vec<(String, String)> {
-        vec![("id".into(), self.id.clone())]
+        vec![(
+            "id".into(),
+            self.id
+                .clone(),
+        )]
     }
 }
 
@@ -4592,23 +4684,59 @@ impl Endpoint for GetIptvChannels {
     }
     fn query(&self) -> Vec<(String, String)> {
         let mut q = vec![
-            ("limit".into(), self.limit.to_string()),
-            ("offset".into(), self.offset.to_string()),
+            (
+                "limit".into(),
+                self.limit
+                    .to_string(),
+            ),
+            (
+                "offset".into(),
+                self.offset
+                    .to_string(),
+            ),
         ];
-        if !self.search.is_empty() {
-            q.push(("search".into(), self.search.clone()));
+        if !self
+            .search
+            .is_empty()
+        {
+            q.push((
+                "search".into(),
+                self.search
+                    .clone(),
+            ));
         }
         if let Some(e) = self.enabled {
             q.push(("enabled".into(), e.to_string()));
         }
-        if !self.country.is_empty() {
-            q.push(("country".into(), self.country.clone()));
+        if !self
+            .country
+            .is_empty()
+        {
+            q.push((
+                "country".into(),
+                self.country
+                    .clone(),
+            ));
         }
-        if !self.group.is_empty() {
-            q.push(("group".into(), self.group.clone()));
+        if !self
+            .group
+            .is_empty()
+        {
+            q.push((
+                "group".into(),
+                self.group
+                    .clone(),
+            ));
         }
-        if !self.sort.is_empty() {
-            q.push(("sort".into(), self.sort.clone()));
+        if !self
+            .sort
+            .is_empty()
+        {
+            q.push((
+                "sort".into(),
+                self.sort
+                    .clone(),
+            ));
         }
         q
     }
@@ -4688,7 +4816,11 @@ impl Endpoint for AuthorizeQuickConnect {
     }
 
     fn query(&self) -> Vec<(String, String)> {
-        vec![("Code".into(), self.code.clone())]
+        vec![(
+            "Code".into(),
+            self.code
+                .clone(),
+        )]
     }
 }
 
@@ -4716,7 +4848,11 @@ impl Endpoint for CreateApiKey {
         Method::POST
     }
     fn query(&self) -> Vec<(String, String)> {
-        vec![("app".into(), self.app.clone())]
+        vec![(
+            "app".into(),
+            self.app
+                .clone(),
+        )]
     }
 }
 
@@ -5135,7 +5271,11 @@ impl Endpoint for GetStreamGroupPreview {
         "/remux/stream-groups/preview".into()
     }
     fn query(&self) -> Vec<(String, String)> {
-        vec![("imdb_id".into(), self.imdb_id.clone())]
+        vec![(
+            "imdb_id".into(),
+            self.imdb_id
+                .clone(),
+        )]
     }
 }
 

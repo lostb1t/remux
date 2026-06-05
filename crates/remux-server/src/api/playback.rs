@@ -77,13 +77,23 @@ async fn items_playbackinfo_inner(
 
     let device_profile = q.device_profile;
 
-    let probe_cfg = db::Settings::get_config(&state.ctx.db)
-        .await
-        .unwrap_or_default();
-    let show_ungrouped = probe_cfg.stream_groups_show_ungrouped.unwrap_or(true);
-    let encoding_cfg = db::Settings::get_encoding_config(&state.ctx.db)
-        .await
-        .unwrap_or_default();
+    let probe_cfg = db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let show_ungrouped = probe_cfg
+        .stream_groups_show_ungrouped
+        .unwrap_or(true);
+    let encoding_cfg = db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
 
     let mut media = resolve_item(media_source_id.unwrap_or(id), &state.ctx)
         .await?
@@ -95,17 +105,30 @@ async fn items_playbackinfo_inner(
         == db::MediaKind::StreamGroup
     {
         let gid = media.id;
-        let gtitle = media.title.clone();
-        let mut candidates =
-            db::StreamGroup::streams_for(&state.ctx.db, &gid, &id).await?;
+        let gtitle = media
+            .title
+            .clone();
+        let mut candidates = db::StreamGroup::streams_for(
+            &state
+                .ctx
+                .db,
+            &gid,
+            &id,
+        )
+        .await?;
         if candidates.is_empty() {
             return Err(anyhow::anyhow!("no streams available for this group").into());
         }
         // Append streams from lower-priority groups so probe can cascade across groups.
-        let cascade =
-            db::StreamGroup::streams_for_groups_after(&state.ctx.db, &gid, &id)
-                .await
-                .unwrap_or_default();
+        let cascade = db::StreamGroup::streams_for_groups_after(
+            &state
+                .ctx
+                .db,
+            &gid,
+            &id,
+        )
+        .await
+        .unwrap_or_default();
         candidates.extend(cascade);
         media = candidates[0].clone();
         Some((gid, gtitle, candidates))
@@ -116,10 +139,15 @@ async fn items_playbackinfo_inner(
     // Load the top-level Movie/Episode for subtitle lookup.
     // `id` is always the movie/episode UUID; `media_source_id` may point to a
     // child Source, so we always resolve via `id` to get the IMDB fields.
-    let subtitle_media = db::Media::get_by_id(&state.ctx.db, &id)
-        .await
-        .ok()
-        .flatten();
+    let subtitle_media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await
+    .ok()
+    .flatten();
 
     let is_live = media.kind == db::MediaKind::TvChannel;
 
@@ -142,22 +170,39 @@ async fn items_playbackinfo_inner(
             .refresh_streams(&media, &state.ctx)
             .await
             .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
-        let sources = media.streams(&state.ctx.db).await?;
+        let sources = media
+            .streams(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await?;
         let raw = if sources.is_empty() {
             vec![media]
         } else {
             sources
         };
         {
-            let sources =
-                db::StreamGroup::filter_sources(&state.ctx.db, raw, show_ungrouped)
-                    .await;
+            let sources = db::StreamGroup::filter_sources(
+                &state
+                    .ctx
+                    .db,
+                raw,
+                show_ungrouped,
+            )
+            .await;
             if let Some(sf) = session
                 .user
                 .policy
                 .as_ref()
-                .and_then(|p| p.stream_filter.as_ref())
-                .filter(|sf| !sf.rules.is_empty())
+                .and_then(|p| {
+                    p.stream_filter
+                        .as_ref()
+                })
+                .filter(|sf| {
+                    !sf.rules
+                        .is_empty()
+                })
             {
                 let before = sources.len();
                 let filtered = db::apply_stream_filter(sf, sources);
@@ -191,7 +236,12 @@ async fn items_playbackinfo_inner(
     // Android TV always sends media_source_id = item_id (not None) for auto-play.
     // Treat that the same as "return first source only" — no need to send all versions.
     let specific_source_requested = media_source_id
-        .map(|sid| sid != id && all_source_medias.iter().any(|s| s.id == sid))
+        .map(|sid| {
+            sid != id
+                && all_source_medias
+                    .iter()
+                    .any(|s| s.id == sid)
+        })
         .unwrap_or(false);
     let (source_medias, probe_only_first) = if specific_source_requested {
         // Specific stream requested: return only that stream.
@@ -225,14 +275,27 @@ async fn items_playbackinfo_inner(
         (a, b) => a.or(b),
     };
 
-    let play_session_id = common::get_uuid().as_simple().to_string();
+    let play_session_id = common::get_uuid()
+        .as_simple()
+        .to_string();
 
-    let probe_timeout_secs = probe_cfg.probe_timeout_secs.unwrap_or(20) as u64;
-    let probe_timeout_p2p_secs = probe_cfg.probe_timeout_p2p_secs.unwrap_or(60) as u64;
-    let auto_next_stream = probe_cfg.auto_next_stream_on_probe_fail.unwrap_or(true);
-    let max_stream_retries = probe_cfg.max_probe_fallback_streams.unwrap_or(3) as usize;
+    let probe_timeout_secs = probe_cfg
+        .probe_timeout_secs
+        .unwrap_or(20) as u64;
+    let probe_timeout_p2p_secs = probe_cfg
+        .probe_timeout_p2p_secs
+        .unwrap_or(60) as u64;
+    let auto_next_stream = probe_cfg
+        .auto_next_stream_on_probe_fail
+        .unwrap_or(true);
+    let max_stream_retries = probe_cfg
+        .max_probe_fallback_streams
+        .unwrap_or(3) as usize;
 
-    let port = state.ctx.config.port;
+    let port = state
+        .ctx
+        .config
+        .port;
     // For group selections, use all group candidates (including cascade) as the probe fallback pool.
     // Resolution filtering is disabled for group requests: the group priority order already
     // encodes the user's quality preference, so cross-resolution fallback is intentional.
@@ -243,13 +306,23 @@ async fn items_playbackinfo_inner(
             (source_medias.clone(), true)
         };
     let mut media_sources = Vec::with_capacity(source_medias.len());
-    for (idx, sm) in source_medias.into_iter().enumerate() {
+    for (idx, sm) in source_medias
+        .into_iter()
+        .enumerate()
+    {
         let url_opt = sm
             .stream_info
             .as_ref()
-            .map(|si| si.descriptor.server_input(sm.id, port));
+            .map(|si| {
+                si.descriptor
+                    .server_input(sm.id, port)
+            });
         let skip_probe = probe_only_first && idx > 0;
-        let timeout_secs = if sm.stream_info.as_ref().map_or(false, |si| si.is_p2p()) {
+        let timeout_secs = if sm
+            .stream_info
+            .as_ref()
+            .map_or(false, |si| si.is_p2p())
+        {
             probe_timeout_p2p_secs
         } else {
             probe_timeout_secs
@@ -264,12 +337,17 @@ async fn items_playbackinfo_inner(
             &all_sources,
             restrict_resolution,
             port,
-            &state.ctx.db,
+            &state
+                .ctx
+                .db,
         )
         .await?;
         source.id = sm.id;
         source.e_tag = sm.id;
-        source.name = Some(sm.title.clone());
+        source.name = Some(
+            sm.title
+                .clone(),
+        );
         source.has_segments = true;
         if let Some(u) = url_opt {
             source.path = Some(u);
@@ -294,8 +372,11 @@ async fn items_playbackinfo_inner(
         // actually exceeds the cap. An unknown bitrate is treated as within
         // limits so that clients with a high/unlimited cap aren't forced into
         // transcoding unnecessarily.
-        let bitrate_exceeded =
-            max_bitrate.map_or(false, |max| source.bitrate.map_or(false, |b| b > max));
+        let bitrate_exceeded = max_bitrate.map_or(false, |max| {
+            source
+                .bitrate
+                .map_or(false, |b| b > max)
+        });
 
         let mut transcode_reasons: api::TranscodeReasons = {
             let mut reasons = device_profile
@@ -307,7 +388,9 @@ async fn items_playbackinfo_inner(
             }
             // RTSP streams can only be served via ffmpeg — never direct-playable.
             if matches!(
-                sm.stream_info.as_ref().map(|si| &si.descriptor),
+                sm.stream_info
+                    .as_ref()
+                    .map(|si| &si.descriptor),
                 Some(crate::stream::StreamDescriptor::Rtsp { .. })
             ) {
                 reasons.insert(api::TranscodeReason::ContainerNotSupported(
@@ -323,19 +406,32 @@ async fn items_playbackinfo_inner(
             .subtitle_stream_index
             .or(source.default_subtitle_stream_index);
         let needs_pgs_burn = effective_sub_idx.map_or(false, |idx| {
-            source.media_streams.iter().any(|s| {
-                s.index == idx
-                    && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                    && matches!(
-                        s.codec.as_deref().unwrap_or(""),
-                        "pgssub" | "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvdsub"
-                    )
-            })
+            source
+                .media_streams
+                .iter()
+                .any(|s| {
+                    s.index == idx
+                        && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                        && matches!(
+                            s.codec
+                                .as_deref()
+                                .unwrap_or(""),
+                            "pgssub" | "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvdsub"
+                        )
+                })
         });
         if needs_pgs_burn {
             let codec = effective_sub_idx
-                .and_then(|idx| source.media_streams.iter().find(|s| s.index == idx))
-                .and_then(|s| s.codec.clone())
+                .and_then(|idx| {
+                    source
+                        .media_streams
+                        .iter()
+                        .find(|s| s.index == idx)
+                })
+                .and_then(|s| {
+                    s.codec
+                        .clone()
+                })
                 .unwrap_or_default();
             transcode_reasons
                 .insert(api::TranscodeReason::SubtitleCodecNotSupported(codec));
@@ -343,10 +439,15 @@ async fn items_playbackinfo_inner(
 
         // `EnableTranscoding=true` means "allowed", not "forced".
         let transcode_required = !transcode_reasons.is_empty()
-            || !q.enable_direct_play.unwrap_or(true)
-            || !q.enable_direct_stream.unwrap_or(true);
-        let needs_transcoding =
-            transcode_required && q.enable_transcoding.unwrap_or(true);
+            || !q
+                .enable_direct_play
+                .unwrap_or(true)
+            || !q
+                .enable_direct_stream
+                .unwrap_or(true);
+        let needs_transcoding = transcode_required
+            && q.enable_transcoding
+                .unwrap_or(true);
 
         tracing::debug!(
             source_id = %sm.id,
@@ -355,19 +456,33 @@ async fn items_playbackinfo_inner(
         );
 
         if needs_transcoding {
-            let is_audio_only = source.video_stream().is_none();
+            let is_audio_only = source
+                .video_stream()
+                .is_none();
 
             if is_audio_only {
                 let trans_profile = device_profile
                     .as_ref()
                     .and_then(|p| p.audio_transcoding_profile());
                 let trans_container = trans_profile
-                    .and_then(|p| p.container.clone())
+                    .and_then(|p| {
+                        p.container
+                            .clone()
+                    })
                     .unwrap_or_else(|| "mp3".to_string());
                 let audio_codec = trans_profile
-                    .and_then(|p| p.audio_codec.as_deref())
-                    .and_then(|c| c.split(',').next())
-                    .map(|c| c.trim().to_string())
+                    .and_then(|p| {
+                        p.audio_codec
+                            .as_deref()
+                    })
+                    .and_then(|c| {
+                        c.split(',')
+                            .next()
+                    })
+                    .map(|c| {
+                        c.trim()
+                            .to_string()
+                    })
                     .unwrap_or_else(|| "aac".to_string());
 
                 let start_time_param = q
@@ -383,7 +498,9 @@ async fn items_playbackinfo_inner(
                     source.id,
                     audio_codec,
                     start_time_param,
-                    session.device.access_token,
+                    session
+                        .device
+                        .access_token,
                 ));
                 source.transcoding_container = Some(trans_container);
                 source.transcoding_sub_protocol = "http".to_string();
@@ -396,8 +513,12 @@ async fn items_playbackinfo_inner(
                 let (trans_container, trans_protocol) = trans_profile
                     .map(|p| {
                         (
-                            p.container.clone().unwrap_or_else(|| "ts".to_string()),
-                            p.protocol.clone().unwrap_or_else(|| "hls".to_string()),
+                            p.container
+                                .clone()
+                                .unwrap_or_else(|| "ts".to_string()),
+                            p.protocol
+                                .clone()
+                                .unwrap_or_else(|| "hls".to_string()),
                         )
                     })
                     .unwrap_or_else(|| ("ts".to_string(), "hls".to_string()));
@@ -413,14 +534,15 @@ async fn items_playbackinfo_inner(
                             ),
                         );
 
-                let video_transcode_allowed =
-                    encoding_cfg.enable_video_transcoding.unwrap_or(true)
-                        && session
-                            .user
-                            .policy
-                            .as_ref()
-                            .map(|p| p.enable_video_playback_transcoding)
-                            .unwrap_or(true);
+                let video_transcode_allowed = encoding_cfg
+                    .enable_video_transcoding
+                    .unwrap_or(true)
+                    && session
+                        .user
+                        .policy
+                        .as_ref()
+                        .map(|p| p.enable_video_playback_transcoding)
+                        .unwrap_or(true);
 
                 if needs_video_transcode && !video_transcode_allowed {
                     info!(
@@ -451,16 +573,22 @@ async fn items_playbackinfo_inner(
                 let selected_sub_idx = effective_sub_idx;
                 let subtitle_method = selected_sub_idx
                     .and_then(|idx| {
-                        source.media_streams.iter().find(|s| {
-                            s.index == idx
-                                && matches!(
-                                    s.type_,
-                                    Some(api::MediaStreamType::Subtitle)
-                                )
-                        })
+                        source
+                            .media_streams
+                            .iter()
+                            .find(|s| {
+                                s.index == idx
+                                    && matches!(
+                                        s.type_,
+                                        Some(api::MediaStreamType::Subtitle)
+                                    )
+                            })
                     })
                     .and_then(|stream| {
-                        let codec = stream.codec.as_deref().unwrap_or("");
+                        let codec = stream
+                            .codec
+                            .as_deref()
+                            .unwrap_or("");
                         let is_image_sub = matches!(
                             codec,
                             "pgssub" | "hdmv_pgs_subtitle" | "dvd_subtitle"
@@ -519,7 +647,9 @@ async fn items_playbackinfo_inner(
                             subtitle_stream_param,
                             subtitle_method_param,
                             start_time_param,
-                            session.device.access_token,
+                            session
+                                .device
+                                .access_token,
                         )
                     } else {
                         format!(
@@ -536,7 +666,9 @@ async fn items_playbackinfo_inner(
                             subtitle_stream_param,
                             subtitle_method_param,
                             start_time_param,
-                            session.device.access_token,
+                            session
+                                .device
+                                .access_token,
                         )
                     },
                 );
@@ -561,8 +693,13 @@ async fn items_playbackinfo_inner(
 
         // Set delivery URL on text subtitle streams so clients can download them.
         let source_id = source.id;
-        let api_key = &session.device.access_token;
-        for stream in source.media_streams.iter_mut() {
+        let api_key = &session
+            .device
+            .access_token;
+        for stream in source
+            .media_streams
+            .iter_mut()
+        {
             if stream.type_ != Some(api::MediaStreamType::Subtitle) {
                 continue;
             }
@@ -589,21 +726,33 @@ async fn items_playbackinfo_inner(
 
     // Inject external subtitles from AIO (cache-backed)
     if let Some(ref sm) = subtitle_media {
-        let sub_langs = probe_cfg.subtitle_languages.clone().unwrap_or_default();
+        let sub_langs = probe_cfg
+            .subtitle_languages
+            .clone()
+            .unwrap_or_default();
         inject_external_subtitles(
             &state.ctx,
             sm,
             &mut media_sources,
             id,
-            &session.device.access_token,
+            &session
+                .device
+                .access_token,
             sub_langs,
         )
         .await;
     }
 
     // Apply per-user playback preferences
-    apply_user_playback_prefs(&state.ctx.db, &session.user, &id, &mut media_sources)
-        .await;
+    apply_user_playback_prefs(
+        &state
+            .ctx
+            .db,
+        &session.user,
+        &id,
+        &mut media_sources,
+    )
+    .await;
 
     // When no specific source was requested (initial load, or media_source_id == item_id),
     // override source[0].Id to equal the item ID — clients expect this for auto-play.
@@ -656,7 +805,10 @@ async fn probe_source(
         return Ok(api::MediaSourceInfo::from(sm.clone()));
     }
     if let Some(cached) = &sm.probe_data {
-        if cached.video_stream().is_some() {
+        if cached
+            .video_stream()
+            .is_some()
+        {
             tracing::debug!(id = %sm.id, "probe cache hit");
             return Ok(cached.clone());
         }
@@ -693,7 +845,10 @@ async fn probe_with_fallback(
     use crate::{IntoApiError, ResultExt};
 
     let candidates: Vec<(db::Media, String)> = if auto_next_stream {
-        let pri_p2p = primary.stream_info.as_ref().map_or(false, |si| si.is_p2p());
+        let pri_p2p = primary
+            .stream_info
+            .as_ref()
+            .map_or(false, |si| si.is_p2p());
         let pri_res = primary
             .stream_info
             .as_ref()
@@ -704,13 +859,18 @@ async fn probe_with_fallback(
                 if c.id == primary.id {
                     return false;
                 }
-                let c_p2p = c.stream_info.as_ref().map_or(false, |si| si.is_p2p());
+                let c_p2p = c
+                    .stream_info
+                    .as_ref()
+                    .map_or(false, |si| si.is_p2p());
                 if c_p2p != pri_p2p {
                     return false;
                 }
                 if restrict_resolution {
-                    let c_res =
-                        c.stream_info.as_ref().and_then(|si| si.resolution_tag());
+                    let c_res = c
+                        .stream_info
+                        .as_ref()
+                        .and_then(|si| si.resolution_tag());
                     if c_res != pri_res {
                         return false;
                     }
@@ -725,7 +885,11 @@ async fn probe_with_fallback(
                 usize::MAX
             })
             .filter_map(|c| {
-                let url = c.stream_info.as_ref()?.descriptor.server_input(c.id, port);
+                let url = c
+                    .stream_info
+                    .as_ref()?
+                    .descriptor
+                    .server_input(c.id, port);
                 Some((c.clone(), url))
             })
             .collect()
@@ -733,8 +897,11 @@ async fn probe_with_fallback(
         vec![]
     };
 
-    let all_to_try = std::iter::once((primary.clone(), primary_url))
-        .chain(candidates.into_iter().map(|(m, u)| (m, Some(u))));
+    let all_to_try = std::iter::once((primary.clone(), primary_url)).chain(
+        candidates
+            .into_iter()
+            .map(|(m, u)| (m, Some(u))),
+    );
 
     for (sm, url_opt) in all_to_try {
         let is_retry = sm.id != primary.id;
@@ -766,7 +933,13 @@ async fn probe_with_fallback(
 
         match probe_result {
             Ok(Ok(Ok((mut probed, segments)))) => {
-                if probed.video_stream().is_some() || probed.audio_stream().is_some() {
+                if probed
+                    .video_stream()
+                    .is_some()
+                    || probed
+                        .audio_stream()
+                        .is_some()
+                {
                     if !segments.is_empty() {
                         probed.segments = Some(segments);
                     }
@@ -838,7 +1011,9 @@ pub async fn audio_stream_by_container(
     Path((id, container)): Path<(Uuid, String)>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    if q.container.is_none() {
+    if q.container
+        .is_none()
+    {
         q.container = Some(container);
     }
     videos_stream_inner(headers, state, id, q).await
@@ -861,7 +1036,9 @@ pub async fn videos_stream_by_container(
     Path((id, container)): Path<(Uuid, String)>,
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
-    if q.container.is_none() {
+    if q.container
+        .is_none()
+    {
         q.container = Some(container);
     }
     videos_stream_inner(headers, state, id, q).await
@@ -873,22 +1050,40 @@ async fn videos_stream_inner(
     id: Uuid,
     q: api::VideoStreamQuery,
 ) -> Result<impl IntoResponse> {
-    let mut media =
-        db::Media::get_by_id(&state.ctx.db, &q.media_source_id.unwrap_or(id))
-            .await?
-            .context_not_found("not found")?;
+    let mut media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &q.media_source_id
+            .unwrap_or(id),
+    )
+    .await?
+    .context_not_found("not found")?;
 
     if media.kind == db::MediaKind::Movie
         || media.kind == db::MediaKind::Episode
         || media.kind == db::MediaKind::Track
     {
-        let sources = media.streams(&state.ctx.db).await?;
+        let sources = media
+            .streams(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await?;
         media = if let Some(wanted) = q.media_source_id {
-            sources.iter().find(|s| s.id == wanted).cloned()
+            sources
+                .iter()
+                .find(|s| s.id == wanted)
+                .cloned()
         } else {
             None
         }
-        .or_else(|| sources.into_iter().next())
+        .or_else(|| {
+            sources
+                .into_iter()
+                .next()
+        })
         .context_not_found("no playable source found")?;
     }
 
@@ -900,7 +1095,9 @@ async fn videos_stream_inner(
     // Direct play: serve bytes directly through the StreamSource trait.
     // This handles HTTP, local files, torrents, and opendal without going through
     // our own HTTP proxy — TorrentSource resolves and streams inline.
-    if q.static_.unwrap_or(false) {
+    if q.static_
+        .unwrap_or(false)
+    {
         let resp = if let Some(addon_id) = descriptor.addon_id() {
             let addon = state
                 .ctx
@@ -908,7 +1105,10 @@ async fn videos_stream_inner(
                 .get(addon_id)
                 .await
                 .context_not_found("addon not found")?;
-            addon.kind.serve_stream(&descriptor, &headers).await?
+            addon
+                .kind
+                .serve_stream(&descriptor, &headers)
+                .await?
         } else {
             descriptor
                 .clone()
@@ -919,25 +1119,48 @@ async fn videos_stream_inner(
         return Ok(resp);
     }
 
-    let url = descriptor.server_input(media.id, state.ctx.config.port);
+    let url = descriptor.server_input(
+        media.id,
+        state
+            .ctx
+            .config
+            .port,
+    );
 
     // Progressive transcode/remux: only reached when Static=false.
-    let wants_stream_selection =
-        q.audio_stream_index.is_some() || q.subtitle_stream_index.is_some();
-    let container = q.container.as_deref().unwrap_or("mp4").to_string();
-    let video_codec = q.video_codec.as_deref().unwrap_or("copy");
-    let encoding_opts = crate::db::Settings::get_encoding_config(&state.ctx.db)
-        .await
-        .unwrap_or_default();
-    let video_transcode_enabled =
-        encoding_opts.enable_video_transcoding.unwrap_or(true);
+    let wants_stream_selection = q
+        .audio_stream_index
+        .is_some()
+        || q.subtitle_stream_index
+            .is_some();
+    let container = q
+        .container
+        .as_deref()
+        .unwrap_or("mp4")
+        .to_string();
+    let video_codec = q
+        .video_codec
+        .as_deref()
+        .unwrap_or("copy");
+    let encoding_opts = crate::db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let video_transcode_enabled = encoding_opts
+        .enable_video_transcoding
+        .unwrap_or(true);
     let video_codec = if video_codec == "copy" || !video_transcode_enabled {
         "copy"
     } else {
         "h264"
     }
     .to_string();
-    let audio_codec = q.audio_codec.unwrap_or_else(|| "aac".to_string());
+    let audio_codec = q
+        .audio_codec
+        .unwrap_or_else(|| "aac".to_string());
     // Keep a copy before the video_codec is moved into params (needed for Content-Type logic)
     let is_copy_video = video_codec == "copy";
 
@@ -951,11 +1174,23 @@ async fn videos_stream_inner(
         q.video_bit_rate
     );
 
-    let encoding_opts = crate::db::Settings::get_encoding_config(&state.ctx.db)
-        .await
-        .unwrap_or_default();
-    let source_video_stream = media.probe_data.as_ref().and_then(|p| p.video_stream());
-    let source_video_codec = source_video_stream.as_ref().and_then(|s| s.codec.clone());
+    let encoding_opts = crate::db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let source_video_stream = media
+        .probe_data
+        .as_ref()
+        .and_then(|p| p.video_stream());
+    let source_video_codec = source_video_stream
+        .as_ref()
+        .and_then(|s| {
+            s.codec
+                .clone()
+        });
     let source_video_range_type = source_video_stream
         .as_ref()
         .and_then(|s| s.video_range_type);
@@ -965,14 +1200,31 @@ async fn videos_stream_inner(
         video_codec,
         audio_codec,
         start_time_ticks: q.start_time_ticks,
-        max_width: q.max_width.map(|v| v as u32),
-        max_height: q.max_height.map(|v| v as u32),
-        video_bitrate: q.video_bit_rate.map(|v| v as u32),
-        audio_bitrate: q.audio_bit_rate.map(|v| v as u32),
-        audio_channels: q.audio_channels.map(|v| v as u32),
-        audio_stream_index: q.audio_stream_index.map(|v| v as i32),
-        subtitle_stream_index: q.subtitle_stream_index.map(|v| v as i32),
-        burn_subtitle: q.subtitle_method.as_deref() == Some("Encode"),
+        max_width: q
+            .max_width
+            .map(|v| v as u32),
+        max_height: q
+            .max_height
+            .map(|v| v as u32),
+        video_bitrate: q
+            .video_bit_rate
+            .map(|v| v as u32),
+        audio_bitrate: q
+            .audio_bit_rate
+            .map(|v| v as u32),
+        audio_channels: q
+            .audio_channels
+            .map(|v| v as u32),
+        audio_stream_index: q
+            .audio_stream_index
+            .map(|v| v as i32),
+        subtitle_stream_index: q
+            .subtitle_stream_index
+            .map(|v| v as i32),
+        burn_subtitle: q
+            .subtitle_method
+            .as_deref()
+            == Some("Encode"),
         subtitle_width: None,
         subtitle_height: None,
         encoding_preset: encoding_opts.encoding_preset,
@@ -983,19 +1235,37 @@ async fn videos_stream_inner(
         vaapi_device: encoding_opts
             .vaapi_device
             .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
-        vaapi_driver: encoding_opts.vaapi_driver.unwrap_or_default(),
+        vaapi_driver: encoding_opts
+            .vaapi_driver
+            .unwrap_or_default(),
         source_video_range_type,
-        enable_tonemapping: encoding_opts.enable_tonemapping.unwrap_or(false),
-        enable_vpp_tonemapping: encoding_opts.enable_vpp_tonemapping.unwrap_or(false),
+        enable_tonemapping: encoding_opts
+            .enable_tonemapping
+            .unwrap_or(false),
+        enable_vpp_tonemapping: encoding_opts
+            .enable_vpp_tonemapping
+            .unwrap_or(false),
         tonemapping_algorithm: encoding_opts
             .tonemapping_algorithm
             .unwrap_or_else(|| "hable".to_string()),
-        tonemapping_desat: encoding_opts.tonemapping_desat.unwrap_or(0.0),
-        tonemapping_peak: encoding_opts.tonemapping_peak.unwrap_or(0.0),
-        allow_hevc_encoding: encoding_opts.allow_hevc_encoding.unwrap_or(false),
-        allow_av1_encoding: encoding_opts.allow_av1_encoding.unwrap_or(false),
-        h264_crf: encoding_opts.h264_crf.unwrap_or(23),
-        h265_crf: encoding_opts.h265_crf.unwrap_or(28),
+        tonemapping_desat: encoding_opts
+            .tonemapping_desat
+            .unwrap_or(0.0),
+        tonemapping_peak: encoding_opts
+            .tonemapping_peak
+            .unwrap_or(0.0),
+        allow_hevc_encoding: encoding_opts
+            .allow_hevc_encoding
+            .unwrap_or(false),
+        allow_av1_encoding: encoding_opts
+            .allow_av1_encoding
+            .unwrap_or(false),
+        h264_crf: encoding_opts
+            .h264_crf
+            .unwrap_or(23),
+        h265_crf: encoding_opts
+            .h265_crf
+            .unwrap_or(28),
     };
 
     let stream = crate::transcode::engine::start_progressive_transcode(params)?;
@@ -1028,8 +1298,15 @@ pub async fn sessions_logout(
     State(state): State<AppState>,
     session: auth::AuthSession,
 ) -> Result<StatusCode> {
-    auth::Device::delete_by_access_token(&state.ctx.db, &session.device.access_token)
-        .await?;
+    auth::Device::delete_by_access_token(
+        &state
+            .ctx
+            .db,
+        &session
+            .device
+            .access_token,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1040,9 +1317,16 @@ pub async fn sessions_capabilities(
     body: Option<Json<api::ClientCapabilitiesDto>>,
 ) -> Result<StatusCode> {
     if let Some(Json(caps)) = body {
-        let _ =
-            auth::Device::save_capabilities(&state.ctx.db, &session.device.id, &caps)
-                .await;
+        let _ = auth::Device::save_capabilities(
+            &state
+                .ctx
+                .db,
+            &session
+                .device
+                .id,
+            &caps,
+        )
+        .await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1055,7 +1339,14 @@ pub async fn sessions_capabilities_by_id(
     body: Option<Json<api::ClientCapabilitiesDto>>,
 ) -> Result<StatusCode> {
     if let Some(Json(caps)) = body {
-        let _ = auth::Device::save_capabilities(&state.ctx.db, &id, &caps).await;
+        let _ = auth::Device::save_capabilities(
+            &state
+                .ctx
+                .db,
+            &id,
+            &caps,
+        )
+        .await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1069,11 +1360,19 @@ pub async fn report_playback_start(
     state
         .ctx
         .sessions
-        .start(&state.ctx.db, &session, &data)
+        .start(
+            &state
+                .ctx
+                .db,
+            &session,
+            &data,
+        )
         .await
         .map_err(|e| {
             // Re-raise stream-limit errors as 403 Forbidden; everything else as 500.
-            if e.to_string().contains("Stream limit reached") {
+            if e.to_string()
+                .contains("Stream limit reached")
+            {
                 e.context_forbidden("Maximum concurrent streams reached")
             } else {
                 e.context_internal("failed to start session")
@@ -1407,7 +1706,11 @@ mod tests {
         // id is the device id from the auth header, not the play session id
         assert_eq!(sessions[0].id, Some("test-device".to_string()));
         // now_playing_item is populated for the active playback session
-        assert!(sessions[0].now_playing_item.is_some());
+        assert!(
+            sessions[0]
+                .now_playing_item
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -1429,14 +1732,31 @@ mod tests {
         resp.assert_status_ok();
         let sessions: Vec<crate::api::SessionInfoDto> = resp.json();
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].device_name.as_deref(), Some("Chrome Laptop"));
-        assert_eq!(sessions[0].client.as_deref(), Some("Jellyfin Web"));
-        assert_eq!(sessions[0].application_version.as_deref(), Some("10.11.0"));
+        assert_eq!(
+            sessions[0]
+                .device_name
+                .as_deref(),
+            Some("Chrome Laptop")
+        );
+        assert_eq!(
+            sessions[0]
+                .client
+                .as_deref(),
+            Some("Jellyfin Web")
+        );
+        assert_eq!(
+            sessions[0]
+                .application_version
+                .as_deref(),
+            Some("10.11.0")
+        );
     }
 
     #[tokio::test]
     async fn test_playbackinfo_requires_auth() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
         let fake_id = uuid::Uuid::new_v4();
 
         server
@@ -1530,7 +1850,12 @@ mod tests {
         }));
         // Sanity-check bitrate is probed and non-zero (exact value varies by probe).
         let body: serde_json::Value = resp.json();
-        assert!(body["MediaSources"][0]["Bitrate"].as_i64().unwrap_or(0) > 0);
+        assert!(
+            body["MediaSources"][0]["Bitrate"]
+                .as_i64()
+                .unwrap_or(0)
+                > 0
+        );
     }
 
     /// A device profile that supports direct play causes the endpoint to return a direct-play response.
@@ -1746,8 +2071,12 @@ mod tests {
         let body: serde_json::Value = resp_no_sid.json();
         // Without MediaSourceId the server overrides source[0].Id to the item id.
         assert_eq!(
-            body["MediaSources"][0]["Id"].as_str().unwrap(),
-            source.id.to_string(),
+            body["MediaSources"][0]["Id"]
+                .as_str()
+                .unwrap(),
+            source
+                .id
+                .to_string(),
             "source Id should equal item id when no MediaSourceId given"
         );
 
@@ -1763,8 +2092,12 @@ mod tests {
         resp_with_sid.assert_status_ok();
         let body2: serde_json::Value = resp_with_sid.json();
         assert_eq!(
-            body2["MediaSources"][0]["Id"].as_str().unwrap(),
-            source.id.to_string(),
+            body2["MediaSources"][0]["Id"]
+                .as_str()
+                .unwrap(),
+            source
+                .id
+                .to_string(),
             "source Id must equal item id when MediaSourceId == item id (Android TV)"
         );
     }
@@ -1821,7 +2154,10 @@ mod tests {
             updated_at: now,
             ..Default::default()
         };
-        movie.save(&ctx.db).await.expect("save track");
+        movie
+            .save(&ctx.db)
+            .await
+            .expect("save track");
 
         let mut source_a = db::Media {
             title: "1080p".to_string(),
@@ -1839,7 +2175,10 @@ mod tests {
             updated_at: now,
             ..Default::default()
         };
-        source_a.save(&ctx.db).await.expect("save source_a");
+        source_a
+            .save(&ctx.db)
+            .await
+            .expect("save source_a");
 
         let mut source_b = db::Media {
             title: "720p".to_string(),
@@ -1857,7 +2196,10 @@ mod tests {
             updated_at: now,
             ..Default::default()
         };
-        source_b.save(&ctx.db).await.expect("save source_b");
+        source_b
+            .save(&ctx.db)
+            .await
+            .expect("save source_b");
 
         // Specific source requested: must return exactly one source with that id.
         let resp = server
@@ -1871,18 +2213,29 @@ mod tests {
         resp.assert_status_ok();
         let body: serde_json::Value = resp.json();
         assert_eq!(
-            body["MediaSources"].as_array().unwrap().len(),
+            body["MediaSources"]
+                .as_array()
+                .unwrap()
+                .len(),
             1,
             "specific source requested: must return exactly one MediaSource"
         );
         assert_eq!(
-            body["MediaSources"][0]["Id"].as_str().unwrap(),
-            source_a.id.to_string(),
+            body["MediaSources"][0]["Id"]
+                .as_str()
+                .unwrap(),
+            source_a
+                .id
+                .to_string(),
             "Id must equal the requested MediaSourceId, not source_b's id"
         );
         assert_eq!(
-            body["MediaSources"][0]["ETag"].as_str().unwrap(),
-            source_a.id.to_string(),
+            body["MediaSources"][0]["ETag"]
+                .as_str()
+                .unwrap(),
+            source_a
+                .id
+                .to_string(),
             "ETag must equal the requested MediaSourceId"
         );
 
@@ -1898,13 +2251,21 @@ mod tests {
         resp2.assert_status_ok();
         let body2: serde_json::Value = resp2.json();
         assert_eq!(
-            body2["MediaSources"][0]["Id"].as_str().unwrap(),
-            movie.id.to_string(),
+            body2["MediaSources"][0]["Id"]
+                .as_str()
+                .unwrap(),
+            movie
+                .id
+                .to_string(),
             "without MediaSourceId, first source Id must equal the item id, not a stream's id"
         );
         assert_eq!(
-            body2["MediaSources"][0]["ETag"].as_str().unwrap(),
-            movie.id.to_string(),
+            body2["MediaSources"][0]["ETag"]
+                .as_str()
+                .unwrap(),
+            movie
+                .id
+                .to_string(),
             "without MediaSourceId, ETag must equal the item id"
         );
     }
@@ -1920,7 +2281,14 @@ pub async fn report_playback_progress(
         state
             .ctx
             .sessions
-            .progress(&state.ctx.db, &session.user, psid, &data)
+            .progress(
+                &state
+                    .ctx
+                    .db,
+                &session.user,
+                psid,
+                &data,
+            )
             .await
             .context_internal("failed to update progress")?;
     }
@@ -1937,7 +2305,14 @@ pub async fn report_playback_stopped(
         state
             .ctx
             .sessions
-            .stopped(&state.ctx.db, &session.user, psid, &data)
+            .stopped(
+                &state
+                    .ctx
+                    .db,
+                &session.user,
+                psid,
+                &data,
+            )
             .await
             .context_internal("failed to record stop")?;
     }
@@ -1955,7 +2330,10 @@ pub async fn ping_playback_session(
     _session: auth::AuthSession,
     Query(q): Query<PingQuery>,
 ) -> Result<impl IntoResponse> {
-    state.ctx.sessions.ping(&q.play_session_id);
+    state
+        .ctx
+        .sessions
+        .ping(&q.play_session_id);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1966,9 +2344,16 @@ pub async fn sessions_capabilities_full(
     body: Option<Json<api::ClientCapabilitiesDto>>,
 ) -> Result<StatusCode> {
     if let Some(Json(caps)) = body {
-        let _ =
-            auth::Device::save_capabilities(&state.ctx.db, &session.device.id, &caps)
-                .await;
+        let _ = auth::Device::save_capabilities(
+            &state
+                .ctx
+                .db,
+            &session
+                .device
+                .id,
+            &caps,
+        )
+        .await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1981,7 +2366,14 @@ pub async fn sessions_capabilities_full_by_id(
     body: Option<Json<api::ClientCapabilitiesDto>>,
 ) -> Result<StatusCode> {
     if let Some(Json(caps)) = body {
-        let _ = auth::Device::save_capabilities(&state.ctx.db, &id, &caps).await;
+        let _ = auth::Device::save_capabilities(
+            &state
+                .ctx
+                .db,
+            &id,
+            &caps,
+        )
+        .await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2002,8 +2394,17 @@ pub async fn get_sessions(
     _session: auth::AuthSession,
     Query(q): Query<SessionsQuery>,
 ) -> Result<impl IntoResponse> {
-    let devices = auth::Device::get_all(&state.ctx.db, q.active_within).await?;
-    let playback_sessions = state.ctx.sessions.get_all();
+    let devices = auth::Device::get_all(
+        &state
+            .ctx
+            .db,
+        q.active_within,
+    )
+    .await?;
+    let playback_sessions = state
+        .ctx
+        .sessions
+        .get_all();
 
     let mut sessions = Vec::with_capacity(devices.len());
     for device in devices {
@@ -2014,46 +2415,78 @@ pub async fn get_sessions(
         let ps = playback_sessions
             .iter()
             .filter(|s| s.device_id == device.id)
-            .max_by_key(|s| (s.transcode.is_some(), s.last_activity));
+            .max_by_key(|s| {
+                (
+                    s.transcode
+                        .is_some(),
+                    s.last_activity,
+                )
+            });
 
         // Load full media from DB if there's an active playback session.
         let mut media = if let Some(ps) = ps {
-            db::Media::get_by_id(&state.ctx.db, &ps.item_id)
-                .await
-                .ok()
-                .flatten()
+            db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &ps.item_id,
+            )
+            .await
+            .ok()
+            .flatten()
         } else {
             None
         };
 
         // Load the source being played directly by media_source_id.
         // The source has probe_data with MediaStreams from ffprobe.
-        let mut source_media =
-            if let Some(msid) = ps.and_then(|p| p.media_source_id.as_ref()) {
-                if let Ok(source_id) = msid.parse::<Uuid>() {
-                    db::Media::get_by_id(&state.ctx.db, &source_id)
-                        .await
-                        .ok()
-                        .flatten()
-                } else {
-                    None
-                }
+        let mut source_media = if let Some(msid) = ps.and_then(|p| {
+            p.media_source_id
+                .as_ref()
+        }) {
+            if let Ok(source_id) = msid.parse::<Uuid>() {
+                db::Media::get_by_id(
+                    &state
+                        .ctx
+                        .db,
+                    &source_id,
+                )
+                .await
+                .ok()
+                .flatten()
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
         // Fallback: if media_source_id didn't yield probe data, try the first
         // Source child of the item (covers cases where media_source_id is missing
         // or points to the parent item itself without probe data).
         if source_media
             .as_ref()
-            .and_then(|m| m.probe_data.as_ref())
+            .and_then(|m| {
+                m.probe_data
+                    .as_ref()
+            })
             .is_none()
         {
             if let Some(m) = media.as_mut() {
-                if let Ok(sources) = m.streams(&state.ctx.db).await {
-                    if let Some(s) =
-                        sources.into_iter().find(|s| s.probe_data.is_some())
+                if let Ok(sources) = m
+                    .streams(
+                        &state
+                            .ctx
+                            .db,
+                    )
+                    .await
+                {
+                    if let Some(s) = sources
+                        .into_iter()
+                        .find(|s| {
+                            s.probe_data
+                                .is_some()
+                        })
                     {
                         source_media = Some(s);
                     }
@@ -2063,8 +2496,18 @@ pub async fn get_sessions(
 
         let probe_data = source_media
             .as_ref()
-            .and_then(|m| m.probe_data.as_ref())
-            .or_else(|| media.as_ref().and_then(|m| m.probe_data.as_ref()));
+            .and_then(|m| {
+                m.probe_data
+                    .as_ref()
+            })
+            .or_else(|| {
+                media
+                    .as_ref()
+                    .and_then(|m| {
+                        m.probe_data
+                            .as_ref()
+                    })
+            });
 
         // Populate now-playing item from DB for full metadata.
         let now_playing = if let Some(ps) = ps {
@@ -2077,17 +2520,32 @@ pub async fn get_sessions(
                 });
             // Attach MediaStreams from probe data so clients can see track info.
             if let Some(probe) = probe_data {
-                if !probe.media_streams.is_empty() {
-                    if item.media_streams.is_none() {
-                        item.media_streams = Some(probe.media_streams.clone());
+                if !probe
+                    .media_streams
+                    .is_empty()
+                {
+                    if item
+                        .media_streams
+                        .is_none()
+                    {
+                        item.media_streams = Some(
+                            probe
+                                .media_streams
+                                .clone(),
+                        );
                     }
                     // Populate MediaStreams inside each MediaSource so clients
                     // that read streams from the source (e.g. Streamyfin) get
                     // the full track list even in the Sessions response.
                     if let Some(ref mut sources) = item.media_sources {
                         for source in sources.iter_mut() {
-                            if source.media_streams.is_empty() {
-                                source.media_streams = probe.media_streams.clone();
+                            if source
+                                .media_streams
+                                .is_empty()
+                            {
+                                source.media_streams = probe
+                                    .media_streams
+                                    .clone();
                             }
                         }
                     }
@@ -2099,77 +2557,104 @@ pub async fn get_sessions(
         };
 
         // Attach TranscodingInfo with enriched metadata from probe data.
-        let transcode_guard = if let Some(ts) = ps.and_then(|ps| ps.transcode.clone()) {
-            Some(ts.read_owned().await)
+        let transcode_guard = if let Some(ts) = ps.and_then(|ps| {
+            ps.transcode
+                .clone()
+        }) {
+            Some(
+                ts.read_owned()
+                    .await,
+            )
         } else {
             None
         };
-        let transcoding_info = transcode_guard.as_deref().map(|ts| {
-            // Pull width/height/bitrate/channels from source media probe data.
-            let video_stream = probe_data.and_then(|p| {
-                p.media_streams
-                    .iter()
-                    .find(|s| s.type_ == Some(api::MediaStreamType::Video))
+        let transcoding_info = transcode_guard
+            .as_deref()
+            .map(|ts| {
+                // Pull width/height/bitrate/channels from source media probe data.
+                let video_stream = probe_data.and_then(|p| {
+                    p.media_streams
+                        .iter()
+                        .find(|s| s.type_ == Some(api::MediaStreamType::Video))
+                });
+                let width = video_stream.and_then(|v| {
+                    v.width
+                        .map(|x| x as i32)
+                });
+                let height = video_stream.and_then(|v| {
+                    v.height
+                        .map(|x| x as i32)
+                });
+                let audio_channels = probe_data.and_then(|p| {
+                    p.media_streams
+                        .iter()
+                        .find(|s| s.type_ == Some(api::MediaStreamType::Audio))
+                        .and_then(|a| {
+                            a.channels
+                                .map(|x| x as i32)
+                        })
+                });
+
+                // Compute completion percentage from transcode progress.
+                let completion_percentage = if ts.runtime_ticks > 0 {
+                    let start_ticks = ts.start_time_secs as i64 * 10_000_000;
+                    let last_seg = ts
+                        .last_segment_index
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        as i64;
+                    let transcoded_ticks = start_ticks
+                        + (last_seg + 1) * ts.segment_length as i64 * 10_000_000;
+                    Some(
+                        (transcoded_ticks as f64 / ts.runtime_ticks as f64 * 100.0)
+                            .min(100.0),
+                    )
+                } else {
+                    None
+                };
+
+                // Use the actual source codec name when ffmpeg is copying the
+                // stream (remux). Clients use VideoCodec/AudioCodec to display
+                // the stream format, so "copy" is meaningless to them.
+                let video_codec_name = if ts.video_codec == "copy" {
+                    ts.source_video_codec
+                        .clone()
+                        .unwrap_or_else(|| {
+                            ts.video_codec
+                                .clone()
+                        })
+                } else {
+                    ts.video_codec
+                        .clone()
+                };
+                let audio_codec_name = if ts.audio_codec == "copy" {
+                    ts.source_audio_codec
+                        .clone()
+                        .unwrap_or_else(|| {
+                            ts.audio_codec
+                                .clone()
+                        })
+                } else {
+                    ts.audio_codec
+                        .clone()
+                };
+
+                api::TranscodingInfo {
+                    audio_codec: Some(audio_codec_name),
+                    video_codec: Some(video_codec_name),
+                    container: Some("ts".to_string()),
+                    is_video_direct: ts.video_codec == "copy",
+                    is_audio_direct: ts.audio_codec == "copy",
+                    bitrate: probe_data.and_then(|p| p.bitrate),
+                    width,
+                    height,
+                    audio_channels,
+                    completion_percentage,
+                    transcode_reasons: ts
+                        .transcode_reasons
+                        .clone(),
+                    ..Default::default()
+                }
             });
-            let width = video_stream.and_then(|v| v.width.map(|x| x as i32));
-            let height = video_stream.and_then(|v| v.height.map(|x| x as i32));
-            let audio_channels = probe_data.and_then(|p| {
-                p.media_streams
-                    .iter()
-                    .find(|s| s.type_ == Some(api::MediaStreamType::Audio))
-                    .and_then(|a| a.channels.map(|x| x as i32))
-            });
-
-            // Compute completion percentage from transcode progress.
-            let completion_percentage = if ts.runtime_ticks > 0 {
-                let start_ticks = ts.start_time_secs as i64 * 10_000_000;
-                let last_seg = ts
-                    .last_segment_index
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                    as i64;
-                let transcoded_ticks = start_ticks
-                    + (last_seg + 1) * ts.segment_length as i64 * 10_000_000;
-                Some(
-                    (transcoded_ticks as f64 / ts.runtime_ticks as f64 * 100.0)
-                        .min(100.0),
-                )
-            } else {
-                None
-            };
-
-            // Use the actual source codec name when ffmpeg is copying the
-            // stream (remux). Clients use VideoCodec/AudioCodec to display
-            // the stream format, so "copy" is meaningless to them.
-            let video_codec_name = if ts.video_codec == "copy" {
-                ts.source_video_codec
-                    .clone()
-                    .unwrap_or_else(|| ts.video_codec.clone())
-            } else {
-                ts.video_codec.clone()
-            };
-            let audio_codec_name = if ts.audio_codec == "copy" {
-                ts.source_audio_codec
-                    .clone()
-                    .unwrap_or_else(|| ts.audio_codec.clone())
-            } else {
-                ts.audio_codec.clone()
-            };
-
-            api::TranscodingInfo {
-                audio_codec: Some(audio_codec_name),
-                video_codec: Some(video_codec_name),
-                container: Some("ts".to_string()),
-                is_video_direct: ts.video_codec == "copy",
-                is_audio_direct: ts.audio_codec == "copy",
-                bitrate: probe_data.and_then(|p| p.bitrate),
-                width,
-                height,
-                audio_channels,
-                completion_percentage,
-                transcode_reasons: ts.transcode_reasons.clone(),
-                ..Default::default()
-            }
-        });
 
         // Build PlayState from active playback session, always non-null.
         let play_state = Some(
@@ -2181,8 +2666,12 @@ pub async fn get_sessions(
                 volume_level: ps.volume_level,
                 audio_stream_index: ps.audio_stream_index,
                 subtitle_stream_index: ps.subtitle_stream_index,
-                media_source_id: ps.media_source_id.clone(),
-                play_method: ps.play_method.clone(),
+                media_source_id: ps
+                    .media_source_id
+                    .clone(),
+                play_method: ps
+                    .play_method
+                    .clone(),
                 repeat_mode: "RepeatNone".to_string(),
                 playback_order: "Default".to_string(),
             })
@@ -2200,8 +2689,10 @@ pub async fn get_sessions(
             .as_ref()
             .map_or((vec![], vec![], false, false), |c| {
                 (
-                    c.playable_media_types.clone(),
-                    c.supported_commands.clone(),
+                    c.playable_media_types
+                        .clone(),
+                    c.supported_commands
+                        .clone(),
                     c.supports_media_control,
                     c.supports_media_control,
                 )
@@ -2209,37 +2700,82 @@ pub async fn get_sessions(
 
         let last_paused_date = ps.and_then(|ps| ps.last_paused_at);
         let now_playing_queue: Vec<_> = ps
-            .and_then(|ps| ps.now_playing_queue.clone())
+            .and_then(|ps| {
+                ps.now_playing_queue
+                    .clone()
+            })
             .unwrap_or_default();
-        let playlist_item_id = ps.and_then(|ps| ps.playlist_item_id.clone());
+        let playlist_item_id = ps.and_then(|ps| {
+            ps.playlist_item_id
+                .clone()
+        });
 
         // Populate NowPlayingQueueFullItems from queue item IDs.
         let mut now_playing_queue_full_items =
             Vec::with_capacity(now_playing_queue.len());
         for qi in &now_playing_queue {
-            if let Ok(Some(m)) = db::Media::get_by_id(&state.ctx.db, &qi.id).await {
+            if let Ok(Some(m)) = db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &qi.id,
+            )
+            .await
+            {
                 now_playing_queue_full_items.push(api::db_media_to_item(m));
             }
         }
 
-        let remote_end_point = device.remote_ip.clone();
+        let remote_end_point = device
+            .remote_ip
+            .clone();
 
         let user_name = device
-            .user(&state.ctx.db)
+            .user(
+                &state
+                    .ctx
+                    .db,
+            )
             .await?
             .map(|u| u.username)
             .unwrap_or_default();
 
         sessions.push(api::SessionInfoDto {
-            id: Some(device.id.clone()),
-            device_id: Some(device.id.clone()),
-            device_name: Some(device.name.clone()),
-            client: Some(device.app_name.clone()),
-            application_version: Some(device.app_version.clone()),
-            user_id: device.user_id.to_string(),
+            id: Some(
+                device
+                    .id
+                    .clone(),
+            ),
+            device_id: Some(
+                device
+                    .id
+                    .clone(),
+            ),
+            device_name: Some(
+                device
+                    .name
+                    .clone(),
+            ),
+            client: Some(
+                device
+                    .app_name
+                    .clone(),
+            ),
+            application_version: Some(
+                device
+                    .app_version
+                    .clone(),
+            ),
+            user_id: device
+                .user_id
+                .to_string(),
             user_name: Some(user_name),
-            last_activity_date: device.last_activity_at.unwrap_or_else(Utc::now),
-            last_playback_check_in: device.last_activity_at.unwrap_or_else(Utc::now),
+            last_activity_date: device
+                .last_activity_at
+                .unwrap_or_else(Utc::now),
+            last_playback_check_in: device
+                .last_activity_at
+                .unwrap_or_else(Utc::now),
             last_paused_date,
             remote_end_point,
             now_playing_item: now_playing,
@@ -2268,11 +2804,22 @@ pub async fn user_mark_played(
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(&state.ctx.db, &id)
-        .await?
-        .context_not_found("not found")?;
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .context_not_found("not found")?;
     let ms = media
-        .mark_played(&state.ctx.db, &session.user, true)
+        .mark_played(
+            &state
+                .ctx
+                .db,
+            &session.user,
+            true,
+        )
         .await?;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -2283,11 +2830,22 @@ pub async fn user_unmark_played(
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(&state.ctx.db, &id)
-        .await?
-        .context_not_found("not found")?;
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .context_not_found("not found")?;
     let ms = media
-        .mark_unplayed(&state.ctx.db, &session.user, true)
+        .mark_unplayed(
+            &state
+                .ctx
+                .db,
+            &session.user,
+            true,
+        )
         .await?;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
 }
@@ -2312,56 +2870,98 @@ pub async fn master_hls_video(
 
     let play_session_id = q
         .play_session_id
-        .unwrap_or_else(|| common::get_uuid().as_simple().to_string());
+        .unwrap_or_else(|| {
+            common::get_uuid()
+                .as_simple()
+                .to_string()
+        });
 
     tracing::debug!("Using play session ID: {}", play_session_id);
 
-    let encoding_opts_hls = crate::db::Settings::get_encoding_config(&state.ctx.db)
-        .await
-        .unwrap_or_default();
-    let video_transcode_enabled_hls =
-        encoding_opts_hls.enable_video_transcoding.unwrap_or(true);
-    let video_codec_raw = q.video_codec.as_deref().unwrap_or("copy");
+    let encoding_opts_hls = crate::db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let video_transcode_enabled_hls = encoding_opts_hls
+        .enable_video_transcoding
+        .unwrap_or(true);
+    let video_codec_raw = q
+        .video_codec
+        .as_deref()
+        .unwrap_or("copy");
     let video_codec = if video_codec_raw == "copy" || !video_transcode_enabled_hls {
         "copy".to_string()
     } else {
         "h264".to_string()
     };
-    let audio_codec = q.audio_codec.unwrap_or_else(|| "aac".to_string());
-    let segment_length = q.segment_length.unwrap_or(6) as u32;
+    let audio_codec = q
+        .audio_codec
+        .unwrap_or_else(|| "aac".to_string());
+    let segment_length = q
+        .segment_length
+        .unwrap_or(6) as u32;
 
     // Look up existing session or create a new one.
     // When the client seeks it sends the same PlaySessionId but with a new
     // StartTimeTicks.  In that case we must stop the old transcode job and
     // restart from the requested position — otherwise the player waits for
     // segments that the old job will never produce at the new offset.
-    let is_seeking = q.start_time_ticks.is_some_and(|t| t > 0);
+    let is_seeking = q
+        .start_time_ticks
+        .is_some_and(|t| t > 0);
     if is_seeking {
-        if state.ctx.sessions.get_transcode(&play_session_id).is_some() {
+        if state
+            .ctx
+            .sessions
+            .get_transcode(&play_session_id)
+            .is_some()
+        {
             tracing::debug!(
                 play_session_id = %play_session_id,
                 start_time_ticks = ?q.start_time_ticks,
                 "seek detected — stopping old transcode session and restarting"
             );
-            state.ctx.sessions.stop_transcode(&play_session_id).await;
+            state
+                .ctx
+                .sessions
+                .stop_transcode(&play_session_id)
+                .await;
         }
     }
-    let session = if let Some(existing) =
-        state.ctx.sessions.get_transcode(&play_session_id)
+    let session = if let Some(existing) = state
+        .ctx
+        .sessions
+        .get_transcode(&play_session_id)
     {
         existing
     } else {
         // Fetch media info to get the stream URL
-        let media_source_id = q.media_source_id.unwrap_or(id);
-        let media = db::Media::get_by_id(&state.ctx.db, &media_source_id)
-            .await?
-            .context_not_found("media not found")?;
+        let media_source_id = q
+            .media_source_id
+            .unwrap_or(id);
+        let media = db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &media_source_id,
+        )
+        .await?
+        .context_not_found("media not found")?;
 
         let mut resolved_media = media.clone();
         if resolved_media.kind == db::MediaKind::StreamGroup {
             let gid = resolved_media.id;
-            let candidates =
-                db::StreamGroup::streams_for(&state.ctx.db, &gid, &id).await?;
+            let candidates = db::StreamGroup::streams_for(
+                &state
+                    .ctx
+                    .db,
+                &gid,
+                &id,
+            )
+            .await?;
             resolved_media = candidates
                 .into_iter()
                 .next()
@@ -2371,16 +2971,35 @@ pub async fn master_hls_video(
             resolved_media.kind,
             db::MediaKind::Movie | db::MediaKind::Episode
         ) {
-            let sources = resolved_media.streams(&state.ctx.db).await?;
+            let sources = resolved_media
+                .streams(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await?;
             resolved_media = if let Some(wanted) = q.media_source_id {
-                sources.iter().find(|s| s.id == wanted).cloned()
+                sources
+                    .iter()
+                    .find(|s| s.id == wanted)
+                    .cloned()
             } else {
                 None
             }
-            .or_else(|| sources.into_iter().next())
+            .or_else(|| {
+                sources
+                    .into_iter()
+                    .next()
+            })
             .context_not_found("no playable source found")?;
         } else if resolved_media.kind == db::MediaKind::Track {
-            let sources = resolved_media.streams(&state.ctx.db).await?;
+            let sources = resolved_media
+                .streams(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await?;
             resolved_media = sources
                 .into_iter()
                 .next()
@@ -2392,7 +3011,13 @@ pub async fn master_hls_video(
             .as_ref()
             .map(|si| {
                 si.descriptor
-                    .server_input(resolved_media.id, state.ctx.config.port)
+                    .server_input(
+                        resolved_media.id,
+                        state
+                            .ctx
+                            .config
+                            .port,
+                    )
             })
             .context_not_found("media source has no URL")?;
 
@@ -2425,14 +3050,19 @@ pub async fn master_hls_video(
             };
             match rt {
                 Some(t) if t > 0 => t,
-                _ => db::Media::get_by_id(&state.ctx.db, &id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|m| m.runtime)
-                    .filter(|&r| r > 0)
-                    .map(|r| r * 10_000_000)
-                    .unwrap_or(0),
+                _ => db::Media::get_by_id(
+                    &state
+                        .ctx
+                        .db,
+                    &id,
+                )
+                .await
+                .ok()
+                .flatten()
+                .and_then(|m| m.runtime)
+                .filter(|&r| r > 0)
+                .map(|r| r * 10_000_000)
+                .unwrap_or(0),
             }
         };
         debug!(runtime_ticks, is_live, segment_length, "transcode session");
@@ -2440,18 +3070,33 @@ pub async fn master_hls_video(
             .probe_data
             .as_ref()
             .and_then(|p| p.video_stream());
-        let source_video_codec =
-            source_video_stream.as_ref().and_then(|s| s.codec.clone());
-        let source_video_profile =
-            source_video_stream.as_ref().and_then(|s| s.profile.clone());
-        let source_video_level = source_video_stream.as_ref().and_then(|s| s.level);
+        let source_video_codec = source_video_stream
+            .as_ref()
+            .and_then(|s| {
+                s.codec
+                    .clone()
+            });
+        let source_video_profile = source_video_stream
+            .as_ref()
+            .and_then(|s| {
+                s.profile
+                    .clone()
+            });
+        let source_video_level = source_video_stream
+            .as_ref()
+            .and_then(|s| s.level);
         let source_video_range_type = source_video_stream
             .as_ref()
             .and_then(|s| s.video_range_type);
-        let source_video_width = source_video_stream.as_ref().and_then(|s| s.width);
-        let source_video_height = source_video_stream.as_ref().and_then(|s| s.height);
-        let source_frame_rate =
-            source_video_stream.as_ref().and_then(|s| s.real_frame_rate);
+        let source_video_width = source_video_stream
+            .as_ref()
+            .and_then(|s| s.width);
+        let source_video_height = source_video_stream
+            .as_ref()
+            .and_then(|s| s.height);
+        let source_frame_rate = source_video_stream
+            .as_ref()
+            .and_then(|s| s.real_frame_rate);
         debug!(
             ?source_video_codec,
             ?source_video_profile,
@@ -2466,7 +3111,10 @@ pub async fn master_hls_video(
             .probe_data
             .as_ref()
             .and_then(|p| p.audio_stream());
-        let source_audio_codec = source_audio_stream.and_then(|s| s.codec.clone());
+        let source_audio_codec = source_audio_stream.and_then(|s| {
+            s.codec
+                .clone()
+        });
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -2475,8 +3123,10 @@ pub async fn master_hls_video(
             output_dir,
             video_codec.clone(),
             audio_codec.clone(),
-            q.audio_stream_index.map(|v| v as i32),
-            q.subtitle_stream_index.map(|v| v as i32),
+            q.audio_stream_index
+                .map(|v| v as i32),
+            q.subtitle_stream_index
+                .map(|v| v as i32),
             q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode),
             segment_length,
             // Parse reasons from query param (set by playbackinfo on the transcoding URL)
@@ -2506,64 +3156,114 @@ pub async fn master_hls_video(
         let encoding_opts = encoding_opts_hls.clone();
         let params = crate::transcode::engine::TranscodeParams {
             input_url,
-            output_dir: session.read().await.output_dir.clone(),
+            output_dir: session
+                .read()
+                .await
+                .output_dir
+                .clone(),
             video_codec: video_codec.clone(),
             audio_codec: audio_codec.clone(),
             segment_length,
             start_time_ticks: q.start_time_ticks,
-            max_width: q.max_width.map(|v| v as u32),
-            max_height: q.max_height.map(|v| v as u32),
+            max_width: q
+                .max_width
+                .map(|v| v as u32),
+            max_height: q
+                .max_height
+                .map(|v| v as u32),
             // Prefer an explicit VideoBitRate; fall back to MaxStreamingBitrate so
             // the encoder targets the client-requested cap rather than CRF mode.
             video_bitrate: q
                 .video_bit_rate
                 .map(|v| v as u32)
-                .or_else(|| q.max_streaming_bitrate.map(|b| b as u32)),
-            audio_bitrate: q.audio_bit_rate.map(|v| v as u32),
+                .or_else(|| {
+                    q.max_streaming_bitrate
+                        .map(|b| b as u32)
+                }),
+            audio_bitrate: q
+                .audio_bit_rate
+                .map(|v| v as u32),
             // Force stereo downmix when transcoding audio — multi-channel AAC
             // (e.g. 6.1 from DTS-HD) causes MEDIA_ERR_SRC_NOT_SUPPORTED on most
             // browsers and iOS Safari.
             audio_channels: if audio_codec == "copy" { None } else { Some(2) },
-            audio_stream_index: q.audio_stream_index.map(|v| v as i32),
-            subtitle_stream_index: q.subtitle_stream_index.map(|v| v as i32),
+            audio_stream_index: q
+                .audio_stream_index
+                .map(|v| v as i32),
+            subtitle_stream_index: q
+                .subtitle_stream_index
+                .map(|v| v as i32),
             burn_subtitle: q.subtitle_method
                 == Some(api::SubtitleDeliveryMethod::Encode),
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: encoding_opts.encoding_preset,
-            source_video_codec: session.read().await.source_video_codec.clone(),
+            source_video_codec: session
+                .read()
+                .await
+                .source_video_codec
+                .clone(),
             hardware_acceleration_type: encoding_opts
                 .hardware_acceleration_type
                 .unwrap_or_default(),
             vaapi_device: encoding_opts
                 .vaapi_device
                 .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
-            vaapi_driver: encoding_opts.vaapi_driver.unwrap_or_default(),
+            vaapi_driver: encoding_opts
+                .vaapi_driver
+                .unwrap_or_default(),
             source_video_range_type,
-            enable_tonemapping: encoding_opts.enable_tonemapping.unwrap_or(false),
+            enable_tonemapping: encoding_opts
+                .enable_tonemapping
+                .unwrap_or(false),
             enable_vpp_tonemapping: encoding_opts
                 .enable_vpp_tonemapping
                 .unwrap_or(false),
             tonemapping_algorithm: encoding_opts
                 .tonemapping_algorithm
                 .unwrap_or_else(|| "hable".to_string()),
-            tonemapping_desat: encoding_opts.tonemapping_desat.unwrap_or(0.0),
-            tonemapping_peak: encoding_opts.tonemapping_peak.unwrap_or(0.0),
-            allow_hevc_encoding: encoding_opts.allow_hevc_encoding.unwrap_or(false),
-            allow_av1_encoding: encoding_opts.allow_av1_encoding.unwrap_or(false),
-            h264_crf: encoding_opts.h264_crf.unwrap_or(23),
-            h265_crf: encoding_opts.h265_crf.unwrap_or(28),
+            tonemapping_desat: encoding_opts
+                .tonemapping_desat
+                .unwrap_or(0.0),
+            tonemapping_peak: encoding_opts
+                .tonemapping_peak
+                .unwrap_or(0.0),
+            allow_hevc_encoding: encoding_opts
+                .allow_hevc_encoding
+                .unwrap_or(false),
+            allow_av1_encoding: encoding_opts
+                .allow_av1_encoding
+                .unwrap_or(false),
+            h264_crf: encoding_opts
+                .h264_crf
+                .unwrap_or(23),
+            h265_crf: encoding_opts
+                .h265_crf
+                .unwrap_or(28),
             is_live,
         };
 
         // Spawn the transcode task with proper error handling
-        let media_title_for_log = resolved_media.title.clone();
-        let transcode_reasons_for_log = q.transcode_reasons.clone();
-        let log_user = auth.user.username.clone();
-        let log_client = auth.device.app_name.clone();
+        let media_title_for_log = resolved_media
+            .title
+            .clone();
+        let transcode_reasons_for_log = q
+            .transcode_reasons
+            .clone();
+        let log_user = auth
+            .user
+            .username
+            .clone();
+        let log_client = auth
+            .device
+            .app_name
+            .clone();
         let session_clone = session.clone();
         tokio::spawn(async move {
-            let start_secs = params.start_time_ticks.unwrap_or(0) / 10_000_000;
+            let start_secs = params
+                .start_time_ticks
+                .unwrap_or(0)
+                / 10_000_000;
             let resolution = match (params.max_width, params.max_height) {
                 (Some(w), Some(h)) => format!("{}x{}", w, h),
                 (Some(w), None) => format!("{}w", w),
@@ -2595,7 +3295,9 @@ pub async fn master_hls_video(
     };
 
     // Generate and return the master playlist
-    let session_read = session.read().await;
+    let session_read = session
+        .read()
+        .await;
     let master_playlist =
         crate::transcode::engine::generate_master_playlist(&session_read);
 
@@ -2642,13 +3344,20 @@ async fn variant_hls_video_inner(
         .context_not_found("transcode session not found")?;
 
     // Keep the session alive.
-    state.ctx.sessions.ping(&play_session_id);
+    state
+        .ctx
+        .sessions
+        .ping(&play_session_id);
 
-    let session_read = session.read().await;
+    let session_read = session
+        .read()
+        .await;
     let is_live = session_read.is_live;
     let use_fmp4 = session_read.use_fmp4();
     let playlist_path = session_read.variant_playlist_path();
-    let psid = session_read.id.clone();
+    let psid = session_read
+        .id
+        .clone();
 
     // For live streams and fMP4 sessions we must serve the ffmpeg-written playlist
     // because fMP4 segments snap to keyframe boundaries — actual durations differ
@@ -2784,7 +3493,10 @@ fn get_current_transcoding_index(dir: &std::path::Path) -> Option<u32> {
         if let Some(idx_str) = name
             .strip_suffix(".ts")
             .or_else(|| name.strip_suffix(".m4s"))
-            .and_then(|s| s.rsplit('_').next())
+            .and_then(|s| {
+                s.rsplit('_')
+                    .next()
+            })
         {
             if let Ok(idx) = idx_str.parse::<u32>() {
                 max_idx = Some(max_idx.map_or(idx, |m: u32| m.max(idx)));
@@ -2810,13 +3522,19 @@ async fn hls_segment_inner(
         "HLS segment request"
     );
 
-    let session = state.ctx.sessions.get_transcode(&play_session_id);
+    let session = state
+        .ctx
+        .sessions
+        .get_transcode(&play_session_id);
 
     // The fMP4 init segment is served at "init.mp4" — strip_segment_extension
     // reduces that to "init", so we detect it here and serve it directly.
     if segment_id == "init" {
         let init_path = match &session {
-            Some(s) => s.read().await.init_segment_path(),
+            Some(s) => s
+                .read()
+                .await
+                .init_segment_path(),
             None => state
                 .ctx
                 .sessions
@@ -2834,7 +3552,10 @@ async fn hls_segment_inner(
         if !init_path.exists() {
             None::<()>.context_not_found("fMP4 init segment not ready")?;
         }
-        state.ctx.sessions.ping(&play_session_id);
+        state
+            .ctx
+            .sessions
+            .ping(&play_session_id);
         let file = tokio::fs::File::open(&init_path).await?;
         let stream = ReaderStream::new(file);
         return Ok(Response::builder()
@@ -2848,7 +3569,10 @@ async fn hls_segment_inner(
     // Derive the segment path — either from the live session or from the base
     // dir directly (handles server restart where session is gone but files remain).
     let segment_path = match &session {
-        Some(s) => s.read().await.segment_path(&segment_id),
+        Some(s) => s
+            .read()
+            .await
+            .segment_path(&segment_id),
         None => state
             .ctx
             .sessions
@@ -2859,16 +3583,24 @@ async fn hls_segment_inner(
     let requested_idx: Option<u32> = segment_id
         .rsplit('_')
         .next()
-        .and_then(|n| n.parse::<u32>().ok());
+        .and_then(|n| {
+            n.parse::<u32>()
+                .ok()
+        });
 
     if let Some(ref session) = session {
         // Update playback position for the buffer monitor.
         if let Some(idx) = requested_idx {
             use std::sync::atomic::Ordering;
-            let s = session.read().await;
-            let prev = s.last_segment_index.load(Ordering::Relaxed);
+            let s = session
+                .read()
+                .await;
+            let prev = s
+                .last_segment_index
+                .load(Ordering::Relaxed);
             if idx > prev {
-                s.last_segment_index.store(idx, Ordering::Relaxed);
+                s.last_segment_index
+                    .store(idx, Ordering::Relaxed);
             }
         }
     }
@@ -2877,8 +3609,12 @@ async fn hls_segment_inner(
     // FFmpeg needs to be restarted at a different position (like Jellyfin does).
     if !segment_path.exists() {
         if let (Some(session), Some(requested_idx)) = (&session, requested_idx) {
-            let s = session.read().await;
-            let output_dir = s.output_dir.clone();
+            let s = session
+                .read()
+                .await;
+            let output_dir = s
+                .output_dir
+                .clone();
             let segment_length = s.segment_length;
             let current_idx = get_current_transcoding_index(&output_dir);
             let segment_gap_threshold = 24 / segment_length;
@@ -2906,7 +3642,9 @@ async fn hls_segment_inner(
                 // Guard against concurrent restart: only proceed if FFmpeg
                 // is actually running (kill_tx is Some). If another request
                 // already killed it and started a new one, just wait.
-                let has_running_ffmpeg = s.kill_tx.is_some();
+                let has_running_ffmpeg = s
+                    .kill_tx
+                    .is_some();
                 if !has_running_ffmpeg {
                     drop(s);
                     // Another request already restarted — fall through to wait loop.
@@ -2919,9 +3657,15 @@ async fn hls_segment_inner(
                     );
 
                     // Gather params we need before dropping the read lock.
-                    let input_url = s.input_url.clone();
-                    let video_codec = s.video_codec.clone();
-                    let audio_codec = s.audio_codec.clone();
+                    let input_url = s
+                        .input_url
+                        .clone();
+                    let video_codec = s
+                        .video_codec
+                        .clone();
+                    let audio_codec = s
+                        .audio_codec
+                        .clone();
                     let audio_stream_index = s.audio_stream_index;
                     let subtitle_stream_index = s.subtitle_stream_index;
                     let burn_subtitle = s.burn_subtitle;
@@ -2931,8 +3675,15 @@ async fn hls_segment_inner(
                     // like bitrate/codec may change, so old segments are invalid).
                     {
                         let (kill_tx, wait_done) = {
-                            let mut s = session.write().await;
-                            (s.kill_tx.take(), s.wait_done.clone())
+                            let mut s = session
+                                .write()
+                                .await;
+                            (
+                                s.kill_tx
+                                    .take(),
+                                s.wait_done
+                                    .clone(),
+                            )
                         };
                         if let Some(kill_tx) = kill_tx {
                             let notification = wait_done.notified();
@@ -2946,14 +3697,19 @@ async fn hls_segment_inner(
                     // Calculate the seek position from the runtimeTicks query param
                     // (cumulative ticks to start of this segment) provided by our
                     // server-generated VOD playlist. Fall back to segment_index * segment_length.
-                    let start_time_ticks = q.runtime_ticks.unwrap_or_else(|| {
-                        requested_idx as i64 * segment_length as i64 * 10_000_000
-                    });
+                    let start_time_ticks = q
+                        .runtime_ticks
+                        .unwrap_or_else(|| {
+                            requested_idx as i64 * segment_length as i64 * 10_000_000
+                        });
 
-                    let encoding_opts =
-                        crate::db::Settings::get_encoding_config(&state.ctx.db)
-                            .await
-                            .unwrap_or_default();
+                    let encoding_opts = crate::db::Settings::get_encoding_config(
+                        &state
+                            .ctx
+                            .db,
+                    )
+                    .await
+                    .unwrap_or_default();
                     let params = crate::transcode::engine::TranscodeParams {
                         input_url,
                         output_dir: output_dir.clone(),
@@ -2961,13 +3717,22 @@ async fn hls_segment_inner(
                         audio_codec: audio_codec.clone(),
                         segment_length,
                         start_time_ticks: Some(start_time_ticks),
-                        max_width: q.max_width.map(|v| v as u32),
-                        max_height: q.max_height.map(|v| v as u32),
+                        max_width: q
+                            .max_width
+                            .map(|v| v as u32),
+                        max_height: q
+                            .max_height
+                            .map(|v| v as u32),
                         video_bitrate: q
                             .video_bit_rate
                             .map(|v| v as u32)
-                            .or_else(|| q.max_streaming_bitrate.map(|b| b as u32)),
-                        audio_bitrate: q.audio_bit_rate.map(|v| v as u32),
+                            .or_else(|| {
+                                q.max_streaming_bitrate
+                                    .map(|b| b as u32)
+                            }),
+                        audio_bitrate: q
+                            .audio_bit_rate
+                            .map(|v| v as u32),
                         audio_channels: if audio_codec == "copy" {
                             None
                         } else {
@@ -2990,7 +3755,9 @@ async fn hls_segment_inner(
                         vaapi_device: encoding_opts
                             .vaapi_device
                             .unwrap_or_else(|| "/dev/dri/renderD128".to_string()),
-                        vaapi_driver: encoding_opts.vaapi_driver.unwrap_or_default(),
+                        vaapi_driver: encoding_opts
+                            .vaapi_driver
+                            .unwrap_or_default(),
                         source_video_range_type: session
                             .read()
                             .await
@@ -3007,28 +3774,39 @@ async fn hls_segment_inner(
                         tonemapping_desat: encoding_opts
                             .tonemapping_desat
                             .unwrap_or(0.0),
-                        tonemapping_peak: encoding_opts.tonemapping_peak.unwrap_or(0.0),
+                        tonemapping_peak: encoding_opts
+                            .tonemapping_peak
+                            .unwrap_or(0.0),
                         allow_hevc_encoding: encoding_opts
                             .allow_hevc_encoding
                             .unwrap_or(false),
                         allow_av1_encoding: encoding_opts
                             .allow_av1_encoding
                             .unwrap_or(false),
-                        h264_crf: encoding_opts.h264_crf.unwrap_or(23),
-                        h265_crf: encoding_opts.h265_crf.unwrap_or(28),
+                        h264_crf: encoding_opts
+                            .h264_crf
+                            .unwrap_or(23),
+                        h265_crf: encoding_opts
+                            .h265_crf
+                            .unwrap_or(28),
                         is_live: false,
                     };
 
                     // Reinitialise the session's state for the new transcode run.
                     {
-                        let mut s = session.write().await;
+                        let mut s = session
+                            .write()
+                            .await;
                         s.state = TranscodeState::Starting;
-                        let _ = s.state_tx.send(TranscodeState::Starting);
+                        let _ = s
+                            .state_tx
+                            .send(TranscodeState::Starting);
                         s.start_time_secs = (start_time_ticks / 10_000_000) as u32;
-                        s.playback_offset_secs.store(
-                            s.start_time_secs,
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
+                        s.playback_offset_secs
+                            .store(
+                                s.start_time_secs,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
                     }
 
                     let session_clone = session.clone();
@@ -3071,19 +3849,25 @@ async fn hls_segment_inner(
     }
 
     // Keep the session alive — the segment request counts as activity.
-    state.ctx.sessions.ping(&play_session_id);
+    state
+        .ctx
+        .sessions
+        .ping(&play_session_id);
 
     let file = tokio::fs::File::open(&segment_path).await?;
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
     // fMP4 segments (.m4s) use video/mp4; MPEG-TS segments use video/mp2t.
-    let content_type =
-        if segment_path.extension().and_then(|e| e.to_str()) == Some("m4s") {
-            "video/mp4"
-        } else {
-            "video/mp2t"
-        };
+    let content_type = if segment_path
+        .extension()
+        .and_then(|e| e.to_str())
+        == Some("m4s")
+    {
+        "video/mp4"
+    } else {
+        "video/mp2t"
+    };
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -3102,7 +3886,11 @@ pub async fn delete_transcoding(
 ) -> Result<impl IntoResponse> {
     if let Some(play_session_id) = q.play_session_id {
         info!("Stopping transcode session: {}", play_session_id);
-        state.ctx.sessions.stop_transcode(&play_session_id).await;
+        state
+            .ctx
+            .sessions
+            .stop_transcode(&play_session_id)
+            .await;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -3127,17 +3915,31 @@ pub async fn audio_universal(
     Path(id): Path<Uuid>,
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(&state.ctx.db, &id)
-        .await?
-        .context_not_found("track not found")?;
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .context_not_found("track not found")?;
 
     let play_session_id = q
         .play_session_id
-        .unwrap_or_else(|| common::get_uuid().as_simple().to_string());
+        .unwrap_or_else(|| {
+            common::get_uuid()
+                .as_simple()
+                .to_string()
+        });
 
     let transcoding_url = format!(
         "/videos/{}/master.m3u8?PlaySessionId={}&MediaSourceId={}&VideoCodec=copy&AudioCodec=aac&ApiKey={}",
-        id, play_session_id, id, session.device.access_token
+        id,
+        play_session_id,
+        id,
+        session
+            .device
+            .access_token
     );
 
     Ok(axum::response::Redirect::temporary(&transcoding_url).into_response())
@@ -3148,7 +3950,10 @@ pub async fn audio_universal(
 pub async fn playback_bitratetest_sized(
     Query(q): Query<BitrateTestQuery>,
 ) -> Result<impl IntoResponse> {
-    let size = q.size.unwrap_or(100_000).min(10_000_000) as usize;
+    let size = q
+        .size
+        .unwrap_or(100_000)
+        .min(10_000_000) as usize;
     let body = vec![0u8; size];
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -3219,16 +4024,25 @@ pub async fn subtitles_stream(
             .unwrap());
     }
 
-    let mut media = db::Media::get_by_id(&state.ctx.db, &media_source_id)
-        .await?
-        .context_not_found("media source not found")?;
+    let mut media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &media_source_id,
+    )
+    .await?
+    .context_not_found("media source not found")?;
 
     if matches!(
         media.kind,
         db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
     ) {
         media = media
-            .streams(&state.ctx.db)
+            .streams(
+                &state
+                    .ctx
+                    .db,
+            )
             .await?
             .get(0)
             .context_not_found("no sources found")?
@@ -3238,7 +4052,16 @@ pub async fn subtitles_stream(
     let url = media
         .stream_info
         .as_ref()
-        .map(|si| si.descriptor.server_input(media.id, state.ctx.config.port))
+        .map(|si| {
+            si.descriptor
+                .server_input(
+                    media.id,
+                    state
+                        .ctx
+                        .config
+                        .port,
+                )
+        })
         .context_not_found("media source has no URL")?;
 
     let output_format = format.to_ascii_lowercase();
@@ -3298,7 +4121,10 @@ pub async fn subtitles_stream(
         .await
         .map_err(|e| anyhow!("ffmpeg failed: {e}"))?;
 
-    if !output.status.success() {
+    if !output
+        .status
+        .success()
+    {
         let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::error!(
             media_source_id = %media_source_id,
@@ -3324,17 +4150,29 @@ pub async fn subtitles_stream(
 
 /// Convert SRT subtitle text to WebVTT. Already-valid VTT is passed through unchanged.
 fn srt_to_vtt(input: &str) -> String {
-    if input.trim_start().starts_with("WEBVTT") {
+    if input
+        .trim_start()
+        .starts_with("WEBVTT")
+    {
         return input.to_string();
     }
     let mut out = String::from("WEBVTT\n\n");
-    for block in input.trim().split("\n\n") {
-        let lines: Vec<&str> = block.lines().collect();
+    for block in input
+        .trim()
+        .split("\n\n")
+    {
+        let lines: Vec<&str> = block
+            .lines()
+            .collect();
         if lines.len() < 2 {
             continue;
         }
         // Skip the sequence number line (all digits), keep timecodes + text
-        let rest = if lines[0].trim().chars().all(|c| c.is_ascii_digit()) {
+        let rest = if lines[0]
+            .trim()
+            .chars()
+            .all(|c| c.is_ascii_digit())
+        {
             &lines[1..]
         } else {
             &lines[..]
@@ -3357,7 +4195,9 @@ fn srt_to_vtt(input: &str) -> String {
 
 pub(crate) fn lang_to_two_letter(lang: &str) -> Option<String> {
     use std::str::FromStr;
-    let lang = lang.trim().to_lowercase();
+    let lang = lang
+        .trim()
+        .to_lowercase();
     if lang.is_empty() {
         return None;
     }
@@ -3381,11 +4221,24 @@ fn score_sub_url(
             .map(|t| t.to_lowercase())
             .collect()
     }
-    let sub_file = sub_url.rsplit('/').next().unwrap_or(sub_url);
+    let sub_file = sub_url
+        .rsplit('/')
+        .next()
+        .unwrap_or(sub_url);
     let sub_tok = tokens(sub_file);
-    let mut src_tok = tokens(source_name.as_deref().unwrap_or(""));
-    src_tok.extend(tokens(source_path.as_deref().unwrap_or("")));
-    sub_tok.intersection(&src_tok).count() as i32
+    let mut src_tok = tokens(
+        source_name
+            .as_deref()
+            .unwrap_or(""),
+    );
+    src_tok.extend(tokens(
+        source_path
+            .as_deref()
+            .unwrap_or(""),
+    ));
+    sub_tok
+        .intersection(&src_tok)
+        .count() as i32
 }
 
 /// Inject external subtitles into a list of `MediaSourceInfo` entries.
@@ -3397,7 +4250,10 @@ pub(super) async fn inject_external_subtitles(
     api_key: &str,
     sub_langs: Vec<String>,
 ) {
-    let subs = ctx.addons.fetch_subtitles(subtitle_media, &ctx.db).await;
+    let subs = ctx
+        .addons
+        .fetch_subtitles(subtitle_media, &ctx.db)
+        .await;
     if subs.is_empty() {
         return;
     }
@@ -3407,9 +4263,14 @@ pub(super) async fn inject_external_subtitles(
     } else {
         subs.into_iter()
             .filter(|s| {
-                let two = s.lang.as_deref().and_then(lang_to_two_letter);
+                let two = s
+                    .lang
+                    .as_deref()
+                    .and_then(lang_to_two_letter);
                 two.map_or(false, |two| {
-                    sub_langs.iter().any(|p| two.eq_ignore_ascii_case(p.trim()))
+                    sub_langs
+                        .iter()
+                        .any(|p| two.eq_ignore_ascii_case(p.trim()))
                 })
             })
             .collect()
@@ -3434,7 +4295,10 @@ pub(super) async fn inject_external_subtitles(
             .collect();
         scored.sort_by(|(sa, a), (sb, b)| {
             let rank = |s: &&sdks::stremio::Subtitle| {
-                let two = s.lang.as_deref().and_then(lang_to_two_letter);
+                let two = s
+                    .lang
+                    .as_deref()
+                    .and_then(lang_to_two_letter);
                 sub_langs
                     .iter()
                     .position(|p| {
@@ -3443,7 +4307,9 @@ pub(super) async fn inject_external_subtitles(
                     })
                     .unwrap_or(usize::MAX)
             };
-            rank(a).cmp(&rank(b)).then(sb.cmp(sa))
+            rank(a)
+                .cmp(&rank(b))
+                .then(sb.cmp(sa))
         });
 
         let mut lang_counts: std::collections::HashMap<String, usize> =
@@ -3451,8 +4317,13 @@ pub(super) async fn inject_external_subtitles(
         let scored: Vec<_> = scored
             .into_iter()
             .filter(|(_, s)| {
-                let key = s.lang.clone().unwrap_or_else(|| "und".to_string());
-                let count = lang_counts.entry(key).or_insert(0);
+                let key = s
+                    .lang
+                    .clone()
+                    .unwrap_or_else(|| "und".to_string());
+                let count = lang_counts
+                    .entry(key)
+                    .or_insert(0);
                 if *count < 2 {
                     *count += 1;
                     true
@@ -3462,9 +4333,14 @@ pub(super) async fn inject_external_subtitles(
             })
             .collect();
 
-        let wants_default =
-            !sub_langs.is_empty() && source.default_subtitle_stream_index.is_none();
-        for (i, (_, sub)) in scored.iter().enumerate() {
+        let wants_default = !sub_langs.is_empty()
+            && source
+                .default_subtitle_stream_index
+                .is_none();
+        for (i, (_, sub)) in scored
+            .iter()
+            .enumerate()
+        {
             let mut stream =
                 crate::conversions::subtitle_to_media_stream((*sub).clone());
             let idx = next_idx + i as i64;
@@ -3478,7 +4354,9 @@ pub(super) async fn inject_external_subtitles(
                 stream.is_default = Some(true);
                 source.default_subtitle_stream_index = Some(next_idx);
             }
-            source.media_streams.push(stream);
+            source
+                .media_streams
+                .push(stream);
         }
     }
 }
@@ -3502,7 +4380,9 @@ async fn apply_user_playback_prefs(
     let cfg = user
         .configuration
         .as_ref()
-        .map(|c| c.0.clone())
+        .map(|c| {
+            c.0.clone()
+        })
         .unwrap_or_default();
 
     // Load saved stream selections (best-effort; failure means no recall)
@@ -3541,10 +4421,13 @@ async fn apply_user_playback_prefs(
         // --- remember_audio_selections ---
         if cfg.remember_audio_selections {
             if let Some(idx) = saved_audio {
-                let exists = source.media_streams.iter().any(|s| {
-                    s.index == idx
-                        && matches!(s.type_, Some(api::MediaStreamType::Audio))
-                });
+                let exists = source
+                    .media_streams
+                    .iter()
+                    .any(|s| {
+                        s.index == idx
+                            && matches!(s.type_, Some(api::MediaStreamType::Audio))
+                    });
                 if exists {
                     source.default_audio_stream_index = Some(idx);
                 }
@@ -3554,20 +4437,28 @@ async fn apply_user_playback_prefs(
         // --- remember_subtitle_selections ---
         if cfg.remember_subtitle_selections {
             if let Some(idx) = saved_subtitle {
-                let exists = source.media_streams.iter().any(|s| {
-                    s.index == idx
-                        && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                });
+                let exists = source
+                    .media_streams
+                    .iter()
+                    .any(|s| {
+                        s.index == idx
+                            && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                    });
                 if exists {
                     // Clear any previous default flag, set the recalled one
-                    for s in source.media_streams.iter_mut() {
+                    for s in source
+                        .media_streams
+                        .iter_mut()
+                    {
                         if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
                             s.is_default = Some(false);
                         }
                     }
                     source.default_subtitle_stream_index = Some(idx);
-                    if let Some(s) =
-                        source.media_streams.iter_mut().find(|s| s.index == idx)
+                    if let Some(s) = source
+                        .media_streams
+                        .iter_mut()
+                        .find(|s| s.index == idx)
                     {
                         s.is_default = Some(true);
                     }
@@ -3582,18 +4473,25 @@ async fn apply_user_playback_prefs(
 
         // --- subtitle_language_preference ---
         // Only act if no subtitle default is already set
-        if source.default_subtitle_stream_index.is_none() {
+        if source
+            .default_subtitle_stream_index
+            .is_none()
+        {
             if let Some(ref pref) = cfg.subtitle_language_preference {
                 let pref_two = lang_to_two_letter(pref);
                 if let Some(ref target) = pref_two {
-                    if let Some(stream) = source.media_streams.iter_mut().find(|s| {
-                        matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                            && s.language
-                                .as_deref()
-                                .and_then(lang_to_two_letter)
-                                .as_deref()
-                                == Some(target.as_str())
-                    }) {
+                    if let Some(stream) = source
+                        .media_streams
+                        .iter_mut()
+                        .find(|s| {
+                            matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                                && s.language
+                                    .as_deref()
+                                    .and_then(lang_to_two_letter)
+                                    .as_deref()
+                                    == Some(target.as_str())
+                        })
+                    {
                         let idx = stream.index;
                         stream.is_default = Some(true);
                         source.default_subtitle_stream_index = Some(idx);
@@ -3609,7 +4507,10 @@ async fn apply_user_playback_prefs(
 
 fn apply_subtitle_mode(mode: &api::SubtitleMode, source: &mut api::MediaSourceInfo) {
     let clear_all = |source: &mut api::MediaSourceInfo| {
-        for s in source.media_streams.iter_mut() {
+        for s in source
+            .media_streams
+            .iter_mut()
+        {
             if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
                 s.is_default = Some(false);
             }
@@ -3618,14 +4519,21 @@ fn apply_subtitle_mode(mode: &api::SubtitleMode, source: &mut api::MediaSourceIn
     };
 
     let set_default = |source: &mut api::MediaSourceInfo, idx: Option<i64>| {
-        for s in source.media_streams.iter_mut() {
+        for s in source
+            .media_streams
+            .iter_mut()
+        {
             if matches!(s.type_, Some(api::MediaStreamType::Subtitle)) {
                 s.is_default = Some(false);
             }
         }
         source.default_subtitle_stream_index = idx;
         if let Some(i) = idx {
-            if let Some(s) = source.media_streams.iter_mut().find(|s| s.index == i) {
+            if let Some(s) = source
+                .media_streams
+                .iter_mut()
+                .find(|s| s.index == i)
+            {
                 s.is_default = Some(true);
             }
         }
@@ -3638,16 +4546,22 @@ fn apply_subtitle_mode(mode: &api::SubtitleMode, source: &mut api::MediaSourceIn
         }
         api::SubtitleMode::Always => {
             // If no subtitle is already selected, pick the first non-forced subtitle
-            if source.default_subtitle_stream_index.is_none() {
-                let idx = source.media_streams.iter().find_map(|s| {
-                    if matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                        && !s.is_forced
-                    {
-                        Some(s.index)
-                    } else {
-                        None
-                    }
-                });
+            if source
+                .default_subtitle_stream_index
+                .is_none()
+            {
+                let idx = source
+                    .media_streams
+                    .iter()
+                    .find_map(|s| {
+                        if matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                            && !s.is_forced
+                        {
+                            Some(s.index)
+                        } else {
+                            None
+                        }
+                    });
                 if idx.is_some() {
                     set_default(source, idx);
                 }
@@ -3655,15 +4569,18 @@ fn apply_subtitle_mode(mode: &api::SubtitleMode, source: &mut api::MediaSourceIn
         }
         api::SubtitleMode::OnlyForced => {
             // Only a forced subtitle may be default; clear any non-forced default
-            let forced_idx = source.media_streams.iter().find_map(|s| {
-                if matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                    && s.is_forced
-                {
-                    Some(s.index)
-                } else {
-                    None
-                }
-            });
+            let forced_idx = source
+                .media_streams
+                .iter()
+                .find_map(|s| {
+                    if matches!(s.type_, Some(api::MediaStreamType::Subtitle))
+                        && s.is_forced
+                    {
+                        Some(s.index)
+                    } else {
+                        None
+                    }
+                });
             // Replace whatever is set with the first forced sub (or nothing)
             set_default(source, forced_idx);
         }
@@ -3678,16 +4595,26 @@ fn apply_subtitle_mode(mode: &api::SubtitleMode, source: &mut api::MediaSourceIn
                         matches!(s.type_, Some(api::MediaStreamType::Audio))
                             && Some(s.index) == source.default_audio_stream_index
                     })
-                    .and_then(|s| s.language.clone());
+                    .and_then(|s| {
+                        s.language
+                            .clone()
+                    });
 
                 let sub_lang = source
                     .media_streams
                     .iter()
                     .find(|s| s.index == def_idx)
-                    .and_then(|s| s.language.clone());
+                    .and_then(|s| {
+                        s.language
+                            .clone()
+                    });
 
-                let audio_two = audio_lang.as_deref().and_then(lang_to_two_letter);
-                let sub_two = sub_lang.as_deref().and_then(lang_to_two_letter);
+                let audio_two = audio_lang
+                    .as_deref()
+                    .and_then(lang_to_two_letter);
+                let sub_two = sub_lang
+                    .as_deref()
+                    .and_then(lang_to_two_letter);
 
                 if audio_two.is_some() && audio_two == sub_two {
                     // Subtitle language matches audio — no need to display it

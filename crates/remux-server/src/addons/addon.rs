@@ -114,8 +114,8 @@ impl Addon {
     }
 
     pub fn set_catalog_states(&mut self, states: HashMap<String, CatalogState>) {
-        self.preset.config["catalogs"] =
-            serde_json::to_value(states).unwrap_or_default();
+        self.preset
+            .config["catalogs"] = serde_json::to_value(states).unwrap_or_default();
         self.updated_at = Utc::now().naive_utc();
     }
 }

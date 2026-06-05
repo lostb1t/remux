@@ -88,11 +88,23 @@ fn ratings_data() -> &'static RatingsData {
             let country = normalize_country_alpha2(&system.country_code);
             let mut list = Vec::new();
             let mut country_lookup = HashMap::new();
-            for entry in system.ratings.unwrap_or_default() {
+            for entry in system
+                .ratings
+                .unwrap_or_default()
+            {
                 for rating in entry.rating_strings {
-                    country_lookup
-                        .insert(rating.to_lowercase(), entry.rating_score.clone());
-                    list.push((rating, entry.rating_score.clone()));
+                    country_lookup.insert(
+                        rating.to_lowercase(),
+                        entry
+                            .rating_score
+                            .clone(),
+                    );
+                    list.push((
+                        rating,
+                        entry
+                            .rating_score
+                            .clone(),
+                    ));
                 }
             }
             by_country.insert(country.clone(), list);
@@ -111,7 +123,10 @@ pub fn parental_ratings_for_country(country_code: Option<&str>) -> Vec<ParentalR
     let mut ratings: Vec<ParentalRating> = data
         .by_country
         .get(&country)
-        .or_else(|| data.by_country.get("US"))
+        .or_else(|| {
+            data.by_country
+                .get("US")
+        })
         .into_iter()
         .flat_map(|ratings| ratings.iter())
         .map(|(name, score)| ParentalRating {
@@ -124,19 +139,29 @@ pub fn parental_ratings_for_country(country_code: Option<&str>) -> Vec<ParentalR
     add_common_ratings(&mut ratings);
     ratings.sort_by_key(|r| {
         (
-            r.rating_score.as_ref().map(|s| s.score).unwrap_or(-1),
+            r.rating_score
+                .as_ref()
+                .map(|s| s.score)
+                .unwrap_or(-1),
             r.rating_score
                 .as_ref()
                 .and_then(|s| s.sub_score)
                 .unwrap_or(0),
-            r.name.clone(),
+            r.name
+                .clone(),
         )
     });
     ratings
 }
 
 fn add_common_ratings(ratings: &mut Vec<ParentalRating>) {
-    if !ratings.iter().any(|r| r.rating_score.is_none()) {
+    if !ratings
+        .iter()
+        .any(|r| {
+            r.rating_score
+                .is_none()
+        })
+    {
         ratings.push(ParentalRating::unrated("Unrated"));
     }
 }
@@ -148,7 +173,9 @@ pub fn resolve_rating_score(
     let rating = rating.trim();
     if rating.is_empty()
         || matches!(
-            rating.to_lowercase().as_str(),
+            rating
+                .to_lowercase()
+                .as_str(),
             "n/a" | "unrated" | "not rated" | "nr"
         )
     {
@@ -178,7 +205,10 @@ pub fn resolve_rating_score(
     if let Some(score) = lookup_in_country(data, "US", &rating) {
         return Some(score);
     }
-    for country in data.lookup.keys() {
+    for country in data
+        .lookup
+        .keys()
+    {
         if let Some(score) = lookup_in_country(data, country, &rating) {
             return Some(score);
         }

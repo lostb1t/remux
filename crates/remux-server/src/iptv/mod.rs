@@ -28,10 +28,16 @@ pub async fn stream_import_epg(
 
     let tvg_map: std::collections::HashMap<String, Uuid> = channels
         .iter()
-        .filter_map(|(id, tvg)| tvg.as_ref().map(|t| (t.clone(), *id)))
+        .filter_map(|(id, tvg)| {
+            tvg.as_ref()
+                .map(|t| (t.clone(), *id))
+        })
         .collect();
 
-    let resp = client.get(url).send().await?;
+    let resp = client
+        .get(url)
+        .send()
+        .await?;
     let byte_stream = resp
         .bytes_stream()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
@@ -44,7 +50,8 @@ pub async fn stream_import_epg(
         let sync_reader = SyncIoBridge::new_with_handle(async_reader, handle);
         let buf_reader = std::io::BufReader::with_capacity(256 * 1024, sync_reader);
         parse_xmltv(buf_reader, |prog| {
-            tx.blocking_send(prog).ok();
+            tx.blocking_send(prog)
+                .ok();
         })
     });
 
@@ -52,7 +59,10 @@ pub async fn stream_import_epg(
     let mut kept_ids: Vec<Uuid> = Vec::new();
     let mut total = 0usize;
 
-    while let Some(prog) = rx.recv().await {
+    while let Some(prog) = rx
+        .recv()
+        .await
+    {
         let Some(&channel_id) = tvg_map.get(&prog.channel_id) else {
             continue;
         };
@@ -60,7 +70,9 @@ pub async fn stream_import_epg(
             &channel_id,
             format!(
                 "{}{}",
-                prog.start.map(|d| d.to_string()).unwrap_or_default(),
+                prog.start
+                    .map(|d| d.to_string())
+                    .unwrap_or_default(),
                 prog.title
             )
             .as_bytes(),
@@ -97,7 +109,10 @@ pub async fn stream_import_epg(
     parse_handle.await??;
 
     {
-        let mut tx = ctx.db.begin().await?;
+        let mut tx = ctx
+            .db
+            .begin()
+            .await?;
         sqlx::query(
             "CREATE TEMPORARY TABLE IF NOT EXISTS _epg_kept (id BLOB NOT NULL PRIMARY KEY)",
         )
@@ -113,7 +128,9 @@ pub async fn stream_import_epg(
             qb.push_values(chunk.iter(), |mut b, id| {
                 b.push_bind(*id);
             });
-            qb.build().execute(&mut *tx).await?;
+            qb.build()
+                .execute(&mut *tx)
+                .await?;
         }
 
         for chunk in channels.chunks(500) {
@@ -125,10 +142,13 @@ pub async fn stream_import_epg(
                 sep.push_bind(*id);
             }
             qb.push(")");
-            qb.build().execute(&mut *tx).await?;
+            qb.build()
+                .execute(&mut *tx)
+                .await?;
         }
 
-        tx.commit().await?;
+        tx.commit()
+            .await?;
     }
 
     sqlx::query(
@@ -216,6 +236,10 @@ pub fn parse_program_kind(category: &str) -> Option<ProgramKind> {
     ];
     rules
         .iter()
-        .find(|(terms, _)| terms.iter().any(|t| lower.contains(t)))
+        .find(|(terms, _)| {
+            terms
+                .iter()
+                .any(|t| lower.contains(t))
+        })
         .map(|(_, kind)| kind.clone())
 }

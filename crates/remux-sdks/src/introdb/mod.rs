@@ -48,7 +48,10 @@ pub async fn fetch_episode_segments(
         season,
         episode,
     };
-    let resp = match client.execute(ep.with_cache(CACHE_TTL)).await {
+    let resp = match client
+        .execute(ep.with_cache(CACHE_TTL))
+        .await
+    {
         Ok(r) => r,
         Err(ClientError::Http { status: 404, .. }) => {
             return Ok(MediaSegments::default());

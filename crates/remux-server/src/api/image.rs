@@ -36,7 +36,10 @@ impl JellyfinImage {
 /// client sending raw binary directly).
 fn decode_body(body: &[u8]) -> Vec<u8> {
     // Strip "data:<mime>;base64," prefix if present
-    let src = if let Some(pos) = body.iter().position(|&b| b == b',') {
+    let src = if let Some(pos) = body
+        .iter()
+        .position(|&b| b == b',')
+    {
         &body[pos + 1..]
     } else {
         body

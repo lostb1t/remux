@@ -94,10 +94,16 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
     // duplicate rows alongside any existing TMDB-keyed row for the same person.
     let name_keyed_person_ids: std::collections::HashSet<Uuid> = items
         .iter()
-        .filter_map(|m| m.relations.as_ref())
+        .filter_map(|m| {
+            m.relations
+                .as_ref()
+        })
         .flatten()
         .filter(|(_, m)| {
-            m.kind == db::MediaKind::Person && m.external_ids.tmdb.is_none()
+            m.kind == db::MediaKind::Person
+                && m.external_ids
+                    .tmdb
+                    .is_none()
         })
         .map(|(_, m)| m.id)
         .collect();
@@ -106,7 +112,10 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
     // avoids opening a separate transaction per item (N items → N transactions otherwise).
     let all_rel_media: Vec<db::Media> = items
         .iter()
-        .filter_map(|m| m.relations.as_ref())
+        .filter_map(|m| {
+            m.relations
+                .as_ref()
+        })
         .flatten()
         .map(|(_, m)| m.clone())
         .filter(|m| !name_keyed_person_ids.contains(&m.id))
@@ -121,20 +130,33 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
     // (replaces N×delete + N×upsert with 1 delete + 1 upsert).
     let items_with_rels: Vec<&db::Media> = items
         .iter()
-        .filter(|m| m.relations.as_ref().map_or(false, |r| !r.is_empty()))
+        .filter(|m| {
+            m.relations
+                .as_ref()
+                .map_or(false, |r| !r.is_empty())
+        })
         .collect();
     if items_with_rels.is_empty() {
         return;
     }
 
-    let all_ids: Vec<uuid::Uuid> = items_with_rels.iter().map(|m| m.id).collect();
+    let all_ids: Vec<uuid::Uuid> = items_with_rels
+        .iter()
+        .map(|m| m.id)
+        .collect();
     db::MediaRelation::delete_by_left_ids(&ctx.db, &all_ids)
         .await
         .ok();
 
     let all_rels: Vec<db::MediaRelation> = items_with_rels
         .iter()
-        .flat_map(|m| m.relations.as_ref().unwrap().iter().map(|(r, _)| r.clone()))
+        .flat_map(|m| {
+            m.relations
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|(r, _)| r.clone())
+        })
         // Don't link relations that point to name-keyed person stubs.
         .filter(|r| !name_keyed_person_ids.contains(&r.right_media_id))
         .collect();
@@ -148,16 +170,34 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     macro_rules! fill {
         ($field:ident) => {
-            if replace || target.$field.is_none() {
-                if source.$field.is_some() {
-                    target.$field = source.$field.clone();
+            if replace
+                || target
+                    .$field
+                    .is_none()
+            {
+                if source
+                    .$field
+                    .is_some()
+                {
+                    target.$field = source
+                        .$field
+                        .clone();
                 }
             }
         };
     }
-    if replace || target.title.is_empty() {
-        if !source.title.is_empty() {
-            target.title = source.title.clone();
+    if replace
+        || target
+            .title
+            .is_empty()
+    {
+        if !source
+            .title
+            .is_empty()
+        {
+            target.title = source
+                .title
+                .clone();
         }
     }
 
@@ -174,22 +214,60 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
     fill!(idx);
     fill!(parent_idx);
 
-    let mut merged_ids = target.external_ids.clone();
-    if source.external_ids.imdb.is_some() && (replace || merged_ids.imdb.is_none()) {
-        merged_ids.imdb = source.external_ids.imdb.clone();
+    let mut merged_ids = target
+        .external_ids
+        .clone();
+    if source
+        .external_ids
+        .imdb
+        .is_some()
+        && (replace
+            || merged_ids
+                .imdb
+                .is_none())
+    {
+        merged_ids.imdb = source
+            .external_ids
+            .imdb
+            .clone();
     }
-    if source.external_ids.tmdb.is_some() && (replace || merged_ids.tmdb.is_none()) {
-        merged_ids.tmdb = source.external_ids.tmdb;
+    if source
+        .external_ids
+        .tmdb
+        .is_some()
+        && (replace
+            || merged_ids
+                .tmdb
+                .is_none())
+    {
+        merged_ids.tmdb = source
+            .external_ids
+            .tmdb;
     }
-    if source.external_ids.tvdb.is_some() && (replace || merged_ids.tvdb.is_none()) {
-        merged_ids.tvdb = source.external_ids.tvdb;
+    if source
+        .external_ids
+        .tvdb
+        .is_some()
+        && (replace
+            || merged_ids
+                .tvdb
+                .is_none())
+    {
+        merged_ids.tvdb = source
+            .external_ids
+            .tvdb;
     }
     target.external_ids = merged_ids;
 }
 
 pub(crate) fn apply_title_format(media: &mut db::Media) {
     if media.kind == db::MediaKind::Season {
-        media.title = format!("Season {}", media.idx.unwrap_or(1));
+        media.title = format!(
+            "Season {}",
+            media
+                .idx
+                .unwrap_or(1)
+        );
     }
     if media.kind == db::MediaKind::Episode {
         if let Some(ep) = media.idx {
@@ -204,19 +282,38 @@ pub(crate) fn apply_title_format(media: &mut db::Media) {
 fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
     // Merge images onto the in-memory struct; db::Media::upsert persists them via
     // sync_from_media after the media row is committed, avoiding FK violations.
-    if !patch.images.is_empty() {
+    if !patch
+        .images
+        .is_empty()
+    {
         let patch_images = std::mem::take(&mut patch.images);
         let imgs = &mut media.images;
-        if replace || imgs.primary.is_empty() {
+        if replace
+            || imgs
+                .primary
+                .is_empty()
+        {
             imgs.primary = patch_images.primary;
         }
-        if replace || imgs.backdrop.is_empty() {
+        if replace
+            || imgs
+                .backdrop
+                .is_empty()
+        {
             imgs.backdrop = patch_images.backdrop;
         }
-        if replace || imgs.logo.is_empty() {
+        if replace
+            || imgs
+                .logo
+                .is_empty()
+        {
             imgs.logo = patch_images.logo;
         }
-        if replace || imgs.thumb.is_empty() {
+        if replace
+            || imgs
+                .thumb
+                .is_empty()
+        {
             imgs.thumb = patch_images.thumb;
         }
     }
@@ -231,8 +328,9 @@ fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
                 db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
             )
         {
-            let pending: Vec<(db::MediaRelation, db::Media)> =
-                relations.into_iter().collect();
+            let pending: Vec<(db::MediaRelation, db::Media)> = relations
+                .into_iter()
+                .collect();
             match &mut media.relations {
                 Some(existing) => existing.extend(pending),
                 None => media.relations = Some(pending),
@@ -247,9 +345,14 @@ impl From<crate::stream::StreamInfo> for db::Media {
         let title = si
             .name
             .clone()
-            .or_else(|| si.description.clone())
+            .or_else(|| {
+                si.description
+                    .clone()
+            })
             .unwrap_or_default();
-        let probe_data = si.probe_data.clone();
+        let probe_data = si
+            .probe_data
+            .clone();
         db::Media {
             kind: db::MediaKind::Stream,
             title,
@@ -402,8 +505,10 @@ pub trait AddonKind: Send + Sync {
         &self,
     ) -> (Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>) {
         (
-            self.available_resources().await,
-            self.available_types().await,
+            self.available_resources()
+                .await,
+            self.available_types()
+                .await,
         )
     }
 
@@ -490,7 +595,9 @@ pub struct AddonRuntime {
 
 impl AddonRuntime {
     pub fn supports(&self, r: ResourceType) -> bool {
-        self.row.resources.contains(&r)
+        self.row
+            .resources
+            .contains(&r)
     }
 
     pub fn supports_type(&self, kind: &db::MediaKind) -> bool {
@@ -501,7 +608,15 @@ impl AddonRuntime {
                 return false;
             }
         }
-        self.row.types.is_empty() || kind_in_type_list(kind, &self.row.types)
+        self.row
+            .types
+            .is_empty()
+            || kind_in_type_list(
+                kind,
+                &self
+                    .row
+                    .types,
+            )
     }
 }
 
@@ -526,15 +641,33 @@ impl AddonService {
         let addons = Addon::list(db).await?;
         let mut runtimes = Vec::new();
 
-        for addon in addons.into_iter().filter(|a| a.enabled) {
-            let Some(preset) = presets.iter().find(|p| p.id() == addon.preset.kind)
+        for addon in addons
+            .into_iter()
+            .filter(|a| a.enabled)
+        {
+            let Some(preset) = presets
+                .iter()
+                .find(|p| {
+                    p.id()
+                        == addon
+                            .preset
+                            .kind
+                })
             else {
                 tracing::warn!(addon_id = %addon.id, kind = %addon.preset.kind, "skipping addon with unknown preset kind");
                 continue;
             };
-            match preset.from_cfg(addon.id, &addon.preset.config, config) {
+            match preset.from_cfg(
+                addon.id,
+                &addon
+                    .preset
+                    .config,
+                config,
+            ) {
                 Ok(kind) => {
-                    let (_, raw_types) = kind.available_info().await;
+                    let (_, raw_types) = kind
+                        .available_info()
+                        .await;
                     let manifest_types = if raw_types.is_empty() {
                         None
                     } else {
@@ -567,23 +700,46 @@ impl AddonService {
 
     pub async fn reload(&self, db: &SqlitePool, config: &crate::Config) -> Result<()> {
         let new = Self::from_db(db, config).await?;
-        let mut guard = self.inner.write().await;
-        *guard = new.inner.read().await.clone();
+        let mut guard = self
+            .inner
+            .write()
+            .await;
+        *guard = new
+            .inner
+            .read()
+            .await
+            .clone();
         Ok(())
     }
 
     pub async fn list(&self) -> Vec<AddonRuntime> {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         guard.clone()
     }
 
     pub async fn get(&self, id: Uuid) -> Option<AddonRuntime> {
-        let guard = self.inner.read().await;
-        guard.iter().find(|r| r.row.id == id).cloned()
+        let guard = self
+            .inner
+            .read()
+            .await;
+        guard
+            .iter()
+            .find(|r| {
+                r.row
+                    .id
+                    == id
+            })
+            .cloned()
     }
 
     pub async fn catalog_addons(&self) -> Vec<AddonRuntime> {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         guard
             .iter()
             .filter(|r| r.supports(ResourceType::Catalog))
@@ -592,9 +748,17 @@ impl AddonService {
     }
 
     pub async fn purge_indexes(&self, ctx: &AppContext) -> Result<()> {
-        let addons: Vec<AddonRuntime> = self.inner.read().await.clone();
+        let addons: Vec<AddonRuntime> = self
+            .inner
+            .read()
+            .await
+            .clone();
         for runtime in &addons {
-            if let Err(e) = runtime.kind.purge_index(ctx, &runtime.row).await {
+            if let Err(e) = runtime
+                .kind
+                .purge_index(ctx, &runtime.row)
+                .await
+            {
                 tracing::warn!(addon = %runtime.row.name, error = %e, "purge_index failed");
             }
         }
@@ -607,13 +771,30 @@ impl AddonService {
         progress: ProgressReporter,
     ) -> Result<()> {
         let addons: Vec<AddonRuntime> = {
-            let guard = self.inner.read().await;
-            guard.iter().filter(|r| r.row.enabled).cloned().collect()
+            let guard = self
+                .inner
+                .read()
+                .await;
+            guard
+                .iter()
+                .filter(|r| {
+                    r.row
+                        .enabled
+                })
+                .cloned()
+                .collect()
         };
         let total = addons.len();
-        for (idx, runtime) in addons.iter().enumerate() {
+        for (idx, runtime) in addons
+            .iter()
+            .enumerate()
+        {
             let sub = progress.step(idx, total);
-            if let Err(e) = runtime.kind.refresh_index(ctx, &runtime.row, sub).await {
+            if let Err(e) = runtime
+                .kind
+                .refresh_index(ctx, &runtime.row, sub)
+                .await
+            {
                 tracing::warn!(addon = %runtime.row.name, error = %e, "refresh_index failed");
             }
         }
@@ -622,10 +803,22 @@ impl AddonService {
     }
 
     pub async fn get_catalog(&self, id: Uuid) -> Option<Arc<dyn AddonKind>> {
-        let guard = self.inner.read().await;
-        let r = guard.iter().find(|r| r.row.id == id)?;
+        let guard = self
+            .inner
+            .read()
+            .await;
+        let r = guard
+            .iter()
+            .find(|r| {
+                r.row
+                    .id
+                    == id
+            })?;
         if r.supports(ResourceType::Catalog) {
-            Some(r.kind.clone())
+            Some(
+                r.kind
+                    .clone(),
+            )
         } else {
             None
         }
@@ -641,14 +834,27 @@ impl AddonService {
         let Ok(id) = Uuid::parse_str(addon_uuid) else {
             return vec![];
         };
-        let guard = self.inner.read().await;
-        let Some(r) = guard.iter().find(|r| r.row.id == id) else {
+        let guard = self
+            .inner
+            .read()
+            .await;
+        let Some(r) = guard
+            .iter()
+            .find(|r| {
+                r.row
+                    .id
+                    == id
+            })
+        else {
             return vec![];
         };
         r.row
             .catalog_states()
             .get(local_cat_id)
-            .map(|s| s.tags.clone())
+            .map(|s| {
+                s.tags
+                    .clone()
+            })
             .unwrap_or_default()
     }
 
@@ -659,12 +865,23 @@ impl AddonService {
         let rest = media_id.strip_prefix("addon:")?;
         let (uuid_str, local_id) = rest.split_once(':')?;
         let id = Uuid::parse_str(uuid_str).ok()?;
-        let guard = self.inner.read().await;
-        let r = guard.iter().find(|r| r.row.id == id)?;
+        let guard = self
+            .inner
+            .read()
+            .await;
+        let r = guard
+            .iter()
+            .find(|r| {
+                r.row
+                    .id
+                    == id
+            })?;
         if !r.supports(ResourceType::Catalog) {
             return None;
         }
-        let addon = r.kind.clone();
+        let addon = r
+            .kind
+            .clone();
         Some(Box::new(AddonCatalogStream {
             addon,
             local_id: local_id.to_string(),
@@ -679,12 +896,27 @@ impl AddonService {
         force_refresh: bool,
         config: &api::ServerConfiguration,
     ) -> Result<()> {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         let applicable: Vec<(String, Arc<dyn AddonKind>)> = {
             let mut v = Vec::new();
-            for r in guard.iter().filter(|r| r.supports_type(&media.kind)) {
-                if r.kind.meta_supports(media).await {
-                    v.push((r.row.name.clone(), r.kind.clone()));
+            for r in guard
+                .iter()
+                .filter(|r| r.supports_type(&media.kind))
+            {
+                if r.kind
+                    .meta_supports(media)
+                    .await
+                {
+                    v.push((
+                        r.row
+                            .name
+                            .clone(),
+                        r.kind
+                            .clone(),
+                    ));
                 }
             }
             v
@@ -702,7 +934,10 @@ impl AddonService {
         )
         .await;
 
-        for ((name, _), result) in applicable.iter().zip(results) {
+        for ((name, _), result) in applicable
+            .iter()
+            .zip(results)
+        {
             match result {
                 Ok(Some(patch)) => apply_meta(media, patch, force_refresh),
                 Ok(None) => {}
@@ -714,7 +949,10 @@ impl AddonService {
 
         // Recompute stable UUID for Person once TMDB ID is resolved.
         if media.kind == db::MediaKind::Person {
-            if let Some(tmdb_id) = media.external_ids.tmdb {
+            if let Some(tmdb_id) = media
+                .external_ids
+                .tmdb
+            {
                 media.id = crate::common::stable_media_uuid(
                     &db::MediaKind::Person,
                     &tmdb_id.to_string(),
@@ -731,18 +969,34 @@ impl AddonService {
         let mut all = Vec::new();
         let mut queue = vec![root.clone()];
         while let Some(node) = queue.pop() {
-            let guard = self.inner.read().await;
+            let guard = self
+                .inner
+                .read()
+                .await;
             let applicable: Vec<Arc<dyn AddonKind>> = guard
                 .iter()
-                .filter(|r| r.kind.supports_children(&node))
-                .map(|r| r.kind.clone())
+                .filter(|r| {
+                    r.kind
+                        .supports_children(&node)
+                })
+                .map(|r| {
+                    r.kind
+                        .clone()
+                })
                 .collect();
             drop(guard);
 
             for addon in &applicable {
-                match addon.get_children(&node, ctx).await {
+                match addon
+                    .get_children(&node, ctx)
+                    .await
+                {
                     Ok(Some(children)) if !children.is_empty() => {
-                        queue.extend(children.iter().cloned());
+                        queue.extend(
+                            children
+                                .iter()
+                                .cloned(),
+                        );
                         all.extend(children);
                         break;
                     }
@@ -764,8 +1018,12 @@ impl AddonService {
         force_refresh: bool,
     ) -> Result<()> {
         use futures::stream::{self, StreamExt};
-        let config = db::Settings::get_config(&ctx.db).await.unwrap_or_default();
-        let concurrency = config.meta_concurrency.unwrap_or(5) as usize;
+        let config = db::Settings::get_config(&ctx.db)
+            .await
+            .unwrap_or_default();
+        let concurrency = config
+            .meta_concurrency
+            .unwrap_or(5) as usize;
         let config = Arc::new(config);
         let mut stream = stream::iter(media)
             .map(|m| {
@@ -773,7 +1031,10 @@ impl AddonService {
                 self.process_meta_item(m, ctx, force_refresh, cfg)
             })
             .buffer_unordered(concurrency);
-        while let Some(items) = stream.next().await {
+        while let Some(items) = stream
+            .next()
+            .await
+        {
             if !items.is_empty() {
                 db::Media::upsert(&ctx.db, &items).await?;
                 save_pending_relations(ctx, &items).await;
@@ -812,7 +1073,9 @@ impl AddonService {
             }
         }
 
-        let tree = self.get_tree(&media, ctx).await;
+        let tree = self
+            .get_tree(&media, ctx)
+            .await;
         if tree.is_empty() {
             return vec![media];
         }
@@ -824,7 +1087,11 @@ impl AddonService {
         let mut items = vec![media.clone()];
         for mut item in tree {
             item.grandparent = grandparent.clone();
-            if force_refresh || item.refreshed_at.is_none() {
+            if force_refresh
+                || item
+                    .refreshed_at
+                    .is_none()
+            {
                 if let Err(e) = self
                     .refresh_meta(&mut item, ctx, force_refresh, &config)
                     .await
@@ -845,26 +1112,44 @@ impl AddonService {
         limit: usize,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
             .iter()
             .filter(|r| r.supports(ResourceType::Search) && r.supports_type(kind))
-            .map(|r| (r.row.name.clone(), r.kind.clone()))
+            .map(|r| {
+                (
+                    r.row
+                        .name
+                        .clone(),
+                    r.kind
+                        .clone(),
+                )
+            })
             .collect();
         drop(guard);
 
         for (name, addon) in addons {
-            if !addon.search_supports(kind).await {
+            if !addon
+                .search_supports(kind)
+                .await
+            {
                 continue;
             }
-            match addon.search(kind, query, limit, ctx).await {
+            match addon
+                .search(kind, query, limit, ctx)
+                .await
+            {
                 Ok(Some(results)) => {
                     for m in &results {
-                        ctx.store.save(
-                            m.id.to_string(),
-                            m.clone(),
-                            Duration::from_secs(3600),
-                        );
+                        ctx.store
+                            .save(
+                                m.id.to_string(),
+                                m.clone(),
+                                Duration::from_secs(3600),
+                            );
                     }
                     return Ok(results);
                 }
@@ -883,17 +1168,31 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
             .iter()
             .filter(|r| r.supports_type(&media.kind))
-            .map(|r| (r.row.name.clone(), r.kind.clone()))
+            .map(|r| {
+                (
+                    r.row
+                        .name
+                        .clone(),
+                    r.kind
+                        .clone(),
+                )
+            })
             .collect();
         drop(guard);
 
         let mut out = Vec::new();
         for (name, addon) in addons {
-            match addon.images_fetch(media, ctx).await {
+            match addon
+                .images_fetch(media, ctx)
+                .await
+            {
                 Ok(images) => out.extend(images),
                 Err(e) => {
                     tracing::warn!(addon = %name, error = %e, "images_fetch failed")
@@ -909,21 +1208,36 @@ impl AddonService {
         media: &db::Media,
         db: &SqlitePool,
     ) -> Vec<sdks::stremio::Subtitle> {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
             .iter()
             .filter(|r| {
                 r.supports(ResourceType::Subtitles)
                     && r.supports_type(&media.kind)
-                    && r.kind.subtitle_supports(media)
+                    && r.kind
+                        .subtitle_supports(media)
             })
-            .map(|r| (r.row.name.clone(), r.kind.clone()))
+            .map(|r| {
+                (
+                    r.row
+                        .name
+                        .clone(),
+                    r.kind
+                        .clone(),
+                )
+            })
             .collect();
         drop(guard);
 
         let mut subs = vec![];
         for (name, addon) in addons {
-            match addon.subtitle_fetch(media, db).await {
+            match addon
+                .subtitle_fetch(media, db)
+                .await
+            {
                 Ok(s) => subs.extend(s),
                 Err(e) => {
                     tracing::warn!(addon = %name, error = %e, "subtitle addon failed")
@@ -938,13 +1252,18 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
             .iter()
             .filter(|r| {
                 let has_resource = r.supports(ResourceType::Stream);
                 let has_type = r.supports_type(&media.kind);
-                let kind_supports = r.kind.stream_supports(media);
+                let kind_supports = r
+                    .kind
+                    .stream_supports(media);
                 tracing::debug!(
                     addon = %r.row.name,
                     media_kind = ?media.kind,
@@ -955,7 +1274,15 @@ impl AddonService {
                 );
                 has_resource && has_type && kind_supports
             })
-            .map(|r| (r.row.name.clone(), r.kind.clone()))
+            .map(|r| {
+                (
+                    r.row
+                        .name
+                        .clone(),
+                    r.kind
+                        .clone(),
+                )
+            })
             .collect();
         drop(guard);
 
@@ -998,7 +1325,11 @@ impl AddonService {
     }
 
     fn stream_dedup_key(s: &db::Media) -> Option<String> {
-        match &s.stream_info.as_ref()?.descriptor {
+        match &s
+            .stream_info
+            .as_ref()?
+            .descriptor
+        {
             crate::stream::StreamDescriptor::Torrent { info_hash, .. } => {
                 Some(format!("torrent:{}", info_hash.to_lowercase()))
             }
@@ -1037,7 +1368,9 @@ impl AddonService {
         }
 
         // Acquire per-media lock to prevent concurrent refreshes.
-        let _guard = STREAM_LOCKS.lock(media.id).await;
+        let _guard = STREAM_LOCKS
+            .lock(media.id)
+            .await;
 
         // Re-check after acquiring lock — another task may have just refreshed.
         let refreshed_at = sqlx::query_scalar::<_, Option<chrono::NaiveDateTime>>(
@@ -1054,7 +1387,9 @@ impl AddonService {
         }
 
         let instant = Instant::now();
-        let raw = self.get_streams(media, ctx).await?;
+        let raw = self
+            .get_streams(media, ctx)
+            .await?;
         tracing::debug!(raw_count = raw.len(), "raw streams fetched");
 
         // Dedup by descriptor content; order preserves addon priority (DB load order).
@@ -1072,7 +1407,12 @@ impl AddonService {
             let mut seen = std::collections::HashSet::new();
             deduped
                 .iter()
-                .filter_map(|m| m.stream_info.as_ref()?.source.as_deref())
+                .filter_map(|m| {
+                    m.stream_info
+                        .as_ref()?
+                        .source
+                        .as_deref()
+                })
                 .filter(|s| seen.insert(*s))
                 .collect()
         };
@@ -1120,12 +1460,17 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
     ) -> MediaSegments {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
             .iter()
             .filter(|r| {
                 let has_resource = r.supports(ResourceType::Segment);
-                let kind_supports = r.kind.segment_supports(media);
+                let kind_supports = r
+                    .kind
+                    .segment_supports(media);
                 tracing::debug!(
                     addon = %r.row.name,
                     media_kind = ?media.kind,
@@ -1135,13 +1480,24 @@ impl AddonService {
                 );
                 has_resource && kind_supports
             })
-            .map(|r| (r.row.name.clone(), r.kind.clone()))
+            .map(|r| {
+                (
+                    r.row
+                        .name
+                        .clone(),
+                    r.kind
+                        .clone(),
+                )
+            })
             .collect();
         drop(guard);
 
         let mut merged = MediaSegments::default();
         for (name, addon) in addons {
-            match addon.segment_fetch(media, ctx).await {
+            match addon
+                .segment_fetch(media, ctx)
+                .await
+            {
                 Ok(segs) if !segs.is_empty() => merged.merge_from(segs),
                 Ok(_) => {}
                 Err(e) => {
@@ -1156,16 +1512,30 @@ impl AddonService {
         &self,
         req: &LyricSearchRequest,
     ) -> Result<Option<LyricDto>> {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
             .iter()
             .filter(|r| r.supports(ResourceType::Lyrics))
-            .map(|r| (r.row.name.clone(), r.kind.clone()))
+            .map(|r| {
+                (
+                    r.row
+                        .name
+                        .clone(),
+                    r.kind
+                        .clone(),
+                )
+            })
             .collect();
         drop(guard);
 
         for (name, addon) in addons {
-            match addon.lyric_fetch(req).await {
+            match addon
+                .lyric_fetch(req)
+                .await
+            {
                 Ok(Some(l)) => return Ok(Some(l)),
                 Ok(None) => continue,
                 Err(e) => {
@@ -1180,17 +1550,31 @@ impl AddonService {
         &self,
         req: &LyricSearchRequest,
     ) -> Result<Vec<RemoteLyricInfoDto>> {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
             .iter()
             .filter(|r| r.supports(ResourceType::Lyrics))
-            .map(|r| (r.row.name.clone(), r.kind.clone()))
+            .map(|r| {
+                (
+                    r.row
+                        .name
+                        .clone(),
+                    r.kind
+                        .clone(),
+                )
+            })
             .collect();
         drop(guard);
 
         let mut out = Vec::new();
         for (name, addon) in addons {
-            match addon.lyric_search(req).await {
+            match addon
+                .lyric_search(req)
+                .await
+            {
                 Ok(items) => out.extend(items),
                 Err(e) => {
                     tracing::warn!(addon = %name, error = %e, "lyric addon search failed")
@@ -1204,11 +1588,17 @@ impl AddonService {
         &self,
         composite_id: &str,
     ) -> Result<Option<LyricDto>> {
-        let guard = self.inner.read().await;
+        let guard = self
+            .inner
+            .read()
+            .await;
         let addons: Vec<Arc<dyn AddonKind>> = guard
             .iter()
             .filter(|r| r.supports(ResourceType::Lyrics))
-            .map(|r| r.kind.clone())
+            .map(|r| {
+                r.kind
+                    .clone()
+            })
             .collect();
         drop(guard);
 
@@ -1216,7 +1606,9 @@ impl AddonService {
             if let Some(provider_id) = addon.lyric_provider_id() {
                 let prefix = format!("{}_", provider_id);
                 if let Some(inner) = composite_id.strip_prefix(&prefix) {
-                    return addon.lyric_get_by_id(inner).await;
+                    return addon
+                        .lyric_get_by_id(inner)
+                        .await;
                 }
             }
         }

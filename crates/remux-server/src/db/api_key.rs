@@ -12,7 +12,9 @@ pub struct ApiKey {
 
 impl ApiKey {
     pub async fn create(db: &SqlitePool, app_name: &str) -> Result<Self> {
-        let token = uuid::Uuid::new_v4().to_string().replace('-', "");
+        let token = uuid::Uuid::new_v4()
+            .to_string()
+            .replace('-', "");
         sqlx::query("INSERT INTO api_keys (access_token, app_name) VALUES (?1, ?2)")
             .bind(&token)
             .bind(app_name)

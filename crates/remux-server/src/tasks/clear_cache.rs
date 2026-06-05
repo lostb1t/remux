@@ -31,7 +31,8 @@ impl Task for ClearCacheTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        ctx.store.clear();
+        ctx.store
+            .clear();
         progress.set(50.0);
         crate::sdks::clear_http_cache();
         progress.set(100.0);

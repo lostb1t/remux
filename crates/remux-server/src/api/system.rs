@@ -23,13 +23,22 @@ use super::mock_items;
 pub async fn system_info_public(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
-    let config = crate::db::Settings::get_config(&state.ctx.db).await?;
+    let config = crate::db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     Ok(Json(api::PublicSystemInfo {
         // todo
         local_address: String::new(),
-        server_name: config.server_name.unwrap_or_default(),
+        server_name: config
+            .server_name
+            .unwrap_or_default(),
         product_name: "Jellyfin Server".to_string(),
-        startup_wizard_completed: config.is_startup_wizard_completed.unwrap_or(false),
+        startup_wizard_completed: config
+            .is_startup_wizard_completed
+            .unwrap_or(false),
         // some clients dont like adding a suffix like "-remux"
         version: "10.11.8".to_string(),
         remux_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -147,7 +156,12 @@ pub async fn system_configuration(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
-    let mut config = crate::db::Settings::get_config(&state.ctx.db).await?;
+    let mut config = crate::db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     config.default_web_client = Some(crate::web_client::normalize_web_client(
         config.default_web_client,
     ));
@@ -165,13 +179,29 @@ pub async fn update_system_configuration(
         config.default_web_client,
     ));
     // Apply P2P speed limits before saving so they take effect immediately.
-    if config.p2p_enabled.unwrap_or(true) {
-        state.ctx.torrent.update_limits(
-            config.p2p_upload_speed_kbps.unwrap_or(0),
-            config.p2p_download_speed_kbps.unwrap_or(0),
-        );
+    if config
+        .p2p_enabled
+        .unwrap_or(true)
+    {
+        state
+            .ctx
+            .torrent
+            .update_limits(
+                config
+                    .p2p_upload_speed_kbps
+                    .unwrap_or(0),
+                config
+                    .p2p_download_speed_kbps
+                    .unwrap_or(0),
+            );
     }
-    crate::db::Settings::set_config(&state.ctx.db, &config).await?;
+    crate::db::Settings::set_config(
+        &state
+            .ctx
+            .db,
+        &config,
+    )
+    .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -182,7 +212,12 @@ pub async fn get_encoding_configuration(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
-    let opts = crate::db::Settings::get_encoding_config(&state.ctx.db).await?;
+    let opts = crate::db::Settings::get_encoding_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     Ok(Json(opts))
 }
 
@@ -193,7 +228,13 @@ pub async fn update_encoding_configuration(
     _session: auth::AdminSession,
     Json(opts): Json<api::EncodingOptions>,
 ) -> Result<impl IntoResponse> {
-    crate::db::Settings::set_encoding_config(&state.ctx.db, &opts).await?;
+    crate::db::Settings::set_encoding_config(
+        &state
+            .ctx
+            .db,
+        &opts,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -220,8 +261,15 @@ pub async fn syncplay_list(
 pub async fn quickconnect_enabled(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
-    let cfg = db::Settings::get_config(&state.ctx.db).await?;
-    let enabled = cfg.quick_connect_available.unwrap_or(true);
+    let cfg = db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
+    let enabled = cfg
+        .quick_connect_available
+        .unwrap_or(true);
     Ok(Json(enabled))
 }
 
@@ -242,19 +290,37 @@ pub async fn quickconnect_initiate(
     State(state): State<AppState>,
     auth_header: auth::JellyfinAuthHeader,
 ) -> Result<impl IntoResponse> {
-    let cfg = db::Settings::get_config(&state.ctx.db).await?;
-    if !cfg.quick_connect_available.unwrap_or(true) {
+    let cfg = db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
+    if !cfg
+        .quick_connect_available
+        .unwrap_or(true)
+    {
         return Err(anyhow::anyhow!("QuickConnect is disabled"))
             .context_forbidden("QuickConnect is disabled on this server");
     }
 
-    let secret = get_uuid().simple().to_string();
+    let secret = get_uuid()
+        .simple()
+        .to_string();
     let code = format!("{:06}", get_uuid().as_u128() % 1_000_000);
 
-    let device_id = auth_header.device_id.unwrap_or_default();
-    let device_name = auth_header.device.unwrap_or_default();
-    let app_name = auth_header.client.unwrap_or_default();
-    let app_version = auth_header.version.unwrap_or_default();
+    let device_id = auth_header
+        .device_id
+        .unwrap_or_default();
+    let device_name = auth_header
+        .device
+        .unwrap_or_default();
+    let app_name = auth_header
+        .client
+        .unwrap_or_default();
+    let app_version = auth_header
+        .version
+        .unwrap_or_default();
 
     let date_added = chrono::Utc::now();
     let entry = QuickConnectEntry {
@@ -271,11 +337,14 @@ pub async fn quickconnect_initiate(
         .ctx
         .store
         .save(format!("qc:{secret}"), entry, Duration::from_secs(600));
-    state.ctx.store.save(
-        format!("qc:code:{code}"),
-        secret.clone(),
-        Duration::from_secs(600),
-    );
+    state
+        .ctx
+        .store
+        .save(
+            format!("qc:code:{code}"),
+            secret.clone(),
+            Duration::from_secs(600),
+        );
 
     Ok(Json(api::QuickConnectResult {
         secret,
@@ -312,11 +381,18 @@ pub async fn quickconnect_connect(
         .context_not_found("QuickConnect request not found or expired")?;
 
     Ok(Json(api::QuickConnectResult {
-        secret: q.secret.clone(),
-        code: entry.code.clone(),
+        secret: q
+            .secret
+            .clone(),
+        code: entry
+            .code
+            .clone(),
         authenticated: entry.authenticated,
         authentication_token: if entry.authenticated {
-            Some(q.secret.clone())
+            Some(
+                q.secret
+                    .clone(),
+            )
         } else {
             None
         },
@@ -346,15 +422,22 @@ pub async fn quickconnect_authorize(
         .get::<QuickConnectEntry>(format!("qc:{secret}"))
         .context_not_found("QuickConnect request not found or expired")?;
 
-    state.ctx.store.save(
-        format!("qc:{secret}"),
-        QuickConnectEntry {
-            authenticated: true,
-            user_id: Some(session.user.id),
-            ..entry
-        },
-        Duration::from_secs(300),
-    );
+    state
+        .ctx
+        .store
+        .save(
+            format!("qc:{secret}"),
+            QuickConnectEntry {
+                authenticated: true,
+                user_id: Some(
+                    session
+                        .user
+                        .id,
+                ),
+                ..entry
+            },
+            Duration::from_secs(300),
+        );
 
     Ok(Json(true))
 }
@@ -373,12 +456,18 @@ fn default_branding_configuration() -> api::BrandingOptions {
 pub async fn get_branding_configuration(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
-    let config =
-        match crate::db::Settings::get(&state.ctx.db, BRANDING_CONFIG_KEY).await? {
-            Some(json) => serde_json::from_str(&json)
-                .unwrap_or_else(|_| default_branding_configuration()),
-            None => default_branding_configuration(),
-        };
+    let config = match crate::db::Settings::get(
+        &state
+            .ctx
+            .db,
+        BRANDING_CONFIG_KEY,
+    )
+    .await?
+    {
+        Some(json) => serde_json::from_str(&json)
+            .unwrap_or_else(|_| default_branding_configuration()),
+        None => default_branding_configuration(),
+    };
     Ok(Json(config))
 }
 
@@ -389,7 +478,14 @@ pub async fn update_branding_configuration_legacy(
     Json(config): Json<api::BrandingOptions>,
 ) -> Result<impl IntoResponse> {
     let json = serde_json::to_string(&config)?;
-    crate::db::Settings::set(&state.ctx.db, BRANDING_CONFIG_KEY, &json).await?;
+    crate::db::Settings::set(
+        &state
+            .ctx
+            .db,
+        BRANDING_CONFIG_KEY,
+        &json,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -401,17 +497,33 @@ pub async fn update_branding_configuration(
     Json(config): Json<api::BrandingOptions>,
 ) -> Result<impl IntoResponse> {
     let json = serde_json::to_string(&config)?;
-    crate::db::Settings::set(&state.ctx.db, BRANDING_CONFIG_KEY, &json).await?;
+    crate::db::Settings::set(
+        &state
+            .ctx
+            .db,
+        BRANDING_CONFIG_KEY,
+        &json,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn branding_css_response(state: &AppState) -> Result<Response> {
-    let config =
-        match crate::db::Settings::get(&state.ctx.db, BRANDING_CONFIG_KEY).await? {
-            Some(json) => serde_json::from_str::<api::BrandingOptions>(&json).ok(),
-            None => None,
-        };
-    match config.and_then(|c| c.custom_css).filter(|s| !s.is_empty()) {
+    let config = match crate::db::Settings::get(
+        &state
+            .ctx
+            .db,
+        BRANDING_CONFIG_KEY,
+    )
+    .await?
+    {
+        Some(json) => serde_json::from_str::<api::BrandingOptions>(&json).ok(),
+        None => None,
+    };
+    match config
+        .and_then(|c| c.custom_css)
+        .filter(|s| !s.is_empty())
+    {
         Some(css) => Ok(([(header::CONTENT_TYPE, "text/css")], css).into_response()),
         None => Ok(StatusCode::NO_CONTENT.into_response()),
     }
@@ -460,7 +572,9 @@ pub async fn get_utc_time() -> impl IntoResponse {
 pub async fn system_restart(session: auth::AdminSession) -> Result<impl IntoResponse> {
     tracing::info!(
         "Server restart requested by user: {}",
-        session.user.username
+        session
+            .user
+            .username
     );
 
     // Trigger actual server restart
@@ -508,7 +622,9 @@ async fn restart_server() -> Result<()> {
 pub async fn system_shutdown(session: auth::AdminSession) -> Result<impl IntoResponse> {
     tracing::info!(
         "Server shutdown requested by user: {}",
-        session.user.username
+        session
+            .user
+            .username
     );
 
     // Trigger actual server shutdown
@@ -539,7 +655,12 @@ pub async fn system_info(
     State(state): State<AppState>,
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let config = crate::db::Settings::get_config(&state.ctx.db).await?;
+    let config = crate::db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     Ok(Json(api::SystemInfo {
         id: Some(server_id()),
         server_name: config.server_name,
@@ -567,9 +688,13 @@ mod test {
 
     #[tokio::test]
     async fn test_system_info_public() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
 
-        let resp = server.get("/system/info/public").await;
+        let resp = server
+            .get("/system/info/public")
+            .await;
 
         resp.assert_status_ok();
         resp.assert_json_contains(&json!({
@@ -586,13 +711,21 @@ mod test {
     #[tokio::test]
     async fn system_endpoints_exist_and_protected() {
         use crate::integration_test::new_test_server;
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
 
         // Unauthenticated requests should return 401, not 404
-        let response = server.post("/system/restart").expect_failure().await;
+        let response = server
+            .post("/system/restart")
+            .expect_failure()
+            .await;
         assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
 
-        let response = server.post("/system/shutdown").expect_failure().await;
+        let response = server
+            .post("/system/shutdown")
+            .expect_failure()
+            .await;
         assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
     }
 
@@ -600,9 +733,14 @@ mod test {
     async fn system_restart_requires_auth() {
         use crate::integration_test::new_test_server;
 
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
         // Unauthenticated → 401
-        let response = server.post("/system/restart").expect_failure().await;
+        let response = server
+            .post("/system/restart")
+            .expect_failure()
+            .await;
         response.assert_status(StatusCode::UNAUTHORIZED);
     }
 
@@ -610,9 +748,14 @@ mod test {
     async fn system_shutdown_requires_auth() {
         use crate::integration_test::new_test_server;
 
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
         // Unauthenticated → 401
-        let response = server.post("/system/shutdown").expect_failure().await;
+        let response = server
+            .post("/system/shutdown")
+            .expect_failure()
+            .await;
         response.assert_status(StatusCode::UNAUTHORIZED);
     }
 
@@ -642,7 +785,9 @@ mod test {
 
     #[tokio::test]
     async fn system_configuration_requires_auth() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
         server
             .get("/system/configuration")
             .expect_failure()
@@ -716,9 +861,13 @@ mod test {
 
     #[tokio::test]
     async fn system_endpoint_test() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
 
-        let resp = server.get("/system/endpoint").await;
+        let resp = server
+            .get("/system/endpoint")
+            .await;
 
         resp.assert_status_ok();
         resp.assert_json(&json!({
@@ -731,7 +880,9 @@ mod test {
 
     #[tokio::test]
     async fn syncplay_list_requires_auth() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
         server
             .get("/syncplay/list")
             .expect_failure()
@@ -759,43 +910,67 @@ mod test {
 
     #[tokio::test]
     async fn quickconnect_enabled_get_test() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
 
-        let resp = server.get("/quickconnect/enabled").await;
+        let resp = server
+            .get("/quickconnect/enabled")
+            .await;
 
         resp.assert_status_ok();
-        assert!(resp.text().contains("true"));
+        assert!(
+            resp.text()
+                .contains("true")
+        );
     }
 
     #[tokio::test]
     async fn quickconnect_enabled_post_test() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
 
-        let resp = server.post("/quickconnect/enabled").await;
+        let resp = server
+            .post("/quickconnect/enabled")
+            .await;
 
         resp.assert_status_ok();
-        assert!(resp.text().contains("true"));
+        assert!(
+            resp.text()
+                .contains("true")
+        );
     }
 
     // --- GET /branding/configuration ---
 
     #[tokio::test]
     async fn branding_configuration_default_test() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
 
-        let resp = server.get("/branding/configuration").await;
+        let resp = server
+            .get("/branding/configuration")
+            .await;
 
         resp.assert_status_ok();
         resp.assert_json(&json!({ "SplashscreenEnabled": false }));
         let body: serde_json::Value = resp.json();
-        assert!(body.get("CustomCss").is_none() || body["CustomCss"].is_null());
+        assert!(
+            body.get("CustomCss")
+                .is_none()
+                || body["CustomCss"].is_null()
+        );
     }
 
     // --- POST /branding/configuration ---
 
     #[tokio::test]
     async fn branding_configuration_requires_auth() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
         server
             .post("/branding/configuration")
             .json(&json!({ "SplashscreenEnabled": false }))
@@ -818,7 +993,9 @@ mod test {
             .assert_status(StatusCode::NO_CONTENT);
 
         // GET and verify the CSS persisted
-        let resp = server.get("/branding/configuration").await;
+        let resp = server
+            .get("/branding/configuration")
+            .await;
         resp.assert_status_ok();
         resp.assert_json_contains(&json!({ "CustomCss": "body{color:red}" }));
     }
@@ -839,7 +1016,9 @@ mod test {
             .assert_status(StatusCode::NO_CONTENT);
 
         // GET /branding/configuration verifies the same store was updated
-        let resp = server.get("/branding/configuration").await;
+        let resp = server
+            .get("/branding/configuration")
+            .await;
         resp.assert_status_ok();
         resp.assert_json_contains(&json!({ "CustomCss": "h1{font-size:2em}" }));
     }
@@ -848,7 +1027,9 @@ mod test {
 
     #[tokio::test]
     async fn branding_css_empty_test() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
 
         server
             .get("/branding/css")
@@ -858,7 +1039,9 @@ mod test {
 
     #[tokio::test]
     async fn branding_css_dotcss_empty_test() {
-        let (server, _ctx) = new_test_server().await.unwrap();
+        let (server, _ctx) = new_test_server()
+            .await
+            .unwrap();
 
         server
             .get("/branding/css.css")
@@ -884,12 +1067,16 @@ mod test {
             .assert_status(StatusCode::NO_CONTENT);
 
         // GET /branding/css → 200 + body equals CSS
-        let css_resp = server.get("/branding/css").await;
+        let css_resp = server
+            .get("/branding/css")
+            .await;
         css_resp.assert_status_ok();
         assert_eq!(css_resp.text(), css);
 
         // GET /branding/css.css → 200 + same body
-        let dotcss_resp = server.get("/branding/css.css").await;
+        let dotcss_resp = server
+            .get("/branding/css.css")
+            .await;
         dotcss_resp.assert_status_ok();
         assert_eq!(dotcss_resp.text(), css);
     }

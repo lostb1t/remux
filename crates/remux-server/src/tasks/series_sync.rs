@@ -41,7 +41,10 @@ impl Task for SeriesSyncTask {
         .await?
         .records;
 
-        let series_ids: Vec<uuid::Uuid> = media_list.iter().map(|m| m.id).collect();
+        let series_ids: Vec<uuid::Uuid> = media_list
+            .iter()
+            .map(|m| m.id)
+            .collect();
 
         ctx.addons
             .process_meta_batch(media_list, &ctx, false)

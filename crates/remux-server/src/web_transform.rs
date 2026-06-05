@@ -21,10 +21,17 @@ pub struct TransformCache(Arc<Mutex<HashMap<String, Bytes>>>);
 
 impl TransformCache {
     pub fn get(&self, path: &str) -> Option<Bytes> {
-        self.0.lock().unwrap().get(path).cloned()
+        self.0
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
     }
     pub fn insert(&self, path: String, bytes: Bytes) {
-        self.0.lock().unwrap().insert(path, bytes);
+        self.0
+            .lock()
+            .unwrap()
+            .insert(path, bytes);
     }
 }
 
@@ -46,7 +53,9 @@ impl<S> Layer<S> for TransformLayer {
     fn layer(&self, inner: S) -> Self::Service {
         TransformService {
             inner,
-            cache: self.cache.clone(),
+            cache: self
+                .cache
+                .clone(),
         }
     }
 }
@@ -74,13 +83,21 @@ where
         Pin<Box<dyn Future<Output = Result<Response<Body>, Infallible>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
-        self.inner.poll_ready(cx)
+        self.inner
+            .poll_ready(cx)
     }
 
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        let path = req.uri().path().to_string();
-        let cache = self.cache.clone();
-        let fut = self.inner.call(req);
+        let path = req
+            .uri()
+            .path()
+            .to_string();
+        let cache = self
+            .cache
+            .clone();
+        let fut = self
+            .inner
+            .call(req);
 
         Box::pin(async move {
             let response = fut.await?;
@@ -89,7 +106,10 @@ where
             let is_html = response
                 .headers()
                 .get(http::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
+                .and_then(|v| {
+                    v.to_str()
+                        .ok()
+                })
                 .map(|ct| ct.contains("html"))
                 .unwrap_or(false);
 
@@ -124,10 +144,12 @@ where
 
             let out = Bytes::from(html.into_bytes());
             let mut response = Response::from_parts(parts, Body::from(out.clone()));
-            response.headers_mut().insert(
-                http::header::CONTENT_LENGTH,
-                http::HeaderValue::from(out.len()),
-            );
+            response
+                .headers_mut()
+                .insert(
+                    http::header::CONTENT_LENGTH,
+                    http::HeaderValue::from(out.len()),
+                );
             Ok(response)
         })
     }

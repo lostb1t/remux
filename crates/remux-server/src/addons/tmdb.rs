@@ -152,14 +152,20 @@ where
                 })
                 .and_then(valid)
         })
-        .or_else(|| ratings.iter().find_map(valid))
+        .or_else(|| {
+            ratings
+                .iter()
+                .find_map(valid)
+        })
 }
 
 fn tmdb_rating_label(country: &str, rating: &str) -> String {
     if country.eq_ignore_ascii_case("US") {
         rating.to_string()
     } else if country.eq_ignore_ascii_case("DE")
-        && !rating.to_uppercase().starts_with("FSK")
+        && !rating
+            .to_uppercase()
+            .starts_with("FSK")
     {
         format!("FSK-{rating}")
     } else {
@@ -177,10 +183,18 @@ fn build_person_relations(
     credits: &sdks::tmdb::Credits,
 ) -> Vec<(db::MediaRelation, db::Media)> {
     let mut relations = Vec::new();
-    for (i, member) in credits.cast.iter().enumerate() {
+    for (i, member) in credits
+        .cast
+        .iter()
+        .enumerate()
+    {
         let name = &member.name;
-        let person_id =
-            common::stable_media_uuid(&db::MediaKind::Person, &member.id.to_string());
+        let person_id = common::stable_media_uuid(
+            &db::MediaKind::Person,
+            &member
+                .id
+                .to_string(),
+        );
         let mut person = db::Media {
             id: person_id,
             title: name.clone(),
@@ -191,7 +205,11 @@ fn build_person_relations(
             },
             ..Default::default()
         };
-        if let Some(url) = tmdb_image(member.profile_path.as_deref()) {
+        if let Some(url) = tmdb_image(
+            member
+                .profile_path
+                .as_deref(),
+        ) {
             person.set_image(db::ImageKind::Primary, url);
         }
         relations.push((
@@ -200,14 +218,23 @@ fn build_person_relations(
                 right_media_id: person_id,
                 weight: Some(i as i64),
                 role: Some(db::RelationRole::Actor),
-                character: member.character.clone(),
+                character: member
+                    .character
+                    .clone(),
                 ..Default::default()
             },
             person,
         ));
     }
-    for (i, member) in credits.crew.iter().enumerate() {
-        let role = match member.job.as_str() {
+    for (i, member) in credits
+        .crew
+        .iter()
+        .enumerate()
+    {
+        let role = match member
+            .job
+            .as_str()
+        {
             "Director" => Some(db::RelationRole::Director),
             "Writer" | "Screenplay" | "Author" => Some(db::RelationRole::Writer),
             "Producer" | "Executive Producer" | "Co-Producer" => {
@@ -219,7 +246,9 @@ fn build_person_relations(
             let name = &member.name;
             let person_id = common::stable_media_uuid(
                 &db::MediaKind::Person,
-                &member.id.to_string(),
+                &member
+                    .id
+                    .to_string(),
             );
             let mut person = db::Media {
                 id: person_id,
@@ -231,7 +260,11 @@ fn build_person_relations(
                 },
                 ..Default::default()
             };
-            if let Some(url) = tmdb_image(member.profile_path.as_deref()) {
+            if let Some(url) = tmdb_image(
+                member
+                    .profile_path
+                    .as_deref(),
+            ) {
                 person.set_image(db::ImageKind::Primary, url);
             }
             relations.push((
@@ -288,7 +321,9 @@ async fn fetch_tmdb_meta(
     ctx: &AppContext,
     config: &crate::api::ServerConfiguration,
 ) -> Result<Option<db::Media>> {
-    let api_key = config.get_tmdb_key().to_string();
+    let api_key = config
+        .get_tmdb_key()
+        .to_string();
     let metadata_country = config
         .metadata_country_code
         .as_deref()
@@ -323,7 +358,12 @@ async fn fetch_tmdb_meta(
                     )
                     .await
                     .ok()
-                    .and_then(|r| r.movie_results.into_iter().next().map(|m| m.id))
+                    .and_then(|r| {
+                        r.movie_results
+                            .into_iter()
+                            .next()
+                            .map(|m| m.id)
+                    })
             };
 
             if let Some(tmdb_id) = tmdb_movie_id {
@@ -335,7 +375,12 @@ async fn fetch_tmdb_meta(
                     .await?;
                 let external_ids = db::ExternalIds {
                     tmdb: Some(movie_details.id),
-                    imdb: movie_details.imdb_id.clone().or(ids.imdb.clone()),
+                    imdb: movie_details
+                        .imdb_id
+                        .clone()
+                        .or(ids
+                            .imdb
+                            .clone()),
                     tvdb: ids.tvdb,
                     ..Default::default()
                 };
@@ -349,30 +394,36 @@ async fn fetch_tmdb_meta(
                     .as_ref()
                     .and_then(|i| i.best_thumb())
                     .and_then(|p| tmdb_image(Some(p)));
-                let rating =
-                    movie_details
-                        .release_dates
-                        .as_ref()
-                        .and_then(|release_dates| {
-                            let releases = release_dates
-                                .results
-                                .iter()
-                                .flat_map(|country| {
-                                    country.release_dates.iter().map(|release| {
+                let rating = movie_details
+                    .release_dates
+                    .as_ref()
+                    .and_then(|release_dates| {
+                        let releases = release_dates
+                            .results
+                            .iter()
+                            .flat_map(|country| {
+                                country
+                                    .release_dates
+                                    .iter()
+                                    .map(|release| {
                                         (
-                                            country.iso_3166_1.as_str(),
-                                            release.certification.as_deref(),
+                                            country
+                                                .iso_3166_1
+                                                .as_str(),
+                                            release
+                                                .certification
+                                                .as_deref(),
                                         )
                                     })
-                                })
-                                .collect::<Vec<_>>();
-                            select_rating(
-                                &releases,
-                                &metadata_country,
-                                |(country, _)| country,
-                                |(_, certification)| *certification,
-                            )
-                        });
+                            })
+                            .collect::<Vec<_>>();
+                        select_rating(
+                            &releases,
+                            &metadata_country,
+                            |(country, _)| country,
+                            |(_, certification)| *certification,
+                        )
+                    });
                 let (certification, certification_age) = rating
                     .map(|(country, rating)| {
                         let label = tmdb_rating_label(&country, &rating);
@@ -386,7 +437,11 @@ async fn fetch_tmdb_meta(
                     .and_then(|rd| {
                         rd.results
                             .iter()
-                            .flat_map(|country| country.release_dates.iter())
+                            .flat_map(|country| {
+                                country
+                                    .release_dates
+                                    .iter()
+                            })
                             .filter(|e| e.release_type >= 4)
                             .filter_map(|e| e.release_date)
                             .min()
@@ -399,17 +454,27 @@ async fn fetch_tmdb_meta(
                         .release_date
                         .and_then(|d| d.and_hms_opt(0, 0, 0)),
                     digital_released_at,
-                    runtime: movie_details.runtime.map(|r| r * 60),
+                    runtime: movie_details
+                        .runtime
+                        .map(|r| r * 60),
                     rating_audience: movie_details.vote_average,
                     certification,
                     certification_age,
                     external_ids: external_ids,
                     ..Default::default()
                 };
-                if let Some(url) = tmdb_image(movie_details.poster_path.as_deref()) {
+                if let Some(url) = tmdb_image(
+                    movie_details
+                        .poster_path
+                        .as_deref(),
+                ) {
                     patch.set_image(db::ImageKind::Primary, url);
                 }
-                if let Some(url) = tmdb_image(movie_details.backdrop_path.as_deref()) {
+                if let Some(url) = tmdb_image(
+                    movie_details
+                        .backdrop_path
+                        .as_deref(),
+                ) {
                     patch.set_image(db::ImageKind::Backdrop, url);
                 }
                 if let Some(url) = logo {
@@ -453,7 +518,12 @@ async fn fetch_tmdb_meta(
                     )
                     .await
                     .ok()
-                    .and_then(|r| r.tv_results.into_iter().next().map(|s| s.id))
+                    .and_then(|r| {
+                        r.tv_results
+                            .into_iter()
+                            .next()
+                            .map(|s| s.id)
+                    })
             };
 
             if let Some(tmdb_id) = tmdb_series_id {
@@ -463,14 +533,22 @@ async fn fetch_tmdb_meta(
                             .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
-                let tmdb_ext = tv_details.external_ids.as_ref();
+                let tmdb_ext = tv_details
+                    .external_ids
+                    .as_ref();
                 let external_ids = db::ExternalIds {
                     tmdb: Some(tv_details.id),
-                    imdb: tmdb_ext.and_then(|e| e.imdb_id.clone()),
+                    imdb: tmdb_ext.and_then(|e| {
+                        e.imdb_id
+                            .clone()
+                    }),
                     tvdb: tmdb_ext.and_then(|e| e.tvdb_id),
                     ..Default::default()
                 };
-                let country = tv_details.origin_country.into_iter().next();
+                let country = tv_details
+                    .origin_country
+                    .into_iter()
+                    .next();
                 let logo = tv_details
                     .images
                     .as_ref()
@@ -481,18 +559,25 @@ async fn fetch_tmdb_meta(
                     .as_ref()
                     .and_then(|i| i.best_thumb())
                     .and_then(|p| tmdb_image(Some(p)));
-                let rating =
-                    tv_details
-                        .content_ratings
-                        .as_ref()
-                        .and_then(|content_ratings| {
-                            select_rating(
-                                &content_ratings.results,
-                                &metadata_country,
-                                |rating| rating.iso_3166_1.as_str(),
-                                |rating| rating.rating.as_deref(),
-                            )
-                        });
+                let rating = tv_details
+                    .content_ratings
+                    .as_ref()
+                    .and_then(|content_ratings| {
+                        select_rating(
+                            &content_ratings.results,
+                            &metadata_country,
+                            |rating| {
+                                rating
+                                    .iso_3166_1
+                                    .as_str()
+                            },
+                            |rating| {
+                                rating
+                                    .rating
+                                    .as_deref()
+                            },
+                        )
+                    });
                 let (certification, certification_age) = rating
                     .map(|(country, rating)| {
                         let label = tmdb_rating_label(&country, &rating);
@@ -513,10 +598,18 @@ async fn fetch_tmdb_meta(
                     external_ids: external_ids,
                     ..Default::default()
                 };
-                if let Some(url) = tmdb_image(tv_details.poster_path.as_deref()) {
+                if let Some(url) = tmdb_image(
+                    tv_details
+                        .poster_path
+                        .as_deref(),
+                ) {
                     patch.set_image(db::ImageKind::Primary, url);
                 }
-                if let Some(url) = tmdb_image(tv_details.backdrop_path.as_deref()) {
+                if let Some(url) = tmdb_image(
+                    tv_details
+                        .backdrop_path
+                        .as_deref(),
+                ) {
                     patch.set_image(db::ImageKind::Backdrop, url);
                 }
                 if let Some(url) = logo {
@@ -533,7 +626,10 @@ async fn fetch_tmdb_meta(
                     relations.extend(build_person_relations(media.id, credits));
                 }
                 if let Some(creators) = &tv_details.created_by {
-                    for (i, creator) in creators.iter().enumerate() {
+                    for (i, creator) in creators
+                        .iter()
+                        .enumerate()
+                    {
                         let name = &creator.name;
                         let tmdb_id = creator.id as i64;
                         let person_id = common::stable_media_uuid(
@@ -550,7 +646,11 @@ async fn fetch_tmdb_meta(
                             },
                             ..Default::default()
                         };
-                        if let Some(url) = tmdb_image(creator.profile_path.as_deref()) {
+                        if let Some(url) = tmdb_image(
+                            creator
+                                .profile_path
+                                .as_deref(),
+                        ) {
                             creator_media.set_image(db::ImageKind::Primary, url);
                         }
                         relations.push((
@@ -572,20 +672,30 @@ async fn fetch_tmdb_meta(
             }
         }
         db::MediaKind::Episode => {
-            let mut series_tmdb_id = if let Some(tmdb) =
-                media.grandparent.as_ref().and_then(|g| g.external_ids.tmdb)
-            {
+            let mut series_tmdb_id = if let Some(tmdb) = media
+                .grandparent
+                .as_ref()
+                .and_then(|g| {
+                    g.external_ids
+                        .tmdb
+                }) {
                 Some(tmdb)
             } else if let Some(sid) = media.grandparent_id {
                 db::Media::get_by_id(&ctx.db, &sid)
                     .await?
                     .filter(|m| m.kind == db::MediaKind::Series)
-                    .and_then(|m| m.external_ids.tmdb)
+                    .and_then(|m| {
+                        m.external_ids
+                            .tmdb
+                    })
             } else {
                 None
             };
             if series_tmdb_id.is_none() {
-                if let Some(ref series_imdb) = media.external_ids.series_imdb {
+                if let Some(ref series_imdb) = media
+                    .external_ids
+                    .series_imdb
+                {
                     let find = client
                         .execute(
                             sdks::tmdb::FindByIdEndpoint {
@@ -596,8 +706,12 @@ async fn fetch_tmdb_meta(
                         )
                         .await
                         .ok();
-                    series_tmdb_id = find
-                        .and_then(|f| f.tv_results.into_iter().next().map(|r| r.id));
+                    series_tmdb_id = find.and_then(|f| {
+                        f.tv_results
+                            .into_iter()
+                            .next()
+                            .map(|r| r.id)
+                    });
                 }
             }
             let season_number = media.parent_idx;
@@ -611,10 +725,15 @@ async fn fetch_tmdb_meta(
                             .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
-                let tmdb_ext = ep_details.external_ids.as_ref();
+                let tmdb_ext = ep_details
+                    .external_ids
+                    .as_ref();
                 let external_ids = db::ExternalIds {
                     tmdb: Some(ep_details.id),
-                    imdb: tmdb_ext.and_then(|e| e.imdb_id.clone()),
+                    imdb: tmdb_ext.and_then(|e| {
+                        e.imdb_id
+                            .clone()
+                    }),
                     tvdb: tmdb_ext.and_then(|e| e.tvdb_id),
                     ..Default::default()
                 };
@@ -629,9 +748,16 @@ async fn fetch_tmdb_meta(
                                     .partial_cmp(&b.vote_average)
                                     .unwrap_or(std::cmp::Ordering::Equal)
                             })
-                            .map(|e| e.file_path.clone())
+                            .map(|e| {
+                                e.file_path
+                                    .clone()
+                            })
                     })
-                    .or_else(|| ep_details.still_path.clone());
+                    .or_else(|| {
+                        ep_details
+                            .still_path
+                            .clone()
+                    });
                 let still_url = tmdb_image(best_still.as_deref());
                 let mut patch = db::Media {
                     title: ep_details.name,
@@ -639,7 +765,9 @@ async fn fetch_tmdb_meta(
                     released_at: ep_details
                         .air_date
                         .and_then(|d| d.and_hms_opt(0, 0, 0)),
-                    runtime: ep_details.runtime.map(|r| r * 60),
+                    runtime: ep_details
+                        .runtime
+                        .map(|r| r * 60),
                     rating_audience: ep_details.vote_average,
                     external_ids: external_ids,
                     ..Default::default()
@@ -650,11 +778,16 @@ async fn fetch_tmdb_meta(
                 }
                 let mut relations = vec![];
                 if let Some(guest_stars) = &ep_details.guest_stars {
-                    for (i, member) in guest_stars.iter().enumerate() {
+                    for (i, member) in guest_stars
+                        .iter()
+                        .enumerate()
+                    {
                         let name = &member.name;
                         let person_id = common::stable_media_uuid(
                             &db::MediaKind::Person,
-                            &member.id.to_string(),
+                            &member
+                                .id
+                                .to_string(),
                         );
                         let mut person = db::Media {
                             id: person_id,
@@ -666,7 +799,11 @@ async fn fetch_tmdb_meta(
                             },
                             ..Default::default()
                         };
-                        if let Some(url) = tmdb_image(member.profile_path.as_deref()) {
+                        if let Some(url) = tmdb_image(
+                            member
+                                .profile_path
+                                .as_deref(),
+                        ) {
                             person.set_image(db::ImageKind::Primary, url);
                         }
                         relations.push((
@@ -675,7 +812,9 @@ async fn fetch_tmdb_meta(
                                 right_media_id: person_id,
                                 weight: Some(i as i64),
                                 role: Some(db::RelationRole::Actor),
-                                character: member.character.clone(),
+                                character: member
+                                    .character
+                                    .clone(),
                                 ..Default::default()
                             },
                             person,
@@ -697,7 +836,10 @@ async fn fetch_tmdb_meta(
                 let series_genres: Vec<db::Media> = if let Some(genres) = media
                     .grandparent
                     .as_ref()
-                    .and_then(|g| g.relations.as_ref())
+                    .and_then(|g| {
+                        g.relations
+                            .as_ref()
+                    })
                     .map(|rels| {
                         rels.iter()
                             .filter(|(_, m)| m.kind == db::MediaKind::Genre)
@@ -740,16 +882,25 @@ async fn fetch_tmdb_meta(
             return fetch_tmdb_season_meta(media, ctx, &client).await;
         }
         db::MediaKind::Person => {
-            let tmdb_id = if let Some(id) = media.external_ids.tmdb {
+            let tmdb_id = if let Some(id) = media
+                .external_ids
+                .tmdb
+            {
                 id
             } else {
                 // No stored TMDB ID — search by name to resolve it.
                 let resp = client
                     .execute(sdks::tmdb::PersonSearchEndpoint {
-                        query: media.title.clone(),
+                        query: media
+                            .title
+                            .clone(),
                     })
                     .await?;
-                let Some(hit) = resp.results.into_iter().next() else {
+                let Some(hit) = resp
+                    .results
+                    .into_iter()
+                    .next()
+                else {
                     return Ok(None);
                 };
                 hit.id
@@ -760,15 +911,22 @@ async fn fetch_tmdb_meta(
                         .with_cache(Duration::from_secs(86400)),
                 )
                 .await?;
-            let released_at = details.birthday.as_deref().and_then(|b| {
-                chrono::NaiveDate::parse_from_str(b, "%Y-%m-%d")
-                    .ok()
-                    .and_then(|d| d.and_hms_opt(0, 0, 0))
-            });
+            let released_at = details
+                .birthday
+                .as_deref()
+                .and_then(|b| {
+                    chrono::NaiveDate::parse_from_str(b, "%Y-%m-%d")
+                        .ok()
+                        .and_then(|d| d.and_hms_opt(0, 0, 0))
+                });
             let mut patch = db::Media {
-                description: details.biography.filter(|b| !b.is_empty()),
+                description: details
+                    .biography
+                    .filter(|b| !b.is_empty()),
                 released_at,
-                country: details.place_of_birth.filter(|p| !p.is_empty()),
+                country: details
+                    .place_of_birth
+                    .filter(|p| !p.is_empty()),
                 external_ids: db::ExternalIds {
                     tmdb: Some(tmdb_id),
                     imdb: details.imdb_id,
@@ -776,7 +934,11 @@ async fn fetch_tmdb_meta(
                 },
                 ..Default::default()
             };
-            if let Some(url) = tmdb_image(details.profile_path.as_deref()) {
+            if let Some(url) = tmdb_image(
+                details
+                    .profile_path
+                    .as_deref(),
+            ) {
                 patch.set_image(db::ImageKind::Primary, url);
             }
             return Ok(Some(patch));
@@ -793,14 +955,24 @@ async fn fetch_tmdb_season_meta(
     client: &sdks::RestClient<sdks::BearerAuth>,
 ) -> Result<Option<db::Media>> {
     // Try to get the series TMDB ID — prefer in-memory grandparent, fall back to DB.
-    let series_tmdb_id = if let Some(tmdb) =
-        media.grandparent.as_ref().and_then(|g| g.external_ids.tmdb)
-    {
+    let series_tmdb_id = if let Some(tmdb) = media
+        .grandparent
+        .as_ref()
+        .and_then(|g| {
+            g.external_ids
+                .tmdb
+        }) {
         Some(tmdb)
-    } else if let Some(sid) = media.grandparent_id.or(media.parent_id) {
+    } else if let Some(sid) = media
+        .grandparent_id
+        .or(media.parent_id)
+    {
         db::Media::get_by_id(&ctx.db, &sid)
             .await?
-            .and_then(|m| m.external_ids.tmdb)
+            .and_then(|m| {
+                m.external_ids
+                    .tmdb
+            })
     } else {
         None
     };
@@ -808,7 +980,10 @@ async fn fetch_tmdb_season_meta(
     // On first import the series may not yet be flushed to DB with its TMDB ID.
     // Fall back to resolving via the season's series_imdb field.
     let series_tmdb_id = if series_tmdb_id.is_none() {
-        if let Some(ref imdb) = media.external_ids.series_imdb {
+        if let Some(ref imdb) = media
+            .external_ids
+            .series_imdb
+        {
             client
                 .execute(
                     sdks::tmdb::FindByIdEndpoint {
@@ -819,7 +994,12 @@ async fn fetch_tmdb_season_meta(
                 )
                 .await
                 .ok()
-                .and_then(|r| r.tv_results.into_iter().next().map(|s| s.id))
+                .and_then(|r| {
+                    r.tv_results
+                        .into_iter()
+                        .next()
+                        .map(|s| s.id)
+                })
         } else {
             None
         }
@@ -844,7 +1024,11 @@ async fn fetch_tmdb_season_meta(
         return Ok(None);
     };
     let mut patch = db::Media::default();
-    if let Some(url) = tmdb_image(season.poster_path.as_deref()) {
+    if let Some(url) = tmdb_image(
+        season
+            .poster_path
+            .as_deref(),
+    ) {
         patch.set_image(db::ImageKind::Primary, url);
     }
     Ok(Some(patch))
@@ -860,7 +1044,9 @@ async fn search_tmdb_person(
     ctx: &AppContext,
 ) -> Result<Vec<db::Media>> {
     let config = crate::db::Settings::get_config(&ctx.db).await?;
-    let api_key = config.get_tmdb_key().to_string();
+    let api_key = config
+        .get_tmdb_key()
+        .to_string();
 
     let client = sdks::RestClient::new("https://api.themoviedb.org/3/")?
         .with_auth(sdks::BearerAuth { token: api_key });
@@ -887,8 +1073,11 @@ async fn search_tmdb_person(
         .into_iter()
         .take(limit)
         .map(|p| {
-            let id =
-                common::stable_media_uuid(&db::MediaKind::Person, &p.id.to_string());
+            let id = common::stable_media_uuid(
+                &db::MediaKind::Person,
+                &p.id
+                    .to_string(),
+            );
             let profile_url = p
                 .profile_path
                 .as_deref()
@@ -923,7 +1112,9 @@ async fn tmdb_remote_images(
     media: &db::Media,
 ) -> Result<Vec<api::RemoteImageInfo>> {
     let config = crate::db::Settings::get_config(&ctx.db).await?;
-    let api_key = config.get_tmdb_key().to_string();
+    let api_key = config
+        .get_tmdb_key()
+        .to_string();
     if api_key.is_empty() {
         return Ok(vec![]);
     }
@@ -967,19 +1158,52 @@ async fn tmdb_remote_images(
         out: &mut Vec<api::RemoteImageInfo>,
         images: &sdks::tmdb::Images,
     ) {
-        out.extend(images.backdrops.iter().map(|e| map_image("Backdrop", e)));
-        out.extend(images.posters.iter().map(|e| map_image("Primary", e)));
-        out.extend(images.logos.iter().map(|e| map_image("Logo", e)));
-        out.extend(images.stills.iter().map(|e| map_image("Backdrop", e)));
-        out.extend(images.stills.iter().map(|e| map_image("Screenshot", e)));
-        out.extend(images.stills.iter().map(|e| map_image("Thumb", e)));
+        out.extend(
+            images
+                .backdrops
+                .iter()
+                .map(|e| map_image("Backdrop", e)),
+        );
+        out.extend(
+            images
+                .posters
+                .iter()
+                .map(|e| map_image("Primary", e)),
+        );
+        out.extend(
+            images
+                .logos
+                .iter()
+                .map(|e| map_image("Logo", e)),
+        );
+        out.extend(
+            images
+                .stills
+                .iter()
+                .map(|e| map_image("Backdrop", e)),
+        );
+        out.extend(
+            images
+                .stills
+                .iter()
+                .map(|e| map_image("Screenshot", e)),
+        );
+        out.extend(
+            images
+                .stills
+                .iter()
+                .map(|e| map_image("Thumb", e)),
+        );
     }
 
     let mut out = Vec::new();
 
     match media.kind {
         db::MediaKind::Movie => {
-            let tmdb_id = if let Some(id) = media.external_ids.tmdb {
+            let tmdb_id = if let Some(id) = media
+                .external_ids
+                .tmdb
+            {
                 Some(id)
             } else if let Some((external_id, external_source)) = lookup_for_find() {
                 let find = client
@@ -991,7 +1215,9 @@ async fn tmdb_remote_images(
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
-                find.movie_results.first().map(|m| m.id)
+                find.movie_results
+                    .first()
+                    .map(|m| m.id)
             } else {
                 None
             };
@@ -1005,7 +1231,14 @@ async fn tmdb_remote_images(
                 if let Some(images) = &movie.images {
                     extend_from_images(&mut out, images);
                 }
-                if out.iter().all(|i| i.type_.as_deref() != Some("Primary")) {
+                if out
+                    .iter()
+                    .all(|i| {
+                        i.type_
+                            .as_deref()
+                            != Some("Primary")
+                    })
+                {
                     if let Some(p) = &movie.poster_path {
                         out.push(api::RemoteImageInfo {
                             provider_name: Some("TheMovieDb".to_string()),
@@ -1019,7 +1252,14 @@ async fn tmdb_remote_images(
                         });
                     }
                 }
-                if out.iter().all(|i| i.type_.as_deref() != Some("Backdrop")) {
+                if out
+                    .iter()
+                    .all(|i| {
+                        i.type_
+                            .as_deref()
+                            != Some("Backdrop")
+                    })
+                {
                     if let Some(b) = &movie.backdrop_path {
                         out.push(api::RemoteImageInfo {
                             provider_name: Some("TheMovieDb".to_string()),
@@ -1036,7 +1276,10 @@ async fn tmdb_remote_images(
             }
         }
         db::MediaKind::Series => {
-            let tmdb_id = if let Some(id) = media.external_ids.tmdb {
+            let tmdb_id = if let Some(id) = media
+                .external_ids
+                .tmdb
+            {
                 Some(id)
             } else if let Some((external_id, external_source)) = lookup_for_find() {
                 let find = client
@@ -1048,7 +1291,9 @@ async fn tmdb_remote_images(
                         .with_cache(Duration::from_secs(360)),
                     )
                     .await?;
-                find.tv_results.first().map(|m| m.id)
+                find.tv_results
+                    .first()
+                    .map(|m| m.id)
             } else {
                 None
             };
@@ -1068,12 +1313,18 @@ async fn tmdb_remote_images(
             let mut series_tmdb_id = if let Some(sid) = media.grandparent_id {
                 db::Media::get_by_id(&ctx.db, &sid)
                     .await?
-                    .and_then(|m| m.external_ids.tmdb)
+                    .and_then(|m| {
+                        m.external_ids
+                            .tmdb
+                    })
             } else {
                 None
             };
             if series_tmdb_id.is_none() {
-                if let Some(ref series_imdb) = media.external_ids.series_imdb {
+                if let Some(ref series_imdb) = media
+                    .external_ids
+                    .series_imdb
+                {
                     let find = client
                         .execute(
                             sdks::tmdb::FindByIdEndpoint {
@@ -1084,8 +1335,12 @@ async fn tmdb_remote_images(
                         )
                         .await
                         .ok();
-                    series_tmdb_id = find
-                        .and_then(|f| f.tv_results.into_iter().next().map(|r| r.id));
+                    series_tmdb_id = find.and_then(|f| {
+                        f.tv_results
+                            .into_iter()
+                            .next()
+                            .map(|r| r.id)
+                    });
                 }
             }
             if let (Some(tmdb_id), Some(s_n), Some(e_n)) =
@@ -1100,7 +1355,14 @@ async fn tmdb_remote_images(
                 if let Some(images) = &ep.images {
                     extend_from_images(&mut out, images);
                 }
-                if out.iter().all(|i| i.type_.as_deref() != Some("Thumb")) {
+                if out
+                    .iter()
+                    .all(|i| {
+                        i.type_
+                            .as_deref()
+                            != Some("Thumb")
+                    })
+                {
                     if let Some(p) = &ep.still_path {
                         let url = format!("{TMDB_IMAGE_BASE}{p}");
                         let thumb = format!("https://image.tmdb.org/t/p/w300{p}");
@@ -1160,7 +1422,10 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
                 .await
             {
                 Ok(series) => {
-                    if let Some(imdb) = series.external_ids.and_then(|e| e.imdb_id) {
+                    if let Some(imdb) = series
+                        .external_ids
+                        .and_then(|e| e.imdb_id)
+                    {
                         return Some(imdb);
                     }
                     debug!(tmdb_id, "TMDB series has no imdb_id in external_ids");

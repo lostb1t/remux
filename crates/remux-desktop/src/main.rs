@@ -32,7 +32,12 @@ fn server_url() -> String {
 }
 
 fn ensure_data_dirs(config: &remux_server::Config) -> Result<()> {
-    std::fs::create_dir_all(config.torrent_data_dir.as_deref().unwrap_or_default())?;
+    std::fs::create_dir_all(
+        config
+            .torrent_data_dir
+            .as_deref()
+            .unwrap_or_default(),
+    )?;
     Ok(())
 }
 
@@ -58,8 +63,12 @@ fn main() -> Result<()> {
 
     let open_item = MenuItem::new("Open Remux", true, None);
     let quit_item = MenuItem::new("Quit", true, None);
-    let open_id = open_item.id().clone();
-    let quit_id = quit_item.id().clone();
+    let open_id = open_item
+        .id()
+        .clone();
+    let quit_id = quit_item
+        .id()
+        .clone();
 
     let menu = Menu::new();
     menu.append(&open_item)?;

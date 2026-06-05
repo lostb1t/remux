@@ -35,19 +35,33 @@ impl Task for CleanTranscodeFolderTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        let active: HashSet<String> =
-            ctx.sessions.active_session_ids().into_iter().collect();
-        let base = ctx.sessions.base_dir();
+        let active: HashSet<String> = ctx
+            .sessions
+            .active_session_ids()
+            .into_iter()
+            .collect();
+        let base = ctx
+            .sessions
+            .base_dir();
         let mut removed = 0usize;
 
         for entry in super::iter_dir(base) {
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let name = entry
+                .file_name()
+                .to_string_lossy()
+                .into_owned();
             if !active.contains(&name) {
                 // Kill any orphaned ffmpeg process before removing the dir.
                 #[cfg(unix)]
-                if let Ok(pid_str) = std::fs::read_to_string(entry.path().join(".pid"))
-                {
-                    if let Ok(pid) = pid_str.trim().parse::<libc::pid_t>() {
+                if let Ok(pid_str) = std::fs::read_to_string(
+                    entry
+                        .path()
+                        .join(".pid"),
+                ) {
+                    if let Ok(pid) = pid_str
+                        .trim()
+                        .parse::<libc::pid_t>()
+                    {
                         if pid > 0 {
                             unsafe {
                                 libc::kill(pid, libc::SIGCONT);
@@ -59,7 +73,9 @@ impl Task for CleanTranscodeFolderTask {
                 if let Err(e) = std::fs::remove_dir_all(entry.path()) {
                     tracing::warn!(
                         "failed to remove transcode dir {}: {e:#}",
-                        entry.path().display()
+                        entry
+                            .path()
+                            .display()
                     );
                 } else {
                     removed += 1;
@@ -73,9 +89,16 @@ impl Task for CleanTranscodeFolderTask {
         // Collect torrent IDs currently being streamed by active sessions so we
         // don't pull the rug out from under an in-progress playback.
         let mut active_torrent_ids = HashSet::new();
-        for session in ctx.sessions.get_all() {
+        for session in ctx
+            .sessions
+            .get_all()
+        {
             if let Some(tc) = session.transcode {
-                let input_url = tc.read().await.input_url.clone();
+                let input_url = tc
+                    .read()
+                    .await
+                    .input_url
+                    .clone();
                 if let Some(id) =
                     crate::torrent::TorrentManager::torrent_id_from_url(&input_url)
                 {

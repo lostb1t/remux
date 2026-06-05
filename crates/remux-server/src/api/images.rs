@@ -37,7 +37,10 @@ async fn fetch_upstream(url: &str) -> anyhow::Result<(Vec<u8>, String)> {
     let ct = resp
         .headers()
         .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.to_str()
+                .ok()
+        })
         .unwrap_or("image/jpeg")
         .to_string();
     let bytes = resp
@@ -63,100 +66,144 @@ async fn items_images_inner(
         max_height: q.max_height,
         quality: q.quality,
         blur: q.blur,
-        background_color: q.background_color.clone(),
-        format: q.format.clone(),
+        background_color: q
+            .background_color
+            .clone(),
+        format: q
+            .format
+            .clone(),
     };
 
     // Resolve to (raw_bytes, content_type, source_key_for_cache).
-    let (bytes, _raw_ct, source_key): (Vec<u8>, String, String) =
-        if let Some(url) = q.tag.as_ref().filter(|t| t.contains("://")) {
-            let (b, ct) = fetch_upstream(url)
-                .await
-                .context_not_found("image fetch failed")?;
-            (b, ct, url.clone())
-        } else {
-            let key = id.to_string();
-            if let Some(media) = db::Media::get_by_id(&state.ctx.db, &id).await? {
-                let kind: ImageKind =
-                    image_type.to_string().parse().unwrap_or(ImageKind::Primary);
-                // If Thumb is requested but not stored, fall back to Primary.
-                let img_row = media.images.get(kind).or_else(|| {
+    let (bytes, _raw_ct, source_key): (Vec<u8>, String, String) = if let Some(url) = q
+        .tag
+        .as_ref()
+        .filter(|t| t.contains("://"))
+    {
+        let (b, ct) = fetch_upstream(url)
+            .await
+            .context_not_found("image fetch failed")?;
+        (b, ct, url.clone())
+    } else {
+        let key = id.to_string();
+        if let Some(media) = db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &id,
+        )
+        .await?
+        {
+            let kind: ImageKind = image_type
+                .to_string()
+                .parse()
+                .unwrap_or(ImageKind::Primary);
+            // If Thumb is requested but not stored, fall back to Primary.
+            let img_row = media
+                .images
+                .get(kind)
+                .or_else(|| {
                     if kind == ImageKind::Thumb {
-                        media.images.get(ImageKind::Primary)
+                        media
+                            .images
+                            .get(ImageKind::Primary)
                     } else {
                         None
                     }
                 });
 
-                if let Some(img) = img_row {
-                    let source_key = img.id.to_string();
-                    if img.path.starts_with('/') {
-                        let path = std::path::PathBuf::from(&img.path);
-                        let (b, ct) = ImageService::serve_local(&path)
-                            .await
-                            .context_not_found("image file not found")?;
-                        (b, ct.to_string(), source_key)
-                    } else {
-                        // External URL: redirect the client so it fetches directly.
-                        return Ok(axum::response::Redirect::temporary(&img.path)
-                            .into_response());
-                    }
-                } else if matches!(
-                    image_type,
-                    api::ImageType::Primary | api::ImageType::Thumb
-                ) && matches!(
-                    media.kind,
-                    db::MediaKind::Collection | db::MediaKind::Folder
-                ) {
-                    let b = ImageService::library_image(
-                        &state.ctx.config.data_dir,
-                        id,
-                        &media.title,
-                        &state.ctx.db,
-                    )
-                    .await
-                    .context_not_found("no backdrop available for library")?;
-                    // Reload the newly-inserted image row to get its stable UUID
-                    let img_row = db::MediaImage::get_for_media(&state.ctx.db, &id)
+            if let Some(img) = img_row {
+                let source_key = img
+                    .id
+                    .to_string();
+                if img
+                    .path
+                    .starts_with('/')
+                {
+                    let path = std::path::PathBuf::from(&img.path);
+                    let (b, ct) = ImageService::serve_local(&path)
                         .await
-                        .unwrap_or_default()
-                        .primary
-                        .into_iter()
-                        .find(|i| i.image_index == 0);
-                    let source_key = img_row
-                        .map(|i| i.id.to_string())
-                        .unwrap_or_else(|| format!("placeholder:{id}"));
-                    (b, "image/jpeg".to_string(), source_key)
+                        .context_not_found("image file not found")?;
+                    (b, ct.to_string(), source_key)
                 } else {
-                    return Err(anyhow::anyhow!("image not found"))
-                        .context_not_found("image not found");
+                    // External URL: redirect the client so it fetches directly.
+                    return Ok(
+                        axum::response::Redirect::temporary(&img.path).into_response()
+                    );
                 }
+            } else if matches!(
+                image_type,
+                api::ImageType::Primary | api::ImageType::Thumb
+            ) && matches!(
+                media.kind,
+                db::MediaKind::Collection | db::MediaKind::Folder
+            ) {
+                let b = ImageService::library_image(
+                    &state
+                        .ctx
+                        .config
+                        .data_dir,
+                    id,
+                    &media.title,
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await
+                .context_not_found("no backdrop available for library")?;
+                // Reload the newly-inserted image row to get its stable UUID
+                let img_row = db::MediaImage::get_for_media(
+                    &state
+                        .ctx
+                        .db,
+                    &id,
+                )
+                .await
+                .unwrap_or_default()
+                .primary
+                .into_iter()
+                .find(|i| i.image_index == 0);
+                let source_key = img_row
+                    .map(|i| {
+                        i.id.to_string()
+                    })
+                    .unwrap_or_else(|| format!("placeholder:{id}"));
+                (b, "image/jpeg".to_string(), source_key)
             } else {
-                // Not in DB — cached search result.
-                let url = state.ctx.store.get::<db::Media>(key.clone()).and_then(|m| {
-                    match image_type {
-                        api::ImageType::Primary | api::ImageType::Thumb => {
-                            m.get_image(ImageKind::Primary).map(str::to_owned)
-                        }
-                        api::ImageType::Backdrop => {
-                            m.get_image(ImageKind::Backdrop).map(str::to_owned)
-                        }
-                        api::ImageType::Logo | api::ImageType::LogoImageAspectRatio => {
-                            m.get_image(ImageKind::Logo).map(str::to_owned)
-                        }
-                    }
-                });
-                let url = url.context_not_found("media image not found")?;
-                let (b, ct) = fetch_upstream(&url)
-                    .await
-                    .context_not_found("image fetch failed")?;
-                (b, ct, url)
+                return Err(anyhow::anyhow!("image not found"))
+                    .context_not_found("image not found");
             }
-        };
+        } else {
+            // Not in DB — cached search result.
+            let url = state
+                .ctx
+                .store
+                .get::<db::Media>(key.clone())
+                .and_then(|m| match image_type {
+                    api::ImageType::Primary | api::ImageType::Thumb => m
+                        .get_image(ImageKind::Primary)
+                        .map(str::to_owned),
+                    api::ImageType::Backdrop => m
+                        .get_image(ImageKind::Backdrop)
+                        .map(str::to_owned),
+                    api::ImageType::Logo | api::ImageType::LogoImageAspectRatio => m
+                        .get_image(ImageKind::Logo)
+                        .map(str::to_owned),
+                });
+            let url = url.context_not_found("media image not found")?;
+            let (b, ct) = fetch_upstream(&url)
+                .await
+                .context_not_found("image fetch failed")?;
+            (b, ct, url)
+        }
+    };
 
     // Apply resize/quality/blur/format transforms (cached).
     let (final_bytes, content_type) = ImageService::process_image(
-        &state.ctx.config.data_dir,
+        &state
+            .ctx
+            .config
+            .data_dir,
         bytes,
         &opts,
         &source_key,
@@ -198,17 +245,31 @@ pub async fn get_item_image_infos(
         size: u64,
     }
 
-    let images = db::MediaImage::get_for_media(&state.ctx.db, &id).await?;
+    let images = db::MediaImage::get_for_media(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?;
 
     let infos: Vec<ImageInfo> = images
         .into_iter()
         .map(|img| {
-            let size = if img.path.starts_with('/') {
-                std::fs::metadata(&img.path).map(|m| m.len()).unwrap_or(0)
+            let size = if img
+                .path
+                .starts_with('/')
+            {
+                std::fs::metadata(&img.path)
+                    .map(|m| m.len())
+                    .unwrap_or(0)
             } else {
                 0
             };
-            let image_type = match img.image_type.as_str() {
+            let image_type = match img
+                .image_type
+                .as_str()
+            {
                 "primary" => "Primary",
                 "backdrop" => "Backdrop",
                 "logo" => "Logo",
@@ -223,7 +284,10 @@ pub async fn get_item_image_infos(
                 } else {
                     Some(img.image_index)
                 },
-                image_tag: img.id.simple().to_string(),
+                image_tag: img
+                    .id
+                    .simple()
+                    .to_string(),
                 path: img.path,
                 width: img.width,
                 height: img.height,
@@ -262,11 +326,16 @@ async fn upload_item_image_inner(
     image: api::image::JellyfinImage,
 ) -> Result<impl IntoResponse> {
     ImageService::save_image(
-        &state.ctx.config.data_dir,
+        &state
+            .ctx
+            .config
+            .data_dir,
         id,
         kind,
         &image.bytes,
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
     )
     .await
     .context_internal("failed to save image")?;
@@ -300,9 +369,19 @@ async fn delete_item_image_inner(
     id: Uuid,
     kind: ImageKind,
 ) -> Result<impl IntoResponse> {
-    ImageService::delete_image(&state.ctx.config.data_dir, id, kind, &state.ctx.db)
-        .await
-        .context_internal("failed to delete image")?;
+    ImageService::delete_image(
+        &state
+            .ctx
+            .config
+            .data_dir,
+        id,
+        kind,
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .context_internal("failed to delete image")?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -329,6 +408,10 @@ pub async fn delete_item_image_indexed(
 /// semantics are preserved.
 fn parse_image_kind(s: &str) -> ImageKind {
     s.parse::<api::ImageType>()
-        .map(|t| t.to_string().parse().unwrap_or(ImageKind::Primary))
+        .map(|t| {
+            t.to_string()
+                .parse()
+                .unwrap_or(ImageKind::Primary)
+        })
         .unwrap_or(ImageKind::Primary)
 }

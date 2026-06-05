@@ -10,8 +10,16 @@ use crate::{IntoApiError, ResultExt};
 use axum_anyhow::ApiResult as Result;
 
 async fn require_wizard_incomplete(state: &AppState) -> Result<()> {
-    let config = crate::db::Settings::get_config(&state.ctx.db).await?;
-    if config.is_startup_wizard_completed.unwrap_or(false) {
+    let config = crate::db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
+    if config
+        .is_startup_wizard_completed
+        .unwrap_or(false)
+    {
         return Err(anyhow::anyhow!("forbidden")
             .context_forbidden("Setup wizard is already completed."));
     }
@@ -23,7 +31,12 @@ pub async fn get_startup_configuration(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
     require_wizard_incomplete(&state).await?;
-    let config = crate::db::Settings::get_config(&state.ctx.db).await?;
+    let config = crate::db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     Ok(Json(api::StartupConfiguration {
         server_name: config.server_name,
         preferred_metadata_language: config.preferred_metadata_language,
@@ -47,7 +60,12 @@ pub async fn post_startup_configuration(
         default_web_client,
     } = body;
 
-    let mut config = crate::db::Settings::get_config(&state.ctx.db).await?;
+    let mut config = crate::db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     config.server_name = server_name.or(config.server_name);
     config.preferred_metadata_language =
         preferred_metadata_language.or(config.preferred_metadata_language);
@@ -56,7 +74,13 @@ pub async fn post_startup_configuration(
     config.default_web_client = Some(crate::web_client::normalize_web_client(
         default_web_client.or(config.default_web_client),
     ));
-    crate::db::Settings::set_config(&state.ctx.db, &config).await?;
+    crate::db::Settings::set_config(
+        &state
+            .ctx
+            .db,
+        &config,
+    )
+    .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -85,7 +109,12 @@ pub async fn post_startup_user(
             None,
         )?;
         user.is_admin = true;
-        user.save_by_username(&state.ctx.db).await?;
+        user.save_by_username(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -105,8 +134,19 @@ pub async fn post_startup_complete(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
     require_wizard_incomplete(&state).await?;
-    let mut config = crate::db::Settings::get_config(&state.ctx.db).await?;
+    let mut config = crate::db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     config.is_startup_wizard_completed = Some(true);
-    crate::db::Settings::set_config(&state.ctx.db, &config).await?;
+    crate::db::Settings::set_config(
+        &state
+            .ctx
+            .db,
+        &config,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }

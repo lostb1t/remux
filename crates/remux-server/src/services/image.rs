@@ -56,27 +56,52 @@ pub struct ImageProcessOptions {
 impl ImageProcessOptions {
     /// Returns true when any transformation is requested.
     pub fn needs_processing(&self) -> bool {
-        self.fill_width.is_some()
-            || self.fill_height.is_some()
-            || self.width.is_some()
-            || self.height.is_some()
-            || self.max_width.is_some()
-            || self.max_height.is_some()
-            || self.quality.is_some()
-            || self.blur.is_some()
-            || self.background_color.is_some()
-            || self.format.is_some()
+        self.fill_width
+            .is_some()
+            || self
+                .fill_height
+                .is_some()
+            || self
+                .width
+                .is_some()
+            || self
+                .height
+                .is_some()
+            || self
+                .max_width
+                .is_some()
+            || self
+                .max_height
+                .is_some()
+            || self
+                .quality
+                .is_some()
+            || self
+                .blur
+                .is_some()
+            || self
+                .background_color
+                .is_some()
+            || self
+                .format
+                .is_some()
     }
 
     fn output_format(&self) -> ImageFormat {
-        match self.format.as_deref() {
+        match self
+            .format
+            .as_deref()
+        {
             Some("png") => ImageFormat::Png,
             _ => ImageFormat::Jpeg,
         }
     }
 
     pub fn content_type(&self) -> &'static str {
-        match self.format.as_deref() {
+        match self
+            .format
+            .as_deref()
+        {
             Some("png") => "image/png",
             _ => "image/jpeg",
         }
@@ -112,7 +137,10 @@ pub struct ImageService;
 impl ImageService {
     /// Returns the directory for a library item's local images.
     pub fn image_dir(data_dir: &std::path::Path, id: Uuid) -> PathBuf {
-        data_dir.join("meta").join("library").join(id.to_string())
+        data_dir
+            .join("meta")
+            .join("library")
+            .join(id.to_string())
     }
 
     /// Returns the local path for a specific image type (e.g. `primary.jpg`).
@@ -173,7 +201,8 @@ impl ImageService {
             db,
             id,
             kind,
-            path.to_string_lossy().as_ref(),
+            path.to_string_lossy()
+                .as_ref(),
             img_w,
             img_h,
         )
@@ -210,7 +239,9 @@ impl ImageService {
 
     /// Directory for processed image cache.
     pub fn cache_dir(data_dir: &std::path::Path) -> PathBuf {
-        data_dir.join("cache").join("images")
+        data_dir
+            .join("cache")
+            .join("images")
     }
 
     /// Apply image transformations described by `opts`, returning (bytes, content_type).
@@ -290,8 +321,13 @@ impl ImageService {
     }
 
     async fn fetch_and_resize(url: &str) -> anyhow::Result<RgbImage> {
-        let resp = HTTP_CLIENT.get(url).send().await?;
-        let bytes = resp.bytes().await?;
+        let resp = HTTP_CLIENT
+            .get(url)
+            .send()
+            .await?;
+        let bytes = resp
+            .bytes()
+            .await?;
         let decoded = image::load_from_memory(&bytes)?.into_rgb8();
         let resized = image::imageops::resize(
             &decoded,
@@ -362,16 +398,32 @@ async fn find_backdrop_url(
         }
     };
 
-    let items = db::Media::get_by_filter(db, &filter).await?.records;
+    let items = db::Media::get_by_filter(db, &filter)
+        .await?
+        .records;
 
     // Prefer backdrop, then fall back to primary (poster).
     items
         .iter()
-        .find_map(|m| m.images.get(ImageKind::Backdrop).map(|i| i.path.clone()))
+        .find_map(|m| {
+            m.images
+                .get(ImageKind::Backdrop)
+                .map(|i| {
+                    i.path
+                        .clone()
+                })
+        })
         .or_else(|| {
             items
                 .iter()
-                .find_map(|m| m.images.get(ImageKind::Primary).map(|i| i.path.clone()))
+                .find_map(|m| {
+                    m.images
+                        .get(ImageKind::Primary)
+                        .map(|i| {
+                            i.path
+                                .clone()
+                        })
+                })
         })
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -453,7 +505,9 @@ fn process_image_sync(
     opts: &ImageProcessOptions,
 ) -> anyhow::Result<(Vec<u8>, &'static str)> {
     let img = image::load_from_memory(bytes)?;
-    let has_alpha = img.color().has_alpha();
+    let has_alpha = img
+        .color()
+        .has_alpha();
     let img = apply_sizing(img, opts);
     let img = if let Some(sigma) = opts.blur {
         img.blur(sigma as f32)
@@ -463,10 +517,20 @@ fn process_image_sync(
 
     // Auto-preserve transparency: use PNG when the source has alpha and the caller
     // didn't explicitly request a lossy format.
-    let use_png = matches!(opts.format.as_deref(), Some("png"))
-        || (has_alpha && !matches!(opts.format.as_deref(), Some("jpeg" | "jpg")));
+    let use_png = matches!(
+        opts.format
+            .as_deref(),
+        Some("png")
+    ) || (has_alpha
+        && !matches!(
+            opts.format
+                .as_deref(),
+            Some("jpeg" | "jpg")
+        ));
 
-    let quality = opts.quality.unwrap_or(90);
+    let quality = opts
+        .quality
+        .unwrap_or(90);
     let mut buf = Cursor::new(Vec::<u8>::new());
     if use_png {
         img.write_to(&mut buf, ImageFormat::Png)?;
@@ -484,7 +548,13 @@ fn apply_sizing(img: DynamicImage, opts: &ImageProcessOptions) -> DynamicImage {
     let orig_h = img.height();
 
     // Priority 1: fill — scale down to fit inside box, no upscale, maintain AR.
-    if opts.fill_width.is_some() || opts.fill_height.is_some() {
+    if opts
+        .fill_width
+        .is_some()
+        || opts
+            .fill_height
+            .is_some()
+    {
         let scale_x = opts
             .fill_width
             .map(|fw| fw as f32 / orig_w as f32)
@@ -493,7 +563,9 @@ fn apply_sizing(img: DynamicImage, opts: &ImageProcessOptions) -> DynamicImage {
             .fill_height
             .map(|fh| fh as f32 / orig_h as f32)
             .unwrap_or(f32::MAX);
-        let scale = scale_x.min(scale_y).min(1.0);
+        let scale = scale_x
+            .min(scale_y)
+            .min(1.0);
         if scale < 1.0 {
             let nw = ((orig_w as f32 * scale) as u32).max(1);
             let nh = ((orig_h as f32 * scale) as u32).max(1);
@@ -503,15 +575,29 @@ fn apply_sizing(img: DynamicImage, opts: &ImageProcessOptions) -> DynamicImage {
     }
 
     // Priority 2: exact width / height (missing dimension maintains AR).
-    if opts.width.is_some() || opts.height.is_some() {
-        let nw = opts.width.unwrap_or(u32::MAX);
-        let nh = opts.height.unwrap_or(u32::MAX);
+    if opts
+        .width
+        .is_some()
+        || opts
+            .height
+            .is_some()
+    {
+        let nw = opts
+            .width
+            .unwrap_or(u32::MAX);
+        let nh = opts
+            .height
+            .unwrap_or(u32::MAX);
         return img.resize(nw, nh, image::imageops::FilterType::Lanczos3);
     }
 
     // Priority 3: max — cap size, scale down only.
-    let cap_w = opts.max_width.unwrap_or(u32::MAX);
-    let cap_h = opts.max_height.unwrap_or(u32::MAX);
+    let cap_w = opts
+        .max_width
+        .unwrap_or(u32::MAX);
+    let cap_h = opts
+        .max_height
+        .unwrap_or(u32::MAX);
     if orig_w > cap_w || orig_h > cap_h {
         return img.resize(cap_w, cap_h, image::imageops::FilterType::Lanczos3);
     }

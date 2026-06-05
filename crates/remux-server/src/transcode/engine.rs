@@ -79,7 +79,10 @@ async fn probe_hw_accel() -> HardwareAccelerationType {
         || {
             std::fs::read_to_string("/sys/class/drm/renderD128/device/vendor")
                 .ok()
-                .map(|s| s.trim().to_string())
+                .map(|s| {
+                    s.trim()
+                        .to_string()
+                })
         },
     )
 }
@@ -89,7 +92,11 @@ pub(crate) fn select_hw_accel(
     device_exists: impl Fn(&str) -> bool,
     drm_vendor: impl Fn() -> Option<String>,
 ) -> HardwareAccelerationType {
-    let has = |name: &str| hwaccels_output.lines().any(|l| l.trim() == name);
+    let has = |name: &str| {
+        hwaccels_output
+            .lines()
+            .any(|l| l.trim() == name)
+    };
 
     let has_render_node = device_exists("/dev/dri/renderD128");
     let is_intel = drm_vendor().as_deref() == Some("0x8086");
@@ -206,7 +213,12 @@ fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
             continue;
         }
         // segment_00042.ts → parse the numeric suffix
-        let Some(idx_str) = name.strip_suffix(".ts").and_then(|s| s.rsplit('_').next())
+        let Some(idx_str) = name
+            .strip_suffix(".ts")
+            .and_then(|s| {
+                s.rsplit('_')
+                    .next()
+            })
         else {
             continue;
         };
@@ -224,7 +236,11 @@ fn count_segments(dir: &PathBuf) -> u32 {
         .map(|entries| {
             entries
                 .flatten()
-                .filter(|e| e.file_name().to_string_lossy().ends_with(".ts"))
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .ends_with(".ts")
+                })
                 .count() as u32
         })
         .unwrap_or(0)
@@ -513,7 +529,11 @@ fn qsv_init_only_args(vaapi_device: &str, vaapi_driver: &str) -> Vec<String> {
 pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     let accel = params.hardware_acceleration_type;
     let is_hw = !matches!(accel, HardwareAccelerationType::None);
-    let hdr = is_hdr(params.source_video_range_type.as_ref());
+    let hdr = is_hdr(
+        params
+            .source_video_range_type
+            .as_ref(),
+    );
 
     // Tone-map decisions (only apply to HDR + transcode, never to copy).
     let do_vpp_tonemap = hdr
@@ -525,13 +545,18 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     let do_sw_tonemap = hdr && params.enable_tonemapping && !do_vpp_tonemap;
 
     let ffmpeg_video_codec = {
-        let base = match params.video_codec.as_str() {
+        let base = match params
+            .video_codec
+            .as_str()
+        {
             "copy" => "copy",
             _ => "libx264",
         };
         // Subtitle burn-in requires re-encoding; can't copy video.
         let base = if params.burn_subtitle
-            && params.subtitle_stream_index.is_some()
+            && params
+                .subtitle_stream_index
+                .is_some()
             && base == "copy"
         {
             "libx264"
@@ -544,7 +569,10 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             base.to_string()
         }
     };
-    let ffmpeg_audio_codec = match params.audio_codec.as_str() {
+    let ffmpeg_audio_codec = match params
+        .audio_codec
+        .as_str()
+    {
         "copy" => "copy",
         _ => "aac",
     };
@@ -553,7 +581,9 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     // authoring specification.  MPEG-TS cannot carry HEVC correctly in HLS.
     let is_hevc_copy = ffmpeg_video_codec == "copy"
         && matches!(
-            params.source_video_codec.as_deref(),
+            params
+                .source_video_codec
+                .as_deref(),
             Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1")
         );
 
@@ -591,7 +621,11 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     }
 
     // RTSP reliability: force TCP transport and set a 5 s connection timeout
-    if params.is_live && params.input_url.starts_with("rtsp://") {
+    if params.is_live
+        && params
+            .input_url
+            .starts_with("rtsp://")
+    {
         args.extend([
             "-rtsp_transport".into(),
             "tcp".into(),
@@ -603,7 +637,9 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     args.extend([
         "-copyts".into(),
         "-i".into(),
-        params.input_url.clone(),
+        params
+            .input_url
+            .clone(),
         "-avoid_negative_ts".into(),
         "disabled".into(),
         "-max_muxing_queue_size".into(),
@@ -778,14 +814,19 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             args.extend(["-b:v".into(), bitrate.to_string()]);
         }
     } else if ffmpeg_video_codec == "libx264" {
-        let preset = params.encoding_preset.unwrap_or_default().to_string();
+        let preset = params
+            .encoding_preset
+            .unwrap_or_default()
+            .to_string();
         args.extend([
             "-profile:v".into(),
             "high".into(),
             "-pix_fmt".into(),
             "yuv420p".into(),
             "-crf".into(),
-            params.h264_crf.to_string(),
+            params
+                .h264_crf
+                .to_string(),
             "-preset".into(),
             preset,
             "-tune".into(),
@@ -801,12 +842,17 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
             ]);
         }
     } else if ffmpeg_video_codec == "libx265" {
-        let preset = params.encoding_preset.unwrap_or_default().to_string();
+        let preset = params
+            .encoding_preset
+            .unwrap_or_default()
+            .to_string();
         args.extend([
             "-pix_fmt".into(),
             "yuv420p".into(),
             "-crf".into(),
-            params.h265_crf.to_string(),
+            params
+                .h265_crf
+                .to_string(),
             "-preset".into(),
             preset,
         ]);
@@ -825,7 +871,9 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     // Audio codec
     args.extend(["-c:a".into(), ffmpeg_audio_codec.into()]);
     if ffmpeg_audio_codec != "copy" {
-        let audio_bitrate = params.audio_bitrate.unwrap_or(128_000);
+        let audio_bitrate = params
+            .audio_bitrate
+            .unwrap_or(128_000);
         args.extend(["-b:a".into(), audio_bitrate.to_string()]);
         if let Some(ch) = params.audio_channels {
             args.extend(["-ac".into(), ch.to_string()]);
@@ -833,9 +881,13 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     }
 
     // HLS output
-    let playlist = params.output_dir.join("main.m3u8");
+    let playlist = params
+        .output_dir
+        .join("main.m3u8");
     let seg_ext = if is_hevc_copy { "m4s" } else { "ts" };
-    let segment = params.output_dir.join(format!("segment_%05d.{}", seg_ext));
+    let segment = params
+        .output_dir
+        .join(format!("segment_%05d.{}", seg_ext));
 
     let start_number = params
         .start_time_ticks
@@ -848,11 +900,15 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         "-f".into(),
         "hls".into(),
         "-hls_time".into(),
-        params.segment_length.to_string(),
+        params
+            .segment_length
+            .to_string(),
         "-start_number".into(),
         start_number.to_string(),
         "-hls_segment_filename".into(),
-        segment.to_string_lossy().into_owned(),
+        segment
+            .to_string_lossy()
+            .into_owned(),
         "-hls_playlist_type".into(),
         "event".into(),
         "-hls_list_size".into(),
@@ -870,7 +926,11 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         ]);
     }
 
-    args.push(playlist.to_string_lossy().into_owned());
+    args.push(
+        playlist
+            .to_string_lossy()
+            .into_owned(),
+    );
 
     args
 }
@@ -915,7 +975,8 @@ async fn run_ffmpeg(
     String,
 ) {
     let mut cmd = tokio::process::Command::new(ffmpeg_bin());
-    cmd.args(&args).stderr(Stdio::piped());
+    cmd.args(&args)
+        .stderr(Stdio::piped());
     for (k, v) in env_overrides {
         cmd.env(k, v);
     }
@@ -929,12 +990,16 @@ async fn run_ffmpeg(
         }
     };
 
-    let pid = child.id().unwrap_or(0);
+    let pid = child
+        .id()
+        .unwrap_or(0);
     ffmpeg_pid_out.store(pid, Ordering::Relaxed);
     if pid > 0 {
         let _ = std::fs::write(output_dir.join(".pid"), pid.to_string());
     }
-    let stderr = child.stderr.take();
+    let stderr = child
+        .stderr
+        .take();
 
     let (stderr_tx, stderr_rx) = tokio::sync::oneshot::channel::<String>();
     if let Some(stderr) = stderr {
@@ -942,7 +1007,10 @@ async fn run_ffmpeg(
             use tokio::io::AsyncBufReadExt;
             let mut lines = tokio::io::BufReader::new(stderr).lines();
             let mut buf = String::new();
-            while let Ok(Some(line)) = lines.next_line().await {
+            while let Ok(Some(line)) = lines
+                .next_line()
+                .await
+            {
                 if !line.is_empty() {
                     debug!("ffmpeg: {}", line);
                     buf.push_str(&line);
@@ -969,7 +1037,9 @@ async fn run_ffmpeg(
     };
 
     let _ = monitor_stop_tx.send(());
-    let stderr_out = stderr_rx.await.unwrap_or_default();
+    let stderr_out = stderr_rx
+        .await
+        .unwrap_or_default();
     (result, stderr_out)
 }
 
@@ -981,9 +1051,13 @@ pub async fn start_transcode(
     params: TranscodeParams,
 ) -> Result<()> {
     {
-        let mut s = session.write().await;
+        let mut s = session
+            .write()
+            .await;
         s.state = TranscodeState::Running;
-        let _ = s.state_tx.send(TranscodeState::Running);
+        let _ = s
+            .state_tx
+            .send(TranscodeState::Running);
     }
 
     std::fs::create_dir_all(&params.output_dir)
@@ -1006,21 +1080,26 @@ pub async fn start_transcode(
 
             let ffmpeg_pid = Arc::new(AtomicU32::new(0));
             let output_dir = {
-                let mut s = session_clone.write().await;
+                let mut s = session_clone
+                    .write()
+                    .await;
                 s.start_time_secs = params
                     .start_time_ticks
                     .map(|t| (t / 10_000_000) as u32)
                     .unwrap_or(0);
                 s.kill_tx = Some(kill_tx);
                 spawn_buffer_monitor(
-                    s.output_dir.clone(),
+                    s.output_dir
+                        .clone(),
                     s.segment_length,
-                    s.playback_offset_secs.clone(),
+                    s.playback_offset_secs
+                        .clone(),
                     ffmpeg_pid.clone(),
                     monitor_stop_rx,
                     s.id.clone(),
                 );
-                s.output_dir.clone()
+                s.output_dir
+                    .clone()
             };
 
             let env_overrides = ffmpeg_env_overrides(
@@ -1060,7 +1139,9 @@ pub async fn start_transcode(
                 continue;
             }
 
-            let mut s = session_clone.write().await;
+            let mut s = session_clone
+                .write()
+                .await;
             s.kill_tx = None;
 
             // Live streams: auto-restart on unexpected exit; only stop when killed.
@@ -1068,12 +1149,18 @@ pub async fn start_transcode(
                 match result {
                     None => {
                         debug!(session_id = %s.id, "live stream killed by session stop");
-                        s.wait_done.notify_one();
+                        s.wait_done
+                            .notify_one();
                         break;
                     }
                     Some(r) => {
                         let (status_str, stderr_str) = match &r {
-                            Ok(st) => (format!("{st}"), stderr_out.trim().to_string()),
+                            Ok(st) => (
+                                format!("{st}"),
+                                stderr_out
+                                    .trim()
+                                    .to_string(),
+                            ),
                             Err(e) => ("error".to_string(), e.to_string()),
                         };
                         if live_restarts < MAX_LIVE_RESTARTS {
@@ -1095,8 +1182,11 @@ pub async fn start_transcode(
                             );
                             error!(session_id = %s.id, error = %err_msg, "Live stream failed");
                             s.state = TranscodeState::Error(err_msg.clone());
-                            let _ = s.state_tx.send(TranscodeState::Error(err_msg));
-                            s.wait_done.notify_one();
+                            let _ = s
+                                .state_tx
+                                .send(TranscodeState::Error(err_msg));
+                            s.wait_done
+                                .notify_one();
                             break;
                         }
                     }
@@ -1106,7 +1196,9 @@ pub async fn start_transcode(
             match result {
                 Some(Ok(status)) if status.success() => {
                     s.state = TranscodeState::Complete;
-                    let _ = s.state_tx.send(TranscodeState::Complete);
+                    let _ = s
+                        .state_tx
+                        .send(TranscodeState::Complete);
                     info!(session_id = %s.id, sw_fallback, "Transcode completed successfully");
                 }
                 Some(Ok(status)) => {
@@ -1117,20 +1209,25 @@ pub async fn start_transcode(
                     );
                     error!(session_id = %s.id, error = %err_msg, "Transcode failed");
                     s.state = TranscodeState::Error(err_msg.clone());
-                    let _ = s.state_tx.send(TranscodeState::Error(err_msg));
+                    let _ = s
+                        .state_tx
+                        .send(TranscodeState::Error(err_msg));
                 }
                 Some(Err(e)) => {
                     let err_msg = format!("Failed to wait for ffmpeg: {}", e);
                     error!(session_id = %s.id, error = %err_msg, "Transcode error");
                     s.state = TranscodeState::Error(err_msg.clone());
-                    let _ = s.state_tx.send(TranscodeState::Error(err_msg));
+                    let _ = s
+                        .state_tx
+                        .send(TranscodeState::Error(err_msg));
                 }
                 None => {
                     debug!(session_id = %s.id, "ffmpeg killed by session stop");
                 }
             }
 
-            s.wait_done.notify_one();
+            s.wait_done
+                .notify_one();
             break;
         }
     });
@@ -1180,7 +1277,11 @@ pub(crate) fn build_progressive_args(
 ) -> Vec<String> {
     let accel = params.hardware_acceleration_type;
     let is_hw = !matches!(accel, HardwareAccelerationType::None);
-    let hdr = is_hdr(params.source_video_range_type.as_ref());
+    let hdr = is_hdr(
+        params
+            .source_video_range_type
+            .as_ref(),
+    );
 
     let do_vpp_tonemap = hdr
         && params.enable_vpp_tonemapping
@@ -1191,12 +1292,17 @@ pub(crate) fn build_progressive_args(
     let do_sw_tonemap = hdr && params.enable_tonemapping && !do_vpp_tonemap;
 
     let ffmpeg_video_codec = {
-        let base = match params.video_codec.as_str() {
+        let base = match params
+            .video_codec
+            .as_str()
+        {
             "copy" => "copy",
             _ => "libx264",
         };
         let base = if params.burn_subtitle
-            && params.subtitle_stream_index.is_some()
+            && params
+                .subtitle_stream_index
+                .is_some()
             && base == "copy"
         {
             "libx264"
@@ -1209,7 +1315,10 @@ pub(crate) fn build_progressive_args(
             base.to_string()
         }
     };
-    let ffmpeg_audio_codec = match params.audio_codec.as_str() {
+    let ffmpeg_audio_codec = match params
+        .audio_codec
+        .as_str()
+    {
         "copy" => "copy",
         "aac" => "aac",
         "libopus" | "opus" => "libopus",
@@ -1219,7 +1328,10 @@ pub(crate) fn build_progressive_args(
 
     // When stream-copying into MP4 we need bitstream filters; promote to MKV instead.
     let format = {
-        let requested = match params.container.as_str() {
+        let requested = match params
+            .container
+            .as_str()
+        {
             "ts" | "mpegts" => "mpegts",
             "webm" => "webm",
             "mkv" | "matroska" => "matroska",
@@ -1269,7 +1381,12 @@ pub(crate) fn build_progressive_args(
         args.extend(["-ss".into(), format!("{:.6}", secs)]);
     }
 
-    args.extend(["-i".into(), params.input_url.clone()]);
+    args.extend([
+        "-i".into(),
+        params
+            .input_url
+            .clone(),
+    ]);
 
     let hw_suffix = if do_vpp_tonemap && matches!(accel, HardwareAccelerationType::Qsv)
     {
@@ -1390,8 +1507,12 @@ pub(crate) fn build_progressive_args(
         };
         if let Some(ref filter) = vf {
             args.extend(["-vf".into(), filter.clone()]);
-        } else if params.audio_stream_index.is_some()
-            || params.subtitle_stream_index.is_some()
+        } else if params
+            .audio_stream_index
+            .is_some()
+            || params
+                .subtitle_stream_index
+                .is_some()
         {
             args.extend(["-map".into(), "0:v:0".into()]);
             if let Some(audio_idx) = params.audio_stream_index {
@@ -1412,7 +1533,9 @@ pub(crate) fn build_progressive_args(
     if ffmpeg_video_codec == "copy" {
         // Apply hvc1 codec tag for HEVC Apple compatibility
         if matches!(
-            params.source_video_codec.as_deref(),
+            params
+                .source_video_codec
+                .as_deref(),
             Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1")
         ) {
             args.extend(["-tag:v".into(), "hvc1".into()]);
@@ -1422,14 +1545,19 @@ pub(crate) fn build_progressive_args(
             args.extend(["-b:v".into(), bitrate.to_string()]);
         }
     } else if ffmpeg_video_codec == "libx264" {
-        let preset = params.encoding_preset.unwrap_or_default().to_string();
+        let preset = params
+            .encoding_preset
+            .unwrap_or_default()
+            .to_string();
         args.extend([
             "-profile:v".into(),
             "high".into(),
             "-pix_fmt".into(),
             "yuv420p".into(),
             "-crf".into(),
-            params.h264_crf.to_string(),
+            params
+                .h264_crf
+                .to_string(),
             "-preset".into(),
             preset,
         ]);
@@ -1442,12 +1570,17 @@ pub(crate) fn build_progressive_args(
             ]);
         }
     } else if ffmpeg_video_codec == "libx265" {
-        let preset = params.encoding_preset.unwrap_or_default().to_string();
+        let preset = params
+            .encoding_preset
+            .unwrap_or_default()
+            .to_string();
         args.extend([
             "-pix_fmt".into(),
             "yuv420p".into(),
             "-crf".into(),
-            params.h265_crf.to_string(),
+            params
+                .h265_crf
+                .to_string(),
             "-preset".into(),
             preset,
         ]);
@@ -1524,12 +1657,18 @@ pub fn start_progressive_transcode(
     tokio::spawn(async move {
         use tokio::io::AsyncBufReadExt;
         let mut lines = tokio::io::BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
+        while let Ok(Some(line)) = lines
+            .next_line()
+            .await
+        {
             if !line.is_empty() {
                 debug!("ffmpeg: {}", line);
             }
         }
-        match child.wait().await {
+        match child
+            .wait()
+            .await
+        {
             Ok(status) if !status.success() => {
                 if status.code() == Some(224) {
                     debug!(
@@ -1675,11 +1814,19 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
 
     let play_session_id = &session.id;
 
-    let video_codec_str: String = match session.video_codec.as_str() {
-        "copy" => match session.source_video_codec.as_deref() {
+    let video_codec_str: String = match session
+        .video_codec
+        .as_str()
+    {
+        "copy" => match session
+            .source_video_codec
+            .as_deref()
+        {
             Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1") => {
                 hevc_hls_codec_string(
-                    session.source_video_profile.as_deref(),
+                    session
+                        .source_video_profile
+                        .as_deref(),
                     session.source_video_level,
                 )
             }
@@ -1687,12 +1834,17 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
         },
         "h264" | "libx264" => "avc1.640028".to_string(),
         "hevc" | "libx265" => hevc_hls_codec_string(
-            session.source_video_profile.as_deref(),
+            session
+                .source_video_profile
+                .as_deref(),
             session.source_video_level,
         ),
         _ => "avc1.640028".to_string(),
     };
-    let audio_codec_str = match session.audio_codec.as_str() {
+    let audio_codec_str = match session
+        .audio_codec
+        .as_str()
+    {
         "copy" | "aac" => "mp4a.40.2",
         _ => "mp4a.40.2",
     };
@@ -1760,7 +1912,8 @@ mod tests {
     // ── helpers ──────────────────────────────────────────────────────────────
 
     fn args_contains(args: &[String], flag: &str) -> bool {
-        args.iter().any(|a| a == flag)
+        args.iter()
+            .any(|a| a == flag)
     }
 
     fn arg_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
@@ -1969,7 +2122,10 @@ mod tests {
         // Default TS segments — no fmp4 flag
         assert!(!args_contains(&args, "-hls_segment_type"));
         // Playlist and segment paths
-        assert!(args.iter().any(|a| a.ends_with("main.m3u8")));
+        assert!(
+            args.iter()
+                .any(|a| a.ends_with("main.m3u8"))
+        );
         assert!(
             args.iter()
                 .any(|a| a.contains("segment_") && a.ends_with(".ts"))
@@ -2056,8 +2212,14 @@ mod tests {
             ..default_hls(dir)
         });
 
-        let ss_pos = args.iter().position(|a| a == "-ss").expect("-ss missing");
-        let i_pos = args.iter().position(|a| a == "-i").expect("-i missing");
+        let ss_pos = args
+            .iter()
+            .position(|a| a == "-ss")
+            .expect("-ss missing");
+        let i_pos = args
+            .iter()
+            .position(|a| a == "-i")
+            .expect("-i missing");
         assert!(ss_pos < i_pos, "-ss must come before -i");
         assert_eq!(args[ss_pos + 1], "30.000000");
 
@@ -2156,7 +2318,10 @@ mod tests {
             "filter_complex should reference sub stream: {fc}"
         );
         // map [v] output label
-        assert!(args.windows(2).any(|w| w[0] == "-map" && w[1] == "[v]"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-map" && w[1] == "[v]")
+        );
     }
 
     #[test]
@@ -2194,7 +2359,10 @@ mod tests {
             .iter()
             .position(|a| a == "-hwaccel")
             .expect("-hwaccel missing");
-        let i_pos = args.iter().position(|a| a == "-i").expect("-i missing");
+        let i_pos = args
+            .iter()
+            .position(|a| a == "-i")
+            .expect("-i missing");
         assert!(hwaccel_pos < i_pos);
         assert_eq!(args[hwaccel_pos + 1], "cuda");
         // Encoder remapped
@@ -2214,10 +2382,11 @@ mod tests {
 
         // init_hw_device with driver= instead of legacy -vaapi_device
         assert!(
-            args.windows(2).any(|w| w[0] == "-init_hw_device"
-                && w[1].contains("vaapi=va:")
-                && w[1].contains("/dev/dri/renderD128")
-                && w[1].contains("driver=iHD")),
+            args.windows(2)
+                .any(|w| w[0] == "-init_hw_device"
+                    && w[1].contains("vaapi=va:")
+                    && w[1].contains("/dev/dri/renderD128")
+                    && w[1].contains("driver=iHD")),
             "expected init_hw_device vaapi with iHD driver, got: {args:?}"
         );
         assert!(
@@ -2226,7 +2395,11 @@ mod tests {
             "expected -filter_hw_device va"
         );
         // legacy -vaapi_device must NOT appear
-        assert!(!args.windows(2).any(|w| w[0] == "-vaapi_device"));
+        assert!(
+            !args
+                .windows(2)
+                .any(|w| w[0] == "-vaapi_device")
+        );
         // Encoder remapped
         assert_eq!(arg_after(&args, "-c:v"), Some("h264_vaapi"));
     }
@@ -2277,9 +2450,10 @@ mod tests {
 
         // VAAPI device init with iHD driver
         assert!(
-            args.windows(2).any(|w| w[0] == "-init_hw_device"
-                && w[1].starts_with("vaapi=va:")
-                && w[1].contains("driver=iHD")),
+            args.windows(2)
+                .any(|w| w[0] == "-init_hw_device"
+                    && w[1].starts_with("vaapi=va:")
+                    && w[1].contains("driver=iHD")),
             "expected VAAPI init with iHD: {args:?}"
         );
         // QSV device derived from VAAPI
@@ -2360,8 +2534,14 @@ mod tests {
             start_time_ticks: Some(ticks),
             ..default_progressive()
         });
-        let ss_pos = args.iter().position(|a| a == "-ss").expect("-ss missing");
-        let i_pos = args.iter().position(|a| a == "-i").expect("-i missing");
+        let ss_pos = args
+            .iter()
+            .position(|a| a == "-ss")
+            .expect("-ss missing");
+        let i_pos = args
+            .iter()
+            .position(|a| a == "-i")
+            .expect("-i missing");
         assert!(ss_pos < i_pos);
         assert_eq!(args[ss_pos + 1], "60.000000");
     }

@@ -98,11 +98,14 @@ impl TaskHandler {
     }
 
     pub fn key(&self) -> &str {
-        self.task.key()
+        self.task
+            .key()
     }
 
     fn lock_status(&self) -> std::sync::MutexGuard<'_, TaskStatus> {
-        self.status.lock().unwrap_or_else(|e| e.into_inner())
+        self.status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn is_running(&self) -> bool {
@@ -114,9 +117,16 @@ impl TaskHandler {
 
     pub fn view(&self) -> TaskView {
         TaskView {
-            task: self.task.clone(),
-            status: self.lock_status().clone(),
-            progress: f64::from_bits(self.progress.load(Ordering::Relaxed)),
+            task: self
+                .task
+                .clone(),
+            status: self
+                .lock_status()
+                .clone(),
+            progress: f64::from_bits(
+                self.progress
+                    .load(Ordering::Relaxed),
+            ),
         }
     }
 
@@ -125,20 +135,32 @@ impl TaskHandler {
             return;
         }
 
-        self.progress.store(0u64, Ordering::Relaxed);
+        self.progress
+            .store(0u64, Ordering::Relaxed);
         *self.lock_status() = TaskStatus::Running;
 
-        let task = self.task.clone();
-        let task_key = task.key().to_string();
-        let status = self.status.clone();
-        let progress = ProgressReporter::new(self.progress.clone());
+        let task = self
+            .task
+            .clone();
+        let task_key = task
+            .key()
+            .to_string();
+        let status = self
+            .status
+            .clone();
+        let progress = ProgressReporter::new(
+            self.progress
+                .clone(),
+        );
 
         let handle = tokio::spawn(async move {
             let start_at = Utc::now().naive_utc();
             let instant = Instant::now();
             info!(task = %task.name(), "starting");
 
-            let result = task.run(ctx.clone(), task_service, progress).await;
+            let result = task
+                .run(ctx.clone(), task_service, progress)
+                .await;
             let elapsed = instant.elapsed();
 
             // Flush WAL after every task so write bursts don't accumulate into
@@ -151,7 +173,9 @@ impl TaskHandler {
             let (new_status, db_status) = match &result {
                 Ok(_) => {
                     info!(task = %task.name(), elapsed = ?elapsed, "completed");
-                    let _ = ctx.ws_tx.send(ws::WsEvent::LibraryChanged);
+                    let _ = ctx
+                        .ws_tx
+                        .send(ws::WsEvent::LibraryChanged);
                     (TaskStatus::Idle, db::TaskResultStatus::Completed)
                 }
                 Err(e) => {
@@ -163,7 +187,9 @@ impl TaskHandler {
                 }
             };
 
-            *status.lock().unwrap_or_else(|e| e.into_inner()) = new_status;
+            *status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = new_status;
 
             let task_result = db::TaskResult {
                 task_id: task_key.clone(),
@@ -172,7 +198,10 @@ impl TaskHandler {
                 status: db_status,
             };
 
-            if let Err(e) = task_result.save(&ctx.db).await {
+            if let Err(e) = task_result
+                .save(&ctx.db)
+                .await
+            {
                 error!(task = %task_key, error = %e, "failed to save result");
             }
         });
@@ -181,7 +210,10 @@ impl TaskHandler {
     }
 
     pub fn stop(&mut self) {
-        if let Some(handle) = self.handle.take() {
+        if let Some(handle) = self
+            .handle
+            .take()
+        {
             handle.abort();
             *self.lock_status() = TaskStatus::Stopped;
             info!(task = %self.task.key(), "stopped");
@@ -209,20 +241,40 @@ impl TaskService {
             ctx: ctx.clone(),
         };
 
-        service.register_task(Arc::new(ClearCacheTask)).await?;
-        service.register_task(Arc::new(ClearImageCacheTask)).await?;
+        service
+            .register_task(Arc::new(ClearCacheTask))
+            .await?;
+        service
+            .register_task(Arc::new(ClearImageCacheTask))
+            .await?;
         service
             .register_task(Arc::new(CleanTranscodeFolderTask))
             .await?;
-        service.register_task(Arc::new(RefreshLibraryTask)).await?;
-        service.register_task(Arc::new(RefreshAllMetaTask)).await?;
+        service
+            .register_task(Arc::new(RefreshLibraryTask))
+            .await?;
+        service
+            .register_task(Arc::new(RefreshAllMetaTask))
+            .await?;
         // service.register_task(Arc::new(SeriesSyncTask)).await?;
-        service.register_task(Arc::new(PurgeMediaTask)).await?;
-        service.register_task(Arc::new(JellyfinImportTask)).await?;
+        service
+            .register_task(Arc::new(PurgeMediaTask))
+            .await?;
+        service
+            .register_task(Arc::new(JellyfinImportTask))
+            .await?;
 
-        let triggers = db::TaskTrigger::get_all(&service.ctx.db).await?;
+        let triggers = db::TaskTrigger::get_all(
+            &service
+                .ctx
+                .db,
+        )
+        .await?;
         for trigger in triggers {
-            if let Err(e) = service.add_trigger(trigger).await {
+            if let Err(e) = service
+                .add_trigger(trigger)
+                .await
+            {
                 error!("Failed to add trigger (skipping): {}", e);
             }
         }
@@ -231,8 +283,13 @@ impl TaskService {
     }
 
     pub async fn register_task(&self, task: Arc<dyn Task>) -> Result<()> {
-        let key = task.key().to_lowercase();
-        self.tasks.lock().await.insert(key, TaskHandler::new(task));
+        let key = task
+            .key()
+            .to_lowercase();
+        self.tasks
+            .lock()
+            .await
+            .insert(key, TaskHandler::new(task));
         Ok(())
     }
 
@@ -241,10 +298,16 @@ impl TaskService {
             return Ok(());
         };
 
-        let tasks = self.tasks.clone();
-        let ctx = self.ctx.clone();
+        let tasks = self
+            .tasks
+            .clone();
+        let ctx = self
+            .ctx
+            .clone();
         let task_service = self.clone();
-        let task_id = trigger.task_id.to_lowercase();
+        let task_id = trigger
+            .task_id
+            .to_lowercase();
         let task_id_for_closure = task_id.clone();
 
         let job = Job::new_async(cron.as_str(), move |_uuid, _l| {
@@ -254,17 +317,30 @@ impl TaskService {
             let task_id = task_id_for_closure.clone();
 
             Box::pin(async move {
-                if let Some(handler) = tasks.lock().await.get_mut(&task_id) {
+                if let Some(handler) = tasks
+                    .lock()
+                    .await
+                    .get_mut(&task_id)
+                {
                     handler.run(ctx, task_service);
                 }
             })
         })?;
 
         let job_id = job.guid();
-        self.scheduler.add(job).await?;
+        self.scheduler
+            .add(job)
+            .await?;
 
-        if let Some(handler) = self.tasks.lock().await.get_mut(&task_id) {
-            handler.jobs.push(job_id);
+        if let Some(handler) = self
+            .tasks
+            .lock()
+            .await
+            .get_mut(&task_id)
+        {
+            handler
+                .jobs
+                .push(job_id);
         }
 
         Ok(())
@@ -276,47 +352,87 @@ impl TaskService {
         triggers: Vec<db::TaskTrigger>,
     ) -> Result<()> {
         let key = task_key.to_lowercase();
-        let mut tasks = self.tasks.lock().await;
+        let mut tasks = self
+            .tasks
+            .lock()
+            .await;
         let handler = tasks
             .get_mut(&key)
             .ok_or_else(|| anyhow!("Task not found: {task_key}"))?;
 
-        for job_id in handler.jobs.drain(..) {
-            let _ = self.scheduler.remove(&job_id).await;
+        for job_id in handler
+            .jobs
+            .drain(..)
+        {
+            let _ = self
+                .scheduler
+                .remove(&job_id)
+                .await;
         }
 
         drop(tasks);
 
-        db::TaskTrigger::delete_by_task_id(&self.ctx.db, task_key).await?;
+        db::TaskTrigger::delete_by_task_id(
+            &self
+                .ctx
+                .db,
+            task_key,
+        )
+        .await?;
 
         for trigger in triggers {
-            trigger.save(&self.ctx.db).await?;
-            self.add_trigger(trigger).await?;
+            trigger
+                .save(
+                    &self
+                        .ctx
+                        .db,
+                )
+                .await?;
+            self.add_trigger(trigger)
+                .await?;
         }
 
         Ok(())
     }
 
     pub async fn run_task(&self, task_key: &str) -> Result<()> {
-        if let Some(handler) = self.tasks.lock().await.get_mut(&task_key.to_lowercase())
+        if let Some(handler) = self
+            .tasks
+            .lock()
+            .await
+            .get_mut(&task_key.to_lowercase())
         {
-            handler.run(self.ctx.clone(), Arc::new(self.clone()));
+            handler.run(
+                self.ctx
+                    .clone(),
+                Arc::new(self.clone()),
+            );
         }
         Ok(())
     }
 
     pub async fn run_startup_tasks(&self) -> Result<()> {
-        let triggers = db::TaskTrigger::get_all(&self.ctx.db).await?;
+        let triggers = db::TaskTrigger::get_all(
+            &self
+                .ctx
+                .db,
+        )
+        .await?;
         for trigger in triggers {
             if trigger.kind == TaskTriggerInfoType::StartupTrigger {
-                self.run_task(&trigger.task_id).await?;
+                self.run_task(&trigger.task_id)
+                    .await?;
             }
         }
         Ok(())
     }
 
     pub async fn stop_task(&self, task_key: &str) -> Result<()> {
-        if let Some(handler) = self.tasks.lock().await.get_mut(&task_key.to_lowercase())
+        if let Some(handler) = self
+            .tasks
+            .lock()
+            .await
+            .get_mut(&task_key.to_lowercase())
         {
             handler.stop();
         }
@@ -325,18 +441,26 @@ impl TaskService {
 
     pub async fn deregister_task(&self, key: &str) -> Result<()> {
         let key = key.to_lowercase();
-        let mut tasks = self.tasks.lock().await;
+        let mut tasks = self
+            .tasks
+            .lock()
+            .await;
         if let Some(mut handler) = tasks.remove(&key) {
             handler.stop();
             for job_id in &handler.jobs {
-                let _ = self.scheduler.remove(job_id).await;
+                let _ = self
+                    .scheduler
+                    .remove(job_id)
+                    .await;
             }
         }
         Ok(())
     }
 
     pub async fn start(&self) -> Result<()> {
-        self.scheduler.start().await?;
+        self.scheduler
+            .start()
+            .await?;
         Ok(())
     }
 
@@ -353,5 +477,8 @@ impl TaskService {
 pub(super) fn iter_dir(
     path: impl AsRef<std::path::Path>,
 ) -> impl Iterator<Item = std::fs::DirEntry> {
-    std::fs::read_dir(path).into_iter().flatten().flatten()
+    std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
 }

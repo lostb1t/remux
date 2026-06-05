@@ -104,9 +104,18 @@ impl AddonKind for TorznabAddon {
         _ctx: &AppContext,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         match media.kind {
-            db::MediaKind::Track => self.resolve_track(media).await,
-            db::MediaKind::Movie => self.resolve_movie(media).await,
-            db::MediaKind::Episode => self.resolve_episode(media).await,
+            db::MediaKind::Track => {
+                self.resolve_track(media)
+                    .await
+            }
+            db::MediaKind::Movie => {
+                self.resolve_movie(media)
+                    .await
+            }
+            db::MediaKind::Episode => {
+                self.resolve_episode(media)
+                    .await
+            }
             _ => Ok(vec![]),
         }
     }
@@ -121,11 +130,16 @@ impl TorznabAddon {
             .description
             .as_deref()
             .and_then(|d| d.strip_prefix("by "))
-            .filter(|a| !a.trim().is_empty())
+            .filter(|a| {
+                !a.trim()
+                    .is_empty()
+            })
             .map(str::to_string);
 
         let search = MediaSearch {
-            title: media.title.clone(),
+            title: media
+                .title
+                .clone(),
             extra: artist.clone(),
             title_tokens: significant_tokens(&media.title),
             extra_tokens: artist
@@ -136,23 +150,46 @@ impl TorznabAddon {
 
         let query = match artist.as_deref() {
             Some(a) => format!("{} {}", a, media.title),
-            None => media.title.clone(),
+            None => media
+                .title
+                .clone(),
         };
 
         tracing::debug!(query, title = %media.title, "torznab track stream lookup");
 
-        let mut items = self.fetch_items(&query, "3000").await?;
-        items.retain(|item| item.is_music() && item.url().is_some());
-        if items.iter().any(|item| item_matches_title(item, &search)) {
+        let mut items = self
+            .fetch_items(&query, "3000")
+            .await?;
+        items.retain(|item| {
+            item.is_music()
+                && item
+                    .url()
+                    .is_some()
+        });
+        if items
+            .iter()
+            .any(|item| item_matches_title(item, &search))
+        {
             items.retain(|item| item_matches_title(item, &search));
         }
         items.sort_by(|a, b| {
             score_item(b, &search)
                 .cmp(&score_item(a, &search))
-                .then_with(|| b.seeders.cmp(&a.seeders))
-                .then_with(|| b.peers.cmp(&a.peers))
                 .then_with(|| {
-                    a.size.unwrap_or(i64::MAX).cmp(&b.size.unwrap_or(i64::MAX))
+                    b.seeders
+                        .cmp(&a.seeders)
+                })
+                .then_with(|| {
+                    b.peers
+                        .cmp(&a.peers)
+                })
+                .then_with(|| {
+                    a.size
+                        .unwrap_or(i64::MAX)
+                        .cmp(
+                            &b.size
+                                .unwrap_or(i64::MAX),
+                        )
                 })
         });
 
@@ -161,9 +198,18 @@ impl TorznabAddon {
             .take(MAX_RESULTS)
             .filter_map(|item| {
                 let fmt = infer_audio_format(&item.title);
-                let codec = fmt.map(|f| f.codec().to_string());
-                let descriptor =
-                    magnet_to_descriptor(&item.url()?, Some(search.title.clone()))?;
+                let codec = fmt.map(|f| {
+                    f.codec()
+                        .to_string()
+                });
+                let descriptor = magnet_to_descriptor(
+                    &item.url()?,
+                    Some(
+                        search
+                            .title
+                            .clone(),
+                    ),
+                )?;
                 Some(crate::stream::StreamInfo {
                     descriptor,
                     name: Some(item.label(&self.name)),
@@ -187,34 +233,64 @@ impl TorznabAddon {
         &self,
         media: &db::Media,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
-        let year = media.released_at.map(|d| d.format("%Y").to_string());
+        let year = media
+            .released_at
+            .map(|d| {
+                d.format("%Y")
+                    .to_string()
+            });
 
         let query = match year.as_deref() {
             Some(y) => format!("{} {}", media.title, y),
-            None => media.title.clone(),
+            None => media
+                .title
+                .clone(),
         };
 
         tracing::debug!(query, title = %media.title, "torznab movie stream lookup");
 
         let search = MediaSearch {
-            title: media.title.clone(),
+            title: media
+                .title
+                .clone(),
             extra: year,
             title_tokens: significant_tokens(&media.title),
             extra_tokens: vec![],
         };
 
-        let mut items = self.fetch_items(&query, "2000").await?;
-        items.retain(|item| item.is_movie() && item.url().is_some());
-        if items.iter().any(|item| item_matches_title(item, &search)) {
+        let mut items = self
+            .fetch_items(&query, "2000")
+            .await?;
+        items.retain(|item| {
+            item.is_movie()
+                && item
+                    .url()
+                    .is_some()
+        });
+        if items
+            .iter()
+            .any(|item| item_matches_title(item, &search))
+        {
             items.retain(|item| item_matches_title(item, &search));
         }
         items.sort_by(|a, b| {
             score_item(b, &search)
                 .cmp(&score_item(a, &search))
-                .then_with(|| b.seeders.cmp(&a.seeders))
-                .then_with(|| b.peers.cmp(&a.peers))
                 .then_with(|| {
-                    a.size.unwrap_or(i64::MAX).cmp(&b.size.unwrap_or(i64::MAX))
+                    b.seeders
+                        .cmp(&a.seeders)
+                })
+                .then_with(|| {
+                    b.peers
+                        .cmp(&a.peers)
+                })
+                .then_with(|| {
+                    a.size
+                        .unwrap_or(i64::MAX)
+                        .cmp(
+                            &b.size
+                                .unwrap_or(i64::MAX),
+                        )
                 })
         });
 
@@ -235,32 +311,59 @@ impl TorznabAddon {
         &self,
         media: &db::Media,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
-        let season = media.parent_idx.unwrap_or(1);
-        let episode = media.idx.unwrap_or(1);
+        let season = media
+            .parent_idx
+            .unwrap_or(1);
+        let episode = media
+            .idx
+            .unwrap_or(1);
         let se = format!("S{:02}E{:02}", season, episode);
         let query = format!("{} {}", media.title, se);
 
         tracing::debug!(query, title = %media.title, %se, "torznab episode stream lookup");
 
         let search = MediaSearch {
-            title: media.title.clone(),
+            title: media
+                .title
+                .clone(),
             extra: Some(se.clone()),
             title_tokens: significant_tokens(&media.title),
             extra_tokens: vec![se.to_ascii_lowercase()],
         };
 
-        let mut items = self.fetch_items(&query, "5000").await?;
-        items.retain(|item| item.is_episode() && item.url().is_some());
-        if items.iter().any(|item| item_matches_title(item, &search)) {
+        let mut items = self
+            .fetch_items(&query, "5000")
+            .await?;
+        items.retain(|item| {
+            item.is_episode()
+                && item
+                    .url()
+                    .is_some()
+        });
+        if items
+            .iter()
+            .any(|item| item_matches_title(item, &search))
+        {
             items.retain(|item| item_matches_title(item, &search));
         }
         items.sort_by(|a, b| {
             score_item(b, &search)
                 .cmp(&score_item(a, &search))
-                .then_with(|| b.seeders.cmp(&a.seeders))
-                .then_with(|| b.peers.cmp(&a.peers))
                 .then_with(|| {
-                    a.size.unwrap_or(i64::MAX).cmp(&b.size.unwrap_or(i64::MAX))
+                    b.seeders
+                        .cmp(&a.seeders)
+                })
+                .then_with(|| {
+                    b.peers
+                        .cmp(&a.peers)
+                })
+                .then_with(|| {
+                    a.size
+                        .unwrap_or(i64::MAX)
+                        .cmp(
+                            &b.size
+                                .unwrap_or(i64::MAX),
+                        )
                 })
         });
 
@@ -286,14 +389,26 @@ impl TorznabAddon {
             MAX_CANDIDATES
         );
 
-        let resp = self.client.get(&search_url).send().await?;
-        if !resp.status().is_success() {
+        let resp = self
+            .client
+            .get(&search_url)
+            .send()
+            .await?;
+        if !resp
+            .status()
+            .is_success()
+        {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_default();
             bail!("torznab HTTP {} - {}", status, body);
         }
 
-        let body = resp.text().await?;
+        let body = resp
+            .text()
+            .await?;
         parse_torznab_items(body.as_bytes())
     }
 }
@@ -319,7 +434,8 @@ struct TorznabItem {
 
 impl TorznabItem {
     fn category_prefix(&self) -> Option<&str> {
-        self.category.as_deref()
+        self.category
+            .as_deref()
     }
 
     fn is_music(&self) -> bool {
@@ -345,13 +461,18 @@ impl TorznabItem {
     fn url(&self) -> Option<String> {
         self.magnet_url
             .clone()
-            .or_else(|| self.enclosure_url.clone())
+            .or_else(|| {
+                self.enclosure_url
+                    .clone()
+            })
             .filter(|u| u.starts_with("magnet:"))
     }
 
     fn label(&self, instance_name: &str) -> String {
         let quality = infer_quality(&self.title);
-        let size = self.size.map(format_size);
+        let size = self
+            .size
+            .map(format_size);
         let mut label = format!("Torznab - {}", self.title);
         if let Some(q) = quality {
             label.push_str(&format!(" - {q}"));
@@ -374,7 +495,9 @@ fn score_item(item: &TorznabItem, search: &MediaSearch) -> i64 {
         score -= 1000;
     }
 
-    if !search.extra_tokens.is_empty()
+    if !search
+        .extra_tokens
+        .is_empty()
         && contains_all_tokens(&norm, &search.extra_tokens)
     {
         score += 250;
@@ -397,7 +520,11 @@ fn score_item(item: &TorznabItem, search: &MediaSearch) -> i64 {
         score -= 400;
     }
 
-    score + item.seeders.saturating_mul(10) + item.peers
+    score
+        + item
+            .seeders
+            .saturating_mul(10)
+        + item.peers
 }
 
 fn item_matches_title(item: &TorznabItem, search: &MediaSearch) -> bool {
@@ -406,7 +533,9 @@ fn item_matches_title(item: &TorznabItem, search: &MediaSearch) -> bool {
 
 fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
     let mut reader = Reader::from_reader(bytes);
-    reader.config_mut().trim_text(true);
+    reader
+        .config_mut()
+        .trim_text(true);
 
     let mut buf = Vec::new();
     let mut items = Vec::new();
@@ -415,16 +544,26 @@ fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
 
     loop {
         match reader.read_event_into(&mut buf)? {
-            Event::Start(e) => match e.name().as_ref() {
+            Event::Start(e) => match e
+                .name()
+                .as_ref()
+            {
                 b"item" => item = Some(TorznabItem::default()),
                 b"title" if item.is_some() => current_field = Some(Field::Title),
                 b"category" if item.is_some() => current_field = Some(Field::Category),
                 b"size" if item.is_some() => current_field = Some(Field::Size),
                 b"enclosure" if item.is_some() => {
                     if let Some(cur) = item.as_mut() {
-                        for attr in e.attributes().with_checks(false) {
+                        for attr in e
+                            .attributes()
+                            .with_checks(false)
+                        {
                             let attr = attr?;
-                            if attr.key.as_ref() == b"url" {
+                            if attr
+                                .key
+                                .as_ref()
+                                == b"url"
+                            {
                                 cur.enclosure_url = Some(
                                     attr.decode_and_unescape_value(reader.decoder())?
                                         .into_owned(),
@@ -438,12 +577,22 @@ fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
                 }
                 _ => {}
             },
-            Event::Empty(e) => match e.name().as_ref() {
+            Event::Empty(e) => match e
+                .name()
+                .as_ref()
+            {
                 b"enclosure" if item.is_some() => {
                     if let Some(cur) = item.as_mut() {
-                        for attr in e.attributes().with_checks(false) {
+                        for attr in e
+                            .attributes()
+                            .with_checks(false)
+                        {
                             let attr = attr?;
-                            if attr.key.as_ref() == b"url" {
+                            if attr
+                                .key
+                                .as_ref()
+                                == b"url"
+                            {
                                 cur.enclosure_url = Some(
                                     attr.decode_and_unescape_value(reader.decoder())?
                                         .into_owned(),
@@ -461,15 +610,24 @@ fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
                 if let (Some(cur), Some(field)) =
                     (item.as_mut(), current_field.as_ref())
                 {
-                    let text = e.unescape()?.into_owned();
+                    let text = e
+                        .unescape()?
+                        .into_owned();
                     match field {
                         Field::Title => cur.title = text,
                         Field::Category => cur.category = Some(text),
-                        Field::Size => cur.size = text.parse().ok(),
+                        Field::Size => {
+                            cur.size = text
+                                .parse()
+                                .ok()
+                        }
                     }
                 }
             }
-            Event::End(e) => match e.name().as_ref() {
+            Event::End(e) => match e
+                .name()
+                .as_ref()
+            {
                 b"item" => {
                     if let Some(cur) = item.take() {
                         items.push(cur);
@@ -497,7 +655,10 @@ fn apply_torznab_attr<'a>(
 
     for attr in attributes.with_checks(false) {
         let attr = attr?;
-        match attr.key.as_ref() {
+        match attr
+            .key
+            .as_ref()
+        {
             b"name" => {
                 name = Some(
                     attr.decode_and_unescape_value(reader.decoder())?
@@ -524,9 +685,21 @@ fn apply_torznab_attr<'a>(
     match name.as_str() {
         "magneturl" => cur.magnet_url = Some(value),
         "category" => cur.category = Some(value),
-        "seeders" => cur.seeders = value.parse().unwrap_or(0),
-        "peers" => cur.peers = value.parse().unwrap_or(0),
-        "size" => cur.size = value.parse().ok(),
+        "seeders" => {
+            cur.seeders = value
+                .parse()
+                .unwrap_or(0)
+        }
+        "peers" => {
+            cur.peers = value
+                .parse()
+                .unwrap_or(0)
+        }
+        "size" => {
+            cur.size = value
+                .parse()
+                .ok()
+        }
         _ => {}
     }
 
@@ -668,7 +841,10 @@ fn normalize_for_match(input: &str) -> String {
 }
 
 fn contains_all_tokens(haystack: &str, tokens: &[String]) -> bool {
-    !tokens.is_empty() && tokens.iter().all(|t| haystack.contains(t.as_str()))
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|t| haystack.contains(t.as_str()))
 }
 
 fn magnet_to_descriptor(
@@ -676,13 +852,13 @@ fn magnet_to_descriptor(
     file_hint: Option<String>,
 ) -> Option<crate::stream::StreamDescriptor> {
     let parsed = url::Url::parse(magnet).ok()?;
-    let info_hash =
-        parsed
-            .query_pairs()
-            .find(|(k, _)| k == "xt")
-            .and_then(|(_, v)| {
-                v.strip_prefix("urn:btih:").map(|h| h.to_ascii_lowercase())
-            })?;
+    let info_hash = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "xt")
+        .and_then(|(_, v)| {
+            v.strip_prefix("urn:btih:")
+                .map(|h| h.to_ascii_lowercase())
+        })?;
     let trackers = parsed
         .query_pairs()
         .filter(|(k, _)| k == "tr")
@@ -742,9 +918,16 @@ mod tests {
         assert_eq!(items[0].title, "Artist - Track [FLAC]");
         assert_eq!(items[0].seeders, 7);
         assert_eq!(items[0].peers, 9);
-        assert_eq!(items[0].category.as_deref(), Some("3000"));
         assert_eq!(
-            items[0].url().as_deref(),
+            items[0]
+                .category
+                .as_deref(),
+            Some("3000")
+        );
+        assert_eq!(
+            items[0]
+                .url()
+                .as_deref(),
             Some("magnet:?xt=urn:btih:def&dn=Artist+-+Track")
         );
         assert!(items[0].is_music());

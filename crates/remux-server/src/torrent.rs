@@ -38,7 +38,9 @@ impl TorrentManager {
         let listener =
             tokio::net::TcpListener::bind(format!("127.0.0.1:{}", bind_port)).await?;
 
-        let bound_port = listener.local_addr()?.port();
+        let bound_port = listener
+            .local_addr()?
+            .port();
 
         let api = Api::new(session.clone(), None, None);
         let http_api = HttpApi::new(api, None);
@@ -55,7 +57,9 @@ impl TorrentManager {
     /// (including the DHT UDP socket). Call this before dropping the manager
     /// to avoid "address already in use" errors on restart.
     pub async fn shutdown(&self) {
-        self.session.stop().await;
+        self.session
+            .stop()
+            .await;
     }
 
     /// Resolve a magnet URI (possibly with `&tr=`, `&file_idx=`, `&file=` params
@@ -70,13 +74,15 @@ impl TorrentManager {
             "resolving torrent"
         );
 
-        let opts = wanted_file.as_deref().map(|name| AddTorrentOptions {
-            // Ask librqbit to download only the matching file so we don't pull the
-            // whole torrent.  The regex is anchored at the end so "Movie.mkv" doesn't
-            // match "Movie.mkv.nfo".
-            only_files_regex: Some(format!("(?i){}$", regex::escape(name))),
-            ..Default::default()
-        });
+        let opts = wanted_file
+            .as_deref()
+            .map(|name| AddTorrentOptions {
+                // Ask librqbit to download only the matching file so we don't pull the
+                // whole torrent.  The regex is anchored at the end so "Movie.mkv" doesn't
+                // match "Movie.mkv.nfo".
+                only_files_regex: Some(format!("(?i){}$", regex::escape(name))),
+                ..Default::default()
+            });
 
         let response = self
             .session
@@ -134,7 +140,12 @@ impl TorrentManager {
         &self,
         active: &std::collections::HashSet<usize>,
     ) -> Result<usize> {
-        let api = Api::new(self.session.clone(), None, None);
+        let api = Api::new(
+            self.session
+                .clone(),
+            None,
+            None,
+        );
         let ids: Vec<_> = api
             .api_torrent_list()
             .torrents
@@ -144,7 +155,9 @@ impl TorrentManager {
             .collect();
         let count = ids.len();
         for id in ids {
-            if let Err(e) = api.api_torrent_action_delete(TorrentIdOrHash::Id(id)).await
+            if let Err(e) = api
+                .api_torrent_action_delete(TorrentIdOrHash::Id(id))
+                .await
             {
                 tracing::warn!(id, "failed to delete torrent: {e:#}");
             }
@@ -155,12 +168,19 @@ impl TorrentManager {
     /// Parse the torrent ID out of a librqbit stream URL.
     /// Format: `http://127.0.0.1:{port}/torrents/{id}/stream/{file_idx}`
     pub fn torrent_id_from_url(url: &str) -> Option<usize> {
-        let after_host = url.split_once("//")?.1.split_once('/')?.1;
+        let after_host = url
+            .split_once("//")?
+            .1
+            .split_once('/')?
+            .1;
         let mut parts = after_host.splitn(3, '/');
         if parts.next()? != "torrents" {
             return None;
         }
-        parts.next()?.parse().ok()
+        parts
+            .next()?
+            .parse()
+            .ok()
     }
 
     /// Apply upload/download speed limits.  0 = no limit (for download) or
@@ -180,14 +200,20 @@ impl TorrentManager {
         } else {
             NonZeroU32::new((download_kbps as u32).saturating_mul(1024))
         };
-        self.session.ratelimits.set_upload_bps(upload);
-        self.session.ratelimits.set_download_bps(download);
+        self.session
+            .ratelimits
+            .set_upload_bps(upload);
+        self.session
+            .ratelimits
+            .set_download_bps(download);
     }
 }
 
 /// Extract the `file=` query parameter we encode into our magnet URIs.
 fn parse_file_param(magnet: &str) -> Option<String> {
-    let query = magnet.split_once('?')?.1;
+    let query = magnet
+        .split_once('?')?
+        .1;
     url::form_urlencoded::parse(query.as_bytes())
         .find(|(k, _)| k == "file")
         .map(|(_, v)| v.into_owned())
@@ -195,8 +221,13 @@ fn parse_file_param(magnet: &str) -> Option<String> {
 
 /// Extract the `file_idx=` query parameter we encode into our magnet URIs.
 fn parse_file_idx_param(magnet: &str) -> Option<usize> {
-    let query = magnet.split_once('?')?.1;
+    let query = magnet
+        .split_once('?')?
+        .1;
     url::form_urlencoded::parse(query.as_bytes())
         .find(|(k, _)| k == "file_idx")
-        .and_then(|(_, v)| v.parse().ok())
+        .and_then(|(_, v)| {
+            v.parse()
+                .ok()
+        })
 }

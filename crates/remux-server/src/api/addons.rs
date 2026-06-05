@@ -20,16 +20,33 @@ use remux_sdks::remux::MediaKind;
 async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
     let preset = registered_presets()
         .into_iter()
-        .find(|p| p.id() == addon.preset.kind);
+        .find(|p| {
+            p.id()
+                == addon
+                    .preset
+                    .kind
+        });
 
     let (supported_resources, supported_types) = if let Some(ref p) = preset {
         let meta = p.metadata();
-        match p.from_cfg(addon.id, &addon.preset.config, config) {
+        match p.from_cfg(
+            addon.id,
+            &addon
+                .preset
+                .config,
+            config,
+        ) {
             Ok(kind) => {
-                let (resources, raw_types) = kind.available_info().await;
+                let (resources, raw_types) = kind
+                    .available_info()
+                    .await;
                 let types: Vec<MediaKind> = raw_types
                     .into_iter()
-                    .filter_map(|t| DbMediaKind::try_from(t).ok().map(Into::into))
+                    .filter_map(|t| {
+                        DbMediaKind::try_from(t)
+                            .ok()
+                            .map(Into::into)
+                    })
                     .collect();
                 if !resources.is_empty() {
                     (resources, types)
@@ -45,11 +62,20 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
 
     AddonDto {
         id: addon.id,
-        kind: addon.preset.kind,
+        kind: addon
+            .preset
+            .kind,
         name: addon.name,
-        config: addon.preset.config,
+        config: addon
+            .preset
+            .config,
         resources: addon.resources,
-        types: addon.types.iter().cloned().map(Into::into).collect(),
+        types: addon
+            .types
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect(),
         enabled: addon.enabled,
         supported_resources,
         supported_types,
@@ -67,7 +93,10 @@ pub async fn list_addon_kinds(
     _session: auth::AdminSession,
 ) -> Result<Json<Vec<AddonMetadata>>> {
     Ok(Json(
-        registered_presets().iter().map(|p| p.metadata()).collect(),
+        registered_presets()
+            .iter()
+            .map(|p| p.metadata())
+            .collect(),
     ))
 }
 
@@ -77,11 +106,21 @@ pub async fn list_addons(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<Json<Vec<AddonDto>>> {
-    let addons = Addon::list(&state.ctx.db).await?;
-    let config = &state.ctx.config;
-    let dtos =
-        futures::future::join_all(addons.into_iter().map(|a| addon_to_dto(a, config)))
-            .await;
+    let addons = Addon::list(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
+    let config = &state
+        .ctx
+        .config;
+    let dtos = futures::future::join_all(
+        addons
+            .into_iter()
+            .map(|a| addon_to_dto(a, config)),
+    )
+    .await;
     Ok(Json(dtos))
 }
 
@@ -92,10 +131,23 @@ pub async fn get_addon(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AddonDto>> {
-    let addon = Addon::get(&state.ctx.db, id)
-        .await?
-        .context_not_found("Addon not found")?;
-    Ok(Json(addon_to_dto(addon, &state.ctx.config).await))
+    let addon = Addon::get(
+        &state
+            .ctx
+            .db,
+        id,
+    )
+    .await?
+    .context_not_found("Addon not found")?;
+    Ok(Json(
+        addon_to_dto(
+            addon,
+            &state
+                .ctx
+                .config,
+        )
+        .await,
+    ))
 }
 
 /// Create a new addon instance.
@@ -108,17 +160,46 @@ pub async fn create_addon(
     let presets = registered_presets();
     let preset = presets
         .iter()
-        .find(|p| p.id() == payload.preset.kind)
-        .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", payload.preset.kind))
+        .find(|p| {
+            p.id()
+                == payload
+                    .preset
+                    .kind
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown addon kind: {}",
+                payload
+                    .preset
+                    .kind
+            )
+        })
         .context_bad_request("Unknown addon kind")?;
 
     let addon_id = Uuid::new_v4();
     let normalized_config = preset
-        .normalize_cfg(payload.preset.config, &state.ctx.config)
+        .normalize_cfg(
+            payload
+                .preset
+                .config,
+            &state
+                .ctx
+                .config,
+        )
         .context_bad_request("Invalid addon configuration")?;
-    payload.preset.config = normalized_config;
+    payload
+        .preset
+        .config = normalized_config;
     let kind = preset
-        .from_cfg(addon_id, &payload.preset.config, &state.ctx.config)
+        .from_cfg(
+            addon_id,
+            &payload
+                .preset
+                .config,
+            &state
+                .ctx
+                .config,
+        )
         .context_bad_request("Invalid addon configuration")?;
 
     // Default resources/types to the live available set (e.g. upstream manifest for
@@ -128,10 +209,19 @@ pub async fn create_addon(
     // returns nothing and the caller provided nothing, fail rather than silently storing
     // preset defaults — those would persist wrong values into the DB.
     let metadata = preset.metadata();
-    let (avail_resources, avail_types) = kind.available_info().await;
+    let (avail_resources, avail_types) = kind
+        .available_info()
+        .await;
 
-    let resources = if payload.resources.is_empty() {
-        if avail_resources.is_empty() && !metadata.supported_resources.is_empty() {
+    let resources = if payload
+        .resources
+        .is_empty()
+    {
+        if avail_resources.is_empty()
+            && !metadata
+                .supported_resources
+                .is_empty()
+        {
             return Err(anyhow::anyhow!("addon manifest returned no resources")
                 .context_bad_request("Could not fetch addon capabilities — is the manifest URL reachable?",
                 ));
@@ -140,8 +230,15 @@ pub async fn create_addon(
     } else {
         payload.resources
     };
-    let types: Vec<DbMediaKind> = if payload.types.is_empty() {
-        if avail_types.is_empty() && !metadata.supported_types.is_empty() {
+    let types: Vec<DbMediaKind> = if payload
+        .types
+        .is_empty()
+    {
+        if avail_types.is_empty()
+            && !metadata
+                .supported_types
+                .is_empty()
+        {
             return Err(anyhow::anyhow!("addon manifest returned no types")
                 .context_bad_request("Could not fetch addon capabilities — is the manifest URL reachable?",
                 ));
@@ -151,7 +248,11 @@ pub async fn create_addon(
             .filter_map(|t| DbMediaKind::try_from(t).ok())
             .collect()
     } else {
-        payload.types.into_iter().map(DbMediaKind::from).collect()
+        payload
+            .types
+            .into_iter()
+            .map(DbMediaKind::from)
+            .collect()
     };
 
     let now = Utc::now().naive_utc();
@@ -167,15 +268,36 @@ pub async fn create_addon(
         updated_at: now,
     };
 
-    addon.insert(&state.ctx.db).await?;
+    addon
+        .insert(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
     state
         .ctx
         .addons
-        .reload(&state.ctx.db, &state.ctx.config)
+        .reload(
+            &state
+                .ctx
+                .db,
+            &state
+                .ctx
+                .config,
+        )
         .await?;
     Ok((
         StatusCode::CREATED,
-        Json(addon_to_dto(addon, &state.ctx.config).await),
+        Json(
+            addon_to_dto(
+                addon,
+                &state
+                    .ctx
+                    .config,
+            )
+            .await,
+        ),
     ))
 }
 
@@ -187,9 +309,14 @@ pub async fn update_addon(
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateAddonRequest>,
 ) -> Result<Json<AddonDto>> {
-    let mut addon = Addon::get(&state.ctx.db, id)
-        .await?
-        .context_not_found("Addon not found")?;
+    let mut addon = Addon::get(
+        &state
+            .ctx
+            .db,
+        id,
+    )
+    .await?
+    .context_not_found("Addon not found")?;
 
     if let Some(name) = payload.name {
         addon.name = name;
@@ -198,7 +325,10 @@ pub async fn update_addon(
         addon.resources = resources;
     }
     if let Some(types) = payload.types {
-        addon.types = types.into_iter().map(DbMediaKind::from).collect();
+        addon.types = types
+            .into_iter()
+            .map(DbMediaKind::from)
+            .collect();
     }
     if let Some(enabled) = payload.enabled {
         addon.enabled = enabled;
@@ -211,25 +341,73 @@ pub async fn update_addon(
     let presets = registered_presets();
     let preset = presets
         .iter()
-        .find(|p| p.id() == addon.preset.kind)
-        .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", addon.preset.kind))
+        .find(|p| {
+            p.id()
+                == addon
+                    .preset
+                    .kind
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown addon kind: {}",
+                addon
+                    .preset
+                    .kind
+            )
+        })
         .context_bad_request("Unknown addon kind")?;
     if let Some(config) = payload.config {
-        addon.preset.config = preset
-            .normalize_cfg(config, &state.ctx.config)
+        addon
+            .preset
+            .config = preset
+            .normalize_cfg(
+                config,
+                &state
+                    .ctx
+                    .config,
+            )
             .context_bad_request("Invalid addon configuration")?;
     }
     preset
-        .from_cfg(addon.id, &addon.preset.config, &state.ctx.config)
+        .from_cfg(
+            addon.id,
+            &addon
+                .preset
+                .config,
+            &state
+                .ctx
+                .config,
+        )
         .context_bad_request("Invalid addon configuration")?;
 
-    addon.update(&state.ctx.db).await?;
+    addon
+        .update(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
     state
         .ctx
         .addons
-        .reload(&state.ctx.db, &state.ctx.config)
+        .reload(
+            &state
+                .ctx
+                .db,
+            &state
+                .ctx
+                .config,
+        )
         .await?;
-    Ok(Json(addon_to_dto(addon, &state.ctx.config).await))
+    Ok(Json(
+        addon_to_dto(
+            addon,
+            &state
+                .ctx
+                .config,
+        )
+        .await,
+    ))
 }
 
 /// Delete an addon instance.
@@ -239,29 +417,60 @@ pub async fn delete_addon(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
-    let addon_row = Addon::get(&state.ctx.db, id)
-        .await?
-        .context_not_found("Addon not found")?;
+    let addon_row = Addon::get(
+        &state
+            .ctx
+            .db,
+        id,
+    )
+    .await?
+    .context_not_found("Addon not found")?;
 
     // Purge the addon's index (removes e.g. IPTV channels) before deleting.
-    if let Some(runtime) = state.ctx.addons.get(id).await {
-        if let Err(e) = runtime.kind.purge_index(&state.ctx, &addon_row).await {
+    if let Some(runtime) = state
+        .ctx
+        .addons
+        .get(id)
+        .await
+    {
+        if let Err(e) = runtime
+            .kind
+            .purge_index(&state.ctx, &addon_row)
+            .await
+        {
             tracing::warn!(addon = %id, error = %e, "purge_index failed on addon delete");
         }
     }
 
-    Addon::delete(&state.ctx.db, id).await?;
+    Addon::delete(
+        &state
+            .ctx
+            .db,
+        id,
+    )
+    .await?;
     state
         .ctx
         .addons
-        .reload(&state.ctx.db, &state.ctx.config)
+        .reload(
+            &state
+                .ctx
+                .db,
+            &state
+                .ctx
+                .config,
+        )
         .await?;
 
     // Remove catalog memberships for this addon so items are no longer
     // associated with catalogs that no longer exist.
     if let Err(e) = sqlx::query("DELETE FROM media_catalog_items WHERE addon_id = ?")
         .bind(id.to_string())
-        .execute(&state.ctx.db)
+        .execute(
+            &state
+                .ctx
+                .db,
+        )
         .await
     {
         tracing::warn!(addon = %id, error = %e, "failed to clean up catalog memberships on addon delete");
@@ -278,9 +487,14 @@ pub async fn get_addon_catalogs(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<AddonCatalogDto>>> {
-    let addon_row = Addon::get(&state.ctx.db, id)
-        .await?
-        .context_not_found("Addon not found")?;
+    let addon_row = Addon::get(
+        &state
+            .ctx
+            .db,
+        id,
+    )
+    .await?
+    .context_not_found("Addon not found")?;
 
     let catalog = state
         .ctx
@@ -302,21 +516,28 @@ pub async fn get_addon_catalogs(
         .iter()
         .map(|cat_info| {
             let full_id = make_media_id(id, &cat_info.provider_catalog_id);
-            let local_id = full_id.strip_prefix(&prefix).unwrap_or(&full_id);
-            let state_entry = states.get(local_id).cloned().unwrap_or_else(|| {
-                crate::addons::CatalogState {
+            let local_id = full_id
+                .strip_prefix(&prefix)
+                .unwrap_or(&full_id);
+            let state_entry = states
+                .get(local_id)
+                .cloned()
+                .unwrap_or_else(|| crate::addons::CatalogState {
                     enabled: cat_info.default_enabled,
                     max_items: cat_info.default_max_items,
                     tags: vec![],
                     create_collection: false,
-                }
-            });
+                });
             AddonCatalogDto {
                 catalog_id: full_id,
-                name: cat_info.name.clone(),
+                name: cat_info
+                    .name
+                    .clone(),
                 enabled: state_entry.enabled,
                 max_items: state_entry.max_items,
-                tags: state_entry.tags.clone(),
+                tags: state_entry
+                    .tags
+                    .clone(),
                 create_collection: state_entry.create_collection,
             }
         })
@@ -333,9 +554,14 @@ pub async fn update_addon_catalogs(
     Path(id): Path<Uuid>,
     Json(payload): Json<Vec<UpdateAddonCatalogRequest>>,
 ) -> Result<StatusCode> {
-    let mut addon = Addon::get(&state.ctx.db, id)
-        .await?
-        .context_not_found("Addon not found")?;
+    let mut addon = Addon::get(
+        &state
+            .ctx
+            .db,
+        id,
+    )
+    .await?
+    .context_not_found("Addon not found")?;
 
     let prefix = format!("addon:{id}:");
     let mut states = addon.catalog_states();
@@ -346,18 +572,26 @@ pub async fn update_addon_catalogs(
             .strip_prefix(&prefix)
             .unwrap_or(&req.catalog_id)
             .to_string();
-        let new_tags = req.tags.clone().unwrap_or_else(|| {
-            states
-                .get(&local_id)
-                .map(|s| s.tags.clone())
-                .unwrap_or_default()
-        });
-        let new_create_collection = req.create_collection.unwrap_or_else(|| {
-            states
-                .get(&local_id)
-                .map(|s| s.create_collection)
-                .unwrap_or(false)
-        });
+        let new_tags = req
+            .tags
+            .clone()
+            .unwrap_or_else(|| {
+                states
+                    .get(&local_id)
+                    .map(|s| {
+                        s.tags
+                            .clone()
+                    })
+                    .unwrap_or_default()
+            });
+        let new_create_collection = req
+            .create_collection
+            .unwrap_or_else(|| {
+                states
+                    .get(&local_id)
+                    .map(|s| s.create_collection)
+                    .unwrap_or(false)
+            });
         states.insert(
             local_id.clone(),
             crate::addons::CatalogState {
@@ -381,7 +615,11 @@ pub async fn update_addon_catalogs(
             .bind(tag)
             .bind(&addon_id_str)
             .bind(&local_id)
-            .execute(&state.ctx.db)
+            .execute(
+                &state
+                    .ctx
+                    .db,
+            )
             .await
             {
                 tracing::warn!(addon = %id, catalog = %local_id, tag = %tag, error = %e, "failed to apply catalog tag");
@@ -394,20 +632,24 @@ pub async fn update_addon_catalogs(
             let collection_id = Uuid::new_v5(&id, local_id.as_bytes());
 
             // Get catalog name and media kind (fall back to local_id if addon isn't loaded yet).
-            let (catalog_name, catalog_media_kind) =
-                if let Some(kind) = state.ctx.addons.get_catalog(id).await {
-                    kind.catalog_list(&state.ctx)
-                        .await
-                        .ok()
-                        .and_then(|list| {
-                            list.into_iter()
-                                .find(|c| c.provider_catalog_id == local_id)
-                                .map(|c| (c.name, c.collection_media_kind))
-                        })
-                        .unwrap_or_else(|| (local_id.clone(), None))
-                } else {
-                    (local_id.clone(), None)
-                };
+            let (catalog_name, catalog_media_kind) = if let Some(kind) = state
+                .ctx
+                .addons
+                .get_catalog(id)
+                .await
+            {
+                kind.catalog_list(&state.ctx)
+                    .await
+                    .ok()
+                    .and_then(|list| {
+                        list.into_iter()
+                            .find(|c| c.provider_catalog_id == local_id)
+                            .map(|c| (c.name, c.collection_media_kind))
+                    })
+                    .unwrap_or_else(|| (local_id.clone(), None))
+            } else {
+                (local_id.clone(), None)
+            };
 
             // Insert the collection row only if it doesn't exist yet.
             // Using INSERT OR IGNORE so user edits (description, images, etc.)
@@ -436,12 +678,18 @@ pub async fn update_addon_catalogs(
             )
             .bind(&addon_id_str)
             .bind(&local_id)
-            .fetch_all(&state.ctx.db)
+            .fetch_all(
+                &state
+                    .ctx
+                    .db,
+            )
             .await
             .unwrap_or_default();
 
             if let Err(e) = crate::db::MediaRelation::replace_collection_items(
-                &state.ctx.db,
+                &state
+                    .ctx
+                    .db,
                 &collection_id,
                 &media_ids,
             )
@@ -453,11 +701,24 @@ pub async fn update_addon_catalogs(
     }
 
     addon.set_catalog_states(states);
-    addon.update(&state.ctx.db).await?;
+    addon
+        .update(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
     state
         .ctx
         .addons
-        .reload(&state.ctx.db, &state.ctx.config)
+        .reload(
+            &state
+                .ctx
+                .db,
+            &state
+                .ctx
+                .config,
+        )
         .await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -482,16 +743,29 @@ mod test {
         let (server, _ctx, token) = authenticated_server().await;
         let (h, v) = auth(&token);
 
-        let resp = server.get("/addon-kinds").add_header(h, v).await;
+        let resp = server
+            .get("/addon-kinds")
+            .add_header(h, v)
+            .await;
         resp.assert_status_ok();
 
         let kinds: Vec<AddonMetadata> = resp.json();
         assert!(
-            kinds.iter().any(|k| k.id == "stremio"),
+            kinds
+                .iter()
+                .any(|k| k.id == "stremio"),
             "stremio kind should be registered"
         );
-        let stremio = kinds.iter().find(|k| k.id == "stremio").unwrap();
-        assert_eq!(stremio.options.len(), 1);
+        let stremio = kinds
+            .iter()
+            .find(|k| k.id == "stremio")
+            .unwrap();
+        assert_eq!(
+            stremio
+                .options
+                .len(),
+            1
+        );
         assert_eq!(stremio.options[0].id, "manifest_url");
     }
 
@@ -528,16 +802,26 @@ mod test {
 
         // Registry should reflect the new addon immediately.
         assert!(
-            ctx.0.addons.get(created.id).await.is_some(),
+            ctx.0
+                .addons
+                .get(created.id)
+                .await
+                .is_some(),
             "registry did not pick up the new addon"
         );
 
         // List shows exactly one more than baseline.
-        let list_resp = server.get("/addons").add_header(h.clone(), v.clone()).await;
+        let list_resp = server
+            .get("/addons")
+            .add_header(h.clone(), v.clone())
+            .await;
         list_resp.assert_status_ok();
         let list: Vec<AddonDto> = list_resp.json();
         assert_eq!(list.len(), initial_count + 1);
-        assert!(list.iter().any(|a| a.id == created.id));
+        assert!(
+            list.iter()
+                .any(|a| a.id == created.id)
+        );
 
         // Delete.
         let del_resp = server
@@ -546,15 +830,22 @@ mod test {
             .await;
         del_resp.assert_status(http::StatusCode::NO_CONTENT);
 
-        let list_after: Vec<AddonDto> =
-            server.get("/addons").add_header(h, v).await.json();
+        let list_after: Vec<AddonDto> = server
+            .get("/addons")
+            .add_header(h, v)
+            .await
+            .json();
         assert_eq!(
             list_after.len(),
             initial_count,
             "addon should be gone after delete"
         );
         assert!(
-            ctx.0.addons.get(created.id).await.is_none(),
+            ctx.0
+                .addons
+                .get(created.id)
+                .await
+                .is_none(),
             "registry should have dropped the deleted addon"
         );
     }

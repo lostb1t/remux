@@ -32,7 +32,11 @@ impl Task for ClearImageCacheTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        let cache_dir = ctx.config.data_dir.join("cache").join("images");
+        let cache_dir = ctx
+            .config
+            .data_dir
+            .join("cache")
+            .join("images");
         let mut removed = 0usize;
 
         for entry in super::iter_dir(&cache_dir) {

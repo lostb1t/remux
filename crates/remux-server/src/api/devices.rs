@@ -21,7 +21,13 @@ pub async fn delete_device(
     _session: auth::AdminSession,
     Query(q): Query<DeleteDeviceQuery>,
 ) -> Result<StatusCode> {
-    auth::Device::delete_by_id(&state.ctx.db, &q.id).await?;
+    auth::Device::delete_by_id(
+        &state
+            .ctx
+            .db,
+        &q.id,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -40,9 +46,21 @@ pub async fn get_devices(
 ) -> Result<impl IntoResponse> {
     // Get all devices from the database
     let devices = if let Some(user_id) = params.user_id {
-        auth::Device::get_by_user_id(&state.ctx.db, &user_id).await?
+        auth::Device::get_by_user_id(
+            &state
+                .ctx
+                .db,
+            &user_id,
+        )
+        .await?
     } else {
-        auth::Device::get_all(&state.ctx.db, None).await?
+        auth::Device::get_all(
+            &state
+                .ctx
+                .db,
+            None,
+        )
+        .await?
     };
 
     // Convert to Jellyfin DeviceInfo format

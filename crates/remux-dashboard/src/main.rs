@@ -83,15 +83,22 @@ impl std::fmt::Debug for AppState {
 
 impl PartialEq for AppState {
     fn eq(&self, other: &Self) -> bool {
-        self.server.id == other.server.id
+        self.server
+            .id
+            == other
+                .server
+                .id
     }
 }
 
 impl AppState {
     fn new(server: StoredServer) -> Self {
         let device_id = get_or_create_device_id();
-        let auth =
-            JellyfinAuth::new(&device_id).with_token(server.access_token.clone());
+        let auth = JellyfinAuth::new(&device_id).with_token(
+            server
+                .access_token
+                .clone(),
+        );
         let client = remux_sdks::remux::client(&server.manual_address)
             .unwrap_or_else(|_| panic!("invalid server url: {}", server.manual_address))
             .with_auth(auth);
@@ -102,24 +109,37 @@ impl AppState {
 /// Extracts HH:MM from a DateTime Display string ("2026-02-26 18:30:38 UTC").
 fn fmt_time(dt: impl std::fmt::Display) -> String {
     let s = dt.to_string();
-    s.chars().skip(11).take(5).collect()
+    s.chars()
+        .skip(11)
+        .take(5)
+        .collect()
 }
 
 fn get_origin() -> String {
     web_sys::window()
-        .and_then(|w| w.location().origin().ok())
+        .and_then(|w| {
+            w.location()
+                .origin()
+                .ok()
+        })
         .unwrap_or_default()
 }
 
 fn browser_metadata_country_code() -> String {
     web_sys::window()
-        .and_then(|w| w.navigator().language())
+        .and_then(|w| {
+            w.navigator()
+                .language()
+        })
         .and_then(|language| {
             language
                 .split(['-', '_'])
                 .skip(1)
                 .filter(|part| {
-                    part.len() == 2 && part.chars().all(|c| c.is_ascii_alphabetic())
+                    part.len() == 2
+                        && part
+                            .chars()
+                            .all(|c| c.is_ascii_alphabetic())
                 })
                 .last()
                 .map(|part| part.to_ascii_uppercase())
@@ -137,7 +157,10 @@ fn get_or_create_device_id() -> String {
 
 fn get_stored_server() -> Option<StoredServer> {
     let creds: StoredCredentials = LocalStorage::get(CREDENTIALS_KEY).ok()?;
-    creds.servers.into_iter().next()
+    creds
+        .servers
+        .into_iter()
+        .next()
 }
 
 fn store_credentials(server: StoredServer) {
@@ -223,7 +246,10 @@ fn Login(on_login: EventHandler) -> Element {
         spawn(async move {
             let origin = get_origin();
             let reachable = match remux_sdks::remux::client(&origin) {
-                Ok(c) => c.execute(PublicSystemInfo::default()).await.is_ok(),
+                Ok(c) => c
+                    .execute(PublicSystemInfo::default())
+                    .await
+                    .is_ok(),
                 Err(_) => false,
             };
             server_url.set(Some(if reachable { origin } else { String::new() }));
@@ -233,10 +259,16 @@ fn Login(on_login: EventHandler) -> Element {
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
 
-        let url = match server_url.peek().clone() {
+        let url = match server_url
+            .peek()
+            .clone()
+        {
             Some(u) if !u.is_empty() => u,
             _ => {
-                let h = host_input.peek().trim().to_string();
+                let h = host_input
+                    .peek()
+                    .trim()
+                    .to_string();
                 if h.is_empty() {
                     error.set(Some("Please enter the server URL".into()));
                     return;
@@ -245,8 +277,12 @@ fn Login(on_login: EventHandler) -> Element {
             }
         };
 
-        let u = username.peek().clone();
-        let p = password.peek().clone();
+        let u = username
+            .peek()
+            .clone();
+        let p = password
+            .peek()
+            .clone();
         let device_id = get_or_create_device_id();
 
         loading.set(true);
@@ -278,7 +314,9 @@ fn Login(on_login: EventHandler) -> Element {
                             name: "Remux".to_string(),
                             manual_address: url,
                             access_token: token,
-                            user_id: user.id.to_string(),
+                            user_id: user
+                                .id
+                                .to_string(),
                             date_last_accessed: 0.0,
                         });
                         on_login.call(());
@@ -377,9 +415,14 @@ fn ServerInfoCard(app_state: AppState) -> Element {
     let mut error = use_signal(|| Option::<String>::None);
 
     use_effect(move || {
-        let client = app_state.client.clone();
+        let client = app_state
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(PublicSystemInfo::default()).await {
+            match client
+                .execute(PublicSystemInfo::default())
+                .await
+            {
                 Ok(info) => {
                     server_info.set(Some(info));
                     error.set(None);
@@ -426,9 +469,14 @@ fn MediaStatsCard(app_state: AppState) -> Element {
     let mut error = use_signal(|| Option::<String>::None);
 
     use_effect(move || {
-        let client = app_state.client.clone();
+        let client = app_state
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(GetItemCounts).await {
+            match client
+                .execute(GetItemCounts)
+                .await
+            {
                 Ok(c) => {
                     counts.set(Some(c));
                     error.set(None);
@@ -468,7 +516,9 @@ fn SessionsCard(app_state: AppState) -> Element {
     let mut error = use_signal(|| Option::<String>::None);
 
     use_effect(move || {
-        let client = app_state.client.clone();
+        let client = app_state
+            .client
+            .clone();
         spawn(async move {
             match client
                 .execute(GetSessions {
@@ -545,26 +595,38 @@ fn trigger_label(t: &TaskTriggerInfo) -> String {
     let kind = t
         .r#type
         .as_deref()
-        .and_then(|s| s.parse::<TaskTriggerInfoType>().ok());
+        .and_then(|s| {
+            s.parse::<TaskTriggerInfoType>()
+                .ok()
+        });
     match kind {
         Some(TaskTriggerInfoType::StartupTrigger) => "On server startup".into(),
         Some(TaskTriggerInfoType::DailyTrigger) => {
-            let ticks = t.time_of_day_ticks.unwrap_or(0);
+            let ticks = t
+                .time_of_day_ticks
+                .unwrap_or(0);
             let total_secs = ticks / 10_000_000;
             let hour = total_secs / 3600;
             let min = (total_secs % 3600) / 60;
             format!("Daily at {:02}:{:02}", hour, min)
         }
         Some(TaskTriggerInfoType::WeeklyTrigger) => {
-            let ticks = t.time_of_day_ticks.unwrap_or(0);
+            let ticks = t
+                .time_of_day_ticks
+                .unwrap_or(0);
             let total_secs = ticks / 10_000_000;
             let hour = total_secs / 3600;
             let min = (total_secs % 3600) / 60;
-            let day = t.day_of_week.as_deref().unwrap_or("Sunday");
+            let day = t
+                .day_of_week
+                .as_deref()
+                .unwrap_or("Sunday");
             format!("Weekly on {} at {:02}:{:02}", day, hour, min)
         }
         Some(TaskTriggerInfoType::IntervalTrigger) => {
-            let ticks = t.interval_ticks.unwrap_or(0);
+            let ticks = t
+                .interval_ticks
+                .unwrap_or(0);
             if ticks % 36_000_000_000 == 0 {
                 format!("Every {} hour(s)", ticks / 36_000_000_000)
             } else {
@@ -582,7 +644,11 @@ fn TaskTriggersModal(
     on_done: EventHandler,
     on_cancel: EventHandler,
 ) -> Element {
-    let mut triggers = use_signal(|| task.triggers.clone().unwrap_or_default());
+    let mut triggers = use_signal(|| {
+        task.triggers
+            .clone()
+            .unwrap_or_default()
+    });
     let mut new_type = use_signal(|| TaskTriggerInfoType::DailyTrigger);
     let mut new_hour = use_signal(|| "0".to_string());
     let mut new_min = use_signal(|| "0".to_string());
@@ -592,8 +658,12 @@ fn TaskTriggersModal(
     let mut saving = use_signal(|| false);
     let mut error: Signal<Option<String>> = use_signal(|| None);
 
-    let task_id = task.id.clone();
-    let task_name = task.name.clone();
+    let task_id = task
+        .id
+        .clone();
+    let task_name = task
+        .name
+        .clone();
 
     rsx! {
         h2 { class: "modal-title", "Triggers — {task_name}" }
@@ -810,7 +880,9 @@ fn TasksCard(
     use_effect(move || {
         let _r = *refresh.read(); // only signal read — re-runs on start/stop, not on poll updates
         loading.set(true);
-        let client = app_state_effect.client.clone();
+        let client = app_state_effect
+            .client
+            .clone();
         spawn(async move {
             match client
                 .execute(GetScheduledTasks {
@@ -831,7 +903,9 @@ fn TasksCard(
     // Background polling — silently refreshes task list every 3 s
     let app_state_poll = app_state.clone();
     use_effect(move || {
-        let client = app_state_poll.client.clone();
+        let client = app_state_poll
+            .client
+            .clone();
         spawn(async move {
             loop {
                 gloo_timers::future::sleep(std::time::Duration::from_secs(5)).await;
@@ -949,10 +1023,18 @@ fn TaskPageRow(
     on_edit: EventHandler<TaskInfo>,
     #[props(default = true)] show_category: bool,
 ) -> Element {
-    let start_id = task.id.clone();
-    let stop_id = task.id.clone();
-    let c_start = app_state.client.clone();
-    let c_stop = app_state.client.clone();
+    let start_id = task
+        .id
+        .clone();
+    let stop_id = task
+        .id
+        .clone();
+    let c_start = app_state
+        .client
+        .clone();
+    let c_stop = app_state
+        .client
+        .clone();
     let task_for_edit = task.clone();
 
     rsx! {
@@ -988,14 +1070,20 @@ fn TaskRow(
     #[props(optional)] on_start: Option<EventHandler>,
     #[props(optional)] on_stop: Option<EventHandler>,
 ) -> Element {
-    let state = task.state.as_deref().unwrap_or("Idle");
+    let state = task
+        .state
+        .as_deref()
+        .unwrap_or("Idle");
     let is_running = state == "Running";
 
     // Last result status shown when idle
     let last_status = task
         .last_execution_result
         .as_ref()
-        .and_then(|r| r.status.as_deref())
+        .and_then(|r| {
+            r.status
+                .as_deref()
+        })
         .unwrap_or("");
 
     let display_state = if is_running { state } else { last_status };
@@ -1516,7 +1604,9 @@ fn CollectionsPage(app_state: AppState) -> Element {
     use_effect(move || {
         let _r = *refresh.read();
         loading.set(true);
-        let client = app_state_effect.client.clone();
+        let client = app_state_effect
+            .client
+            .clone();
         spawn(async move {
             match client
                 .execute(GetItems {
@@ -1721,20 +1811,29 @@ fn CollectionForm(
     let mut title = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|f| f.name.clone())
+            .and_then(|f| {
+                f.name
+                    .clone()
+            })
             .unwrap_or_default()
     });
     let mut promoted = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|f| f.remux.as_ref())
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
             .and_then(|r| r.promoted)
             .unwrap_or(false)
     });
     let mut col_type = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|f| f.collection_type.as_ref())
+            .and_then(|f| {
+                f.collection_type
+                    .as_ref()
+            })
             .map(|ct| match ct {
                 remux_sdks::remux::CollectionType::Movies => "movies".to_string(),
                 remux_sdks::remux::CollectionType::Tvshows => "tvshows".to_string(),
@@ -1747,8 +1846,14 @@ fn CollectionForm(
     let mut col_kind = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|f| f.remux.as_ref())
-            .and_then(|r| r.collection_kind.as_ref())
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
+            .and_then(|r| {
+                r.collection_kind
+                    .as_ref()
+            })
             .map(|k| k.to_string())
             .unwrap_or_else(|| "smart".to_string())
     });
@@ -1756,37 +1861,68 @@ fn CollectionForm(
     let sf_match: Signal<FilterMatchMode> = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|f| f.remux.as_ref())
-            .and_then(|r| r.smart_filter.as_ref())
-            .map(|sf| sf.match_mode.clone())
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
+            .and_then(|r| {
+                r.smart_filter
+                    .as_ref()
+            })
+            .map(|sf| {
+                sf.match_mode
+                    .clone()
+            })
             .unwrap_or(FilterMatchMode::All)
     });
     let sf_rules: Signal<Vec<FilterRule>> = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|f| f.remux.as_ref())
-            .and_then(|r| r.smart_filter.as_ref())
-            .map(|sf| sf.rules.clone())
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
+            .and_then(|r| {
+                r.smart_filter
+                    .as_ref()
+            })
+            .map(|sf| {
+                sf.rules
+                    .clone()
+            })
             .unwrap_or_default()
     });
     let tags: Signal<Vec<String>> = use_signal(|| {
         existing
             .as_ref()
-            .map(|f| f.tags.clone())
+            .map(|f| {
+                f.tags
+                    .clone()
+            })
             .unwrap_or_default()
     });
-    let mut sort_order = use_signal(|| existing.as_ref().and_then(|f| f.index_number));
+    let mut sort_order = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|f| f.index_number)
+    });
     let mut latest_auto_unplayed = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|f| f.remux.as_ref())
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
             .and_then(|r| r.latest_auto_unplayed)
             .unwrap_or(false)
     });
     let mut latest_sort_digital = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|f| f.remux.as_ref())
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
             .and_then(|r| r.latest_sort_digital)
             .unwrap_or(false)
     });
@@ -1796,10 +1932,23 @@ fn CollectionForm(
     // Image upload state (edit mode only)
     let existing_image_tag = existing
         .as_ref()
-        .and_then(|f| f.image_tags.as_ref())
-        .and_then(|t| t.primary.clone());
-    let existing_item_id = existing.as_ref().map(|f| f.id.to_string());
-    let server_base = app_state.server.manual_address.clone();
+        .and_then(|f| {
+            f.image_tags
+                .as_ref()
+        })
+        .and_then(|t| {
+            t.primary
+                .clone()
+        });
+    let existing_item_id = existing
+        .as_ref()
+        .map(|f| {
+            f.id.to_string()
+        });
+    let server_base = app_state
+        .server
+        .manual_address
+        .clone();
     let current_image_url = existing_item_id
         .as_ref()
         .zip(existing_image_tag.as_ref())
@@ -1807,36 +1956,61 @@ fn CollectionForm(
     let mut pending_image_bytes: Signal<Option<Vec<u8>>> = use_signal(|| None);
     let mut pending_image_preview: Signal<Option<String>> = use_signal(|| None);
     let mut has_image = use_signal(|| existing_image_tag.is_some());
-    let client_for_delete = app_state.client.clone();
+    let client_for_delete = app_state
+        .client
+        .clone();
     let app_state_delete = app_state.clone();
     let delete_name = existing
         .as_ref()
-        .and_then(|f| f.name.clone())
+        .and_then(|f| {
+            f.name
+                .clone()
+        })
         .unwrap_or_default();
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state.client.clone();
-        let item_id = existing.as_ref().map(|f| f.id.to_string());
-        let name = title.peek().clone();
-        let ct = col_type.peek().clone();
-        let ck = col_kind.peek().clone();
+        let client = app_state
+            .client
+            .clone();
+        let item_id = existing
+            .as_ref()
+            .map(|f| {
+                f.id.to_string()
+            });
+        let name = title
+            .peek()
+            .clone();
+        let ct = col_type
+            .peek()
+            .clone();
+        let ck = col_kind
+            .peek()
+            .clone();
         let prm = *promoted.peek();
         let so = *sort_order.peek();
         let auto_unplayed = *latest_auto_unplayed.peek();
         let sort_digital = *latest_sort_digital.peek();
-        let current_tags = tags.peek().clone();
+        let current_tags = tags
+            .peek()
+            .clone();
         let smart_filter_payload = if ck == "smart" {
             Some(CollectionFilter {
-                match_mode: sf_match.peek().clone(),
-                rules: sf_rules.peek().clone(),
+                match_mode: sf_match
+                    .peek()
+                    .clone(),
+                rules: sf_rules
+                    .peek()
+                    .clone(),
             })
         } else {
             None
         };
         saving.set(true);
         err.set(None);
-        let pending_bytes = pending_image_bytes.peek().clone();
+        let pending_bytes = pending_image_bytes
+            .peek()
+            .clone();
         spawn(async move {
             let result = if let Some(id) = item_id {
                 let patch = client
@@ -2131,9 +2305,13 @@ fn TagChipInput(tags: Signal<Vec<String>>) -> Element {
     let mut suggestions: Signal<Vec<String>> = use_signal(Vec::new);
     let mut show_dropdown = use_signal(|| false);
 
-    let client_fetch = app_state.client.clone();
+    let client_fetch = app_state
+        .client
+        .clone();
     use_effect(move || {
-        let q = input_text.read().clone();
+        let q = input_text
+            .read()
+            .clone();
         let client = client_fetch.clone();
         spawn(async move {
             if q.is_empty() {
@@ -2141,7 +2319,10 @@ fn TagChipInput(tags: Signal<Vec<String>>) -> Element {
                 show_dropdown.set(false);
                 return;
             }
-            match client.execute(GetTagSuggestions { search_term: q }).await {
+            match client
+                .execute(GetTagSuggestions { search_term: q })
+                .await
+            {
                 Ok(v) => {
                     show_dropdown.set(!v.is_empty());
                     suggestions.set(v);
@@ -2152,9 +2333,16 @@ fn TagChipInput(tags: Signal<Vec<String>>) -> Element {
     });
 
     let mut add_tag = move |tag: String| {
-        let tag = tag.trim().to_string();
-        if !tag.is_empty() && !tags.read().contains(&tag) {
-            tags.write().push(tag);
+        let tag = tag
+            .trim()
+            .to_string();
+        if !tag.is_empty()
+            && !tags
+                .read()
+                .contains(&tag)
+        {
+            tags.write()
+                .push(tag);
         }
         input_text.set(String::new());
         suggestions.set(vec![]);
@@ -2271,7 +2459,10 @@ async fn fetch_suggestions(
                 })
                 .await
             {
-                Ok(tags) => tags.into_iter().map(|t| (t.clone(), t)).collect(),
+                Ok(tags) => tags
+                    .into_iter()
+                    .map(|t| (t.clone(), t))
+                    .collect(),
                 Err(_) => vec![],
             }
         }
@@ -2282,18 +2473,26 @@ async fn fetch_suggestions(
                 })
                 .await
             {
-                Ok(v) => v.into_iter().map(|s| (s.clone(), s)).collect(),
+                Ok(v) => v
+                    .into_iter()
+                    .map(|s| (s.clone(), s))
+                    .collect(),
                 Err(_) => vec![],
             }
         }
         "country" => {
-            match client.execute(GetCountries).await {
+            match client
+                .execute(GetCountries)
+                .await
+            {
                 Ok(countries) => {
                     let q = query.to_lowercase();
                     countries
                         .into_iter()
                         .filter(|c| {
-                            c.name.to_lowercase().contains(&q)
+                            c.name
+                                .to_lowercase()
+                                .contains(&q)
                                 || c.two_letter_iso_region_name
                                     .to_lowercase()
                                     .contains(&q)
@@ -2444,7 +2643,10 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
     let set_values = || -> Vec<String> {
         value_str
             .split(',')
-            .map(|s| s.trim().to_string())
+            .map(|s| {
+                s.trim()
+                    .to_string()
+            })
             .filter(|s| !s.is_empty())
             .collect()
     };
@@ -2452,19 +2654,27 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
     match field {
         "year" => FilterRule::Year {
             op: num_op,
-            value: value_str.parse().unwrap_or(0),
+            value: value_str
+                .parse()
+                .unwrap_or(0),
         },
         "rating_audience" => FilterRule::RatingAudience {
             op: num_op,
-            value: value_str.parse().unwrap_or(0.0),
+            value: value_str
+                .parse()
+                .unwrap_or(0.0),
         },
         "rating_critic" => FilterRule::RatingCritic {
             op: num_op,
-            value: value_str.parse().unwrap_or(0.0),
+            value: value_str
+                .parse()
+                .unwrap_or(0.0),
         },
         "parental_rating" => FilterRule::ParentalRating {
             op: NumericOp::Lt,
-            value: value_str.parse().unwrap_or(0),
+            value: value_str
+                .parse()
+                .unwrap_or(0),
         },
         "certification" => FilterRule::Certification {
             op: set_op,
@@ -2572,9 +2782,13 @@ fn ChipInput(
 
     // Re-fetch suggestions whenever the typed text changes.
     let fk_fetch = field_key.clone();
-    let client_fetch = app_state.client.clone();
+    let client_fetch = app_state
+        .client
+        .clone();
     use_effect(move || {
-        let q = input_text.read().clone();
+        let q = input_text
+            .read()
+            .clone();
         let fk = fk_fetch.clone();
         let client = client_fetch.clone();
         spawn(async move {
@@ -2702,9 +2916,14 @@ fn FilterRuleRow(
     let app_state = use_context::<AppState>();
     let mut parental_ratings: Signal<Vec<ParentalRating>> = use_signal(Vec::new);
     use_effect(move || {
-        let client = app_state.client.clone();
+        let client = app_state
+            .client
+            .clone();
         spawn(async move {
-            if let Ok(ratings) = client.execute(GetParentalRatings).await {
+            if let Ok(ratings) = client
+                .execute(GetParentalRatings)
+                .await
+            {
                 parental_ratings.set(ratings);
             }
         });
@@ -2727,8 +2946,16 @@ fn FilterRuleRow(
     let grouped_ratings: Vec<(i32, String)> = {
         let ratings = parental_ratings.read();
         let mut groups: Vec<(i32, i32, String)> = vec![];
-        for rating in ratings.iter().filter(|r| r.value.is_some()) {
-            let score = rating.value.unwrap();
+        for rating in ratings
+            .iter()
+            .filter(|r| {
+                r.value
+                    .is_some()
+            })
+        {
+            let score = rating
+                .value
+                .unwrap();
             let sub = rating
                 .rating_score
                 .as_ref()
@@ -2736,12 +2963,20 @@ fn FilterRuleRow(
                 .unwrap_or(0);
             if let Some(last) = groups.last_mut() {
                 if last.0 == score && last.1 == sub {
-                    last.2.push('/');
-                    last.2.push_str(&rating.name);
+                    last.2
+                        .push('/');
+                    last.2
+                        .push_str(&rating.name);
                     continue;
                 }
             }
-            groups.push((score, sub, rating.name.clone()));
+            groups.push((
+                score,
+                sub,
+                rating
+                    .name
+                    .clone(),
+            ));
         }
         groups
             .into_iter()
@@ -2911,12 +3146,20 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
     // Load distinct country codes and groups once on mount
     let app_state_countries = app_state.clone();
     use_effect(move || {
-        let client = app_state_countries.client.clone();
+        let client = app_state_countries
+            .client
+            .clone();
         spawn(async move {
-            if let Ok(cs) = client.execute(GetIptvChannelCountries).await {
+            if let Ok(cs) = client
+                .execute(GetIptvChannelCountries)
+                .await
+            {
                 countries.set(cs);
             }
-            if let Ok(gs) = client.execute(GetIptvChannelGroups).await {
+            if let Ok(gs) = client
+                .execute(GetIptvChannelGroups)
+                .await
+            {
                 groups.set(gs);
             }
         });
@@ -2925,13 +3168,25 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
     let app_state_effect = app_state.clone();
     use_effect(move || {
         let p = *page.read();
-        let s = search_committed.read().clone();
-        let ef = enabled_filter.read().clone();
-        let cf = country_filter.read().clone();
-        let gf = group_filter.read().clone();
-        let sm = sort_mode.read().clone();
+        let s = search_committed
+            .read()
+            .clone();
+        let ef = enabled_filter
+            .read()
+            .clone();
+        let cf = country_filter
+            .read()
+            .clone();
+        let gf = group_filter
+            .read()
+            .clone();
+        let sm = sort_mode
+            .read()
+            .clone();
         loading.set(true);
-        let client = app_state_effect.client.clone();
+        let client = app_state_effect
+            .client
+            .clone();
         spawn(async move {
             let enabled = match ef.as_str() {
                 "true" => Some(true),
@@ -2966,7 +3221,9 @@ fn IptvChannelsTab(app_state: AppState) -> Element {
     let total_pages = total_v.div_ceil(PAGE_SIZE as usize) as u32;
 
     let mut do_search = move || {
-        let s = search_input.peek().clone();
+        let s = search_input
+            .peek()
+            .clone();
         search_committed.set(s);
         page.set(0);
     };
@@ -3345,15 +3602,23 @@ fn UsersPage(app_state: AppState) -> Element {
     let mut form_mode: Signal<Option<UserFormMode>> = use_signal(|| None);
 
     // ID of the currently logged-in user (to disable self-delete)
-    let self_id = app_state.server.user_id.clone();
+    let self_id = app_state
+        .server
+        .user_id
+        .clone();
 
     let app_state_effect = app_state.clone();
     use_effect(move || {
         let _r = *refresh.read();
         loading.set(true);
-        let client = app_state_effect.client.clone();
+        let client = app_state_effect
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(GetUsers).await {
+            match client
+                .execute(GetUsers)
+                .await
+            {
                 Ok(list) => {
                     users.set(list);
                     error.set(None);
@@ -3472,13 +3737,19 @@ fn UserForm(
     let mut username = use_signal(|| {
         existing
             .as_ref()
-            .map(|u| u.name.clone())
+            .map(|u| {
+                u.name
+                    .clone()
+            })
             .unwrap_or_default()
     });
     let mut is_admin = use_signal(|| {
         existing
             .as_ref()
-            .map(|u| u.policy.is_administrator)
+            .map(|u| {
+                u.policy
+                    .is_administrator
+            })
             .unwrap_or(false)
     });
     let mut password = use_signal(String::new);
@@ -3488,48 +3759,86 @@ fn UserForm(
     let fr_match: Signal<FilterMatchMode> = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|u| u.policy.filter_rules.as_ref())
-            .map(|f| f.match_mode.clone())
+            .and_then(|u| {
+                u.policy
+                    .filter_rules
+                    .as_ref()
+            })
+            .map(|f| {
+                f.match_mode
+                    .clone()
+            })
             .unwrap_or(FilterMatchMode::All)
     });
     let fr_rules: Signal<Vec<FilterRule>> = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|u| u.policy.filter_rules.as_ref())
-            .map(|f| f.rules.clone())
+            .and_then(|u| {
+                u.policy
+                    .filter_rules
+                    .as_ref()
+            })
+            .map(|f| {
+                f.rules
+                    .clone()
+            })
             .unwrap_or_default()
     });
     let sf_stream_match: Signal<FilterMatchMode> = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|u| u.policy.stream_filter.as_ref())
-            .map(|f| f.match_mode.clone())
+            .and_then(|u| {
+                u.policy
+                    .stream_filter
+                    .as_ref()
+            })
+            .map(|f| {
+                f.match_mode
+                    .clone()
+            })
             .unwrap_or(FilterMatchMode::All)
     });
     let sf_stream_rules: Signal<Vec<StreamRule>> = use_signal(|| {
         existing
             .as_ref()
-            .and_then(|u| u.policy.stream_filter.as_ref())
-            .map(|f| f.rules.clone())
+            .and_then(|u| {
+                u.policy
+                    .stream_filter
+                    .as_ref()
+            })
+            .map(|f| {
+                f.rules
+                    .clone()
+            })
             .unwrap_or_default()
     });
     let mut enable_remote_search = use_signal(|| {
         existing
             .as_ref()
-            .map(|u| u.policy.enable_remote_search)
+            .map(|u| {
+                u.policy
+                    .enable_remote_search
+            })
             .unwrap_or(true)
     });
     let mut max_active_sessions: Signal<i64> = use_signal(|| {
         existing
             .as_ref()
-            .map(|u| u.policy.max_active_sessions)
+            .map(|u| {
+                u.policy
+                    .max_active_sessions
+            })
             .unwrap_or(0)
     });
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let pw = password.peek().clone();
-        let pw2 = password2.peek().clone();
+        let pw = password
+            .peek()
+            .clone();
+        let pw2 = password2
+            .peek()
+            .clone();
         if !pw.is_empty() && pw != pw2 {
             err.set(Some("Passwords do not match".into()));
             return;
@@ -3539,14 +3848,26 @@ fn UserForm(
             return;
         }
 
-        let client = app_state.client.clone();
-        let name = username.peek().clone();
+        let client = app_state
+            .client
+            .clone();
+        let name = username
+            .peek()
+            .clone();
         let admin = *is_admin.peek();
         let user_dto = existing.clone();
-        let rules_snapshot = fr_rules.peek().clone();
-        let match_snapshot = fr_match.peek().clone();
-        let stream_rules_snapshot = sf_stream_rules.peek().clone();
-        let stream_match_snapshot = sf_stream_match.peek().clone();
+        let rules_snapshot = fr_rules
+            .peek()
+            .clone();
+        let match_snapshot = fr_match
+            .peek()
+            .clone();
+        let stream_rules_snapshot = sf_stream_rules
+            .peek()
+            .clone();
+        let stream_match_snapshot = sf_stream_match
+            .peek()
+            .clone();
         let remote_search_snapshot = *enable_remote_search.peek();
         let max_sessions_snapshot = *max_active_sessions.peek();
 
@@ -3571,7 +3892,9 @@ fn UserForm(
             };
             let result: Result<(), remux_sdks::ClientError> = async {
                 if is_edit {
-                    let user = user_dto.as_ref().unwrap();
+                    let user = user_dto
+                        .as_ref()
+                        .unwrap();
                     // Update username
                     let mut updated = user.clone();
                     updated.name = name;
@@ -3582,7 +3905,9 @@ fn UserForm(
                         })
                         .await?;
                     // Update admin flag and filter rules
-                    let mut policy = user.policy.clone();
+                    let mut policy = user
+                        .policy
+                        .clone();
                     policy.is_administrator = admin;
                     policy.filter_rules = filter_rules.clone();
                     policy.stream_filter = stream_filter.clone();
@@ -3605,15 +3930,18 @@ fn UserForm(
                     }
                 } else {
                     // Create user
-                    let new_user =
-                        client.execute(CreateUser { name, password: pw }).await?;
+                    let new_user = client
+                        .execute(CreateUser { name, password: pw })
+                        .await?;
                     if admin
                         || filter_rules.is_some()
                         || stream_filter.is_some()
                         || !remote_search_snapshot
                         || max_sessions_snapshot > 0
                     {
-                        let mut policy = new_user.policy.clone();
+                        let mut policy = new_user
+                            .policy
+                            .clone();
                         policy.is_administrator = admin;
                         policy.filter_rules = filter_rules.clone();
                         policy.stream_filter = stream_filter.clone();
@@ -3791,9 +4119,14 @@ fn ApiKeysPage(app_state: AppState) -> Element {
     use_effect(move || {
         let _r = *refresh.read();
         loading.set(true);
-        let client = app_state_effect.client.clone();
+        let client = app_state_effect
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(GetApiKeys).await {
+            match client
+                .execute(GetApiKeys)
+                .await
+            {
                 Ok(result) => {
                     keys.set(result.items);
                     error.set(None);
@@ -4060,18 +4393,33 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load.client.clone();
+        let client = app_state_load
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(GetSystemConfiguration).await {
+            match client
+                .execute(GetSystemConfiguration)
+                .await
+            {
                 Ok(cfg) => {
-                    server_name.set(cfg.server_name.clone().unwrap_or_default());
+                    server_name.set(
+                        cfg.server_name
+                            .clone()
+                            .unwrap_or_default(),
+                    );
                     metadata_country.set(
                         cfg.metadata_country_code
                             .clone()
                             .unwrap_or_else(|| "US".to_string()),
                     );
-                    catalog_max_items.set(cfg.catalog_max_items.unwrap_or(100));
-                    meta_concurrency.set(cfg.meta_concurrency.unwrap_or(25));
+                    catalog_max_items.set(
+                        cfg.catalog_max_items
+                            .unwrap_or(100),
+                    );
+                    meta_concurrency.set(
+                        cfg.meta_concurrency
+                            .unwrap_or(25),
+                    );
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
@@ -4080,13 +4428,18 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
                             .map(|v| v.join(", "))
                             .unwrap_or_default(),
                     );
-                    quick_connect_enabled
-                        .set(cfg.quick_connect_available.unwrap_or(true));
+                    quick_connect_enabled.set(
+                        cfg.quick_connect_available
+                            .unwrap_or(true),
+                    );
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
             }
-            if let Ok(list) = client.execute(GetCountries).await {
+            if let Ok(list) = client
+                .execute(GetCountries)
+                .await
+            {
                 countries.set(list);
             }
             loading.set(false);
@@ -4095,17 +4448,28 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state.client.clone();
-        let name = server_name.peek().clone();
-        let country = metadata_country.peek().clone();
+        let client = app_state
+            .client
+            .clone();
+        let name = server_name
+            .peek()
+            .clone();
+        let country = metadata_country
+            .peek()
+            .clone();
         let max = *catalog_max_items.peek();
         let concurrency = *meta_concurrency.peek();
         let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
-        let sub_langs_str = subtitle_languages.peek().clone();
+        let sub_langs_str = subtitle_languages
+            .peek()
+            .clone();
         let qc_enabled = *quick_connect_enabled.peek();
 
-        let mut cfg = base_cfg.peek().clone().unwrap_or_default();
+        let mut cfg = base_cfg
+            .peek()
+            .clone()
+            .unwrap_or_default();
         cfg.server_name = Some(name);
         cfg.metadata_country_code = Some(country);
         cfg.quick_connect_available = Some(qc_enabled);
@@ -4116,7 +4480,10 @@ fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.subtitle_languages = Some(
             sub_langs_str
                 .split(',')
-                .map(|s| s.trim().to_lowercase())
+                .map(|s| {
+                    s.trim()
+                        .to_lowercase()
+                })
                 .filter(|s| !s.is_empty())
                 .collect(),
         );
@@ -4327,41 +4694,78 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load.client.clone();
+        let client = app_state_load
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(GetEncodingConfiguration).await {
+            match client
+                .execute(GetEncodingConfiguration)
+                .await
+            {
                 Ok(opts) => {
-                    encoding_preset
-                        .set(opts.encoding_preset.unwrap_or_default().to_string());
-                    auto_detect
-                        .set(opts.auto_detect_hardware_acceleration.unwrap_or(true));
-                    let accel_str =
-                        match opts.hardware_acceleration_type.unwrap_or_default() {
-                            HardwareAccelerationType::None => "none",
-                            HardwareAccelerationType::Vaapi => "vaapi",
-                            HardwareAccelerationType::Nvenc => "nvenc",
-                            HardwareAccelerationType::Qsv => "qsv",
-                            HardwareAccelerationType::Amf => "amf",
-                            HardwareAccelerationType::VideoToolbox => "videotoolbox",
-                            HardwareAccelerationType::V4l2m2m => "v4l2m2m",
-                            HardwareAccelerationType::Rkmpp => "rkmpp",
-                        };
+                    encoding_preset.set(
+                        opts.encoding_preset
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                    auto_detect.set(
+                        opts.auto_detect_hardware_acceleration
+                            .unwrap_or(true),
+                    );
+                    let accel_str = match opts
+                        .hardware_acceleration_type
+                        .unwrap_or_default()
+                    {
+                        HardwareAccelerationType::None => "none",
+                        HardwareAccelerationType::Vaapi => "vaapi",
+                        HardwareAccelerationType::Nvenc => "nvenc",
+                        HardwareAccelerationType::Qsv => "qsv",
+                        HardwareAccelerationType::Amf => "amf",
+                        HardwareAccelerationType::VideoToolbox => "videotoolbox",
+                        HardwareAccelerationType::V4l2m2m => "v4l2m2m",
+                        HardwareAccelerationType::Rkmpp => "rkmpp",
+                    };
                     hw_accel.set(accel_str.to_string());
-                    enable_tonemapping.set(opts.enable_tonemapping.unwrap_or(false));
-                    enable_vpp_tonemapping
-                        .set(opts.enable_vpp_tonemapping.unwrap_or(false));
+                    enable_tonemapping.set(
+                        opts.enable_tonemapping
+                            .unwrap_or(false),
+                    );
+                    enable_vpp_tonemapping.set(
+                        opts.enable_vpp_tonemapping
+                            .unwrap_or(false),
+                    );
                     tonemapping_algorithm.set(
                         opts.tonemapping_algorithm
                             .unwrap_or_else(|| "hable".to_string()),
                     );
-                    tonemapping_desat.set(opts.tonemapping_desat.unwrap_or(0.0));
-                    tonemapping_peak.set(opts.tonemapping_peak.unwrap_or(0.0));
-                    allow_hevc_encoding.set(opts.allow_hevc_encoding.unwrap_or(true));
-                    allow_av1_encoding.set(opts.allow_av1_encoding.unwrap_or(false));
-                    h264_crf.set(opts.h264_crf.unwrap_or(23));
-                    h265_crf.set(opts.h265_crf.unwrap_or(28));
-                    enable_video_transcoding
-                        .set(opts.enable_video_transcoding.unwrap_or(true));
+                    tonemapping_desat.set(
+                        opts.tonemapping_desat
+                            .unwrap_or(0.0),
+                    );
+                    tonemapping_peak.set(
+                        opts.tonemapping_peak
+                            .unwrap_or(0.0),
+                    );
+                    allow_hevc_encoding.set(
+                        opts.allow_hevc_encoding
+                            .unwrap_or(true),
+                    );
+                    allow_av1_encoding.set(
+                        opts.allow_av1_encoding
+                            .unwrap_or(false),
+                    );
+                    h264_crf.set(
+                        opts.h264_crf
+                            .unwrap_or(23),
+                    );
+                    h265_crf.set(
+                        opts.h265_crf
+                            .unwrap_or(28),
+                    );
+                    enable_video_transcoding.set(
+                        opts.enable_video_transcoding
+                            .unwrap_or(true),
+                    );
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
             }
@@ -4371,8 +4775,13 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state.client.clone();
-        let accel_type = match hw_accel.peek().as_str() {
+        let client = app_state
+            .client
+            .clone();
+        let accel_type = match hw_accel
+            .peek()
+            .as_str()
+        {
             "vaapi" => HardwareAccelerationType::Vaapi,
             "nvenc" => HardwareAccelerationType::Nvenc,
             "qsv" => HardwareAccelerationType::Qsv,
@@ -4383,14 +4792,21 @@ fn PlaybackSettingsCard(app_state: AppState) -> Element {
             _ => HardwareAccelerationType::None,
         };
         let opts = EncodingOptions {
-            encoding_preset: encoding_preset.peek().parse().ok(),
+            encoding_preset: encoding_preset
+                .peek()
+                .parse()
+                .ok(),
             hardware_acceleration_type: Some(accel_type),
             vaapi_device: None,
             vaapi_driver: None,
             auto_detect_hardware_acceleration: Some(*auto_detect.peek()),
             enable_tonemapping: Some(*enable_tonemapping.peek()),
             enable_vpp_tonemapping: Some(*enable_vpp_tonemapping.peek()),
-            tonemapping_algorithm: Some(tonemapping_algorithm.peek().clone()),
+            tonemapping_algorithm: Some(
+                tonemapping_algorithm
+                    .peek()
+                    .clone(),
+            ),
             tonemapping_desat: Some(*tonemapping_desat.peek()),
             tonemapping_peak: Some(*tonemapping_peak.peek()),
             allow_hevc_encoding: Some(*allow_hevc_encoding.peek()),
@@ -4668,16 +5084,31 @@ fn ProbeSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load.client.clone();
+        let client = app_state_load
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(GetSystemConfiguration).await {
+            match client
+                .execute(GetSystemConfiguration)
+                .await
+            {
                 Ok(cfg) => {
-                    probe_timeout.set(cfg.probe_timeout_secs.unwrap_or(20));
-                    probe_timeout_p2p.set(cfg.probe_timeout_p2p_secs.unwrap_or(60));
-                    auto_next_stream
-                        .set(cfg.auto_next_stream_on_probe_fail.unwrap_or(true));
-                    max_fallback_streams
-                        .set(cfg.max_probe_fallback_streams.unwrap_or(3));
+                    probe_timeout.set(
+                        cfg.probe_timeout_secs
+                            .unwrap_or(20),
+                    );
+                    probe_timeout_p2p.set(
+                        cfg.probe_timeout_p2p_secs
+                            .unwrap_or(60),
+                    );
+                    auto_next_stream.set(
+                        cfg.auto_next_stream_on_probe_fail
+                            .unwrap_or(true),
+                    );
+                    max_fallback_streams.set(
+                        cfg.max_probe_fallback_streams
+                            .unwrap_or(3),
+                    );
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load settings: {e}"))),
@@ -4688,8 +5119,13 @@ fn ProbeSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state.client.clone();
-        let Some(cfg) = base_cfg.peek().clone() else {
+        let client = app_state
+            .client
+            .clone();
+        let Some(cfg) = base_cfg
+            .peek()
+            .clone()
+        else {
             return;
         };
         let updated = ServerConfiguration {
@@ -4836,13 +5272,20 @@ fn SearchSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load.client.clone();
+        let client = app_state_load
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(GetSystemConfiguration).await {
+            match client
+                .execute(GetSystemConfiguration)
+                .await
+            {
                 Ok(cfg) => {
                     let enabled = &cfg.search_remote_enabled;
                     let all = enabled.is_none();
-                    let list = enabled.as_deref().unwrap_or(&[]);
+                    let list = enabled
+                        .as_deref()
+                        .unwrap_or(&[]);
                     movies_remote.set(all || list.contains(&"movie".to_string()));
                     series_remote.set(all || list.contains(&"series".to_string()));
                     tracks_remote.set(all || list.contains(&"track".to_string()));
@@ -4858,8 +5301,13 @@ fn SearchSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state.client.clone();
-        let mut cfg = base_cfg.peek().clone().unwrap_or_default();
+        let client = app_state
+            .client
+            .clone();
+        let mut cfg = base_cfg
+            .peek()
+            .clone()
+            .unwrap_or_default();
         let mut remote_enabled: Vec<String> = vec!["person".to_string()];
         if *movies_remote.peek() {
             remote_enabled.push("movie".to_string());
@@ -5005,13 +5453,25 @@ fn JellyfinImportCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load.client.clone();
+        let client = app_state_load
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(GetSystemConfiguration).await {
+            match client
+                .execute(GetSystemConfiguration)
+                .await
+            {
                 Ok(cfg) => {
-                    jellyfin_url.set(cfg.jellyfin_url.clone().unwrap_or_default());
-                    jellyfin_api_key
-                        .set(cfg.jellyfin_api_key.clone().unwrap_or_default());
+                    jellyfin_url.set(
+                        cfg.jellyfin_url
+                            .clone()
+                            .unwrap_or_default(),
+                    );
+                    jellyfin_api_key.set(
+                        cfg.jellyfin_api_key
+                            .clone()
+                            .unwrap_or_default(),
+                    );
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => save_error.set(Some(format!("Failed to load settings: {e}"))),
@@ -5023,11 +5483,20 @@ fn JellyfinImportCard(app_state: AppState) -> Element {
     let app_state_save = app_state.clone();
     let on_save = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state_save.client.clone();
-        let url = jellyfin_url.peek().clone();
-        let key = jellyfin_api_key.peek().clone();
+        let client = app_state_save
+            .client
+            .clone();
+        let url = jellyfin_url
+            .peek()
+            .clone();
+        let key = jellyfin_api_key
+            .peek()
+            .clone();
 
-        let mut cfg = base_cfg.peek().clone().unwrap_or_default();
+        let mut cfg = base_cfg
+            .peek()
+            .clone()
+            .unwrap_or_default();
         cfg.jellyfin_url = if url.is_empty() { None } else { Some(url) };
         cfg.jellyfin_api_key = if key.is_empty() { None } else { Some(key) };
 
@@ -5047,7 +5516,9 @@ fn JellyfinImportCard(app_state: AppState) -> Element {
     };
 
     let on_import = move |_| {
-        let client = app_state.client.clone();
+        let client = app_state
+            .client
+            .clone();
         importing.set(true);
         import_error.set(None);
         import_done.set(false);
@@ -5065,8 +5536,12 @@ fn JellyfinImportCard(app_state: AppState) -> Element {
         });
     };
 
-    let url_filled = !jellyfin_url.read().is_empty();
-    let key_filled = !jellyfin_api_key.read().is_empty();
+    let url_filled = !jellyfin_url
+        .read()
+        .is_empty();
+    let key_filled = !jellyfin_api_key
+        .read()
+        .is_empty();
     let can_import = url_filled && key_filled && !*importing.read();
 
     rsx! {
@@ -5160,13 +5635,25 @@ fn BrandingPage(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load.client.clone();
+        let client = app_state_load
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(GetBrandingConfiguration).await {
+            match client
+                .execute(GetBrandingConfiguration)
+                .await
+            {
                 Ok(cfg) => {
-                    custom_css.set(cfg.custom_css.clone().unwrap_or_default());
-                    login_disclaimer
-                        .set(cfg.login_disclaimer.clone().unwrap_or_default());
+                    custom_css.set(
+                        cfg.custom_css
+                            .clone()
+                            .unwrap_or_default(),
+                    );
+                    login_disclaimer.set(
+                        cfg.login_disclaimer
+                            .clone()
+                            .unwrap_or_default(),
+                    );
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load branding: {e}"))),
@@ -5177,11 +5664,20 @@ fn BrandingPage(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state.client.clone();
-        let css = custom_css.peek().clone();
-        let disc = login_disclaimer.peek().clone();
+        let client = app_state
+            .client
+            .clone();
+        let css = custom_css
+            .peek()
+            .clone();
+        let disc = login_disclaimer
+            .peek()
+            .clone();
 
-        let mut cfg = base_cfg.peek().clone().unwrap_or_default();
+        let mut cfg = base_cfg
+            .peek()
+            .clone()
+            .unwrap_or_default();
         cfg.custom_css = if css.is_empty() { None } else { Some(css) };
         cfg.login_disclaimer = if disc.is_empty() { None } else { Some(disc) };
 
@@ -5295,8 +5791,14 @@ fn Wizard(on_complete: EventHandler) -> Element {
         let origin = get_origin();
         spawn(async move {
             if let Ok(c) = remux_sdks::remux::client(&origin) {
-                if let Ok(cfg) = c.execute(GetStartupConfiguration::default()).await {
-                    if let Some(name) = cfg.server_name.filter(|s| !s.is_empty()) {
+                if let Ok(cfg) = c
+                    .execute(GetStartupConfiguration::default())
+                    .await
+                {
+                    if let Some(name) = cfg
+                        .server_name
+                        .filter(|s| !s.is_empty())
+                    {
                         server_name.set(name);
                     }
                     metadata_country.set(
@@ -5305,7 +5807,10 @@ fn Wizard(on_complete: EventHandler) -> Element {
                             .unwrap_or_else(browser_metadata_country_code),
                     );
                 }
-                if let Ok(list) = c.execute(GetCountries).await {
+                if let Ok(list) = c
+                    .execute(GetCountries)
+                    .await
+                {
                     countries.set(list);
                 }
             }
@@ -5569,13 +6074,27 @@ fn P2pSettingsCard(app_state: AppState) -> Element {
 
     let app_state_load = app_state.clone();
     use_effect(move || {
-        let client = app_state_load.client.clone();
+        let client = app_state_load
+            .client
+            .clone();
         spawn(async move {
-            match client.execute(GetSystemConfiguration).await {
+            match client
+                .execute(GetSystemConfiguration)
+                .await
+            {
                 Ok(cfg) => {
-                    p2p_enabled.set(cfg.p2p_enabled.unwrap_or(true));
-                    p2p_upload_speed.set(cfg.p2p_upload_speed_kbps.unwrap_or(0));
-                    p2p_download_speed.set(cfg.p2p_download_speed_kbps.unwrap_or(0));
+                    p2p_enabled.set(
+                        cfg.p2p_enabled
+                            .unwrap_or(true),
+                    );
+                    p2p_upload_speed.set(
+                        cfg.p2p_upload_speed_kbps
+                            .unwrap_or(0),
+                    );
+                    p2p_download_speed.set(
+                        cfg.p2p_download_speed_kbps
+                            .unwrap_or(0),
+                    );
                     base_cfg.set(Some(cfg));
                 }
                 Err(e) => error.set(Some(format!("Failed to load: {e}"))),
@@ -5586,8 +6105,13 @@ fn P2pSettingsCard(app_state: AppState) -> Element {
 
     let on_submit = move |e: Event<FormData>| {
         e.prevent_default();
-        let client = app_state.client.clone();
-        let Some(cfg) = base_cfg.peek().clone() else {
+        let client = app_state
+            .client
+            .clone();
+        let Some(cfg) = base_cfg
+            .peek()
+            .clone()
+        else {
             return;
         };
         let updated = ServerConfiguration {
@@ -5839,7 +6363,9 @@ fn StreamFilterEditor(
     match_mode: Signal<FilterMatchMode>,
     rules: Signal<Vec<StreamRule>>,
 ) -> Element {
-    let rule_count = rules.read().len();
+    let rule_count = rules
+        .read()
+        .len();
     rsx! {
         div {
             style: "background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--warning);border-radius:8px;padding:12px 14px",
@@ -5919,7 +6445,9 @@ fn StreamGroupsCard(app_state: AppState) -> Element {
 
     let app_state_preview = app_state.clone();
     use_effect(move || {
-        let imdb = preview_imdb.read().clone();
+        let imdb = preview_imdb
+            .read()
+            .clone();
         let _r = *refresh.read();
         if imdb.is_empty() {
             return;
@@ -5927,7 +6455,9 @@ fn StreamGroupsCard(app_state: AppState) -> Element {
         preview_loading.set(true);
         preview_data.set(None);
         preview_error.set(None);
-        let client = app_state_preview.client.clone();
+        let client = app_state_preview
+            .client
+            .clone();
         spawn(async move {
             match client
                 .execute(GetStreamGroupPreview { imdb_id: imdb })
@@ -5948,14 +6478,22 @@ fn StreamGroupsCard(app_state: AppState) -> Element {
     use_effect(move || {
         let _r = *refresh.read();
         loading.set(true);
-        let client = app_state_effect.client.clone();
+        let client = app_state_effect
+            .client
+            .clone();
         spawn(async move {
-            let groups_res = client.execute(ListStreamGroups).await;
-            let cfg_res = client.execute(GetSystemConfiguration).await;
+            let groups_res = client
+                .execute(ListStreamGroups)
+                .await;
+            let cfg_res = client
+                .execute(GetSystemConfiguration)
+                .await;
             match (groups_res, cfg_res) {
                 (Ok(g), Ok(cfg)) => {
-                    show_ungrouped
-                        .set(cfg.stream_groups_show_ungrouped.unwrap_or(true));
+                    show_ungrouped.set(
+                        cfg.stream_groups_show_ungrouped
+                            .unwrap_or(true),
+                    );
                     base_cfg.set(Some(cfg));
                     groups.set(g);
                     error.set(None);
@@ -6476,10 +7014,16 @@ fn AddonsPage(app_state: AppState) -> Element {
     use_effect(move || {
         let _r = *refresh.read();
         loading.set(true);
-        let client = app_state_effect.client.clone();
+        let client = app_state_effect
+            .client
+            .clone();
         spawn(async move {
-            let kinds_res = client.execute(ListAddonKinds).await;
-            let addons_res = client.execute(ListAddons).await;
+            let kinds_res = client
+                .execute(ListAddonKinds)
+                .await;
+            let addons_res = client
+                .execute(ListAddons)
+                .await;
             match (kinds_res, addons_res) {
                 (Ok(k), Ok(a)) => {
                     kinds.set(k);
@@ -6495,8 +7039,16 @@ fn AddonsPage(app_state: AppState) -> Element {
     });
 
     let selected_kind_meta = {
-        let sel = selected_kind.read().clone();
-        sel.and_then(|id| kinds.read().iter().find(|k| k.id == id).cloned())
+        let sel = selected_kind
+            .read()
+            .clone();
+        sel.and_then(|id| {
+            kinds
+                .read()
+                .iter()
+                .find(|k| k.id == id)
+                .cloned()
+        })
     };
 
     rsx! {
@@ -7173,9 +7725,15 @@ fn AddonOptionField(
     option: AddonOption,
     values: Signal<std::collections::HashMap<String, serde_json::Value>>,
 ) -> Element {
-    let id = option.id.clone();
-    let label = option.name.clone();
-    let desc = option.description.clone();
+    let id = option
+        .id
+        .clone();
+    let label = option
+        .name
+        .clone();
+    let desc = option
+        .description
+        .clone();
     let id_change = id.clone();
     let id_check = id.clone();
     let id_num = id.clone();

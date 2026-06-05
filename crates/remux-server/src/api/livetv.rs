@@ -30,14 +30,28 @@ pub async fn livetv_info(
     };
     let user_filter = db::UserFilter::default();
     let (channel_result, users) = tokio::join!(
-        db::Media::get_by_filter(&state.ctx.db, &channel_filter),
-        db::User::get_by_filter(&state.ctx.db, &user_filter),
+        db::Media::get_by_filter(
+            &state
+                .ctx
+                .db,
+            &channel_filter
+        ),
+        db::User::get_by_filter(
+            &state
+                .ctx
+                .db,
+            &user_filter
+        ),
     );
-    let has_channels = !channel_result?.records.is_empty();
+    let has_channels = !channel_result?
+        .records
+        .is_empty();
     let user_ids: Vec<String> = users?
         .records
         .into_iter()
-        .map(|u| u.id.to_string())
+        .map(|u| {
+            u.id.to_string()
+        })
         .collect();
 
     Ok(Json(serde_json::json!({
@@ -59,7 +73,11 @@ pub async fn livetv_guide_info(
     let row = sqlx::query(
         "SELECT MIN(live_start), MAX(live_end) FROM media WHERE kind = 'tv_program'",
     )
-    .fetch_one(&state.ctx.db)
+    .fetch_one(
+        &state
+            .ctx
+            .db,
+    )
     .await?;
 
     let now = Utc::now().naive_utc();
@@ -95,7 +113,9 @@ pub async fn livetv_channels(
     Query(q): Query<GetChannelsQuery>,
 ) -> Result<impl IntoResponse> {
     let result = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::TvChannel]),
             enabled: Some(true),
@@ -114,7 +134,9 @@ pub async fn livetv_channels(
         .collect();
     Ok(Json(api::QueryResult {
         total_record_count: result.total_count as i64,
-        start_index: q.start_index.unwrap_or(0) as i32,
+        start_index: q
+            .start_index
+            .unwrap_or(0) as i32,
         items: dtos,
     }))
 }
@@ -129,9 +151,14 @@ pub async fn livetv_channel(
     _session: AuthSession,
     Path(channel_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(&state.ctx.db, &channel_id)
-        .await?
-        .context_not_found("channel not found")?;
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &channel_id,
+    )
+    .await?
+    .context_not_found("channel not found")?;
     Ok(Json(api::db_media_to_item(media)))
 }
 
@@ -154,14 +181,19 @@ pub async fn livetv_programs_recommended(
 ) -> Result<impl IntoResponse> {
     let now = Utc::now().naive_utc();
     let result = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::TvProgram]),
             parent_enabled: Some(true),
             min_end_date: Some(now),
             max_start_date: Some(now),
             sort_by_channel_order: true,
-            limit: Some(q.limit.unwrap_or(20)),
+            limit: Some(
+                q.limit
+                    .unwrap_or(20),
+            ),
             total_count: false,
             ..Default::default()
         },
@@ -224,7 +256,9 @@ pub async fn livetv_programs(
     _session: AuthSession,
     Query(q): Query<GetProgramsQuery>,
 ) -> Result<impl IntoResponse> {
-    if q.library_series_id.is_some() {
+    if q.library_series_id
+        .is_some()
+    {
         return Ok(Json(api::QueryResult {
             total_record_count: 0,
             start_index: 0,
@@ -266,13 +300,24 @@ pub async fn livetv_programs(
 
     let mut filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::TvProgram]),
-        limit: Some(q.limit.unwrap_or(500)),
+        limit: Some(
+            q.limit
+                .unwrap_or(500),
+        ),
         offset: q.start_index,
-        total_count: q.enable_total_record_count.unwrap_or(true),
+        total_count: q
+            .enable_total_record_count
+            .unwrap_or(true),
         has_aired: q.has_aired,
         parent_enabled: Some(true),
-        min_end_date: q.min_end_date.as_deref().and_then(parse_dt),
-        max_start_date: q.max_start_date.as_deref().and_then(parse_dt),
+        min_end_date: q
+            .min_end_date
+            .as_deref()
+            .and_then(parse_dt),
+        max_start_date: q
+            .max_start_date
+            .as_deref()
+            .and_then(parse_dt),
         program_kinds: if program_kinds.is_empty() {
             None
         } else {
@@ -287,7 +332,13 @@ pub async fn livetv_programs(
         _ => {}
     }
 
-    let result = db::Media::get_by_filter(&state.ctx.db, &filter).await?;
+    let result = db::Media::get_by_filter(
+        &state
+            .ctx
+            .db,
+        &filter,
+    )
+    .await?;
 
     let dtos: Vec<_> = result
         .records
@@ -296,7 +347,9 @@ pub async fn livetv_programs(
         .collect();
     Ok(Json(api::QueryResult {
         total_record_count: result.total_count as i64,
-        start_index: q.start_index.unwrap_or(0) as i32,
+        start_index: q
+            .start_index
+            .unwrap_or(0) as i32,
         items: dtos,
     }))
 }
@@ -331,13 +384,24 @@ pub async fn livetv_programs_post(
 
     let mut filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::TvProgram]),
-        limit: Some(body.limit.unwrap_or(500)),
+        limit: Some(
+            body.limit
+                .unwrap_or(500),
+        ),
         offset: body.start_index,
-        total_count: body.enable_total_record_count.unwrap_or(true),
+        total_count: body
+            .enable_total_record_count
+            .unwrap_or(true),
         has_aired: body.has_aired,
         parent_enabled: Some(true),
-        min_end_date: body.min_end_date.as_deref().and_then(parse_dt),
-        max_start_date: body.max_start_date.as_deref().and_then(parse_dt),
+        min_end_date: body
+            .min_end_date
+            .as_deref()
+            .and_then(parse_dt),
+        max_start_date: body
+            .max_start_date
+            .as_deref()
+            .and_then(parse_dt),
         ..Default::default()
     };
 
@@ -349,7 +413,13 @@ pub async fn livetv_programs_post(
         }
     }
 
-    let result = db::Media::get_by_filter(&state.ctx.db, &filter).await?;
+    let result = db::Media::get_by_filter(
+        &state
+            .ctx
+            .db,
+        &filter,
+    )
+    .await?;
 
     let dtos: Vec<_> = result
         .records
@@ -358,7 +428,9 @@ pub async fn livetv_programs_post(
         .collect();
     Ok(Json(api::QueryResult {
         total_record_count: result.total_count as i64,
-        start_index: body.start_index.unwrap_or(0) as i32,
+        start_index: body
+            .start_index
+            .unwrap_or(0) as i32,
         items: dtos,
     }))
 }
@@ -418,7 +490,9 @@ pub async fn livetv_timer_defaults(
     }
     Ok(Json(TimerDefaults {
         id: String::new(),
-        program_id: q.program_id.map(|id| id.to_string()),
+        program_id: q
+            .program_id
+            .map(|id| id.to_string()),
         pre_padding_seconds: 0,
         post_padding_seconds: 0,
         is_pre_padding_required: false,
@@ -539,11 +613,22 @@ pub async fn livetv_program(
     _session: AuthSession,
     Path(program_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(&state.ctx.db, &program_id)
-        .await?
-        .context_not_found("program not found")?;
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &program_id,
+    )
+    .await?
+    .context_not_found("program not found")?;
     let mut records = vec![media];
-    db::Media::preload_parents(&state.ctx.db, &mut records).await;
+    db::Media::preload_parents(
+        &state
+            .ctx
+            .db,
+        &mut records,
+    )
+    .await;
     Ok(Json(api::db_media_to_item(records.remove(0))))
 }
 
@@ -614,7 +699,10 @@ pub async fn livetv_tuner_host_default(
     _session: AdminSession,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse> {
-    let ty = q.get("type").cloned().unwrap_or_else(|| "m3u".to_string());
+    let ty = q
+        .get("type")
+        .cloned()
+        .unwrap_or_else(|| "m3u".to_string());
     Ok(Json(serde_json::json!({
         "Id": "",
         "Url": "",
@@ -634,9 +722,17 @@ pub async fn remux_epg_sources(
     State(state): State<AppState>,
     _session: AdminSession,
 ) -> Result<impl IntoResponse> {
-    let sources = db::EpgSource::get_all(&state.ctx.db).await?;
+    let sources = db::EpgSource::get_all(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     Ok(Json(
-        sources.iter().map(epg_source_to_dto).collect::<Vec<_>>(),
+        sources
+            .iter()
+            .map(epg_source_to_dto)
+            .collect::<Vec<_>>(),
     ))
 }
 
@@ -669,7 +765,13 @@ pub async fn remux_save_epg_source(
         url: body.url,
         ..Default::default()
     };
-    source.save(&state.ctx.db).await?;
+    source
+        .save(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
     Ok((StatusCode::OK, Json(epg_source_to_dto(&source))))
 }
 
@@ -689,7 +791,13 @@ pub async fn remux_delete_epg_source(
     _session: AdminSession,
     Query(q): Query<DeleteEpgQuery>,
 ) -> Result<impl IntoResponse> {
-    db::EpgSource::delete(&state.ctx.db, &q.id).await?;
+    db::EpgSource::delete(
+        &state
+            .ctx
+            .db,
+        &q.id,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -715,20 +823,31 @@ pub async fn remux_iptv_channels(
     _session: AdminSession,
     Query(q): Query<GetAllChannelsQuery>,
 ) -> Result<impl IntoResponse> {
-    let sort_by = match q.sort.as_deref() {
+    let sort_by = match q
+        .sort
+        .as_deref()
+    {
         Some("name") => vec![api::ItemSortBy::SortName],
         _ => vec![api::ItemSortBy::ChannelOrder],
     };
     let result = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::TvChannel]),
             limit: q.limit,
             offset: q.offset,
-            title_contains: q.search.filter(|s| !s.is_empty()),
+            title_contains: q
+                .search
+                .filter(|s| !s.is_empty()),
             enabled: q.enabled,
-            country_filter: q.country.filter(|s| !s.is_empty()),
-            iptv_group_filter: q.group.filter(|s| !s.is_empty()),
+            country_filter: q
+                .country
+                .filter(|s| !s.is_empty()),
+            iptv_group_filter: q
+                .group
+                .filter(|s| !s.is_empty()),
             sort_by,
             sort_order: vec![api::SortOrder::Ascending],
             total_count: true,
@@ -763,7 +882,11 @@ pub async fn remux_iptv_channel_countries(
          WHERE kind = 'tv_channel' AND country IS NOT NULL AND country != '' \
          ORDER BY country",
     )
-    .fetch_all(&state.ctx.db)
+    .fetch_all(
+        &state
+            .ctx
+            .db,
+    )
     .await?;
     Ok(Json(rows))
 }
@@ -782,7 +905,11 @@ pub async fn remux_iptv_channel_groups(
          WHERE kind = 'tv_channel' AND grp IS NOT NULL AND grp != '' \
          ORDER BY grp",
     )
-    .fetch_all(&state.ctx.db)
+    .fetch_all(
+        &state
+            .ctx
+            .db,
+    )
     .await?;
     Ok(Json(rows))
 }
@@ -804,14 +931,21 @@ pub async fn remux_bulk_channels(
     Json(body): Json<BulkChannelBody>,
 ) -> Result<impl IntoResponse> {
     let enabled_val = body.enabled;
-    if let Some(search) = body.search.filter(|s| !s.is_empty()) {
+    if let Some(search) = body
+        .search
+        .filter(|s| !s.is_empty())
+    {
         sqlx::query(
             "UPDATE media SET enabled = $1, updated_at = datetime('now')
              WHERE kind = 'tv_channel' AND (title LIKE $2 OR custom_name LIKE $2)",
         )
         .bind(enabled_val)
         .bind(format!("%{search}%"))
-        .execute(&state.ctx.db)
+        .execute(
+            &state
+                .ctx
+                .db,
+        )
         .await?;
     } else {
         sqlx::query(
@@ -858,7 +992,11 @@ pub async fn remux_patch_channel(
     .bind(body.sort_order)
     .bind(body.custom_name)
     .bind(id)
-    .execute(&state.ctx.db)
+    .execute(
+        &state
+            .ctx
+            .db,
+    )
     .await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -873,9 +1011,16 @@ pub struct EpgSourceDto {
 
 fn epg_source_to_dto(source: &db::EpgSource) -> EpgSourceDto {
     EpgSourceDto {
-        id: source.id.simple().to_string(),
-        name: source.name.clone(),
-        url: source.url.clone(),
+        id: source
+            .id
+            .simple()
+            .to_string(),
+        name: source
+            .name
+            .clone(),
+        url: source
+            .url
+            .clone(),
     }
 }
 
@@ -895,14 +1040,29 @@ pub struct ChannelEditorDto {
 
 fn channel_to_editor_dto(m: &db::Media) -> ChannelEditorDto {
     ChannelEditorDto {
-        id: m.id.simple().to_string(),
-        name: m.title.clone(),
-        custom_name: m.custom_name.clone(),
+        id: m
+            .id
+            .simple()
+            .to_string(),
+        name: m
+            .title
+            .clone(),
+        custom_name: m
+            .custom_name
+            .clone(),
         channel_number: m.channel_number,
         sort_order: m.sort_order,
         enabled: m.enabled,
-        logo: m.images.get_path(db::ImageKind::Primary).map(str::to_owned),
-        group: m.external_ids.iptv_group.clone(),
-        country: m.country.clone(),
+        logo: m
+            .images
+            .get_path(db::ImageKind::Primary)
+            .map(str::to_owned),
+        group: m
+            .external_ids
+            .iptv_group
+            .clone(),
+        country: m
+            .country
+            .clone(),
     }
 }

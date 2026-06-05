@@ -71,10 +71,16 @@ fn parse_lrc(lrc: &str) -> Vec<LyricLine> {
             let rest = line.strip_prefix('[')?;
             let close = rest.find(']')?;
             let timestamp = &rest[..close];
-            let text = rest[close + 1..].trim().to_string();
+            let text = rest[close + 1..]
+                .trim()
+                .to_string();
             let (mins_str, secs_str) = timestamp.split_once(':')?;
-            let mins: f64 = mins_str.parse().ok()?;
-            let secs: f64 = secs_str.parse().ok()?;
+            let mins: f64 = mins_str
+                .parse()
+                .ok()?;
+            let secs: f64 = secs_str
+                .parse()
+                .ok()?;
             let ticks = ((mins * 60.0 + secs) * TICKS_PER_SECOND) as i64;
             Some(LyricLine {
                 text,
@@ -95,7 +101,9 @@ fn plain_to_lines(plain: &str) -> Vec<LyricLine> {
 }
 
 fn track_to_dto(data: &LrcLibTrack) -> Option<LyricDto> {
-    let is_synced = data.synced_lyrics.is_some();
+    let is_synced = data
+        .synced_lyrics
+        .is_some();
     let lyrics = if let Some(lrc) = &data.synced_lyrics {
         parse_lrc(lrc)
     } else if let Some(plain) = &data.plain_lyrics {
@@ -105,10 +113,18 @@ fn track_to_dto(data: &LrcLibTrack) -> Option<LyricDto> {
     };
     Some(LyricDto {
         metadata: LyricMetadata {
-            title: data.track_name.clone(),
-            artist: data.artist_name.clone(),
-            album: data.album_name.clone(),
-            length: data.duration.map(|d| (d * TICKS_PER_SECOND) as i64),
+            title: data
+                .track_name
+                .clone(),
+            artist: data
+                .artist_name
+                .clone(),
+            album: data
+                .album_name
+                .clone(),
+            length: data
+                .duration
+                .map(|d| (d * TICKS_PER_SECOND) as i64),
             is_synced: Some(is_synced),
         },
         lyrics,
@@ -132,11 +148,18 @@ impl LrcLibAddon {
             }
         }
         tracing::debug!(url = %url, "lrclib: exact-match request");
-        let resp = self.client.get(url).send().await?;
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        if !resp.status().is_success() {
+        if !resp
+            .status()
+            .is_success()
+        {
             tracing::warn!(status = %resp.status(), "lrclib /get returned error");
             return Ok(None);
         }
@@ -167,14 +190,22 @@ impl AddonKind for LrcLibAddon {
             "lrclib: fetching lyrics"
         );
 
-        if let Some(dto) = self.fetch_exact(req).await? {
+        if let Some(dto) = self
+            .fetch_exact(req)
+            .await?
+        {
             tracing::debug!(title = %req.title, "lrclib: exact match found");
             return Ok(Some(dto));
         }
 
         tracing::debug!(title = %req.title, "lrclib: exact match missed, trying search fallback");
-        let results = self.lyric_search(req).await?;
-        let first = results.into_iter().next().map(|r| r.lyrics);
+        let results = self
+            .lyric_search(req)
+            .await?;
+        let first = results
+            .into_iter()
+            .next()
+            .map(|r| r.lyrics);
         if first.is_some() {
             tracing::info!(title = %req.title, "lrclib: found via search fallback");
         } else {
@@ -199,12 +230,21 @@ impl AddonKind for LrcLibAddon {
             }
         }
         tracing::debug!(url = %url, "lrclib: search request");
-        let resp = self.client.get(url).send().await?;
-        if !resp.status().is_success() {
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await?;
+        if !resp
+            .status()
+            .is_success()
+        {
             tracing::warn!(status = %resp.status(), "lrclib /search returned error");
             return Ok(vec![]);
         }
-        let tracks: Vec<LrcLibTrack> = resp.json().await?;
+        let tracks: Vec<LrcLibTrack> = resp
+            .json()
+            .await?;
         tracing::debug!(
             count = tracks.len(),
             "lrclib: search returned {} results",
@@ -225,11 +265,18 @@ impl AddonKind for LrcLibAddon {
     async fn lyric_get_by_id(&self, id: &str) -> Result<Option<LyricDto>> {
         let url = format!("{}/get/{}", BASE, id);
         tracing::debug!(id, "lrclib: get by id");
-        let resp = self.client.get(&url).send().await?;
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        if !resp.status().is_success() {
+        if !resp
+            .status()
+            .is_success()
+        {
             tracing::warn!(status = %resp.status(), "lrclib /get/{id} returned error");
             return Ok(None);
         }

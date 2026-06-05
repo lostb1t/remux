@@ -58,7 +58,8 @@ impl Store {
             ttl,
             weight: 1,
         });
-        self.inner.insert(key.into(), entry);
+        self.inner
+            .insert(key.into(), entry);
     }
 
     pub fn save_with_weight<T: Any + Send + Sync + 'static>(
@@ -73,7 +74,8 @@ impl Store {
             ttl,
             weight,
         });
-        self.inner.insert(key.into(), entry);
+        self.inner
+            .insert(key.into(), entry);
     }
 
     pub fn insert<T: Any + Send + Sync + 'static>(
@@ -83,7 +85,10 @@ impl Store {
         ttl: Duration,
     ) -> bool {
         let key = key.into();
-        if self.inner.contains_key(&key) {
+        if self
+            .inner
+            .contains_key(&key)
+        {
             return false;
         }
         let entry = Arc::new(StoreEntry {
@@ -91,7 +96,8 @@ impl Store {
             ttl,
             weight: 1,
         });
-        self.inner.insert(key, entry);
+        self.inner
+            .insert(key, entry);
         true
     }
 
@@ -101,20 +107,24 @@ impl Store {
     ) -> Option<T> {
         let key: String = key.into();
 
-        self.inner.get(&key).and_then(|entry| {
-            Arc::clone(&entry.item)
-                .downcast::<T>()
-                .ok()
-                .map(|arc| (*arc).clone())
-        })
+        self.inner
+            .get(&key)
+            .and_then(|entry| {
+                Arc::clone(&entry.item)
+                    .downcast::<T>()
+                    .ok()
+                    .map(|arc| (*arc).clone())
+            })
     }
 
     pub fn clear(&self) {
-        self.inner.invalidate_all();
+        self.inner
+            .invalidate_all();
     }
 
     pub fn delete(&self, key: impl Into<String>) {
-        self.inner.invalidate(&key.into());
+        self.inner
+            .invalidate(&key.into());
     }
 
     /// Scan all keys with a given prefix.

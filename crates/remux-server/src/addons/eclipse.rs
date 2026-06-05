@@ -56,7 +56,10 @@ fn eclipse_from_cfg(
     let raw_url = cfg
         .get("manifest_url")
         .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
+        .filter(|s| {
+            !s.trim()
+                .is_empty()
+        })
         .unwrap_or(default_url)
         .to_string();
     let manifest_url = StremioManifestUrl::try_new(raw_url)
@@ -160,7 +163,8 @@ impl EclipseAddon {
     }
 
     fn base_url(&self) -> &str {
-        self.manifest_url.as_ref()
+        self.manifest_url
+            .as_ref()
     }
 }
 
@@ -176,7 +180,10 @@ impl AddonKind for EclipseAddon {
         let Ok(svc) = self.service() else {
             return (vec![], vec![]);
         };
-        let Ok(manifest) = svc.get_manifest().await else {
+        let Ok(manifest) = svc
+            .get_manifest()
+            .await
+        else {
             return (vec![], vec![]);
         };
         parse_manifest_info(&manifest)
@@ -217,7 +224,9 @@ async fn eclipse_streams(
 
     let query = match artist_name {
         Some(ref artist) => format!("{} {}", artist, media.title),
-        None => media.title.clone(),
+        None => media
+            .title
+            .clone(),
     };
 
     let search_url = format!("{}/search?q={}", base_url, urlencoding::encode(&query));
@@ -229,16 +238,25 @@ async fn eclipse_streams(
         .json::<EclipseSearchResponse>()
         .await?;
 
-    if resp.tracks.is_empty() {
+    if resp
+        .tracks
+        .is_empty()
+    {
         return Ok(vec![]);
     }
 
     // Pick the first result whose title matches (case-insensitive), else fall back to first.
-    let title_lower = media.title.to_lowercase();
+    let title_lower = media
+        .title
+        .to_lowercase();
     let track = resp
         .tracks
         .iter()
-        .find(|t| t.title.to_lowercase() == title_lower)
+        .find(|t| {
+            t.title
+                .to_lowercase()
+                == title_lower
+        })
         .unwrap_or(&resp.tracks[0]);
 
     let stream_url = format!("{}/stream/{}", base_url, track.id);

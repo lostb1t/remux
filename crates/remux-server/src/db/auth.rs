@@ -102,11 +102,21 @@ impl Device {
         user: &db::User,
     ) -> Result<Self> {
         Ok(Self {
-            id: header.device_id.context("missing device id")?,
-            name: header.device.context("missing device name")?,
-            app_name: header.client.context("missing device name")?,
-            app_version: header.version.context("missing device name")?,
-            user_id: user.id.clone(),
+            id: header
+                .device_id
+                .context("missing device id")?,
+            name: header
+                .device
+                .context("missing device name")?,
+            app_name: header
+                .client
+                .context("missing device name")?,
+            app_version: header
+                .version
+                .context("missing device name")?,
+            user_id: user
+                .id
+                .clone(),
             access_token: get_uuid().to_string(),
             ..Default::default()
         })
@@ -194,7 +204,10 @@ impl Device {
 
     fn merge_runtime_metadata_from_header(&mut self, header: &JellyfinAuthHeader) {
         // Only trust metadata updates for this exact device identity.
-        if let Some(device_id) = header.device_id.as_deref() {
+        if let Some(device_id) = header
+            .device_id
+            .as_deref()
+        {
             if device_id != self.id {
                 return;
             }
@@ -264,7 +277,11 @@ impl Device {
 
     /// Get the stored capabilities for this device, if present.
     pub fn parsed_capabilities(&self) -> Option<crate::api::ClientCapabilitiesDto> {
-        self.capabilities.as_ref().map(|j| j.0.clone())
+        self.capabilities
+            .as_ref()
+            .map(|j| {
+                j.0.clone()
+            })
     }
 
     /// Load the user this device belongs to.
@@ -305,48 +322,95 @@ impl FromRequestParts<AppState> for AuthSession {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let jfauth = JellyfinAuthHeader::from_request_parts(parts, state).await?;
-        let token = jfauth.token.as_deref().context_unauthorized("forbidden")?;
+        let token = jfauth
+            .token
+            .as_deref()
+            .context_unauthorized("forbidden")?;
         // device_id is optional — query-param-only auth (e.g. ?token=...)
         // doesn't carry a DeviceId. The device is looked up by token alone.
-        let _device_id = jfauth.device_id.as_deref();
+        let _device_id = jfauth
+            .device_id
+            .as_deref();
 
         // Capture client IP from proxy headers or peer address.
         let remote_ip = parts
             .headers
             .get("X-Forwarded-For")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .map(|s| s.trim().to_string())
+            .and_then(|v| {
+                v.to_str()
+                    .ok()
+            })
+            .and_then(|v| {
+                v.split(',')
+                    .next()
+            })
+            .map(|s| {
+                s.trim()
+                    .to_string()
+            })
             .or_else(|| {
                 parts
                     .headers
                     .get("X-Real-IP")
-                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| {
+                        v.to_str()
+                            .ok()
+                    })
                     .map(|s| s.to_string())
             });
 
         // First try the devices table (normal session token).
-        if let Some(mut device) =
-            Device::get_by_access_token(&state.ctx.db, token).await?
+        if let Some(mut device) = Device::get_by_access_token(
+            &state
+                .ctx
+                .db,
+            token,
+        )
+        .await?
         {
             device.merge_runtime_metadata_from_header(&jfauth);
-            let _ = device.touch(&state.ctx.db, remote_ip.as_deref()).await;
-            let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
-                .await?
-                .context_unauthorized("forbidden")?;
-            tracing::Span::current().record("user", user.username.as_str());
+            let _ = device
+                .touch(
+                    &state
+                        .ctx
+                        .db,
+                    remote_ip.as_deref(),
+                )
+                .await;
+            let user = db::User::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &device.user_id,
+            )
+            .await?
+            .context_unauthorized("forbidden")?;
+            tracing::Span::current().record(
+                "user",
+                user.username
+                    .as_str(),
+            );
             return Ok(AuthSession { device, user });
         }
 
         // Fall back to the api_keys table. API keys are admin-scoped tokens.
-        let api_key = db::ApiKey::get_by_token(&state.ctx.db, token)
-            .await?
-            .context_unauthorized("forbidden")?;
+        let api_key = db::ApiKey::get_by_token(
+            &state
+                .ctx
+                .db,
+            token,
+        )
+        .await?
+        .context_unauthorized("forbidden")?;
 
         let user = sqlx::query_as::<_, db::User>(
             "SELECT * FROM users WHERE is_admin = 1 LIMIT 1",
         )
-        .fetch_optional(&state.ctx.db)
+        .fetch_optional(
+            &state
+                .ctx
+                .db,
+        )
         .await?
         .context_unauthorized("forbidden")?;
 
@@ -354,7 +418,9 @@ impl FromRequestParts<AppState> for AuthSession {
             id: format!("apikey-{}", api_key.access_token),
             access_token: api_key.access_token,
             user_id: user.id,
-            name: api_key.app_name.clone(),
+            name: api_key
+                .app_name
+                .clone(),
             app_name: api_key.app_name,
             app_version: String::new(),
             last_activity_at: None,
@@ -362,7 +428,11 @@ impl FromRequestParts<AppState> for AuthSession {
             remote_ip: None,
         };
 
-        tracing::Span::current().record("user", user.username.as_str());
+        tracing::Span::current().record(
+            "user",
+            user.username
+                .as_str(),
+        );
         Ok(AuthSession {
             device: synthetic_device,
             user,
@@ -381,7 +451,10 @@ impl FromRequestParts<AppState> for AdminSession {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let session = AuthSession::from_request_parts(parts, state).await?;
-        if !session.user.is_admin {
+        if !session
+            .user
+            .is_admin
+        {
             return Err(anyhow::anyhow!("forbidden").context_unauthorized("forbidden"));
         }
         Ok(AdminSession(session))
@@ -419,7 +492,9 @@ impl JellyfinAuthHeader {
         let mut map = HashMap::new();
         let mut parts = header.splitn(2, ' ');
 
-        let scheme = parts.next().unwrap_or("");
+        let scheme = parts
+            .next()
+            .unwrap_or("");
         let rest = match parts.next() {
             Some(r) => r,
             None => return Ok(JellyfinAuthHeader::default()),
@@ -435,17 +510,30 @@ impl JellyfinAuthHeader {
             let item = item.trim();
             let mut kv = item.splitn(2, '=');
             if let (Some(key), Some(val)) = (kv.next(), kv.next()) {
-                let unquoted = val.trim().trim_matches('"').to_string();
+                let unquoted = val
+                    .trim()
+                    .trim_matches('"')
+                    .to_string();
                 map.insert(key.to_string(), unquoted);
             }
         }
 
         Ok(Self {
-            client: map.get("Client").map(|v| Self::decode_header_text(v)),
-            device: map.get("Device").map(|v| Self::decode_header_text(v)),
-            device_id: map.get("DeviceId").map(|v| Self::decode_header_text(v)),
-            version: map.get("Version").map(|v| Self::decode_header_text(v)),
-            token: map.get("Token").cloned(),
+            client: map
+                .get("Client")
+                .map(|v| Self::decode_header_text(v)),
+            device: map
+                .get("Device")
+                .map(|v| Self::decode_header_text(v)),
+            device_id: map
+                .get("DeviceId")
+                .map(|v| Self::decode_header_text(v)),
+            version: map
+                .get("Version")
+                .map(|v| Self::decode_header_text(v)),
+            token: map
+                .get("Token")
+                .cloned(),
             ..Default::default()
         })
     }
@@ -461,12 +549,18 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
         if let Some(raw) = parts
             .headers
             .get(http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                v.to_str()
+                    .ok()
+            })
             .or_else(|| {
                 parts
                     .headers
                     .get("X-Emby-Authorization")
-                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| {
+                        v.to_str()
+                            .ok()
+                    })
             })
         {
             return Ok(JellyfinAuthHeader::from_str(raw)?);
@@ -475,8 +569,15 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
         if let Some(token) = parts
             .headers
             .get("X-Emby-Token")
-            .or_else(|| parts.headers.get("X-MediaBrowser-Token"))
-            .and_then(|v| v.to_str().ok())
+            .or_else(|| {
+                parts
+                    .headers
+                    .get("X-MediaBrowser-Token")
+            })
+            .and_then(|v| {
+                v.to_str()
+                    .ok()
+            })
         {
             return Ok(JellyfinAuthHeader {
                 token: Some(token.to_string()),
@@ -484,7 +585,10 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
             });
         }
 
-        if let Some(query) = parts.uri.query() {
+        if let Some(query) = parts
+            .uri
+            .query()
+        {
             for pair in query.split('&') {
                 let mut kv = pair.splitn(2, '=');
                 if let (Some(key), Some(val)) = (kv.next(), kv.next()) {

@@ -23,11 +23,14 @@ pub struct TestGuard(pub AppContext);
 
 impl Drop for TestGuard {
     fn drop(&mut self) {
-        let ctx = self.0.clone();
+        let ctx = self
+            .0
+            .clone();
         // Fire-and-forget shutdown: releases sockets so the next test (or a
         // server restart) can bind the same ports without "address in use" errors.
         tokio::spawn(async move {
-            ctx.shutdown().await;
+            ctx.shutdown()
+                .await;
         });
     }
 }
@@ -57,7 +60,9 @@ pub async fn new_test_server() -> Result<(TestServer, TestGuard)> {
         .json(&json!({ "Name": "test", "Password": "test" }))
         .await;
 
-    server.post("/startup/complete").await;
+    server
+        .post("/startup/complete")
+        .await;
 
     Ok((server, TestGuard(ctx)))
 }
@@ -65,7 +70,9 @@ pub async fn new_test_server() -> Result<(TestServer, TestGuard)> {
 /// Spins up a test server and authenticates as the seeded "test" user.
 /// Returns `(server, guard, access_token)`.
 pub async fn authenticated_server() -> (TestServer, TestGuard, String) {
-    let (server, guard) = new_test_server().await.unwrap();
+    let (server, guard) = new_test_server()
+        .await
+        .unwrap();
 
     let resp = server
         .post("/users/authenticatebyname")
@@ -77,7 +84,10 @@ pub async fn authenticated_server() -> (TestServer, TestGuard, String) {
         .await;
 
     let body: serde_json::Value = resp.json();
-    let token = body["AccessToken"].as_str().unwrap().to_string();
+    let token = body["AccessToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
     (server, guard, token)
 }
 

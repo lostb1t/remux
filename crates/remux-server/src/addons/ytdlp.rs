@@ -77,14 +77,21 @@ impl AddonPreset for YtDlpPreset {
                     .get("cookies_content")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())?;
-                let path = config.data_dir.join("yt-dlp-cookies.txt");
+                let path = config
+                    .data_dir
+                    .join("yt-dlp-cookies.txt");
                 std::fs::write(&path, content).ok()?;
-                Some(path.to_string_lossy().into_owned())
+                Some(
+                    path.to_string_lossy()
+                        .into_owned(),
+                )
             });
         Ok(Arc::new(YtDlpAddon {
             cookies,
             executable: PathBuf::from("yt-dlp"),
-            bgutil_script_path: config.bgutil_script_path.clone(),
+            bgutil_script_path: config
+                .bgutil_script_path
+                .clone(),
         }))
     }
 
@@ -100,13 +107,18 @@ impl AddonPreset for YtDlpPreset {
             .map(str::to_owned);
 
         if let Some(content) = content {
-            let path = config.data_dir.join("yt-dlp-cookies.txt");
+            let path = config
+                .data_dir
+                .join("yt-dlp-cookies.txt");
             std::fs::write(&path, content)
                 .context("failed to write cookies content to data dir")?;
             if let Some(obj) = cfg.as_object_mut() {
                 obj.insert(
                     "cookies".to_string(),
-                    serde_json::Value::String(path.to_string_lossy().into_owned()),
+                    serde_json::Value::String(
+                        path.to_string_lossy()
+                            .into_owned(),
+                    ),
                 );
                 obj.remove("cookies_content");
             }
@@ -136,14 +148,18 @@ fn ytdlp_extra_args() -> Vec<String> {
 
 impl YtDlpAddon {
     fn bgutil_args(&self) -> Vec<String> {
-        if !self.bgutil_script_path.exists() {
+        if !self
+            .bgutil_script_path
+            .exists()
+        {
             return vec![];
         }
         vec![
             "--extractor-args".to_string(),
             format!(
                 "youtubepot-bgutilscript:script_path={}",
-                self.bgutil_script_path.display()
+                self.bgutil_script_path
+                    .display()
             ),
         ]
     }
@@ -189,12 +205,23 @@ impl YtDlpMeta {
         if let Some(t) = self
             .thumbnails
             .iter()
-            .filter(|t| !t.url.is_empty())
-            .max_by_key(|t| (t.preference.unwrap_or(0), t.width.unwrap_or(0) as i64))
+            .filter(|t| {
+                !t.url
+                    .is_empty()
+            })
+            .max_by_key(|t| {
+                (
+                    t.preference
+                        .unwrap_or(0),
+                    t.width
+                        .unwrap_or(0) as i64,
+                )
+            })
         {
             return Some(&t.url);
         }
-        self.thumbnail.as_deref()
+        self.thumbnail
+            .as_deref()
     }
 }
 
@@ -270,7 +297,10 @@ struct YtDlpFormat {
 
 impl YtDlpFormat {
     fn is_audio_only(&self) -> bool {
-        let no_video = self.vcodec.as_deref().map_or(false, |v| v == "none");
+        let no_video = self
+            .vcodec
+            .as_deref()
+            .map_or(false, |v| v == "none");
         let has_audio = self
             .acodec
             .as_deref()
@@ -279,18 +309,28 @@ impl YtDlpFormat {
     }
 
     fn bitrate(&self) -> Option<i64> {
-        self.tbr.or(self.abr).map(|b| (b * 1000.0) as i64)
+        self.tbr
+            .or(self.abr)
+            .map(|b| (b * 1000.0) as i64)
     }
 
     fn label(&self) -> String {
         self.format_note
             .clone()
-            .or_else(|| self.format_id.clone())
+            .or_else(|| {
+                self.format_id
+                    .clone()
+            })
             .unwrap_or_else(|| "audio".to_string())
     }
 
     fn container(&self) -> Option<String> {
-        let raw = self.container.as_deref().or(self.ext.as_deref());
+        let raw = self
+            .container
+            .as_deref()
+            .or(self
+                .ext
+                .as_deref());
         match raw {
             Some("mp3") => Some("mp3".to_string()),
             Some("m4a") | Some("mp4") => Some("mp4".to_string()),
@@ -337,7 +377,10 @@ impl YtDlpAddon {
             .await
             .context("failed to spawn yt-dlp")?;
 
-        if !output.status.success() {
+        if !output
+            .status
+            .success()
+        {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("yt-dlp exited with {}: {}", output.status, stderr.trim());
         }
@@ -345,7 +388,10 @@ impl YtDlpAddon {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let line = stdout
             .lines()
-            .find(|l| !l.trim().is_empty())
+            .find(|l| {
+                !l.trim()
+                    .is_empty()
+            })
             .ok_or_else(|| {
                 anyhow!("yt-dlp produced no output for '{}'", url_or_query)
             })?;
@@ -359,11 +405,17 @@ impl YtDlpAddon {
         if let Some(url) = media
             .stream_info
             .as_ref()
-            .and_then(|si| si.descriptor.as_http_url())
+            .and_then(|si| {
+                si.descriptor
+                    .as_http_url()
+            })
         {
             return Ok(url.to_owned());
         }
-        if let Some(id) = &media.external_ids.youtube_id {
+        if let Some(id) = &media
+            .external_ids
+            .youtube_id
+        {
             if id.len() == 11
                 && id
                     .chars()
@@ -383,7 +435,9 @@ impl YtDlpAddon {
             format!("ytsearch1:{} {}", media.title, artist_part)
         };
         tracing::debug!(?query, "searching YouTube for track");
-        let video = self.dump_json(&query).await?;
+        let video = self
+            .dump_json(&query)
+            .await?;
         video
             .webpage_url
             .ok_or_else(|| anyhow!("yt-dlp search returned no webpage_url for query"))
@@ -412,7 +466,10 @@ impl YtDlpAddon {
             .await
             .context("failed to spawn yt-dlp")?;
 
-        if !output.status.success() {
+        if !output
+            .status
+            .success()
+        {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("yt-dlp exited with {}: {}", output.status, stderr.trim());
         }
@@ -426,7 +483,10 @@ impl YtDlpAddon {
     }
 
     fn meta_can_refresh(&self, media: &db::Media) -> bool {
-        media.kind == db::MediaKind::Track && media.stream_info.is_some()
+        media.kind == db::MediaKind::Track
+            && media
+                .stream_info
+                .is_some()
     }
 
     async fn fetch_meta(&self, media: &db::Media) -> Result<Option<db::Media>> {
@@ -436,7 +496,11 @@ impl YtDlpAddon {
         let url = media
             .stream_info
             .as_ref()
-            .and_then(|si| si.descriptor.as_http_url().map(str::to_owned))
+            .and_then(|si| {
+                si.descriptor
+                    .as_http_url()
+                    .map(str::to_owned)
+            })
             .or_else(|| {
                 media
                     .external_ids
@@ -464,7 +528,10 @@ impl YtDlpAddon {
             .await
             .context("failed to spawn yt-dlp for metadata")?;
 
-        if !output.status.success() {
+        if !output
+            .status
+            .success()
+        {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("yt-dlp metadata failed for '{}': {}", url, stderr.trim());
         }
@@ -472,7 +539,10 @@ impl YtDlpAddon {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let line = stdout
             .lines()
-            .find(|l| !l.trim().is_empty())
+            .find(|l| {
+                !l.trim()
+                    .is_empty()
+            })
             .ok_or_else(|| {
                 anyhow::anyhow!("yt-dlp produced no output for '{}'", url)
             })?;
@@ -480,15 +550,24 @@ impl YtDlpAddon {
             format!("failed to parse yt-dlp metadata JSON for '{}'", url)
         })?;
 
-        let thumbnail_url = meta.best_thumbnail().map(|s| s.to_owned());
+        let thumbnail_url = meta
+            .best_thumbnail()
+            .map(|s| s.to_owned());
         let mut patch = db::Media {
-            title: if meta.title.is_empty() {
-                media.title.clone()
+            title: if meta
+                .title
+                .is_empty()
+            {
+                media
+                    .title
+                    .clone()
             } else {
                 meta.title
             },
             description: meta.description,
-            runtime: meta.duration.map(|d| d as i64),
+            runtime: meta
+                .duration
+                .map(|d| d as i64),
             ..Default::default()
         };
         if let Some(url) = thumbnail_url {
@@ -501,7 +580,10 @@ impl YtDlpAddon {
         let t = std::time::Instant::now();
         let yt_query = format!("ytsearch{}:{}", limit, query);
 
-        let playlist = match self.run_flat_playlist(&yt_query, limit).await {
+        let playlist = match self
+            .run_flat_playlist(&yt_query, limit)
+            .await
+        {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(query, error = %e, "yt-dlp search failed");
@@ -513,13 +595,22 @@ impl YtDlpAddon {
             .entries
             .into_iter()
             .map(|entry| {
-                let watch_url = entry.webpage_url.or(entry.url).or_else(|| {
-                    if !entry.id.is_empty() {
-                        Some(format!("https://www.youtube.com/watch?v={}", entry.id))
-                    } else {
-                        None
-                    }
-                });
+                let watch_url = entry
+                    .webpage_url
+                    .or(entry.url)
+                    .or_else(|| {
+                        if !entry
+                            .id
+                            .is_empty()
+                        {
+                            Some(format!(
+                                "https://www.youtube.com/watch?v={}",
+                                entry.id
+                            ))
+                        } else {
+                            None
+                        }
+                    });
                 let mut media = db::Media {
                     id: crate::common::stable_media_uuid(
                         &db::MediaKind::Track,
@@ -531,9 +622,15 @@ impl YtDlpAddon {
                         descriptor: crate::stream::StreamDescriptor::http(u),
                         ..Default::default()
                     }),
-                    runtime: entry.duration.map(|d| d as i64),
+                    runtime: entry
+                        .duration
+                        .map(|d| d as i64),
                     external_ids: db::ExternalIds {
-                        youtube_id: Some(entry.id.clone()),
+                        youtube_id: Some(
+                            entry
+                                .id
+                                .clone(),
+                        ),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -548,7 +645,9 @@ impl YtDlpAddon {
         tracing::debug!(
             query,
             count = results.len(),
-            elapsed_ms = t.elapsed().as_millis(),
+            elapsed_ms = t
+                .elapsed()
+                .as_millis(),
             "yt-dlp track search done"
         );
         Ok(results)
@@ -578,7 +677,10 @@ impl YtDlpAddon {
             .await
             .context("failed to spawn yt-dlp for album search")?;
 
-        if !output.status.success() {
+        if !output
+            .status
+            .success()
+        {
             let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::warn!(query, error = %stderr.trim(), "yt-dlp album stub search failed");
             return Ok(vec![]);
@@ -601,7 +703,9 @@ impl YtDlpAddon {
         tracing::debug!(
             query,
             count = album_urls.len(),
-            elapsed_ms = t.elapsed().as_millis(),
+            elapsed_ms = t
+                .elapsed()
+                .as_millis(),
             "yt-dlp album stubs fetched"
         );
 
@@ -609,7 +713,9 @@ impl YtDlpAddon {
             return Ok(vec![]);
         }
 
-        let exe = self.executable.clone();
+        let exe = self
+            .executable
+            .clone();
         let cookies_args = self.cookies_args();
         let futures: Vec<_> = album_urls
             .into_iter()
@@ -631,7 +737,10 @@ impl YtDlpAddon {
                         .output()
                         .await
                         .ok()?;
-                    if !output.status.success() {
+                    if !output
+                        .status
+                        .success()
+                    {
                         return None;
                     }
                     let playlist: YtDlpPlaylist =
@@ -647,9 +756,17 @@ impl YtDlpAddon {
             .into_iter()
             .flatten()
             .map(|(url, playlist)| {
-                let thumbnail = playlist.thumbnail.or_else(|| {
-                    playlist.entries.first().and_then(|e| e.thumbnail.clone())
-                });
+                let thumbnail = playlist
+                    .thumbnail
+                    .or_else(|| {
+                        playlist
+                            .entries
+                            .first()
+                            .and_then(|e| {
+                                e.thumbnail
+                                    .clone()
+                            })
+                    });
                 let mut media = db::Media {
                     id: crate::common::stable_media_uuid(
                         &db::MediaKind::Album,
@@ -662,7 +779,11 @@ impl YtDlpAddon {
                         ..Default::default()
                     }),
                     external_ids: db::ExternalIds {
-                        youtube_id: Some(playlist.id.clone()),
+                        youtube_id: Some(
+                            playlist
+                                .id
+                                .clone(),
+                        ),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -677,7 +798,9 @@ impl YtDlpAddon {
         tracing::debug!(
             query,
             count = results.len(),
-            elapsed_ms = t.elapsed().as_millis(),
+            elapsed_ms = t
+                .elapsed()
+                .as_millis(),
             "yt-dlp album search done"
         );
         Ok(results)
@@ -687,8 +810,12 @@ impl YtDlpAddon {
         &self,
         media: &db::Media,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
-        let url = self.resolve_watch_url(media).await?;
-        let video = self.dump_json(&url).await?;
+        let url = self
+            .resolve_watch_url(media)
+            .await?;
+        let video = self
+            .dump_json(&url)
+            .await?;
 
         let to_source = |f: &YtDlpFormat| -> crate::stream::StreamInfo {
             let codec = f.normalized_codec();
@@ -699,19 +826,27 @@ impl YtDlpAddon {
             };
             crate::stream::StreamInfo {
                 descriptor: crate::stream::StreamDescriptor::http(
-                    f.url.clone().unwrap_or_default(),
+                    f.url
+                        .clone()
+                        .unwrap_or_default(),
                 ),
                 name: Some(f.label()),
                 probe_data: Some(api::MediaSourceInfo {
                     container: f.container(),
-                    run_time_ticks: media.runtime.map(|r| r * 10_000_000),
+                    run_time_ticks: media
+                        .runtime
+                        .map(|r| r * 10_000_000),
                     bitrate: f.bitrate(),
                     media_streams: vec![api::MediaStream {
                         index: 0,
                         type_: Some(api::MediaStreamType::Audio),
                         codec,
-                        channels: f.audio_channels.map(|c| c as i64),
-                        sample_rate: f.asr.map(|r| r as i64),
+                        channels: f
+                            .audio_channels
+                            .map(|c| c as i64),
+                        sample_rate: f
+                            .asr
+                            .map(|r| r as i64),
                         is_default: Some(true),
                         display_title: Some(display_title),
                         ..Default::default()
@@ -725,7 +860,11 @@ impl YtDlpAddon {
         let audio_only: Vec<crate::stream::StreamInfo> = video
             .formats
             .iter()
-            .filter(|f| f.url.is_some() && f.is_audio_only())
+            .filter(|f| {
+                f.url
+                    .is_some()
+                    && f.is_audio_only()
+            })
             .map(&to_source)
             .collect();
 
@@ -736,7 +875,10 @@ impl YtDlpAddon {
         Ok(video
             .formats
             .iter()
-            .filter(|f| f.url.is_some())
+            .filter(|f| {
+                f.url
+                    .is_some()
+            })
             .map(&to_source)
             .collect())
     }
@@ -762,7 +904,8 @@ impl AddonKind for YtDlpAddon {
         _ctx: &AppContext,
         _config: &crate::api::ServerConfiguration,
     ) -> Result<Option<db::Media>> {
-        self.fetch_meta(media).await
+        self.fetch_meta(media)
+            .await
     }
 
     async fn search_supports(&self, kind: &db::MediaKind) -> bool {
@@ -777,8 +920,14 @@ impl AddonKind for YtDlpAddon {
         _ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
         match kind {
-            db::MediaKind::Track => Ok(Some(self.search_tracks(query, limit).await?)),
-            db::MediaKind::Album => Ok(Some(self.search_albums(query, limit).await?)),
+            db::MediaKind::Track => Ok(Some(
+                self.search_tracks(query, limit)
+                    .await?,
+            )),
+            db::MediaKind::Album => Ok(Some(
+                self.search_albums(query, limit)
+                    .await?,
+            )),
             _ => Ok(None),
         }
     }
@@ -792,6 +941,7 @@ impl AddonKind for YtDlpAddon {
         media: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
-        self.get_streams_for(media).await
+        self.get_streams_for(media)
+            .await
     }
 }

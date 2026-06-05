@@ -71,10 +71,15 @@ impl MediaImage {
             sep.push_bind(id);
         }
         qb.push(") ORDER BY media_id, image_type, image_index");
-        let rows = qb.build_query_as::<Self>().fetch_all(db).await?;
+        let rows = qb
+            .build_query_as::<Self>()
+            .fetch_all(db)
+            .await?;
         let mut flat: HashMap<Uuid, Vec<Self>> = HashMap::new();
         for row in rows {
-            flat.entry(row.media_id).or_default().push(row);
+            flat.entry(row.media_id)
+                .or_default()
+                .push(row);
         }
         Ok(flat
             .into_iter()
@@ -169,28 +174,49 @@ impl MediaImages {
             ImageKind::Logo => &self.logo,
             ImageKind::Thumb => &self.thumb,
         };
-        vec.iter().find(|i| i.image_index == 0)
+        vec.iter()
+            .find(|i| i.image_index == 0)
     }
 
     /// Return the path for the first image of the given kind at index 0.
     pub fn get_path(&self, kind: ImageKind) -> Option<&str> {
-        self.get(kind).map(|i| i.path.as_str())
+        self.get(kind)
+            .map(|i| {
+                i.path
+                    .as_str()
+            })
     }
 
     pub fn is_empty(&self) -> bool {
-        self.primary.is_empty()
-            && self.backdrop.is_empty()
-            && self.logo.is_empty()
-            && self.thumb.is_empty()
+        self.primary
+            .is_empty()
+            && self
+                .backdrop
+                .is_empty()
+            && self
+                .logo
+                .is_empty()
+            && self
+                .thumb
+                .is_empty()
     }
 
     /// Iterate over all images across all types.
     pub fn iter(&self) -> impl Iterator<Item = &MediaImage> {
         self.primary
             .iter()
-            .chain(self.backdrop.iter())
-            .chain(self.logo.iter())
-            .chain(self.thumb.iter())
+            .chain(
+                self.backdrop
+                    .iter(),
+            )
+            .chain(
+                self.logo
+                    .iter(),
+            )
+            .chain(
+                self.thumb
+                    .iter(),
+            )
     }
 }
 
@@ -212,10 +238,18 @@ impl From<Vec<MediaImage>> for MediaImages {
         let mut result = MediaImages::default();
         for img in images {
             match ImageKind::from_str(&img.image_type) {
-                Ok(ImageKind::Primary) => result.primary.push(img),
-                Ok(ImageKind::Backdrop) => result.backdrop.push(img),
-                Ok(ImageKind::Logo) => result.logo.push(img),
-                Ok(ImageKind::Thumb) => result.thumb.push(img),
+                Ok(ImageKind::Primary) => result
+                    .primary
+                    .push(img),
+                Ok(ImageKind::Backdrop) => result
+                    .backdrop
+                    .push(img),
+                Ok(ImageKind::Logo) => result
+                    .logo
+                    .push(img),
+                Ok(ImageKind::Thumb) => result
+                    .thumb
+                    .push(img),
                 Err(_) => {}
             }
         }

@@ -31,7 +31,11 @@ impl Endpoint for FindByIdEndpoint {
     }
 
     fn query(&self) -> Vec<(String, String)> {
-        vec![("external_source".to_string(), self.external_source.clone())]
+        vec![(
+            "external_source".to_string(),
+            self.external_source
+                .clone(),
+        )]
     }
 }
 
@@ -103,14 +107,25 @@ impl Images {
     pub fn best_logo(&self) -> Option<&str> {
         self.logos
             .iter()
-            .filter(|e| e.iso_639_1.as_deref() == Some("en"))
+            .filter(|e| {
+                e.iso_639_1
+                    .as_deref()
+                    == Some("en")
+            })
             .max_by(|a, b| {
                 a.vote_average
                     .partial_cmp(&b.vote_average)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .or_else(|| self.logos.iter().next())
-            .map(|e| e.file_path.as_str())
+            .or_else(|| {
+                self.logos
+                    .iter()
+                    .next()
+            })
+            .map(|e| {
+                e.file_path
+                    .as_str()
+            })
     }
 
     /// Best English-language backdrop (title card with text overlay).
@@ -118,13 +133,20 @@ impl Images {
     pub fn best_thumb(&self) -> Option<&str> {
         self.backdrops
             .iter()
-            .filter(|e| e.iso_639_1.as_deref() == Some("en"))
+            .filter(|e| {
+                e.iso_639_1
+                    .as_deref()
+                    == Some("en")
+            })
             .max_by(|a, b| {
                 a.vote_average
                     .partial_cmp(&b.vote_average)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|e| e.file_path.as_str())
+            .map(|e| {
+                e.file_path
+                    .as_str()
+            })
     }
 }
 
@@ -339,7 +361,11 @@ impl Endpoint for PersonSearchEndpoint {
     }
 
     fn query(&self) -> Vec<(String, String)> {
-        vec![("query".to_string(), self.query.clone())]
+        vec![(
+            "query".to_string(),
+            self.query
+                .clone(),
+        )]
     }
 }
 

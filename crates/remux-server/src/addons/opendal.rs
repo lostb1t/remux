@@ -56,13 +56,20 @@ fn cfg_paths_local(cfg: &serde_json::Value) -> Result<Vec<String>> {
     if let Some(arr) = cfg["paths"].as_array() {
         let v: Vec<String> = arr
             .iter()
-            .filter_map(|v| v.as_str().filter(|s| !s.is_empty()).map(str::to_string))
+            .filter_map(|v| {
+                v.as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            })
             .collect();
         if !v.is_empty() {
             return Ok(v);
         }
     }
-    if let Some(p) = cfg["path"].as_str().filter(|s| !s.is_empty()) {
+    if let Some(p) = cfg["path"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+    {
         return Ok(vec![p.to_string()]);
     }
     anyhow::bail!("opendal-local: at least one path is required")
@@ -72,7 +79,11 @@ fn cfg_paths_webdav(cfg: &serde_json::Value) -> Vec<String> {
     if let Some(arr) = cfg["paths"].as_array() {
         let v: Vec<String> = arr
             .iter()
-            .filter_map(|v| v.as_str().filter(|s| !s.is_empty()).map(str::to_string))
+            .filter_map(|v| {
+                v.as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            })
             .collect();
         if !v.is_empty() {
             return v;
@@ -125,9 +136,15 @@ impl AddonPreset for OpendalLocalPreset {
         cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
-        let media_kind = cfg["media_kind"].as_str().unwrap_or("movie").to_string();
+        let media_kind = cfg["media_kind"]
+            .as_str()
+            .unwrap_or("movie")
+            .to_string();
         let paths = cfg_paths_local(cfg)?;
-        let first = paths.first().cloned().unwrap_or_default();
+        let first = paths
+            .first()
+            .cloned()
+            .unwrap_or_default();
         let operator =
             opendal::Operator::new(opendal::services::Fs::default().root(&first))?
                 .finish();
@@ -214,17 +231,26 @@ impl AddonPreset for OpendalWebdavPreset {
         cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
-        let media_kind = cfg["media_kind"].as_str().unwrap_or("movie").to_string();
+        let media_kind = cfg["media_kind"]
+            .as_str()
+            .unwrap_or("movie")
+            .to_string();
         let endpoint = cfg["endpoint"]
             .as_str()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("opendal-webdav: endpoint is required"))?;
 
         let mut builder = opendal::services::Webdav::default().endpoint(endpoint);
-        if let Some(u) = cfg["username"].as_str().filter(|s| !s.is_empty()) {
+        if let Some(u) = cfg["username"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+        {
             builder = builder.username(u);
         }
-        if let Some(p) = cfg["password"].as_str().filter(|s| !s.is_empty()) {
+        if let Some(p) = cfg["password"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+        {
             builder = builder.password(p);
         }
         let operator = opendal::Operator::new(builder)?.finish();
@@ -275,7 +301,10 @@ impl AddonKind for OpendalAddon {
     }
 
     async fn available_info(&self) -> (Vec<ResourceType>, Vec<StremioMediaType>) {
-        let media_type = match self.media_kind.as_str() {
+        let media_type = match self
+            .media_kind
+            .as_str()
+        {
             "episode" => StremioMediaType::Series,
             "track" => StremioMediaType::Track,
             _ => StremioMediaType::Movie,
@@ -292,7 +321,11 @@ impl AddonKind for OpendalAddon {
             name: "files".to_string(),
             default_enabled: true,
             default_max_items: Some(999999999),
-            collection_media_kind: Some(self.media_kind.as_str().into()),
+            collection_media_kind: Some(
+                self.media_kind
+                    .as_str()
+                    .into(),
+            ),
         }])
     }
 
@@ -395,13 +428,23 @@ impl AddonKind for OpendalAddon {
     }
 
     fn stream_supports(&self, media: &db::Media) -> bool {
-        match self.media_kind.as_str() {
+        match self
+            .media_kind
+            .as_str()
+        {
             "movie" => {
-                media.kind == db::MediaKind::Movie && media.external_ids.imdb.is_some()
+                media.kind == db::MediaKind::Movie
+                    && media
+                        .external_ids
+                        .imdb
+                        .is_some()
             }
             "episode" => {
                 media.kind == db::MediaKind::Episode
-                    && media.external_ids.imdb.is_some()
+                    && media
+                        .external_ids
+                        .imdb
+                        .is_some()
             }
             "track" => media.kind == db::MediaKind::Track,
             _ => false,
@@ -424,7 +467,11 @@ impl AddonKind for OpendalAddon {
             .fetch_all(&ctx.db)
             .await?
         } else {
-            let imdb_id = match media.external_ids.imdb.as_deref() {
+            let imdb_id = match media
+                .external_ids
+                .imdb
+                .as_deref()
+            {
                 Some(id) => id,
                 None => return Ok(vec![]),
             };
@@ -444,8 +491,10 @@ impl AddonKind for OpendalAddon {
             .into_iter()
             .filter(|f| {
                 if media.kind == db::MediaKind::Episode {
-                    let ep_match =
-                        media.idx.map(|e| f.episode == Some(e)).unwrap_or(true);
+                    let ep_match = media
+                        .idx
+                        .map(|e| f.episode == Some(e))
+                        .unwrap_or(true);
                     let season_match = media
                         .parent_idx
                         .map(|s| f.season == Some(s))
@@ -463,12 +512,17 @@ impl AddonKind for OpendalAddon {
                 } else {
                     crate::stream::StreamDescriptor::Opendal {
                         addon_id: self.addon_id,
-                        path: f.path.clone(),
+                        path: f
+                            .path
+                            .clone(),
                     }
                 };
                 crate::stream::StreamInfo {
                     descriptor,
-                    name: Some(f.name.clone()),
+                    name: Some(
+                        f.name
+                            .clone(),
+                    ),
                     ..Default::default()
                 }
             })
@@ -508,7 +562,10 @@ impl AddonKind for OpendalAddon {
 
         let range_str = headers
             .get(http::header::RANGE)
-            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                v.to_str()
+                    .ok()
+            })
             .map(str::to_owned);
 
         if let Some(range) = range_str {
@@ -578,9 +635,17 @@ async fn scan_addon(
     tmdb: &Option<sdks::RestClient<sdks::BearerAuth>>,
     addon: &Addon,
 ) -> Result<()> {
-    let cfg = &addon.preset.config;
-    let media_kind = cfg["media_kind"].as_str().unwrap_or("movie").to_string();
-    let is_local = addon.preset.kind == "opendal-local";
+    let cfg = &addon
+        .preset
+        .config;
+    let media_kind = cfg["media_kind"]
+        .as_str()
+        .unwrap_or("movie")
+        .to_string();
+    let is_local = addon
+        .preset
+        .kind
+        == "opendal-local";
 
     info!(addon = %addon.name, kind = %addon.preset.kind, media_kind, "opendal: scanning");
 
@@ -617,14 +682,26 @@ async fn scan_addon(
     let mut upserted = 0usize;
 
     for (operator, list_from, path_prefix) in scan_roots {
-        let mut lister = operator.lister_with(&list_from).recursive(true).await?;
+        let mut lister = operator
+            .lister_with(&list_from)
+            .recursive(true)
+            .await?;
 
-        while let Some(entry) = lister.try_next().await? {
-            if entry.metadata().mode() != EntryMode::FILE {
+        while let Some(entry) = lister
+            .try_next()
+            .await?
+        {
+            if entry
+                .metadata()
+                .mode()
+                != EntryMode::FILE
+            {
                 continue;
             }
 
-            let entry_rel = entry.path().to_string();
+            let entry_rel = entry
+                .path()
+                .to_string();
             let path = if path_prefix.is_empty() {
                 entry_rel.clone()
             } else {
@@ -634,7 +711,9 @@ async fn scan_addon(
                     entry_rel.trim_start_matches('/')
                 )
             };
-            let name = entry.name().to_string();
+            let name = entry
+                .name()
+                .to_string();
             let ext = std::path::Path::new(&name)
                 .extension()
                 .and_then(|e| e.to_str())
@@ -649,10 +728,14 @@ async fn scan_addon(
             seen_ids.push(row_id);
 
             let stored_path: String = if ext == "strm" {
-                match operator.read(&entry_rel).await {
+                match operator
+                    .read(&entry_rel)
+                    .await
+                {
                     Ok(buf) => {
-                        let url =
-                            String::from_utf8_lossy(&buf.to_bytes()).trim().to_string();
+                        let url = String::from_utf8_lossy(&buf.to_bytes())
+                            .trim()
+                            .to_string();
                         if url.is_empty() {
                             warn!(path, "opendal: empty strm file, skipping");
                             continue;
@@ -683,24 +766,40 @@ async fn scan_addon(
                     let track_number = track_num_re
                         .captures(&stem)
                         .and_then(|c| c.get(1))
-                        .and_then(|m| m.as_str().parse::<i64>().ok());
+                        .and_then(|m| {
+                            m.as_str()
+                                .parse::<i64>()
+                                .ok()
+                        });
                     let clean_stem = if track_number.is_some() {
-                        track_num_re.replace(&stem, "").into_owned()
+                        track_num_re
+                            .replace(&stem, "")
+                            .into_owned()
                     } else {
                         stem.clone()
                     };
                     let parsed = hunch::hunch(&clean_stem);
-                    let title =
-                        parsed.title().unwrap_or(clean_stem.as_str()).to_string();
+                    let title = parsed
+                        .title()
+                        .unwrap_or(clean_stem.as_str())
+                        .to_string();
                     (Some(title), None, None, track_number, None, None)
                 }
                 "episode" => {
                     let parsed = hunch::hunch(&stem);
-                    let season = parsed.season().map(|s| s as i64);
-                    let episode = parsed.episode().map(|e| e as i64);
-                    let year = parsed.year().map(|y| y as i64);
-                    let clean_title =
-                        parsed.title().unwrap_or(stem.as_str()).to_string();
+                    let season = parsed
+                        .season()
+                        .map(|s| s as i64);
+                    let episode = parsed
+                        .episode()
+                        .map(|e| e as i64);
+                    let year = parsed
+                        .year()
+                        .map(|y| y as i64);
+                    let clean_title = parsed
+                        .title()
+                        .unwrap_or(stem.as_str())
+                        .to_string();
 
                     let existing_imdb =
                         fetch_existing_imdb(ctx, addon.id, &path).await?;
@@ -715,7 +814,9 @@ async fn scan_addon(
                             )
                             .await
                         } else {
-                            jellyfin_ids.imdb.clone()
+                            jellyfin_ids
+                                .imdb
+                                .clone()
                         }
                     } else {
                         resolve_imdb(tmdb, &clean_title, None, true).await
@@ -731,9 +832,13 @@ async fn scan_addon(
                 _ => {
                     // movie
                     let parsed = hunch::hunch(&stem);
-                    let year = parsed.year().map(|y| y as i64);
-                    let clean_title =
-                        parsed.title().unwrap_or(stem.as_str()).to_string();
+                    let year = parsed
+                        .year()
+                        .map(|y| y as i64);
+                    let clean_title = parsed
+                        .title()
+                        .unwrap_or(stem.as_str())
+                        .to_string();
 
                     let existing_imdb =
                         fetch_existing_imdb(ctx, addon.id, &path).await?;
@@ -748,7 +853,9 @@ async fn scan_addon(
                             )
                             .await
                         } else {
-                            jellyfin_ids.imdb.clone()
+                            jellyfin_ids
+                                .imdb
+                                .clone()
                         }
                     } else {
                         resolve_imdb(tmdb, &clean_title, year, false).await
@@ -763,8 +870,14 @@ async fn scan_addon(
                 }
             };
 
-            let size = Some(entry.metadata().content_length() as i64);
-            let now = Utc::now().naive_utc().to_string();
+            let size = Some(
+                entry
+                    .metadata()
+                    .content_length() as i64,
+            );
+            let now = Utc::now()
+                .naive_utc()
+                .to_string();
 
             sqlx::query(
                 "INSERT INTO opendal_files \
@@ -817,10 +930,16 @@ fn build_webdav_operator(cfg: &serde_json::Value) -> Result<opendal::Operator> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("opendal-webdav: endpoint required"))?;
     let mut builder = opendal::services::Webdav::default().endpoint(endpoint);
-    if let Some(u) = cfg["username"].as_str().filter(|s| !s.is_empty()) {
+    if let Some(u) = cfg["username"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+    {
         builder = builder.username(u);
     }
-    if let Some(p) = cfg["password"].as_str().filter(|s| !s.is_empty()) {
+    if let Some(p) = cfg["password"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+    {
         builder = builder.password(p);
     }
     Ok(opendal::Operator::new(builder)?.finish())
@@ -862,7 +981,11 @@ async fn resolve_imdb(
             )
             .await
             .ok()?;
-        let tmdb_id = resp.results.into_iter().next()?.id;
+        let tmdb_id = resp
+            .results
+            .into_iter()
+            .next()?
+            .id;
 
         let series = client
             .execute(
@@ -872,7 +995,13 @@ async fn resolve_imdb(
             .await
             .ok()?;
 
-        series.external_ids.as_ref().and_then(|e| e.imdb_id.clone())
+        series
+            .external_ids
+            .as_ref()
+            .and_then(|e| {
+                e.imdb_id
+                    .clone()
+            })
     } else {
         let resp = client
             .execute(
@@ -884,7 +1013,11 @@ async fn resolve_imdb(
             )
             .await
             .ok()?;
-        let tmdb_id = resp.results.into_iter().next()?.id;
+        let tmdb_id = resp
+            .results
+            .into_iter()
+            .next()?
+            .id;
 
         let movie = client
             .execute(
@@ -911,7 +1044,10 @@ async fn prune_stale_paths(
         return Ok(result.rows_affected() as usize);
     }
 
-    let mut tx = ctx.db.begin().await?;
+    let mut tx = ctx
+        .db
+        .begin()
+        .await?;
     sqlx::query(
         "CREATE TEMPORARY TABLE IF NOT EXISTS _opendal_seen (id BLOB NOT NULL PRIMARY KEY)",
     )
@@ -927,7 +1063,9 @@ async fn prune_stale_paths(
         qb.push_values(chunk.iter(), |mut b, id| {
             b.push_bind(*id);
         });
-        qb.build().execute(&mut *tx).await?;
+        qb.build()
+            .execute(&mut *tx)
+            .await?;
     }
 
     let result = sqlx::query(
@@ -938,7 +1076,8 @@ async fn prune_stale_paths(
     .execute(&mut *tx)
     .await?;
 
-    tx.commit().await?;
+    tx.commit()
+        .await?;
     Ok(result.rows_affected() as usize)
 }
 
@@ -989,7 +1128,9 @@ mod tests {
         for c in &cases {
             let parsed = hunch::hunch(c.stem);
             assert_eq!(
-                parsed.title().unwrap_or(""),
+                parsed
+                    .title()
+                    .unwrap_or(""),
                 c.title,
                 "title mismatch for {:?}",
                 c.stem
@@ -1041,7 +1182,9 @@ mod tests {
         for c in &cases {
             let parsed = hunch::hunch(c.stem);
             assert_eq!(
-                parsed.title().unwrap_or(""),
+                parsed
+                    .title()
+                    .unwrap_or(""),
                 c.title,
                 "title mismatch for {:?}",
                 c.stem
@@ -1102,12 +1245,18 @@ mod tests {
             let track_number = re
                 .captures(c.stem)
                 .and_then(|cap| cap.get(1))
-                .and_then(|m| m.as_str().parse::<i64>().ok());
+                .and_then(|m| {
+                    m.as_str()
+                        .parse::<i64>()
+                        .ok()
+                });
 
             let remainder = if track_number.is_some() {
-                re.replace(c.stem, "").into_owned()
+                re.replace(c.stem, "")
+                    .into_owned()
             } else {
-                c.stem.to_string()
+                c.stem
+                    .to_string()
             };
 
             assert_eq!(

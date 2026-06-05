@@ -19,7 +19,9 @@ pub async fn studios(
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     let records = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Studio]),
             limit: q.limit,
@@ -30,9 +32,14 @@ pub async fn studios(
     .records;
     let total = records.len() as i64;
     Ok(Json(api::BaseItemDtoQueryResult {
-        items: records.into_iter().map(api::db_media_to_item).collect(),
+        items: records
+            .into_iter()
+            .map(api::db_media_to_item)
+            .collect(),
         total_record_count: total,
-        start_index: q.start_index.unwrap_or(0),
+        start_index: q
+            .start_index
+            .unwrap_or(0),
     }))
 }
 
@@ -43,7 +50,9 @@ pub async fn studio_by_name(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse> {
     let record = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Studio]),
             title_contains: Some(name.clone()),
@@ -72,11 +81,21 @@ pub async fn years(
         .filter_map(|t| db::MediaKind::try_from(t).ok())
         .collect();
 
-    let year_vals = db::Media::get_distinct_years(&state.ctx.db, &kinds).await?;
+    let year_vals = db::Media::get_distinct_years(
+        &state
+            .ctx
+            .db,
+        &kinds,
+    )
+    .await?;
     let items: Vec<api::BaseItemDto> = year_vals
         .into_iter()
         .map(|y| {
-            let id = Uuid::new_v5(&Uuid::NAMESPACE_OID, y.to_string().as_bytes());
+            let id = Uuid::new_v5(
+                &Uuid::NAMESPACE_OID,
+                y.to_string()
+                    .as_bytes(),
+            );
             api::BaseItemDto {
                 id,
                 name: Some(y.to_string()),
@@ -88,7 +107,9 @@ pub async fn years(
         .collect();
 
     let total = items.len() as i64;
-    let start = q.start_index.unwrap_or(0);
+    let start = q
+        .start_index
+        .unwrap_or(0);
     Ok(Json(api::BaseItemDtoQueryResult {
         items,
         total_record_count: total,
@@ -102,7 +123,11 @@ pub async fn year_by_value(
     _session: auth::AuthSession,
     Path(year): Path<i64>,
 ) -> Result<impl IntoResponse> {
-    let id = Uuid::new_v5(&Uuid::NAMESPACE_OID, year.to_string().as_bytes());
+    let id = Uuid::new_v5(
+        &Uuid::NAMESPACE_OID,
+        year.to_string()
+            .as_bytes(),
+    );
     Ok(Json(api::BaseItemDto {
         id,
         name: Some(year.to_string()),
@@ -119,7 +144,9 @@ pub async fn person_by_name(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse> {
     let record = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Person]),
             title_contains: Some(name.clone()),
@@ -142,7 +169,9 @@ pub async fn genre_by_name(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse> {
     let record = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Genre]),
             title_contains: Some(name.clone()),

@@ -18,7 +18,11 @@ fn first_to_upper(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
         None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        Some(f) => {
+            f.to_uppercase()
+                .collect::<String>()
+                + c.as_str()
+        }
     }
 }
 
@@ -97,19 +101,32 @@ fn display_title_audio(m: &StreamMeta) -> Option<String> {
 
     if let Some(lang) = m.language {
         let special = ["und", "mis", "zxx", "mul"];
-        if !special.contains(&lang.to_ascii_lowercase().as_str()) {
+        if !special.contains(
+            &lang
+                .to_ascii_lowercase()
+                .as_str(),
+        ) {
             let name = Language::from_str(lang)
                 .ok()
-                .map(|l| l.to_name().to_string())
+                .map(|l| {
+                    l.to_name()
+                        .to_string()
+                })
                 .unwrap_or_else(|| lang.to_string());
             attrs.push(first_to_upper(&name));
         }
     }
 
-    let profile_lc = m.profile.map(|p| p.to_ascii_lowercase());
+    let profile_lc = m
+        .profile
+        .map(|p| p.to_ascii_lowercase());
     if let Some(ref p) = profile_lc {
         if p != "lc" {
-            attrs.push(m.profile.unwrap().to_string());
+            attrs.push(
+                m.profile
+                    .unwrap()
+                    .to_string(),
+            );
         }
     } else if let Some(codec) = m.codec {
         attrs.push(audio_codec_friendly(codec).to_string());
@@ -169,7 +186,10 @@ fn display_title_subtitle(m: &StreamMeta) -> Option<String> {
     if let Some(lang) = m.language {
         let name = Language::from_str(lang)
             .ok()
-            .map(|l| l.to_name().to_string())
+            .map(|l| {
+                l.to_name()
+                    .to_string()
+            })
             .unwrap_or_else(|| lang.to_string());
         attrs.push(first_to_upper(&name));
     } else {
@@ -257,8 +277,15 @@ struct FfprobeFormat {
 
 fn parse_frame_rate(s: &str) -> Option<f64> {
     let mut parts = s.splitn(2, '/');
-    let num: f64 = parts.next()?.parse().ok()?;
-    let den: f64 = parts.next().unwrap_or("1").parse().ok()?;
+    let num: f64 = parts
+        .next()?
+        .parse()
+        .ok()?;
+    let den: f64 = parts
+        .next()
+        .unwrap_or("1")
+        .parse()
+        .ok()?;
     if den == 0.0 {
         return None;
     }
@@ -267,7 +294,9 @@ fn parse_frame_rate(s: &str) -> Option<f64> {
 }
 
 fn secs_to_ticks(s: &str) -> Option<i64> {
-    let secs: f64 = s.parse().ok()?;
+    let secs: f64 = s
+        .parse()
+        .ok()?;
     Some((secs * 10_000_000.0) as i64)
 }
 
@@ -291,7 +320,11 @@ fn chapter_title_to_type(title: &str) -> Option<MediaSegmentType> {
 fn chapters_to_segments(chapters: &[FfprobeChapter]) -> MediaSegments {
     let mut segs = MediaSegments::default();
     for ch in chapters {
-        let title = ch.tags.get("title").map(|s| s.as_str()).unwrap_or("");
+        let title = ch
+            .tags
+            .get("title")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let Some(kind) = chapter_title_to_type(title) else {
             continue;
         };
@@ -306,13 +339,39 @@ fn chapters_to_segments(chapters: &[FfprobeChapter]) -> MediaSegments {
             end_ticks: end,
         };
         match kind {
-            MediaSegmentType::Intro if segs.intro.is_none() => segs.intro = Some(seg),
-            MediaSegmentType::Outro if segs.outro.is_none() => segs.outro = Some(seg),
-            MediaSegmentType::Recap if segs.recap.is_none() => segs.recap = Some(seg),
-            MediaSegmentType::Preview if segs.preview.is_none() => {
+            MediaSegmentType::Intro
+                if segs
+                    .intro
+                    .is_none() =>
+            {
+                segs.intro = Some(seg)
+            }
+            MediaSegmentType::Outro
+                if segs
+                    .outro
+                    .is_none() =>
+            {
+                segs.outro = Some(seg)
+            }
+            MediaSegmentType::Recap
+                if segs
+                    .recap
+                    .is_none() =>
+            {
+                segs.recap = Some(seg)
+            }
+            MediaSegmentType::Preview
+                if segs
+                    .preview
+                    .is_none() =>
+            {
                 segs.preview = Some(seg)
             }
-            MediaSegmentType::Commercial if segs.commercial.is_none() => {
+            MediaSegmentType::Commercial
+                if segs
+                    .commercial
+                    .is_none() =>
+            {
                 segs.commercial = Some(seg)
             }
             _ => {}
@@ -340,7 +399,10 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         .output()
         .map_err(|e| anyhow!("Failed to run ffprobe: {}", e))?;
 
-    if !output.status.success() {
+    if !output
+        .status
+        .success()
+    {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!("ffprobe failed for {}: {}", url, stderr));
     }
@@ -352,26 +414,39 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         .format
         .duration
         .as_deref()
-        .and_then(|s| s.parse::<f64>().ok())
+        .and_then(|s| {
+            s.parse::<f64>()
+                .ok()
+        })
         .map(|secs| (secs * 1_000_000.0) as i64) // → µs
         .and_then(nonzero)
         .map(|us| us * 10); // µs → 100ns ticks
 
-    let container = probe.format.format_name.as_deref().map(|f| {
-        let base = f.split(',').next().unwrap_or(f);
-        match base {
-            "matroska" => "mkv".to_string(),
-            "mov" => "mp4".to_string(),
-            "mpegts" => "ts".to_string(),
-            other => other.to_string(),
-        }
-    });
+    let container = probe
+        .format
+        .format_name
+        .as_deref()
+        .map(|f| {
+            let base = f
+                .split(',')
+                .next()
+                .unwrap_or(f);
+            match base {
+                "matroska" => "mkv".to_string(),
+                "mov" => "mp4".to_string(),
+                "mpegts" => "ts".to_string(),
+                other => other.to_string(),
+            }
+        });
 
     let overall_bitrate = probe
         .format
         .bit_rate
         .as_deref()
-        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|s| {
+            s.parse::<i64>()
+                .ok()
+        })
         .and_then(nonzero);
 
     tracing::debug!(?run_time_ticks, ?container, "probe container info");
@@ -382,29 +457,53 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
     let mut sub_idx: i64 = 0;
 
     for s in &probe.streams {
-        let codec_type = s.codec_type.as_deref().unwrap_or("");
-        let language = s.tags.get("language").map(|s| s.as_str());
-        let title = s.tags.get("title").cloned();
+        let codec_type = s
+            .codec_type
+            .as_deref()
+            .unwrap_or("");
+        let language = s
+            .tags
+            .get("language")
+            .map(|s| s.as_str());
+        let title = s
+            .tags
+            .get("title")
+            .cloned();
 
         match codec_type {
             "video" => {
                 let bitrate = s
                     .bit_rate
                     .as_deref()
-                    .and_then(|b| b.parse::<i64>().ok())
+                    .and_then(|b| {
+                        b.parse::<i64>()
+                            .ok()
+                    })
                     .and_then(nonzero);
                 // Prefer r_frame_rate (exact) then avg_frame_rate for display/segment math.
                 let fps = s
                     .r_frame_rate
                     .as_deref()
                     .and_then(parse_frame_rate)
-                    .or_else(|| s.avg_frame_rate.as_deref().and_then(parse_frame_rate));
-                let codec = s.codec_name.clone().unwrap_or_default();
+                    .or_else(|| {
+                        s.avg_frame_rate
+                            .as_deref()
+                            .and_then(parse_frame_rate)
+                    });
+                let codec = s
+                    .codec_name
+                    .clone()
+                    .unwrap_or_default();
                 let is_default = video_idx == 0;
-                let is_forced = s.disposition.forced != 0;
+                let is_forced = s
+                    .disposition
+                    .forced
+                    != 0;
 
                 // Detect HDR type from color_transfer reported by ffprobe.
-                let (video_range, video_range_type) = match s.color_transfer.as_deref()
+                let (video_range, video_range_type) = match s
+                    .color_transfer
+                    .as_deref()
                 {
                     Some("smpte2084") => {
                         (api::VideoRange::Hdr, api::VideoRangeType::Hdr10)
@@ -418,11 +517,17 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                 let meta = StreamMeta {
                     language,
                     codec: Some(&codec),
-                    profile: s.profile.as_deref(),
+                    profile: s
+                        .profile
+                        .as_deref(),
                     channels: None,
                     channel_layout: None,
-                    width: s.width.and_then(nonzero),
-                    height: s.height.and_then(nonzero),
+                    width: s
+                        .width
+                        .and_then(nonzero),
+                    height: s
+                        .height
+                        .and_then(nonzero),
                     video_range: Some(&video_range),
                     is_default,
                     is_forced,
@@ -435,14 +540,22 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     type_: Some(api::MediaStreamType::Video),
                     index: s.index,
                     codec: Some(codec.clone()),
-                    codec_tag: s.codec_tag_string.clone(),
-                    profile: s.profile.clone(),
+                    codec_tag: s
+                        .codec_tag_string
+                        .clone(),
+                    profile: s
+                        .profile
+                        .clone(),
                     level: s.level,
                     width: meta.width,
                     height: meta.height,
                     bit_rate: bitrate,
-                    average_frame_rate: fps.map(|f| f as f32).and_then(nonzero),
-                    real_frame_rate: fps.map(|f| f as f32).and_then(nonzero),
+                    average_frame_rate: fps
+                        .map(|f| f as f32)
+                        .and_then(nonzero),
+                    real_frame_rate: fps
+                        .map(|f| f as f32)
+                        .and_then(nonzero),
                     is_default: Some(is_default),
                     is_forced,
                     is_avc: Some(false),
@@ -461,23 +574,41 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                 let bitrate = s
                     .bit_rate
                     .as_deref()
-                    .and_then(|b| b.parse::<i64>().ok())
+                    .and_then(|b| {
+                        b.parse::<i64>()
+                            .ok()
+                    })
                     .and_then(nonzero);
-                let channels = s.channels.and_then(nonzero);
+                let channels = s
+                    .channels
+                    .and_then(nonzero);
                 let sample_rate = s
                     .sample_rate
                     .as_deref()
-                    .and_then(|sr| sr.parse::<i64>().ok())
+                    .and_then(|sr| {
+                        sr.parse::<i64>()
+                            .ok()
+                    })
                     .and_then(nonzero);
-                let codec = s.codec_name.clone().unwrap_or_default();
+                let codec = s
+                    .codec_name
+                    .clone()
+                    .unwrap_or_default();
                 let is_default = audio_idx == 0;
-                let is_forced = s.disposition.forced != 0;
-                let channel_layout = s.channel_layout.as_deref();
+                let is_forced = s
+                    .disposition
+                    .forced
+                    != 0;
+                let channel_layout = s
+                    .channel_layout
+                    .as_deref();
 
                 let meta = StreamMeta {
                     language,
                     codec: Some(&codec),
-                    profile: s.profile.as_deref(),
+                    profile: s
+                        .profile
+                        .as_deref(),
                     channels,
                     channel_layout,
                     width: None,
@@ -515,7 +646,10 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                 audio_idx += 1;
             }
             "subtitle" => {
-                let codec = s.codec_name.clone().unwrap_or_default();
+                let codec = s
+                    .codec_name
+                    .clone()
+                    .unwrap_or_default();
                 let is_text = matches!(
                     codec.as_str(),
                     "ass" | "ssa" | "subrip" | "webvtt" | "mov_text" | "text"
@@ -530,8 +664,14 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     None
                 };
                 let is_default = sub_idx == 0;
-                let is_forced = s.disposition.forced != 0;
-                let is_hearing_impaired = s.disposition.hearing_impaired != 0;
+                let is_forced = s
+                    .disposition
+                    .forced
+                    != 0;
+                let is_hearing_impaired = s
+                    .disposition
+                    .hearing_impaired
+                    != 0;
 
                 let meta = StreamMeta {
                     language,

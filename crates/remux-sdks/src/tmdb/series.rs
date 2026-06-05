@@ -92,10 +92,14 @@ impl Endpoint for SeriesEndpoint {
         if let Some(lang) = &self.language {
             params.push(("language".to_string(), lang.clone()));
         }
-        if !self.append_to_response.is_empty() {
+        if !self
+            .append_to_response
+            .is_empty()
+        {
             params.push((
                 "append_to_response".to_string(),
-                self.append_to_response.join(","),
+                self.append_to_response
+                    .join(","),
             ));
         }
         params
@@ -237,6 +241,10 @@ impl Endpoint for SearchTvEndpoint {
     }
 
     fn query(&self) -> Vec<(String, String)> {
-        vec![("query".to_string(), self.query.clone())]
+        vec![(
+            "query".to_string(),
+            self.query
+                .clone(),
+        )]
     }
 }

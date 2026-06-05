@@ -46,14 +46,19 @@ impl Task for PurgeMediaTask {
         // transaction. PRAGMA foreign_keys cannot be changed inside a transaction,
         // and the truncate optimization (O(1) DELETE FROM table with no WHERE) is
         // disabled when foreign_keys = ON.
-        let mut conn = ctx.db.acquire().await?;
+        let mut conn = ctx
+            .db
+            .acquire()
+            .await?;
         sqlx::query("PRAGMA foreign_keys = OFF")
             .execute(&mut *conn)
             .await
             .ok();
 
         let result: Result<()> = async {
-            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+            sqlx::query("BEGIN IMMEDIATE")
+                .execute(&mut *conn)
+                .await?;
             let t2 = Instant::now();
 
             // These IN subqueries use existing media_id indexes — fast even for
@@ -126,7 +131,9 @@ impl Task for PurgeMediaTask {
             sqlx::query("DELETE FROM media_catalog_items")
                 .execute(&mut *conn)
                 .await?;
-            sqlx::query("DELETE FROM media").execute(&mut *conn).await?;
+            sqlx::query("DELETE FROM media")
+                .execute(&mut *conn)
+                .await?;
 
             tracing::debug!(elapsed = ?t2.elapsed(), "tables truncated");
 
@@ -147,7 +154,9 @@ impl Task for PurgeMediaTask {
                 .execute(&mut *conn)
                 .await?;
 
-            sqlx::query("DROP TABLE _keep").execute(&mut *conn).await?;
+            sqlx::query("DROP TABLE _keep")
+                .execute(&mut *conn)
+                .await?;
             sqlx::query("DROP TABLE _keep_images")
                 .execute(&mut *conn)
                 .await?;
@@ -165,10 +174,14 @@ impl Task for PurgeMediaTask {
 
             // Rebuild media indexes over ~1,200 surviving rows — near-instant.
             for (_, sql) in &indexes {
-                sqlx::query(sql).execute(&mut *conn).await?;
+                sqlx::query(sql)
+                    .execute(&mut *conn)
+                    .await?;
             }
 
-            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            sqlx::query("COMMIT")
+                .execute(&mut *conn)
+                .await?;
             tracing::debug!(elapsed = ?t2.elapsed(), "committed");
 
             Ok(())
@@ -183,7 +196,9 @@ impl Task for PurgeMediaTask {
 
         result?;
 
-        ctx.addons.purge_indexes(&ctx).await?;
+        ctx.addons
+            .purge_indexes(&ctx)
+            .await?;
         tracing::debug!(elapsed = ?t.elapsed(), "purge_indexes done");
 
         sqlx::query("PRAGMA incremental_vacuum")

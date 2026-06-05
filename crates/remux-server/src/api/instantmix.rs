@@ -65,7 +65,11 @@ async fn build_mix(
         sort_by: vec![ItemSortBy::Random],
         limit: Some(limit.unwrap_or(50)),
         include_user_state: true,
-        user_id: Some(session.user.id),
+        user_id: Some(
+            session
+                .user
+                .id,
+        ),
         total_count: false,
         ..Default::default()
     };
@@ -76,8 +80,10 @@ async fn build_mix(
 
 fn mix_response(items: Vec<db::Media>) -> impl IntoResponse {
     let total = items.len() as i64;
-    let dtos: Vec<api::BaseItemDto> =
-        items.into_iter().map(api::db_media_to_item).collect();
+    let dtos: Vec<api::BaseItemDto> = items
+        .into_iter()
+        .map(api::db_media_to_item)
+        .collect();
     Json(api::BaseItemDtoQueryResult {
         items: dtos,
         total_record_count: total,
@@ -97,12 +103,26 @@ pub async fn instant_mix_song(
     Path(item_id): Path<Uuid>,
     Query(q): Query<InstantMixQuery>,
 ) -> Result<impl IntoResponse> {
-    let track = db::Media::get_by_id(&state.ctx.db, &item_id)
-        .await?
-        .context_not_found("Song not found")?;
+    let track = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await?
+    .context_not_found("Song not found")?;
 
-    let genre_ids = genre_ids_for(&state.ctx.db, track.id).await;
-    let artist_ids = track.grandparent_id.into_iter().collect();
+    let genre_ids = genre_ids_for(
+        &state
+            .ctx
+            .db,
+        track.id,
+    )
+    .await;
+    let artist_ids = track
+        .grandparent_id
+        .into_iter()
+        .collect();
 
     let items = build_mix(&state.ctx, &session, genre_ids, artist_ids, q.limit).await?;
     Ok(mix_response(items))
@@ -119,12 +139,26 @@ pub async fn instant_mix_album(
     Path(item_id): Path<Uuid>,
     Query(q): Query<InstantMixQuery>,
 ) -> Result<impl IntoResponse> {
-    let album = db::Media::get_by_id(&state.ctx.db, &item_id)
-        .await?
-        .context_not_found("Album not found")?;
+    let album = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await?
+    .context_not_found("Album not found")?;
 
-    let genre_ids = genre_ids_for(&state.ctx.db, album.id).await;
-    let artist_ids = album.parent_id.into_iter().collect();
+    let genre_ids = genre_ids_for(
+        &state
+            .ctx
+            .db,
+        album.id,
+    )
+    .await;
+    let artist_ids = album
+        .parent_id
+        .into_iter()
+        .collect();
 
     let items = build_mix(&state.ctx, &session, genre_ids, artist_ids, q.limit).await?;
     Ok(mix_response(items))
@@ -141,9 +175,14 @@ pub async fn instant_mix_artist(
     Path(item_id): Path<Uuid>,
     Query(q): Query<InstantMixQuery>,
 ) -> Result<impl IntoResponse> {
-    db::Media::get_by_id(&state.ctx.db, &item_id)
-        .await?
-        .context_not_found("Artist not found")?;
+    db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await?
+    .context_not_found("Artist not found")?;
 
     let items = build_mix(&state.ctx, &session, vec![], vec![item_id], q.limit).await?;
     Ok(mix_response(items))
@@ -160,13 +199,20 @@ pub async fn instant_mix_playlist(
     Path(item_id): Path<Uuid>,
     Query(q): Query<InstantMixQuery>,
 ) -> Result<impl IntoResponse> {
-    db::Media::get_by_id(&state.ctx.db, &item_id)
-        .await?
-        .context_not_found("Playlist not found")?;
+    db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await?
+    .context_not_found("Playlist not found")?;
 
     // Fetch tracks in the playlist to gather their genres and artists.
     let tracks = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Track]),
             parent_id: Some(item_id),
@@ -177,16 +223,29 @@ pub async fn instant_mix_playlist(
     .await?
     .records;
 
-    let track_ids: Vec<Uuid> = tracks.iter().map(|t| t.id).collect();
-    let artist_ids: Vec<Uuid> =
-        tracks.iter().filter_map(|t| t.grandparent_id).collect();
+    let track_ids: Vec<Uuid> = tracks
+        .iter()
+        .map(|t| t.id)
+        .collect();
+    let artist_ids: Vec<Uuid> = tracks
+        .iter()
+        .filter_map(|t| t.grandparent_id)
+        .collect();
 
     let genre_ids: Vec<Uuid> = if track_ids.is_empty() {
         vec![]
     } else {
         let mut ids = Vec::new();
         for tid in &track_ids {
-            ids.extend(genre_ids_for(&state.ctx.db, *tid).await);
+            ids.extend(
+                genre_ids_for(
+                    &state
+                        .ctx
+                        .db,
+                    *tid,
+                )
+                .await,
+            );
         }
         ids.sort_unstable();
         ids.dedup();
@@ -208,25 +267,54 @@ pub async fn instant_mix_item(
     Path(item_id): Path<Uuid>,
     Query(q): Query<InstantMixQuery>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(&state.ctx.db, &item_id)
-        .await?
-        .context_not_found("Item not found")?;
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await?
+    .context_not_found("Item not found")?;
 
     let (genre_ids, artist_ids) = match media.kind {
         db::MediaKind::Track => {
-            let g = genre_ids_for(&state.ctx.db, media.id).await;
-            let a = media.grandparent_id.into_iter().collect();
+            let g = genre_ids_for(
+                &state
+                    .ctx
+                    .db,
+                media.id,
+            )
+            .await;
+            let a = media
+                .grandparent_id
+                .into_iter()
+                .collect();
             (g, a)
         }
         db::MediaKind::Album => {
-            let g = genre_ids_for(&state.ctx.db, media.id).await;
-            let a = media.parent_id.into_iter().collect();
+            let g = genre_ids_for(
+                &state
+                    .ctx
+                    .db,
+                media.id,
+            )
+            .await;
+            let a = media
+                .parent_id
+                .into_iter()
+                .collect();
             (g, a)
         }
         db::MediaKind::Artist => (vec![], vec![media.id]),
         db::MediaKind::Genre => (vec![media.id], vec![]),
         _ => {
-            let g = genre_ids_for(&state.ctx.db, media.id).await;
+            let g = genre_ids_for(
+                &state
+                    .ctx
+                    .db,
+                media.id,
+            )
+            .await;
             (g, vec![])
         }
     };
@@ -250,7 +338,11 @@ pub async fn instant_mix_genre(
         "SELECT id FROM media WHERE kind = 'genre' AND LOWER(title) = LOWER(?) LIMIT 1",
     )
     .bind(&name)
-    .fetch_optional(&state.ctx.db)
+    .fetch_optional(
+        &state
+            .ctx
+            .db,
+    )
     .await?
     .context_not_found("Genre not found")?;
 

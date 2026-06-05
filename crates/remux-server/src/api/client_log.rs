@@ -30,14 +30,24 @@ pub async fn log_document(
             .into_response());
     }
 
-    let client_name = session.device.app_name.replace(['/', '\\', ' '], "_");
-    let client_version = session.device.app_version.replace(['/', '\\', ' '], "_");
+    let client_name = session
+        .device
+        .app_name
+        .replace(['/', '\\', ' '], "_");
+    let client_version = session
+        .device
+        .app_version
+        .replace(['/', '\\', ' '], "_");
     let timestamp = Utc::now().format("%Y%m%d%H%M%S");
     let id = uuid::Uuid::new_v4().simple();
     let file_name =
         format!("upload_{client_name}_{client_version}_{timestamp}_{id}.log");
 
-    let log_dir = state.ctx.config.data_dir.join("logs");
+    let log_dir = state
+        .ctx
+        .config
+        .data_dir
+        .join("logs");
     tokio::fs::create_dir_all(&log_dir)
         .await
         .map_err(|e| anyhow::anyhow!("failed to create log dir: {e}"))?;

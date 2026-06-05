@@ -48,18 +48,34 @@ impl Task for RefreshLibraryTask {
             .refresh_indexes(&ctx, progress.scaled(0.0, 20.0))
             .await?;
 
-        let addons = ctx.addons.catalog_addons().await;
-        let total_work = addons.len().max(1);
+        let addons = ctx
+            .addons
+            .catalog_addons()
+            .await;
+        let total_work = addons
+            .len()
+            .max(1);
         let mut valid_pairs: HashSet<(String, String)> = HashSet::new();
 
         let catalog_progress = progress.scaled(20.0, 70.0);
-        for (addon_idx, runtime) in addons.iter().enumerate() {
+        for (addon_idx, runtime) in addons
+            .iter()
+            .enumerate()
+        {
             let addon_progress = catalog_progress.step(addon_idx, total_work);
-            let addon_id = runtime.row.id;
-            let catalog_states = runtime.row.catalog_states();
+            let addon_id = runtime
+                .row
+                .id;
+            let catalog_states = runtime
+                .row
+                .catalog_states();
             let prefix = format!("addon:{addon_id}:");
 
-            let available = match runtime.kind.catalog_list(&ctx).await {
+            let available = match runtime
+                .kind
+                .catalog_list(&ctx)
+                .await
+            {
                 Ok(v) => v,
                 Err(e) => {
                     warn!(addon = %addon_id, error = %e, "failed to list addon catalogs, skipping");
@@ -85,11 +101,21 @@ impl Task for RefreshLibraryTask {
                 "importing enabled catalogs"
             );
 
-            for (cat_idx, cat_info) in enabled.iter().enumerate() {
-                addon_progress.report(cat_idx, enabled.len().max(1));
+            for (cat_idx, cat_info) in enabled
+                .iter()
+                .enumerate()
+            {
+                addon_progress.report(
+                    cat_idx,
+                    enabled
+                        .len()
+                        .max(1),
+                );
 
                 let full_id = make_media_id(addon_id, &cat_info.provider_catalog_id);
-                let local_id = full_id.strip_prefix(&prefix).unwrap_or(&full_id);
+                let local_id = full_id
+                    .strip_prefix(&prefix)
+                    .unwrap_or(&full_id);
                 let max = catalog_states
                     .get(local_id)
                     .and_then(|s| s.max_items)
@@ -102,7 +128,11 @@ impl Task for RefreshLibraryTask {
                         .insert((addon_uuid.to_string(), local_cat_id.to_string()));
                 }
 
-                let source = match ctx.addons.make_catalog_stream(&full_id).await {
+                let source = match ctx
+                    .addons
+                    .make_catalog_stream(&full_id)
+                    .await
+                {
                     Some(s) => s,
                     None => {
                         warn!(catalog = %full_id, "no addon found for catalog, skipping");
@@ -112,7 +142,10 @@ impl Task for RefreshLibraryTask {
 
                 debug!(catalog = %full_id, max, "importing catalog items");
 
-                let stream = match source.stream(&ctx).await {
+                let stream = match source
+                    .stream(&ctx)
+                    .await
+                {
                     Ok(s) => s,
                     Err(e) => {
                         error!(catalog = %full_id, error = %e, "failed to open catalog stream");
@@ -197,7 +230,9 @@ impl Task for RefreshLibraryTask {
                 break;
             }
             let fetched = batch.len() as u32;
-            ctx.addons.process_meta_batch(batch, &ctx, false).await?;
+            ctx.addons
+                .process_meta_batch(batch, &ctx, false)
+                .await?;
             processed += fetched;
             if let Some(t) = total {
                 meta_progress.report(processed as usize, t as usize);

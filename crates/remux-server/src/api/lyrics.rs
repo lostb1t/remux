@@ -18,16 +18,34 @@ pub async fn get_lyrics(
     _session: auth::AuthSession,
     Path(item_id): Path<Uuid>,
 ) -> Result<Response> {
-    let Some(media) = db::Media::get_by_id(&state.ctx.db, &item_id).await? else {
+    let Some(media) = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await?
+    else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
     if media.kind != db::MediaKind::Track {
         return Ok(StatusCode::NOT_FOUND.into_response());
     }
 
-    let req = build_search_request(&state.ctx.db, &media).await;
+    let req = build_search_request(
+        &state
+            .ctx
+            .db,
+        &media,
+    )
+    .await;
 
-    let Some(lyrics) = state.ctx.addons.lyric_fetch(&req).await? else {
+    let Some(lyrics) = state
+        .ctx
+        .addons
+        .lyric_fetch(&req)
+        .await?
+    else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
 
@@ -41,15 +59,32 @@ pub async fn search_remote_lyrics(
     _session: auth::AuthSession,
     Path(item_id): Path<Uuid>,
 ) -> Result<Response> {
-    let Some(media) = db::Media::get_by_id(&state.ctx.db, &item_id).await? else {
+    let Some(media) = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await?
+    else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
     if media.kind != db::MediaKind::Track {
         return Ok(StatusCode::NOT_FOUND.into_response());
     }
 
-    let req = build_search_request(&state.ctx.db, &media).await;
-    let results = state.ctx.addons.lyric_search(&req).await?;
+    let req = build_search_request(
+        &state
+            .ctx
+            .db,
+        &media,
+    )
+    .await;
+    let results = state
+        .ctx
+        .addons
+        .lyric_search(&req)
+        .await?;
 
     Ok(Json(results).into_response())
 }
@@ -78,10 +113,14 @@ async fn build_search_request(
 ) -> LyricSearchRequest {
     let (artist, album) = resolve_music_titles(db, media).await;
     LyricSearchRequest {
-        title: media.title.clone(),
+        title: media
+            .title
+            .clone(),
         artist,
         album,
-        duration_secs: media.runtime.map(|r| r as f64),
+        duration_secs: media
+            .runtime
+            .map(|r| r as f64),
     }
 }
 
@@ -121,7 +160,17 @@ pub(crate) async fn resolve_music_titles(
         })
         .collect();
 
-    let artist = media.grandparent_id.and_then(|id| map.get(&id).cloned());
-    let album = media.parent_id.and_then(|id| map.get(&id).cloned());
+    let artist = media
+        .grandparent_id
+        .and_then(|id| {
+            map.get(&id)
+                .cloned()
+        });
+    let album = media
+        .parent_id
+        .and_then(|id| {
+            map.get(&id)
+                .cloned()
+        });
     (artist, album)
 }

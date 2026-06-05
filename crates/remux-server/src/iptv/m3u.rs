@@ -34,8 +34,13 @@ pub async fn parse_m3u_stream(resp: reqwest::Response) -> Result<Vec<M3uChannel>
     let mut channels = Vec::new();
     let mut pending: Option<M3uChannel> = None;
 
-    while let Some(line) = lines.next_line().await? {
-        let line = line.trim().to_string();
+    while let Some(line) = lines
+        .next_line()
+        .await?
+    {
+        let line = line
+            .trim()
+            .to_string();
         if line.starts_with("#EXTINF") {
             pending = Some(parse_extinf(&line));
         } else if !line.is_empty() && !line.starts_with('#') {
@@ -50,7 +55,9 @@ pub async fn parse_m3u_stream(resp: reqwest::Response) -> Result<Vec<M3uChannel>
 }
 
 fn parse_extinf(line: &str) -> M3uChannel {
-    let after = line.strip_prefix("#EXTINF:").unwrap_or(line);
+    let after = line
+        .strip_prefix("#EXTINF:")
+        .unwrap_or(line);
     let (attrs_part, name_part) = match after.find(',') {
         Some(idx) => (&after[..idx], after[idx + 1..].trim()),
         None => (after, ""),
@@ -61,8 +68,13 @@ fn parse_extinf(line: &str) -> M3uChannel {
     let tvg_name = extract_attr(attrs_part, "tvg-name");
     let channel_number = extract_attr(attrs_part, "tvg-chno")
         .or_else(|| extract_attr(attrs_part, "ch-number"))
-        .and_then(|s| s.parse::<i64>().ok());
-    let program_kind = group.as_deref().and_then(super::parse_program_kind);
+        .and_then(|s| {
+            s.parse::<i64>()
+                .ok()
+        });
+    let program_kind = group
+        .as_deref()
+        .and_then(super::parse_program_kind);
     M3uChannel {
         tvg_id,
         name: tvg_name.unwrap_or_else(|| name_part.to_string()),
@@ -80,7 +92,9 @@ fn extract_attr(s: &str, key: &str) -> Option<String> {
     let search_quoted = format!("{}=\"", key);
     if let Some(start) = s.find(search_quoted.as_str()) {
         let after = &s[start + search_quoted.len()..];
-        let end = after.find('"').unwrap_or(after.len());
+        let end = after
+            .find('"')
+            .unwrap_or(after.len());
         let val = after[..end].trim();
         if !val.is_empty() {
             return Some(val.to_string());
@@ -91,8 +105,12 @@ fn extract_attr(s: &str, key: &str) -> Option<String> {
     if let Some(start) = s.find(search_unquoted.as_str()) {
         let after = &s[start + search_unquoted.len()..];
         // Value ends at next space or end of string
-        let end = after.find(' ').unwrap_or(after.len());
-        let val = after[..end].trim().trim_matches('"');
+        let end = after
+            .find(' ')
+            .unwrap_or(after.len());
+        let val = after[..end]
+            .trim()
+            .trim_matches('"');
         if !val.is_empty() {
             return Some(val.to_string());
         }
@@ -112,11 +130,20 @@ mod tests {
             http://stream/1\n\
             #EXTINF:-1 tvg-id=\"ch2\" tvg-chno=\"2\",Channel 2\n\
             http://stream/2\n";
-        let resp =
-            reqwest::Response::from(http::Response::new(m3u.as_bytes().to_vec()));
-        let channels = parse_m3u_stream(resp).await.unwrap();
+        let resp = reqwest::Response::from(http::Response::new(
+            m3u.as_bytes()
+                .to_vec(),
+        ));
+        let channels = parse_m3u_stream(resp)
+            .await
+            .unwrap();
         assert_eq!(channels.len(), 2);
-        assert_eq!(channels[0].tvg_id.as_deref(), Some("ch1"));
+        assert_eq!(
+            channels[0]
+                .tvg_id
+                .as_deref(),
+            Some("ch1")
+        );
         assert_eq!(channels[0].name, "Channel 1");
         assert_eq!(channels[0].url, "http://stream/1");
         assert_eq!(channels[1].channel_number, Some(2));

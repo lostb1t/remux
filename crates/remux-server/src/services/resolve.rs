@@ -20,10 +20,14 @@ async fn persist_from_store(
     id: Uuid,
     ctx: &AppContext,
 ) -> anyhow::Result<Option<db::Media>> {
-    let Some(mut media) = ctx.store.get::<db::Media>(id.to_string()) else {
+    let Some(mut media) = ctx
+        .store
+        .get::<db::Media>(id.to_string())
+    else {
         return Ok(None);
     };
-    ctx.store.delete(id.to_string());
+    ctx.store
+        .delete(id.to_string());
 
     if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
         if !crate::services::imdb::resolve_media_imdb(&mut media, ctx).await {
@@ -31,7 +35,11 @@ async fn persist_from_store(
         }
         // Recompute the stable UUID now that we have the IMDB ID. Use the authoritative
         // path (media_id_raw → From<MediaIdRaw>) which correctly handles all kinds.
-        if media.external_ids.imdb.is_some() {
+        if media
+            .external_ids
+            .imdb
+            .is_some()
+        {
             media.id = uuid::Uuid::from(&media.media_id_raw());
         }
     }
@@ -44,7 +52,10 @@ async fn persist_from_store(
     }
 
     let root = if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album) {
-        let Some(deezer_artist_id) = media.external_ids.deezer_artist else {
+        let Some(deezer_artist_id) = media
+            .external_ids
+            .deezer_artist
+        else {
             tracing::debug!(%id, kind = ?media.kind, "persist_from_store: no deezer_artist id on music child");
             return Ok(None);
         };
@@ -56,7 +67,10 @@ async fn persist_from_store(
             title: media
                 .grandparent
                 .as_ref()
-                .map(|gp| gp.title.clone())
+                .map(|gp| {
+                    gp.title
+                        .clone()
+                })
                 .unwrap_or_default(),
             kind: db::MediaKind::Artist,
             external_ids: db::ExternalIds {
@@ -75,11 +89,12 @@ async fn persist_from_store(
     // If the caller's fake UUID differs from the resolved real UUID, keep an alias so
     // future lookups for the fake ID still resolve to the persisted row.
     if id != resolved_id {
-        ctx.store.save(
-            id.to_string(),
-            resolved_id,
-            std::time::Duration::from_secs(7 * 24 * 3600),
-        );
+        ctx.store
+            .save(
+                id.to_string(),
+                resolved_id,
+                std::time::Duration::from_secs(7 * 24 * 3600),
+            );
     }
 
     let config = std::sync::Arc::new(
@@ -87,9 +102,14 @@ async fn persist_from_store(
             .await
             .unwrap_or_default(),
     );
-    let processed = ctx.addons.process_meta_item(root, ctx, false, config).await;
+    let processed = ctx
+        .addons
+        .process_meta_item(root, ctx, false, config)
+        .await;
     if !processed.is_empty() {
-        db::Media::upsert(&ctx.db, &processed).await.ok();
+        db::Media::upsert(&ctx.db, &processed)
+            .await
+            .ok();
         crate::addons::save_pending_relations(ctx, &processed).await;
     }
     Ok(db::Media::get_by_id(&ctx.db, &resolved_id).await?)
@@ -104,14 +124,26 @@ pub(crate) async fn wait_for_persist(
     ctx: &AppContext,
 ) -> anyhow::Result<bool> {
     for &id in ids {
-        let in_db = db::Media::get_by_id(&ctx.db, &id).await?.is_some();
+        let in_db = db::Media::get_by_id(&ctx.db, &id)
+            .await?
+            .is_some();
         if !in_db {
-            let _guard = PERSIST_LOCKS.lock(id).await;
-            if db::Media::get_by_id(&ctx.db, &id).await?.is_none() {
-                persist_from_store(id, ctx).await.ok();
+            let _guard = PERSIST_LOCKS
+                .lock(id)
+                .await;
+            if db::Media::get_by_id(&ctx.db, &id)
+                .await?
+                .is_none()
+            {
+                persist_from_store(id, ctx)
+                    .await
+                    .ok();
             }
             return Ok(true);
-        } else if let Some(_guard) = PERSIST_LOCKS.lock_if_exists(&id).await {
+        } else if let Some(_guard) = PERSIST_LOCKS
+            .lock_if_exists(&id)
+            .await
+        {
             return Ok(true);
         }
     }
@@ -139,7 +171,9 @@ where
     }
 
     let result = {
-        let _guard = PERSIST_LOCKS.lock(id).await;
+        let _guard = PERSIST_LOCKS
+            .lock(id)
+            .await;
         if let Some(media) = lookup().await? {
             Ok(Some(media))
         } else {
@@ -164,7 +198,10 @@ pub(crate) async fn resolve_item(
             if let Some(media) = db::Media::get_by_id(&ctx.db, &id).await? {
                 return Ok(Some(media));
             }
-            if let Some(real_id) = ctx.store.get::<Uuid>(id.to_string()) {
+            if let Some(real_id) = ctx
+                .store
+                .get::<Uuid>(id.to_string())
+            {
                 return Ok(db::Media::get_by_id(&ctx.db, &real_id).await?);
             }
             Ok(None)
@@ -276,7 +313,12 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.unwrap().id, media.id);
+        assert_eq!(
+            result
+                .unwrap()
+                .id,
+            media.id
+        );
         assert_eq!(
             persist_calls.load(Ordering::SeqCst),
             0,
@@ -306,7 +348,12 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.unwrap().id, media.id);
+        assert_eq!(
+            result
+                .unwrap()
+                .id,
+            media.id
+        );
         assert_eq!(persist_calls.load(Ordering::SeqCst), 1);
     }
 
@@ -353,7 +400,8 @@ mod tests {
 
         let (pc1, saved1, b1) = (persist_calls.clone(), saved.clone(), barrier.clone());
         let t1 = tokio::spawn(async move {
-            b1.wait().await;
+            b1.wait()
+                .await;
             resolve_item_core(
                 id,
                 {
@@ -361,11 +409,16 @@ mod tests {
                     move || {
                         let s = saved.clone();
                         async move {
-                            Ok(if *s.read().await {
-                                Some(make_media())
-                            } else {
-                                None
-                            })
+                            Ok(
+                                if *s
+                                    .read()
+                                    .await
+                                {
+                                    Some(make_media())
+                                } else {
+                                    None
+                                },
+                            )
                         }
                     }
                 },
@@ -375,7 +428,9 @@ mod tests {
                     async move {
                         // Simulate slow persist.
                         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                        *saved.write().await = true;
+                        *saved
+                            .write()
+                            .await = true;
                         Ok(Some(make_media()))
                     }
                 },
@@ -385,7 +440,8 @@ mod tests {
 
         let (pc2, saved2, b2) = (persist_calls.clone(), saved.clone(), barrier.clone());
         let t2 = tokio::spawn(async move {
-            b2.wait().await;
+            b2.wait()
+                .await;
             resolve_item_core(
                 id,
                 {
@@ -393,11 +449,16 @@ mod tests {
                     move || {
                         let s = saved.clone();
                         async move {
-                            Ok(if *s.read().await {
-                                Some(make_media())
-                            } else {
-                                None
-                            })
+                            Ok(
+                                if *s
+                                    .read()
+                                    .await
+                                {
+                                    Some(make_media())
+                                } else {
+                                    None
+                                },
+                            )
                         }
                     }
                 },
@@ -405,7 +466,9 @@ mod tests {
                     pc2.fetch_add(1, Ordering::SeqCst);
                     let saved = saved2.clone();
                     async move {
-                        *saved.write().await = true;
+                        *saved
+                            .write()
+                            .await = true;
                         Ok(Some(make_media()))
                     }
                 },
@@ -414,8 +477,18 @@ mod tests {
         });
 
         let (r1, r2) = tokio::join!(t1, t2);
-        assert!(r1.unwrap().unwrap().is_some(), "t1 must resolve");
-        assert!(r2.unwrap().unwrap().is_some(), "t2 must resolve");
+        assert!(
+            r1.unwrap()
+                .unwrap()
+                .is_some(),
+            "t1 must resolve"
+        );
+        assert!(
+            r2.unwrap()
+                .unwrap()
+                .is_some(),
+            "t2 must resolve"
+        );
         assert_eq!(
             persist_calls.load(Ordering::SeqCst),
             1,

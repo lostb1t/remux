@@ -9,7 +9,11 @@ pub(crate) async fn resolve_media_imdb(
     media: &mut db::Media,
     ctx: &AppContext,
 ) -> bool {
-    if media.external_ids.imdb.is_some() {
+    if media
+        .external_ids
+        .imdb
+        .is_some()
+    {
         return true;
     }
 
@@ -25,6 +29,8 @@ pub(crate) async fn resolve_media_imdb(
         return false;
     };
 
-    media.external_ids.imdb = Some(imdb);
+    media
+        .external_ids
+        .imdb = Some(imdb);
     true
 }

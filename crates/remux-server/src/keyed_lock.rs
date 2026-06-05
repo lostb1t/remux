@@ -17,7 +17,9 @@ impl<K: Eq + Hash + Clone + Send + Sync + 'static> KeyedLock<K> {
     }
 
     fn inner(&self) -> Arc<DashMap<K, Arc<Mutex<()>>>> {
-        self.map.get_or_init(|| Arc::new(DashMap::new())).clone()
+        self.map
+            .get_or_init(|| Arc::new(DashMap::new()))
+            .clone()
     }
 
     /// Acquire the lock for `key`, inserting an entry if none exists.
@@ -27,20 +29,28 @@ impl<K: Eq + Hash + Clone + Send + Sync + 'static> KeyedLock<K> {
             .entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let _guard = mutex.lock_owned().await;
+        let _guard = mutex
+            .lock_owned()
+            .await;
         KeyedLockGuard { map, key, _guard }
     }
 
     pub fn contains_key(&self, key: &K) -> bool {
-        self.map.get().map_or(false, |m| m.contains_key(key))
+        self.map
+            .get()
+            .map_or(false, |m| m.contains_key(key))
     }
 
     /// Acquire the lock only if an entry already exists (someone else is working).
     /// Returns `None` immediately if no entry is found.
     pub async fn lock_if_exists(&self, key: &K) -> Option<KeyedLockGuard<K>> {
         let map = self.inner();
-        let mutex = map.get(key).map(|e| Arc::clone(&e))?;
-        let _guard = mutex.lock_owned().await;
+        let mutex = map
+            .get(key)
+            .map(|e| Arc::clone(&e))?;
+        let _guard = mutex
+            .lock_owned()
+            .await;
         Some(KeyedLockGuard {
             map,
             key: key.clone(),
@@ -57,6 +67,7 @@ pub(crate) struct KeyedLockGuard<K: Eq + Hash + Clone + Send + Sync + 'static> {
 
 impl<K: Eq + Hash + Clone + Send + Sync + 'static> Drop for KeyedLockGuard<K> {
     fn drop(&mut self) {
-        self.map.remove(&self.key);
+        self.map
+            .remove(&self.key);
     }
 }

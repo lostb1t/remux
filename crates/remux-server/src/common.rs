@@ -47,11 +47,16 @@ pub async fn init_server_id(db: &sqlx::SqlitePool) -> anyhow::Result<()> {
         Some(existing) => {
             // Normalize: parse back to UUID and emit simple (no-hyphen) form.
             Uuid::parse_str(&existing)
-                .map(|u| u.simple().to_string())
+                .map(|u| {
+                    u.simple()
+                        .to_string()
+                })
                 .unwrap_or(existing)
         }
         None => {
-            let new_id = Uuid::new_v4().simple().to_string();
+            let new_id = Uuid::new_v4()
+                .simple()
+                .to_string();
             crate::db::Settings::set(db, "server_id", &new_id).await?;
             new_id
         }
@@ -74,14 +79,21 @@ pub fn native_to_utc(opt_date: Option<NaiveDate>) -> Option<DateTime<Utc>> {
 }
 
 pub async fn download_to_file(url: &str) -> Result<TokioFile> {
-    let resp = reqwest::get(url).await?.error_for_status()?;
-    let bytes = resp.bytes().await?;
+    let resp = reqwest::get(url)
+        .await?
+        .error_for_status()?;
+    let bytes = resp
+        .bytes()
+        .await?;
 
     let std_file = tempfile::tempfile()?; // std::fs::File
     let mut file = TokioFile::from_std(std_file); // convert to async
-    file.write_all(&bytes).await?;
-    file.sync_all().await?;
-    file.seek(std::io::SeekFrom::Start(0)).await?;
+    file.write_all(&bytes)
+        .await?;
+    file.sync_all()
+        .await?;
+    file.seek(std::io::SeekFrom::Start(0))
+        .await?;
 
     Ok(file)
 }
@@ -188,7 +200,10 @@ where
 pub fn parse_strings_to_u64s(strings: Vec<String>) -> Vec<u64> {
     strings
         .into_iter()
-        .filter_map(|s| s.parse::<u64>().ok())
+        .filter_map(|s| {
+            s.parse::<u64>()
+                .ok()
+        })
         .collect()
 }
 
@@ -203,7 +218,10 @@ impl std::str::FromStr for TickUnit {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+        match s
+            .to_lowercase()
+            .as_str()
+        {
             "ticks" => Ok(TickUnit::Ticks),
             "seconds" => Ok(TickUnit::Seconds),
             "minutes" => Ok(TickUnit::Minutes),
@@ -258,13 +276,17 @@ impl ToRunTimeTicks for f64 {
 // Strings
 impl ToRunTimeTicks for String {
     fn to_ticks(&self, unit: TickUnit) -> Option<i64> {
-        self.parse::<f64>().ok().and_then(|v| v.to_ticks(unit))
+        self.parse::<f64>()
+            .ok()
+            .and_then(|v| v.to_ticks(unit))
     }
 }
 
 impl ToRunTimeTicks for &str {
     fn to_ticks(&self, unit: TickUnit) -> Option<i64> {
-        self.parse::<f64>().ok().and_then(|v| v.to_ticks(unit))
+        self.parse::<f64>()
+            .ok()
+            .and_then(|v| v.to_ticks(unit))
     }
 }
 
@@ -295,7 +317,9 @@ pub async fn tmdb_client(
 pub fn tmdb_client_from_config(
     cfg: &crate::api::ServerConfiguration,
 ) -> Option<sdks::RestClient<sdks::BearerAuth>> {
-    let key = cfg.get_tmdb_key().to_string();
+    let key = cfg
+        .get_tmdb_key()
+        .to_string();
     sdks::RestClient::new("https://api.themoviedb.org/3/")
         .ok()
         .map(|c| c.with_auth(sdks::BearerAuth { token: key }))
@@ -360,6 +384,8 @@ impl<T> IntoVec<T> for Vec<T> {
     where
         T: Into<U>,
     {
-        self.into_iter().map(|x| x.into()).collect()
+        self.into_iter()
+            .map(|x| x.into())
+            .collect()
     }
 }

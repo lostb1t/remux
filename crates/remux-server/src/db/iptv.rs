@@ -48,9 +48,17 @@ impl IptvSource {
         if self.source_type != IptvSourceType::Xtream {
             return None;
         }
-        let base = self.m3u_url.trim_end_matches('/');
-        let user = self.xtream_username.as_deref().unwrap_or("");
-        let pass = self.xtream_password.as_deref().unwrap_or("");
+        let base = self
+            .m3u_url
+            .trim_end_matches('/');
+        let user = self
+            .xtream_username
+            .as_deref()
+            .unwrap_or("");
+        let pass = self
+            .xtream_password
+            .as_deref()
+            .unwrap_or("");
         Some(format!(
             "{}/xmltv.php?username={}&password={}",
             base, user, pass
@@ -61,7 +69,10 @@ impl IptvSource {
     /// (channels are fetched via the native player API, not via this URL).
     pub fn m3u_playlist_url(&self) -> Option<String> {
         if self.source_type == IptvSourceType::M3u {
-            Some(self.m3u_url.clone())
+            Some(
+                self.m3u_url
+                    .clone(),
+            )
         } else {
             None
         }

@@ -88,7 +88,9 @@ fn parse_cache_storage_key(storage_key: &str) -> Option<(String, String)> {
 }
 
 fn normalize_registration_id(id: &str) -> String {
-    id.strip_prefix("request-").unwrap_or(id).to_string()
+    id.strip_prefix("request-")
+        .unwrap_or(id)
+        .to_string()
 }
 
 fn compute_expiration(ttl_seconds: i64) -> Option<DateTime<Utc>> {
@@ -174,7 +176,11 @@ pub async fn remux_cache_stats(
         "SELECT key, value FROM settings WHERE key LIKE ?1",
     )
     .bind(pattern)
-    .fetch_all(&state.ctx.db)
+    .fetch_all(
+        &state
+            .ctx
+            .db,
+    )
     .await?;
 
     let mut namespaces = HashSet::new();
@@ -188,7 +194,10 @@ pub async fn remux_cache_stats(
         }
 
         let parsed = serde_json::from_str::<CacheRecord>(raw_value).ok();
-        let expired = parsed.as_ref().map(is_expired).unwrap_or(false);
+        let expired = parsed
+            .as_ref()
+            .map(is_expired)
+            .unwrap_or(false);
 
         if expired {
             expired_keys += 1;
@@ -201,7 +210,11 @@ pub async fn remux_cache_stats(
     for storage_key in expired_storage_keys {
         sqlx::query("DELETE FROM settings WHERE key = ?1")
             .bind(storage_key)
-            .execute(&state.ctx.db)
+            .execute(
+                &state
+                    .ctx
+                    .db,
+            )
             .await?;
     }
 
@@ -224,7 +237,15 @@ pub async fn remux_cache_get(
 ) -> Result<Response> {
     let ns = query.ns;
 
-    let Some(record) = load_cache_record(&state.ctx.db, &ns, &key).await? else {
+    let Some(record) = load_cache_record(
+        &state
+            .ctx
+            .db,
+        &ns,
+        &key,
+    )
+    .await?
+    else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
 
@@ -246,7 +267,9 @@ pub async fn remux_cache_set(
     Json(payload): Json<CacheSetRequest>,
 ) -> Result<Response> {
     save_cache_record(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &query.ns,
         &key,
         &payload.value,
@@ -264,7 +287,14 @@ pub async fn remux_cache_delete(
     Path(key): Path<String>,
     Query(query): Query<NamespaceQuery>,
 ) -> Result<Response> {
-    delete_cache_record(&state.ctx.db, &query.ns, &key).await?;
+    delete_cache_record(
+        &state
+            .ctx
+            .db,
+        &query.ns,
+        &key,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -278,7 +308,15 @@ pub async fn remux_cache_bulk(
     let mut out = HashMap::<String, String>::new();
 
     for key in payload.keys {
-        if let Some(record) = load_cache_record(&state.ctx.db, &query.ns, &key).await? {
+        if let Some(record) = load_cache_record(
+            &state
+                .ctx
+                .db,
+            &query.ns,
+            &key,
+        )
+        .await?
+        {
             out.insert(key, record.value);
         }
     }
@@ -306,17 +344,45 @@ fn source_to_dto(s: &db::Media) -> StreamMetadataDto {
     // Title in the DB carries the merged "name\ndescription" string —
     // split it back so legacy clients that only render `Name` still
     // see something useful and ones that consume both get the pair.
-    let (name, description) = match s.title.split_once('\n') {
-        Some((n, d)) => (Some(n.trim().to_string()), Some(d.trim().to_string())),
-        None if !s.title.is_empty() => (Some(s.title.clone()), None),
+    let (name, description) = match s
+        .title
+        .split_once('\n')
+    {
+        Some((n, d)) => (
+            Some(
+                n.trim()
+                    .to_string(),
+            ),
+            Some(
+                d.trim()
+                    .to_string(),
+            ),
+        ),
+        None if !s
+            .title
+            .is_empty() =>
+        {
+            (
+                Some(
+                    s.title
+                        .clone(),
+                ),
+                None,
+            )
+        }
         _ => (None, None),
     };
     StreamMetadataDto {
         id: s.id,
         name,
         description,
-        index: s.idx.unwrap_or(0),
-        size: s.probe_data.as_ref().and_then(|p| p.size),
+        index: s
+            .idx
+            .unwrap_or(0),
+        size: s
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.size),
     }
 }
 
@@ -324,13 +390,27 @@ fn source_to_dto(s: &db::Media) -> StreamMetadataDto {
 /// Returns stream metadata from `/gelato/streams/{id}` so the
 /// client can match versions across episodes without re-issuing playback info.
 async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsResponse> {
-    let Some(media) = db::Media::get_by_id(&state.ctx.db, &id).await? else {
+    let Some(media) = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    else {
         return Ok(StreamsResponse { streams: vec![] });
     };
 
     // Accept both the parent (Movie/Episode) and the Source itself.
     let mut parent = if media.kind == db::MediaKind::Stream {
-        media.parent(&state.ctx.db).await?.unwrap_or(media)
+        media
+            .parent(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await?
+            .unwrap_or(media)
     } else {
         media
     };
@@ -342,24 +422,49 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
         return Ok(StreamsResponse { streams: vec![] });
     }
 
-    let mut sources = parent.streams(&state.ctx.db).await.unwrap_or_default();
-    sources.sort_by_key(|s| s.idx.unwrap_or(0));
-
-    let groups = db::StreamGroup::list(&state.ctx.db)
+    let mut sources = parent
+        .streams(
+            &state
+                .ctx
+                .db,
+        )
         .await
         .unwrap_or_default();
-    let enabled_groups: Vec<&db::StreamGroup> =
-        groups.iter().filter(|g| g.enabled).collect();
+    sources.sort_by_key(|s| {
+        s.idx
+            .unwrap_or(0)
+    });
+
+    let groups = db::StreamGroup::list(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let enabled_groups: Vec<&db::StreamGroup> = groups
+        .iter()
+        .filter(|g| g.enabled)
+        .collect();
 
     if enabled_groups.is_empty() {
-        let streams = sources.iter().map(source_to_dto).collect();
+        let streams = sources
+            .iter()
+            .map(source_to_dto)
+            .collect();
         return Ok(StreamsResponse { streams });
     }
 
-    let config = db::Settings::get_config(&state.ctx.db)
-        .await
-        .unwrap_or_default();
-    let show_ungrouped = config.stream_groups_show_ungrouped.unwrap_or(true);
+    let config = db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
+    let show_ungrouped = config
+        .stream_groups_show_ungrouped
+        .unwrap_or(true);
 
     let mut result: Vec<StreamMetadataDto> = vec![];
     let mut matched_ids: HashSet<Uuid> = HashSet::new();
@@ -419,7 +524,10 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
             name: Some(group.display_name()),
             description,
             index: result.len() as i64,
-            size: best.probe_data.as_ref().and_then(|p| p.size),
+            size: best
+                .probe_data
+                .as_ref()
+                .and_then(|p| p.size),
         });
     }
 
@@ -458,15 +566,29 @@ pub async fn remux_meta(
         _ => remux_sdks::stremio::MediaType::Movie,
     };
 
-    let manifest_url = match crate::addons::Addon::list(&state.ctx.db).await {
+    let manifest_url = match crate::addons::Addon::list(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    {
         Ok(addons) => addons
             .into_iter()
-            .filter(|a| a.enabled && a.preset.kind == "stremio")
+            .filter(|a| {
+                a.enabled
+                    && a.preset
+                        .kind
+                        == "stremio"
+            })
             .find_map(|a| {
                 a.preset
                     .config
                     .get("manifest_url")
-                    .and_then(|v| v.as_str().map(str::to_string))
+                    .and_then(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                    })
             }),
         Err(_) => None,
     };
@@ -483,7 +605,10 @@ pub async fn remux_meta(
         }
     };
 
-    match svc.get_meta(media_type, id).await {
+    match svc
+        .get_meta(media_type, id)
+        .await
+    {
         Ok(meta) => Ok(Json::<remux_sdks::stremio::Meta>(meta).into_response()),
         Err(_) => {
             Ok((StatusCode::NOT_FOUND, Json(serde_json::Value::Null)).into_response())

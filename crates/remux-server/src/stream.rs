@@ -77,7 +77,9 @@ impl StreamDescriptor {
     pub fn server_input(&self, media_id: Uuid, port: u16) -> String {
         match self {
             Self::Http { url, .. } | Self::Rtsp { url } => url.clone(),
-            Self::Local(path) => path.to_string_lossy().into_owned(),
+            Self::Local(path) => path
+                .to_string_lossy()
+                .into_owned(),
             Self::Torrent { .. } | Self::Opendal { .. } => {
                 format!("http://127.0.0.1:{}/stream/{}", port, media_id)
             }
@@ -182,7 +184,12 @@ impl StreamInfo {
     /// Extract a resolution tag ("2160p", "1080p", "720p", etc.) from the
     /// filename or name for use in next-stream matching on probe failure.
     pub fn resolution_tag(&self) -> Option<&'static str> {
-        let src = self.filename.as_deref().or(self.name.as_deref())?;
+        let src = self
+            .filename
+            .as_deref()
+            .or(self
+                .name
+                .as_deref())?;
         let lower = src.to_lowercase();
         for tag in ["2160p", "4k", "1080p", "720p", "480p", "360p"] {
             if lower.contains(tag) {
@@ -271,10 +278,19 @@ impl StreamSource for HttpSource {
             .context_bad_request("upstream request failed")?;
 
         let status = upstream.status();
-        let upstream_headers = upstream.headers().clone();
-        let body = Body::from_stream(upstream.bytes_stream().map_err(io::Error::other));
+        let upstream_headers = upstream
+            .headers()
+            .clone();
+        let body = Body::from_stream(
+            upstream
+                .bytes_stream()
+                .map_err(io::Error::other),
+        );
 
-        let mut resp = Response::builder().status(status).body(body).unwrap();
+        let mut resp = Response::builder()
+            .status(status)
+            .body(body)
+            .unwrap();
         let out = resp.headers_mut();
         for (k, v) in &upstream_headers {
             match k.as_str() {
@@ -311,7 +327,10 @@ impl StreamSource for LocalSource {
 
         let range_str = headers
             .get(http::header::RANGE)
-            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                v.to_str()
+                    .ok()
+            })
             .map(str::to_owned);
 
         if let Some(range) = range_str {
@@ -388,14 +407,19 @@ pub fn parse_range(range: &str, file_size: u64) -> anyhow::Result<(u64, u64)> {
     let end: u64 = if end_str.is_empty() {
         file_size - 1
     } else {
-        end_str.parse::<u64>()?.min(file_size - 1)
+        end_str
+            .parse::<u64>()?
+            .min(file_size - 1)
     };
 
     Ok((start, end))
 }
 
 pub fn mime_from_path(path: &std::path::Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()) {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+    {
         Some("mp4") | Some("m4v") => "video/mp4",
         Some("mkv") => "video/x-matroska",
         Some("avi") => "video/x-msvideo",
@@ -419,7 +443,10 @@ fn extract_btih(magnet: &str) -> Option<String> {
         .ok()?
         .query_pairs()
         .find(|(k, _)| k == "xt")
-        .and_then(|(_, v)| v.strip_prefix("urn:btih:").map(|h| h.to_ascii_lowercase()))
+        .and_then(|(_, v)| {
+            v.strip_prefix("urn:btih:")
+                .map(|h| h.to_ascii_lowercase())
+        })
 }
 
 fn extract_query_param(url: &str, param: &str) -> Option<String> {

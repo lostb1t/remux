@@ -13,7 +13,10 @@ pub struct StremioService {
 
 impl StremioService {
     pub fn from_url(url: &str) -> Result<Self> {
-        let base = url.trim_end_matches('/').to_string() + "/";
+        let base = url
+            .trim_end_matches('/')
+            .to_string()
+            + "/";
         Ok(Self {
             client: sdks::stremio::client(&base)?,
         })
@@ -62,8 +65,12 @@ impl StremioService {
             .client
             .execute(
                 sdks::stremio::CatalogEndpoint {
-                    kind: catalog.kind.clone(),
-                    id: catalog.id.clone(),
+                    kind: catalog
+                        .kind
+                        .clone(),
+                    id: catalog
+                        .id
+                        .clone(),
                     search: Some(q),
                     genre: None,
                     skip: None,
@@ -119,7 +126,9 @@ impl StremioService {
         kind: String,
         id: String,
     ) -> Result<Pin<Box<dyn Stream<Item = sdks::stremio::Meta> + Send>>> {
-        let client = self.client.clone();
+        let client = self
+            .client
+            .clone();
 
         let t0 = Instant::now();
         let first_page = client
@@ -132,7 +141,9 @@ impl StremioService {
             })
             .await?;
 
-        let page_size = first_page.metas.len() as u32;
+        let page_size = first_page
+            .metas
+            .len() as u32;
         tracing::debug!(kind = %kind, id = %id, page_size, elapsed = ?t0.elapsed(), "catalog first page");
         if page_size == 0 {
             return Ok(Box::pin(stream::empty()));
@@ -167,7 +178,11 @@ impl StremioService {
                 future::ready(
                     result
                         .as_ref()
-                        .map(|response| !response.metas.is_empty())
+                        .map(|response| {
+                            !response
+                                .metas
+                                .is_empty()
+                        })
                         .unwrap_or(true),
                 )
             })

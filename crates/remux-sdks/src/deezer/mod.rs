@@ -225,7 +225,11 @@ impl Endpoint for ArtistAlbumsEndpoint {
         format!("artist/{}/albums", self.id)
     }
     fn query(&self) -> Vec<(String, String)> {
-        vec![("limit".to_string(), self.limit.to_string())]
+        vec![(
+            "limit".to_string(),
+            self.limit
+                .to_string(),
+        )]
     }
 }
 
@@ -254,8 +258,16 @@ impl Endpoint for SearchTracksEndpoint {
     }
     fn query(&self) -> Vec<(String, String)> {
         vec![
-            ("q".to_string(), self.q.clone()),
-            ("limit".to_string(), self.limit.to_string()),
+            (
+                "q".to_string(),
+                self.q
+                    .clone(),
+            ),
+            (
+                "limit".to_string(),
+                self.limit
+                    .to_string(),
+            ),
         ]
     }
 }
@@ -273,8 +285,16 @@ impl Endpoint for SearchAlbumsEndpoint {
     }
     fn query(&self) -> Vec<(String, String)> {
         vec![
-            ("q".to_string(), self.q.clone()),
-            ("limit".to_string(), self.limit.to_string()),
+            (
+                "q".to_string(),
+                self.q
+                    .clone(),
+            ),
+            (
+                "limit".to_string(),
+                self.limit
+                    .to_string(),
+            ),
         ]
     }
 }
@@ -292,8 +312,16 @@ impl Endpoint for SearchArtistsEndpoint {
     }
     fn query(&self) -> Vec<(String, String)> {
         vec![
-            ("q".to_string(), self.q.clone()),
-            ("limit".to_string(), self.limit.to_string()),
+            (
+                "q".to_string(),
+                self.q
+                    .clone(),
+            ),
+            (
+                "limit".to_string(),
+                self.limit
+                    .to_string(),
+            ),
         ]
     }
 }

@@ -21,9 +21,14 @@ pub async fn stream_proxy(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(&state.ctx.db, &id)
-        .await?
-        .context_not_found("not found")?;
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .context_not_found("not found")?;
 
     let descriptor = media
         .stream_info
@@ -37,19 +42,32 @@ pub async fn stream_proxy(
             .get(addon_id)
             .await
             .context_not_found("addon not found")?;
-        return addon.kind.serve_stream(&descriptor, &headers).await;
+        return addon
+            .kind
+            .serve_stream(&descriptor, &headers)
+            .await;
     }
 
     if matches!(descriptor, StreamDescriptor::Torrent { .. }) {
-        let cfg = db::Settings::get_config(&state.ctx.db)
-            .await
-            .unwrap_or_default();
-        if !cfg.p2p_enabled.unwrap_or(true) {
+        let cfg = db::Settings::get_config(
+            &state
+                .ctx
+                .db,
+        )
+        .await
+        .unwrap_or_default();
+        if !cfg
+            .p2p_enabled
+            .unwrap_or(true)
+        {
             return Err(anyhow::anyhow!("P2P disabled")).context_bad_request(
                 "P2P streams are disabled by the server administrator",
             );
         }
     }
 
-    descriptor.into_source().serve(&state, &headers).await
+    descriptor
+        .into_source()
+        .serve(&state, &headers)
+        .await
 }

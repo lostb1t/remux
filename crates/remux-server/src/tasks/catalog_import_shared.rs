@@ -29,12 +29,17 @@ where
 {
     // Stop pulling from the underlying paginated stream once we have enough items.
     // Without this, the stream fetches ALL pages until empty even when max=50.
-    let mut chunks = stream.take(max).chunks(250);
+    let mut chunks = stream
+        .take(max)
+        .chunks(250);
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut total = 0usize;
     let membership = catalog_membership(media_id);
 
-    while let Some(items) = chunks.next().await {
+    while let Some(items) = chunks
+        .next()
+        .await
+    {
         progress.report(total, max.max(1));
 
         let remaining = max.saturating_sub(total);
@@ -42,7 +47,10 @@ where
             break;
         }
 
-        let items: Vec<db::Media> = items.into_iter().take(remaining).collect();
+        let items: Vec<db::Media> = items
+            .into_iter()
+            .take(remaining)
+            .collect();
         if items.is_empty() {
             break;
         }
@@ -50,10 +58,16 @@ where
         // Separate top-level items (series/movies) from any sub-items in the stream.
         let top_level: Vec<db::Media> = items
             .iter()
-            .filter(|m| m.parent_id.is_none())
+            .filter(|m| {
+                m.parent_id
+                    .is_none()
+            })
             .cloned()
             .collect();
-        let top_ids: Vec<Uuid> = top_level.iter().map(|m| m.id).collect();
+        let top_ids: Vec<Uuid> = top_level
+            .iter()
+            .map(|m| m.id)
+            .collect();
 
         // One batch query: which of these are already in DB with metadata?
         let already_refreshed = fetch_already_refreshed_ids(&ctx.db, &top_ids).await;
@@ -75,7 +89,11 @@ where
             .filter(|m| m.kind == db::MediaKind::Series)
             .map(|m| m.id)
             .collect();
-        if let Err(e) = ctx.addons.process_meta_batch(new_items, ctx, false).await {
+        if let Err(e) = ctx
+            .addons
+            .process_meta_batch(new_items, ctx, false)
+            .await
+        {
             error!(catalog = media_id, error = %e, "failed to process new items chunk");
             continue;
         }
@@ -101,8 +119,10 @@ where
         // Record catalog membership and apply catalog tags for the original top-level IDs.
         if let Some((addon_uuid, local_cat_id)) = membership {
             // Fetch tags configured for this catalog.
-            let catalog_tags: Vec<String> =
-                ctx.addons.catalog_tags(addon_uuid, local_cat_id).await;
+            let catalog_tags: Vec<String> = ctx
+                .addons
+                .catalog_tags(addon_uuid, local_cat_id)
+                .await;
 
             for id in &top_ids {
                 if let Err(e) = sqlx::query(
@@ -133,10 +153,23 @@ where
             }
         }
 
-        for item in items.iter().filter(|m| m.parent_id.is_none()) {
-            *counts.entry(item.kind.to_string()).or_insert(0) += 1;
+        for item in items
+            .iter()
+            .filter(|m| {
+                m.parent_id
+                    .is_none()
+            })
+        {
+            *counts
+                .entry(
+                    item.kind
+                        .to_string(),
+                )
+                .or_insert(0) += 1;
         }
-        total = counts.values().sum();
+        total = counts
+            .values()
+            .sum();
         if total >= max {
             break;
         }
@@ -161,9 +194,14 @@ async fn fetch_already_refreshed_ids(
         sep.push_bind(*id);
     }
     qb.push(")");
-    let rows: Vec<(Uuid,)> =
-        qb.build_query_as().fetch_all(db).await.unwrap_or_default();
-    rows.into_iter().map(|(id,)| id).collect()
+    let rows: Vec<(Uuid,)> = qb
+        .build_query_as()
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
+    rows.into_iter()
+        .map(|(id,)| id)
+        .collect()
 }
 
 /// Delete rows from `media_catalog_items` whose (addon_id, catalog_id) pair is not in `valid_pairs`.

@@ -346,7 +346,11 @@ pub enum CollectionMediaKind {
 
 impl From<&str> for CollectionMediaKind {
     fn from(s: &str) -> Self {
-        match s.trim().to_lowercase().as_str() {
+        match s
+            .trim()
+            .to_lowercase()
+            .as_str()
+        {
             "series" | "episode" => Self::Series,
             "album" | "artist" | "track" => Self::Music,
             _ => Self::Movie,
@@ -403,7 +407,9 @@ impl MediaRelation {
             return Ok(());
         }
 
-        let mut tx = db.begin().await?;
+        let mut tx = db
+            .begin()
+            .await?;
 
         for chunk in items.chunks(CHUNK_SIZE) {
             let mut qb = sqlx::QueryBuilder::new(
@@ -421,10 +427,13 @@ impl MediaRelation {
 
             qb.push(" ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight, character = excluded.character");
 
-            qb.build().execute(&mut *tx).await?;
+            qb.build()
+                .execute(&mut *tx)
+                .await?;
         }
 
-        tx.commit().await?;
+        tx.commit()
+            .await?;
         Ok(())
     }
 
@@ -466,7 +475,9 @@ impl MediaRelation {
                 sep.push_bind(id);
             }
             qb.push(")");
-            qb.build().execute(db).await?;
+            qb.build()
+                .execute(db)
+                .await?;
         }
         Ok(())
     }
@@ -498,7 +509,9 @@ impl MediaRelation {
         .bind(playlist_id)
         .fetch_one(db)
         .await?;
-        let mut next_weight = max_weight.map(|w| w + 1).unwrap_or(0);
+        let mut next_weight = max_weight
+            .map(|w| w + 1)
+            .unwrap_or(0);
         let items: Vec<Self> = media_ids
             .iter()
             .map(|&media_id| {
@@ -533,7 +546,9 @@ impl MediaRelation {
             sep.push_bind(id);
         }
         qb.push(")");
-        qb.build().execute(db).await?;
+        qb.build()
+            .execute(db)
+            .await?;
         Ok(())
     }
 
@@ -544,22 +559,31 @@ impl MediaRelation {
         new_index: usize,
     ) -> Result<()> {
         let mut items = Self::get_playlist_items(db, playlist_id).await?;
-        let Some(pos) = items.iter().position(|r| &r.relation_id == relation_id) else {
+        let Some(pos) = items
+            .iter()
+            .position(|r| &r.relation_id == relation_id)
+        else {
             return Ok(());
         };
         let item = items.remove(pos);
         let insert_at = new_index.min(items.len());
         items.insert(insert_at, item);
 
-        let mut tx = db.begin().await?;
-        for (i, r) in items.iter().enumerate() {
+        let mut tx = db
+            .begin()
+            .await?;
+        for (i, r) in items
+            .iter()
+            .enumerate()
+        {
             sqlx::query("UPDATE media_relations SET weight = ? WHERE relation_id = ?")
                 .bind(i as i64)
                 .bind(r.relation_id)
                 .execute(&mut *tx)
                 .await?;
         }
-        tx.commit().await?;
+        tx.commit()
+            .await?;
         Ok(())
     }
 
@@ -595,7 +619,9 @@ impl MediaRelation {
         .bind(collection_id)
         .fetch_one(db)
         .await?;
-        let mut next_weight = max_weight.map(|w| w + 1).unwrap_or(0);
+        let mut next_weight = max_weight
+            .map(|w| w + 1)
+            .unwrap_or(0);
         let items: Vec<Self> = media_ids
             .iter()
             .map(|&media_id| {
@@ -620,22 +646,31 @@ impl MediaRelation {
         new_index: usize,
     ) -> Result<()> {
         let mut items = Self::get_collection_items(db, collection_id).await?;
-        let Some(pos) = items.iter().position(|r| &r.relation_id == relation_id) else {
+        let Some(pos) = items
+            .iter()
+            .position(|r| &r.relation_id == relation_id)
+        else {
             return Ok(());
         };
         let item = items.remove(pos);
         let insert_at = new_index.min(items.len());
         items.insert(insert_at, item);
 
-        let mut tx = db.begin().await?;
-        for (i, r) in items.iter().enumerate() {
+        let mut tx = db
+            .begin()
+            .await?;
+        for (i, r) in items
+            .iter()
+            .enumerate()
+        {
             sqlx::query("UPDATE media_relations SET weight = ? WHERE relation_id = ?")
                 .bind(i as i64)
                 .bind(r.relation_id)
                 .execute(&mut *tx)
                 .await?;
         }
-        tx.commit().await?;
+        tx.commit()
+            .await?;
         Ok(())
     }
 
@@ -646,14 +681,17 @@ impl MediaRelation {
         collection_id: &Uuid,
         media_ids: &[Uuid],
     ) -> Result<()> {
-        let mut tx = db.begin().await?;
+        let mut tx = db
+            .begin()
+            .await?;
         sqlx::query(
             "DELETE FROM media_relations WHERE left_media_id = ? AND role = 'collection'",
         )
         .bind(collection_id)
         .execute(&mut *tx)
         .await?;
-        tx.commit().await?;
+        tx.commit()
+            .await?;
 
         Self::add_collection_items(db, collection_id, media_ids).await
     }
@@ -717,21 +755,36 @@ impl ExternalIds {
         let mut result = Self::default();
         for cap in RE.captures_iter(path) {
             let provider = cap[1].to_ascii_lowercase();
-            let value = cap[2].trim().to_string();
+            let value = cap[2]
+                .trim()
+                .to_string();
             match provider.as_str() {
                 "tmdb" | "tmdbid" => {
-                    if result.tmdb.is_none() {
-                        result.tmdb = value.parse::<i64>().ok();
+                    if result
+                        .tmdb
+                        .is_none()
+                    {
+                        result.tmdb = value
+                            .parse::<i64>()
+                            .ok();
                     }
                 }
                 "imdb" | "imdbid" => {
-                    if result.imdb.is_none() {
+                    if result
+                        .imdb
+                        .is_none()
+                    {
                         result.imdb = Some(value);
                     }
                 }
                 "tvdb" | "tvdbid" => {
-                    if result.tvdb.is_none() {
-                        result.tvdb = value.parse::<i64>().ok();
+                    if result
+                        .tvdb
+                        .is_none()
+                    {
+                        result.tvdb = value
+                            .parse::<i64>()
+                            .ok();
                     }
                 }
                 _ => {}
@@ -741,28 +794,50 @@ impl ExternalIds {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.imdb.is_none()
-            && self.series_imdb.is_none()
-            && self.tmdb.is_none()
-            && self.tvdb.is_none()
+        self.imdb
+            .is_none()
+            && self
+                .series_imdb
+                .is_none()
+            && self
+                .tmdb
+                .is_none()
+            && self
+                .tvdb
+                .is_none()
     }
 
     /// Merge another `ExternalIds` into `self`, with `other` taking precedence
     /// for any field that is `Some`.
     pub fn merge(mut self, other: Self) -> Self {
-        if other.imdb.is_some() {
+        if other
+            .imdb
+            .is_some()
+        {
             self.imdb = other.imdb;
         }
-        if other.series_imdb.is_some() {
+        if other
+            .series_imdb
+            .is_some()
+        {
             self.series_imdb = other.series_imdb;
         }
-        if other.tmdb.is_some() {
+        if other
+            .tmdb
+            .is_some()
+        {
             self.tmdb = other.tmdb;
         }
-        if other.series_tmdb.is_some() {
+        if other
+            .series_tmdb
+            .is_some()
+        {
             self.series_tmdb = other.series_tmdb;
         }
-        if other.tvdb.is_some() {
+        if other
+            .tvdb
+            .is_some()
+        {
             self.tvdb = other.tvdb;
         }
         self
@@ -883,10 +958,16 @@ pub fn normalize_country_alpha2(c: &str) -> String {
         .or_else(|| {
             rust_iso3166::ALL
                 .iter()
-                .find(|cc| cc.name.eq_ignore_ascii_case(c))
+                .find(|cc| {
+                    cc.name
+                        .eq_ignore_ascii_case(c)
+                })
                 .copied()
         })
-        .map(|cc| cc.alpha2.to_string())
+        .map(|cc| {
+            cc.alpha2
+                .to_string()
+        })
         .unwrap_or(upper)
 }
 
@@ -1042,7 +1123,11 @@ impl Media {
                         | MediaKind::TvProgram
                 )
             })
-            .flat_map(|m| [m.parent_id, m.grandparent_id].into_iter().flatten())
+            .flat_map(|m| {
+                [m.parent_id, m.grandparent_id]
+                    .into_iter()
+                    .flatten()
+            })
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
@@ -1068,22 +1153,30 @@ impl Media {
                 sep.push_bind(id);
             }
             qb.push(")");
-            if let Ok(rows) = qb.build().fetch_all(db).await {
-                parent_map.extend(rows.into_iter().filter_map(|r| {
-                    let id: Option<Uuid> = r.get(0);
-                    let title: Option<String> = r.get(1);
-                    let channel_number: Option<i64> = r.get(2);
-                    id.zip(title).map(|(id, title)| {
-                        (
-                            id,
-                            ParentRow {
-                                id,
-                                title,
-                                channel_number,
-                            },
-                        )
-                    })
-                }));
+            if let Ok(rows) = qb
+                .build()
+                .fetch_all(db)
+                .await
+            {
+                parent_map.extend(
+                    rows.into_iter()
+                        .filter_map(|r| {
+                            let id: Option<Uuid> = r.get(0);
+                            let title: Option<String> = r.get(1);
+                            let channel_number: Option<i64> = r.get(2);
+                            id.zip(title)
+                                .map(|(id, title)| {
+                                    (
+                                        id,
+                                        ParentRow {
+                                            id,
+                                            title,
+                                            channel_number,
+                                        },
+                                    )
+                                })
+                        }),
+                );
             }
         }
 
@@ -1101,7 +1194,9 @@ impl Media {
             |row: &ParentRow, images: super::image::MediaImages| -> Box<Media> {
                 let mut m = Media::default();
                 m.id = row.id;
-                m.title = row.title.clone();
+                m.title = row
+                    .title
+                    .clone();
                 m.channel_number = row.channel_number;
                 m.images = images;
                 Box::new(m)
@@ -1121,7 +1216,9 @@ impl Media {
 
             if let Some(pid) = media.parent_id {
                 if let Some(row) = parent_map.get(&pid) {
-                    let imgs = parent_images.remove(&pid).unwrap_or_default();
+                    let imgs = parent_images
+                        .remove(&pid)
+                        .unwrap_or_default();
                     media.parent = Some(make_stub(row, imgs));
                 }
             }
@@ -1129,12 +1226,16 @@ impl Media {
             // For episodes grandparent_id points to the series;
             // fall back to parent_id for episodes with a flat hierarchy.
             let gp_id = match media.kind {
-                MediaKind::Episode => media.grandparent_id.or(media.parent_id),
+                MediaKind::Episode => media
+                    .grandparent_id
+                    .or(media.parent_id),
                 _ => media.grandparent_id,
             };
             if let Some(gid) = gp_id {
                 if let Some(row) = parent_map.get(&gid) {
-                    let imgs = parent_images.remove(&gid).unwrap_or_default();
+                    let imgs = parent_images
+                        .remove(&gid)
+                        .unwrap_or_default();
                     media.grandparent = Some(make_stub(row, imgs));
                 }
             }
@@ -1151,12 +1252,15 @@ impl Media {
     }
 
     pub fn parse_smart_filter(&self) -> Option<&remux_sdks::remux::CollectionFilter> {
-        self.collection_smart_filter.as_ref()
+        self.collection_smart_filter
+            .as_ref()
     }
 
     pub fn is_remote_url(&self) -> bool {
         matches!(
-            self.stream_info.as_ref().map(|si| &si.descriptor),
+            self.stream_info
+                .as_ref()
+                .map(|si| &si.descriptor),
             Some(crate::stream::StreamDescriptor::Http { .. })
         )
     }
@@ -1188,8 +1292,12 @@ pub enum MediaError {
 impl Media {
     pub fn media_id_raw(&self) -> super::MediaIdRaw {
         super::MediaIdRaw {
-            kind: self.kind.clone(),
-            external_ids: self.external_ids.clone(),
+            kind: self
+                .kind
+                .clone(),
+            external_ids: self
+                .external_ids
+                .clone(),
             season: match self.kind {
                 MediaKind::Season => self.idx,
                 MediaKind::Episode => self.parent_idx,
@@ -1204,18 +1312,38 @@ impl Media {
     }
 
     pub fn get_image(&self, kind: ImageKind) -> Option<&str> {
-        self.images.get_path(kind)
+        self.images
+            .get_path(kind)
     }
 
     pub fn set_image(&mut self, kind: ImageKind, url: String) {
         let media_id = self.id;
         let vec = match kind {
-            ImageKind::Primary => &mut self.images.primary,
-            ImageKind::Backdrop => &mut self.images.backdrop,
-            ImageKind::Logo => &mut self.images.logo,
-            ImageKind::Thumb => &mut self.images.thumb,
+            ImageKind::Primary => {
+                &mut self
+                    .images
+                    .primary
+            }
+            ImageKind::Backdrop => {
+                &mut self
+                    .images
+                    .backdrop
+            }
+            ImageKind::Logo => {
+                &mut self
+                    .images
+                    .logo
+            }
+            ImageKind::Thumb => {
+                &mut self
+                    .images
+                    .thumb
+            }
         };
-        if let Some(existing) = vec.iter_mut().find(|i| i.image_index == 0) {
+        if let Some(existing) = vec
+            .iter_mut()
+            .find(|i| i.image_index == 0)
+        {
             existing.path = url;
         } else {
             vec.push(MediaImage {
@@ -1241,7 +1369,9 @@ impl Media {
 
     pub fn validate(&self) -> Result<(), MediaError> {
         if matches!(self.kind, MediaKind::Season | MediaKind::Episode)
-            && self.idx.is_none()
+            && self
+                .idx
+                .is_none()
         {
             return Err(MediaError::ValidationError(format!(
                 "{:?} requires an index number",
@@ -1250,9 +1380,11 @@ impl Media {
         }
 
         let missing = match self.kind {
-            MediaKind::Movie | MediaKind::Series => {
-                self.external_ids.imdb.is_none().then_some("imdb")
-            }
+            MediaKind::Movie | MediaKind::Series => self
+                .external_ids
+                .imdb
+                .is_none()
+                .then_some("imdb"),
             MediaKind::Season | MediaKind::Episode => self
                 .external_ids
                 .series_imdb
@@ -1263,11 +1395,23 @@ impl Media {
                 .deezer_artist
                 .is_none()
                 .then_some("deezer_artist"),
-            MediaKind::Album => (self.external_ids.deezer_album.is_none()
-                && self.external_ids.youtube_id.is_none())
+            MediaKind::Album => (self
+                .external_ids
+                .deezer_album
+                .is_none()
+                && self
+                    .external_ids
+                    .youtube_id
+                    .is_none())
             .then_some("deezer_album or youtube_id"),
-            MediaKind::Track => (self.external_ids.deezer_track.is_none()
-                && self.external_ids.youtube_id.is_none())
+            MediaKind::Track => (self
+                .external_ids
+                .deezer_track
+                .is_none()
+                && self
+                    .external_ids
+                    .youtube_id
+                    .is_none())
             .then_some("deezer_track or youtube_id"),
             _ => None,
         };
@@ -1298,7 +1442,10 @@ impl Media {
         }
 
         if self.kind == MediaKind::Person {
-            if let Some(tmdb_id) = self.external_ids.tmdb {
+            if let Some(tmdb_id) = self
+                .external_ids
+                .tmdb
+            {
                 let expected = crate::common::stable_media_uuid(
                     &MediaKind::Person,
                     &tmdb_id.to_string(),
@@ -1447,7 +1594,9 @@ impl Media {
             return Ok(());
         }
 
-        let mut tx = db.begin().await?;
+        let mut tx = db
+            .begin()
+            .await?;
         sqlx::query("PRAGMA defer_foreign_keys = ON")
             .execute(&mut *tx)
             .await?;
@@ -1497,7 +1646,11 @@ impl Media {
                     .push_bind(&item.digital_released_at)
                     .push_bind(&item.status)
                     .push_bind(&item.grandparent_id)
-                    .push_bind(item.country.as_deref().map(normalize_country_alpha2))
+                    .push_bind(
+                        item.country
+                            .as_deref()
+                            .map(normalize_country_alpha2),
+                    )
                     .push_bind(&item.program_kind)
                     .push_bind(&item.collection_latest_auto_unplayed)
                     .push_bind(&item.collection_latest_sort_digital);
@@ -1505,10 +1658,14 @@ impl Media {
 
             query_builder.push(" ON CONFLICT DO NOTHING");
 
-            query_builder.build().execute(&mut *tx).await?;
+            query_builder
+                .build()
+                .execute(&mut *tx)
+                .await?;
         }
 
-        tx.commit().await?;
+        tx.commit()
+            .await?;
         Ok(())
     }
 
@@ -1534,7 +1691,9 @@ impl Media {
         }
 
         for chunk in items.chunks(CHUNK_SIZE) {
-            let mut tx = db.begin().await?;
+            let mut tx = db
+                .begin()
+                .await?;
             sqlx::query("PRAGMA defer_foreign_keys = ON")
                 .execute(&mut *tx)
                 .await?;
@@ -1581,7 +1740,11 @@ impl Media {
                     .push_bind(&item.status)
                     .push_bind(&item.refreshed_at)
                     .push_bind(&item.grandparent_id)
-                    .push_bind(item.country.as_deref().map(normalize_country_alpha2))
+                    .push_bind(
+                        item.country
+                            .as_deref()
+                            .map(normalize_country_alpha2),
+                    )
                     .push_bind(&item.program_kind)
                     .push_bind(&item.collection_latest_auto_unplayed)
                     .push_bind(&item.collection_latest_sort_digital);
@@ -1626,11 +1789,18 @@ impl Media {
                 program_kind = excluded.program_kind",
             );
 
-            query_builder.build().execute(&mut *tx).await?;
+            query_builder
+                .build()
+                .execute(&mut *tx)
+                .await?;
 
             let chunk_images: Vec<(Uuid, &MediaImage)> = chunk
                 .iter()
-                .flat_map(|m| m.images.iter().map(move |img| (m.id, img)))
+                .flat_map(|m| {
+                    m.images
+                        .iter()
+                        .map(move |img| (m.id, img))
+                })
                 .collect();
             for img_chunk in chunk_images.chunks(500) {
                 let mut qb = sqlx::QueryBuilder::new(
@@ -1646,10 +1816,13 @@ impl Media {
                         .push_bind(img.width)
                         .push_bind(img.height);
                 });
-                qb.build().execute(&mut *tx).await?;
+                qb.build()
+                    .execute(&mut *tx)
+                    .await?;
             }
 
-            tx.commit().await?;
+            tx.commit()
+                .await?;
         }
 
         Ok(())
@@ -1678,7 +1851,10 @@ impl Media {
 
         qb.push(" ORDER BY g.title ASC");
 
-        Ok(qb.build_query_as::<Self>().fetch_all(db).await?)
+        Ok(qb
+            .build_query_as::<Self>()
+            .fetch_all(db)
+            .await?)
     }
 
     pub async fn get_by_id(
@@ -1734,7 +1910,10 @@ impl Media {
             qb.push(")");
         }
         qb.push(" ORDER BY y DESC");
-        let rows = qb.build().fetch_all(db).await?;
+        let rows = qb
+            .build()
+            .fetch_all(db)
+            .await?;
         Ok(rows
             .iter()
             .filter_map(|r| {
@@ -1754,14 +1933,20 @@ impl Media {
             .map(|p| p.collection_kind == Some(CollectionKind::Manual))
             .unwrap_or(false);
 
-        let use_recursive =
-            filter.recursive && filter.parent_id.is_some() && !is_manual_collection;
+        let use_recursive = filter.recursive
+            && filter
+                .parent_id
+                .is_some()
+            && !is_manual_collection;
 
         let mut count_qb;
         let mut records_qb;
 
         if use_recursive {
-            let parent_id = filter.parent_id.as_ref().unwrap();
+            let parent_id = filter
+                .parent_id
+                .as_ref()
+                .unwrap();
 
             count_qb = sqlx::QueryBuilder::new(
                 "WITH RECURSIVE subtree AS (SELECT id FROM media WHERE parent_id = ",
@@ -1781,7 +1966,10 @@ impl Media {
                 ) SELECT * FROM media WHERE id IN (SELECT id FROM subtree) AND 1=1",
             );
         } else if is_manual_collection {
-            let collection_id = filter.parent_id.as_ref().unwrap();
+            let collection_id = filter
+                .parent_id
+                .as_ref()
+                .unwrap();
 
             count_qb = sqlx::QueryBuilder::new(
                 "SELECT COUNT(*) as count FROM media \
@@ -1824,9 +2012,14 @@ impl Media {
                     );
                     pre_qb.push_bind(user_id);
                     pre_qb.push(" AND playback_position > 0 AND play_count = 0");
-                    let needs_media_filter =
-                        filter.kind.as_ref().map(|k| !k.is_empty()).unwrap_or(false)
-                            || filter.digital_released_before.is_some();
+                    let needs_media_filter = filter
+                        .kind
+                        .as_ref()
+                        .map(|k| !k.is_empty())
+                        .unwrap_or(false)
+                        || filter
+                            .digital_released_before
+                            .is_some();
                     if needs_media_filter {
                         pre_qb.push(
                             " AND EXISTS (SELECT 1 FROM media \
@@ -1869,7 +2062,8 @@ impl Media {
         for qb in [&mut count_qb, &mut records_qb] {
             if !use_recursive && !is_manual_collection {
                 if let Some(parent_id) = &filter.parent_id {
-                    qb.push(" AND parent_id = ").push_bind(parent_id);
+                    qb.push(" AND parent_id = ")
+                        .push_bind(parent_id);
                 }
                 if let Some(parent_ids) = &filter.parent_ids {
                     if !parent_ids.is_empty() {
@@ -1883,10 +2077,12 @@ impl Media {
                 }
             }
             if let Some(grandparent_id) = &filter.grandparent_id {
-                qb.push(" AND grandparent_id = ").push_bind(grandparent_id);
+                qb.push(" AND grandparent_id = ")
+                    .push_bind(grandparent_id);
             }
             if let Some(promoted) = &filter.promoted {
-                qb.push(" AND promoted = ").push_bind(promoted);
+                qb.push(" AND promoted = ")
+                    .push_bind(promoted);
             }
             if let Some(kind) = &filter.kind {
                 if resumable_ids.is_none() {
@@ -1929,7 +2125,8 @@ impl Media {
                 if let Some(favorite) = &user_state_filter.favorite {
                     qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_id = media.id");
                     if let Some(user_id) = &user_state_filter.user_id {
-                        qb.push(" AND ums.user_id = ").push_bind(user_id);
+                        qb.push(" AND ums.user_id = ")
+                            .push_bind(user_id);
                     }
                     qb.push(" AND ums.favorite = ")
                         .push_bind(favorite)
@@ -1940,7 +2137,8 @@ impl Media {
                 if user_state_filter.played == Some(true) {
                     qb.push(" AND EXISTS (SELECT 1 FROM user_media_state ums WHERE ums.media_id = media.id");
                     if let Some(user_id) = &user_state_filter.user_id {
-                        qb.push(" AND ums.user_id = ").push_bind(user_id);
+                        qb.push(" AND ums.user_id = ")
+                            .push_bind(user_id);
                     }
                     qb.push(" AND ums.play_count > 0)");
                 }
@@ -1959,7 +2157,8 @@ impl Media {
                                                 WHERE ums.media_id = e.id",
                     );
                     if let Some(user_id) = &user_state_filter.user_id {
-                        qb.push(" AND ums.user_id = ").push_bind(user_id.clone());
+                        qb.push(" AND ums.user_id = ")
+                            .push_bind(user_id.clone());
                     }
                     qb.push(
                         " AND ums.play_count > 0)) \
@@ -1967,7 +2166,8 @@ impl Media {
                                           WHERE ums.media_id = media.id",
                     );
                     if let Some(user_id) = &user_state_filter.user_id {
-                        qb.push(" AND ums.user_id = ").push_bind(user_id.clone());
+                        qb.push(" AND ums.user_id = ")
+                            .push_bind(user_id.clone());
                     }
                     qb.push(" AND ums.play_count > 0) END");
                 }
@@ -2021,7 +2221,8 @@ impl Media {
             if let Some(s) = &filter.name_starts_with {
                 // LIKE is case-insensitive for ASCII in SQLite; no UPPER() needed.
                 // A COLLATE NOCASE index on title can satisfy this as a prefix scan.
-                qb.push(" AND title LIKE ").push_bind(format!("{}%", s));
+                qb.push(" AND title LIKE ")
+                    .push_bind(format!("{}%", s));
             }
 
             if let Some(s) = &filter.name_starts_with_or_greater {
@@ -2037,11 +2238,13 @@ impl Media {
             }
 
             if let Some(s) = &filter.title_contains {
-                qb.push(" AND title LIKE ").push_bind(format!("%{}%", s));
+                qb.push(" AND title LIKE ")
+                    .push_bind(format!("%{}%", s));
             }
 
             if let Some(idx) = &filter.index_number {
-                qb.push(" AND idx = ").push_bind(idx);
+                qb.push(" AND idx = ")
+                    .push_bind(idx);
             }
 
             if let Some(true) = &filter.has_trailer {
@@ -2110,11 +2313,13 @@ impl Media {
             }
 
             if let Some(enabled) = &filter.enabled {
-                qb.push(" AND enabled = ").push_bind(*enabled);
+                qb.push(" AND enabled = ")
+                    .push_bind(*enabled);
             }
 
             if let Some(c) = &filter.country_filter {
-                qb.push(" AND country = ").push_bind(c.to_uppercase());
+                qb.push(" AND country = ")
+                    .push_bind(c.to_uppercase());
             }
 
             if let Some(g) = &filter.iptv_group_filter {
@@ -2137,11 +2342,13 @@ impl Media {
             }
 
             if let Some(min_end) = &filter.min_end_date {
-                qb.push(" AND live_end >= ").push_bind(min_end);
+                qb.push(" AND live_end >= ")
+                    .push_bind(min_end);
             }
 
             if let Some(max_start) = &filter.max_start_date {
-                qb.push(" AND live_start <= ").push_bind(max_start);
+                qb.push(" AND live_start <= ")
+                    .push_bind(max_start);
             }
 
             if let Some(kinds) = &filter.program_kinds {
@@ -2157,7 +2364,10 @@ impl Media {
                 }
             }
 
-            if !filter.filter_rules.is_empty() {
+            if !filter
+                .filter_rules
+                .is_empty()
+            {
                 apply_filter_rules(qb, &filter.filter_rules, &filter.filter_match);
             }
         }
@@ -2165,10 +2375,16 @@ impl Media {
         let is_channel_query = filter
             .kind
             .as_ref()
-            .map(|k| k.iter().all(|k| matches!(k, MediaKind::TvChannel)))
+            .map(|k| {
+                k.iter()
+                    .all(|k| matches!(k, MediaKind::TvChannel))
+            })
             .unwrap_or(false);
 
-        if !filter.sort_by.is_empty() {
+        if !filter
+            .sort_by
+            .is_empty()
+        {
             let mut order_clauses: Vec<String> = filter
                 .sort_by
                 .iter()
@@ -2238,30 +2454,44 @@ impl Media {
         }
 
         if let Some(limit) = &filter.limit {
-            records_qb.push(" LIMIT ").push_bind(limit);
-        } else if filter.offset.is_some() {
+            records_qb
+                .push(" LIMIT ")
+                .push_bind(limit);
+        } else if filter
+            .offset
+            .is_some()
+        {
             records_qb.push(" LIMIT -1");
         }
         if let Some(offset) = &filter.offset {
-            records_qb.push(" OFFSET ").push_bind(offset);
+            records_qb
+                .push(" OFFSET ")
+                .push_bind(offset);
         }
 
         let (count, records_result) = tokio::join!(
             async {
                 let query = count_qb.build();
-                let row = query.fetch_one(db).await;
+                let row = query
+                    .fetch_one(db)
+                    .await;
                 row.map(|r| r.get::<i64, _>(0) as usize)
             },
             async {
                 let query = records_qb.build_query_as::<Media>();
-                query.fetch_all(db).await
+                query
+                    .fetch_all(db)
+                    .await
             }
         );
 
         let mut records = records_result?;
 
         if !records.is_empty() {
-            let ids: Vec<Uuid> = records.iter().map(|m| m.id).collect();
+            let ids: Vec<Uuid> = records
+                .iter()
+                .map(|m| m.id)
+                .collect();
             let mut tags_qb = sqlx::QueryBuilder::new(
                 "SELECT media_id, tag FROM media_tags WHERE media_id IN (",
             );
@@ -2270,12 +2500,18 @@ impl Media {
                 sep.push_bind(id);
             }
             tags_qb.push(") ORDER BY tag");
-            let tag_rows = tags_qb.build().fetch_all(db).await?;
+            let tag_rows = tags_qb
+                .build()
+                .fetch_all(db)
+                .await?;
             let mut tags_map: HashMap<Uuid, Vec<String>> = HashMap::new();
             for row in tag_rows {
                 let media_id: Uuid = row.get(0);
                 let tag: String = row.get(1);
-                tags_map.entry(media_id).or_default().push(tag);
+                tags_map
+                    .entry(media_id)
+                    .or_default()
+                    .push(tag);
             }
             for media in &mut records {
                 if let Some(tags) = tags_map.remove(&media.id) {
@@ -2287,7 +2523,9 @@ impl Media {
                 .await
                 .unwrap_or_default();
             for media in &mut records {
-                media.images = images_map.remove(&media.id).unwrap_or_default();
+                media.images = images_map
+                    .remove(&media.id)
+                    .unwrap_or_default();
             }
         }
 
@@ -2321,7 +2559,11 @@ impl Media {
                 sep.push_bind(id);
             }
             g_qb.push(") ORDER BY mr.left_media_id, mr.weight");
-            match g_qb.build().fetch_all(db).await {
+            match g_qb
+                .build()
+                .fetch_all(db)
+                .await
+            {
                 Ok(rows) => {
                     let mut rels_map: HashMap<Uuid, Vec<(MediaRelation, Media)>> =
                         HashMap::new();
@@ -2356,7 +2598,10 @@ impl Media {
                     }
                     let related_ids: Vec<Uuid> = rels_map
                         .values()
-                        .flat_map(|v| v.iter().map(|(_, m)| m.id))
+                        .flat_map(|v| {
+                            v.iter()
+                                .map(|(_, m)| m.id)
+                        })
                         .collect::<std::collections::HashSet<_>>()
                         .into_iter()
                         .collect();
@@ -2408,7 +2653,11 @@ impl Media {
                     sep.push_bind(id);
                 }
                 cc_qb.push(") GROUP BY parent_id");
-                match cc_qb.build().fetch_all(db).await {
+                match cc_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
                     Ok(cc_rows) => {
                         let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
                         for row in cc_rows {
@@ -2443,7 +2692,11 @@ impl Media {
                     sep.push_bind(id);
                 }
                 pl_qb.push(") GROUP BY left_media_id");
-                match pl_qb.build().fetch_all(db).await {
+                match pl_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
                     Ok(rows) => {
                         let mut cc_map: HashMap<Uuid, i64> = HashMap::new();
                         for row in rows {
@@ -2453,8 +2706,11 @@ impl Media {
                         }
                         for media in &mut records {
                             if media.kind == MediaKind::Playlist {
-                                media.child_count =
-                                    Some(*cc_map.get(&media.id).unwrap_or(&0));
+                                media.child_count = Some(
+                                    *cc_map
+                                        .get(&media.id)
+                                        .unwrap_or(&0),
+                                );
                             }
                         }
                     }
@@ -2479,14 +2735,20 @@ impl Media {
                     sep.push_bind(id);
                 }
                 ep_qb.push(") GROUP BY grandparent_id");
-                if let Ok(rows) = ep_qb.build().fetch_all(db).await {
+                if let Ok(rows) = ep_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
                         map.insert(row.get(0), row.get(1));
                     }
                     for media in &mut records {
                         if media.kind == MediaKind::Series {
-                            media.recursive_item_count = map.get(&media.id).copied();
+                            media.recursive_item_count = map
+                                .get(&media.id)
+                                .copied();
                         }
                     }
                 }
@@ -2511,14 +2773,20 @@ impl Media {
                     sep.push_bind(id);
                 }
                 movie_qb.push(") GROUP BY mr.right_media_id");
-                if let Ok(rows) = movie_qb.build().fetch_all(db).await {
+                if let Ok(rows) = movie_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
                         map.insert(row.get(0), row.get(1));
                     }
                     for media in &mut records {
                         if media.kind == MediaKind::Person {
-                            media.movie_count = map.get(&media.id).copied();
+                            media.movie_count = map
+                                .get(&media.id)
+                                .copied();
                         }
                     }
                 }
@@ -2535,14 +2803,20 @@ impl Media {
                     sep.push_bind(id);
                 }
                 series_qb.push(") GROUP BY mr.right_media_id");
-                if let Ok(rows) = series_qb.build().fetch_all(db).await {
+                if let Ok(rows) = series_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
                         map.insert(row.get(0), row.get(1));
                     }
                     for media in &mut records {
                         if media.kind == MediaKind::Person {
-                            media.series_count = map.get(&media.id).copied();
+                            media.series_count = map
+                                .get(&media.id)
+                                .copied();
                         }
                     }
                 }
@@ -2551,8 +2825,12 @@ impl Media {
                 for media in &mut records {
                     if media.kind == MediaKind::Person {
                         media.child_count = Some(
-                            media.movie_count.unwrap_or(0)
-                                + media.series_count.unwrap_or(0),
+                            media
+                                .movie_count
+                                .unwrap_or(0)
+                                + media
+                                    .series_count
+                                    .unwrap_or(0),
                         );
                     }
                 }
@@ -2573,14 +2851,20 @@ impl Media {
                     sep.push_bind(id);
                 }
                 alb_qb.push(") GROUP BY parent_id");
-                if let Ok(rows) = alb_qb.build().fetch_all(db).await {
+                if let Ok(rows) = alb_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
                         map.insert(row.get(0), row.get(1));
                     }
                     for media in &mut records {
                         if media.kind == MediaKind::Artist {
-                            media.album_count = map.get(&media.id).copied();
+                            media.album_count = map
+                                .get(&media.id)
+                                .copied();
                         }
                     }
                 }
@@ -2593,14 +2877,20 @@ impl Media {
                     sep.push_bind(id);
                 }
                 song_qb.push(") GROUP BY grandparent_id");
-                if let Ok(rows) = song_qb.build().fetch_all(db).await {
+                if let Ok(rows) = song_qb
+                    .build()
+                    .fetch_all(db)
+                    .await
+                {
                     let mut map: HashMap<Uuid, i64> = HashMap::new();
                     for row in rows {
                         map.insert(row.get(0), row.get(1));
                     }
                     for media in &mut records {
                         if media.kind == MediaKind::Artist {
-                            media.song_count = map.get(&media.id).copied();
+                            media.song_count = map
+                                .get(&media.id)
+                                .copied();
                         }
                     }
                 }
@@ -2612,9 +2902,17 @@ impl Media {
         if filter.include_user_state {
             let uid = filter
                 .user_id
-                .or_else(|| filter.user_state.as_ref().and_then(|s| s.user_id));
+                .or_else(|| {
+                    filter
+                        .user_state
+                        .as_ref()
+                        .and_then(|s| s.user_id)
+                });
             if let Some(user_id) = uid {
-                let media_ids: Vec<Uuid> = records.iter().map(|m| m.id).collect();
+                let media_ids: Vec<Uuid> = records
+                    .iter()
+                    .map(|m| m.id)
+                    .collect();
 
                 let states = super::UserMediaState::get_by_filter(
                     db,
@@ -2664,7 +2962,11 @@ impl Media {
                     qb.push_bind(user_id);
                     qb.push(" AND ums.play_count > 0) GROUP BY e.grandparent_id");
 
-                    match qb.build().fetch_all(db).await {
+                    match qb
+                        .build()
+                        .fetch_all(db)
+                        .await
+                    {
                         Ok(rows) => {
                             let mut unplayed_map: HashMap<Uuid, i64> = HashMap::new();
                             for row in rows {
@@ -2748,10 +3050,17 @@ impl Media {
         smart_filter: Option<&remux_sdks::remux::CollectionFilter>,
         parent: Option<&Media>,
     ) -> Result<FilterResult<Media>> {
-        let user_policy = user.and_then(|u| u.policy.as_ref()).map(|p| &p.0);
+        let user_policy = user
+            .and_then(|u| {
+                u.policy
+                    .as_ref()
+            })
+            .map(|p| &p.0);
         // Map media_types (Video, Book, ...) to MediaKind constraints
-        let media_type_kinds: Option<Vec<MediaKind>> =
-            filter.media_types.as_ref().map(|types| {
+        let media_type_kinds: Option<Vec<MediaKind>> = filter
+            .media_types
+            .as_ref()
+            .map(|types| {
                 types
                     .iter()
                     .flat_map(|t| match t {
@@ -2829,7 +3138,10 @@ impl Media {
                         sep.push_bind(n);
                     }
                     qb.push(")");
-                    let rows = qb.build().fetch_all(db).await?;
+                    let rows = qb
+                        .build()
+                        .fetch_all(db)
+                        .await?;
                     Some(
                         rows.into_iter()
                             .filter_map(|r| r.get::<Option<Uuid>, _>(0))
@@ -2854,7 +3166,10 @@ impl Media {
                         sep.push_bind(n);
                     }
                     qb.push(")");
-                    let rows = qb.build().fetch_all(db).await?;
+                    let rows = qb
+                        .build()
+                        .fetch_all(db)
+                        .await?;
                     Some(
                         rows.into_iter()
                             .filter_map(|r| r.get::<Option<Uuid>, _>(0))
@@ -2867,12 +3182,19 @@ impl Media {
 
         // Merge genre IDs from query param and from genre names
         let genre_ids: Option<Vec<Uuid>> = {
-            let from_param: Option<Vec<Uuid>> = filter.genre_ids.as_ref().map(|ids| {
-                ids.iter()
-                    .flat_map(|s| s.split(','))
-                    .filter_map(|s| s.trim().parse::<Uuid>().ok())
-                    .collect()
-            });
+            let from_param: Option<Vec<Uuid>> = filter
+                .genre_ids
+                .as_ref()
+                .map(|ids| {
+                    ids.iter()
+                        .flat_map(|s| s.split(','))
+                        .filter_map(|s| {
+                            s.trim()
+                                .parse::<Uuid>()
+                                .ok()
+                        })
+                        .collect()
+                });
             match (from_param, genre_ids_from_names) {
                 (Some(mut a), Some(b)) => {
                     a.extend(b);
@@ -2886,12 +3208,19 @@ impl Media {
 
         // Merge studio IDs from query param and from studio names
         let studio_ids: Option<Vec<Uuid>> = {
-            let from_param: Option<Vec<Uuid>> = filter.studio_ids.as_ref().map(|ids| {
-                ids.iter()
-                    .flat_map(|s| s.split(','))
-                    .filter_map(|s| s.trim().parse::<Uuid>().ok())
-                    .collect()
-            });
+            let from_param: Option<Vec<Uuid>> = filter
+                .studio_ids
+                .as_ref()
+                .map(|ids| {
+                    ids.iter()
+                        .flat_map(|s| s.split(','))
+                        .filter_map(|s| {
+                            s.trim()
+                                .parse::<Uuid>()
+                                .ok()
+                        })
+                        .collect()
+                });
             match (from_param, studio_ids_from_names) {
                 (Some(mut a), Some(b)) => {
                     a.extend(b);
@@ -2903,23 +3232,35 @@ impl Media {
             }
         };
 
-        let person_ids: Option<Vec<Uuid>> = filter.person_ids.as_ref().map(|ids| {
-            ids.iter()
-                .flat_map(|s| s.split(','))
-                .filter_map(|s| s.trim().parse::<Uuid>().ok())
-                .collect()
-        });
+        let person_ids: Option<Vec<Uuid>> = filter
+            .person_ids
+            .as_ref()
+            .map(|ids| {
+                ids.iter()
+                    .flat_map(|s| s.split(','))
+                    .filter_map(|s| {
+                        s.trim()
+                            .parse::<Uuid>()
+                            .ok()
+                    })
+                    .collect()
+            });
 
         // Build user-state filter from is_favorite + filters[] items
-        let item_filters = filter.filters.as_deref().unwrap_or(&[]);
+        let item_filters = filter
+            .filters
+            .as_deref()
+            .unwrap_or(&[]);
         let is_played = item_filters.contains(&api::ItemFilter::IsPlayed);
         let is_unplayed = item_filters.contains(&api::ItemFilter::IsUnplayed);
         let is_resumable = item_filters.contains(&api::ItemFilter::IsResumable);
-        let favorite = filter.is_favorite.or_else(|| {
-            item_filters
-                .contains(&api::ItemFilter::IsFavorite)
-                .then_some(true)
-        });
+        let favorite = filter
+            .is_favorite
+            .or_else(|| {
+                item_filters
+                    .contains(&api::ItemFilter::IsFavorite)
+                    .then_some(true)
+            });
 
         let user_state =
             if favorite.is_some() || is_played || is_unplayed || is_resumable {
@@ -2941,15 +3282,17 @@ impl Media {
             };
 
         let release_date_applies = !kinds.is_empty()
-            && kinds.iter().any(|k| {
-                matches!(
-                    k,
-                    MediaKind::Movie
-                        | MediaKind::Series
-                        | MediaKind::Season
-                        | MediaKind::Episode
-                )
-            });
+            && kinds
+                .iter()
+                .any(|k| {
+                    matches!(
+                        k,
+                        MediaKind::Movie
+                            | MediaKind::Series
+                            | MediaKind::Season
+                            | MediaKind::Episode
+                    )
+                });
         let digital_released_before = if release_date_applies
             && server_config.map(|c| c.filter_by_digital_release_date) != Some(false)
         {
@@ -2970,7 +3313,10 @@ impl Media {
                 .iter()
                 .all(|k| matches!(k, MediaKind::Collection | MediaKind::Folder));
 
-        let user_policy_filter = user_policy.and_then(|p| p.filter_rules.as_ref());
+        let user_policy_filter = user_policy.and_then(|p| {
+            p.filter_rules
+                .as_ref()
+        });
 
         let mut result = Self::get_by_filter(
             db,
@@ -2978,15 +3324,32 @@ impl Media {
                 kind: Some(kinds),
                 enabled: has_tv_channel.then_some(true),
                 promoted: filter.promoted,
-                limit: filter.limit.clone(),
-                id: filter.ids.clone(),
+                limit: filter
+                    .limit
+                    .clone(),
+                id: filter
+                    .ids
+                    .clone(),
                 // album_ids maps directly to parent_id (tracks are children of albums)
-                parent_id: filter.parent_id.clone().or_else(|| {
-                    filter.album_ids.as_ref().and_then(|v| v.first().cloned())
-                }),
-                offset: filter.start_index.clone(),
+                parent_id: filter
+                    .parent_id
+                    .clone()
+                    .or_else(|| {
+                        filter
+                            .album_ids
+                            .as_ref()
+                            .and_then(|v| {
+                                v.first()
+                                    .cloned()
+                            })
+                    }),
+                offset: filter
+                    .start_index
+                    .clone(),
                 recursive: filter.recursive,
-                include_user_state: filter.enable_user_data.is_none(),
+                include_user_state: filter
+                    .enable_user_data
+                    .is_none(),
                 user_id: filter.user_id,
                 include_child_count: has_playlist
                     || filter
@@ -2999,45 +3362,89 @@ impl Media {
                 genre_ids,
                 studio_ids,
                 person_ids,
-                years: filter.years.clone(),
-                official_ratings: filter.official_ratings.clone(),
+                years: filter
+                    .years
+                    .clone(),
+                official_ratings: filter
+                    .official_ratings
+                    .clone(),
                 max_parental_rating: user_policy.and_then(|p| p.max_parental_rating),
-                name_starts_with: filter.name_starts_with.clone(),
-                name_starts_with_or_greater: filter.name_starts_with_or_greater.clone(),
-                name_less_than: filter.name_less_than.clone(),
-                title_contains: filter.search_term.clone(),
+                name_starts_with: filter
+                    .name_starts_with
+                    .clone(),
+                name_starts_with_or_greater: filter
+                    .name_starts_with_or_greater
+                    .clone(),
+                name_less_than: filter
+                    .name_less_than
+                    .clone(),
+                title_contains: filter
+                    .search_term
+                    .clone(),
                 index_number: filter.index_number,
                 has_trailer: filter.has_trailer,
-                tags: filter.tags.clone(),
+                tags: filter
+                    .tags
+                    .clone(),
                 blocked_tags: user_policy
-                    .map(|p| p.blocked_tags.clone())
+                    .map(|p| {
+                        p.blocked_tags
+                            .clone()
+                    })
                     .filter(|v| !v.is_empty()),
                 allowed_tags: user_policy
-                    .map(|p| p.allowed_tags.clone())
+                    .map(|p| {
+                        p.allowed_tags
+                            .clone()
+                    })
                     .filter(|v| !v.is_empty()),
                 digital_released_before,
-                sort_by: filter.sort_by.clone().unwrap_or_default(),
-                sort_order: filter.sort_order.clone().unwrap_or_default(),
+                sort_by: filter
+                    .sort_by
+                    .clone()
+                    .unwrap_or_default(),
+                sort_order: filter
+                    .sort_order
+                    .clone()
+                    .unwrap_or_default(),
                 filter_rules: {
-                    let mut rules =
-                        smart_filter.map(|sf| sf.rules.clone()).unwrap_or_default();
+                    let mut rules = smart_filter
+                        .map(|sf| {
+                            sf.rules
+                                .clone()
+                        })
+                        .unwrap_or_default();
                     // Content filter rules must not apply to container queries — only
                     // to content (movies, episodes, etc.). See CLAUDE.md.
                     if !targeting_containers {
                         if let Some(pf) = user_policy_filter {
-                            rules.extend(pf.rules.clone());
+                            rules.extend(
+                                pf.rules
+                                    .clone(),
+                            );
                         }
                     }
                     rules
                 },
                 filter_match: smart_filter
-                    .map(|sf| sf.match_mode.clone())
+                    .map(|sf| {
+                        sf.match_mode
+                            .clone()
+                    })
                     .unwrap_or_default(),
                 artist_ids: filter
                     .artist_ids
                     .clone()
-                    .or_else(|| filter.contributing_artist_ids.clone())
-                    .or_else(|| filter.album_artist_ids.clone()),
+                    .or_else(|| {
+                        filter
+                            .contributing_artist_ids
+                            .clone()
+                    })
+                    .or_else(|| {
+                        filter
+                            .album_artist_ids
+                            .clone()
+                    }),
                 grandparent_id: filter.series_id,
                 parent: parent.cloned(),
                 ..Default::default()
@@ -3047,11 +3454,21 @@ impl Media {
 
         // Hide containers that contain zero items visible to the user after applying
         // their content filter rules.
-        if targeting_containers && !result.records.is_empty() {
+        if targeting_containers
+            && !result
+                .records
+                .is_empty()
+        {
             if let Some(pf) = user_policy_filter {
-                if !pf.rules.is_empty() {
-                    let container_ids: Vec<uuid::Uuid> =
-                        result.records.iter().map(|m| m.id).collect();
+                if !pf
+                    .rules
+                    .is_empty()
+                {
+                    let container_ids: Vec<uuid::Uuid> = result
+                        .records
+                        .iter()
+                        .map(|m| m.id)
+                        .collect();
                     let mut qb = sqlx::QueryBuilder::new(
                         "SELECT parent_id, COUNT(*) FROM media WHERE parent_id IN (",
                     );
@@ -3065,15 +3482,27 @@ impl Media {
                     apply_filter_rules(&mut qb, &pf.rules, &pf.match_mode);
                     qb.push(" GROUP BY parent_id");
 
-                    if let Ok(rows) = qb.build().fetch_all(db).await {
+                    if let Ok(rows) = qb
+                        .build()
+                        .fetch_all(db)
+                        .await
+                    {
                         let counts: HashMap<uuid::Uuid, i64> = rows
                             .into_iter()
                             .map(|r| (r.get::<uuid::Uuid, _>(0), r.get::<i64, _>(1)))
                             .collect();
                         result
                             .records
-                            .retain(|m| counts.get(&m.id).copied().unwrap_or(0) > 0);
-                        result.total_count = result.records.len();
+                            .retain(|m| {
+                                counts
+                                    .get(&m.id)
+                                    .copied()
+                                    .unwrap_or(0)
+                                    > 0
+                            });
+                        result.total_count = result
+                            .records
+                            .len();
                     }
                 }
             }
@@ -3091,13 +3520,26 @@ impl Media {
         let mut item = api::BaseItemDto {
             id: self.id,
             server_id: server_id(),
-            type_: self.kind.clone().into(),
+            type_: self
+                .kind
+                .clone()
+                .into(),
             parent_id: self.parent_id,
             index_number: self.idx,
             name: Some(match self.kind {
-                MediaKind::Episode => format!("Episode {}", self.idx.unwrap_or(0)),
-                MediaKind::Season => format!("Season {}", self.idx.unwrap_or(0)),
-                _ => self.title.clone(),
+                MediaKind::Episode => format!(
+                    "Episode {}",
+                    self.idx
+                        .unwrap_or(0)
+                ),
+                MediaKind::Season => format!(
+                    "Season {}",
+                    self.idx
+                        .unwrap_or(0)
+                ),
+                _ => self
+                    .title
+                    .clone(),
             }),
             is_folder: matches!(self.kind, MediaKind::Series | MediaKind::Season),
             ..Default::default()
@@ -3130,9 +3572,13 @@ impl Media {
         now: chrono::NaiveDateTime,
     ) -> Result<super::UserMediaState> {
         let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
-        state.play_count = state.play_count.max(1);
+        state.play_count = state
+            .play_count
+            .max(1);
         state.played_at = Some(now);
-        state.save(db).await?;
+        state
+            .save(db)
+            .await?;
         Ok(state)
     }
 
@@ -3146,7 +3592,9 @@ impl Media {
         state.play_count = 0;
         state.played_at = None;
         state.playback_position = 0;
-        state.save(db).await?;
+        state
+            .save(db)
+            .await?;
         Ok(state)
     }
 
@@ -3157,7 +3605,9 @@ impl Media {
         recursive: bool,
     ) -> Result<super::UserMediaState> {
         let now = Local::now().naive_local();
-        let state = self.apply_played(db, user, now).await?;
+        let state = self
+            .apply_played(db, user, now)
+            .await?;
 
         if !recursive {
             return Ok(state);
@@ -3185,7 +3635,9 @@ impl Media {
                     if unplayed == 0 {
                         if let Ok(Some(season)) = Self::get_by_id(db, &season_id).await
                         {
-                            season.apply_played(db, user, now).await?;
+                            season
+                                .apply_played(db, user, now)
+                                .await?;
 
                             if let Some(series_id) = season.parent_id {
                                 let unplayed_seasons: i64 = sqlx::query_scalar(
@@ -3208,7 +3660,9 @@ impl Media {
                                     if let Ok(Some(series)) =
                                         Self::get_by_id(db, &series_id).await
                                     {
-                                        series.apply_played(db, user, now).await?;
+                                        series
+                                            .apply_played(db, user, now)
+                                            .await?;
                                     }
                                 }
                             }
@@ -3241,7 +3695,9 @@ impl Media {
                     if unplayed_seasons == 0 {
                         if let Ok(Some(series)) = Self::get_by_id(db, &series_id).await
                         {
-                            series.apply_played(db, user, now).await?;
+                            series
+                                .apply_played(db, user, now)
+                                .await?;
                         }
                     }
                 }
@@ -3266,7 +3722,9 @@ impl Media {
         user: &super::User,
         recursive: bool,
     ) -> Result<super::UserMediaState> {
-        let state = self.apply_unplayed(db, user).await?;
+        let state = self
+            .apply_unplayed(db, user)
+            .await?;
 
         if !recursive {
             return Ok(state);
@@ -3279,7 +3737,9 @@ impl Media {
                         let ss = super::UserMediaState::get_or_new(db, user, &season)
                             .await?;
                         if ss.play_count > 0 {
-                            season.apply_unplayed(db, user).await?;
+                            season
+                                .apply_unplayed(db, user)
+                                .await?;
                         }
                     }
                 }
@@ -3288,7 +3748,9 @@ impl Media {
                         let ss = super::UserMediaState::get_or_new(db, user, &series)
                             .await?;
                         if ss.play_count > 0 {
-                            series.apply_unplayed(db, user).await?;
+                            series
+                                .apply_unplayed(db, user)
+                                .await?;
                         }
                     }
                 }
@@ -3303,7 +3765,9 @@ impl Media {
                         let ss = super::UserMediaState::get_or_new(db, user, &series)
                             .await?;
                         if ss.play_count > 0 {
-                            series.apply_unplayed(db, user).await?;
+                            series
+                                .apply_unplayed(db, user)
+                                .await?;
                         }
                     }
                 }
@@ -3329,7 +3793,9 @@ impl Media {
     ) -> Result<super::UserMediaState> {
         let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
         state.favorite = true;
-        state.save(db).await?;
+        state
+            .save(db)
+            .await?;
         Ok(state)
     }
 
@@ -3340,12 +3806,17 @@ impl Media {
     ) -> Result<super::UserMediaState> {
         let mut state = super::UserMediaState::get_or_new(db, user, self).await?;
         state.favorite = false;
-        state.save(db).await?;
+        state
+            .save(db)
+            .await?;
         Ok(state)
     }
 
     pub async fn streams(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
-        if self.sources.is_none() {
+        if self
+            .sources
+            .is_none()
+        {
             let mut sources = Self::get_by_filter(
                 db,
                 &MediaFilter {
@@ -3357,7 +3828,10 @@ impl Media {
             .await?
             .records;
 
-            sources.sort_by(|a, b| a.idx.cmp(&b.idx));
+            sources.sort_by(|a, b| {
+                a.idx
+                    .cmp(&b.idx)
+            });
 
             // Exclude Sources that predate the last refresh — they belong to a
             // previous fetch and may have expired URLs. They stay in the DB so
@@ -3368,7 +3842,11 @@ impl Media {
 
             self.sources = Some(sources);
         };
-        Ok(self.sources.as_deref().unwrap_or_default().to_vec())
+        Ok(self
+            .sources
+            .as_deref()
+            .unwrap_or_default()
+            .to_vec())
     }
 
     pub async fn seasons(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
@@ -3376,7 +3854,10 @@ impl Media {
             return Ok(vec![]);
         }
 
-        if self.seasons.is_none() {
+        if self
+            .seasons
+            .is_none()
+        {
             let seasons = Self::get_by_filter(
                 db,
                 &MediaFilter {
@@ -3391,7 +3872,11 @@ impl Media {
             self.seasons = Some(seasons);
         }
 
-        Ok(self.seasons.as_deref().unwrap_or_default().to_vec())
+        Ok(self
+            .seasons
+            .as_deref()
+            .unwrap_or_default()
+            .to_vec())
     }
 
     pub async fn episodes(&mut self, db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
@@ -3399,7 +3884,10 @@ impl Media {
             return Ok(vec![]);
         }
 
-        if self.episodes.is_none() {
+        if self
+            .episodes
+            .is_none()
+        {
             let episodes = Self::get_by_filter(
                 db,
                 &MediaFilter {
@@ -3414,7 +3902,11 @@ impl Media {
             self.episodes = Some(episodes);
         }
 
-        Ok(self.episodes.as_deref().unwrap_or_default().to_vec())
+        Ok(self
+            .episodes
+            .as_deref()
+            .unwrap_or_default()
+            .to_vec())
     }
 
     pub async fn user_state(
@@ -3422,17 +3914,25 @@ impl Media {
         db: &SqlitePool,
         user: &super::User,
     ) -> Result<Option<super::UserMediaState>> {
-        if self.user_state.is_none() {
+        if self
+            .user_state
+            .is_none()
+        {
             let state = super::UserMediaState::get_or_new(db, user, self).await?;
 
             self.user_state = Some(state);
         }
 
-        Ok(self.user_state.clone())
+        Ok(self
+            .user_state
+            .clone())
     }
 
     pub async fn load_relations(&mut self, db: &SqlitePool) -> Result<()> {
-        if self.relations.is_some() {
+        if self
+            .relations
+            .is_some()
+        {
             return Ok(());
         }
 
@@ -3442,7 +3942,10 @@ impl Media {
             return Ok(());
         }
 
-        let media_ids: Vec<Uuid> = rels.iter().map(|r| r.right_media_id).collect();
+        let media_ids: Vec<Uuid> = rels
+            .iter()
+            .map(|r| r.right_media_id)
+            .collect();
         let related = Self::get_by_filter(
             db,
             &MediaFilter {
@@ -3453,12 +3956,17 @@ impl Media {
         .await?
         .records;
 
-        let map: std::collections::HashMap<Uuid, Media> =
-            related.into_iter().map(|m| (m.id, m)).collect();
+        let map: std::collections::HashMap<Uuid, Media> = related
+            .into_iter()
+            .map(|m| (m.id, m))
+            .collect();
 
         let pairs = rels
             .into_iter()
-            .filter_map(|rel| map.get(&rel.right_media_id).map(|m| (rel, m.clone())))
+            .filter_map(|rel| {
+                map.get(&rel.right_media_id)
+                    .map(|m| (rel, m.clone()))
+            })
             .collect();
 
         self.relations = Some(pairs);
@@ -3556,7 +4064,11 @@ async fn bulk_mark_played(
                play_count = CASE WHEN user_media_state.play_count > 0 THEN user_media_state.play_count ELSE excluded.play_count END, \
                played_at  = CASE WHEN user_media_state.play_count > 0 THEN user_media_state.played_at  ELSE excluded.played_at  END, \
                last_played_at = excluded.last_played_at");
-        if let Err(e) = qb.build().execute(db).await {
+        if let Err(e) = qb
+            .build()
+            .execute(db)
+            .await
+        {
             tracing::warn!(error = %e, "bulk_mark_played failed for chunk");
         }
     }
@@ -3581,7 +4093,11 @@ async fn bulk_mark_unplayed(db: &SqlitePool, user_id: Uuid, media_ids: &[Uuid]) 
             sep.push_bind(*id);
         }
         qb.push(")");
-        if let Err(e) = qb.build().execute(db).await {
+        if let Err(e) = qb
+            .build()
+            .execute(db)
+            .await
+        {
             tracing::warn!(error = %e, "bulk_mark_unplayed failed for chunk");
         }
     }
@@ -3676,8 +4192,12 @@ impl From<sdks::stremio::Stream> for Media {
         let descriptor = if let Some(hash) = &source.info_hash {
             StreamDescriptor::Torrent {
                 info_hash: hash.to_ascii_lowercase(),
-                file_hint: source.filename.clone(),
-                file_idx: source.file_idx.map(|i| i as usize),
+                file_hint: source
+                    .filename
+                    .clone(),
+                file_idx: source
+                    .file_idx
+                    .map(|i| i as usize),
                 trackers: source
                     .sources
                     .as_deref()
@@ -3687,8 +4207,14 @@ impl From<sdks::stremio::Stream> for Media {
                     .map(String::from)
                     .collect(),
             }
-        } else if let Some(url) =
-            source.url.clone().or_else(|| source.external_url.clone())
+        } else if let Some(url) = source
+            .url
+            .clone()
+            .or_else(|| {
+                source
+                    .external_url
+                    .clone()
+            })
         {
             StreamDescriptor::http(url)
         } else {
@@ -3701,13 +4227,21 @@ impl From<sdks::stremio::Stream> for Media {
 
         let stream_info = Some(StreamInfo {
             descriptor,
-            filename: source.filename.clone(),
-            name: source.name.clone(),
-            description: source.description.clone(),
+            filename: source
+                .filename
+                .clone(),
+            name: source
+                .name
+                .clone(),
+            description: source
+                .description
+                .clone(),
             seeders: source.seeders,
             size: source.size,
             duration: source.duration,
-            subtitles: source.subtitles.clone(),
+            subtitles: source
+                .subtitles
+                .clone(),
             probe_data: None,
             source: None,
         });
@@ -3737,10 +4271,16 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         //self.info_hash.is_some()
         // let imdb_id = meta.imdb_id.context("missing IMDB ID")?;
 
-        let mut media_kind =
-            MediaKind::try_from(meta.media_type.clone()).unwrap_or(MediaKind::Movie);
+        let mut media_kind = MediaKind::try_from(
+            meta.media_type
+                .clone(),
+        )
+        .unwrap_or(MediaKind::Movie);
         if media_kind == MediaKind::Movie
-            && meta.videos.as_ref().map_or(false, |v| !v.is_empty())
+            && meta
+                .videos
+                .as_ref()
+                .map_or(false, |v| !v.is_empty())
         {
             media_kind = MediaKind::Series;
         }
@@ -3748,12 +4288,19 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         let digital_released_at = meta
             .app_extras
             .as_ref()
-            .and_then(|e| e.release_dates.as_ref())
+            .and_then(|e| {
+                e.release_dates
+                    .as_ref()
+            })
             .map(|rd| {
                 {
                     rd.results
                         .iter()
-                        .flat_map(|country| country.release_dates.iter())
+                        .flat_map(|country| {
+                            country
+                                .release_dates
+                                .iter()
+                        })
                         .filter(|entry| entry.release_type >= 4)
                         .map(|entry| entry.release_date)
                         .min()
@@ -3768,36 +4315,47 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                     media_kind,
                     MediaKind::Series | MediaKind::Season | MediaKind::Episode
                 ) {
-                    meta.released.map(|x| x.naive_utc())
+                    meta.released
+                        .map(|x| x.naive_utc())
                 } else {
                     None
                 }
             });
 
-        let status = meta.status.as_ref().map(|s| match s {
-            sdks::stremio::Status::Continuing
-            | sdks::stremio::Status::ReturningSeries
-            | sdks::stremio::Status::InProduction
-            | sdks::stremio::Status::Running => MediaStatus::Continuing,
-            sdks::stremio::Status::Ended | sdks::stremio::Status::Canceled => {
-                MediaStatus::Ended
-            }
-            sdks::stremio::Status::Upcoming | sdks::stremio::Status::Planned => {
-                MediaStatus::Unreleased
-            }
-            sdks::stremio::Status::Unknown => MediaStatus::Continuing,
-        });
+        let status =
+            meta.status
+                .as_ref()
+                .map(|s| match s {
+                    sdks::stremio::Status::Continuing
+                    | sdks::stremio::Status::ReturningSeries
+                    | sdks::stremio::Status::InProduction
+                    | sdks::stremio::Status::Running => MediaStatus::Continuing,
+                    sdks::stremio::Status::Ended | sdks::stremio::Status::Canceled => {
+                        MediaStatus::Ended
+                    }
+                    sdks::stremio::Status::Upcoming
+                    | sdks::stremio::Status::Planned => MediaStatus::Unreleased,
+                    sdks::stremio::Status::Unknown => MediaStatus::Continuing,
+                });
 
         let media = Media {
-            title: meta.get_name().unwrap_or_default(),
+            title: meta
+                .get_name()
+                .unwrap_or_default(),
             kind: media_kind.clone(),
-            released_at: meta.released.map(|x| x.naive_utc()),
+            released_at: meta
+                .released
+                .map(|x| x.naive_utc()),
             digital_released_at,
-            runtime: meta.runtime.map(|d| d.num_seconds()),
+            runtime: meta
+                .runtime
+                .map(|d| d.num_seconds()),
             // rating_critic: meta.rating_critic,
             rating_audience: meta.imdb_rating,
             description: meta.description,
-            certification: meta.certification.clone(),
+            certification: meta
+                .certification
+                .clone(),
             certification_age: {
                 let country = meta
                     .country
@@ -3805,13 +4363,17 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                     .and_then(|v| v.first())
                     .map(|c| normalize_country_alpha2(c));
                 crate::localization::ratings::resolve_rating_age(
-                    meta.certification.as_deref(),
+                    meta.certification
+                        .as_deref(),
                     country.as_deref(),
                 )
             },
             country: meta
                 .country
-                .and_then(|v| v.into_iter().next())
+                .and_then(|v| {
+                    v.into_iter()
+                        .next()
+                })
                 .map(|c| normalize_country_alpha2(&c)),
             external_ids: {
                 let mut ids = ExternalIds::from_stremio_id(&meta.id);
@@ -3821,12 +4383,14 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                 ids
             },
             status,
-            trailers: meta.trailers.map(|trailers| {
-                trailers
-                    .into_iter()
-                    .map(|t| t.source)
-                    .collect::<Vec<String>>()
-            }),
+            trailers: meta
+                .trailers
+                .map(|trailers| {
+                    trailers
+                        .into_iter()
+                        .map(|t| t.source)
+                        .collect::<Vec<String>>()
+                }),
             id: {
                 // Prefer the explicit imdb_id field; fall back to extracting it from
                 // meta.id (e.g. Cinemeta returns id="tt0076759" without imdb_id set).
@@ -3859,7 +4423,10 @@ impl TryFrom<sdks::stremio::Meta> for Media {
         };
 
         let mut media = media;
-        if let Some(url) = meta.poster.or(meta.thumbnail) {
+        if let Some(url) = meta
+            .poster
+            .or(meta.thumbnail)
+        {
             media.set_image(ImageKind::Primary, url);
         }
         if let Some(url) = meta.logo {
@@ -3874,11 +4441,18 @@ impl TryFrom<sdks::stremio::Meta> for Media {
 }
 
 pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
-    let imdb_id = meta.imdb_id.clone().context("imdb_id is missing")?;
+    let imdb_id = meta
+        .imdb_id
+        .clone()
+        .context("imdb_id is missing")?;
 
-    let mut media: Media = meta.clone().try_into()?;
+    let mut media: Media = meta
+        .clone()
+        .try_into()?;
     media.id = Uuid::from(&super::MediaIdRaw {
-        kind: media.kind.clone(),
+        kind: media
+            .kind
+            .clone(),
         external_ids: ExternalIds {
             imdb: Some(imdb_id.clone()),
             ..Default::default()
@@ -3895,11 +4469,16 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
             let seasons: std::collections::BTreeMap<i64, Vec<sdks::stremio::Episode>> =
                 episodes
                     .iter()
-                    .filter_map(|ep| ep.season.map(|s| (s, ep.clone())))
+                    .filter_map(|ep| {
+                        ep.season
+                            .map(|s| (s, ep.clone()))
+                    })
                     .fold(
                         std::collections::BTreeMap::new(),
                         |mut acc, (season, ep)| {
-                            acc.entry(season).or_default().push(ep);
+                            acc.entry(season)
+                                .or_default()
+                                .push(ep);
                             acc
                         },
                     );
@@ -3939,8 +4518,12 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                 media_instances.push(season.clone());
 
                 for ep in episodes {
-                    let mut episode: Media = ep.clone().try_into()?;
-                    let ep_idx = ep.episode.unwrap_or(0);
+                    let mut episode: Media = ep
+                        .clone()
+                        .try_into()?;
+                    let ep_idx = ep
+                        .episode
+                        .unwrap_or(0);
                     episode.id = Uuid::from(&super::MediaIdRaw {
                         kind: MediaKind::Episode,
                         external_ids: ExternalIds {
@@ -3953,14 +4536,20 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
                     episode.idx = ep.episode;
                     episode.external_ids = ExternalIds {
                         series_imdb: Some(imdb_id.clone()),
-                        series_tmdb: media.external_ids.tmdb,
+                        series_tmdb: media
+                            .external_ids
+                            .tmdb,
                         ..Default::default()
                     };
                     episode.grandparent_id = Some(media.id);
                     episode.parent_id = Some(season.id);
                     episode.parent_idx = Some(season_idx);
-                    episode.released_at = ep.released.map(|x| x.naive_utc());
-                    episode.digital_released_at = ep.released.map(|x| x.naive_utc());
+                    episode.released_at = ep
+                        .released
+                        .map(|x| x.naive_utc());
+                    episode.digital_released_at = ep
+                        .released
+                        .map(|x| x.naive_utc());
 
                     let rels = build_episode_relations_from_ep(&episode, &ep);
                     if !rels.is_empty() {
@@ -4104,7 +4693,10 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             let sql = match op {
                 SetOp::Is | SetOp::IsNot => {
-                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    let v = esc(values
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or(""));
                     format!("lower(certification) = lower('{v}')")
                 }
                 SetOp::In | SetOp::NotIn => {
@@ -4118,7 +4710,10 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             let sql = match op {
                 SetOp::Is | SetOp::IsNot => {
-                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    let v = esc(values
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or(""));
                     format!("lower(country) = lower('{v}')")
                 }
                 SetOp::In | SetOp::NotIn => {
@@ -4132,7 +4727,10 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             let sql = match op {
                 SetOp::Is | SetOp::IsNot => {
-                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    let v = esc(values
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or(""));
                     format!(
                         "EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media.id AND lower(mt.tag) = lower('{v}'))"
                     )
@@ -4150,7 +4748,10 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             let sql = match op {
                 SetOp::Is | SetOp::IsNot => {
-                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    let v = esc(values
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or(""));
                     format!(
                         "media.id IN (SELECT mr.left_media_id FROM media_relations mr \
                          WHERE mr.right_media_id IN \
@@ -4172,7 +4773,10 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             let sql = match op {
                 SetOp::Is | SetOp::IsNot => {
-                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    let v = esc(values
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or(""));
                     format!(
                         "media.id IN (SELECT mr.left_media_id FROM media_relations mr \
                          WHERE mr.right_media_id IN \
@@ -4202,7 +4806,10 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
             let sql = match op {
                 SetOp::Is | SetOp::IsNot => {
-                    let v = esc(values.first().map(|s| s.as_str()).unwrap_or(""));
+                    let v = esc(values
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or(""));
                     format!(
                         "EXISTS (SELECT 1 FROM media_relations mr \
                          JOIN media p ON p.id = mr.right_media_id \
@@ -4235,10 +4842,19 @@ fn build_episode_relations_from_ep(
             .map(|v| v.as_slice())
             .unwrap_or_default()
             .iter()
-            .flat_map(|s| s.split(',').map(|n| n.trim().to_string()))
+            .flat_map(|s| {
+                s.split(',')
+                    .map(|n| {
+                        n.trim()
+                            .to_string()
+                    })
+            })
             .filter(|s| !s.is_empty())
             .collect();
-        for (i, name) in names.into_iter().enumerate() {
+        for (i, name) in names
+            .into_iter()
+            .enumerate()
+        {
             let person_id = crate::common::stable_media_uuid(
                 &MediaKind::Person,
                 &name.to_lowercase(),
@@ -4262,10 +4878,16 @@ fn build_episode_relations_from_ep(
     };
     add_names(
         &mut relations,
-        ep.directors.as_ref(),
+        ep.directors
+            .as_ref(),
         RelationRole::Director,
     );
-    add_names(&mut relations, ep.writers.as_ref(), RelationRole::Writer);
+    add_names(
+        &mut relations,
+        ep.writers
+            .as_ref(),
+        RelationRole::Writer,
+    );
     relations
 }
 
@@ -4279,8 +4901,14 @@ mod tests {
             "Movies/The Matrix (1999) [tmdbid-603]/The Matrix.mkv",
         );
         assert_eq!(ids.tmdb, Some(603));
-        assert!(ids.imdb.is_none());
-        assert!(ids.tvdb.is_none());
+        assert!(
+            ids.imdb
+                .is_none()
+        );
+        assert!(
+            ids.tvdb
+                .is_none()
+        );
     }
 
     #[test]
@@ -4289,13 +4917,20 @@ mod tests {
             "TV/Breaking Bad [tvdbid-81189]/Season 1/S01E01.mkv",
         );
         assert_eq!(ids.tvdb, Some(81189));
-        assert!(ids.tmdb.is_none());
+        assert!(
+            ids.tmdb
+                .is_none()
+        );
     }
 
     #[test]
     fn from_path_imdb_in_filename() {
         let ids = ExternalIds::from_path("[imdbid-tt0133093] The Matrix 1999.mkv");
-        assert_eq!(ids.imdb.as_deref(), Some("tt0133093"));
+        assert_eq!(
+            ids.imdb
+                .as_deref(),
+            Some("tt0133093")
+        );
     }
 
     #[test]

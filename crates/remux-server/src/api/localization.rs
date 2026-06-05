@@ -68,10 +68,18 @@ pub async fn get_countries(
     let countries = rust_iso3166::ALL
         .iter()
         .map(|c| api::CountryInfo {
-            name: c.name.to_string(),
-            display_name: c.name.to_string(),
-            two_letter_iso_region_name: c.alpha2.to_string(),
-            three_letter_iso_region_name: c.alpha3.to_string(),
+            name: c
+                .name
+                .to_string(),
+            display_name: c
+                .name
+                .to_string(),
+            two_letter_iso_region_name: c
+                .alpha2
+                .to_string(),
+            three_letter_iso_region_name: c
+                .alpha3
+                .to_string(),
         })
         .collect::<Vec<_>>();
     Ok(Json(countries))
@@ -83,16 +91,28 @@ pub async fn get_cultures(State(_state): State<AppState>) -> Result<impl IntoRes
         .filter_map(|lang| {
             let two = lang.to_639_1()?;
             Some(api::CultureDto {
-                name: lang.to_name().to_string(),
-                display_name: lang.to_name().to_string(),
+                name: lang
+                    .to_name()
+                    .to_string(),
+                display_name: lang
+                    .to_name()
+                    .to_string(),
                 two_letter_iso_language_name: two.to_string(),
-                three_letter_iso_language_name: lang.to_639_3().to_string(),
-                three_letter_iso_language_names: vec![lang.to_639_3().to_string()],
+                three_letter_iso_language_name: lang
+                    .to_639_3()
+                    .to_string(),
+                three_letter_iso_language_names: vec![
+                    lang.to_639_3()
+                        .to_string(),
+                ],
             })
         })
         .collect::<Vec<_>>();
     let mut cultures = cultures;
-    cultures.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    cultures.sort_by(|a, b| {
+        a.display_name
+            .cmp(&b.display_name)
+    });
     Ok(Json(cultures))
 }
 
@@ -100,10 +120,17 @@ pub async fn get_cultures(State(_state): State<AppState>) -> Result<impl IntoRes
 pub async fn get_parental_ratings(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse> {
-    let config = crate::db::Settings::get_config(&state.ctx.db).await?;
+    let config = crate::db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     Ok(Json(
         crate::localization::ratings::parental_ratings_for_country(
-            config.metadata_country_code.as_deref(),
+            config
+                .metadata_country_code
+                .as_deref(),
         ),
     ))
 }

@@ -55,9 +55,16 @@ impl AddonKind for IntroDbAddon {
 
     fn segment_supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Stream)
-            && media.external_ids.series_imdb.is_some()
-            && media.parent_idx.is_some()
-            && media.idx.is_some()
+            && media
+                .external_ids
+                .series_imdb
+                .is_some()
+            && media
+                .parent_idx
+                .is_some()
+            && media
+                .idx
+                .is_some()
     }
 
     async fn segment_fetch(
@@ -72,8 +79,12 @@ impl AddonKind for IntroDbAddon {
             .ok_or_else(|| anyhow!("no series_imdb"))?;
         remux_sdks::introdb::fetch_episode_segments(
             imdb_id,
-            media.parent_idx.unwrap(),
-            media.idx.unwrap(),
+            media
+                .parent_idx
+                .unwrap(),
+            media
+                .idx
+                .unwrap(),
         )
         .await
     }

@@ -29,7 +29,9 @@ fn route_macro(method: &str, args: TokenStream, input: TokenStream) -> TokenStre
     let MultiPath(paths) = parse_macro_input!(args as MultiPath);
     let func = parse_macro_input!(input as ItemFn);
 
-    let fn_name = &func.sig.ident;
+    let fn_name = &func
+        .sig
+        .ident;
     let vis = &func.vis;
     let method_ident = format_ident!("{}", method);
 
@@ -106,11 +108,17 @@ pub fn route(args: TokenStream, input: TokenStream) -> TokenStream {
     let args2: proc_macro2::TokenStream = args.into();
     let parsed = match syn::parse2::<RouteArgs>(args2) {
         Ok(a) => a,
-        Err(e) => return e.to_compile_error().into(),
+        Err(e) => {
+            return e
+                .to_compile_error()
+                .into()
+        }
     };
 
     let path = &parsed.path;
-    let fn_name = &func.sig.ident;
+    let fn_name = &func
+        .sig
+        .ident;
     let vis = &func.vis;
     let register_fn = format_ident!("__register_route_{}", fn_name);
 
@@ -120,7 +128,11 @@ pub fn route(args: TokenStream, input: TokenStream) -> TokenStream {
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let method_ident = format_ident!("{}", m.value().to_lowercase());
+            let method_ident = format_ident!(
+                "{}",
+                m.value()
+                    .to_lowercase()
+            );
             if i == 0 {
                 quote! { ::axum::routing::#method_ident(#fn_name) }
             } else {
@@ -163,7 +175,10 @@ impl syn::parse::Parse for RouteArgs {
                 break;
             }
             let meta: syn::MetaNameValue = input.parse()?;
-            if !meta.path.is_ident("method") {
+            if !meta
+                .path
+                .is_ident("method")
+            {
                 return Err(syn::Error::new_spanned(meta.path, "expected `method`"));
             }
             if let syn::Expr::Lit(syn::ExprLit {
@@ -210,18 +225,30 @@ pub fn api_query(_args: TokenStream, input: TokenStream) -> TokenStream {
     let mut item = parse_macro_input!(input as ItemStruct);
 
     // Check whether Deserialize is already derived so we don't add it twice.
-    let has_deser = item.attrs.iter().any(|a| {
-        a.path().is_ident("derive")
-            && a.to_token_stream().to_string().contains("Deserialize")
-    });
+    let has_deser = item
+        .attrs
+        .iter()
+        .any(|a| {
+            a.path()
+                .is_ident("derive")
+                && a.to_token_stream()
+                    .to_string()
+                    .contains("Deserialize")
+        });
 
     // Drop struct-level #[serde(rename_all = "...")] — aliases cover all cases.
-    item.attrs.retain(|a| {
-        if !a.path().is_ident("serde") {
-            return true;
-        }
-        !a.to_token_stream().to_string().contains("rename_all")
-    });
+    item.attrs
+        .retain(|a| {
+            if !a
+                .path()
+                .is_ident("serde")
+            {
+                return true;
+            }
+            !a.to_token_stream()
+                .to_string()
+                .contains("rename_all")
+        });
 
     // Inject per-field aliases.
     if let Fields::Named(ref mut fields) = item.fields {
@@ -229,7 +256,9 @@ pub fn api_query(_args: TokenStream, input: TokenStream) -> TokenStream {
             let Some(ident) = &field.ident else { continue };
             for variant in query_field_aliases(&ident.to_string()) {
                 let lit = LitStr::new(&variant, Span::call_site());
-                field.attrs.push(syn::parse_quote!(#[serde(alias = #lit)]));
+                field
+                    .attrs
+                    .push(syn::parse_quote!(#[serde(alias = #lit)]));
             }
         }
     }
@@ -250,7 +279,9 @@ pub fn api_query(_args: TokenStream, input: TokenStream) -> TokenStream {
 /// Returns the case variants of a snake_case field name that differ from the
 /// original, so they can be registered as serde aliases.
 fn query_field_aliases(snake: &str) -> Vec<String> {
-    let words: Vec<&str> = snake.split('_').collect();
+    let words: Vec<&str> = snake
+        .split('_')
+        .collect();
 
     let camel = {
         let mut s = words[0].to_lowercase();
@@ -270,7 +301,11 @@ fn query_field_aliases(snake: &str) -> Vec<String> {
             let mut chars = w.chars();
             match chars.next() {
                 None => String::new(),
-                Some(f) => f.to_uppercase().to_string() + chars.as_str(),
+                Some(f) => {
+                    f.to_uppercase()
+                        .to_string()
+                        + chars.as_str()
+                }
             }
         })
         .collect();

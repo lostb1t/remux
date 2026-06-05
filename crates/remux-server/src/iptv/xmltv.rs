@@ -27,7 +27,9 @@ pub fn parse_xmltv<R: std::io::BufRead, F: FnMut(EpgProgram)>(
     mut on_program: F,
 ) -> Result<()> {
     let mut reader = Reader::from_reader(input);
-    reader.config_mut().trim_text(true);
+    reader
+        .config_mut()
+        .trim_text(true);
 
     let mut current: Option<EpgProgram> = None;
     let mut in_title = false;
@@ -40,11 +42,19 @@ pub fn parse_xmltv<R: std::io::BufRead, F: FnMut(EpgProgram)>(
     loop {
         buf.clear();
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => match e.name().as_ref() {
+            Ok(Event::Start(ref e)) => match e
+                .name()
+                .as_ref()
+            {
                 b"programme" => {
                     let mut prog = EpgProgram::default();
-                    for attr in e.attributes().flatten() {
-                        let key = attr.key.as_ref();
+                    for attr in e
+                        .attributes()
+                        .flatten()
+                    {
+                        let key = attr
+                            .key
+                            .as_ref();
                         let val = String::from_utf8_lossy(&attr.value).into_owned();
                         match key {
                             b"channel" => prog.channel_id = val,
@@ -74,26 +84,45 @@ pub fn parse_xmltv<R: std::io::BufRead, F: FnMut(EpgProgram)>(
             },
             Ok(Event::Text(ref e)) => {
                 if let Some(ref mut prog) = current {
-                    let text = e.unescape().unwrap_or_default().into_owned();
+                    let text = e
+                        .unescape()
+                        .unwrap_or_default()
+                        .into_owned();
                     if in_title {
                         prog.title = text;
                     } else if in_desc {
                         prog.description = Some(text);
-                    } else if in_category && prog.program_kind.is_none() {
+                    } else if in_category
+                        && prog
+                            .program_kind
+                            .is_none()
+                    {
                         let kind = parse_program_kind(&text);
                         tracing::debug!(category = %text, matched = ?kind, "xmltv category");
                         prog.program_kind = kind;
                     }
                 }
             }
-            Ok(Event::End(ref e)) => match e.name().as_ref() {
+            Ok(Event::End(ref e)) => match e
+                .name()
+                .as_ref()
+            {
                 b"title" => in_title = false,
                 b"desc" => in_desc = false,
                 b"category" => in_category = false,
                 b"programme" => {
                     if let Some(prog) = current.take() {
-                        if !prog.channel_id.is_empty() && !prog.title.is_empty() {
-                            if prog.program_kind.is_some() {
+                        if !prog
+                            .channel_id
+                            .is_empty()
+                            && !prog
+                                .title
+                                .is_empty()
+                        {
+                            if prog
+                                .program_kind
+                                .is_some()
+                            {
                                 with_kind += 1;
                             }
                             total += 1;
@@ -104,18 +133,30 @@ pub fn parse_xmltv<R: std::io::BufRead, F: FnMut(EpgProgram)>(
                 _ => {}
             },
             Ok(Event::Empty(ref e)) => {
-                if e.name().as_ref() == b"icon" {
+                if e.name()
+                    .as_ref()
+                    == b"icon"
+                {
                     if let Some(ref mut prog) = current {
-                        if prog.poster.is_none() {
-                            prog.poster = e.attributes().flatten().find_map(|a| {
-                                if a.key.as_ref() == b"src" {
-                                    let url =
-                                        String::from_utf8_lossy(&a.value).into_owned();
-                                    if !url.is_empty() { Some(url) } else { None }
-                                } else {
-                                    None
-                                }
-                            });
+                        if prog
+                            .poster
+                            .is_none()
+                        {
+                            prog.poster = e
+                                .attributes()
+                                .flatten()
+                                .find_map(|a| {
+                                    if a.key
+                                        .as_ref()
+                                        == b"src"
+                                    {
+                                        let url = String::from_utf8_lossy(&a.value)
+                                            .into_owned();
+                                        if !url.is_empty() { Some(url) } else { None }
+                                    } else {
+                                        None
+                                    }
+                                });
                         }
                     }
                 }
@@ -134,7 +175,9 @@ pub fn parse_xmltv<R: std::io::BufRead, F: FnMut(EpgProgram)>(
 fn parse_xmltv_datetime(s: &str) -> Option<NaiveDateTime> {
     let s = s.trim();
     // Strip timezone offset (everything after a space)
-    let dt_part = s.split_whitespace().next()?;
+    let dt_part = s
+        .split_whitespace()
+        .next()?;
     // Try common formats
     NaiveDateTime::parse_from_str(dt_part, "%Y%m%d%H%M%S")
         .or_else(|_| NaiveDateTime::parse_from_str(dt_part, "%Y%m%d%H%M"))

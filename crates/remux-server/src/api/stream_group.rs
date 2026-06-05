@@ -73,9 +73,16 @@ pub async fn list_stream_groups(
     State(state): State<AppState>,
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    let groups = StreamGroup::list(&state.ctx.db).await?;
-    let response: Vec<StreamGroupResponse> =
-        groups.into_iter().map(Into::into).collect();
+    let groups = StreamGroup::list(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
+    let response: Vec<StreamGroupResponse> = groups
+        .into_iter()
+        .map(Into::into)
+        .collect();
     Ok(Json(response))
 }
 
@@ -86,7 +93,9 @@ pub async fn create_stream_group(
     Json(payload): Json<CreateStreamGroupPayload>,
 ) -> Result<impl IntoResponse> {
     let group = StreamGroup::create(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &payload.name,
         payload.filter,
         payload.priority,
@@ -103,7 +112,9 @@ pub async fn update_stream_group(
     Json(payload): Json<UpdateStreamGroupPayload>,
 ) -> Result<impl IntoResponse> {
     let group = StreamGroup::update(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &id,
         &payload.name,
         payload.filter,
@@ -121,7 +132,13 @@ pub async fn delete_stream_group(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    StreamGroup::delete(&state.ctx.db, &id).await?;
+    StreamGroup::delete(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -160,10 +177,22 @@ pub async fn stream_group_preview(
         ..Default::default()
     };
 
-    let raw_streams = state.ctx.addons.get_streams(&stub, &state.ctx).await?;
+    let raw_streams = state
+        .ctx
+        .addons
+        .get_streams(&stub, &state.ctx)
+        .await?;
 
-    let groups = StreamGroup::list(&state.ctx.db).await?;
-    let enabled: Vec<&StreamGroup> = groups.iter().filter(|g| g.enabled).collect();
+    let groups = StreamGroup::list(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
+    let enabled: Vec<&StreamGroup> = groups
+        .iter()
+        .filter(|g| g.enabled)
+        .collect();
 
     let mut result_groups: Vec<PreviewGroupEntry> = vec![];
     let mut matched_ids: HashSet<Uuid> = HashSet::new();
@@ -191,8 +220,18 @@ pub async fn stream_group_preview(
             .map(|s| {
                 s.stream_info
                     .as_ref()
-                    .and_then(|i| i.filename.clone().or_else(|| i.name.clone()))
-                    .unwrap_or_else(|| s.title.clone())
+                    .and_then(|i| {
+                        i.filename
+                            .clone()
+                            .or_else(|| {
+                                i.name
+                                    .clone()
+                            })
+                    })
+                    .unwrap_or_else(|| {
+                        s.title
+                            .clone()
+                    })
             })
             .collect();
 
@@ -209,8 +248,18 @@ pub async fn stream_group_preview(
         .map(|s| {
             s.stream_info
                 .as_ref()
-                .and_then(|i| i.filename.clone().or_else(|| i.name.clone()))
-                .unwrap_or_else(|| s.title.clone())
+                .and_then(|i| {
+                    i.filename
+                        .clone()
+                        .or_else(|| {
+                            i.name
+                                .clone()
+                        })
+                })
+                .unwrap_or_else(|| {
+                    s.title
+                        .clone()
+                })
         })
         .collect();
 

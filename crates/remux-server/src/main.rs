@@ -27,7 +27,13 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let cfg = std::env::var("CONFIG").unwrap_or_else(|_| "/data/config".to_string());
     let cli_config = load_cli_config(&cfg, config::Environment::default())?;
-    serve(cli_config.base.resolve(), cli_config.paths).await
+    serve(
+        cli_config
+            .base
+            .resolve(),
+        cli_config.paths,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -45,6 +51,11 @@ mod tests {
         let cli_config =
             load_cli_config("/tmp/remux-missing-test-config", env).unwrap();
 
-        assert_eq!(cli_config.base.port, 5000);
+        assert_eq!(
+            cli_config
+                .base
+                .port,
+            5000
+        );
     }
 }

@@ -71,7 +71,11 @@ impl PlaybackSessionManager {
         let play_session_id = data
             .play_session_id
             .clone()
-            .unwrap_or_else(|| common::get_uuid().as_simple().to_string());
+            .unwrap_or_else(|| {
+                common::get_uuid()
+                    .as_simple()
+                    .to_string()
+            });
 
         // Enforce per-user concurrent-stream limit.
         let max_sessions = auth_session
@@ -83,21 +87,31 @@ impl PlaybackSessionManager {
         if max_sessions > 0 {
             // Exclude the caller's own device: insert() will replace any existing
             // session for that device, so it doesn't consume an extra slot.
-            let current = self
-                .count_for_user(auth_session.user.id, Some(&auth_session.device.id));
+            let current = self.count_for_user(
+                auth_session
+                    .user
+                    .id,
+                Some(
+                    &auth_session
+                        .device
+                        .id,
+                ),
+            );
             if current >= max_sessions as usize {
                 return Err(anyhow::anyhow!("Stream limit reached")
                     .context("Maximum concurrent streams reached"));
             }
         }
 
-        let item_id = data.item_id.unwrap_or_else(|| {
-            warn!(
-                client = %auth_session.device.app_name,
-                "PlaybackStart missing item_id"
-            );
-            Uuid::default()
-        });
+        let item_id = data
+            .item_id
+            .unwrap_or_else(|| {
+                warn!(
+                    client = %auth_session.device.app_name,
+                    "PlaybackStart missing item_id"
+                );
+                Uuid::default()
+            });
 
         // If the client selected a StreamGroup source, record its group UUID.
         let group_id: Option<Uuid> = if let Some(ref sid) = data.media_source_id {
@@ -117,12 +131,24 @@ impl PlaybackSessionManager {
 
         let ps = PlaybackSession {
             play_session_id: play_session_id.clone(),
-            user_id: auth_session.user.id,
+            user_id: auth_session
+                .user
+                .id,
             item_id,
-            media_source_id: data.media_source_id.clone(),
-            device_id: auth_session.device.id.clone(),
-            client_name: auth_session.device.app_name.clone(),
-            position_ticks: data.position_ticks.unwrap_or(0),
+            media_source_id: data
+                .media_source_id
+                .clone(),
+            device_id: auth_session
+                .device
+                .id
+                .clone(),
+            client_name: auth_session
+                .device
+                .app_name
+                .clone(),
+            position_ticks: data
+                .position_ticks
+                .unwrap_or(0),
             can_seek: data.can_seek,
             is_paused: data.is_paused,
             last_paused_at: if data.is_paused {
@@ -134,9 +160,16 @@ impl PlaybackSessionManager {
             volume_level: data.volume_level,
             audio_stream_index: data.audio_stream_index,
             subtitle_stream_index: data.subtitle_stream_index,
-            play_method: data.play_method.as_ref().map(|m| m.to_string()),
-            now_playing_queue: data.now_playing_queue.clone(),
-            playlist_item_id: data.playlist_item_id.clone(),
+            play_method: data
+                .play_method
+                .as_ref()
+                .map(|m| m.to_string()),
+            now_playing_queue: data
+                .now_playing_queue
+                .clone(),
+            playlist_item_id: data
+                .playlist_item_id
+                .clone(),
             started_at: Utc::now(),
             last_activity: Utc::now(),
             transcode: None,
@@ -157,26 +190,38 @@ impl PlaybackSessionManager {
                 .map(|m| m.title)
                 .unwrap_or_default();
 
-            let (source_title, source_path) = if let Some(ref sid) =
-                data.media_source_id
-            {
-                if let Ok(source_uuid) = sid.parse::<Uuid>() {
-                    let m = db::Media::get_by_id(db, &source_uuid).await.ok().flatten();
-                    (
-                        m.as_ref().map(|m| m.title.clone()),
-                        m.and_then(|m| m.stream_info.map(|si| si.descriptor)),
-                    )
+            let (source_title, source_path) =
+                if let Some(ref sid) = data.media_source_id {
+                    if let Ok(source_uuid) = sid.parse::<Uuid>() {
+                        let m = db::Media::get_by_id(db, &source_uuid)
+                            .await
+                            .ok()
+                            .flatten();
+                        (
+                            m.as_ref()
+                                .map(|m| {
+                                    m.title
+                                        .clone()
+                                }),
+                            m.and_then(|m| {
+                                m.stream_info
+                                    .map(|si| si.descriptor)
+                            }),
+                        )
+                    } else {
+                        (None, None)
+                    }
                 } else {
                     (None, None)
-                }
-            } else {
-                (None, None)
-            };
+                };
 
             let log_session_id = play_session_id
                 .trim_start_matches("audio-")
                 .trim_start_matches("video-");
-            let position_secs = data.position_ticks.unwrap_or(0) / 10_000_000;
+            let position_secs = data
+                .position_ticks
+                .unwrap_or(0)
+                / 10_000_000;
             info!(
                 play_session_id = log_session_id,
                 %item_id,
@@ -214,16 +259,28 @@ impl PlaybackSessionManager {
             None => return Ok(()),
         };
 
-        let item_id = data.item_id.unwrap_or(ps.item_id);
+        let item_id = data
+            .item_id
+            .unwrap_or(ps.item_id);
 
         // Detect encode-parameter changes and log them once.
         // We ignore pause/unpause — those are not encode changes.
-        let audio_changed = data.audio_stream_index.is_some()
+        let audio_changed = data
+            .audio_stream_index
+            .is_some()
             && data.audio_stream_index != ps.audio_stream_index;
-        let subtitle_changed = data.subtitle_stream_index.is_some()
+        let subtitle_changed = data
+            .subtitle_stream_index
+            .is_some()
             && data.subtitle_stream_index != ps.subtitle_stream_index;
-        let method_changed = data.play_method.is_some()
-            && data.play_method.as_ref().map(|m| m.to_string()) != ps.play_method;
+        let method_changed = data
+            .play_method
+            .is_some()
+            && data
+                .play_method
+                .as_ref()
+                .map(|m| m.to_string())
+                != ps.play_method;
         if audio_changed || subtitle_changed || method_changed {
             info!(
                 play_session_id = psid.trim_start_matches("audio-").trim_start_matches("video-"),
@@ -254,7 +311,9 @@ impl PlaybackSessionManager {
                     ps.item_id = id;
                 }
             }
-            ps.position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
+            ps.position_ticks = data
+                .position_ticks
+                .unwrap_or(ps.position_ticks);
             if data.is_paused && !ps.is_paused {
                 ps.last_paused_at = Some(Utc::now());
             } else if !data.is_paused {
@@ -262,10 +321,15 @@ impl PlaybackSessionManager {
             }
             ps.is_paused = data.is_paused;
             ps.is_muted = data.is_muted;
-            ps.volume_level = data.volume_level.or(ps.volume_level);
-            ps.audio_stream_index = data.audio_stream_index.or(ps.audio_stream_index);
-            ps.subtitle_stream_index =
-                data.subtitle_stream_index.or(ps.subtitle_stream_index);
+            ps.volume_level = data
+                .volume_level
+                .or(ps.volume_level);
+            ps.audio_stream_index = data
+                .audio_stream_index
+                .or(ps.audio_stream_index);
+            ps.subtitle_stream_index = data
+                .subtitle_stream_index
+                .or(ps.subtitle_stream_index);
             if let Some(ref m) = data.play_method {
                 ps.play_method = Some(m.to_string());
             }
@@ -285,7 +349,9 @@ impl PlaybackSessionManager {
         }
 
         // Persist position to DB (no watched-threshold check on progress).
-        let position_ticks = data.position_ticks.unwrap_or(ps.position_ticks);
+        let position_ticks = data
+            .position_ticks
+            .unwrap_or(ps.position_ticks);
         if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
             db::UserMediaState::update_playback(
                 db,
@@ -318,12 +384,22 @@ impl PlaybackSessionManager {
         psid: &str,
         data: &PlaybackInfo,
     ) -> anyhow::Result<()> {
-        let ps = self.stop(psid).await;
+        let ps = self
+            .stop(psid)
+            .await;
 
-        let item_id = data.item_id.or_else(|| ps.as_ref().map(|s| s.item_id));
+        let item_id = data
+            .item_id
+            .or_else(|| {
+                ps.as_ref()
+                    .map(|s| s.item_id)
+            });
         let final_ticks = data
             .position_ticks
-            .or_else(|| ps.as_ref().map(|s| s.position_ticks));
+            .or_else(|| {
+                ps.as_ref()
+                    .map(|s| s.position_ticks)
+            });
 
         if let Some(item_id) = item_id {
             if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
@@ -349,33 +425,61 @@ impl PlaybackSessionManager {
     /// Removes stale sessions for the same device so `get_sessions` always
     /// finds the most recent playback.
     pub fn insert(&self, mut session: PlaybackSession) {
-        if session.transcode.is_none() {
-            if let Some(existing) = self.sessions.get(&session.play_session_id) {
-                session.transcode = existing.value().transcode.clone();
+        if session
+            .transcode
+            .is_none()
+        {
+            if let Some(existing) = self
+                .sessions
+                .get(&session.play_session_id)
+            {
+                session.transcode = existing
+                    .value()
+                    .transcode
+                    .clone();
             }
         }
         // Remove any previous session for this device (different play_session_id).
-        if !session.device_id.is_empty() {
+        if !session
+            .device_id
+            .is_empty()
+        {
             let stale: Vec<String> = self
                 .sessions
                 .iter()
                 .filter(|e| {
-                    e.value().device_id == session.device_id
+                    e.value()
+                        .device_id
+                        == session.device_id
                         && e.key() != &session.play_session_id
                 })
-                .map(|e| e.key().clone())
+                .map(|e| {
+                    e.key()
+                        .clone()
+                })
                 .collect();
             for id in stale {
-                self.sessions.remove(&id);
+                self.sessions
+                    .remove(&id);
             }
         }
         self.sessions
-            .insert(session.play_session_id.clone(), session);
+            .insert(
+                session
+                    .play_session_id
+                    .clone(),
+                session,
+            );
     }
 
     /// Return a clone of the session, if it exists.
     pub fn get(&self, id: &str) -> Option<PlaybackSession> {
-        self.sessions.get(id).map(|e| e.value().clone())
+        self.sessions
+            .get(id)
+            .map(|e| {
+                e.value()
+                    .clone()
+            })
     }
 
     /// Return a clone of the transcode session attached to this playback session.
@@ -383,12 +487,22 @@ impl PlaybackSessionManager {
         &self,
         id: &str,
     ) -> Option<Arc<tokio::sync::RwLock<TranscodeSession>>> {
-        self.sessions.get(id)?.value().transcode.clone()
+        self.sessions
+            .get(id)?
+            .value()
+            .transcode
+            .clone()
     }
 
     /// Return clones of all active sessions.
     pub fn get_all(&self) -> Vec<PlaybackSession> {
-        self.sessions.iter().map(|e| e.value().clone()).collect()
+        self.sessions
+            .iter()
+            .map(|e| {
+                e.value()
+                    .clone()
+            })
+            .collect()
     }
 
     /// Count active sessions for a user, optionally excluding sessions from a
@@ -408,7 +522,10 @@ impl PlaybackSessionManager {
 
     /// Update a session in-place via a closure.
     pub fn update<F: FnOnce(&mut PlaybackSession)>(&self, id: &str, f: F) {
-        if let Some(mut entry) = self.sessions.get_mut(id) {
+        if let Some(mut entry) = self
+            .sessions
+            .get_mut(id)
+        {
             f(entry.value_mut());
         }
     }
@@ -433,8 +550,13 @@ impl PlaybackSessionManager {
         id: &str,
         ts: Arc<tokio::sync::RwLock<TranscodeSession>>,
     ) {
-        if let Some(mut entry) = self.sessions.get_mut(id) {
-            entry.value_mut().transcode = Some(ts);
+        if let Some(mut entry) = self
+            .sessions
+            .get_mut(id)
+        {
+            entry
+                .value_mut()
+                .transcode = Some(ts);
         } else {
             // Inherit device_id from the freshest transcodeless session so that
             // get_sessions can find this stub by device_id immediately.
@@ -442,38 +564,52 @@ impl PlaybackSessionManager {
                 .sessions
                 .iter()
                 .filter(|e| {
-                    e.value().transcode.is_none() && !e.value().device_id.is_empty()
+                    e.value()
+                        .transcode
+                        .is_none()
+                        && !e
+                            .value()
+                            .device_id
+                            .is_empty()
                 })
-                .max_by_key(|e| e.value().last_activity)
-                .map(|e| e.value().device_id.clone())
+                .max_by_key(|e| {
+                    e.value()
+                        .last_activity
+                })
+                .map(|e| {
+                    e.value()
+                        .device_id
+                        .clone()
+                })
                 .unwrap_or_default();
 
-            self.sessions.insert(
-                id.to_string(),
-                PlaybackSession {
-                    play_session_id: id.to_string(),
-                    transcode: Some(ts),
-                    user_id: Uuid::nil(),
-                    item_id: Uuid::nil(),
-                    media_source_id: None,
-                    device_id: inherited_device_id,
-                    client_name: String::new(),
-                    position_ticks: 0,
-                    can_seek: true,
-                    is_paused: false,
-                    last_paused_at: None,
-                    is_muted: false,
-                    volume_level: None,
-                    audio_stream_index: None,
-                    subtitle_stream_index: None,
-                    play_method: None,
-                    now_playing_queue: None,
-                    playlist_item_id: None,
-                    started_at: Utc::now(),
-                    last_activity: Utc::now(),
-                    group_id: None,
-                },
-            );
+            self.sessions
+                .insert(
+                    id.to_string(),
+                    PlaybackSession {
+                        play_session_id: id.to_string(),
+                        transcode: Some(ts),
+                        user_id: Uuid::nil(),
+                        item_id: Uuid::nil(),
+                        media_source_id: None,
+                        device_id: inherited_device_id,
+                        client_name: String::new(),
+                        position_ticks: 0,
+                        can_seek: true,
+                        is_paused: false,
+                        last_paused_at: None,
+                        is_muted: false,
+                        volume_level: None,
+                        audio_stream_index: None,
+                        subtitle_stream_index: None,
+                        play_method: None,
+                        now_playing_queue: None,
+                        playlist_item_id: None,
+                        started_at: Utc::now(),
+                        last_activity: Utc::now(),
+                        group_id: None,
+                    },
+                );
         }
     }
 
@@ -483,7 +619,11 @@ impl PlaybackSessionManager {
         let ts = self
             .sessions
             .get_mut(id)
-            .and_then(|mut e| e.value_mut().transcode.take());
+            .and_then(|mut e| {
+                e.value_mut()
+                    .transcode
+                    .take()
+            });
         if let Some(ts) = ts {
             kill_transcode(ts).await;
         }
@@ -492,8 +632,13 @@ impl PlaybackSessionManager {
     /// Stop the transcode (if any) and remove the playback session entirely.
     /// Returns the removed session so callers can read final position/item data.
     pub async fn stop(&self, id: &str) -> Option<PlaybackSession> {
-        let (_, session) = self.sessions.remove(id)?;
-        if let Some(ts) = session.transcode.clone() {
+        let (_, session) = self
+            .sessions
+            .remove(id)?;
+        if let Some(ts) = session
+            .transcode
+            .clone()
+        {
             kill_transcode(ts).await;
         }
         Some(session)
@@ -501,7 +646,9 @@ impl PlaybackSessionManager {
 
     /// Path where a given HLS segment lives on disk (used for disk-based recovery).
     pub fn segment_path(&self, play_session_id: &str, segment_id: &str) -> PathBuf {
-        let session_dir = self.base_dir.join(play_session_id);
+        let session_dir = self
+            .base_dir
+            .join(play_session_id);
 
         if let Ok(entries) = std::fs::read_dir(&session_dir) {
             let mut latest_dir: Option<(PathBuf, std::time::SystemTime)> = None;
@@ -511,7 +658,9 @@ impl PlaybackSessionManager {
                         let modified = metadata
                             .modified()
                             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                        if latest_dir.as_ref().map_or(true, |(_, max)| modified > *max)
+                        if latest_dir
+                            .as_ref()
+                            .map_or(true, |(_, max)| modified > *max)
                         {
                             latest_dir = Some((entry.path(), modified));
                         }
@@ -531,7 +680,13 @@ impl PlaybackSessionManager {
     }
 
     pub fn active_session_ids(&self) -> Vec<String> {
-        self.sessions.iter().map(|e| e.key().clone()).collect()
+        self.sessions
+            .iter()
+            .map(|e| {
+                e.key()
+                    .clone()
+            })
+            .collect()
     }
 
     /// Spawn a background task that reaps sessions idle longer than `max_age`.
@@ -543,18 +698,28 @@ impl PlaybackSessionManager {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
-                ticker.tick().await;
+                ticker
+                    .tick()
+                    .await;
                 let cutoff = Utc::now()
                     - chrono::Duration::from_std(max_age).unwrap_or_default();
                 let stale: Vec<String> = self
                     .sessions
                     .iter()
-                    .filter(|e| e.value().last_activity < cutoff)
-                    .map(|e| e.key().clone())
+                    .filter(|e| {
+                        e.value()
+                            .last_activity
+                            < cutoff
+                    })
+                    .map(|e| {
+                        e.key()
+                            .clone()
+                    })
                     .collect();
                 for id in stale {
                     info!("Cleaning up idle session: {}", id);
-                    self.stop(&id).await;
+                    self.stop(&id)
+                        .await;
                 }
             }
         })
@@ -564,8 +729,17 @@ impl PlaybackSessionManager {
 /// Kill an ffmpeg process and wait for it to exit before returning.
 async fn kill_transcode(ts: Arc<tokio::sync::RwLock<TranscodeSession>>) {
     let (kill_tx, wait_done, output_dir) = {
-        let mut s = ts.write().await;
-        (s.kill_tx.take(), s.wait_done.clone(), s.output_dir.clone())
+        let mut s = ts
+            .write()
+            .await;
+        (
+            s.kill_tx
+                .take(),
+            s.wait_done
+                .clone(),
+            s.output_dir
+                .clone(),
+        )
     };
     if let Some(kill_tx) = kill_tx {
         let notification = wait_done.notified();

@@ -214,27 +214,36 @@ impl User {
                 qb.push_in("id", &id);
             }
             if let Some(username) = &filter.username {
-                qb.push(" AND username = ").push_bind(username);
+                qb.push(" AND username = ")
+                    .push_bind(username);
             }
         }
 
         if let Some(limit) = &filter.limit {
-            records_qb.push(" LIMIT ").push_bind(limit);
+            records_qb
+                .push(" LIMIT ")
+                .push_bind(limit);
         }
 
         if let Some(offset) = &filter.offset {
-            records_qb.push(" OFFSET ").push_bind(offset);
+            records_qb
+                .push(" OFFSET ")
+                .push_bind(offset);
         }
 
         let (count, records) = tokio::join!(
             async {
                 let query = count_qb.build();
-                let row = query.fetch_one(db).await;
+                let row = query
+                    .fetch_one(db)
+                    .await;
                 row.map(|r| r.get::<i64, _>(0) as usize)
             },
             async {
                 let query = records_qb.build_query_as::<User>();
-                query.fetch_all(db).await
+                query
+                    .fetch_all(db)
+                    .await
             }
         );
 
@@ -320,28 +329,52 @@ impl MediaIdRaw {
     pub fn canonical(&self) -> Option<String> {
         use super::MediaKind;
         match self.kind {
-            MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => {
-                self.external_ids.imdb.clone()
-            }
+            MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => self
+                .external_ids
+                .imdb
+                .clone(),
             MediaKind::Season => {
-                let series_imdb = self.external_ids.series_imdb.as_deref()?;
-                Some(format!("{}:{}", series_imdb, self.season.unwrap_or(0)))
+                let series_imdb = self
+                    .external_ids
+                    .series_imdb
+                    .as_deref()?;
+                Some(format!(
+                    "{}:{}",
+                    series_imdb,
+                    self.season
+                        .unwrap_or(0)
+                ))
             }
             MediaKind::Episode => {
-                let series_imdb = self.external_ids.series_imdb.as_deref()?;
+                let series_imdb = self
+                    .external_ids
+                    .series_imdb
+                    .as_deref()?;
                 Some(format!(
                     "{}:{}:{}",
                     series_imdb,
-                    self.season.unwrap_or(0),
-                    self.episode.unwrap_or(0)
+                    self.season
+                        .unwrap_or(0),
+                    self.episode
+                        .unwrap_or(0)
                 ))
             }
-            MediaKind::Artist => {
-                self.external_ids.deezer_artist.map(|id| id.to_string())
-            }
-            MediaKind::Album => self.external_ids.deezer_album.map(|id| id.to_string()),
-            MediaKind::Track => self.external_ids.deezer_track.map(|id| id.to_string()),
-            MediaKind::Person => self.external_ids.tmdb.map(|id| id.to_string()),
+            MediaKind::Artist => self
+                .external_ids
+                .deezer_artist
+                .map(|id| id.to_string()),
+            MediaKind::Album => self
+                .external_ids
+                .deezer_album
+                .map(|id| id.to_string()),
+            MediaKind::Track => self
+                .external_ids
+                .deezer_track
+                .map(|id| id.to_string()),
+            MediaKind::Person => self
+                .external_ids
+                .tmdb
+                .map(|id| id.to_string()),
             _ => None,
         }
     }
@@ -351,7 +384,8 @@ impl From<&MediaIdRaw> for Uuid {
     fn from(raw: &MediaIdRaw) -> Uuid {
         crate::common::stable_media_uuid(
             &raw.kind,
-            &raw.canonical().unwrap_or_default(),
+            &raw.canonical()
+                .unwrap_or_default(),
         )
     }
 }
@@ -414,7 +448,10 @@ impl UserMediaState {
         // (e.g. pre-fix random UUID) for the same content, matched via media_raw JSON.
         let fallback: Option<Self> = match media.kind {
             super::MediaKind::Movie | super::MediaKind::Series => {
-                if let Some(imdb) = &raw.external_ids.imdb {
+                if let Some(imdb) = &raw
+                    .external_ids
+                    .imdb
+                {
                     sqlx::query_as(
                         "SELECT * FROM user_media_state \
                          WHERE user_id = ? \
@@ -424,7 +461,11 @@ impl UserMediaState {
                          LIMIT 1",
                     )
                     .bind(user.id)
-                    .bind(media.kind.to_string())
+                    .bind(
+                        media
+                            .kind
+                            .to_string(),
+                    )
                     .bind(imdb)
                     .fetch_optional(db)
                     .await?
@@ -433,9 +474,11 @@ impl UserMediaState {
                 }
             }
             super::MediaKind::Season => {
-                if let (Some(series_imdb), Some(season)) =
-                    (&raw.external_ids.series_imdb, raw.season)
-                {
+                if let (Some(series_imdb), Some(season)) = (
+                    &raw.external_ids
+                        .series_imdb,
+                    raw.season,
+                ) {
                     sqlx::query_as(
                         "SELECT * FROM user_media_state \
                          WHERE user_id = ? \
@@ -456,9 +499,12 @@ impl UserMediaState {
                 }
             }
             super::MediaKind::Episode => {
-                if let (Some(series_imdb), Some(season), Some(episode)) =
-                    (&raw.external_ids.series_imdb, raw.season, raw.episode)
-                {
+                if let (Some(series_imdb), Some(season), Some(episode)) = (
+                    &raw.external_ids
+                        .series_imdb,
+                    raw.season,
+                    raw.episode,
+                ) {
                     sqlx::query_as(
                         "SELECT * FROM user_media_state \
                          WHERE user_id = ? \
@@ -525,14 +571,17 @@ impl UserMediaState {
         }
 
         // Persist the position + stream preferences first.
-        ms.save(db).await?;
+        ms.save(db)
+            .await?;
 
         // Apply the "mark as watched" threshold only on stop events.
         // Delegate to `media.mark_played` so that finishing an episode also
         // propagates to the parent season / series.
         if let Some(runtime) = runtime_seconds {
             if runtime > 0 && position_seconds >= (runtime * 90 / 100) {
-                media.mark_played(db, user, true).await?;
+                media
+                    .mark_played(db, user, true)
+                    .await?;
                 // Reset playback position now that the item is fully watched.
                 sqlx::query(
                     "UPDATE user_media_state SET playback_position = 0 \
@@ -613,7 +662,8 @@ impl UserMediaState {
 
         for qb in [&mut count_qb, &mut records_qb] {
             if let Some(user_id) = &filter.user_id {
-                qb.push(" AND user_id = ").push_bind(user_id);
+                qb.push(" AND user_id = ")
+                    .push_bind(user_id);
             }
             if let Some(media_ids) = &filter.media_id {
                 qb.push_in("media_id", &media_ids);
@@ -622,26 +672,35 @@ impl UserMediaState {
                 qb.push(" AND play_count > 0");
             }
             if let Some(favorite) = &filter.favorite {
-                qb.push(" AND favorite = ").push_bind(favorite);
+                qb.push(" AND favorite = ")
+                    .push_bind(favorite);
             }
         }
 
         if let Some(limit) = &filter.limit {
-            records_qb.push(" LIMIT ").push_bind(limit);
+            records_qb
+                .push(" LIMIT ")
+                .push_bind(limit);
         }
         if let Some(offset) = &filter.offset {
-            records_qb.push(" OFFSET ").push_bind(offset);
+            records_qb
+                .push(" OFFSET ")
+                .push_bind(offset);
         }
 
         let (count, records) = tokio::join!(
             async {
                 let query = count_qb.build();
-                let row = query.fetch_one(db).await;
+                let row = query
+                    .fetch_one(db)
+                    .await;
                 row.map(|r| r.get::<i64, _>(0) as usize)
             },
             async {
                 let query = records_qb.build_query_as::<UserMediaState>();
-                query.fetch_all(db).await
+                query
+                    .fetch_all(db)
+                    .await
             }
         );
 
@@ -755,30 +814,40 @@ impl JellyfinDisplayPrefs {
                 qb.push_in("id", &id);
             }
             if let Some(client) = &filter.client {
-                qb.push(" AND client = ").push_bind(client);
+                qb.push(" AND client = ")
+                    .push_bind(client);
             }
             if let Some(user_id) = &filter.user_id {
-                qb.push(" AND user_id = ").push_bind(user_id);
+                qb.push(" AND user_id = ")
+                    .push_bind(user_id);
             }
         }
 
         if let Some(limit) = &filter.limit {
-            records_qb.push(" LIMIT ").push_bind(limit);
+            records_qb
+                .push(" LIMIT ")
+                .push_bind(limit);
         }
 
         if let Some(offset) = &filter.offset {
-            records_qb.push(" OFFSET ").push_bind(offset);
+            records_qb
+                .push(" OFFSET ")
+                .push_bind(offset);
         }
 
         let (count, records) = tokio::join!(
             async {
                 let query = count_qb.build();
-                let row = query.fetch_one(db).await;
+                let row = query
+                    .fetch_one(db)
+                    .await;
                 row.map(|r| r.get::<i64, _>(0) as usize)
             },
             async {
                 let query = records_qb.build_query_as::<Self>();
-                query.fetch_all(db).await
+                query
+                    .fetch_all(db)
+                    .await
             }
         );
 

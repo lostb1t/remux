@@ -83,10 +83,14 @@ impl Endpoint for MovieEndpoint {
         if let Some(lang) = &self.language {
             params.push(("language".to_string(), lang.clone()));
         }
-        if !self.append_to_response.is_empty() {
+        if !self
+            .append_to_response
+            .is_empty()
+        {
             params.push((
                 "append_to_response".to_string(),
-                self.append_to_response.join(","),
+                self.append_to_response
+                    .join(","),
             ));
         }
         params
@@ -120,7 +124,11 @@ impl Endpoint for SearchMovieEndpoint {
     }
 
     fn query(&self) -> Vec<(String, String)> {
-        let mut params = vec![("query".to_string(), self.query.clone())];
+        let mut params = vec![(
+            "query".to_string(),
+            self.query
+                .clone(),
+        )];
         if let Some(y) = self.year {
             params.push(("year".to_string(), y.to_string()));
         }

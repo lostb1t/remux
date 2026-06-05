@@ -21,7 +21,12 @@ pub async fn get_api_keys(
     State(state): State<AppState>,
     session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
-    let keys = ApiKey::get_all(&state.ctx.db).await?;
+    let keys = ApiKey::get_all(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     let items: Vec<api::AuthenticationInfo> = keys
         .into_iter()
         .map(|k| api::AuthenticationInfo {
@@ -47,7 +52,13 @@ pub async fn create_api_key(
     session: auth::AdminSession,
     Query(params): Query<CreateKeyQuery>,
 ) -> Result<impl IntoResponse> {
-    let key = ApiKey::create(&state.ctx.db, &params.app).await?;
+    let key = ApiKey::create(
+        &state
+            .ctx
+            .db,
+        &params.app,
+    )
+    .await?;
     let info = api::AuthenticationInfo {
         access_token: Some(key.access_token),
         app_name: Some(key.app_name),
@@ -64,6 +75,12 @@ pub async fn delete_api_key(
     session: auth::AdminSession,
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse> {
-    ApiKey::delete(&state.ctx.db, &key).await?;
+    ApiKey::delete(
+        &state
+            .ctx
+            .db,
+        &key,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -26,8 +26,13 @@ pub struct StreamGroup {
 
 impl StreamGroup {
     pub fn display_name(&self) -> String {
-        if !self.name.is_empty() {
-            return self.name.clone();
+        if !self
+            .name
+            .is_empty()
+        {
+            return self
+                .name
+                .clone();
         }
         auto_name(&self.filter)
     }
@@ -47,11 +52,17 @@ impl StreamGroup {
 
     async fn save(&self, db: &SqlitePool) -> Result<()> {
         let data = StreamGroupData {
-            name: self.name.clone(),
-            filter: self.filter.clone(),
+            name: self
+                .name
+                .clone(),
+            filter: self
+                .filter
+                .clone(),
             priority: self.priority,
             hidden: self.hidden,
-            created_at: self.created_at.clone(),
+            created_at: self
+                .created_at
+                .clone(),
         };
         let data_json = serde_json::to_string(&data)?;
         let now = Utc::now().naive_utc();
@@ -116,7 +127,9 @@ impl StreamGroup {
                 hidden: l.hidden,
                 created_at: l.created_at,
             };
-            let _ = group.save(db).await;
+            let _ = group
+                .save(db)
+                .await;
         }
         let _ = sqlx::query("DELETE FROM settings WHERE key = ?")
             .bind(LEGACY_SETTINGS_KEY)
@@ -129,8 +142,10 @@ impl StreamGroup {
             sqlx::query_as("SELECT * FROM media WHERE kind = 'stream_group'")
                 .fetch_all(db)
                 .await?;
-        let mut groups: Vec<Self> =
-            rows.into_iter().filter_map(Self::from_media).collect();
+        let mut groups: Vec<Self> = rows
+            .into_iter()
+            .filter_map(Self::from_media)
+            .collect();
         groups.sort_by_key(|g| g.priority);
         Ok(groups)
     }
@@ -158,9 +173,13 @@ impl StreamGroup {
             priority,
             enabled: true,
             hidden: false,
-            created_at: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            created_at: Utc::now()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string(),
         };
-        group.save(db).await?;
+        group
+            .save(db)
+            .await?;
         Ok(group)
     }
 
@@ -185,7 +204,9 @@ impl StreamGroup {
             hidden,
             created_at: existing.created_at,
         };
-        group.save(db).await?;
+        group
+            .save(db)
+            .await?;
         Ok(group)
     }
 
@@ -208,7 +229,10 @@ impl StreamGroup {
             Ok(g) => g,
             Err(_) => return sources,
         };
-        let enabled: Vec<&StreamGroup> = groups.iter().filter(|g| g.enabled).collect();
+        let enabled: Vec<&StreamGroup> = groups
+            .iter()
+            .filter(|g| g.enabled)
+            .collect();
         if enabled.is_empty() {
             return sources;
         }
@@ -261,7 +285,10 @@ impl StreamGroup {
 /// Sources without `stream_info` (unparseable filename) are kept unchanged.
 /// An empty filter (no rules) is a no-op.
 pub fn apply_stream_filter(filter: &StreamFilter, sources: Vec<Media>) -> Vec<Media> {
-    if filter.rules.is_empty() {
+    if filter
+        .rules
+        .is_empty()
+    {
         return sources;
     }
     let temp = StreamGroup {
@@ -288,11 +315,20 @@ impl StreamGroup {
     /// An empty filter (no rules) matches everything.
     pub fn matches(&self, info: &StreamInfo) -> bool {
         let filter = &self.filter;
-        if filter.rules.is_empty() {
+        if filter
+            .rules
+            .is_empty()
+        {
             return true;
         }
 
-        let raw = match info.filename.as_deref().or(info.name.as_deref()) {
+        let raw = match info
+            .filename
+            .as_deref()
+            .or(info
+                .name
+                .as_deref())
+        {
             Some(s) => s,
             None => return false,
         };
@@ -302,14 +338,25 @@ impl StreamGroup {
         // Parse each non-empty line with hunch and use the one that yields the
         // richest result (has at least a resolution or source hit).
         let candidates: Vec<&str> = if raw.contains('\n') {
-            raw.lines().filter(|l| !l.trim().is_empty()).collect()
+            raw.lines()
+                .filter(|l| {
+                    !l.trim()
+                        .is_empty()
+                })
+                .collect()
         } else {
             vec![raw]
         };
 
-        let best = candidates.iter().map(|s| hunch::hunch(s)).max_by_key(|p| {
-            (p.screen_size().is_some() as u8) + (p.source().is_some() as u8)
-        });
+        let best = candidates
+            .iter()
+            .map(|s| hunch::hunch(s))
+            .max_by_key(|p| {
+                (p.screen_size()
+                    .is_some() as u8)
+                    + (p.source()
+                        .is_some() as u8)
+            });
 
         let parsed = match best {
             Some(p) => p,
@@ -356,8 +403,14 @@ impl StreamGroup {
         };
 
         match filter.match_mode {
-            FilterMatchMode::All => filter.rules.iter().all(eval),
-            FilterMatchMode::Any => filter.rules.iter().any(eval),
+            FilterMatchMode::All => filter
+                .rules
+                .iter()
+                .all(eval),
+            FilterMatchMode::Any => filter
+                .rules
+                .iter()
+                .any(eval),
         }
     }
 
@@ -371,7 +424,10 @@ impl StreamGroup {
             })
             .cloned()
             .collect();
-        v.sort_by_key(|s| s.idx.unwrap_or(0));
+        v.sort_by_key(|s| {
+            s.idx
+                .unwrap_or(0)
+        });
         v
     }
 
@@ -388,7 +444,9 @@ impl StreamGroup {
         let mut parent = Media::get_by_id(db, parent_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("parent item not found"))?;
-        let raw = parent.streams(db).await?;
+        let raw = parent
+            .streams(db)
+            .await?;
         let raw = if raw.is_empty() { vec![parent] } else { raw };
         Ok(Self::candidates_for_group(&group, &raw))
     }
@@ -405,12 +463,17 @@ impl StreamGroup {
         let mut parent = Media::get_by_id(db, parent_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("parent item not found"))?;
-        let raw = parent.streams(db).await?;
+        let raw = parent
+            .streams(db)
+            .await?;
         let raw = if raw.is_empty() { vec![parent] } else { raw };
 
         let mut result = vec![];
         let mut found = false;
-        for group in groups.iter().filter(|g| g.enabled) {
+        for group in groups
+            .iter()
+            .filter(|g| g.enabled)
+        {
             if !found {
                 if group.id == *current_group_id {
                     found = true;
@@ -429,15 +492,18 @@ fn auto_name(filter: &StreamFilter) -> String {
         .iter()
         .filter_map(|r| {
             let labels: Vec<&str> = match r {
-                StreamRule::Resolution { values, .. } => {
-                    values.iter().map(|v| v.label()).collect()
-                }
-                StreamRule::Quality { values, .. } => {
-                    values.iter().map(|v| v.label()).collect()
-                }
-                StreamRule::Codec { values, .. } => {
-                    values.iter().map(|v| v.label()).collect()
-                }
+                StreamRule::Resolution { values, .. } => values
+                    .iter()
+                    .map(|v| v.label())
+                    .collect(),
+                StreamRule::Quality { values, .. } => values
+                    .iter()
+                    .map(|v| v.label())
+                    .collect(),
+                StreamRule::Codec { values, .. } => values
+                    .iter()
+                    .map(|v| v.label())
+                    .collect(),
             };
             if labels.is_empty() {
                 None

@@ -41,7 +41,9 @@ pub async fn shows_seasons(
 ) -> Result<impl IntoResponse> {
     q.parent_id = Some(id);
     q.include_item_types = Some(vec![api::MediaType::Season]);
-    if q.sort_by.is_none() {
+    if q.sort_by
+        .is_none()
+    {
         q.sort_by = Some(vec![api::ItemSortBy::IndexNumber]);
         q.sort_order = Some(vec![api::SortOrder::Ascending]);
     }
@@ -52,7 +54,9 @@ pub async fn shows_seasons(
     Ok(Json(api::BaseItemDtoQueryResult {
         items: items.items,
         total_record_count: items.total_count as i64,
-        start_index: q.start_index.unwrap_or(0),
+        start_index: q
+            .start_index
+            .unwrap_or(0),
         ..Default::default()
     }))
 }
@@ -67,24 +71,37 @@ pub async fn shows_episodes(
     // Some Jellyfin clients accidentally pass the season ID as the show ID in the path.
     // If season_id is given, it's sufficient on its own (maps to parent_id in get_items),
     // so skip setting series_id to avoid filtering by the wrong ID.
-    if q.season_id.is_none() {
+    if q.season_id
+        .is_none()
+    {
         q.series_id = Some(id);
     }
     q.include_item_types = Some(vec![api::MediaType::Episode]);
-    if q.sort_by.is_none() {
+    if q.sort_by
+        .is_none()
+    {
         q.sort_by = Some(vec![
             api::ItemSortBy::ParentIndexNumber,
             api::ItemSortBy::IndexNumber,
         ]);
         q.sort_order = Some(vec![api::SortOrder::Ascending]);
     }
-    if let Some(start_id) = q.start_item_id.take() {
-        if q.start_index.is_none() {
+    if let Some(start_id) = q
+        .start_item_id
+        .take()
+    {
+        if q.start_index
+            .is_none()
+        {
             let mut all_q = q.clone();
             all_q.limit = None;
             all_q.start_index = None;
             let all = get_items(state.clone(), session.clone(), all_q, false).await?;
-            if let Some(pos) = all.items.iter().position(|i| i.id == start_id) {
+            if let Some(pos) = all
+                .items
+                .iter()
+                .position(|i| i.id == start_id)
+            {
                 q.start_index = Some(pos as u32);
             }
         }
@@ -96,7 +113,9 @@ pub async fn shows_episodes(
     Ok(Json(api::BaseItemDtoQueryResult {
         items: items.items,
         total_record_count: items.total_count as i64,
-        start_index: q.start_index.unwrap_or(0),
+        start_index: q
+            .start_index
+            .unwrap_or(0),
         ..Default::default()
     }))
 }
@@ -108,16 +127,26 @@ pub async fn shows_nextup(
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
     // Home-screen call: no seriesId — return one next-up episode per in-progress series
-    if q.series_id.is_none() {
+    if q.series_id
+        .is_none()
+    {
         return shows_nextup_all(state, session, q)
             .await
             .map(IntoResponse::into_response);
     }
-    let grandparent_id = q.series_id.unwrap();
+    let grandparent_id = q
+        .series_id
+        .unwrap();
 
-    let disable_first = q.disable_first_episode.unwrap_or(false);
-    let enable_resumable = q.enable_resumable.unwrap_or(true);
-    let user_id = session.user.id;
+    let disable_first = q
+        .disable_first_episode
+        .unwrap_or(false);
+    let enable_resumable = q
+        .enable_resumable
+        .unwrap_or(true);
+    let user_id = session
+        .user
+        .id;
 
     // All episodes for the series in watch order (season asc, episode asc)
     let episodes: Vec<db::Media> = sqlx::query_as(
@@ -126,20 +155,29 @@ pub async fn shows_nextup(
          ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
     )
     .bind(grandparent_id)
-    .fetch_all(&state.ctx.db)
+    .fetch_all(
+        &state
+            .ctx
+            .db,
+    )
     .await?;
 
     if episodes.is_empty() {
         return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
     }
 
-    let media_ids: Vec<Uuid> = episodes.iter().map(|e| e.id).collect();
+    let media_ids: Vec<Uuid> = episodes
+        .iter()
+        .map(|e| e.id)
+        .collect();
 
     let states: HashMap<Uuid, db::UserMediaState> = if media_ids.is_empty() {
         HashMap::new()
     } else {
         db::UserMediaState::get_by_filter(
-            &state.ctx.db,
+            &state
+                .ctx
+                .db,
             &db::UserMediaStateFilter {
                 user_id: Some(user_id),
                 media_id: Some(media_ids),
@@ -159,9 +197,12 @@ pub async fn shows_nextup(
     // 1. Resumable: partially-watched episode
     let mut next_ep: Option<&db::Media> = None;
     if enable_resumable {
-        next_ep = episodes.iter().find(|e| {
-            state_for(e).map_or(false, |s| s.play_count == 0 && s.playback_position > 0)
-        });
+        next_ep = episodes
+            .iter()
+            .find(|e| {
+                state_for(e)
+                    .map_or(false, |s| s.play_count == 0 && s.playback_position > 0)
+            });
     }
 
     // 2. First unplayed episode after the last fully-played episode
@@ -177,7 +218,10 @@ pub async fn shows_nextup(
             // skipping Season 0 specials just like Jellyfin server does.
             episodes
                 .iter()
-                .find(|e| e.parent_idx.map_or(true, |s| s > 0))
+                .find(|e| {
+                    e.parent_idx
+                        .map_or(true, |s| s > 0)
+                })
                 .or_else(|| episodes.first())
         } else {
             None
@@ -189,11 +233,22 @@ pub async fn shows_nextup(
     };
 
     let mut enriched = vec![ep.clone()];
-    db::Media::preload_parents(&state.ctx.db, &mut enriched).await;
+    db::Media::preload_parents(
+        &state
+            .ctx
+            .db,
+        &mut enriched,
+    )
+    .await;
     let mut ep = enriched.remove(0);
-    ep.images = db::MediaImage::get_for_media(&state.ctx.db, &ep.id)
-        .await
-        .unwrap_or_default();
+    ep.images = db::MediaImage::get_for_media(
+        &state
+            .ctx
+            .db,
+        &ep.id,
+    )
+    .await
+    .unwrap_or_default();
 
     let mut item = api::db_media_to_item(ep.clone());
     if let Some(s) = state_for(&ep) {
@@ -216,9 +271,15 @@ async fn shows_nextup_all(
     session: auth::AuthSession,
     q: api::GetItemsQuery,
 ) -> Result<impl IntoResponse> {
-    let user_id = session.user.id;
-    let limit = q.limit.unwrap_or(50) as i64;
-    let enable_resumable = q.enable_resumable.unwrap_or(true);
+    let user_id = session
+        .user
+        .id;
+    let limit = q
+        .limit
+        .unwrap_or(50) as i64;
+    let enable_resumable = q
+        .enable_resumable
+        .unwrap_or(true);
 
     // Drive from user_media_state (small, indexed by user_id) via a UNION subquery
     // to avoid a full media table scan. The OR on play_count/playback_position prevents
@@ -245,7 +306,10 @@ async fn shows_nextup_all(
         return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
     }
 
-    let series_ids: Vec<Uuid> = active_series.into_iter().map(|(id,)| id).collect();
+    let series_ids: Vec<Uuid> = active_series
+        .into_iter()
+        .map(|(id,)| id)
+        .collect();
 
     let mut ep_qb =
         sqlx::QueryBuilder::new("SELECT * FROM media WHERE grandparent_id IN (");
@@ -259,10 +323,19 @@ async fn shows_nextup_all(
         ") AND kind = 'episode' \
          ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
     );
-    let all_episodes: Vec<db::Media> =
-        ep_qb.build_query_as().fetch_all(&state.ctx.db).await?;
+    let all_episodes: Vec<db::Media> = ep_qb
+        .build_query_as()
+        .fetch_all(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
 
-    let all_ep_ids: Vec<Uuid> = all_episodes.iter().map(|e| e.id).collect();
+    let all_ep_ids: Vec<Uuid> = all_episodes
+        .iter()
+        .map(|e| e.id)
+        .collect();
     let mut states_map: HashMap<Uuid, db::UserMediaState> = HashMap::new();
     for chunk in all_ep_ids.chunks(900) {
         let mut s_qb =
@@ -274,16 +347,29 @@ async fn shows_nextup_all(
             sep.push_bind(id);
         }
         s_qb.push(")");
-        let chunk_states: Vec<db::UserMediaState> =
-            s_qb.build_query_as().fetch_all(&state.ctx.db).await?;
-        states_map.extend(chunk_states.into_iter().map(|s| (s.media_id, s)));
+        let chunk_states: Vec<db::UserMediaState> = s_qb
+            .build_query_as()
+            .fetch_all(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await?;
+        states_map.extend(
+            chunk_states
+                .into_iter()
+                .map(|s| (s.media_id, s)),
+        );
     }
 
     // Group episodes by grandparent_id (order within each group preserved from query).
     let mut episodes_by_series: HashMap<Uuid, Vec<db::Media>> = HashMap::new();
     for ep in all_episodes {
         if let Some(gid) = ep.grandparent_id {
-            episodes_by_series.entry(gid).or_default().push(ep);
+            episodes_by_series
+                .entry(gid)
+                .or_default()
+                .push(ep);
         }
     }
 
@@ -298,10 +384,12 @@ async fn shows_nextup_all(
 
         let mut next_ep: Option<&db::Media> = None;
         if enable_resumable {
-            next_ep = episodes.iter().find(|e| {
-                state_for(e)
-                    .map_or(false, |s| s.play_count == 0 && s.playback_position > 0)
-            });
+            next_ep = episodes
+                .iter()
+                .find(|e| {
+                    state_for(e)
+                        .map_or(false, |s| s.play_count == 0 && s.playback_position > 0)
+                });
         }
         if next_ep.is_none() {
             let last_played_pos = episodes
@@ -321,13 +409,29 @@ async fn shows_nextup_all(
         return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
     }
 
-    db::Media::preload_parents(&state.ctx.db, &mut next_eps).await;
-    let next_ep_ids: Vec<Uuid> = next_eps.iter().map(|e| e.id).collect();
-    let mut images_map = db::MediaImage::get_for_media_ids(&state.ctx.db, &next_ep_ids)
-        .await
-        .unwrap_or_default();
+    db::Media::preload_parents(
+        &state
+            .ctx
+            .db,
+        &mut next_eps,
+    )
+    .await;
+    let next_ep_ids: Vec<Uuid> = next_eps
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    let mut images_map = db::MediaImage::get_for_media_ids(
+        &state
+            .ctx
+            .db,
+        &next_ep_ids,
+    )
+    .await
+    .unwrap_or_default();
     for ep in &mut next_eps {
-        ep.images = images_map.remove(&ep.id).unwrap_or_default();
+        ep.images = images_map
+            .remove(&ep.id)
+            .unwrap_or_default();
     }
 
     let items: Vec<api::BaseItemDto> = next_eps
@@ -345,7 +449,9 @@ async fn shows_nextup_all(
     Ok(Json(api::BaseItemDtoQueryResult {
         items,
         total_record_count: total,
-        start_index: q.start_index.unwrap_or(0),
+        start_index: q
+            .start_index
+            .unwrap_or(0),
         ..Default::default()
     })
     .into_response())

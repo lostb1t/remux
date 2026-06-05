@@ -17,7 +17,9 @@ const TICKS_PER_HOUR: i64 = 3600 * TICKS_PER_SECOND;
 const TICKS_PER_MINUTE: i64 = 60 * TICKS_PER_SECOND;
 
 fn db_trigger_to_jellyfin(trigger: &api::db::TaskTrigger) -> api::TaskTriggerInfo {
-    let cron = trigger.cron.as_deref();
+    let cron = trigger
+        .cron
+        .as_deref();
     let (time_of_day_ticks, interval_ticks, day_of_week) = match trigger.kind {
         TaskTriggerInfoType::StartupTrigger => (None, None, None),
         TaskTriggerInfoType::IntervalTrigger => {
@@ -25,7 +27,9 @@ fn db_trigger_to_jellyfin(trigger: &api::db::TaskTrigger) -> api::TaskTriggerInf
         }
         TaskTriggerInfoType::WeeklyTrigger => {
             let ticks = cron.and_then(cron_to_time_of_day_ticks);
-            let day = cron.and_then(cron_to_day_name).map(str::to_string);
+            let day = cron
+                .and_then(cron_to_day_name)
+                .map(str::to_string);
             (ticks, None, day)
         }
         TaskTriggerInfoType::DailyTrigger => {
@@ -34,11 +38,17 @@ fn db_trigger_to_jellyfin(trigger: &api::db::TaskTrigger) -> api::TaskTriggerInf
     };
 
     api::TaskTriggerInfo {
-        r#type: Some(trigger.kind.to_string()),
+        r#type: Some(
+            trigger
+                .kind
+                .to_string(),
+        ),
         time_of_day_ticks,
         interval_ticks,
         day_of_week,
-        max_runtime_ticks: trigger.time_limit_hours.map(|h| h * TICKS_PER_HOUR),
+        max_runtime_ticks: trigger
+            .time_limit_hours
+            .map(|h| h * TICKS_PER_HOUR),
     }
 }
 
@@ -47,25 +57,39 @@ fn db_trigger_to_jellyfin(trigger: &api::db::TaskTrigger) -> api::TaskTriggerInf
 fn cron_to_time_of_day_ticks(cron: &str) -> Option<i64> {
     let mut parts = cron.split_whitespace();
     parts.next(); // sec
-    let min: i64 = parts.next()?.parse().ok()?;
-    let hour: i64 = parts.next()?.parse().ok()?;
+    let min: i64 = parts
+        .next()?
+        .parse()
+        .ok()?;
+    let hour: i64 = parts
+        .next()?
+        .parse()
+        .ok()?;
     Some(hour * TICKS_PER_HOUR + min * TICKS_PER_MINUTE)
 }
 
 /// Parse `0 */MIN * * * *` or `0 0 */HOURS * * *` interval cron into ticks.
 fn cron_to_interval_ticks(cron: &str) -> Option<i64> {
-    let parts: Vec<&str> = cron.split_whitespace().collect();
+    let parts: Vec<&str> = cron
+        .split_whitespace()
+        .collect();
     if let Some(min) = parts
         .get(1)
         .and_then(|s| s.strip_prefix("*/"))
-        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|s| {
+            s.parse::<i64>()
+                .ok()
+        })
     {
         return Some(min * TICKS_PER_MINUTE);
     }
     if let Some(hours) = parts
         .get(2)
         .and_then(|s| s.strip_prefix("*/"))
-        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|s| {
+            s.parse::<i64>()
+                .ok()
+        })
     {
         return Some(hours * TICKS_PER_HOUR);
     }
@@ -75,7 +99,11 @@ fn cron_to_interval_ticks(cron: &str) -> Option<i64> {
 /// Parse `0 MIN HOUR * * DAY_NUM` cron into day name.
 /// Croner uses POSIX weekdays: 1=Mon … 6=Sat, 7=Sun.
 fn cron_to_day_name(cron: &str) -> Option<&'static str> {
-    let day_num: u8 = cron.split_whitespace().nth(5)?.parse().ok()?;
+    let day_num: u8 = cron
+        .split_whitespace()
+        .nth(5)?
+        .parse()
+        .ok()?;
     Some(match day_num {
         1 => "Monday",
         2 => "Tuesday",
@@ -112,30 +140,72 @@ fn task_info(
                     }
                     .to_string(),
                 ),
-                name: Some(task.name().to_string()),
-                id: Some(task.key().to_string()),
-                key: Some(task.key().to_string()),
-                start_time_utc: Some(r.start_at.to_string()),
-                end_time_utc: Some(r.end_at.to_string()),
+                name: Some(
+                    task.name()
+                        .to_string(),
+                ),
+                id: Some(
+                    task.key()
+                        .to_string(),
+                ),
+                key: Some(
+                    task.key()
+                        .to_string(),
+                ),
+                start_time_utc: Some(
+                    r.start_at
+                        .to_string(),
+                ),
+                end_time_utc: Some(
+                    r.end_at
+                        .to_string(),
+                ),
                 ..Default::default()
             };
-            (Some(result), Some(r.end_at.to_string()))
+            (
+                Some(result),
+                Some(
+                    r.end_at
+                        .to_string(),
+                ),
+            )
         }
         None => (None, None),
     };
 
     api::TaskInfo {
-        name: task.name().to_string(),
+        name: task
+            .name()
+            .to_string(),
         state: Some(state_str.to_string()),
         current_progress_percentage: Some(handler.progress),
-        id: task.key().to_string(),
-        key: Some(task.key().to_string()),
+        id: task
+            .key()
+            .to_string(),
+        key: Some(
+            task.key()
+                .to_string(),
+        ),
         last_execution_result,
         last_execution_date,
-        triggers: Some(triggers.iter().map(db_trigger_to_jellyfin).collect()),
-        description: Some(task.description().to_string()),
-        short_description: Some(task.short_description().to_string()),
-        category: Some(task.category().to_string()),
+        triggers: Some(
+            triggers
+                .iter()
+                .map(db_trigger_to_jellyfin)
+                .collect(),
+        ),
+        description: Some(
+            task.description()
+                .to_string(),
+        ),
+        short_description: Some(
+            task.short_description()
+                .to_string(),
+        ),
+        category: Some(
+            task.category()
+                .to_string(),
+        ),
         is_hidden: Some(false),
         is_enabled: Some(true),
         can_be_terminated: Some(true),
@@ -149,17 +219,29 @@ pub async fn scheduled_tasks(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<impl axum::response::IntoResponse> {
-    let task_handlers = state.tasks.get_task_handlers().await;
+    let task_handlers = state
+        .tasks
+        .get_task_handlers()
+        .await;
 
     // Fetch all triggers once and group by lowercase task_id to avoid N+1
-    let all_triggers = api::db::TaskTrigger::get_all(&state.ctx.db).await?;
+    let all_triggers = api::db::TaskTrigger::get_all(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     let mut triggers_by_task: std::collections::HashMap<
         String,
         Vec<api::db::TaskTrigger>,
     > = std::collections::HashMap::new();
     for trigger in all_triggers {
         triggers_by_task
-            .entry(trigger.task_id.to_lowercase())
+            .entry(
+                trigger
+                    .task_id
+                    .to_lowercase(),
+            )
             .or_default()
             .push(trigger);
     }
@@ -167,11 +249,18 @@ pub async fn scheduled_tasks(
     let mut task_infos: Vec<api::TaskInfo> = Vec::new();
 
     for (key, handler) in task_handlers.iter() {
-        let last_result = api::db::TaskResult::get_by_task_id(&state.ctx.db, key)
-            .await
-            .ok()
-            .flatten();
-        let triggers = triggers_by_task.remove(key).unwrap_or_default();
+        let last_result = api::db::TaskResult::get_by_task_id(
+            &state
+                .ctx
+                .db,
+            key,
+        )
+        .await
+        .ok()
+        .flatten();
+        let triggers = triggers_by_task
+            .remove(key)
+            .unwrap_or_default();
         task_infos.push(task_info(handler, triggers, last_result));
     }
 
@@ -185,17 +274,30 @@ pub async fn get_task_by_id(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<impl axum::response::IntoResponse> {
-    let task_handlers = state.tasks.get_task_handlers().await;
+    let task_handlers = state
+        .tasks
+        .get_task_handlers()
+        .await;
     let handler = task_handlers
         .get(&task_id)
         .ok_or_else(|| anyhow::anyhow!("Task not found"))?;
 
-    let last_result = api::db::TaskResult::get_by_task_id(&state.ctx.db, &task_id)
-        .await
-        .ok()
-        .flatten();
-    let triggers =
-        api::db::TaskTrigger::get_by_task_id(&state.ctx.db, &task_id).await?;
+    let last_result = api::db::TaskResult::get_by_task_id(
+        &state
+            .ctx
+            .db,
+        &task_id,
+    )
+    .await
+    .ok()
+    .flatten();
+    let triggers = api::db::TaskTrigger::get_by_task_id(
+        &state
+            .ctx
+            .db,
+        &task_id,
+    )
+    .await?;
 
     Ok(Json(task_info(handler, triggers, last_result)))
 }
@@ -206,7 +308,10 @@ pub async fn start_task(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<impl axum::response::IntoResponse> {
-    state.tasks.run_task(&task_id).await?;
+    state
+        .tasks
+        .run_task(&task_id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -216,7 +321,10 @@ pub async fn stop_task(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<impl axum::response::IntoResponse> {
-    state.tasks.stop_task(&task_id).await?;
+    state
+        .tasks
+        .stop_task(&task_id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -237,7 +345,10 @@ fn trigger_to_cron(t: &api::TaskTriggerInfo) -> Option<String> {
     let kind = t
         .r#type
         .as_deref()
-        .and_then(|s| s.parse::<TaskTriggerInfoType>().ok())
+        .and_then(|s| {
+            s.parse::<TaskTriggerInfoType>()
+                .ok()
+        })
         .unwrap_or(TaskTriggerInfoType::DailyTrigger);
 
     match kind {
@@ -258,8 +369,11 @@ fn trigger_to_cron(t: &api::TaskTriggerInfo) -> Option<String> {
             let hour = total_secs / 3600;
             let min = (total_secs % 3600) / 60;
             if kind == TaskTriggerInfoType::WeeklyTrigger {
-                let day =
-                    day_name_to_cron(t.day_of_week.as_deref().unwrap_or("Sunday"));
+                let day = day_name_to_cron(
+                    t.day_of_week
+                        .as_deref()
+                        .unwrap_or("Sunday"),
+                );
                 Some(format!("0 {min} {hour} * * {day}"))
             } else {
                 Some(format!("0 {min} {hour} * * *"))
@@ -283,13 +397,21 @@ pub async fn update_task_triggers(
             kind: t
                 .r#type
                 .as_deref()
-                .and_then(|s| s.parse::<TaskTriggerInfoType>().ok())
+                .and_then(|s| {
+                    s.parse::<TaskTriggerInfoType>()
+                        .ok()
+                })
                 .unwrap_or(TaskTriggerInfoType::DailyTrigger),
-            time_limit_hours: t.max_runtime_ticks.map(|ticks| ticks / TICKS_PER_HOUR),
+            time_limit_hours: t
+                .max_runtime_ticks
+                .map(|ticks| ticks / TICKS_PER_HOUR),
             cron: trigger_to_cron(&t),
         })
         .collect();
 
-    state.tasks.replace_triggers(&task_id, triggers).await?;
+    state
+        .tasks
+        .replace_triggers(&task_id, triggers)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

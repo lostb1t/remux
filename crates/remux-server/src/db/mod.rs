@@ -50,7 +50,9 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
 }
 
 pub async fn migrate(pool: &SqlitePool) -> Result<()> {
-    sqlx::migrate!("./migrations").run(pool).await?;
+    sqlx::migrate!("./migrations")
+        .run(pool)
+        .await?;
     vacuum_if_needed(pool).await?;
     Ok(())
 }
@@ -65,13 +67,17 @@ async fn vacuum_if_needed(pool: &SqlitePool) -> Result<()> {
             freelist_pages = freelist,
             "vacuuming database to apply auto_vacuum mode and reclaim freed pages"
         );
-        sqlx::query("VACUUM").execute(pool).await?;
+        sqlx::query("VACUUM")
+            .execute(pool)
+            .await?;
     }
     Ok(())
 }
 
 async fn backfill_certification_age(pool: &SqlitePool) -> Result<()> {
-    let config = Settings::get_config(pool).await.unwrap_or_default();
+    let config = Settings::get_config(pool)
+        .await
+        .unwrap_or_default();
     let rows = sqlx::query_as::<_, (uuid::Uuid, String)>(
         "SELECT id, certification FROM media WHERE certification IS NOT NULL AND certification_age IS NULL",
     )
@@ -81,7 +87,9 @@ async fn backfill_certification_age(pool: &SqlitePool) -> Result<()> {
     for (id, certification) in rows {
         if let Some(age) = crate::localization::ratings::resolve_rating_age(
             Some(&certification),
-            config.metadata_country_code.as_deref(),
+            config
+                .metadata_country_code
+                .as_deref(),
         ) {
             sqlx::query("UPDATE media SET certification_age = ?1 WHERE id = ?2")
                 .bind(age)

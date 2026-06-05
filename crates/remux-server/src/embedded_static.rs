@@ -8,7 +8,11 @@ use include_dir::Dir;
 use tower::Service;
 
 fn mime_for_path(path: &str) -> &'static str {
-    match path.rsplit('.').next().unwrap_or("") {
+    match path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+    {
         "html" => "text/html; charset=utf-8",
         "js" | "mjs" => "application/javascript",
         "css" => "text/css",
@@ -43,7 +47,10 @@ impl<B> Service<Request<B>> for EmbeddedDir {
     }
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
-        std::future::ready(Ok(self.serve(req.uri().path())))
+        std::future::ready(Ok(self.serve(
+            req.uri()
+                .path(),
+        )))
     }
 }
 
@@ -57,12 +64,18 @@ impl EmbeddedDir {
         let path = uri_path.trim_start_matches('/');
         let path = if path.is_empty() { "index.html" } else { path };
 
-        if let Some(file) = self.dir.get_file(path) {
+        if let Some(file) = self
+            .dir
+            .get_file(path)
+        {
             return self.file_response(path, file.contents());
         }
 
         if self.spa_fallback {
-            if let Some(index) = self.dir.get_file("index.html") {
+            if let Some(index) = self
+                .dir
+                .get_file("index.html")
+            {
                 return self.file_response("index.html", index.contents());
             }
         }

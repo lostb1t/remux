@@ -42,12 +42,18 @@ pub async fn get_network_configuration(
     State(state): State<AppState>,
     session: auth::AdminSession,
 ) -> Result<impl IntoResponse> {
-    let config =
-        match crate::db::Settings::get(&state.ctx.db, NETWORK_CONFIG_KEY).await? {
-            Some(json) => serde_json::from_str(&json)
-                .unwrap_or_else(|_| default_network_configuration()),
-            None => default_network_configuration(),
-        };
+    let config = match crate::db::Settings::get(
+        &state
+            .ctx
+            .db,
+        NETWORK_CONFIG_KEY,
+    )
+    .await?
+    {
+        Some(json) => serde_json::from_str(&json)
+            .unwrap_or_else(|_| default_network_configuration()),
+        None => default_network_configuration(),
+    };
     Ok(Json(config))
 }
 
@@ -58,6 +64,13 @@ pub async fn update_network_configuration(
     Json(config): Json<api::NetworkConfiguration>,
 ) -> Result<impl IntoResponse> {
     let json = serde_json::to_string(&config)?;
-    crate::db::Settings::set(&state.ctx.db, NETWORK_CONFIG_KEY, &json).await?;
+    crate::db::Settings::set(
+        &state
+            .ctx
+            .db,
+        NETWORK_CONFIG_KEY,
+        &json,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }

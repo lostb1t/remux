@@ -138,7 +138,11 @@ pub fn collect_routes() -> axum::Router<AppState> {
 
 pub async fn init_app_with_config(config: Config) -> Result<Router> {
     let paths = FilesystemPaths::default();
-    let admin = admin_from_filesystem(&paths.dashboard_path.clone());
+    let admin = admin_from_filesystem(
+        &paths
+            .dashboard_path
+            .clone(),
+    );
     let web_client = WebClientService::from_filesystem(&paths.web_path);
     let (router, _ctx) = init_app(config, Some(paths), admin, web_client).await?;
     Ok(router)
@@ -146,7 +150,11 @@ pub async fn init_app_with_config(config: Config) -> Result<Router> {
 
 pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
     let paths = FilesystemPaths::default();
-    let admin = admin_from_filesystem(&paths.dashboard_path.clone());
+    let admin = admin_from_filesystem(
+        &paths
+            .dashboard_path
+            .clone(),
+    );
     let web_client = WebClientService::from_filesystem(&paths.web_path);
     init_app(config, Some(paths), admin, web_client).await
 }
@@ -154,7 +162,11 @@ pub async fn init_app_with_ctx(config: Config) -> Result<(Router, AppContext)> {
 /// Start the HTTP server with web assets served from the filesystem.
 /// Binds to `0.0.0.0:{port}` (default 3000, or `PORT` env var).
 pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
-    let admin = admin_from_filesystem(&paths.dashboard_path.clone());
+    let admin = admin_from_filesystem(
+        &paths
+            .dashboard_path
+            .clone(),
+    );
     let web_client = WebClientService::from_filesystem(&paths.web_path);
     let port = config.port;
     let (router, _) = init_app(config, Some(paths), admin, web_client).await?;
@@ -208,7 +220,10 @@ pub async fn init_app(
     // it is a runtime property of the host, not a user preference.
     {
         let mut enc_opts = db::Settings::get_encoding_config(&conn).await?;
-        if enc_opts.auto_detect_hardware_acceleration.unwrap_or(true) {
+        if enc_opts
+            .auto_detect_hardware_acceleration
+            .unwrap_or(true)
+        {
             let detected =
                 crate::transcode::engine::detect_hardware_acceleration().await;
             enc_opts.hardware_acceleration_type = Some(detected);
@@ -261,27 +276,40 @@ pub async fn init_app(
 
     // Apply saved P2P speed limits on startup.
     {
-        if saved_config.p2p_enabled.unwrap_or(true) {
+        if saved_config
+            .p2p_enabled
+            .unwrap_or(true)
+        {
             torrent_mgr.update_limits(
-                saved_config.p2p_upload_speed_kbps.unwrap_or(0),
-                saved_config.p2p_download_speed_kbps.unwrap_or(0),
+                saved_config
+                    .p2p_upload_speed_kbps
+                    .unwrap_or(0),
+                saved_config
+                    .p2p_download_speed_kbps
+                    .unwrap_or(0),
             );
         }
     }
 
     // Kill idle sessions after 30 minutes of no activity.
     // 30 min matches a "stepped away" scenario; pings keep active sessions alive indefinitely.
-    ctx.sessions.clone().spawn_cleanup_task(
-        std::time::Duration::from_secs(60),
-        std::time::Duration::from_secs(60 * 30),
-    );
+    ctx.sessions
+        .clone()
+        .spawn_cleanup_task(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(60 * 30),
+        );
 
     db::StreamGroup::migrate_from_settings(&conn).await;
 
     let task_service = tasks::TaskService::new(ctx.clone()).await?;
 
-    task_service.start().await?;
-    task_service.run_startup_tasks().await?;
+    task_service
+        .start()
+        .await?;
+    task_service
+        .run_startup_tasks()
+        .await?;
 
     let state = AppState {
         ctx: ctx.clone(),
@@ -338,7 +366,9 @@ impl AppContext {
     /// Gracefully shut down background services (torrent DHT, etc.).
     /// Call this when the server is stopping to release sockets immediately.
     pub async fn shutdown(&self) {
-        self.torrent.shutdown().await;
+        self.torrent
+            .shutdown()
+            .await;
     }
 }
 
@@ -429,13 +459,21 @@ fn default_torrent_peer_port() -> Option<u16> {
 impl Config {
     /// Fill in `None` fields that derive from `data_dir`. Call once after loading.
     pub fn resolve(mut self) -> Self {
-        if self.database_url.is_none() {
+        if self
+            .database_url
+            .is_none()
+        {
             self.database_url = Some(format!(
                 "sqlite://{}?mode=rwc",
-                self.data_dir.join("db.sqlite").display()
+                self.data_dir
+                    .join("db.sqlite")
+                    .display()
             ));
         }
-        if self.torrent_data_dir.is_none() {
+        if self
+            .torrent_data_dir
+            .is_none()
+        {
             self.torrent_data_dir = Some(
                 self.data_dir
                     .join("torrents")
@@ -466,7 +504,9 @@ impl Default for Config {
 
 pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     let uri = req.uri();
-    let mut path = uri.path().replace("/emby", "");
+    let mut path = uri
+        .path()
+        .replace("/emby", "");
     if path.is_empty() {
         path = "/".to_string();
     }
@@ -474,7 +514,10 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
     // Keep file paths case-sensitive (Linux filesystems are case-sensitive).
     // Only normalize API-style routes that don't look like files, plus known
     // API file endpoints (for example /Videos/.../Stream.vtt).
-    let last_segment = path.rsplit('/').next().unwrap_or_default();
+    let last_segment = path
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
     let is_file_like = last_segment.contains('.');
     let lower_path = path.to_ascii_lowercase();
     let api_file_like = is_file_like
@@ -489,7 +532,10 @@ pub fn rewrite_request_uri<B>(mut req: http::Request<B>) -> http::Request<B> {
         path
     };
 
-    let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let query = uri
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
 
     let new_uri = http::Uri::builder()
         .path_and_query(format!("{}{}", new_path, query))
@@ -565,7 +611,8 @@ async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
     tracing::debug!(
         "Static 404 Not Found: {} {}",
         req.method(),
-        req.uri().path()
+        req.uri()
+            .path()
     );
     Ok((StatusCode::NOT_FOUND, "404 - File not found"))
 }

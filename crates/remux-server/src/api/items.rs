@@ -72,24 +72,46 @@ pub async fn get_items(
 ) -> Result<ItemsQueryResult> {
     //trace!(?q, "get_items");
 
-    let parent = if let Some(parent_id) = q.parent_id.clone() {
-        db::Media::get_by_id(&state.ctx.db, &parent_id).await?
+    let parent = if let Some(parent_id) = q
+        .parent_id
+        .clone()
+    {
+        db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &parent_id,
+        )
+        .await?
     } else {
         None
     };
 
-    let server_config = db::Settings::get_config(&state.ctx.db).await.ok();
+    let server_config = db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .ok();
     let show_ungrouped = server_config
         .as_ref()
         .and_then(|c| c.stream_groups_show_ungrouped)
         .unwrap_or(true);
 
-    let search = q.search_term.clone();
-    let skip = q.start_index.unwrap_or(0) as u32;
+    let search = q
+        .search_term
+        .clone();
+    let skip = q
+        .start_index
+        .unwrap_or(0) as u32;
 
     // "local:" prefix bypasses AIO and falls through to the DB query path below,
     // enabling local title-contains search for any media kind (Genre, Studio, Person, …).
-    if let Some(local_term) = search.as_deref().and_then(|s| s.strip_prefix("local:")) {
+    if let Some(local_term) = search
+        .as_deref()
+        .and_then(|s| s.strip_prefix("local:"))
+    {
         q.search_term = Some(local_term.to_string());
     } else if search.is_some()
         || parent
@@ -97,11 +119,18 @@ pub async fn get_items(
             .map_or(false, |p| p.kind == db::MediaKind::Collection)
     {
         let types = q.get_requested_item_types();
-        let raw_types = q.include_item_types.as_deref().unwrap_or(&[]);
-        let cfg = server_config.clone().unwrap_or_default();
+        let raw_types = q
+            .include_item_types
+            .as_deref()
+            .unwrap_or(&[]);
+        let cfg = server_config
+            .clone()
+            .unwrap_or_default();
 
         if let Some(ref s) = search {
-            let limit = q.limit.unwrap_or(250) as usize;
+            let limit = q
+                .limit
+                .unwrap_or(250) as usize;
 
             fn kind_limit(kind: &db::MediaKind, limit: usize) -> usize {
                 match kind {
@@ -130,7 +159,10 @@ pub async fn get_items(
                     .filter_map(|t| db::MediaKind::try_from(t.clone()).ok())
                     .collect()
             } else {
-                let exclude = q.exclude_item_types.as_deref().unwrap_or(&[]);
+                let exclude = q
+                    .exclude_item_types
+                    .as_deref()
+                    .unwrap_or(&[]);
                 raw_types
                     .iter()
                     .filter(|t| !exclude.contains(t))
@@ -169,7 +201,10 @@ pub async fn get_items(
             let mut all_items: Vec<api::BaseItemDto> = vec![];
             let mut debug_counts: Vec<(String, usize)> = vec![];
 
-            for (kind, result) in remote_kinds.iter().zip(remote_results) {
+            for (kind, result) in remote_kinds
+                .iter()
+                .zip(remote_results)
+            {
                 match result {
                     Ok(results) => {
                         let items: Vec<_> = results
@@ -193,8 +228,13 @@ pub async fn get_items(
 
             // Local: single DB query for all local kinds combined.
             if !local_kinds.is_empty() {
-                let local_types: Vec<api::MediaType> =
-                    local_kinds.iter().map(|k| k.clone().into()).collect();
+                let local_types: Vec<api::MediaType> = local_kinds
+                    .iter()
+                    .map(|k| {
+                        k.clone()
+                            .into()
+                    })
+                    .collect();
                 let mut local_q = q.clone();
                 local_q.search_term = Some(s.clone());
                 local_q.include_item_types = Some(local_types);
@@ -202,7 +242,9 @@ pub async fn get_items(
                 local_q.start_index = None;
                 local_q.limit = Some(limit as u32);
                 match db::Media::get_by_jellyfin_filter(
-                    &state.ctx.db,
+                    &state
+                        .ctx
+                        .db,
                     &local_q,
                     false,
                     Some(&session.user),
@@ -213,9 +255,16 @@ pub async fn get_items(
                 .await
                 {
                     Ok(r) => {
-                        debug_counts.push(("local".to_string(), r.records.len()));
-                        all_items
-                            .extend(r.records.into_iter().map(api::db_media_to_item));
+                        debug_counts.push((
+                            "local".to_string(),
+                            r.records
+                                .len(),
+                        ));
+                        all_items.extend(
+                            r.records
+                                .into_iter()
+                                .map(api::db_media_to_item),
+                        );
                     }
                     Err(e) => warn!(error = %e, "get_items: local search failed"),
                 }
@@ -254,12 +303,20 @@ pub async fn get_items(
     if let Some(parent) = &parent {
         // playlist browse
         if parent.kind == db::MediaKind::Playlist {
-            let relations =
-                db::MediaRelation::get_playlist_items(&state.ctx.db, &parent.id)
-                    .await?;
+            let relations = db::MediaRelation::get_playlist_items(
+                &state
+                    .ctx
+                    .db,
+                &parent.id,
+            )
+            .await?;
             let total = relations.len() as i64;
-            let start = q.start_index.unwrap_or(0) as usize;
-            let remaining = relations.len().saturating_sub(start);
+            let start = q
+                .start_index
+                .unwrap_or(0) as usize;
+            let remaining = relations
+                .len()
+                .saturating_sub(start);
             let slice = match q.limit {
                 Some(limit) => {
                     &relations[start.min(relations.len())..]
@@ -269,11 +326,19 @@ pub async fn get_items(
             };
             let mut items = Vec::with_capacity(slice.len());
             for rel in slice {
-                if let Some(media) =
-                    db::Media::get_by_id(&state.ctx.db, &rel.right_media_id).await?
+                if let Some(media) = db::Media::get_by_id(
+                    &state
+                        .ctx
+                        .db,
+                    &rel.right_media_id,
+                )
+                .await?
                 {
                     let mut dto = api::db_media_to_item(media);
-                    dto.playlist_item_id = Some(rel.relation_id.to_string());
+                    dto.playlist_item_id = Some(
+                        rel.relation_id
+                            .to_string(),
+                    );
                     items.push(dto);
                 }
             }
@@ -290,22 +355,36 @@ pub async fn get_items(
             if parent.collection_media_kind == Some(db::CollectionMediaKind::Collection)
             {
                 let result = db::Media::get_by_filter(
-                    &state.ctx.db,
+                    &state
+                        .ctx
+                        .db,
                     &db::MediaFilter {
                         kind: Some(vec![db::MediaKind::Collection]),
                         promoted: Some(false),
                         limit: q.limit,
                         offset: q.start_index,
                         total_count: true,
-                        include_user_state: q.enable_user_data.is_none(),
-                        user_id: Some(session.user.id),
+                        include_user_state: q
+                            .enable_user_data
+                            .is_none(),
+                        user_id: Some(
+                            session
+                                .user
+                                .id,
+                        ),
                         include_child_count: q
                             .fields
                             .as_deref()
                             .map(|f| f.contains(&api::ItemFields::ChildCount))
                             .unwrap_or(false),
-                        sort_by: q.sort_by.clone().unwrap_or_default(),
-                        sort_order: q.sort_order.clone().unwrap_or_default(),
+                        sort_by: q
+                            .sort_by
+                            .clone()
+                            .unwrap_or_default(),
+                        sort_order: q
+                            .sort_order
+                            .clone()
+                            .unwrap_or_default(),
                         ..Default::default()
                     },
                 )
@@ -322,9 +401,15 @@ pub async fn get_items(
 
             // Manual collections: use media_relations JOIN via the pre-fetched parent.
             if parent.collection_kind == Some(db::CollectionKind::Manual) {
-                q.user_id = Some(session.user.id);
+                q.user_id = Some(
+                    session
+                        .user
+                        .id,
+                );
                 let result = db::Media::get_by_jellyfin_filter(
-                    &state.ctx.db,
+                    &state
+                        .ctx
+                        .db,
                     &q,
                     true,
                     Some(&session.user),
@@ -346,32 +431,39 @@ pub async fn get_items(
             // Smart collections: items float freely (no parent_id constraint).
             q.parent_id = None;
 
-            let media_kind_filter =
-                if let Some(kind) = parent.collection_media_kind.clone() {
-                    match kind {
-                        db::CollectionMediaKind::Movie => vec![db::MediaKind::Movie],
-                        db::CollectionMediaKind::Series => vec![db::MediaKind::Series],
-                        db::CollectionMediaKind::Music => vec![
-                            db::MediaKind::Track,
-                            db::MediaKind::Album,
-                            db::MediaKind::Artist,
-                        ],
-                        db::CollectionMediaKind::Collection => {
-                            // Handled above — this branch is now unreachable for
-                            // smart collections with collection_media_kind='collection'.
-                            vec![db::MediaKind::Collection]
-                        }
-                        db::CollectionMediaKind::Playlist => {
-                            vec![db::MediaKind::Playlist]
-                        }
+            let media_kind_filter = if let Some(kind) = parent
+                .collection_media_kind
+                .clone()
+            {
+                match kind {
+                    db::CollectionMediaKind::Movie => vec![db::MediaKind::Movie],
+                    db::CollectionMediaKind::Series => vec![db::MediaKind::Series],
+                    db::CollectionMediaKind::Music => vec![
+                        db::MediaKind::Track,
+                        db::MediaKind::Album,
+                        db::MediaKind::Artist,
+                    ],
+                    db::CollectionMediaKind::Collection => {
+                        // Handled above — this branch is now unreachable for
+                        // smart collections with collection_media_kind='collection'.
+                        vec![db::MediaKind::Collection]
                     }
-                } else {
-                    vec![db::MediaKind::Movie, db::MediaKind::Series]
-                };
+                    db::CollectionMediaKind::Playlist => {
+                        vec![db::MediaKind::Playlist]
+                    }
+                }
+            } else {
+                vec![db::MediaKind::Movie, db::MediaKind::Series]
+            };
 
             q.include_item_types = Some({
-                let collection_types: Vec<api::MediaType> =
-                    media_kind_filter.iter().map(|k| k.clone().into()).collect();
+                let collection_types: Vec<api::MediaType> = media_kind_filter
+                    .iter()
+                    .map(|k| {
+                        k.clone()
+                            .into()
+                    })
+                    .collect();
                 // Respect the client's IncludeItemTypes filter if provided,
                 // but constrain it to what this collection actually holds.
                 if let Some(requested) = &q.include_item_types {
@@ -390,10 +482,17 @@ pub async fn get_items(
                 }
             });
 
-            if q.limit.is_none() {
+            if q.limit
+                .is_none()
+            {
                 q.limit = Some(250);
             }
-            q.user_id = Some(session.user.id.clone());
+            q.user_id = Some(
+                session
+                    .user
+                    .id
+                    .clone(),
+            );
 
             // Smart collection: extract stored filter rules so they are applied
             // alongside the Jellyfin query (sort, pagination, user-state, etc.).
@@ -405,7 +504,9 @@ pub async fn get_items(
                 };
 
             let result = db::Media::get_by_jellyfin_filter(
-                &state.ctx.db,
+                &state
+                    .ctx
+                    .db,
                 &q,
                 true,
                 Some(&session.user),
@@ -428,18 +529,34 @@ pub async fn get_items(
         //  }
     }
     // Map season_id → parent_id if parent_id not already set
-    if q.season_id.is_some() && q.parent_id.is_none() {
-        q.parent_id = q.season_id.take();
+    if q.season_id
+        .is_some()
+        && q.parent_id
+            .is_none()
+    {
+        q.parent_id = q
+            .season_id
+            .take();
     }
 
     // Always provide user_id so user-state filters work
-    if q.user_id.is_none() {
-        q.user_id = Some(session.user.id);
+    if q.user_id
+        .is_none()
+    {
+        q.user_id = Some(
+            session
+                .user
+                .id,
+        );
     }
 
-    let want_total = q.enable_total_record_count.unwrap_or(true);
+    let want_total = q
+        .enable_total_record_count
+        .unwrap_or(true);
     let mut result = db::Media::get_by_jellyfin_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &q,
         want_total,
         Some(&session.user),
@@ -451,19 +568,36 @@ pub async fn get_items(
 
     // If result is empty, a parent/artist tree may still be mid-persist. Collect all candidate
     // IDs from the query and wait on whichever has (or needs) a persist lock, then retry once.
-    if result.records.is_empty() {
+    if result
+        .records
+        .is_empty()
+    {
         let candidates: Vec<Uuid> = q
             .parent_id
             .iter()
-            .chain(q.artist_ids.as_deref().unwrap_or(&[]))
-            .chain(q.album_artist_ids.as_deref().unwrap_or(&[]))
-            .chain(q.contributing_artist_ids.as_deref().unwrap_or(&[]))
+            .chain(
+                q.artist_ids
+                    .as_deref()
+                    .unwrap_or(&[]),
+            )
+            .chain(
+                q.album_artist_ids
+                    .as_deref()
+                    .unwrap_or(&[]),
+            )
+            .chain(
+                q.contributing_artist_ids
+                    .as_deref()
+                    .unwrap_or(&[]),
+            )
             .copied()
             .collect();
 
         if wait_for_persist(&candidates, &state.ctx).await? {
             result = db::Media::get_by_jellyfin_filter(
-                &state.ctx.db,
+                &state
+                    .ctx
+                    .db,
                 &q,
                 want_total,
                 Some(&session.user),
@@ -478,7 +612,14 @@ pub async fn get_items(
     // handle details request
     if let Some(ids) = &q.ids {
         if ids.len() == 1 {
-            let media = item(state, session, ids[0], q.fields.as_deref()).await?;
+            let media = item(
+                state,
+                session,
+                ids[0],
+                q.fields
+                    .as_deref(),
+            )
+            .await?;
             if let Some(media) = media {
                 return Ok(ItemsQueryResult {
                     items: vec![media],
@@ -504,16 +645,33 @@ pub async fn items_flat(
     session: auth::AuthSession,
     Query(mut q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    if let Some(parent_id) = q.parent_id.clone() {
-        if let Ok(Some(parent)) = db::Media::get_by_id(&state.ctx.db, &parent_id).await
+    if let Some(parent_id) = q
+        .parent_id
+        .clone()
+    {
+        if let Ok(Some(parent)) = db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &parent_id,
+        )
+        .await
         {
             if parent.collection_latest_auto_unplayed == Some(true) {
-                let mut filters = q.filters.clone().unwrap_or_default();
+                let mut filters = q
+                    .filters
+                    .clone()
+                    .unwrap_or_default();
                 if !filters.contains(&api::ItemFilter::IsUnplayed) {
                     filters.push(api::ItemFilter::IsUnplayed);
                 }
                 q.filters = Some(filters);
-                q.user_id = Some(session.user.id.clone());
+                q.user_id = Some(
+                    session
+                        .user
+                        .id
+                        .clone(),
+                );
             }
             if parent.collection_latest_sort_digital == Some(true) {
                 q.sort_by = Some(vec![api::ItemSortBy::DigitalReleaseDate]);
@@ -521,7 +679,9 @@ pub async fn items_flat(
             }
         }
     }
-    if q.sort_by.is_none() {
+    if q.sort_by
+        .is_none()
+    {
         q.sort_by = Some(vec![api::ItemSortBy::DateCreated]);
         q.sort_order = Some(vec![api::SortOrder::Descending]);
     }
@@ -545,7 +705,9 @@ pub async fn items(
     Ok(Json(api::BaseItemDtoQueryResult {
         items: items.items,
         total_record_count: items.total_count as i64,
-        start_index: q.start_index.unwrap_or_else(|| 0),
+        start_index: q
+            .start_index
+            .unwrap_or_else(|| 0),
         ..Default::default()
     }))
 }
@@ -572,7 +734,13 @@ pub async fn items_ancestors(
     _session: auth::AuthSession,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let ancestors = db::Media::get_ancestors(&state.ctx.db, &id).await?;
+    let ancestors = db::Media::get_ancestors(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?;
     Ok(Json(
         ancestors
             .into_iter()
@@ -588,8 +756,17 @@ pub async fn delete_item(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
-    db::Media::delete(&state.ctx.db, &id).await?;
-    let _ = state.ctx.ws_tx.send(crate::ws::WsEvent::LibraryChanged);
+    db::Media::delete(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?;
+    let _ = state
+        .ctx
+        .ws_tx
+        .send(crate::ws::WsEvent::LibraryChanged);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -600,18 +777,28 @@ pub async fn refresh_item(
     Path(id): Path<Uuid>,
     Query(q): Query<api::RefreshItemQuery>,
 ) -> Result<StatusCode> {
-    let mut media = db::Media::get_by_id(&state.ctx.db, &id)
-        .await?
-        .context_not_found("Item not found")?;
+    let mut media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .context_not_found("Item not found")?;
 
     // If the requested item is a Source (stream), navigate to its parent.
     if media.kind == db::MediaKind::Stream {
         let parent_id = media
             .parent_id
             .context_not_found("Source has no parent item")?;
-        media = db::Media::get_by_id(&state.ctx.db, &parent_id)
-            .await?
-            .context_not_found("Parent item not found")?;
+        media = db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &parent_id,
+        )
+        .await?
+        .context_not_found("Parent item not found")?;
     }
 
     // new files
@@ -619,7 +806,11 @@ pub async fn refresh_item(
         // Force-refresh streams by clearing the timestamp first.
         sqlx::query("UPDATE media SET streams_refreshed_at = NULL WHERE id = ?")
             .bind(media.id)
-            .execute(&state.ctx.db)
+            .execute(
+                &state
+                    .ctx
+                    .db,
+            )
             .await
             .ok();
 
@@ -642,7 +833,10 @@ pub async fn refresh_item(
             .await?;
     }
 
-    let _ = state.ctx.ws_tx.send(crate::ws::WsEvent::LibraryChanged);
+    let _ = state
+        .ctx
+        .ws_tx
+        .send(crate::ws::WsEvent::LibraryChanged);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -659,9 +853,19 @@ pub async fn items_filters2(
         .into_iter()
         .filter_map(|t| db::MediaKind::try_from(t).ok())
         .collect();
-    let genres = db::Media::get_genres(&state.ctx.db, &kinds).await?;
+    let genres = db::Media::get_genres(
+        &state
+            .ctx
+            .db,
+        &kinds,
+    )
+    .await?;
     let tag_rows = sqlx::query("SELECT DISTINCT tag FROM media_tags ORDER BY tag")
-        .fetch_all(&state.ctx.db)
+        .fetch_all(
+            &state
+                .ctx
+                .db,
+        )
         .await?;
     Ok(Json(api::QueryFilters {
         genres: Some(
@@ -692,7 +896,10 @@ pub async fn items_tags(
     _session: auth::AuthSession,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let tags: Vec<String> = match q.search_term.as_deref() {
+    let tags: Vec<String> = match q
+        .search_term
+        .as_deref()
+    {
         Some(s) if !s.is_empty() => {
             let pattern = format!("%{}%", s.to_lowercase());
             sqlx::query(
@@ -709,7 +916,11 @@ pub async fn items_tags(
             .collect()
         }
         _ => sqlx::query("SELECT DISTINCT tag FROM media_tags ORDER BY tag LIMIT 50")
-            .fetch_all(&state.ctx.db)
+            .fetch_all(
+                &state
+                    .ctx
+                    .db,
+            )
             .await?
             .iter()
             .map(|r| {
@@ -728,7 +939,10 @@ pub async fn items_certifications(
     _session: auth::AuthSession,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let values: Vec<String> = match q.search_term.as_deref() {
+    let values: Vec<String> = match q
+        .search_term
+        .as_deref()
+    {
         Some(s) if !s.is_empty() => {
             let pattern = format!("%{}%", s.to_lowercase());
             sqlx::query(
@@ -737,7 +951,11 @@ pub async fn items_certifications(
                  ORDER BY certification LIMIT 25",
             )
             .bind(&pattern)
-            .fetch_all(&state.ctx.db)
+            .fetch_all(
+                &state
+                    .ctx
+                    .db,
+            )
             .await?
             .iter()
             .map(|r| {
@@ -750,7 +968,11 @@ pub async fn items_certifications(
             "SELECT DISTINCT certification FROM media \
                  WHERE certification IS NOT NULL ORDER BY certification LIMIT 50",
         )
-        .fetch_all(&state.ctx.db)
+        .fetch_all(
+            &state
+                .ctx
+                .db,
+        )
         .await?
         .iter()
         .map(|r| {
@@ -768,7 +990,10 @@ pub async fn library_refresh(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<StatusCode> {
-    let _ = state.tasks.run_task("CatalogImport").await;
+    let _ = state
+        .tasks
+        .run_task("CatalogImport")
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -855,7 +1080,14 @@ pub async fn items_remote_images(
     Path(id): Path<Uuid>,
     Query(q): Query<RemoteImagesQuery>,
 ) -> Result<impl IntoResponse> {
-    let media = match db::Media::get_by_id(&state.ctx.db, &id).await? {
+    let media = match db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    {
         Some(m) => m,
         None => {
             return Ok(Json(api::RemoteImageResult {
@@ -866,35 +1098,56 @@ pub async fn items_remote_images(
         }
     };
 
-    let provider = q.provider.as_deref();
+    let provider = q
+        .provider
+        .as_deref();
     let mut images = Vec::new();
     let mut queried_providers = Vec::new();
 
     if provider.is_none() || provider == Some("TheMovieDb") {
         queried_providers.push("TheMovieDb".to_string());
-        match state.ctx.addons.fetch_images(&media, &state.ctx).await {
+        match state
+            .ctx
+            .addons
+            .fetch_images(&media, &state.ctx)
+            .await
+        {
             Ok(v) => images.extend(v),
             Err(e) => warn!(id = %id, error = %e, "tmdb remote images lookup failed"),
         }
     }
 
     // Optional client-side type filter (Backdrop / Primary / etc.).
-    let images: Vec<api::RemoteImageInfo> = if let Some(want) = q.kind.as_deref() {
+    let images: Vec<api::RemoteImageInfo> = if let Some(want) = q
+        .kind
+        .as_deref()
+    {
         let want = want.to_string();
         images
             .into_iter()
-            .filter(|img| img.type_.as_deref() == Some(&want))
+            .filter(|img| {
+                img.type_
+                    .as_deref()
+                    == Some(&want)
+            })
             .collect()
     } else {
         images
     };
 
-    let start = q.start_index.unwrap_or(0).max(0) as usize;
+    let start = q
+        .start_index
+        .unwrap_or(0)
+        .max(0) as usize;
     let total = images.len() as i64;
     let limited: Vec<api::RemoteImageInfo> = images
         .into_iter()
         .skip(start)
-        .take(q.limit.map(|n| n.max(0) as usize).unwrap_or(usize::MAX))
+        .take(
+            q.limit
+                .map(|n| n.max(0) as usize)
+                .unwrap_or(usize::MAX),
+        )
         .collect();
 
     Ok(Json(api::RemoteImageResult {
@@ -937,12 +1190,42 @@ pub async fn items_counts(
         album_count,
         artist_count,
     ) = tokio::try_join!(
-        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Movie),
-        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Series),
-        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Episode),
-        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Track),
-        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Album),
-        db::Media::count_by_kind(&state.ctx.db, &db::MediaKind::Artist),
+        db::Media::count_by_kind(
+            &state
+                .ctx
+                .db,
+            &db::MediaKind::Movie
+        ),
+        db::Media::count_by_kind(
+            &state
+                .ctx
+                .db,
+            &db::MediaKind::Series
+        ),
+        db::Media::count_by_kind(
+            &state
+                .ctx
+                .db,
+            &db::MediaKind::Episode
+        ),
+        db::Media::count_by_kind(
+            &state
+                .ctx
+                .db,
+            &db::MediaKind::Track
+        ),
+        db::Media::count_by_kind(
+            &state
+                .ctx
+                .db,
+            &db::MediaKind::Album
+        ),
+        db::Media::count_by_kind(
+            &state
+                .ctx
+                .db,
+            &db::MediaKind::Artist
+        ),
     )?;
     let (
         movie_count,
@@ -986,18 +1269,30 @@ pub async fn item(
     let want_streams = fields
         .map(|f| f.contains(&api::ItemFields::MediaSources))
         .unwrap_or(true);
-    let server_config = db::Settings::get_config(&state.ctx.db).await.ok();
+    let server_config = db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .ok();
     let show_ungrouped = server_config
         .as_ref()
         .and_then(|c| c.stream_groups_show_ungrouped)
         .unwrap_or(true);
     let mut media = match db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             id: Some(vec![id]),
             include_user_state: true,
             include_child_count: true,
-            user_id: Some(session.user.id),
+            user_id: Some(
+                session
+                    .user
+                    .id,
+            ),
             ..Default::default()
         },
     )
@@ -1013,7 +1308,9 @@ pub async fn item(
         },
     };
 
-    let mut need_refresh = media.refreshed_at.is_none()
+    let mut need_refresh = media
+        .refreshed_at
+        .is_none()
         && matches!(
             media.kind,
             db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
@@ -1061,36 +1358,86 @@ pub async fn item(
         .user
         .policy
         .as_ref()
-        .and_then(|p| p.stream_filter.as_ref())
-        .filter(|sf| !sf.rules.is_empty())
+        .and_then(|p| {
+            p.stream_filter
+                .as_ref()
+        })
+        .filter(|sf| {
+            !sf.rules
+                .is_empty()
+        })
         .cloned();
     if media.kind == db::MediaKind::Stream {
         media.sources = Some(vec![media.clone()]);
     } else if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
-        let raw = media.streams(&state.ctx.db).await?;
-        let grouped =
-            db::StreamGroup::filter_sources(&state.ctx.db, raw, show_ungrouped).await;
+        let raw = media
+            .streams(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await?;
+        let grouped = db::StreamGroup::filter_sources(
+            &state
+                .ctx
+                .db,
+            raw,
+            show_ungrouped,
+        )
+        .await;
         let filtered = if let Some(ref sf) = user_stream_filter {
             db::apply_stream_filter(sf, grouped)
         } else {
             grouped
         };
         media.sources = Some(filtered);
-        media.user_state(&state.ctx.db, &session.user).await?;
+        media
+            .user_state(
+                &state
+                    .ctx
+                    .db,
+                &session.user,
+            )
+            .await?;
     } else if media.kind == db::MediaKind::Track {
-        let raw = media.streams(&state.ctx.db).await?;
-        let grouped =
-            db::StreamGroup::filter_sources(&state.ctx.db, raw, show_ungrouped).await;
+        let raw = media
+            .streams(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await?;
+        let grouped = db::StreamGroup::filter_sources(
+            &state
+                .ctx
+                .db,
+            raw,
+            show_ungrouped,
+        )
+        .await;
         let filtered = if let Some(ref sf) = user_stream_filter {
             db::apply_stream_filter(sf, grouped)
         } else {
             grouped
         };
         media.sources = Some(filtered);
-        media.user_state(&state.ctx.db, &session.user).await?;
+        media
+            .user_state(
+                &state
+                    .ctx
+                    .db,
+                &session.user,
+            )
+            .await?;
     }
     // info!("Seasons length: {:?}", media.seasons(&state.ctx.db).await?.len());
-    media.load_relations(&state.ctx.db).await?;
+    media
+        .load_relations(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
     let mut base_item = api::db_media_to_item(media.clone());
 
     // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.
@@ -1098,13 +1445,26 @@ pub async fn item(
     if media.kind == db::MediaKind::Track {
         let transcoding_url = format!(
             "/videos/{}/master.m3u8?MediaSourceId={}&VideoCodec=copy&AudioCodec=aac&ApiKey={}",
-            media.id, media.id, session.device.access_token
+            media.id,
+            media.id,
+            session
+                .device
+                .access_token
         );
-        let sources = media.sources.as_deref().unwrap_or(&[]);
+        let sources = media
+            .sources
+            .as_deref()
+            .unwrap_or(&[]);
         let mut media_streams: Vec<api::MediaStream> = sources
             .first()
-            .and_then(|s| s.probe_data.as_ref())
-            .map(|p| p.media_streams.clone())
+            .and_then(|s| {
+                s.probe_data
+                    .as_ref()
+            })
+            .map(|p| {
+                p.media_streams
+                    .clone()
+            })
             .unwrap_or_else(|| {
                 vec![api::MediaStream {
                     index: 0,
@@ -1120,7 +1480,11 @@ pub async fn item(
         let mut source = api::MediaSourceInfo {
             id: media.id,
             e_tag: media.id,
-            name: Some(media.title.clone()),
+            name: Some(
+                media
+                    .title
+                    .clone(),
+            ),
             protocol: api::MediaProtocol::Http,
             is_remote: true,
             supports_direct_play: true,
@@ -1129,7 +1493,9 @@ pub async fn item(
             transcoding_url: Some(transcoding_url),
             transcoding_sub_protocol: "hls".to_string(),
             transcoding_container: Some("ts".to_string()),
-            run_time_ticks: media.runtime.map(|s| s * 10_000_000),
+            run_time_ticks: media
+                .runtime
+                .map(|s| s * 10_000_000),
             media_streams,
             ..Default::default()
         };
@@ -1139,26 +1505,50 @@ pub async fn item(
 
     if media.kind == db::MediaKind::Episode {
         if let Some(sid) = media.grandparent_id {
-            if let Ok(Some(s)) = db::Media::get_by_id(&state.ctx.db, &sid).await {
+            if let Ok(Some(s)) = db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &sid,
+            )
+            .await
+            {
                 base_item.series_name = Some(s.title);
                 base_item.series_id = Some(s.id);
             }
         }
         if let Some(pid) = media.parent_id {
-            if let Ok(Some(s)) = db::Media::get_by_id(&state.ctx.db, &pid).await {
+            if let Ok(Some(s)) = db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &pid,
+            )
+            .await
+            {
                 base_item.season_name = Some(s.title);
                 base_item.season_id = Some(s.id);
             }
         }
     } else if media.kind == db::MediaKind::Season {
         if let Some(pid) = media.parent_id {
-            if let Ok(Some(s)) = db::Media::get_by_id(&state.ctx.db, &pid).await {
+            if let Ok(Some(s)) = db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &pid,
+            )
+            .await
+            {
                 base_item.series_name = Some(s.title);
                 base_item.series_id = Some(s.id);
             }
         }
     }
-    if media.sources.as_ref().is_none_or(|s| s.is_empty())
+    if media
+        .sources
+        .as_ref()
+        .is_none_or(|s| s.is_empty())
         && !matches!(
             media.kind,
             db::MediaKind::TvChannel | db::MediaKind::TvProgram
@@ -1180,14 +1570,19 @@ pub async fn item(
             if !sources.is_empty() {
                 let sub_langs = server_config
                     .as_ref()
-                    .and_then(|c| c.subtitle_languages.clone())
+                    .and_then(|c| {
+                        c.subtitle_languages
+                            .clone()
+                    })
                     .unwrap_or_default();
                 super::playback::inject_external_subtitles(
                     &state.ctx,
                     &media,
                     sources,
                     media.id,
-                    &session.device.access_token,
+                    &session
+                        .device
+                        .access_token,
                     sub_langs,
                 )
                 .await;
@@ -1213,9 +1608,17 @@ pub async fn items_get(
     Path(id): Path<Uuid>,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    return Ok(
-        Json(item(state, session, id, q.fields.as_deref()).await?).into_response()
-    );
+    return Ok(Json(
+        item(
+            state,
+            session,
+            id,
+            q.fields
+                .as_deref(),
+        )
+        .await?,
+    )
+    .into_response());
 }
 
 #[get("/items/suggestions")]
@@ -1253,7 +1656,9 @@ pub async fn persons(
     Ok(Json(api::BaseItemDtoQueryResult {
         items: items.items,
         total_record_count: items.total_count as i64,
-        start_index: q.start_index.unwrap_or(0),
+        start_index: q
+            .start_index
+            .unwrap_or(0),
         ..Default::default()
     }))
 }
@@ -1271,11 +1676,28 @@ pub async fn items_filters(
         .filter_map(|t| db::MediaKind::try_from(t).ok())
         .collect();
 
-    let genres = db::Media::get_genres(&state.ctx.db, &kinds).await?;
-    let years = db::Media::get_distinct_years(&state.ctx.db, &kinds).await?;
+    let genres = db::Media::get_genres(
+        &state
+            .ctx
+            .db,
+        &kinds,
+    )
+    .await?;
+    let years = db::Media::get_distinct_years(
+        &state
+            .ctx
+            .db,
+        &kinds,
+    )
+    .await?;
 
     Ok(Json(api::QueryFiltersLegacy {
-        genres: Some(genres.into_iter().map(|g| g.title).collect()),
+        genres: Some(
+            genres
+                .into_iter()
+                .map(|g| g.title)
+                .collect(),
+        ),
         years: Some(years),
         ..Default::default()
     }))
@@ -1287,7 +1709,9 @@ pub async fn library_mediafolders(
     session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let items = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
             promoted: Some(true),
@@ -1314,7 +1738,9 @@ pub async fn library_virtualfolders(
     _session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
     let folders = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Collection, db::MediaKind::Folder]),
             promoted: Some(true),
@@ -1336,10 +1762,16 @@ fn media_to_virtual_folder(m: db::Media) -> api::VirtualFolderInfo {
         .clone()
         .map(api::db_media_kind_to_collection_type);
     api::VirtualFolderInfo {
-        name: Some(m.title.clone()),
+        name: Some(
+            m.title
+                .clone(),
+        ),
         item_id: Some(m.id.to_string()),
         collection_type,
-        collection_kind: m.collection_kind.as_ref().map(|k| k.to_string()),
+        collection_kind: m
+            .collection_kind
+            .as_ref()
+            .map(|k| k.to_string()),
         promoted: Some(m.is_promoted()),
         collection_max_items: m.collection_max_items,
         ..Default::default()
@@ -1373,7 +1805,9 @@ pub async fn create_virtual_folder(
         .and_then(|s| db::CollectionKind::try_from(s).ok())
         .unwrap_or(db::CollectionKind::Smart);
 
-    let promoted = payload.promoted.unwrap_or(false);
+    let promoted = payload
+        .promoted
+        .unwrap_or(false);
 
     let mut media = db::Media {
         title: payload.name,
@@ -1385,7 +1819,13 @@ pub async fn create_virtual_folder(
         ..Default::default()
     };
 
-    media.save(&state.ctx.db).await?;
+    media
+        .save(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
 
     Ok(Json(media_to_virtual_folder(media)))
 }
@@ -1408,9 +1848,14 @@ pub async fn update_virtual_folder(
     session: auth::AdminSession,
     Json(payload): Json<UpdateVirtualFolderRequest>,
 ) -> Result<StatusCode> {
-    let media = db::Media::get_by_id(&state.ctx.db, &payload.id)
-        .await?
-        .context_not_found("Collection not found")?;
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &payload.id,
+    )
+    .await?
+    .context_not_found("Collection not found")?;
 
     if media.kind != db::MediaKind::Collection {
         return Err(anyhow::anyhow!("not a collection"))
@@ -1427,7 +1872,9 @@ pub async fn update_virtual_folder(
         .as_deref()
         .and_then(|s| db::CollectionKind::try_from(s).ok());
 
-    let promoted = payload.promoted.unwrap_or(false);
+    let promoted = payload
+        .promoted
+        .unwrap_or(false);
     let updated_at = Utc::now().naive_utc();
 
     sqlx::query(
@@ -1446,10 +1893,15 @@ pub async fn update_virtual_folder(
 
     // Library name is baked into the generated placeholder — clear it so it regenerates.
     let _ = ImageService::delete_image(
-        &state.ctx.config.data_dir,
+        &state
+            .ctx
+            .config
+            .data_dir,
         payload.id,
         db::ImageKind::Primary,
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
     )
     .await;
 
@@ -1469,7 +1921,9 @@ pub async fn delete_virtual_folder(
     Query(q): Query<DeleteVirtualFolderQuery>,
 ) -> Result<StatusCode> {
     let result = db::Media::get_by_filter(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &db::MediaFilter {
             kind: Some(vec![db::MediaKind::Collection]),
             ..Default::default()
@@ -1482,7 +1936,13 @@ pub async fn delete_virtual_folder(
 
     let media = result.context_not_found("Collection not found")?;
 
-    db::Media::delete(&state.ctx.db, &media.id).await?;
+    db::Media::delete(
+        &state
+            .ctx
+            .db,
+        &media.id,
+    )
+    .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1511,13 +1971,24 @@ pub async fn genres(
         .filter_map(|t| db::MediaKind::try_from(t).ok())
         .collect();
 
-    let genres = db::Media::get_genres(&state.ctx.db, &related_kinds).await?;
+    let genres = db::Media::get_genres(
+        &state
+            .ctx
+            .db,
+        &related_kinds,
+    )
+    .await?;
     let total = genres.len() as i64;
 
     Ok(Json(api::BaseItemDtoQueryResult {
-        items: genres.into_iter().map(api::db_media_to_item).collect(),
+        items: genres
+            .into_iter()
+            .map(api::db_media_to_item)
+            .collect(),
         total_record_count: total,
-        start_index: q.start_index.unwrap_or(0),
+        start_index: q
+            .start_index
+            .unwrap_or(0),
         ..Default::default()
     }))
 }
@@ -1584,9 +2055,15 @@ pub async fn update_item(
     Json(payload): Json<UpdateItemRequest>,
 ) -> Result<StatusCode> {
     if let Some(tags) = &payload.tags {
-        set_tags(&state.ctx.db, id, tags)
-            .await
-            .context_bad_request("Failed to update tags")?;
+        set_tags(
+            &state
+                .ctx
+                .db,
+            id,
+            tags,
+        )
+        .await
+        .context_bad_request("Failed to update tags")?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1618,15 +2095,21 @@ pub async fn patch_item(
     qb.push_bind(updated_at);
 
     if let Some(name) = &payload.name {
-        qb.push(", title = ").push_bind(name);
+        qb.push(", title = ")
+            .push_bind(name);
     }
     if let Some(ct) = &payload.collection_type {
         let media_kind = parse_collection_type(ct);
         qb.push(", collection_media_kind = ")
-            .push_bind(media_kind.as_ref().map(|k| k.to_string()));
+            .push_bind(
+                media_kind
+                    .as_ref()
+                    .map(|k| k.to_string()),
+            );
     }
     if let Some(ck) = &payload.collection_kind {
-        qb.push(", collection_kind = ").push_bind(ck);
+        qb.push(", collection_kind = ")
+            .push_bind(ck);
     }
     if let Some(sf) = &payload.smart_filter {
         qb.push(", collection_smart_filter = ")
@@ -1641,22 +2124,38 @@ pub async fn patch_item(
             .push_bind(dra.naive_utc());
     }
     if let Some(so) = payload.sort_order {
-        qb.push(", idx = ").push_bind(so);
+        qb.push(", idx = ")
+            .push_bind(so);
     }
     if let Some(v) = payload.latest_auto_unplayed {
-        qb.push(", collection_latest_auto_unplayed = ").push_bind(v);
+        qb.push(", collection_latest_auto_unplayed = ")
+            .push_bind(v);
     }
     if let Some(v) = payload.latest_sort_digital {
-        qb.push(", collection_latest_sort_digital = ").push_bind(v);
+        qb.push(", collection_latest_sort_digital = ")
+            .push_bind(v);
     }
 
-    qb.push(" WHERE id = ").push_bind(id);
-    qb.build().execute(&state.ctx.db).await?;
+    qb.push(" WHERE id = ")
+        .push_bind(id);
+    qb.build()
+        .execute(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
 
     if let Some(tags) = &payload.tags {
-        set_tags(&state.ctx.db, id, tags)
-            .await
-            .context_bad_request("Failed to update tags")?;
+        set_tags(
+            &state
+                .ctx
+                .db,
+            id,
+            tags,
+        )
+        .await
+        .context_bad_request("Failed to update tags")?;
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -1669,8 +2168,14 @@ fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
     let media = media.clone();
     let ctx = ctx.clone();
     tokio::spawn(async move {
-        let _ = ctx.addons.fetch_subtitles(&media, &ctx.db).await;
-        let _ = ctx.addons.fetch_segments(&media, &ctx).await;
+        let _ = ctx
+            .addons
+            .fetch_subtitles(&media, &ctx.db)
+            .await;
+        let _ = ctx
+            .addons
+            .fetch_segments(&media, &ctx)
+            .await;
     });
 }
 
@@ -1697,7 +2202,10 @@ fn segments_to_dtos(
             // Derive a stable UUID from (source_id, type discriminant).
             let mut bytes = [0u8; 16];
             let src = source_id.as_bytes();
-            for (i, b) in src.iter().enumerate() {
+            for (i, b) in src
+                .iter()
+                .enumerate()
+            {
                 bytes[i] ^= b;
             }
             bytes[15] ^= t as u8;
@@ -1719,21 +2227,33 @@ pub async fn media_segments(
     Query(q): Query<SegmentQuery>,
     State(state): State<crate::AppState>,
 ) -> Result<impl IntoResponse> {
-    let type_filter = if q.include_segment_types.is_empty() {
+    let type_filter = if q
+        .include_segment_types
+        .is_empty()
+    {
         None
     } else {
         Some(q.include_segment_types)
     };
     let filter_ref = type_filter.as_deref();
 
-    let media = db::Media::get_by_id(&state.ctx.db, &id)
-        .await?
-        .unwrap_or_else(|| db::Media {
-            id,
-            ..Default::default()
-        });
+    let media = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await?
+    .unwrap_or_else(|| db::Media {
+        id,
+        ..Default::default()
+    });
 
-    let segs = state.ctx.addons.fetch_segments(&media, &state.ctx).await;
+    let segs = state
+        .ctx
+        .addons
+        .fetch_segments(&media, &state.ctx)
+        .await;
     let dtos = segments_to_dtos(id, id, &segs, filter_ref);
 
     let count = dtos.len();

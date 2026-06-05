@@ -31,16 +31,22 @@ impl DeviceProfileExt for DeviceProfile {
                         .map(|pr| pr.eq_ignore_ascii_case("http"))
                         .unwrap_or(false)
             })
-            .or_else(|| self.transcoding_profiles.iter().find(|p| is_video(p)))
+            .or_else(|| {
+                self.transcoding_profiles
+                    .iter()
+                    .find(|p| is_video(p))
+            })
     }
 
     fn audio_transcoding_profile(&self) -> Option<&TranscodingProfile> {
-        self.transcoding_profiles.iter().find(|p| {
-            p.type_
-                .as_deref()
-                .map(|t| t.eq_ignore_ascii_case("Audio"))
-                .unwrap_or(false)
-        })
+        self.transcoding_profiles
+            .iter()
+            .find(|p| {
+                p.type_
+                    .as_deref()
+                    .map(|t| t.eq_ignore_ascii_case("Audio"))
+                    .unwrap_or(false)
+            })
     }
 
     fn subtitle_delivery_method(&self, codec: &str) -> Option<SubtitleDeliveryMethod> {
@@ -52,15 +58,21 @@ impl DeviceProfileExt for DeviceProfile {
                     .map(|f| f.eq_ignore_ascii_case(codec))
                     .unwrap_or(false)
             })
-            .and_then(|p| p.method.clone())
+            .and_then(|p| {
+                p.method
+                    .clone()
+            })
     }
 
     fn supports_direct_play(&self, media_source: &MediaSourceInfo) -> bool {
-        self.check_direct_play(media_source).is_empty()
+        self.check_direct_play(media_source)
+            .is_empty()
     }
 
     fn check_direct_play(&self, media_source: &MediaSourceInfo) -> TranscodeReasons {
-        let source_has_video = media_source.video_stream().is_some();
+        let source_has_video = media_source
+            .video_stream()
+            .is_some();
         let mut best: Option<TranscodeReasons> = None;
         for profile in &self.direct_play_profiles {
             if let Some(t) = &profile.type_ {
@@ -78,7 +90,13 @@ impl DeviceProfileExt for DeviceProfile {
             best = Some(match best {
                 None => reasons,
                 Some(prev) => {
-                    if reasons.0.len() < prev.0.len() {
+                    if reasons
+                        .0
+                        .len()
+                        < prev
+                            .0
+                            .len()
+                    {
                         reasons
                     } else {
                         prev
@@ -107,21 +125,36 @@ fn check_codec_profiles(
     reasons: &mut TranscodeReasons,
 ) {
     for cp in &profile.codec_profiles {
-        let type_ = cp.type_.as_deref().unwrap_or("");
+        let type_ = cp
+            .type_
+            .as_deref()
+            .unwrap_or("");
         if type_.eq_ignore_ascii_case("Video") {
             if let Some(stream) = media_source.video_stream() {
-                let codec = stream.codec.as_deref().unwrap_or("");
+                let codec = stream
+                    .codec
+                    .as_deref()
+                    .unwrap_or("");
                 if cp.applies_to_codec(codec) {
-                    for r in cp.check_reasons(stream).0 {
+                    for r in cp
+                        .check_reasons(stream)
+                        .0
+                    {
                         reasons.insert(r);
                     }
                 }
             }
         } else if type_.eq_ignore_ascii_case("Audio") {
             if let Some(stream) = media_source.audio_stream() {
-                let codec = stream.codec.as_deref().unwrap_or("");
+                let codec = stream
+                    .codec
+                    .as_deref()
+                    .unwrap_or("");
                 if cp.applies_to_codec(codec) {
-                    for r in cp.check_reasons(stream).0 {
+                    for r in cp
+                        .check_reasons(stream)
+                        .0
+                    {
                         reasons.insert(r);
                     }
                 }
@@ -139,33 +172,42 @@ fn check_subtitle_codec(
         Some(idx) => idx,
         None => return,
     };
-    let sub_stream = media_source.media_streams.iter().find(|s| {
-        s.index == sub_idx && matches!(s.type_, Some(MediaStreamType::Subtitle))
-    });
-    let sub_codec = match sub_stream.and_then(|s| s.codec.as_deref()) {
+    let sub_stream = media_source
+        .media_streams
+        .iter()
+        .find(|s| {
+            s.index == sub_idx && matches!(s.type_, Some(MediaStreamType::Subtitle))
+        });
+    let sub_codec = match sub_stream.and_then(|s| {
+        s.codec
+            .as_deref()
+    }) {
         Some(c) => c,
         None => return,
     };
 
     // Drop/External/Embed are passthrough-compatible; Encode and Hls require transcoding.
-    let supported = profile.subtitle_profiles.iter().any(|p| {
-        let format_matches = p
-            .format
-            .as_deref()
-            .map(|f| f.eq_ignore_ascii_case(sub_codec))
-            .unwrap_or(false);
-        if !format_matches {
-            return false;
-        }
-        matches!(
-            p.method,
-            Some(
-                SubtitleDeliveryMethod::Drop
-                    | SubtitleDeliveryMethod::External
-                    | SubtitleDeliveryMethod::Embed
+    let supported = profile
+        .subtitle_profiles
+        .iter()
+        .any(|p| {
+            let format_matches = p
+                .format
+                .as_deref()
+                .map(|f| f.eq_ignore_ascii_case(sub_codec))
+                .unwrap_or(false);
+            if !format_matches {
+                return false;
+            }
+            matches!(
+                p.method,
+                Some(
+                    SubtitleDeliveryMethod::Drop
+                        | SubtitleDeliveryMethod::External
+                        | SubtitleDeliveryMethod::Embed
+                )
             )
-        )
-    });
+        });
 
     if !supported {
         reasons.insert(TranscodeReason::SubtitleCodecNotSupported(
@@ -184,7 +226,8 @@ pub trait DirectPlayProfileExt {
 
 impl DirectPlayProfileExt for DirectPlayProfile {
     fn supports_media_source(&self, media_source: &MediaSourceInfo) -> bool {
-        self.check_reasons(media_source).is_empty()
+        self.check_reasons(media_source)
+            .is_empty()
     }
 
     fn check_reasons(&self, media_source: &MediaSourceInfo) -> TranscodeReasons {
@@ -235,7 +278,10 @@ impl DirectPlayProfileExt for DirectPlayProfile {
 
     fn supports_container(&self, container: &str) -> bool {
         // Normalize aliases: mp4 and m4a are the same format.
-        let aliases: &[&str] = match container.to_ascii_lowercase().as_str() {
+        let aliases: &[&str] = match container
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "mp4" => &["mp4", "m4a"],
             "m4a" => &["m4a", "mp4"],
             _ => &[],
@@ -244,11 +290,14 @@ impl DirectPlayProfileExt for DirectPlayProfile {
             .as_ref()
             .map(|c| {
                 c == "*"
-                    || c.split(',').any(|c| {
-                        let c = c.trim();
-                        c.eq_ignore_ascii_case(container)
-                            || aliases.iter().any(|a| c.eq_ignore_ascii_case(a))
-                    })
+                    || c.split(',')
+                        .any(|c| {
+                            let c = c.trim();
+                            c.eq_ignore_ascii_case(container)
+                                || aliases
+                                    .iter()
+                                    .any(|a| c.eq_ignore_ascii_case(a))
+                        })
             })
             .unwrap_or(true)
     }
@@ -257,7 +306,12 @@ impl DirectPlayProfileExt for DirectPlayProfile {
         self.video_codec
             .as_ref()
             .map(|v| {
-                v == "*" || v.split(',').any(|v| v.trim().eq_ignore_ascii_case(codec))
+                v == "*"
+                    || v.split(',')
+                        .any(|v| {
+                            v.trim()
+                                .eq_ignore_ascii_case(codec)
+                        })
             })
             .unwrap_or(true)
     }
@@ -266,7 +320,12 @@ impl DirectPlayProfileExt for DirectPlayProfile {
         self.audio_codec
             .as_ref()
             .map(|a| {
-                a == "*" || a.split(',').any(|a| a.trim().eq_ignore_ascii_case(codec))
+                a == "*"
+                    || a.split(',')
+                        .any(|a| {
+                            a.trim()
+                                .eq_ignore_ascii_case(codec)
+                        })
             })
             .unwrap_or(true)
     }
@@ -282,7 +341,12 @@ impl CodecProfileExt for CodecProfile {
         self.codec
             .as_deref()
             .map(|c| {
-                c == "*" || c.split(',').any(|v| v.trim().eq_ignore_ascii_case(codec))
+                c == "*"
+                    || c.split(',')
+                        .any(|v| {
+                            v.trim()
+                                .eq_ignore_ascii_case(codec)
+                        })
             })
             .unwrap_or(true)
     }
@@ -290,7 +354,10 @@ impl CodecProfileExt for CodecProfile {
     fn check_reasons(&self, stream: &MediaStream) -> TranscodeReasons {
         let mut reasons = TranscodeReasons::default();
         for cond in &self.conditions {
-            let property = match cond.property.as_deref() {
+            let property = match cond
+                .property
+                .as_deref()
+            {
                 Some(p) => p,
                 None => continue,
             };
@@ -310,9 +377,15 @@ impl CodecProfileExt for CodecProfile {
             if !cond.is_satisfied_opt(actual.as_deref()) {
                 let detail = format!(
                     "property={property} condition={} value={} actual={}",
-                    cond.condition.as_deref().unwrap_or(""),
-                    cond.value.as_deref().unwrap_or(""),
-                    actual.as_deref().unwrap_or("(unknown)"),
+                    cond.condition
+                        .as_deref()
+                        .unwrap_or(""),
+                    cond.value
+                        .as_deref()
+                        .unwrap_or(""),
+                    actual
+                        .as_deref()
+                        .unwrap_or("(unknown)"),
                 );
                 let reason = match property {
                     "VideoRangeType" => {
@@ -335,24 +408,61 @@ fn stream_property_value(stream: &MediaStream, property: &str) -> Option<String>
         "VideoRangeType" => stream
             .video_range_type
             .as_ref()
-            .map(|v| v.as_str().to_string()),
-        "VideoCodecTag" => stream.codec_tag.clone(),
-        "IsAnamorphic" => Some(stream.is_anamorphic.unwrap_or(false).to_string()),
-        "IsInterlaced" => Some(stream.is_interlaced.to_string()),
-        "IsAVC" | "IsAvc" => Some(stream.is_avc.unwrap_or(false).to_string()),
-        "BitDepth" => stream.bit_depth.map(|v| v.to_string()),
-        "RefFrames" => stream.ref_frames.map(|v| v.to_string()),
+            .map(|v| {
+                v.as_str()
+                    .to_string()
+            }),
+        "VideoCodecTag" => stream
+            .codec_tag
+            .clone(),
+        "IsAnamorphic" => Some(
+            stream
+                .is_anamorphic
+                .unwrap_or(false)
+                .to_string(),
+        ),
+        "IsInterlaced" => Some(
+            stream
+                .is_interlaced
+                .to_string(),
+        ),
+        "IsAVC" | "IsAvc" => Some(
+            stream
+                .is_avc
+                .unwrap_or(false)
+                .to_string(),
+        ),
+        "BitDepth" => stream
+            .bit_depth
+            .map(|v| v.to_string()),
+        "RefFrames" => stream
+            .ref_frames
+            .map(|v| v.to_string()),
         "NumAudioStreams" | "NumVideoStreams" => None,
-        "VideoLevel" | "Level" => stream.level.map(|v| v.to_string()),
-        "VideoProfile" | "Profile" => stream.profile.clone(),
-        "Height" => stream.height.map(|v| v.to_string()),
-        "Width" => stream.width.map(|v| v.to_string()),
-        "VideoFramerate" | "Framerate" => stream.real_frame_rate.map(|v| v.to_string()),
-        "VideoBitrate" | "Bitrate" | "AudioBitrate" => {
-            stream.bit_rate.map(|v| v.to_string())
-        }
-        "AudioChannels" => stream.channels.map(|v| v.to_string()),
-        "AudioSampleRate" => stream.sample_rate.map(|v| v.to_string()),
+        "VideoLevel" | "Level" => stream
+            .level
+            .map(|v| v.to_string()),
+        "VideoProfile" | "Profile" => stream
+            .profile
+            .clone(),
+        "Height" => stream
+            .height
+            .map(|v| v.to_string()),
+        "Width" => stream
+            .width
+            .map(|v| v.to_string()),
+        "VideoFramerate" | "Framerate" => stream
+            .real_frame_rate
+            .map(|v| v.to_string()),
+        "VideoBitrate" | "Bitrate" | "AudioBitrate" => stream
+            .bit_rate
+            .map(|v| v.to_string()),
+        "AudioChannels" => stream
+            .channels
+            .map(|v| v.to_string()),
+        "AudioSampleRate" => stream
+            .sample_rate
+            .map(|v| v.to_string()),
         _ => None,
     }
 }
@@ -363,15 +473,25 @@ pub trait ProfileConditionExt {
 
 impl ProfileConditionExt for ProfileCondition {
     fn is_satisfied_opt(&self, actual: Option<&str>) -> bool {
-        let cond = match self.condition.as_deref() {
+        let cond = match self
+            .condition
+            .as_deref()
+        {
             Some(c) => c,
             None => return true,
         };
         let actual = match actual {
             Some(v) if !v.is_empty() => v,
-            _ => return !self.is_required.unwrap_or(true),
+            _ => {
+                return !self
+                    .is_required
+                    .unwrap_or(true);
+            }
         };
-        let expected = self.value.as_deref().unwrap_or("");
+        let expected = self
+            .value
+            .as_deref()
+            .unwrap_or("");
 
         match cond {
             "Equals" => actual.eq_ignore_ascii_case(expected),

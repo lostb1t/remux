@@ -117,7 +117,11 @@ pub(super) fn parse_manifest_info(
     if manifest
         .catalogs
         .iter()
-        .any(|c| c.extra.iter().any(|e| e.name == "search"))
+        .any(|c| {
+            c.extra
+                .iter()
+                .any(|e| e.name == "search")
+        })
     {
         if !resources.contains(&ResourceType::Search) {
             resources.push(ResourceType::Search);
@@ -178,7 +182,10 @@ impl AddonKind for StremioAddon {
         let Ok(svc) = self.service() else {
             return (vec![], vec![]);
         };
-        let Ok(manifest) = svc.get_manifest().await else {
+        let Ok(manifest) = svc
+            .get_manifest()
+            .await
+        else {
             return (vec![], vec![]);
         };
         parse_manifest_info(&manifest)
@@ -186,34 +193,59 @@ impl AddonKind for StremioAddon {
 
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         let svc = self.service()?;
-        let manifest = svc.get_manifest().await?;
+        let manifest = svc
+            .get_manifest()
+            .await?;
         Ok(manifest
             .catalogs
             .into_iter()
-            .filter(|c| !c.id.contains("search"))
+            .filter(|c| {
+                !c.id
+                    .contains("search")
+            })
             .map(|c| {
                 let kind_label = {
-                    let k = c.kind.trim();
+                    let k = c
+                        .kind
+                        .trim();
                     let mut chars = k.chars();
                     match chars.next() {
                         Some(first) => {
-                            first.to_uppercase().collect::<String>() + chars.as_str()
+                            first
+                                .to_uppercase()
+                                .collect::<String>()
+                                + chars.as_str()
                         }
                         None => String::new(),
                     }
                 };
                 CatalogInfo {
                     collection_media_kind: matches!(
-                        c.kind.trim().to_lowercase().as_str(),
+                        c.kind
+                            .trim()
+                            .to_lowercase()
+                            .as_str(),
                         "movie" | "series" | "episode" | "album" | "artist" | "track"
                     )
-                    .then(|| c.kind.as_str().into()),
+                    .then(|| {
+                        c.kind
+                            .as_str()
+                            .into()
+                    }),
                     ..CatalogInfo::new(
-                        format!("{}:{}", c.kind.to_lowercase(), c.id),
+                        format!(
+                            "{}:{}",
+                            c.kind
+                                .to_lowercase(),
+                            c.id
+                        ),
                         format!(
                             "{} — {} — {}",
-                            manifest.name.trim(),
-                            c.name.trim(),
+                            manifest
+                                .name
+                                .trim(),
+                            c.name
+                                .trim(),
                             kind_label
                         ),
                     )
@@ -372,7 +404,10 @@ fn needs_release_dates(meta: &sdks::stremio::Meta) -> bool {
         && meta
             .app_extras
             .as_ref()
-            .and_then(|e| e.release_dates.as_ref())
+            .and_then(|e| {
+                e.release_dates
+                    .as_ref()
+            })
             .is_none()
 }
 
@@ -390,10 +425,11 @@ fn inject_tmdb_release_dates(
                     .release_dates
                     .into_iter()
                     .filter_map(|rd| {
-                        rd.release_date.map(|date| sdks::stremio::ReleaseDateEntry {
-                            release_date: date,
-                            release_type: rd.release_type,
-                        })
+                        rd.release_date
+                            .map(|date| sdks::stremio::ReleaseDateEntry {
+                                release_date: date,
+                                release_type: rd.release_type,
+                            })
                     })
                     .collect(),
             })
@@ -411,15 +447,24 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
 ) -> bool {
     let t = Instant::now();
 
-    if meta.imdb_id.is_none() {
+    if meta
+        .imdb_id
+        .is_none()
+    {
         if let Some(imdb) = db::ExternalIds::from_stremio_id(&meta.id).imdb {
             meta.imdb_id = Some(imdb);
         }
     }
 
-    if meta.imdb_id.is_none() {
+    if meta
+        .imdb_id
+        .is_none()
+    {
         if let Some(svc) = svc {
-            match meta.resolve(&svc.client).await {
+            match meta
+                .resolve(&svc.client)
+                .await
+            {
                 Ok(()) => {}
                 Err(e) => warn!(id = %meta.id, error = %e, "AIO resolve failed"),
             }
@@ -427,10 +472,18 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
         }
     }
 
-    if meta.imdb_id.is_none() {
+    if meta
+        .imdb_id
+        .is_none()
+    {
         let mut ids = db::ExternalIds::from_stremio_id(&meta.id);
-        if ids.tmdb.is_none() {
-            ids.tmdb = meta.moviedb_id.map(|n| n as i64);
+        if ids
+            .tmdb
+            .is_none()
+        {
+            ids.tmdb = meta
+                .moviedb_id
+                .map(|n| n as i64);
         }
         if let Some(client) = tmdb_client {
             if !ids.is_empty() {
@@ -443,7 +496,10 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
         }
     }
 
-    if meta.imdb_id.is_none() {
+    if meta
+        .imdb_id
+        .is_none()
+    {
         return false;
     }
 
@@ -451,7 +507,10 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
         if let Some(client) = tmdb_client {
             let tmdb_id = db::ExternalIds::from_stremio_id(&meta.id)
                 .tmdb
-                .or_else(|| meta.moviedb_id.map(|n| n as i64));
+                .or_else(|| {
+                    meta.moviedb_id
+                        .map(|n| n as i64)
+                });
 
             let tmdb_id = if tmdb_id.is_some() {
                 tmdb_id
@@ -466,7 +525,11 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                     )
                     .await
                     .ok()
-                    .and_then(|r| r.movie_results.into_iter().next())
+                    .and_then(|r| {
+                        r.movie_results
+                            .into_iter()
+                            .next()
+                    })
                     .map(|m| m.id)
             } else {
                 None
@@ -511,23 +574,36 @@ async fn stremio_meta_fetch(
         .external_ids
         .series_imdb
         .clone()
-        .or(media.external_ids.imdb.clone());
+        .or(media
+            .external_ids
+            .imdb
+            .clone());
 
     let imdb_id = match imdb_id {
         Some(id) => id,
         None => return Ok(None),
     };
 
-    let mut meta = if let Some(cached_meta) =
-        ctx.store.get::<sdks::stremio::Meta>(media.id.to_string())
-    {
+    let mut meta = if let Some(cached_meta) = ctx
+        .store
+        .get::<sdks::stremio::Meta>(
+            media
+                .id
+                .to_string(),
+        ) {
         cached_meta
     } else {
         let media_type = sdks::stremio::MediaType::from(&media.kind);
-        match svc.get_meta(media_type.clone(), imdb_id.clone()).await {
+        match svc
+            .get_meta(media_type.clone(), imdb_id.clone())
+            .await
+        {
             Ok(m) => m,
             Err(e) if is_404(&e) => {
-                if let Some(tmdb_id) = media.external_ids.tmdb {
+                if let Some(tmdb_id) = media
+                    .external_ids
+                    .tmdb
+                {
                     svc.get_meta(media_type, format!("tmdb:{}", tmdb_id))
                         .await?
                 } else {
@@ -538,7 +614,10 @@ async fn stremio_meta_fetch(
         }
     };
 
-    if meta.imdb_id.is_none() {
+    if meta
+        .imdb_id
+        .is_none()
+    {
         meta.imdb_id = db::ExternalIds::from_stremio_id(&meta.id)
             .imdb
             .or_else(|| Some(imdb_id.clone()));
@@ -547,12 +626,12 @@ async fn stremio_meta_fetch(
     let meta_raw = meta.clone();
     let medias: Vec<db::Media> = db::stremio_meta_to_medias(meta)?;
     let found = match media.kind {
-        db::MediaKind::Movie => {
-            medias.into_iter().find(|x| x.kind == db::MediaKind::Movie)
-        }
-        db::MediaKind::Series => {
-            medias.into_iter().find(|x| x.kind == db::MediaKind::Series)
-        }
+        db::MediaKind::Movie => medias
+            .into_iter()
+            .find(|x| x.kind == db::MediaKind::Movie),
+        db::MediaKind::Series => medias
+            .into_iter()
+            .find(|x| x.kind == db::MediaKind::Series),
         db::MediaKind::Season => {
             let idx = media.idx;
             medias
@@ -573,11 +652,16 @@ async fn stremio_meta_fetch(
             if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
                 build_relations(media, &meta_raw)
             } else if media.kind == db::MediaKind::Episode {
-                if let Some(meta_ep) = meta_raw.videos.as_ref().and_then(|v| {
-                    v.iter().find(|e| {
-                        e.episode == media.idx && e.season == media.parent_idx
+                if let Some(meta_ep) = meta_raw
+                    .videos
+                    .as_ref()
+                    .and_then(|v| {
+                        v.iter()
+                            .find(|e| {
+                                e.episode == media.idx && e.season == media.parent_idx
+                            })
                     })
-                }) {
+                {
                     build_episode_relations(media, meta_ep)
                 } else {
                     vec![]
@@ -604,7 +688,11 @@ async fn stremio_sync_children(
         return Ok(vec![]);
     }
 
-    let imdb_id = match root.external_ids.imdb.clone() {
+    let imdb_id = match root
+        .external_ids
+        .imdb
+        .clone()
+    {
         Some(id) => id,
         None => return Ok(vec![]),
     };
@@ -613,7 +701,10 @@ async fn stremio_sync_children(
         .get_meta(sdks::stremio::MediaType::from(&root.kind), imdb_id.clone())
         .await?;
 
-    if meta.imdb_id.is_none() {
+    if meta
+        .imdb_id
+        .is_none()
+    {
         meta.imdb_id = db::ExternalIds::from_stremio_id(&meta.id)
             .imdb
             .or_else(|| Some(imdb_id.clone()));
@@ -627,12 +718,17 @@ async fn stremio_sync_children(
             if x.kind == db::MediaKind::Season {
                 x.parent_id = Some(root.id);
                 x.grandparent_id = Some(root.id);
-                if let Some(url) =
-                    x.idx.and_then(|idx| meta_clone.get_season_poster(idx))
+                if let Some(url) = x
+                    .idx
+                    .and_then(|idx| meta_clone.get_season_poster(idx))
                 {
                     x.set_image(db::ImageKind::Primary, url);
                 }
-                x.title = format!("Season {}", x.idx.unwrap_or(1));
+                x.title = format!(
+                    "Season {}",
+                    x.idx
+                        .unwrap_or(1)
+                );
                 // Leave refreshed_at as None so sync_tree will call refresh_meta
                 // and TMDB can provide the season poster.
                 Some(x)
@@ -662,10 +758,15 @@ async fn stremio_sync_children(
         .collect::<Vec<db::Media>>();
 
     for child in &mut children {
-        if child.grandparent.is_none() {
+        if child
+            .grandparent
+            .is_none()
+        {
             let mut gp = db::Media::default();
             gp.id = root.id;
-            gp.title = root.title.clone();
+            gp.title = root
+                .title
+                .clone();
             child.grandparent = Some(Box::new(gp));
         }
     }
@@ -683,7 +784,13 @@ pub(crate) fn build_relations(
 ) -> Vec<(db::MediaRelation, db::Media)> {
     let mut relations = Vec::new();
 
-    if let Some(genres) = meta.genre.as_ref().or(meta.genres.as_ref()) {
+    if let Some(genres) = meta
+        .genre
+        .as_ref()
+        .or(meta
+            .genres
+            .as_ref())
+    {
         for genre_name in genres {
             let genre_id = common::stable_media_uuid(
                 &db::MediaKind::Genre,
@@ -708,10 +815,13 @@ pub(crate) fn build_relations(
 
     let mut rels = build_person_relations(
         media.id,
-        meta.director.as_ref(),
-        meta.writer.as_ref(),
+        meta.director
+            .as_ref(),
+        meta.writer
+            .as_ref(),
         None,
-        meta.cast.as_ref(),
+        meta.cast
+            .as_ref(),
         None,
         None,
     );
@@ -721,10 +831,16 @@ pub(crate) fn build_relations(
             media.id,
             None,
             None,
-            extras.cast.as_ref(),
+            extras
+                .cast
+                .as_ref(),
             None,
-            extras.directors.as_ref(),
-            extras.writers.as_ref(),
+            extras
+                .directors
+                .as_ref(),
+            extras
+                .writers
+                .as_ref(),
         ));
     }
 
@@ -738,8 +854,10 @@ pub(crate) fn build_episode_relations(
 ) -> Vec<(db::MediaRelation, db::Media)> {
     build_person_relations(
         media.id,
-        ep.directors.as_ref(),
-        ep.writers.as_ref(),
+        ep.directors
+            .as_ref(),
+        ep.writers
+            .as_ref(),
         None,
         None,
         None,
@@ -763,7 +881,13 @@ fn build_person_relations(
             .map(|v| v.as_slice())
             .unwrap_or_default()
             .iter()
-            .flat_map(|s| s.split(',').map(|n| n.trim().to_string()))
+            .flat_map(|s| {
+                s.split(',')
+                    .map(|n| {
+                        n.trim()
+                            .to_string()
+                    })
+            })
             .filter(|s| !s.is_empty())
             .collect()
     };
@@ -772,9 +896,14 @@ fn build_person_relations(
                            role: db::RelationRole,
                            offset: i64| {
         if let Some(list) = members {
-            for (i, member) in list.iter().enumerate() {
+            for (i, member) in list
+                .iter()
+                .enumerate()
+            {
                 if let Some(name) = &member.name {
-                    let name = name.trim().to_string();
+                    let name = name
+                        .trim()
+                        .to_string();
                     if name.is_empty() {
                         continue;
                     }
@@ -788,7 +917,10 @@ fn build_person_relations(
                         kind: db::MediaKind::Person,
                         ..Default::default()
                     };
-                    if let Some(url) = member.photo.clone() {
+                    if let Some(url) = member
+                        .photo
+                        .clone()
+                    {
                         person.set_image(db::ImageKind::Primary, url);
                     }
                     relations.push((
@@ -797,7 +929,9 @@ fn build_person_relations(
                             right_media_id: person_id,
                             weight: Some(offset + i as i64),
                             role: Some(role.clone()),
-                            character: member.character.clone(),
+                            character: member
+                                .character
+                                .clone(),
                             ..Default::default()
                         },
                         person,
@@ -811,14 +945,21 @@ fn build_person_relations(
     add_members(director_members, db::RelationRole::Director, 0);
     add_members(writer_members, db::RelationRole::Writer, 0);
 
-    for (i, name) in split_names(cast_names).into_iter().enumerate() {
+    for (i, name) in split_names(cast_names)
+        .into_iter()
+        .enumerate()
+    {
         let person_id =
             common::stable_media_uuid(&db::MediaKind::Person, &name.to_lowercase());
         relations.push((
             db::MediaRelation {
                 left_media_id,
                 right_media_id: person_id,
-                weight: Some((i + cast_members.map(|c| c.len()).unwrap_or(0)) as i64),
+                weight: Some(
+                    (i + cast_members
+                        .map(|c| c.len())
+                        .unwrap_or(0)) as i64,
+                ),
                 role: Some(db::RelationRole::Actor),
                 ..Default::default()
             },
@@ -831,7 +972,10 @@ fn build_person_relations(
         ));
     }
 
-    for (i, name) in split_names(directors).into_iter().enumerate() {
+    for (i, name) in split_names(directors)
+        .into_iter()
+        .enumerate()
+    {
         let person_id =
             common::stable_media_uuid(&db::MediaKind::Person, &name.to_lowercase());
         relations.push((
@@ -839,7 +983,9 @@ fn build_person_relations(
                 left_media_id,
                 right_media_id: person_id,
                 weight: Some(
-                    (i + director_members.map(|c| c.len()).unwrap_or(0)) as i64,
+                    (i + director_members
+                        .map(|c| c.len())
+                        .unwrap_or(0)) as i64,
                 ),
                 role: Some(db::RelationRole::Director),
                 ..Default::default()
@@ -853,14 +999,21 @@ fn build_person_relations(
         ));
     }
 
-    for (i, name) in split_names(writers).into_iter().enumerate() {
+    for (i, name) in split_names(writers)
+        .into_iter()
+        .enumerate()
+    {
         let person_id =
             common::stable_media_uuid(&db::MediaKind::Person, &name.to_lowercase());
         relations.push((
             db::MediaRelation {
                 left_media_id,
                 right_media_id: person_id,
-                weight: Some((i + writer_members.map(|c| c.len()).unwrap_or(0)) as i64),
+                weight: Some(
+                    (i + writer_members
+                        .map(|c| c.len())
+                        .unwrap_or(0)) as i64,
+                ),
                 role: Some(db::RelationRole::Writer),
                 ..Default::default()
             },
@@ -993,12 +1146,19 @@ async fn stremio_streams(
 ) -> Result<Vec<crate::stream::StreamInfo>> {
     let (media_type, id, tmdb_fallback_id) = match media.kind {
         db::MediaKind::Episode => {
-            let series_id =
-                media.external_ids.series_imdb.as_deref().ok_or_else(|| {
+            let series_id = media
+                .external_ids
+                .series_imdb
+                .as_deref()
+                .ok_or_else(|| {
                     anyhow!("episode has no series_imdb for stream lookup")
                 })?;
-            let season = media.parent_idx.unwrap_or(1);
-            let episode = media.idx.unwrap_or(1);
+            let season = media
+                .parent_idx
+                .unwrap_or(1);
+            let episode = media
+                .idx
+                .unwrap_or(1);
             let tmdb_fb = media
                 .external_ids
                 .series_tmdb
@@ -1040,19 +1200,30 @@ async fn stremio_streams(
             (sdks::stremio::MediaType::Artist, id, None)
         }
         _ => {
-            let id = media.external_ids.imdb.clone().ok_or_else(|| {
-                anyhow!("media has no identifiable ID for Stremio stream lookup")
-            })?;
-            let tmdb_fb = media.external_ids.tmdb.map(|tid| format!("tmdb:{}", tid));
+            let id = media
+                .external_ids
+                .imdb
+                .clone()
+                .ok_or_else(|| {
+                    anyhow!("media has no identifiable ID for Stremio stream lookup")
+                })?;
+            let tmdb_fb = media
+                .external_ids
+                .tmdb
+                .map(|tid| format!("tmdb:{}", tid));
             (sdks::stremio::MediaType::from(&media.kind), id, tmdb_fb)
         }
     };
 
-    let streams = match svc.get_streams(media_type.clone(), id).await {
+    let streams = match svc
+        .get_streams(media_type.clone(), id)
+        .await
+    {
         Ok(s) => s,
         Err(e) if is_404(&e) => {
             if let Some(fb_id) = tmdb_fallback_id {
-                svc.get_streams(media_type, fb_id).await?
+                svc.get_streams(media_type, fb_id)
+                    .await?
             } else {
                 return Err(e);
             }
@@ -1066,9 +1237,16 @@ async fn stremio_streams(
         .filter_map(|s| {
             let descriptor = if s.is_torrent() {
                 crate::stream::StreamDescriptor::Torrent {
-                    info_hash: s.info_hash.clone()?.to_ascii_lowercase(),
-                    file_hint: s.filename.clone(),
-                    file_idx: s.file_idx.map(|i| i as usize),
+                    info_hash: s
+                        .info_hash
+                        .clone()?
+                        .to_ascii_lowercase(),
+                    file_hint: s
+                        .filename
+                        .clone(),
+                    file_idx: s
+                        .file_idx
+                        .map(|i| i as usize),
                     trackers: s
                         .sources
                         .as_deref()
@@ -1079,14 +1257,29 @@ async fn stremio_streams(
                         .collect(),
                 }
             } else {
-                let url = s.url.clone().or_else(|| s.external_url.clone())?;
+                let url = s
+                    .url
+                    .clone()
+                    .or_else(|| {
+                        s.external_url
+                            .clone()
+                    })?;
                 crate::stream::StreamDescriptor::Http {
                     url: rewrite_aio_url(&url, manifest_url),
-                    request_headers: s.request_headers.clone(),
-                    response_headers: s.response_headers.clone(),
+                    request_headers: s
+                        .request_headers
+                        .clone(),
+                    response_headers: s
+                        .response_headers
+                        .clone(),
                 }
             };
-            let label = match (s.name.as_deref(), s.description.as_deref()) {
+            let label = match (
+                s.name
+                    .as_deref(),
+                s.description
+                    .as_deref(),
+            ) {
                 (Some(n), Some(d)) if !d.is_empty() => format!("{}\n{}", n, d),
                 (Some(n), _) => n.to_string(),
                 (None, Some(d)) => d.to_string(),
@@ -1095,16 +1288,26 @@ async fn stremio_streams(
             Some(crate::stream::StreamInfo {
                 descriptor,
                 name: Some(label),
-                description: s.description.clone(),
+                description: s
+                    .description
+                    .clone(),
                 filename: s
                     .behavior_hints
                     .as_ref()
-                    .and_then(|bh| bh.filename.clone())
-                    .or_else(|| s.filename.clone()),
+                    .and_then(|bh| {
+                        bh.filename
+                            .clone()
+                    })
+                    .or_else(|| {
+                        s.filename
+                            .clone()
+                    }),
                 seeders: s.seeders,
                 size: s.size,
                 duration: s.duration,
-                subtitles: s.subtitles.clone(),
+                subtitles: s
+                    .subtitles
+                    .clone(),
                 probe_data: None,
                 ..Default::default()
             })

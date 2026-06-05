@@ -50,7 +50,10 @@ impl TaskTrigger {
         )
         .bind(&self.id)
         .bind(&self.task_id)
-        .bind(self.kind.to_string())
+        .bind(
+            self.kind
+                .to_string(),
+        )
         .bind(self.time_limit_hours)
         .bind(&self.cron)
         .execute(db)

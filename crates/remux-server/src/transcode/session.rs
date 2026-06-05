@@ -126,11 +126,13 @@ impl TranscodeSession {
     }
 
     pub fn master_playlist_path(&self) -> PathBuf {
-        self.output_dir.join("master.m3u8")
+        self.output_dir
+            .join("master.m3u8")
     }
 
     pub fn variant_playlist_path(&self) -> PathBuf {
-        self.output_dir.join("main.m3u8")
+        self.output_dir
+            .join("main.m3u8")
     }
 
     /// Returns true if this session should use fragmented MP4 (fMP4) segments
@@ -138,30 +140,35 @@ impl TranscodeSession {
     pub fn use_fmp4(&self) -> bool {
         self.video_codec == "copy"
             && matches!(
-                self.source_video_codec.as_deref(),
+                self.source_video_codec
+                    .as_deref(),
                 Some("hevc") | Some("h265") | Some("hvc1") | Some("hev1")
             )
     }
 
     pub fn segment_path(&self, segment_id: &str) -> PathBuf {
         let ext = if self.use_fmp4() { "m4s" } else { "ts" };
-        self.output_dir.join(format!("{}.{}", segment_id, ext))
+        self.output_dir
+            .join(format!("{}.{}", segment_id, ext))
     }
 
     /// Path of the fMP4 initialization segment written by ffmpeg.
     pub fn init_segment_path(&self) -> PathBuf {
-        self.output_dir.join("init.mp4")
+        self.output_dir
+            .join("init.mp4")
     }
 
     /// Generate a Jellyfin-compatible transcoding URL
     pub fn transcoding_url(&self) -> String {
         format!(
             "/videos/{}/master.m3u8?PlaySessionId={}&VideoCodec={}&AudioCodec=aac&SegmentContainer=ts&SegmentLength={}&MediaSourceId={}",
-            self.item_id.as_simple(),
+            self.item_id
+                .as_simple(),
             self.id,
             self.video_codec,
             self.segment_length,
-            self.media_source_id.as_simple(),
+            self.media_source_id
+                .as_simple(),
         )
     }
 }

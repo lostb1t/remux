@@ -33,8 +33,11 @@ pub async fn music_search(
     _session: auth::AuthSession,
     Query(q): Query<MusicSearchQuery>,
 ) -> Result<impl IntoResponse> {
-    let term = q.q.unwrap_or_default();
-    let limit = q.limit.unwrap_or(20);
+    let term =
+        q.q.unwrap_or_default();
+    let limit = q
+        .limit
+        .unwrap_or(20);
 
     if term.is_empty() {
         return Ok(Json(MusicSearchResult {
@@ -81,7 +84,10 @@ pub async fn insert_track(
     _session: auth::AuthSession,
     Json(body): Json<InsertTrackBody>,
 ) -> Result<impl IntoResponse> {
-    let media_id = body.media_id.trim().to_owned();
+    let media_id = body
+        .media_id
+        .trim()
+        .to_owned();
 
     // Normalise: if it looks like just an ID (no slashes), build a URL.
     let url = if media_id.starts_with("http://") || media_id.starts_with("https://") {
@@ -95,7 +101,10 @@ pub async fn insert_track(
         // parse ?v= from URL
         url.split("v=")
             .nth(1)
-            .and_then(|s| s.split('&').next())
+            .and_then(|s| {
+                s.split('&')
+                    .next()
+            })
             .unwrap_or(&media_id)
             .to_owned()
     } else {
@@ -106,7 +115,9 @@ pub async fn insert_track(
 
     let mut media = db::Media {
         id: stable_id,
-        title: body.title.unwrap_or_else(|| video_id.clone()),
+        title: body
+            .title
+            .unwrap_or_else(|| video_id.clone()),
         kind: db::MediaKind::Track,
         stream_info: Some(crate::stream::StreamInfo {
             descriptor: crate::stream::StreamDescriptor::http(url.clone()),
@@ -120,9 +131,13 @@ pub async fn insert_track(
     };
 
     // Enrich with yt-dlp metadata (title, thumbnail, duration, description).
-    let meta_config = crate::db::Settings::get_config(&state.ctx.db)
-        .await
-        .unwrap_or_default();
+    let meta_config = crate::db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .unwrap_or_default();
     if let Err(e) = state
         .ctx
         .addons
@@ -132,7 +147,13 @@ pub async fn insert_track(
         tracing::warn!(id = %media.id, error = %e, "yt-dlp metadata enrichment failed during track insert");
     }
 
-    db::Media::upsert(&state.ctx.db, &[media.clone()]).await?;
+    db::Media::upsert(
+        &state
+            .ctx
+            .db,
+        &[media.clone()],
+    )
+    .await?;
 
     Ok(Json(api::models::db_media_to_item(media)))
 }

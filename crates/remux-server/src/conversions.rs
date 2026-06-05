@@ -14,10 +14,19 @@ use std::convert::{TryFrom, TryInto};
 fn infer_container_from_url(url: &str) -> Option<String> {
     let path = url::Url::parse(url)
         .ok()
-        .map(|u| u.path().to_string())
+        .map(|u| {
+            u.path()
+                .to_string()
+        })
         .unwrap_or_else(|| url.to_string());
-    let filename = path.rsplit('/').next().unwrap_or(path.as_str());
-    let ext = filename.rsplit('.').next()?.to_ascii_lowercase();
+    let filename = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(path.as_str());
+    let ext = filename
+        .rsplit('.')
+        .next()?
+        .to_ascii_lowercase();
     match ext.as_str() {
         "matroska" | "mkv" => Some("mkv".to_string()),
         "mp4" | "m4v" | "mov" => Some("mp4".to_string()),
@@ -81,7 +90,9 @@ fn fallback_media_streams(source: &db::Media) -> Vec<api::MediaStream> {
         return Vec::new();
     }
 
-    let text = source.title.to_ascii_lowercase();
+    let text = source
+        .title
+        .to_ascii_lowercase();
     let video_codec = infer_video_codec(&text);
     let audio_codec = infer_audio_codec(&text);
     let channels = infer_audio_channels(&text);
@@ -128,7 +139,10 @@ impl From<db::Media> for api::MediaSourceInfo {
         } else {
             api::MediaProtocol::File
         };
-        let descriptor = source.stream_info.as_ref().map(|si| &si.descriptor);
+        let descriptor = source
+            .stream_info
+            .as_ref()
+            .map(|si| &si.descriptor);
         let container = descriptor
             .and_then(|d| d.as_http_url())
             .and_then(infer_container_from_url);
@@ -140,11 +154,16 @@ impl From<db::Media> for api::MediaSourceInfo {
                 .and_then(|si| serde_json::to_value(si).ok()),
         });
 
-        let url_path = descriptor.and_then(|d| d.as_http_url().map(str::to_owned));
+        let url_path = descriptor.and_then(|d| {
+            d.as_http_url()
+                .map(str::to_owned)
+        });
         let is_stub = url_path.is_none();
         let path = url_path.or_else(|| Some(format!("remux://{}", source.id)));
 
-        let client_id = source.group_id.unwrap_or(source.id);
+        let client_id = source
+            .group_id
+            .unwrap_or(source.id);
         api::MediaSourceInfo {
             id: client_id,
             e_tag: client_id,
@@ -154,7 +173,11 @@ impl From<db::Media> for api::MediaSourceInfo {
             supports_direct_stream: true,
             supports_direct_play: true,
             is_remote,
-            name: Some(source.title.clone()),
+            name: Some(
+                source
+                    .title
+                    .clone(),
+            ),
             container,
             remux,
             has_segments: !is_stub,
@@ -195,11 +218,19 @@ impl TryFrom<stremio::Episode> for db::Media {
     type Error = anyhow::Error;
     fn try_from(meta: stremio::Episode) -> Result<db::Media> {
         let mut media = db::Media {
-            title: meta.get_name().unwrap_or_default(),
+            title: meta
+                .get_name()
+                .unwrap_or_default(),
             kind: db::MediaKind::Episode,
-            released_at: meta.released.map(|x| x.naive_utc()),
-            runtime: meta.runtime.map(|d| d.num_seconds()),
-            description: meta.overview.or(meta.description),
+            released_at: meta
+                .released
+                .map(|x| x.naive_utc()),
+            runtime: meta
+                .runtime
+                .map(|d| d.num_seconds()),
+            description: meta
+                .overview
+                .or(meta.description),
             rating_audience: meta.rating,
             ..Default::default()
         };
@@ -211,7 +242,9 @@ impl TryFrom<stremio::Episode> for db::Media {
 }
 
 pub fn subtitle_to_media_stream(sub: stremio::Subtitle) -> api::MediaStream {
-    let lc = sub.url.to_ascii_lowercase();
+    let lc = sub
+        .url
+        .to_ascii_lowercase();
     let codec = if lc.ends_with(".vtt") {
         "webvtt"
     } else if lc.ends_with(".srt") {
@@ -223,9 +256,14 @@ pub fn subtitle_to_media_stream(sub: stremio::Subtitle) -> api::MediaStream {
         index: 0,
         type_: Some(api::MediaStreamType::Subtitle),
         codec: Some(codec.to_string()),
-        language: sub.lang.clone(),
+        language: sub
+            .lang
+            .clone(),
         display_title: Some({
-            let lang = sub.lang.clone().unwrap_or_else(|| "und".into());
+            let lang = sub
+                .lang
+                .clone()
+                .unwrap_or_else(|| "und".into());
             format!("{} - {} - External", lang, codec.to_uppercase())
         }),
         is_default: Some(false),
@@ -234,7 +272,10 @@ pub fn subtitle_to_media_stream(sub: stremio::Subtitle) -> api::MediaStream {
         is_text_subtitle_stream: true,
         supports_external_stream: true,
         delivery_method: Some(api::SubtitleDeliveryMethod::External),
-        delivery_url: Some(sub.url.clone()),
+        delivery_url: Some(
+            sub.url
+                .clone(),
+        ),
         is_external_url: Some(true),
         ..Default::default()
     }
@@ -255,7 +296,9 @@ pub fn stream_into_media_source_info(
         supports_direct_stream: true,
         supports_direct_play: true,
         is_remote: false,
-        name: stream.name.clone(),
+        name: stream
+            .name
+            .clone(),
         ..Default::default()
     }
 }

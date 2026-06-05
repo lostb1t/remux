@@ -106,7 +106,9 @@ fn build_query(media: &db::Media) -> String {
         .and_then(|d| d.strip_prefix("by "))
         .unwrap_or("");
     if artist.is_empty() {
-        media.title.clone()
+        media
+            .title
+            .clone()
     } else {
         format!("{} {}", media.title, artist)
     }
@@ -125,13 +127,21 @@ async fn try_instance(
         .send()
         .await?;
 
-    if !resp.status().is_success() {
+    if !resp
+        .status()
+        .is_success()
+    {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_default();
         anyhow::bail!("search HTTP {} — {}", status, body);
     }
 
-    let body: serde_json::Value = resp.json().await?;
+    let body: serde_json::Value = resp
+        .json()
+        .await?;
     let track_id = body
         .pointer("/data/items/0/id")
         .or_else(|| body.pointer("/data/tracks/items/0/id"))
@@ -160,18 +170,28 @@ async fn try_instance(
         .send()
         .await?;
 
-    if !resp.status().is_success() {
+    if !resp
+        .status()
+        .is_success()
+    {
         anyhow::bail!("manifest HTTP {}", resp.status());
     }
 
-    let track = resp.json::<TrackOuter>().await?.into_inner();
+    let track = resp
+        .json::<TrackOuter>()
+        .await?
+        .into_inner();
     let manifest_b64 = match track.manifest {
         Some(m) => m,
         None => return Ok(None),
     };
 
-    if track.manifest_mime_type.contains("dash")
-        || manifest_b64.trim_start().starts_with('<')
+    if track
+        .manifest_mime_type
+        .contains("dash")
+        || manifest_b64
+            .trim_start()
+            .starts_with('<')
     {
         tracing::debug!(track_id, "squid: DASH manifest, skipping");
         return Ok(None);
@@ -181,14 +201,24 @@ async fn try_instance(
         base64::engine::general_purpose::STANDARD.decode(manifest_b64.trim())?;
     let manifest: DecodedManifest = serde_json::from_slice(&decoded)?;
 
-    let url = match manifest.urls.into_iter().next() {
+    let url = match manifest
+        .urls
+        .into_iter()
+        .next()
+    {
         Some(u) => u,
         None => return Ok(None),
     };
 
-    let label = if manifest.mime_type.contains("flac") {
+    let label = if manifest
+        .mime_type
+        .contains("flac")
+    {
         "FLAC"
-    } else if manifest.mime_type.contains("mp4") {
+    } else if manifest
+        .mime_type
+        .contains("mp4")
+    {
         "AAC"
     } else {
         "Audio"
@@ -209,7 +239,9 @@ async fn try_instance(
         name: Some(label.to_string()),
         probe_data: Some(api::MediaSourceInfo {
             container: mime_to_container(&manifest.mime_type),
-            run_time_ticks: parent.runtime.map(|r| r * 10_000_000),
+            run_time_ticks: parent
+                .runtime
+                .map(|r| r * 10_000_000),
             media_streams: vec![api::MediaStream {
                 index: 0,
                 type_: Some(api::MediaStreamType::Audio),
@@ -297,13 +329,17 @@ impl AddonKind for SquidAddon {
         for base in INSTANCES {
             let tx = tx.clone();
             let query = query.clone();
-            let client = self.client.clone();
+            let client = self
+                .client
+                .clone();
             let parent = media.clone();
             let base = base.to_string();
             handles.push(tokio::spawn(async move {
                 match try_instance(&client, &base, &query, &parent).await {
                     Ok(Some(source)) => {
-                        let _ = tx.send((source, base)).await;
+                        let _ = tx
+                            .send((source, base))
+                            .await;
                     }
                     Ok(None) => {}
                     Err(e) => {
@@ -314,7 +350,10 @@ impl AddonKind for SquidAddon {
         }
         drop(tx);
 
-        let result = if let Some((source, base)) = rx.recv().await {
+        let result = if let Some((source, base)) = rx
+            .recv()
+            .await
+        {
             tracing::debug!(query, base, label = ?source.name, "squid: stream resolved");
             Ok(vec![source])
         } else {

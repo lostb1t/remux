@@ -124,8 +124,12 @@ impl ClientError {
 
 fn try_extract_error_message(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    let title = v.get("title")?.as_str()?;
-    let detail = v.get("detail").and_then(|d| d.as_str());
+    let title = v
+        .get("title")?
+        .as_str()?;
+    let detail = v
+        .get("detail")
+        .and_then(|d| d.as_str());
     Some(match detail {
         Some(d) if !d.is_empty() => format!("{title}: {d}"),
         _ => title.to_string(),
@@ -220,15 +224,25 @@ impl<A: Auth + Clone> RestClient<A> {
         endpoint: EP,
     ) -> Result<EP::Output, ClientError> {
         let path = endpoint.path();
-        let mut url = self.base.join(path.trim_matches('/')).unwrap();
+        let mut url = self
+            .base
+            .join(path.trim_matches('/'))
+            .unwrap();
         let query = endpoint.query();
         if !query.is_empty() {
             url.query_pairs_mut()
-                .extend_pairs(query.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+                .extend_pairs(
+                    query
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str())),
+                );
         }
         let cache_key = hash_key(&url.to_string());
 
-        if endpoint.cache_ttl().is_some() {
+        if endpoint
+            .cache_ttl()
+            .is_some()
+        {
             if let Some(cached) = HTTP_CACHE.get::<EP::Output>(&cache_key) {
                 return Ok(cached);
             }
@@ -238,7 +252,9 @@ impl<A: Auth + Clone> RestClient<A> {
             .http
             .request(endpoint.method(), url.clone())
             .headers(endpoint.headers());
-        req = self.auth.apply(req);
+        req = self
+            .auth
+            .apply(req);
         req = match endpoint.body() {
             Body::Empty => req,
             Body::Json(v) => {
@@ -265,9 +281,16 @@ impl<A: Auth + Clone> RestClient<A> {
             Body::Text(s) => req.body(s),
             Body::Bytes(b) => req.body(b),
         };
-        let resp = req.send().await?;
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
+        let resp = req
+            .send()
+            .await?;
+        let status = resp
+            .status()
+            .as_u16();
+        let text = resp
+            .text()
+            .await
+            .unwrap_or_default();
         match status {
             401 => Err(ClientError::Unauthorized),
             s if (200..300).contains(&s) => {
@@ -288,7 +311,9 @@ impl<A: Auth + Clone> RestClient<A> {
                         HTTP_CACHE.save_with_weight(
                             cache_key,
                             value.clone(),
-                            text.len().min(u32::MAX as usize) as u32,
+                            text.len()
+                                .min(u32::MAX as usize)
+                                as u32,
                             ttl,
                         );
                     }
@@ -321,23 +346,28 @@ impl<EP: Endpoint> Endpoint for Cached<EP> {
     type Output = EP::Output;
 
     fn method(&self) -> Method {
-        self.endpoint.method()
+        self.endpoint
+            .method()
     }
 
     fn path(&self) -> String {
-        self.endpoint.path()
+        self.endpoint
+            .path()
     }
 
     fn query(&self) -> Vec<(String, String)> {
-        self.endpoint.query()
+        self.endpoint
+            .query()
     }
 
     fn headers(&self) -> HeaderMap {
-        self.endpoint.headers()
+        self.endpoint
+            .headers()
     }
 
     fn body(&self) -> Body {
-        self.endpoint.body()
+        self.endpoint
+            .body()
     }
 
     fn cache_ttl(&self) -> Option<Duration> {
@@ -368,7 +398,9 @@ impl<T> iter::FromIterator<T> for CommaSeparatedList<T> {
         I: IntoIterator<Item = T>,
     {
         Self {
-            data: iter.into_iter().collect(),
+            data: iter
+                .into_iter()
+                .collect(),
         }
     }
 }
@@ -392,7 +424,13 @@ where
     T: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.data.iter().format(","))
+        write!(
+            f,
+            "{}",
+            self.data
+                .iter()
+                .format(",")
+        )
     }
 }
 
@@ -405,7 +443,11 @@ where
         let data = s
             .split(',')
             .filter(|s| !s.is_empty())
-            .filter_map(|s| s.trim().parse::<T>().ok())
+            .filter_map(|s| {
+                s.trim()
+                    .parse::<T>()
+                    .ok()
+            })
             .collect();
         Ok(Self { data })
     }
@@ -427,10 +469,15 @@ where
     let value = Option::<StringOrNumber>::deserialize(deserializer)?;
     match value {
         Some(StringOrNumber::String(s)) => {
-            if s.trim().is_empty() || s.to_lowercase() == "n/a" {
+            if s.trim()
+                .is_empty()
+                || s.to_lowercase() == "n/a"
+            {
                 Ok(None)
             } else {
-                s.parse::<f64>().map(Some).map_err(serde::de::Error::custom)
+                s.parse::<f64>()
+                    .map(Some)
+                    .map_err(serde::de::Error::custom)
             }
         }
         Some(StringOrNumber::Number(n)) => Ok(Some(n)),
