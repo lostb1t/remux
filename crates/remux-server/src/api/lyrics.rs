@@ -1,15 +1,14 @@
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use axum_anyhow::ApiResult as Result;
 use remux_macros::get;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::addons::LyricSearchRequest;
-use crate::db;
-use crate::db::auth;
+use crate::{AppState, addons::LyricSearchRequest, db, db::auth};
 
 /// `GET /Audio/{item_id}/Lyrics` — fetch the best lyric match for a track.
 #[get("/audio/{item_id}/lyrics")]

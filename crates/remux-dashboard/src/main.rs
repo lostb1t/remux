@@ -1,33 +1,36 @@
 use dioxus::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
-use remux_sdks::remux::{
-    AddonCatalogDto, AddonDto, AddonMetadata, AddonOption, AddonOptionType,
-    AddonPresetRef, AdminSetPassword, AuthenticateUserByName, AuthenticationInfo,
-    BaseItemDto, BrandingOptions, BulkChannelRequest, BulkChannels, ChannelEditorItem,
-    CollectionFilter, CountryInfo, CreateAddon, CreateAddonRequest, CreateApiKey,
-    CreateStreamGroup, CreateStreamGroupRequest, CreateUser, CreateVirtualFolder,
-    CreateVirtualFolderPayload, DeleteAddon, DeleteApiKey, DeleteStreamGroup,
-    DeleteUser, DeleteVirtualFolder, EncodingOptions, FilterMatchMode, FilterRule,
-    GetAddonCatalogs, GetApiKeys, GetBrandingConfiguration,
-    GetCertificationSuggestions, GetCountries, GetEncodingConfiguration,
-    GetIptvChannelCountries, GetIptvChannelGroups, GetIptvChannels, GetItemCounts,
-    GetItems, GetLocalSuggestions, GetParentalRatings, GetScheduledTasks, GetSessions,
-    GetStartupConfiguration, GetStreamGroupPreview, GetSystemConfiguration,
-    GetTagSuggestions, GetUsers, HardwareAccelerationType, ItemCounts, ItemSortBy,
-    JellyfinAuth, ListAddonKinds, ListAddons, ListStreamGroups, NumericOp,
-    ParentalRating, PatchChannel, PatchChannelRequest, PatchItem, PatchItemPayload,
-    PostStartupComplete, PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
-    ServerConfiguration, SessionInfoDto, SetOp, SortOrder, StartTask,
-    StartupConfiguration, StartupUser, StopTask, StreamCodec, StreamFilter,
-    StreamGroupDto, StreamGroupPreviewDto, StreamQuality, StreamResolution, StreamRule,
-    TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, UpdateAddon,
-    UpdateAddonCatalogRequest, UpdateAddonCatalogs, UpdateAddonRequest,
-    UpdateBrandingConfiguration, UpdateEncodingConfiguration, UpdateStreamGroup,
-    UpdateStreamGroupRequest, UpdateSystemConfiguration, UpdateTaskTriggers,
-    UpdateUser, UpdateUserPolicy, UserDto, Username,
+use remux_sdks::{
+    remux::{
+        AddonCatalogDto, AddonDto, AddonMetadata, AddonOption, AddonOptionType,
+        AddonPresetRef, AdminSetPassword, AuthenticateUserByName, AuthenticationInfo,
+        BaseItemDto, BrandingOptions, BulkChannelRequest, BulkChannels,
+        ChannelEditorItem, CollectionFilter, CountryInfo, CreateAddon,
+        CreateAddonRequest, CreateApiKey, CreateStreamGroup, CreateStreamGroupRequest,
+        CreateUser, CreateVirtualFolder, CreateVirtualFolderPayload, DeleteAddon,
+        DeleteApiKey, DeleteStreamGroup, DeleteUser, DeleteVirtualFolder,
+        EncodingOptions, FilterMatchMode, FilterRule, GetAddonCatalogs, GetApiKeys,
+        GetBrandingConfiguration, GetCertificationSuggestions, GetCountries,
+        GetEncodingConfiguration, GetIptvChannelCountries, GetIptvChannelGroups,
+        GetIptvChannels, GetItemCounts, GetItems, GetLocalSuggestions,
+        GetParentalRatings, GetScheduledTasks, GetSessions, GetStartupConfiguration,
+        GetStreamGroupPreview, GetSystemConfiguration, GetTagSuggestions, GetUsers,
+        HardwareAccelerationType, ItemCounts, ItemSortBy, JellyfinAuth, ListAddonKinds,
+        ListAddons, ListStreamGroups, NumericOp, ParentalRating, PatchChannel,
+        PatchChannelRequest, PatchItem, PatchItemPayload, PostStartupComplete,
+        PostStartupConfiguration, PostStartupUser, PublicSystemInfo,
+        ServerConfiguration, SessionInfoDto, SetOp, SortOrder, StartTask,
+        StartupConfiguration, StartupUser, StopTask, StreamCodec, StreamFilter,
+        StreamGroupDto, StreamGroupPreviewDto, StreamQuality, StreamResolution,
+        StreamRule, TaskInfo, TaskTriggerInfo, TaskTriggerInfoType, UpdateAddon,
+        UpdateAddonCatalogRequest, UpdateAddonCatalogs, UpdateAddonRequest,
+        UpdateBrandingConfiguration, UpdateEncodingConfiguration, UpdateStreamGroup,
+        UpdateStreamGroupRequest, UpdateSystemConfiguration, UpdateTaskTriggers,
+        UpdateUser, UpdateUserPolicy, UserDto, Username,
+    },
+    stremio::ResourceType,
+    ClientError, RestClient,
 };
-use remux_sdks::stremio::ResourceType;
-use remux_sdks::{ClientError, RestClient};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

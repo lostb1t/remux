@@ -1,12 +1,10 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use librqbit::api::{Api, TorrentIdOrHash};
-use librqbit::http_api::HttpApi;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions,
+    api::{Api, TorrentIdOrHash},
+    http_api::HttpApi,
 };
 use tracing::debug;
 

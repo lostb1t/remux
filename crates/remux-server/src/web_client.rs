@@ -7,8 +7,7 @@ use std::{
 
 use axum::{body::Body, response::Response};
 use http::{Request, StatusCode, header};
-use tower::util::BoxCloneSyncService;
-use tower::{Layer, Service};
+use tower::{Layer, Service, util::BoxCloneSyncService};
 use tower_http::services::ServeDir;
 
 #[cfg(feature = "desktop")]

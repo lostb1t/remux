@@ -1,12 +1,14 @@
-use crate::api;
-use crate::common;
-use crate::common::ToRunTimeTicks;
-use crate::common::get_uuid;
-use crate::db;
-use crate::sdks::stremio;
+use crate::{
+    api, common,
+    common::{ToRunTimeTicks, get_uuid},
+    db,
+    sdks::stremio,
+};
 use anyhow::Result;
-use std::collections::HashMap;
-use std::convert::{TryFrom, TryInto};
+use std::{
+    collections::HashMap,
+    convert::{TryFrom, TryInto},
+};
 
 // Heuristic metadata fallback for remote source URLs when ffprobe metadata is
 // unavailable. This keeps clients functional (stream selection/transcode

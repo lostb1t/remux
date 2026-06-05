@@ -1,9 +1,7 @@
-use remux_sdks::RestClient;
-use remux_sdks::deezer as dz;
+use remux_sdks::{RestClient, deezer as dz};
 use tracing::warn;
 
-use crate::AppContext;
-use crate::db;
+use crate::{AppContext, db};
 
 pub(crate) async fn resolve_music_deezer(
     media: &mut db::Media,

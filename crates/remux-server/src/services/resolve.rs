@@ -1,14 +1,12 @@
-use axum::extract::FromRequestParts;
-use axum::extract::Path;
-use axum::http::request::Parts;
+use axum::{
+    extract::{FromRequestParts, Path},
+    http::request::Parts,
+};
 use axum_anyhow::{ApiError, ApiResult as Result};
 use http::StatusCode;
 use uuid::Uuid;
 
-use crate::AppContext;
-use crate::AppState;
-use crate::db;
-use crate::keyed_lock::KeyedLock;
+use crate::{AppContext, AppState, db, keyed_lock::KeyedLock};
 
 /// Resolves a cached search result from the store into a persisted `db::Media`.
 ///
@@ -277,8 +275,10 @@ impl FromRequestParts<AppState> for ResolvedItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tokio::sync::Barrier;
 
     fn make_media() -> db::Media {

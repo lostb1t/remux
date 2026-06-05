@@ -4,9 +4,7 @@ use chrono::Utc;
 use futures_util::TryStreamExt;
 use opendal::EntryMode;
 use regex::Regex;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{pin::Pin, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 use futures::Stream;
@@ -18,9 +16,7 @@ use super::{
     AddonPresetRegistration, AddonSelectOption, CatalogInfo, MediaKind,
     ProgressReporter, ResourceType,
 };
-use crate::addons::Addon;
-use crate::sdks::CachedEndpoint;
-use crate::{AppContext, common, db, sdks};
+use crate::{AppContext, addons::Addon, common, db, sdks, sdks::CachedEndpoint};
 
 // ---------------------------------------------------------------------------
 // Shared option helper

@@ -1,16 +1,16 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::catalog_import_shared::{
-    catalog_membership, import_catalog_items, remove_stale_catalog_memberships,
+use super::{
+    ProgressReporter, Task, TaskService,
+    catalog_import_shared::{
+        catalog_membership, import_catalog_items, remove_stale_catalog_memberships,
+    },
 };
-use super::{ProgressReporter, Task, TaskService};
-use crate::addons::make_media_id;
-use crate::{AppContext, db};
+use crate::{AppContext, addons::make_media_id, db};
 
 pub struct RefreshLibraryTask;
 

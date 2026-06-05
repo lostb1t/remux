@@ -1,16 +1,11 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::common;
-use crate::db;
-use crate::db::auth;
-use crate::transcode::session::TranscodeSession;
+use crate::{common, db, db::auth, transcode::session::TranscodeSession};
 use remux_sdks::remux::{PlayMethod, PlaybackInfo, QueueItem};
 
 #[derive(Clone)]

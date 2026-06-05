@@ -1,5 +1,4 @@
-use std::fmt;
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use serde::{Deserialize, Serialize};
 

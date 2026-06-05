@@ -1,17 +1,18 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use chrono::NaiveDate;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, info, warn};
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::{AppContext, db};
-use remux_sdks::remux::{
-    GetJellyfinItemsByIds, GetJellyfinUserItems, GetJellyfinUsers, JellyfinItem,
-    JellyfinUserDto,
+use remux_sdks::{
+    JellyfinApiKeyAuth, RestClient,
+    remux::{
+        GetJellyfinItemsByIds, GetJellyfinUserItems, GetJellyfinUsers, JellyfinItem,
+        JellyfinUserDto,
+    },
 };
-use remux_sdks::{JellyfinApiKeyAuth, RestClient};
 
 pub struct JellyfinImportTask;
 

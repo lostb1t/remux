@@ -4,26 +4,24 @@ use async_compression::tokio::bufread::GzipDecoder;
 //use futures::Stream;
 //use futures::StreamExt;
 //use futures_util::TryStreamExt;
-use tokio_stream::Stream;
-use tokio_stream::StreamExt;
+use tokio_stream::{Stream, StreamExt};
 // use tokio_stream::TryStreamExt;
 //use tokio_stream::TryStreamExt;
 use chrono::{DateTime, NaiveDate, Utc};
-use csv_async::AsyncDeserializer;
-use csv_async::AsyncReaderBuilder;
+use csv_async::{AsyncDeserializer, AsyncReaderBuilder};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
-use std::path::Path;
-use std::pin::Pin;
+use std::{path::Path, pin::Pin};
 //use std::task::{Context, Poll};
 use tempfile;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::{
     fs::File as TokioFile,
-    io::{AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader},
 };
-use tokio_util::compat::TokioAsyncReadCompatExt;
-use tokio_util::io::{ReaderStream, StreamReader};
+use tokio_util::{
+    compat::TokioAsyncReadCompatExt,
+    io::{ReaderStream, StreamReader},
+};
 use tracing;
 //use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 use crate::errors::LogErr;
@@ -35,8 +33,7 @@ use std::{
     time::Duration,
 };
 
-use crate::api;
-use crate::sdks;
+use crate::{api, sdks};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use uuid::Uuid;
 

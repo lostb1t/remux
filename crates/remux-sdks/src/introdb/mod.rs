@@ -1,5 +1,7 @@
-use crate::remux::{MediaSegments, Segment};
-use crate::{CachedEndpoint, ClientError, Endpoint, RestClient};
+use crate::{
+    CachedEndpoint, ClientError, Endpoint, RestClient,
+    remux::{MediaSegments, Segment},
+};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

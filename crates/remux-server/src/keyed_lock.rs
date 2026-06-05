@@ -1,6 +1,8 @@
 use dashmap::DashMap;
-use std::hash::Hash;
-use std::sync::{Arc, OnceLock};
+use std::{
+    hash::Hash,
+    sync::{Arc, OnceLock},
+};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 /// Per-key async mutex. Only one task at a time may hold the lock for a given key.

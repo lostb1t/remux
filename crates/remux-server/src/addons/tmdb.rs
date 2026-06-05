@@ -1,7 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -9,8 +8,10 @@ use super::{
     AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, MediaKind,
     ResourceType,
 };
-use crate::sdks::{CachedEndpoint, ClientError};
-use crate::{AppContext, api, common, db, sdks};
+use crate::{
+    AppContext, api, common, db, sdks,
+    sdks::{CachedEndpoint, ClientError},
+};
 
 pub struct TmdbPreset;
 

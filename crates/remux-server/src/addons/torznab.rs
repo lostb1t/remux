@@ -1,7 +1,6 @@
 use anyhow::{Result, bail};
 use async_trait::async_trait;
-use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::{Reader, events::Event};
 use std::sync::Arc;
 use uuid::Uuid;
 

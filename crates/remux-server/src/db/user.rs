@@ -1,11 +1,11 @@
 use super::{FilterResult, QueryBuilderExt};
-use crate::api::{ScrollDirection, SortOrder};
-use crate::common::get_uuid;
-use crate::sdks;
-use crate::{OptionExt, ResultExt};
-use anyhow::Context;
-use anyhow::Result;
-use anyhow::anyhow;
+use crate::{
+    OptionExt, ResultExt,
+    api::{ScrollDirection, SortOrder},
+    common::get_uuid,
+    sdks,
+};
+use anyhow::{Context, Result, anyhow};
 use argon2::{
     Argon2,
     password_hash::{
@@ -13,52 +13,35 @@ use argon2::{
     },
 };
 use async_trait::async_trait;
-use axum::ServiceExt;
-use axum::body::Body;
-use axum::extract::FromRequestParts;
-use axum::extract::Request;
-use axum::http::request::Parts;
-use axum::middleware;
-use axum::middleware::Next;
-use axum::response::Html;
-use axum::response::IntoResponse;
-use axum::response::Response;
 use axum::{
-    Json, Router,
-    http::StatusCode,
-    response::Redirect,
+    Json, Router, ServiceExt,
+    body::Body,
+    extract::{FromRequestParts, Request},
+    http::{StatusCode, request::Parts},
+    middleware,
+    middleware::Next,
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
-use chrono::prelude::*;
-use chrono::{Duration, Utc};
-use config;
-use config::Config;
+use chrono::{Duration, Utc, prelude::*};
+use config::{self, Config};
 use default2;
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
-use reqwest;
-use reqwest::header::LOCATION;
+use reqwest::{self, header::LOCATION};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::Row;
-use sqlx::SqlitePool;
-use std;
-use std::collections::HashMap;
-use std::env;
-use std::fs;
-use std::path::Path;
-use std::sync::Arc;
+use sqlx::{Row, SqlitePool};
+use std::{self, collections::HashMap, env, fs, path::Path, sync::Arc};
 use timed;
-use tower::Layer;
-use tower::util::MapRequestLayer;
-use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::ServeDir;
-use tracing;
-use tracing::debug;
-use tracing::instrument;
-use tracing::warn;
+use tower::{Layer, util::MapRequestLayer};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    services::ServeDir,
+};
+use tracing::{self, debug, instrument, warn};
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;

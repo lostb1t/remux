@@ -1,7 +1,6 @@
 pub use remux_sdks::remux::*;
 
-use crate::common;
-use crate::db;
+use crate::{common, db};
 use anyhow::Result;
 use chrono::Datelike;
 
@@ -268,8 +267,7 @@ pub fn db_state_to_dto(
 }
 
 pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
-    use crate::common::IntoVec;
-    use crate::common::ToRunTimeTicks;
+    use crate::common::{IntoVec, ToRunTimeTicks};
 
     let type_ = media
         .kind

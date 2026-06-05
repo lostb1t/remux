@@ -4,14 +4,16 @@ use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::stremio::{StremioManifestUrl, parse_manifest_info};
 use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
     AddonPresetRegistration, MediaKind, ResourceType,
+    stremio::{StremioManifestUrl, parse_manifest_info},
 };
-use crate::services::stremio as stremio_service;
-use crate::stream::{StreamDescriptor, StreamInfo};
-use crate::{AppContext, db};
+use crate::{
+    AppContext, db,
+    services::stremio as stremio_service,
+    stream::{StreamDescriptor, StreamInfo},
+};
 
 #[derive(Deserialize)]
 struct EclipseSearchResponse {

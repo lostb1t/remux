@@ -3,8 +3,7 @@ use anyhow::{Result, anyhow};
 use isolang::Language;
 use remux_sdks::remux::{MediaSegmentType, MediaSegments, Segment};
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 fn ffprobe_bin() -> String {
     std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".into())

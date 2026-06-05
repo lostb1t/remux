@@ -4,40 +4,36 @@ use axum::Json;
 fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
 }
-use axum::body::Body;
-use axum::extract::{Path, State};
-use axum::response::IntoResponse;
+use axum::{
+    body::Body,
+    extract::{Path, State},
+    response::IntoResponse,
+};
 use axum_extra::extract::Query;
 use chrono::Utc;
-use futures_util::StreamExt;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use headers;
-use http::Response;
-use http::StatusCode;
+use http::{Response, StatusCode};
 use remux_macros::{api_query, delete, get, post};
 use serde::Deserialize;
 use serde_json::json;
 use serde_with::{DurationSeconds, serde_as};
-use std::io;
-use std::time::Duration;
+use std::{io, time::Duration};
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error, info, trace};
 use url::Url;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::api::MediaSourceInfoExt;
-use crate::common;
-use crate::db;
-use crate::db::auth;
+use crate::{AppState, api, api::MediaSourceInfoExt, common, db, db::auth};
 
-use crate::profile::DeviceProfileExt;
-use crate::sdks;
-use crate::services::resolve::resolve_item;
-use crate::torrent;
-use crate::transcode::session::{TranscodeSession, TranscodeState};
-use crate::{IntoApiError, OptionExt, ResultExt};
+use crate::{
+    IntoApiError, OptionExt, ResultExt,
+    profile::DeviceProfileExt,
+    sdks,
+    services::resolve::resolve_item,
+    torrent,
+    transcode::session::{TranscodeSession, TranscodeState},
+};
 use axum_anyhow::ApiResult as Result;
 
 /// Some Stremio addons expose `aiostreams` as an internal hostname not
@@ -1383,8 +1379,7 @@ pub async fn report_playback_start(
 
 #[cfg(test)]
 mod tests {
-    use http::StatusCode;
-    use http::header::HeaderValue;
+    use http::{StatusCode, header::HeaderValue};
     use serde_json::json;
 
     use crate::integration_test::{
@@ -2117,8 +2112,10 @@ mod tests {
         let ctx = &guard.0;
         let now = chrono::Utc::now().naive_utc();
 
-        use crate::api::{MediaSourceInfo, MediaStream, MediaStreamType};
-        use crate::db;
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db,
+        };
 
         let make_probe = || MediaSourceInfo {
             container: Some("mp4".to_string()),

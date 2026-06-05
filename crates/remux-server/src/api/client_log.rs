@@ -1,15 +1,11 @@
-use axum::Json;
-use axum::body::Bytes;
-use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::{Json, body::Bytes, extract::State, response::IntoResponse};
 use chrono::Utc;
 use http::StatusCode;
 use remux_macros::post;
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
 
-use crate::AppState;
-use crate::db::auth;
+use crate::{AppState, db::auth};
 use axum_anyhow::ApiResult as Result;
 
 const MAX_DOCUMENT_SIZE: usize = 1_000_000;

@@ -1,14 +1,9 @@
-use axum::Json;
-use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::{Json, extract::State, response::IntoResponse};
 use axum_extra::extract::Query;
 use remux_macros::{api_query, get, post};
 use serde::{Deserialize, Serialize};
 
-use crate::AppState;
-use crate::api;
-use crate::db;
-use crate::db::auth;
+use crate::{AppState, api, db, db::auth};
 use axum_anyhow::ApiResult as Result;
 
 #[api_query]

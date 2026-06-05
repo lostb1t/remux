@@ -2,8 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 #[cfg(unix)]
 use libc;
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use tracing::info;
 
 use super::{ProgressReporter, Task, TaskService};

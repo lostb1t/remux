@@ -1,12 +1,8 @@
-use axum::Json;
-use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::{Json, extract::State, response::IntoResponse};
 use http::StatusCode;
 use remux_macros::{get, post};
 
-use crate::AppState;
-use crate::api;
-use crate::{IntoApiError, ResultExt};
+use crate::{AppState, IntoApiError, ResultExt, api};
 use axum_anyhow::ApiResult as Result;
 
 async fn require_wizard_incomplete(state: &AppState) -> Result<()> {

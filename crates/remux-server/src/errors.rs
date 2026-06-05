@@ -1,8 +1,7 @@
 use anyhow::{Result, anyhow};
-use axum;
 use axum::{
-    extract::FromRequest,
-    extract::rejection::JsonRejection,
+    self,
+    extract::{FromRequest, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
 };

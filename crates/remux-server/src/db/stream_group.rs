@@ -8,8 +8,10 @@ use sqlx::SqlitePool;
 use std::collections::HashSet;
 use uuid::Uuid;
 
-use crate::db::{Media, Settings, StreamGroupData};
-use crate::stream::StreamInfo;
+use crate::{
+    db::{Media, Settings, StreamGroupData},
+    stream::StreamInfo,
+};
 
 const LEGACY_SETTINGS_KEY: &str = "remux:stream_groups";
 

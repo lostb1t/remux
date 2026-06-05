@@ -1,12 +1,12 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sqlx::ConnectOptions as _;
-use sqlx::SqlitePool;
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+use sqlx::{
+    ConnectOptions as _, SqlitePool,
+    sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+    },
 };
-use std::str::FromStr;
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 pub mod api_key;
 pub mod auth;
 pub mod image;

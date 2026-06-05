@@ -1,6 +1,8 @@
-use axum::Json;
-use axum::extract::{Path, Query, State};
-use axum::response::IntoResponse;
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    response::IntoResponse,
+};
 use http::StatusCode;
 use remux_macros::{delete, get, post, put};
 use remux_sdks::remux::StreamFilter;
@@ -8,8 +10,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::db::{ExternalIds, Media, MediaKind, StreamGroup, auth};
+use crate::{
+    AppState,
+    db::{ExternalIds, Media, MediaKind, StreamGroup, auth},
+};
 use axum_anyhow::ApiResult as Result;
 
 #[derive(Debug, Serialize)]

@@ -3,32 +3,21 @@
 use axum::response::Html;
 use reqwest;
 
-use anyhow::Context;
-use anyhow::Result;
-use anyhow::anyhow;
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use axum::ServiceExt;
-use axum::body::Body;
-use axum::extract::FromRequestParts;
-use axum::extract::Request;
-use axum::http::request::Parts;
-use axum::middleware;
-use axum::middleware::Next;
-use axum::response::IntoResponse;
-use axum::response::Response;
 use axum::{
-    Json, Router,
-    http::StatusCode,
-    response::Redirect,
+    Json, Router, ServiceExt,
+    body::Body,
+    extract::{FromRequestParts, Request},
+    http::{StatusCode, request::Parts},
+    middleware,
+    middleware::Next,
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
-use axum_anyhow::ApiError;
-use axum_anyhow::ApiResult;
-use axum_anyhow::on_error;
-use axum_anyhow::set_expose_errors;
+use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
 pub mod result_ext;
-use chrono::prelude::*;
-use chrono::{Duration, Utc};
+use chrono::{Duration, Utc, prelude::*};
 use config;
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
@@ -37,28 +26,19 @@ use itertools::Itertools;
 use remux_utils::Store;
 use reqwest::header::LOCATION;
 pub use result_ext::{IntoApiError, OptionExt, ResultExt};
-use serde::Serializer;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::json;
-use std;
-use std::collections::HashMap;
-use std::env;
-use std::fs;
-use std::path::Path;
-use std::sync::Arc;
+use std::{self, collections::HashMap, env, fs, path::Path, sync::Arc};
 use timed;
-use tower::Layer;
-use tower::util::MapRequestLayer;
-use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::{ServeDir, ServeFile};
-use tracing;
-use tracing::debug;
-use tracing::info;
-use tracing::instrument;
-use tracing::warn;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
+use tower::{Layer, util::MapRequestLayer};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    services::{ServeDir, ServeFile},
+};
+use tracing::{self, debug, info, instrument, warn};
+use tracing_subscriber::{
+    EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+};
 use url::Url;
 use uuid::Uuid;
 

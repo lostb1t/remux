@@ -1,15 +1,13 @@
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::response::IntoResponse;
+use axum::{
+    Json,
+    extract::{Path, State},
+    response::IntoResponse,
+};
 use axum_extra::extract::Query;
 use remux_macros::get;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::db;
-use crate::db::auth;
-use crate::{IntoApiError, OptionExt};
+use crate::{AppState, IntoApiError, OptionExt, api, db, db::auth};
 use axum_anyhow::ApiResult as Result;
 
 #[get("/studios")]

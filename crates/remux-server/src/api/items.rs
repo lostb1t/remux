@@ -1,32 +1,27 @@
-use crate::services::image::ImageService;
-use crate::services::resolve::{resolve_item, wait_for_persist};
+use crate::services::{
+    image::ImageService,
+    resolve::{resolve_item, wait_for_persist},
+};
 use anyhow::Context;
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::response::IntoResponse;
+use axum::{
+    Json,
+    extract::{Path, State},
+    response::IntoResponse,
+};
 use axum_extra::extract::Query;
 use http::StatusCode;
 use itertools::Itertools;
 use remux_macros::{api_query, delete, get, patch, post};
 use serde::Deserialize;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
+use tracing::{debug, error, info, trace, warn};
 use uuid::{Uuid, uuid};
 
-use crate::AppState;
-use crate::api;
-use crate::common::IntoVec;
-use crate::db;
-use crate::db::auth;
-use crate::errors::LogErr;
-use crate::sdks;
-use crate::{IntoApiError, OptionExt, ResultExt};
+use crate::{
+    AppState, IntoApiError, OptionExt, ResultExt, api, common::IntoVec, db, db::auth,
+    errors::LogErr, sdks,
+};
 use axum_anyhow::ApiResult as Result;
-use chrono::Datelike;
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use sqlx::SqlitePool;
 
 use super::{mock_items, stub_json};

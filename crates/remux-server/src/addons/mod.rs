@@ -19,27 +19,30 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures::Stream;
 use sqlx::SqlitePool;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::RwLock;
 
 use crate::keyed_lock::KeyedLock;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::sdks;
-use crate::{AppContext, api, common::ProgressReporter, db};
+use crate::{AppContext, api, common::ProgressReporter, db, sdks};
 pub use addon::{Addon, CatalogState};
 pub use remux_sdks::remux::AddonPresetRef;
 use remux_sdks::remux::{LyricDto, MediaSegments, RemoteLyricInfoDto};
 
-pub use remux_sdks::remux::{
-    AddonCatalogDto, AddonDto, AddonMetadata, AddonOption, AddonOptionType,
-    AddonSelectOption, CreateAddonRequest, MediaKind, UpdateAddonCatalogRequest,
-    UpdateAddonRequest,
+pub use remux_sdks::{
+    remux::{
+        AddonCatalogDto, AddonDto, AddonMetadata, AddonOption, AddonOptionType,
+        AddonSelectOption, CreateAddonRequest, MediaKind, UpdateAddonCatalogRequest,
+        UpdateAddonRequest,
+    },
+    stremio::ResourceType,
 };
-pub use remux_sdks::stremio::ResourceType;
 
 #[derive(Debug, Clone)]
 pub struct CatalogInfo {

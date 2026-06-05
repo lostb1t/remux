@@ -5,13 +5,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_alias::serde_alias;
 use serde_aux::prelude::*;
 use serde_with::{serde_as, skip_serializing_none};
-use std::collections::HashMap;
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 
-use crate::stremio;
 pub use crate::stremio::ResourceType;
-use crate::{Auth, Body, Endpoint, RestClient};
+use crate::{Auth, Body, Endpoint, RestClient, stremio};
 
 #[derive(Clone, Debug)]
 pub struct JellyfinAuth {

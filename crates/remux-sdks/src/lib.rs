@@ -10,16 +10,8 @@ use http::{HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;
 use md5;
 use remux_utils::Store;
-use serde::Deserialize;
-use serde::Deserializer;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use std::collections::HashMap;
-use std::fmt;
-use std::iter;
-use std::ops;
-use std::sync::Arc;
-use std::time::Duration;
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use std::{collections::HashMap, fmt, iter, ops, sync::Arc, time::Duration};
 
 static HTTP_CACHE: std::sync::LazyLock<Store> =
     std::sync::LazyLock::new(|| Store::new_weighted(64 * 1024 * 1024)); // 64 MB weight cap

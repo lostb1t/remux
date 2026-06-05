@@ -15,8 +15,7 @@ use crate::ResultExt;
 /// }
 /// ```
 use axum::body::Bytes;
-use axum::extract::FromRequest;
-use axum::extract::Request;
+use axum::extract::{FromRequest, Request};
 use axum_anyhow::ApiError;
 use base64::Engine;
 

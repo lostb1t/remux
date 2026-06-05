@@ -1,16 +1,16 @@
-use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{State, WebSocketUpgrade};
-use axum::response::IntoResponse;
+use axum::{
+    extract::{
+        State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
+    response::IntoResponse,
+};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::common::get_uuid;
-use crate::db;
-use crate::db::auth::AuthSession;
+use crate::{AppState, api, common::get_uuid, db, db::auth::AuthSession};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(transparent)]

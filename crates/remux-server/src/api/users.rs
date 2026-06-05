@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
-use axum::Json;
-use axum::body::Bytes;
-use axum::extract::{Path, State};
-use axum::http::header;
-use axum::response::IntoResponse;
-use axum::response::Redirect;
+use axum::{
+    Json,
+    body::Bytes,
+    extract::{Path, State},
+    http::header,
+    response::{IntoResponse, Redirect},
+};
 use axum_extra::extract::Query;
 use http::StatusCode;
 use remux_macros::{delete, get, post};
@@ -14,21 +15,22 @@ use serde::Deserialize;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::api::system::QuickConnectEntry;
-use crate::common::{get_uuid, server_id};
-use crate::db;
-use crate::db::auth;
-use crate::db::user::User;
-use crate::ws::WsEvent;
-use crate::{IntoApiError, OptionExt, ResultExt};
+use crate::{
+    AppState, IntoApiError, OptionExt, ResultExt, api,
+    api::system::QuickConnectEntry,
+    common::{get_uuid, server_id},
+    db,
+    db::{auth, user::User},
+    ws::WsEvent,
+};
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::Username;
 
-use super::items::{item, items, items_flat};
-use super::mock_items;
-use super::shows::livetv_view_item;
+use super::{
+    items::{item, items, items_flat},
+    mock_items,
+    shows::livetv_view_item,
+};
 
 #[post("/users/{user_id}/configuration")]
 pub async fn user_configuration_update(

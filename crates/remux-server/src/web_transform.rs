@@ -7,8 +7,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use axum::body::Body;
-use axum::response::Response;
+use axum::{body::Body, response::Response};
 use bytes::Bytes;
 use http::Request;
 use http_body_util::BodyExt;

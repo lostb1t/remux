@@ -1,13 +1,15 @@
-use axum::Json;
-use axum::extract::{Path, Query, State};
-use axum::response::IntoResponse;
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    response::IntoResponse,
+};
 use http::StatusCode;
 use remux_macros::{api_query, delete, get, post};
 
-use crate::AppState;
-use crate::api;
-use crate::db::ApiKey;
-use crate::db::auth;
+use crate::{
+    AppState, api,
+    db::{ApiKey, auth},
+};
 use axum_anyhow::{ApiResult as Result, IntoApiError};
 
 #[api_query]

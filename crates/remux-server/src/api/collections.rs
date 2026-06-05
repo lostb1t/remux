@@ -1,7 +1,9 @@
 use crate::{OptionExt, ResultExt};
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::response::IntoResponse;
+use axum::{
+    Json,
+    extract::{Path, State},
+    response::IntoResponse,
+};
 use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
 use futures::StreamExt;
@@ -10,10 +12,7 @@ use remux_macros::{api_query, delete, get, post};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::db;
-use crate::db::auth::AdminSession;
+use crate::{AppState, api, db, db::auth::AdminSession};
 
 // ---------------------------------------------------------------------------
 // GET /collections/{id}/items

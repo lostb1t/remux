@@ -1,14 +1,14 @@
-use axum::extract::{Path, State};
-use axum::response::IntoResponse;
+use axum::{
+    extract::{Path, State},
+    response::IntoResponse,
+};
 use remux_macros::get;
 use uuid::Uuid;
 
 use crate::{OptionExt, ResultExt};
 use axum_anyhow::ApiResult as Result;
 
-use crate::AppState;
-use crate::db;
-use crate::stream::StreamDescriptor;
+use crate::{AppState, db, stream::StreamDescriptor};
 
 /// Proxy any stream stored in `db::Media.stream_info` to the caller.
 ///

@@ -1,13 +1,13 @@
-use axum::Json;
-use axum::extract::{Query, State};
-use axum::response::IntoResponse;
+use axum::{
+    Json,
+    extract::{Query, State},
+    response::IntoResponse,
+};
 use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query as ExtraQuery;
 use remux_macros::get;
 
-use crate::api::items::get_items;
-use crate::db::auth;
-use crate::{AppState, api};
+use crate::{AppState, api, api::items::get_items, db::auth};
 
 async fn artists_response(
     state: AppState,

@@ -2,9 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
 use remux_sdks::stremio::MediaType as StremioMediaType;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{pin::Pin, sync::Arc, time::Instant};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -12,8 +10,7 @@ use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
     AddonPresetRegistration, CatalogInfo, MediaKind, ProgressReporter, ResourceType,
 };
-use crate::addons::Addon;
-use crate::{AppContext, db, iptv};
+use crate::{AppContext, addons::Addon, db, iptv};
 
 // ---------------------------------------------------------------------------
 // IptvM3uPreset

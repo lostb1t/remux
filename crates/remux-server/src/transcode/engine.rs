@@ -1,10 +1,14 @@
 use anyhow::{Result, anyhow};
 #[cfg(unix)]
 use libc;
-use std::path::PathBuf;
-use std::process::Stdio;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    path::PathBuf,
+    process::Stdio,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 

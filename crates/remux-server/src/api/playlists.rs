@@ -1,18 +1,17 @@
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::response::IntoResponse;
+use axum::{
+    Json,
+    extract::{Path, State},
+    response::IntoResponse,
+};
 use axum_extra::extract::Query;
 use http::StatusCode;
 use remux_macros::{api_query, delete, get, post};
 use remux_sdks::CommaSeparatedList;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::common::get_uuid;
-use crate::db;
-use crate::db::auth;
-use crate::{IntoApiError, OptionExt, ResultExt};
+use crate::{
+    AppState, IntoApiError, OptionExt, ResultExt, api, common::get_uuid, db, db::auth,
+};
 use axum_anyhow::ApiResult as Result;
 
 #[api_query]

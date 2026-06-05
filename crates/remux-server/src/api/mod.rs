@@ -30,14 +30,11 @@ pub mod system;
 pub mod tasks;
 pub mod users;
 
-use axum::Json;
-use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::{Json, extract::State, response::IntoResponse};
 use http::StatusCode;
 use serde_json::json;
 
-use crate::AppState;
-use crate::api;
+use crate::{AppState, api};
 use axum_anyhow::ApiResult as Result;
 
 pub async fn stub(State(state): State<AppState>) -> Result<impl IntoResponse> {

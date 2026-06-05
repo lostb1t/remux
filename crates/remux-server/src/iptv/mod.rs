@@ -11,8 +11,7 @@ use futures::TryStreamExt;
 use tokio_util::io::{StreamReader, SyncIoBridge};
 use uuid::Uuid;
 
-use crate::db::ProgramKind;
-use crate::{AppContext, db};
+use crate::{AppContext, db, db::ProgramKind};
 
 /// Stream-parse an XMLTV EPG, match each programme to a channel by tvg_id,
 /// and upsert in batches of 2000.

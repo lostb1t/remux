@@ -2,70 +2,54 @@ use super::{FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt};
 
 const CHUNK_SIZE: usize = 500;
 const SQLITE_VAR_LIMIT: usize = 999;
-use crate::api;
-use crate::api::MediaSourceInfo;
-use crate::common::IntoVec;
-use crate::common::get_uuid;
-use crate::common::server_id;
-use crate::sdks;
-use crate::services::stremio as stremio_service;
-use crate::stream::{StreamDescriptor, StreamInfo};
-use crate::{OptionExt, ResultExt};
-use anyhow::Context;
-use anyhow::Result;
-use anyhow::anyhow;
+use crate::{
+    OptionExt, ResultExt, api,
+    api::MediaSourceInfo,
+    common::{IntoVec, get_uuid, server_id},
+    sdks,
+    services::stremio as stremio_service,
+    stream::{StreamDescriptor, StreamInfo},
+};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use axum::ServiceExt;
-use axum::body::Body;
-use axum::extract::FromRequestParts;
-use axum::extract::Request;
-use axum::http::request::Parts;
-use axum::middleware;
-use axum::middleware::Next;
-use axum::response::Html;
-use axum::response::IntoResponse;
-use axum::response::Response;
 use axum::{
-    Json, Router,
-    http::StatusCode,
-    response::Redirect,
+    Json, Router, ServiceExt,
+    body::Body,
+    extract::{FromRequestParts, Request},
+    http::{StatusCode, request::Parts},
+    middleware,
+    middleware::Next,
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
-use chrono::prelude::*;
-use chrono::{DateTime, Duration, NaiveDateTime, Utc};
-use config;
-use config::Config;
+use chrono::{DateTime, Duration, NaiveDateTime, Utc, prelude::*};
+use config::{self, Config};
 use futures::future::BoxFuture;
 use futures_util::StreamExt;
 use http::Uri;
 use regex::Regex;
-use reqwest;
-use reqwest::header::LOCATION;
+use reqwest::{self, header::LOCATION};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_with::skip_serializing_none;
-use sqlx::Row;
-use sqlx::SqlitePool;
-use std;
-use std::collections::HashMap;
-use std::env;
-use std::fs;
-use std::path::Path;
-use std::str::FromStr;
-use std::sync::{Arc, LazyLock};
+use sqlx::{Row, SqlitePool};
+use std::{
+    self,
+    collections::HashMap,
+    env, fs,
+    path::Path,
+    str::FromStr,
+    sync::{Arc, LazyLock},
+};
 use thiserror::Error;
 use timed;
-use tower::Layer;
-use tower::util::MapRequestLayer;
-use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::ServeDir;
-use tracing;
-use tracing::debug;
-use tracing::info;
-use tracing::instrument;
-use tracing::trace;
-use tracing::warn;
+use tower::{Layer, util::MapRequestLayer};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    services::ServeDir,
+};
+use tracing::{self, debug, info, instrument, trace, warn};
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;

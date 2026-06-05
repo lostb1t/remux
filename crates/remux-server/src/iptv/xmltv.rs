@@ -1,7 +1,6 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
+use quick_xml::{events::Event, reader::Reader};
 
 use super::parse_program_kind;
 use crate::db::ProgramKind; // used by EpgProgram

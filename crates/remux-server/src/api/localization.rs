@@ -1,11 +1,8 @@
-use axum::Json;
-use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::{Json, extract::State, response::IntoResponse};
 use isolang::Language;
 use remux_macros::get;
 
-use crate::AppState;
-use crate::api;
+use crate::{AppState, api};
 use axum_anyhow::ApiResult as Result;
 
 /// Get localization options

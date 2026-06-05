@@ -1,14 +1,11 @@
-use std::io::Cursor;
-use std::path::PathBuf;
+use std::{io::Cursor, path::PathBuf};
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 use imageproc::drawing::draw_text_mut;
 use uuid::Uuid;
 
-use crate::api::image::detect_content_type;
-use crate::db;
-use crate::db::ImageKind;
+use crate::{api::image::detect_content_type, db, db::ImageKind};
 
 /// Width/height of generated library placeholder images (16:9).
 const OUT_W: u32 = 960;

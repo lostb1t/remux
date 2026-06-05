@@ -1,19 +1,23 @@
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use chrono::Utc;
 
 use remux_macros::{delete, get, post};
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::addons::{
-    Addon, AddonCatalogDto, AddonDto, AddonMetadata, CreateAddonRequest,
-    UpdateAddonCatalogRequest, UpdateAddonRequest, make_media_id, registered_presets,
+use crate::{
+    AppState, IntoApiError, OptionExt, ResultExt,
+    addons::{
+        Addon, AddonCatalogDto, AddonDto, AddonMetadata, CreateAddonRequest,
+        UpdateAddonCatalogRequest, UpdateAddonRequest, make_media_id,
+        registered_presets,
+    },
+    db::{MediaKind as DbMediaKind, auth},
 };
-use crate::db::{MediaKind as DbMediaKind, auth};
-use crate::{IntoApiError, OptionExt, ResultExt};
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::MediaKind;
 

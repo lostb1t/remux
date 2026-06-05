@@ -1,10 +1,11 @@
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::{collections::HashMap, sync::OnceLock};
 
 use serde::Deserialize;
 
-use crate::api::{ParentalRating, ParentalRatingScore};
-use crate::db::normalize_country_alpha2;
+use crate::{
+    api::{ParentalRating, ParentalRatingScore},
+    db::normalize_country_alpha2,
+};
 
 const RATING_FILES: &[&str] = &[
     include_str!("ratings/0-prefer.json"),

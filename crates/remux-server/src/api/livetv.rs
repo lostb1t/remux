@@ -1,7 +1,9 @@
 use crate::{OptionExt, ResultExt};
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::response::IntoResponse;
+use axum::{
+    Json,
+    extract::{Path, State},
+    response::IntoResponse,
+};
 use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
 use chrono::{Duration, Utc};
@@ -10,10 +12,10 @@ use remux_macros::{api_query, delete, get, patch, post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::db;
-use crate::db::auth::{AdminSession, AuthSession};
+use crate::{
+    AppState, api, db,
+    db::auth::{AdminSession, AuthSession},
+};
 
 // --------------------------------------------------------------------------
 // GET /livetv/info

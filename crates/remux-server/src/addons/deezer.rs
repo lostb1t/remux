@@ -1,11 +1,11 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
-use futures::Stream;
-use futures::stream::{self, StreamExt};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use futures::{
+    Stream,
+    stream::{self, StreamExt},
+};
+use std::{pin::Pin, sync::Arc, time::Duration};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -13,9 +13,10 @@ use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
     AddonPresetRegistration, CatalogInfo, MediaKind, ResourceType,
 };
-use crate::sdks::deezer as dz;
-use crate::sdks::{self, CachedEndpoint};
-use crate::{AppContext, common, db};
+use crate::{
+    AppContext, common, db,
+    sdks::{self, CachedEndpoint, deezer as dz},
+};
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
 

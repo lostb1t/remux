@@ -1,12 +1,8 @@
-use axum::Json;
-use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::{Json, extract::State, response::IntoResponse};
 use axum_extra::extract::Query;
 use remux_macros::get;
 
-use crate::AppState;
-use crate::api;
-use crate::db::auth;
+use crate::{AppState, api, db::auth};
 use axum_anyhow::ApiResult as Result;
 
 #[get("/search/hints")]

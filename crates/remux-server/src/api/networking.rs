@@ -1,12 +1,8 @@
-use axum::Json;
-use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::{Json, extract::State, response::IntoResponse};
 use http::StatusCode;
 use remux_macros::{get, post};
 
-use crate::AppState;
-use crate::api;
-use crate::db::auth;
+use crate::{AppState, api, db::auth};
 use axum_anyhow::{ApiResult as Result, IntoApiError};
 
 const NETWORK_CONFIG_KEY: &str = "network_configuration";

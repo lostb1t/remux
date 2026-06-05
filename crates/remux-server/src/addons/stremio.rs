@@ -6,10 +6,11 @@ use nutype::nutype;
 
 use serde::{Deserialize, Deserializer};
 use sqlx::SqlitePool;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
+use std::{
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -17,9 +18,11 @@ use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
     AddonPresetRegistration, CatalogInfo, MediaKind, ResourceType, addon,
 };
-use crate::sdks::{CachedEndpoint, ClientError};
-use crate::services::stremio as stremio_service;
-use crate::{AppContext, common, db, sdks};
+use crate::{
+    AppContext, common, db, sdks,
+    sdks::{CachedEndpoint, ClientError},
+    services::stremio as stremio_service,
+};
 
 pub struct StremioPreset;
 

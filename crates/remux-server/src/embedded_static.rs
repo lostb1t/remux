@@ -1,8 +1,12 @@
-use std::convert::Infallible;
-use std::task::{Context, Poll};
+use std::{
+    convert::Infallible,
+    task::{Context, Poll},
+};
 
-use axum::body::Body;
-use axum::http::{Request, Response, StatusCode, header};
+use axum::{
+    body::Body,
+    http::{Request, Response, StatusCode, header},
+};
 use bytes::Bytes;
 use include_dir::Dir;
 use tower::Service;

@@ -1,7 +1,9 @@
-use axum::Json;
-use axum::extract::{Query, State};
-use axum::http::header;
-use axum::response::{IntoResponse, Response};
+use axum::{
+    Json,
+    extract::{Query, State},
+    http::header,
+    response::{IntoResponse, Response},
+};
 use http::StatusCode;
 use remux_macros::{api_query, get, post, route};
 use serde::Deserialize;
@@ -9,11 +11,11 @@ use serde_json::json;
 use std::time::Duration;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::common::{self, get_uuid, server_id};
-use crate::db::{self, auth};
-use crate::{IntoApiError, OptionExt, ResultExt};
+use crate::{
+    AppState, IntoApiError, OptionExt, ResultExt, api,
+    common::{self, get_uuid, server_id},
+    db::{self, auth},
+};
 use anyhow;
 use axum_anyhow::ApiResult as Result;
 

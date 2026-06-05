@@ -1,10 +1,11 @@
-use std::collections::HashMap;
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 use anyhow::Result;
 use futures::TryStreamExt;
-use serde::Deserialize;
-use serde::de::{Deserializer as _, SeqAccess, Visitor};
+use serde::{
+    Deserialize,
+    de::{Deserializer as _, SeqAccess, Visitor},
+};
 use tokio_util::io::{StreamReader, SyncIoBridge};
 
 use super::M3uChannel;

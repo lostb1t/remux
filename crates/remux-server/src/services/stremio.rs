@@ -1,10 +1,13 @@
-use crate::sdks;
-use crate::sdks::CachedEndpoint;
+use crate::{sdks, sdks::CachedEndpoint};
 use anyhow::{Result, anyhow};
-use futures::future;
-use futures::stream::{self, Stream, StreamExt};
-use std::pin::Pin;
-use std::time::{Duration, Instant};
+use futures::{
+    future,
+    stream::{self, Stream, StreamExt},
+};
+use std::{
+    pin::Pin,
+    time::{Duration, Instant},
+};
 
 #[derive(Clone)]
 pub struct StremioService {

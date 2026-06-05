@@ -1,18 +1,16 @@
 use std::collections::HashMap;
 
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::response::IntoResponse;
+use axum::{
+    Json,
+    extract::{Path, State},
+    response::IntoResponse,
+};
 use axum_extra::extract::Query;
 use http::StatusCode;
 use remux_macros::get;
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::db;
-use crate::db::auth;
-use crate::{OptionExt, ResultExt};
+use crate::{AppState, OptionExt, ResultExt, api, db, db::auth};
 use axum_anyhow::ApiResult as Result;
 
 use super::items::get_items;

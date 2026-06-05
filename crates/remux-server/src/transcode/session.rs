@@ -1,8 +1,9 @@
 use remux_sdks::remux::TranscodeReasons;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
-use std::time::Instant;
+use std::{
+    path::PathBuf,
+    sync::{Arc, atomic::AtomicU32},
+    time::Instant,
+};
 use tokio::sync::{Notify, watch};
 use uuid::Uuid;
 

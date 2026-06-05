@@ -1,13 +1,16 @@
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
 use remux_macros::{delete, get, post};
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::db::auth;
-use crate::tasks::{TaskStatus, TaskView};
+use crate::{
+    AppState, api,
+    db::auth,
+    tasks::{TaskStatus, TaskView},
+};
 use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::TaskTriggerInfoType;
 

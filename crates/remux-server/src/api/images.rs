@@ -1,16 +1,17 @@
-use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
-use axum::response::IntoResponse;
+use axum::{
+    extract::{Path, State},
+    http::{StatusCode, header},
+    response::IntoResponse,
+};
 use axum_extra::extract::Query;
 use remux_macros::{delete, get, post};
 use uuid::Uuid;
 
-use crate::AppState;
-use crate::api;
-use crate::db;
-use crate::db::{ImageKind, auth};
-use crate::services::image::{ImageProcessOptions, ImageService};
-use crate::{OptionExt, ResultExt};
+use crate::{
+    AppState, OptionExt, ResultExt, api, db,
+    db::{ImageKind, auth},
+    services::image::{ImageProcessOptions, ImageService},
+};
 use axum_anyhow::ApiResult as Result;
 
 static IMAGE_CLIENT: std::sync::LazyLock<reqwest::Client> =
