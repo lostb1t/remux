@@ -9,7 +9,8 @@ use crate::AppState;
 use crate::api;
 use crate::db;
 use crate::db::auth;
-use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt};
+use crate::{IntoApiError, OptionExt};
+use axum_anyhow::ApiResult as Result;
 
 #[get("/studios")]
 pub async fn studios(
@@ -54,7 +55,7 @@ pub async fn studio_by_name(
     .records
     .into_iter()
     .next()
-    .context_not_found("Not Found", "Studio not found")?;
+    .context_not_found("Studio not found")?;
     Ok(Json(api::db_media_to_item(record)))
 }
 
@@ -130,7 +131,7 @@ pub async fn person_by_name(
     .records
     .into_iter()
     .next()
-    .context_not_found("Not Found", "Person not found")?;
+    .context_not_found("Person not found")?;
     Ok(Json(api::db_media_to_item(record)))
 }
 
@@ -153,6 +154,6 @@ pub async fn genre_by_name(
     .records
     .into_iter()
     .next()
-    .context_not_found("Not Found", "Genre not found")?;
+    .context_not_found("Genre not found")?;
     Ok(Json(api::db_media_to_item(record)))
 }

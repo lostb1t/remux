@@ -482,8 +482,8 @@ impl AddonKind for OpendalAddon {
         descriptor: &crate::stream::StreamDescriptor,
         headers: &axum::http::HeaderMap,
     ) -> axum_anyhow::ApiResult<axum::response::Response> {
+        use crate::ResultExt;
         use axum::body::Body;
-        use axum_anyhow::ResultExt;
         use futures_util::TryStreamExt;
         use std::io;
 
@@ -502,7 +502,7 @@ impl AddonKind for OpendalAddon {
             .operator
             .stat(path)
             .await
-            .context_not_found("stream", "file not found in opendal backend")?;
+            .context_not_found("file not found in opendal backend")?;
         let file_size = meta.content_length();
         let content_type = crate::stream::mime_from_path(std::path::Path::new(path));
 
@@ -513,18 +513,18 @@ impl AddonKind for OpendalAddon {
 
         if let Some(range) = range_str {
             let (start, end) = crate::stream::parse_range(&range, file_size)
-                .context_bad_request("stream", "invalid Range header")?;
+                .context_bad_request("invalid Range header")?;
             let length = end - start + 1;
 
             let reader = self
                 .operator
                 .reader_with(path)
                 .await
-                .context_bad_request("stream", "failed to open opendal reader")?;
+                .context_bad_request("failed to open opendal reader")?;
             let bytes_stream = reader
                 .into_bytes_stream(start..start + length)
                 .await
-                .context_bad_request("stream", "failed to create opendal byte stream")?
+                .context_bad_request("failed to create opendal byte stream")?
                 .map_err(io::Error::other);
 
             Ok(axum::response::Response::builder()
@@ -543,11 +543,11 @@ impl AddonKind for OpendalAddon {
                 .operator
                 .reader(path)
                 .await
-                .context_bad_request("stream", "failed to open opendal reader")?;
+                .context_bad_request("failed to open opendal reader")?;
             let bytes_stream = reader
                 .into_bytes_stream(..)
                 .await
-                .context_bad_request("stream", "failed to create opendal byte stream")?
+                .context_bad_request("failed to create opendal byte stream")?
                 .map_err(io::Error::other);
 
             Ok(axum::response::Response::builder()

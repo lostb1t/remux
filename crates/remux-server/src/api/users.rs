@@ -22,7 +22,8 @@ use crate::db;
 use crate::db::auth;
 use crate::db::user::User;
 use crate::ws::WsEvent;
-use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
+use crate::{IntoApiError, OptionExt, ResultExt};
+use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::Username;
 
 use super::items::{item, items, items_flat};
@@ -123,22 +124,18 @@ pub async fn update_display_preferences(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-#[post("/users/authenticatebyname")]
-pub async fn users_authenticatebyname(
-    State(state): State<AppState>,
-    auth_header: auth::JellyfinAuthHeader,
-    Json(data): Json<api::AuthenticateUserByName>,
-) -> Result<impl IntoResponse> {
-    let user = User::authenticate(
-        &state.ctx.db,
-        data.username.as_deref().unwrap_or(""),
-        data.pw.as_deref().unwrap_or(""),
-    )
-    .await?
-    .context_unauthorized("not found", "not foubd")?;
-    let device = auth::Device::new_from_header(auth_header, &user)?;
-    device.save(&state.ctx.db).await?;
+fn require_self_or_admin(target_id: Uuid, session: &auth::AuthSession) -> Result<()> {
+    if target_id != session.user.id && !session.user.is_admin {
+        return Err(anyhow::anyhow!("Forbidden").context_unauthorized("forbidden"));
+    }
+    Ok(())
+}
 
+fn build_auth_response(
+    data_dir: &std::path::Path,
+    device: auth::Device,
+    user: db::User,
+) -> Json<api::AuthenticationResult> {
     let session_info = api::SessionInfoDto {
         id: Some(device.id.clone()),
         device_id: Some(device.id.clone()),
@@ -158,16 +155,39 @@ pub async fn users_authenticatebyname(
     };
 
     let now = chrono::Utc::now();
-    let mut user_dto = api::db_user_to_dto(&state.ctx.config.data_dir, user);
+    let mut user_dto = api::db_user_to_dto(data_dir, user);
     user_dto.last_login_date = Some(now);
     user_dto.last_activity_date = Some(now);
 
-    Ok(Json(api::AuthenticationResult {
+    Json(api::AuthenticationResult {
         access_token: Some(device.access_token),
         server_id: server_id(),
         session_info: Some(session_info),
         user: Some(user_dto),
-    }))
+    })
+}
+
+#[post("/users/authenticatebyname")]
+pub async fn users_authenticatebyname(
+    State(state): State<AppState>,
+    auth_header: auth::JellyfinAuthHeader,
+    Json(data): Json<api::AuthenticateUserByName>,
+) -> Result<impl IntoResponse> {
+    let user = User::authenticate(
+        &state.ctx.db,
+        data.username.as_deref().unwrap_or(""),
+        data.pw.as_deref().unwrap_or(""),
+    )
+    .await?
+    .context_unauthorized("not found")?;
+    let device = auth::Device::new_from_header(auth_header, &user)?;
+    device.save(&state.ctx.db).await?;
+
+    Ok(build_auth_response(
+        &state.ctx.config.data_dir,
+        device,
+        user,
+    ))
 }
 
 #[post("/users/authenticatewithquickconnect")]
@@ -180,25 +200,20 @@ pub async fn authenticate_with_quickconnect(
         .ctx
         .store
         .get::<QuickConnectEntry>(format!("qc:{}", body.secret))
-        .context_unauthorized(
-            "Unauthorized",
-            "QuickConnect request not found or expired",
-        )?;
+        .context_unauthorized("QuickConnect request not found or expired")?;
 
     if !entry.authenticated {
-        return Err(anyhow::anyhow!("not authenticated")).context_unauthorized(
-            "Unauthorized",
-            "QuickConnect request has not been approved yet",
-        );
+        return Err(anyhow::anyhow!("not authenticated"))
+            .context_unauthorized("QuickConnect request has not been approved yet");
     }
 
     let user_id = entry
         .user_id
-        .context_unauthorized("Unauthorized", "QuickConnect entry missing user")?;
+        .context_unauthorized("QuickConnect entry missing user")?;
 
     let user = db::User::get_by_id(&state.ctx.db, &user_id)
         .await?
-        .context_unauthorized("Unauthorized", "User not found")?;
+        .context_unauthorized("User not found")?;
 
     let device = auth::Device {
         id: auth_header
@@ -223,35 +238,11 @@ pub async fn authenticate_with_quickconnect(
     state.ctx.store.delete(format!("qc:{}", body.secret));
     state.ctx.store.delete(format!("qc:code:{}", entry.code));
 
-    let session_info = api::SessionInfoDto {
-        id: Some(device.id.clone()),
-        device_id: Some(device.id.clone()),
-        device_name: Some(device.name.clone()),
-        client: Some(device.app_name.clone()),
-        application_version: Some(device.app_version.clone()),
-        user_id: device.user_id.to_string(),
-        user_name: Some(user.username.clone()),
-        server_id: server_id(),
-        is_active: true,
-        play_state: Some(api::PlayerStateInfo::default()),
-        capabilities: Some(api::ClientCapabilitiesDto {
-            supports_persistent_identifier: true,
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-
-    let now = chrono::Utc::now();
-    let mut user_dto = api::db_user_to_dto(&state.ctx.config.data_dir, user);
-    user_dto.last_login_date = Some(now);
-    user_dto.last_activity_date = Some(now);
-
-    Ok(Json(api::AuthenticationResult {
-        access_token: Some(device.access_token),
-        server_id: server_id(),
-        session_info: Some(session_info),
-        user: Some(user_dto),
-    }))
+    Ok(build_auth_response(
+        &state.ctx.config.data_dir,
+        device,
+        user,
+    ))
 }
 
 #[get("/users")]
@@ -299,7 +290,7 @@ pub async fn mark_favorite(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context("not foubd")?;
+        .context("not found")?;
     let state = media.mark_favorite(&state.ctx.db, &session.user).await?;
     Ok(Json(api::db_state_to_dto(state, &media)).into_response())
 }
@@ -312,7 +303,7 @@ pub async fn unmark_favorite(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context("not foubd")?;
+        .context("not found")?;
     let state = media.unmark_favorite(&state.ctx.db, &session.user).await?;
     Ok(Json(api::db_state_to_dto(state, &media)).into_response())
 }
@@ -325,7 +316,7 @@ pub async fn mark_favorite_modern(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context_not_found("Not Found", "Item not found")?;
+        .context_not_found("Item not found")?;
     let s = media.mark_favorite(&state.ctx.db, &session.user).await?;
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
@@ -338,7 +329,7 @@ pub async fn unmark_favorite_modern(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context_not_found("Not Found", "Item not found")?;
+        .context_not_found("Item not found")?;
     let s = media.unmark_favorite(&state.ctx.db, &session.user).await?;
     Ok(Json(api::db_state_to_dto(s, &media)).into_response())
 }
@@ -351,7 +342,7 @@ pub async fn mark_played(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context("not foubd")?;
+        .context("not found")?;
     let state = media
         .mark_played(&state.ctx.db, &session.user, true)
         .await?;
@@ -366,7 +357,7 @@ pub async fn unmark_played(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context("not foubd")?;
+        .context("not found")?;
     let state = media
         .mark_unplayed(&state.ctx.db, &session.user, true)
         .await?;
@@ -411,7 +402,7 @@ pub async fn delete_user(
 ) -> Result<impl IntoResponse> {
     if user_id == session.user.id {
         return Err(anyhow::anyhow!("Cannot delete yourself")
-            .context_bad_request("invalid", "cannot delete own account"));
+            .context_bad_request("cannot delete own account"));
     }
     db::User::delete(&state.ctx.db, &user_id).await?;
     let _ = state.ctx.ws_tx.send(WsEvent::UserDeleted(user_id));
@@ -425,24 +416,17 @@ pub async fn change_password(
     Path(user_id): Path<Uuid>,
     Json(payload): Json<api::UpdateUserPassword>,
 ) -> Result<impl IntoResponse> {
-    let is_self = user_id == session.user.id;
-    let is_admin = session.user.is_admin;
-
-    if !is_self && !is_admin {
-        return Err(
-            anyhow::anyhow!("Forbidden").context_unauthorized("forbidden", "forbidden")
-        );
-    }
+    require_self_or_admin(user_id, &session)?;
 
     let mut user = db::User::get_by_id(&state.ctx.db, &user_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("User not found"))?;
 
-    if is_self && !is_admin {
+    if user_id == session.user.id && !session.user.is_admin {
         let current = payload.current_pw.as_deref().unwrap_or("");
         if !user.verify_password(current)? {
             return Err(anyhow::anyhow!("Current password is incorrect")
-                .context_unauthorized("invalid", "invalid password"));
+                .context_unauthorized("invalid password"));
         }
     }
 
@@ -477,18 +461,13 @@ pub async fn update_user(
     Path(user_id): Path<Uuid>,
     Json(payload): Json<api::UserDto>,
 ) -> Result<impl IntoResponse> {
-    let is_self = user_id == session.user.id;
-    if !is_self && !session.user.is_admin {
-        return Err(
-            anyhow::anyhow!("Forbidden").context_unauthorized("forbidden", "forbidden")
-        );
-    }
+    require_self_or_admin(user_id, &session)?;
     let mut user = db::User::get_by_id(&state.ctx.db, &user_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("User not found"))?;
     let username = Username::try_new(payload.name)
         .map_err(|e| anyhow::anyhow!("{e}"))
-        .context_bad_request("InvalidUsername", "Invalid username")?;
+        .context_bad_request("Invalid username")?;
     user.username = username.into_inner();
     if let Some(config) = payload.configuration {
         user.configuration = Some(sqlx::types::Json(config));
@@ -519,15 +498,12 @@ pub async fn users_get_by_id(
         .into_response());
     }
     if !session.user.is_admin {
-        return Err(
-            anyhow::anyhow!("Forbidden").context_unauthorized("forbidden", "forbidden")
-        );
+        return Err(anyhow::anyhow!("Forbidden").context_unauthorized("forbidden"));
     }
     let user = db::User::get_by_id(&state.ctx.db, &user_id)
         .await?
         .ok_or_else(|| {
-            anyhow::anyhow!("User not found")
-                .context_not_found("not found", "user not found")
+            anyhow::anyhow!("User not found").context_not_found("user not found")
         })?;
     Ok(Json(api::db_user_to_dto(&state.ctx.config.data_dir, user)).into_response())
 }
@@ -811,8 +787,7 @@ async fn serve_avatar_for(
 ) -> Result<impl IntoResponse> {
     let path = avatar_path(&data_dir, &user_id);
     let bytes = tokio::fs::read(&path).await.map_err(|_| {
-        anyhow::anyhow!("avatar not found")
-            .context_not_found("not found", "avatar not found")
+        anyhow::anyhow!("avatar not found").context_not_found("avatar not found")
     })?;
     let content_type = crate::api::image::detect_content_type(&bytes);
     Ok(([(header::CONTENT_TYPE, content_type)], bytes).into_response())
@@ -835,7 +810,7 @@ pub async fn get_user_image(
     let uid = q
         .user_id
         .or_else(|| q.tag.as_deref().and_then(|t| Uuid::parse_str(t).ok()))
-        .context_bad_request("missing", "userId required")?;
+        .context_bad_request("userId required")?;
     serve_avatar_for(state.ctx.config.data_dir.clone(), uid).await
 }
 
@@ -865,7 +840,7 @@ pub async fn upload_user_image(
 ) -> Result<impl IntoResponse> {
     upload_avatar_for(&state.ctx.config.data_dir, &session.user.id, image)
         .await
-        .context_internal("upload failed", "failed to save avatar")?;
+        .context_internal("failed to save avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -878,7 +853,7 @@ pub async fn upload_user_image_legacy(
 ) -> Result<impl IntoResponse> {
     upload_avatar_for(&state.ctx.config.data_dir, &user_id, image)
         .await
-        .context_internal("upload failed", "failed to save avatar")?;
+        .context_internal("failed to save avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -891,7 +866,7 @@ pub async fn upload_user_image_indexed(
 ) -> Result<impl IntoResponse> {
     upload_avatar_for(&state.ctx.config.data_dir, &user_id, image)
         .await
-        .context_internal("upload failed", "failed to save avatar")?;
+        .context_internal("failed to save avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -904,7 +879,7 @@ pub async fn delete_user_image(
 ) -> Result<impl IntoResponse> {
     delete_avatar_for(&state.ctx.config.data_dir, &session.user.id)
         .await
-        .context_internal("delete failed", "failed to delete avatar")?;
+        .context_internal("failed to delete avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -916,7 +891,7 @@ pub async fn delete_user_image_legacy(
 ) -> Result<impl IntoResponse> {
     delete_avatar_for(&state.ctx.config.data_dir, &user_id)
         .await
-        .context_internal("delete failed", "failed to delete avatar")?;
+        .context_internal("failed to delete avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -928,7 +903,7 @@ pub async fn delete_user_image_indexed(
 ) -> Result<impl IntoResponse> {
     delete_avatar_for(&state.ctx.config.data_dir, &user_id)
         .await
-        .context_internal("delete failed", "failed to delete avatar")?;
+        .context_internal("failed to delete avatar")?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

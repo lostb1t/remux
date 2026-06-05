@@ -9,15 +9,10 @@ use crate::api::items::get_items;
 use crate::db::auth;
 use crate::{AppState, api};
 
-/// `/Artists` — returns all artists in the library.
-///
-/// Jellyfin music clients call this to populate the Artists view.
-/// We delegate to `get_items` with `IncludeItemTypes=MusicArtist`.
-#[get("/artists")]
-pub async fn get_artists(
-    State(state): State<AppState>,
+async fn artists_response(
+    state: AppState,
     session: auth::AuthSession,
-    ExtraQuery(mut q): ExtraQuery<api::GetItemsQuery>,
+    mut q: api::GetItemsQuery,
 ) -> Result<impl IntoResponse> {
     q.include_item_types = Some(vec![api::MediaType::MusicArtist]);
     q.recursive = true;
@@ -29,19 +24,22 @@ pub async fn get_artists(
     }))
 }
 
+/// `/Artists` — returns all artists in the library.
+#[get("/artists")]
+pub async fn get_artists(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    ExtraQuery(q): ExtraQuery<api::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    artists_response(state, session, q).await
+}
+
 /// `/Artists/AlbumArtists` — same as `/Artists` for our purposes.
 #[get("/artists/albumartists")]
 pub async fn get_album_artists(
     State(state): State<AppState>,
     session: auth::AuthSession,
-    ExtraQuery(mut q): ExtraQuery<api::GetItemsQuery>,
+    ExtraQuery(q): ExtraQuery<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    q.include_item_types = Some(vec![api::MediaType::MusicArtist]);
-    q.recursive = true;
-    let result = get_items(state, session, q, true).await?;
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: result.items,
-        total_record_count: result.total_count,
-        start_index: 0,
-    }))
+    artists_response(state, session, q).await
 }

@@ -101,6 +101,10 @@ impl TaskHandler {
         self.task.key()
     }
 
+    fn lock_status(&self) -> std::sync::MutexGuard<'_, TaskStatus> {
+        self.status.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn is_running(&self) -> bool {
         self.handle
             .as_ref()
@@ -111,11 +115,7 @@ impl TaskHandler {
     pub fn view(&self) -> TaskView {
         TaskView {
             task: self.task.clone(),
-            status: self
-                .status
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
+            status: self.lock_status().clone(),
             progress: f64::from_bits(self.progress.load(Ordering::Relaxed)),
         }
     }
@@ -126,7 +126,7 @@ impl TaskHandler {
         }
 
         self.progress.store(0u64, Ordering::Relaxed);
-        *self.status.lock().unwrap_or_else(|e| e.into_inner()) = TaskStatus::Running;
+        *self.lock_status() = TaskStatus::Running;
 
         let task = self.task.clone();
         let task_key = task.key().to_string();
@@ -183,8 +183,7 @@ impl TaskHandler {
     pub fn stop(&mut self) {
         if let Some(handle) = self.handle.take() {
             handle.abort();
-            *self.status.lock().unwrap_or_else(|e| e.into_inner()) =
-                TaskStatus::Stopped;
+            *self.lock_status() = TaskStatus::Stopped;
             info!(task = %self.task.key(), "stopped");
         }
     }
@@ -246,12 +245,13 @@ impl TaskService {
         let ctx = self.ctx.clone();
         let task_service = self.clone();
         let task_id = trigger.task_id.to_lowercase();
+        let task_id_for_closure = task_id.clone();
 
         let job = Job::new_async(cron.as_str(), move |_uuid, _l| {
             let tasks = tasks.clone();
             let ctx = ctx.clone();
             let task_service = Arc::new(task_service.clone());
-            let task_id = task_id.clone();
+            let task_id = task_id_for_closure.clone();
 
             Box::pin(async move {
                 if let Some(handler) = tasks.lock().await.get_mut(&task_id) {
@@ -263,12 +263,7 @@ impl TaskService {
         let job_id = job.guid();
         self.scheduler.add(job).await?;
 
-        if let Some(handler) = self
-            .tasks
-            .lock()
-            .await
-            .get_mut(&trigger.task_id.to_lowercase())
-        {
+        if let Some(handler) = self.tasks.lock().await.get_mut(&task_id) {
             handler.jobs.push(job_id);
         }
 
@@ -353,4 +348,10 @@ impl TaskService {
             .map(|(k, v)| (k.clone(), v.view()))
             .collect()
     }
+}
+
+pub(super) fn iter_dir(
+    path: impl AsRef<std::path::Path>,
+) -> impl Iterator<Item = std::fs::DirEntry> {
+    std::fs::read_dir(path).into_iter().flatten().flatten()
 }

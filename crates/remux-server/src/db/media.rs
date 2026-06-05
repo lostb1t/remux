@@ -1,4 +1,7 @@
 use super::{FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt};
+
+const CHUNK_SIZE: usize = 500;
+const SQLITE_VAR_LIMIT: usize = 999;
 use crate::api;
 use crate::api::MediaSourceInfo;
 use crate::common::IntoVec;
@@ -7,6 +10,7 @@ use crate::common::server_id;
 use crate::sdks;
 use crate::services::stremio as stremio_service;
 use crate::stream::{StreamDescriptor, StreamInfo};
+use crate::{OptionExt, ResultExt};
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -27,10 +31,7 @@ use axum::{
     response::Redirect,
     routing::{get, post},
 };
-use axum_anyhow::ApiError;
-use axum_anyhow::on_error;
-use axum_anyhow::set_expose_errors;
-use axum_anyhow::{ApiResult, OptionExt, ResultExt};
+use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
 use chrono::prelude::*;
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use config;
@@ -403,9 +404,8 @@ impl MediaRelation {
         }
 
         let mut tx = db.begin().await?;
-        const BATCH_SIZE: usize = 500;
 
-        for chunk in items.chunks(BATCH_SIZE) {
+        for chunk in items.chunks(CHUNK_SIZE) {
             let mut qb = sqlx::QueryBuilder::new(
                 "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, weight, role, character) ",
             );
@@ -457,8 +457,7 @@ impl MediaRelation {
         if ids.is_empty() {
             return Ok(());
         }
-        const CHUNK: usize = 999;
-        for chunk in ids.chunks(CHUNK) {
+        for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
             let mut qb = sqlx::QueryBuilder::new(
                 "DELETE FROM media_relations WHERE left_media_id IN (",
             );
@@ -1452,9 +1451,8 @@ impl Media {
         sqlx::query("PRAGMA defer_foreign_keys = ON")
             .execute(&mut *tx)
             .await?;
-        const BATCH_SIZE: usize = 500;
 
-        for chunk in items.chunks(BATCH_SIZE) {
+        for chunk in items.chunks(CHUNK_SIZE) {
             let mut query_builder = sqlx::QueryBuilder::new(
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
@@ -1535,9 +1533,7 @@ impl Media {
             return Ok(());
         }
 
-        const BATCH_SIZE: usize = 500;
-
-        for chunk in items.chunks(BATCH_SIZE) {
+        for chunk in items.chunks(CHUNK_SIZE) {
             let mut tx = db.begin().await?;
             sqlx::query("PRAGMA defer_foreign_keys = ON")
                 .execute(&mut *tx)
@@ -3222,13 +3218,7 @@ impl Media {
             }
 
             MediaKind::Season => {
-                let episode_ids: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT id FROM media WHERE parent_id = ? AND kind = 'episode'",
-                )
-                .bind(self.id)
-                .fetch_all(db)
-                .await
-                .unwrap_or_default();
+                let episode_ids = child_episode_ids(db, self.id).await;
                 bulk_mark_played(db, user.id, &episode_ids, now).await;
 
                 if let Some(series_id) = self.parent_id {
@@ -3258,22 +3248,9 @@ impl Media {
             }
 
             MediaKind::Series => {
-                let season_ids: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT id FROM media WHERE parent_id = ? AND kind = 'season'",
-                )
-                .bind(self.id)
-                .fetch_all(db)
-                .await
-                .unwrap_or_default();
+                let season_ids = child_season_ids(db, self.id).await;
                 bulk_mark_played(db, user.id, &season_ids, now).await;
-
-                let episode_ids: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT id FROM media WHERE grandparent_id = ? AND kind = 'episode'",
-                )
-                .bind(self.id)
-                .fetch_all(db)
-                .await
-                .unwrap_or_default();
+                let episode_ids = grandchild_episode_ids(db, self.id).await;
                 bulk_mark_played(db, user.id, &episode_ids, now).await;
             }
 
@@ -3318,13 +3295,7 @@ impl Media {
             }
 
             MediaKind::Season => {
-                let episode_ids: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT id FROM media WHERE parent_id = ? AND kind = 'episode'",
-                )
-                .bind(self.id)
-                .fetch_all(db)
-                .await
-                .unwrap_or_default();
+                let episode_ids = child_episode_ids(db, self.id).await;
                 bulk_mark_unplayed(db, user.id, &episode_ids).await;
 
                 if let Some(series_id) = self.parent_id {
@@ -3339,22 +3310,9 @@ impl Media {
             }
 
             MediaKind::Series => {
-                let season_ids: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT id FROM media WHERE parent_id = ? AND kind = 'season'",
-                )
-                .bind(self.id)
-                .fetch_all(db)
-                .await
-                .unwrap_or_default();
+                let season_ids = child_season_ids(db, self.id).await;
                 bulk_mark_unplayed(db, user.id, &season_ids).await;
-
-                let episode_ids: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT id FROM media WHERE grandparent_id = ? AND kind = 'episode'",
-                )
-                .bind(self.id)
-                .fetch_all(db)
-                .await
-                .unwrap_or_default();
+                let episode_ids = grandchild_episode_ids(db, self.id).await;
                 bulk_mark_unplayed(db, user.id, &episode_ids).await;
             }
 
@@ -3518,6 +3476,32 @@ impl Media {
     }
 }
 
+async fn child_episode_ids(db: &SqlitePool, parent_id: Uuid) -> Vec<Uuid> {
+    sqlx::query_scalar("SELECT id FROM media WHERE parent_id = ? AND kind = 'episode'")
+        .bind(parent_id)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
+}
+
+async fn child_season_ids(db: &SqlitePool, parent_id: Uuid) -> Vec<Uuid> {
+    sqlx::query_scalar("SELECT id FROM media WHERE parent_id = ? AND kind = 'season'")
+        .bind(parent_id)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
+}
+
+async fn grandchild_episode_ids(db: &SqlitePool, grandparent_id: Uuid) -> Vec<Uuid> {
+    sqlx::query_scalar(
+        "SELECT id FROM media WHERE grandparent_id = ? AND kind = 'episode'",
+    )
+    .bind(grandparent_id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default()
+}
+
 /// Bulk-upsert `user_media_state` rows for `media_ids` as played (play_count = 1, played_at = `now`).
 /// Existing rows with `play_count > 0` are left untouched (we only bump rows at zero).
 /// New rows are inserted; existing played rows are not regressed.
@@ -3530,8 +3514,7 @@ async fn bulk_mark_played(
     if media_ids.is_empty() {
         return;
     }
-    const CHUNK: usize = 500;
-    for chunk in media_ids.chunks(CHUNK) {
+    for chunk in media_ids.chunks(CHUNK_SIZE) {
         // Build the media_raw JSON for each id by querying the media table, then upsert.
         // For efficiency we do a single INSERT OR REPLACE per chunk using a VALUES list.
         // We use INSERT OR REPLACE so that rows with play_count=0 are overwritten.
@@ -3586,8 +3569,7 @@ async fn bulk_mark_unplayed(db: &SqlitePool, user_id: Uuid, media_ids: &[Uuid]) 
     if media_ids.is_empty() {
         return;
     }
-    const CHUNK: usize = 999;
-    for chunk in media_ids.chunks(CHUNK) {
+    for chunk in media_ids.chunks(SQLITE_VAR_LIMIT) {
         let mut qb = sqlx::QueryBuilder::new(
             "UPDATE user_media_state SET play_count = 0, played_at = NULL, playback_position = 0 \
              WHERE user_id = ",

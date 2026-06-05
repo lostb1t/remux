@@ -1,7 +1,8 @@
+use crate::{OptionExt, ResultExt};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
+use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
 use chrono::{Duration, Utc};
 use http::StatusCode;
@@ -130,7 +131,7 @@ pub async fn livetv_channel(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &channel_id)
         .await?
-        .context_not_found("not found", "channel not found")?;
+        .context_not_found("channel not found")?;
     Ok(Json(api::db_media_to_item(media)))
 }
 
@@ -540,7 +541,7 @@ pub async fn livetv_program(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &program_id)
         .await?
-        .context_not_found("not found", "program not found")?;
+        .context_not_found("program not found")?;
     let mut records = vec![media];
     db::Media::preload_parents(&state.ctx.db, &mut records).await;
     Ok(Json(api::db_media_to_item(records.remove(0))))

@@ -23,7 +23,8 @@ use crate::db;
 use crate::db::auth;
 use crate::errors::LogErr;
 use crate::sdks;
-use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
+use crate::{IntoApiError, OptionExt, ResultExt};
+use axum_anyhow::ApiResult as Result;
 use chrono::Datelike;
 use chrono::Utc;
 use sqlx::SqlitePool;
@@ -601,16 +602,16 @@ pub async fn refresh_item(
 ) -> Result<StatusCode> {
     let mut media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context_not_found("Not Found", "Item not found")?;
+        .context_not_found("Item not found")?;
 
     // If the requested item is a Source (stream), navigate to its parent.
     if media.kind == db::MediaKind::Stream {
         let parent_id = media
             .parent_id
-            .context_not_found("Not Found", "Source has no parent item")?;
+            .context_not_found("Source has no parent item")?;
         media = db::Media::get_by_id(&state.ctx.db, &parent_id)
             .await?
-            .context_not_found("Not Found", "Parent item not found")?;
+            .context_not_found("Parent item not found")?;
     }
 
     // new files
@@ -1409,11 +1410,11 @@ pub async fn update_virtual_folder(
 ) -> Result<StatusCode> {
     let media = db::Media::get_by_id(&state.ctx.db, &payload.id)
         .await?
-        .context_not_found("Not Found", "Collection not found")?;
+        .context_not_found("Collection not found")?;
 
     if media.kind != db::MediaKind::Collection {
         return Err(anyhow::anyhow!("not a collection"))
-            .context_bad_request("Bad Request", "Item is not a collection");
+            .context_bad_request("Item is not a collection");
     }
 
     let collection_media_kind = payload
@@ -1479,7 +1480,7 @@ pub async fn delete_virtual_folder(
     .into_iter()
     .find(|m| m.title == q.name);
 
-    let media = result.context_not_found("Not Found", "Collection not found")?;
+    let media = result.context_not_found("Collection not found")?;
 
     db::Media::delete(&state.ctx.db, &media.id).await?;
 
@@ -1585,7 +1586,7 @@ pub async fn update_item(
     if let Some(tags) = &payload.tags {
         set_tags(&state.ctx.db, id, tags)
             .await
-            .context_bad_request("Bad Request", "Failed to update tags")?;
+            .context_bad_request("Failed to update tags")?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1655,7 +1656,7 @@ pub async fn patch_item(
     if let Some(tags) = &payload.tags {
         set_tags(&state.ctx.db, id, tags)
             .await
-            .context_bad_request("Bad Request", "Failed to update tags")?;
+            .context_bad_request("Failed to update tags")?;
     }
 
     Ok(StatusCode::NO_CONTENT)

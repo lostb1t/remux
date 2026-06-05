@@ -35,13 +35,11 @@ impl Task for ClearImageCacheTask {
         let cache_dir = ctx.config.data_dir.join("cache").join("images");
         let mut removed = 0usize;
 
-        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
-            for entry in entries.flatten() {
-                if let Err(e) = std::fs::remove_file(entry.path()) {
-                    tracing::warn!(path = %entry.path().display(), error = %e, "failed to remove cached image");
-                } else {
-                    removed += 1;
-                }
+        for entry in super::iter_dir(&cache_dir) {
+            if let Err(e) = std::fs::remove_file(entry.path()) {
+                tracing::warn!(path = %entry.path().display(), error = %e, "failed to remove cached image");
+            } else {
+                removed += 1;
             }
         }
 

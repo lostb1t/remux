@@ -13,8 +13,9 @@ use crate::AppState;
 use crate::api;
 use crate::common::{self, get_uuid, server_id};
 use crate::db::{self, auth};
+use crate::{IntoApiError, OptionExt, ResultExt};
 use anyhow;
-use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
+use axum_anyhow::ApiResult as Result;
 
 use super::mock_items;
 
@@ -244,7 +245,7 @@ pub async fn quickconnect_initiate(
     let cfg = db::Settings::get_config(&state.ctx.db).await?;
     if !cfg.quick_connect_available.unwrap_or(true) {
         return Err(anyhow::anyhow!("QuickConnect is disabled"))
-            .context_forbidden("Forbidden", "QuickConnect is disabled on this server");
+            .context_forbidden("QuickConnect is disabled on this server");
     }
 
     let secret = get_uuid().simple().to_string();
@@ -308,7 +309,7 @@ pub async fn quickconnect_connect(
         .ctx
         .store
         .get::<QuickConnectEntry>(format!("qc:{}", q.secret))
-        .context_not_found("NotFound", "QuickConnect request not found or expired")?;
+        .context_not_found("QuickConnect request not found or expired")?;
 
     Ok(Json(api::QuickConnectResult {
         secret: q.secret.clone(),
@@ -337,13 +338,13 @@ pub async fn quickconnect_authorize(
         .ctx
         .store
         .get::<String>(format!("qc:code:{}", q.code))
-        .context_not_found("NotFound", "QuickConnect code not found or expired")?;
+        .context_not_found("QuickConnect code not found or expired")?;
 
     let entry = state
         .ctx
         .store
         .get::<QuickConnectEntry>(format!("qc:{secret}"))
-        .context_not_found("NotFound", "QuickConnect request not found or expired")?;
+        .context_not_found("QuickConnect request not found or expired")?;
 
     state.ctx.store.save(
         format!("qc:{secret}"),

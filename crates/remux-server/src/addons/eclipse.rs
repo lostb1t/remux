@@ -61,9 +61,7 @@ fn eclipse_from_cfg(
         .to_string();
     let manifest_url = StremioManifestUrl::try_new(raw_url)
         .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
-    let client = reqwest::Client::builder()
-        .user_agent("remux-server/1.0")
-        .build()?;
+    let client = super::make_http_client();
     Ok(Arc::new(EclipseAddon {
         manifest_url,
         client,

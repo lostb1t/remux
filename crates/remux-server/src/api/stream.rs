@@ -3,7 +3,8 @@ use axum::response::IntoResponse;
 use remux_macros::get;
 use uuid::Uuid;
 
-use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
+use crate::{OptionExt, ResultExt};
+use axum_anyhow::ApiResult as Result;
 
 use crate::AppState;
 use crate::db;
@@ -22,12 +23,12 @@ pub async fn stream_proxy(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context_not_found("stream", "not found")?;
+        .context_not_found("not found")?;
 
     let descriptor = media
         .stream_info
         .map(|si| si.descriptor)
-        .context_not_found("stream", "media has no URL")?;
+        .context_not_found("media has no URL")?;
 
     if let Some(addon_id) = descriptor.addon_id() {
         let addon = state
@@ -35,7 +36,7 @@ pub async fn stream_proxy(
             .addons
             .get(addon_id)
             .await
-            .context_not_found("stream", "addon not found")?;
+            .context_not_found("addon not found")?;
         return addon.kind.serve_stream(&descriptor, &headers).await;
     }
 
@@ -45,7 +46,6 @@ pub async fn stream_proxy(
             .unwrap_or_default();
         if !cfg.p2p_enabled.unwrap_or(true) {
             return Err(anyhow::anyhow!("P2P disabled")).context_bad_request(
-                "stream",
                 "P2P streams are disabled by the server administrator",
             );
         }

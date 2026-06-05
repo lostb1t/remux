@@ -1,7 +1,8 @@
+use crate::{OptionExt, ResultExt};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum_anyhow::{ApiResult as Result, OptionExt, ResultExt};
+use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
 use futures::StreamExt;
 use http::StatusCode;
@@ -35,7 +36,7 @@ pub async fn get_collection_items(
     db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .filter(|m| m.kind == db::MediaKind::Collection)
-        .context_not_found("Not Found", "Collection not found")?;
+        .context_not_found("Collection not found")?;
 
     let relations = db::MediaRelation::get_collection_items(&state.ctx.db, &id).await?;
     let total = relations.len() as i64;
@@ -87,7 +88,7 @@ pub async fn add_collection_items(
     db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .filter(|m| m.kind == db::MediaKind::Collection)
-        .context_not_found("Not Found", "Collection not found")?;
+        .context_not_found("Collection not found")?;
 
     let media_ids: Vec<Uuid> = q
         .ids
@@ -98,7 +99,7 @@ pub async fn add_collection_items(
 
     db::MediaRelation::add_collection_items(&state.ctx.db, &id, &media_ids)
         .await
-        .context_bad_request("collections", "failed to add items")?;
+        .context_bad_request("failed to add items")?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -123,7 +124,7 @@ pub async fn remove_collection_items(
     db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .filter(|m| m.kind == db::MediaKind::Collection)
-        .context_not_found("Not Found", "Collection not found")?;
+        .context_not_found("Collection not found")?;
 
     let relation_ids: Vec<Uuid> = q
         .ids
@@ -134,7 +135,7 @@ pub async fn remove_collection_items(
 
     db::MediaRelation::delete_by_relation_ids(&state.ctx.db, &relation_ids)
         .await
-        .context_bad_request("collections", "failed to remove items")?;
+        .context_bad_request("failed to remove items")?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -152,11 +153,11 @@ pub async fn move_collection_item(
     db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .filter(|m| m.kind == db::MediaKind::Collection)
-        .context_not_found("Not Found", "Collection not found")?;
+        .context_not_found("Collection not found")?;
 
     db::MediaRelation::move_collection_item(&state.ctx.db, &id, &item_id, new_index)
         .await
-        .context_bad_request("collections", "failed to move item")?;
+        .context_bad_request("failed to move item")?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -181,20 +182,20 @@ pub async fn import_catalog(
     let mut collection = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .filter(|m| m.kind == db::MediaKind::Collection)
-        .context_not_found("Not Found", "Collection not found")?;
+        .context_not_found("Collection not found")?;
 
     let addon = state
         .ctx
         .addons
         .get_catalog(body.addon_id)
         .await
-        .context_not_found("Not Found", "Addon not found or has no catalog")?;
+        .context_not_found("Addon not found or has no catalog")?;
 
     let stream = addon
         .catalog_stream(&state.ctx, &body.catalog_id)
         .await
-        .context_bad_request("collections", "addon catalog_stream failed")?
-        .context_not_found("Not Found", "Catalog not found in addon")?;
+        .context_bad_request("addon catalog_stream failed")?
+        .context_not_found("Catalog not found in addon")?;
 
     let mut items: Vec<db::Media> = Vec::new();
     let mut stream = stream;
@@ -210,7 +211,7 @@ pub async fn import_catalog(
 
     db::MediaRelation::replace_collection_items(&state.ctx.db, &id, &media_ids)
         .await
-        .context_bad_request("collections", "failed to replace collection items")?;
+        .context_bad_request("failed to replace collection items")?;
 
     // Ensure collection_kind is Manual.
     if collection.collection_kind != Some(db::CollectionKind::Manual) {
@@ -218,7 +219,7 @@ pub async fn import_catalog(
         collection
             .save(&state.ctx.db)
             .await
-            .context_bad_request("collections", "failed to update collection kind")?;
+            .context_bad_request("failed to update collection kind")?;
     }
 
     Ok(StatusCode::NO_CONTENT)

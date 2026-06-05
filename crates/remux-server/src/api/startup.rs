@@ -6,13 +6,14 @@ use remux_macros::{get, post};
 
 use crate::AppState;
 use crate::api;
-use axum_anyhow::{ApiResult as Result, IntoApiError, ResultExt};
+use crate::{IntoApiError, ResultExt};
+use axum_anyhow::ApiResult as Result;
 
 async fn require_wizard_incomplete(state: &AppState) -> Result<()> {
     let config = crate::db::Settings::get_config(&state.ctx.db).await?;
     if config.is_startup_wizard_completed.unwrap_or(false) {
         return Err(anyhow::anyhow!("forbidden")
-            .context_forbidden("forbidden", "Setup wizard is already completed."));
+            .context_forbidden("Setup wizard is already completed."));
     }
     Ok(())
 }

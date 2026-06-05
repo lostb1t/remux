@@ -12,7 +12,8 @@ use crate::api;
 use crate::common::get_uuid;
 use crate::db;
 use crate::db::auth;
-use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
+use crate::{IntoApiError, OptionExt, ResultExt};
+use axum_anyhow::ApiResult as Result;
 
 #[api_query]
 pub struct CreatePlaylistQuery {
@@ -49,7 +50,7 @@ pub async fn create_playlist(
     media
         .save(&state.ctx.db)
         .await
-        .context_bad_request("CreatePlaylist", "Failed to create playlist")?;
+        .context_bad_request("Failed to create playlist")?;
 
     if !ids.is_empty() {
         let resolved = crate::services::resolve::resolve_ids(&ids, &state.ctx).await;
@@ -73,9 +74,9 @@ pub async fn get_playlist(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await
-        .context_bad_request("GetPlaylist", "DB error")?
+        .context_bad_request("DB error")?
         .filter(|m| m.kind == db::MediaKind::Playlist)
-        .context_not_found("GetPlaylist", "Playlist not found")?;
+        .context_not_found("Playlist not found")?;
 
     let rels = db::MediaRelation::get_playlist_items(&state.ctx.db, &media.id).await?;
     let item_ids: Vec<Uuid> = rels.iter().map(|r| r.right_media_id).collect();
@@ -96,9 +97,9 @@ pub async fn update_playlist(
 ) -> Result<impl IntoResponse> {
     let mut media = db::Media::get_by_id(&state.ctx.db, &id)
         .await
-        .context_bad_request("UpdatePlaylist", "DB error")?
+        .context_bad_request("DB error")?
         .filter(|m| m.kind == db::MediaKind::Playlist)
-        .context_not_found("UpdatePlaylist", "Playlist not found")?;
+        .context_not_found("Playlist not found")?;
 
     if let Some(name) = body.name {
         media.title = name;
@@ -134,9 +135,9 @@ pub async fn get_playlist_items(
 ) -> Result<impl IntoResponse> {
     db::Media::get_by_id(&state.ctx.db, &id)
         .await
-        .context_bad_request("GetPlaylistItems", "DB error")?
+        .context_bad_request("DB error")?
         .filter(|m| m.kind == db::MediaKind::Playlist)
-        .context_not_found("GetPlaylistItems", "Playlist not found")?;
+        .context_not_found("Playlist not found")?;
 
     let relations = db::MediaRelation::get_playlist_items(&state.ctx.db, &id).await?;
     let total = relations.len() as i64;
@@ -183,9 +184,9 @@ pub async fn add_playlist_items(
 ) -> Result<impl IntoResponse> {
     db::Media::get_by_id(&state.ctx.db, &id)
         .await
-        .context_bad_request("AddPlaylistItems", "DB error")?
+        .context_bad_request("DB error")?
         .filter(|m| m.kind == db::MediaKind::Playlist)
-        .context_not_found("AddPlaylistItems", "Playlist not found")?;
+        .context_not_found("Playlist not found")?;
 
     let resolved = crate::services::resolve::resolve_ids(&q.ids, &state.ctx).await;
     db::MediaRelation::add_playlist_items(&state.ctx.db, &id, &resolved).await?;
@@ -211,7 +212,7 @@ pub async fn get_playlist_user(
     db::Media::get_by_id(&state.ctx.db, &id)
         .await?
         .filter(|m| m.kind == db::MediaKind::Playlist)
-        .context_not_found("GetPlaylistUser", "Playlist not found")?;
+        .context_not_found("Playlist not found")?;
 
     Ok(Json(serde_json::json!({
         "UserId": user_id.to_string(),
@@ -228,9 +229,9 @@ pub async fn remove_playlist_items(
 ) -> Result<impl IntoResponse> {
     db::Media::get_by_id(&state.ctx.db, &id)
         .await
-        .context_bad_request("RemovePlaylistItems", "DB error")?
+        .context_bad_request("DB error")?
         .filter(|m| m.kind == db::MediaKind::Playlist)
-        .context_not_found("RemovePlaylistItems", "Playlist not found")?;
+        .context_not_found("Playlist not found")?;
 
     db::MediaRelation::delete_by_relation_ids(&state.ctx.db, &q.entry_ids).await?;
     db::sync_playlist_media_kind(&state.ctx.db, &id).await;
@@ -246,9 +247,9 @@ pub async fn move_playlist_item(
 ) -> Result<impl IntoResponse> {
     db::Media::get_by_id(&state.ctx.db, &id)
         .await
-        .context_bad_request("MovePlaylistItem", "DB error")?
+        .context_bad_request("DB error")?
         .filter(|m| m.kind == db::MediaKind::Playlist)
-        .context_not_found("MovePlaylistItem", "Playlist not found")?;
+        .context_not_found("Playlist not found")?;
 
     db::MediaRelation::move_playlist_item(&state.ctx.db, &id, &item_id, new_index)
         .await?;

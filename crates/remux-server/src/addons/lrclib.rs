@@ -37,10 +37,7 @@ impl AddonPreset for LrcLibPreset {
         _cfg: &serde_json::Value,
         _config: &crate::Config,
     ) -> Result<Arc<dyn AddonKind>> {
-        let client = reqwest::Client::builder()
-            .user_agent("remux-server/1.0")
-            .build()
-            .expect("failed to build HTTP client");
+        let client = super::make_http_client();
         Ok(Arc::new(LrcLibAddon { client }))
     }
 }

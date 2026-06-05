@@ -23,9 +23,10 @@ use axum::{
     routing::{get, post},
 };
 use axum_anyhow::ApiError;
+use axum_anyhow::ApiResult;
 use axum_anyhow::on_error;
 use axum_anyhow::set_expose_errors;
-use axum_anyhow::{ApiResult, OptionExt, ResultExt};
+pub mod result_ext;
 use chrono::prelude::*;
 use chrono::{Duration, Utc};
 use config;
@@ -35,6 +36,7 @@ use http::Uri;
 use itertools::Itertools;
 use remux_utils::Store;
 use reqwest::header::LOCATION;
+pub use result_ext::{IntoApiError, OptionExt, ResultExt};
 use serde::Serializer;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

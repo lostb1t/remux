@@ -13,7 +13,8 @@ use crate::addons::{
     UpdateAddonCatalogRequest, UpdateAddonRequest, make_media_id, registered_presets,
 };
 use crate::db::{MediaKind as DbMediaKind, auth};
-use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
+use crate::{IntoApiError, OptionExt, ResultExt};
+use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::MediaKind;
 
 async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
@@ -93,7 +94,7 @@ pub async fn get_addon(
 ) -> Result<Json<AddonDto>> {
     let addon = Addon::get(&state.ctx.db, id)
         .await?
-        .context_not_found("Not Found", "Addon not found")?;
+        .context_not_found("Addon not found")?;
     Ok(Json(addon_to_dto(addon, &state.ctx.config).await))
 }
 
@@ -109,16 +110,16 @@ pub async fn create_addon(
         .iter()
         .find(|p| p.id() == payload.preset.kind)
         .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", payload.preset.kind))
-        .context_bad_request("Bad Request", "Unknown addon kind")?;
+        .context_bad_request("Unknown addon kind")?;
 
     let addon_id = Uuid::new_v4();
     let normalized_config = preset
         .normalize_cfg(payload.preset.config, &state.ctx.config)
-        .context_bad_request("Bad Request", "Invalid addon configuration")?;
+        .context_bad_request("Invalid addon configuration")?;
     payload.preset.config = normalized_config;
     let kind = preset
         .from_cfg(addon_id, &payload.preset.config, &state.ctx.config)
-        .context_bad_request("Bad Request", "Invalid addon configuration")?;
+        .context_bad_request("Invalid addon configuration")?;
 
     // Default resources/types to the live available set (e.g. upstream manifest for
     // Stremio/Eclipse). Call available_info() once — addons that fetch a manifest
@@ -132,9 +133,7 @@ pub async fn create_addon(
     let resources = if payload.resources.is_empty() {
         if avail_resources.is_empty() && !metadata.supported_resources.is_empty() {
             return Err(anyhow::anyhow!("addon manifest returned no resources")
-                .context_bad_request(
-                    "Bad Request",
-                    "Could not fetch addon capabilities — is the manifest URL reachable?",
+                .context_bad_request("Could not fetch addon capabilities — is the manifest URL reachable?",
                 ));
         }
         avail_resources
@@ -144,9 +143,7 @@ pub async fn create_addon(
     let types: Vec<DbMediaKind> = if payload.types.is_empty() {
         if avail_types.is_empty() && !metadata.supported_types.is_empty() {
             return Err(anyhow::anyhow!("addon manifest returned no types")
-                .context_bad_request(
-                    "Bad Request",
-                    "Could not fetch addon capabilities — is the manifest URL reachable?",
+                .context_bad_request("Could not fetch addon capabilities — is the manifest URL reachable?",
                 ));
         }
         avail_types
@@ -192,7 +189,7 @@ pub async fn update_addon(
 ) -> Result<Json<AddonDto>> {
     let mut addon = Addon::get(&state.ctx.db, id)
         .await?
-        .context_not_found("Not Found", "Addon not found")?;
+        .context_not_found("Addon not found")?;
 
     if let Some(name) = payload.name {
         addon.name = name;
@@ -216,15 +213,15 @@ pub async fn update_addon(
         .iter()
         .find(|p| p.id() == addon.preset.kind)
         .ok_or_else(|| anyhow::anyhow!("unknown addon kind: {}", addon.preset.kind))
-        .context_bad_request("Bad Request", "Unknown addon kind")?;
+        .context_bad_request("Unknown addon kind")?;
     if let Some(config) = payload.config {
         addon.preset.config = preset
             .normalize_cfg(config, &state.ctx.config)
-            .context_bad_request("Bad Request", "Invalid addon configuration")?;
+            .context_bad_request("Invalid addon configuration")?;
     }
     preset
         .from_cfg(addon.id, &addon.preset.config, &state.ctx.config)
-        .context_bad_request("Bad Request", "Invalid addon configuration")?;
+        .context_bad_request("Invalid addon configuration")?;
 
     addon.update(&state.ctx.db).await?;
     state
@@ -244,7 +241,7 @@ pub async fn delete_addon(
 ) -> Result<StatusCode> {
     let addon_row = Addon::get(&state.ctx.db, id)
         .await?
-        .context_not_found("Not Found", "Addon not found")?;
+        .context_not_found("Addon not found")?;
 
     // Purge the addon's index (removes e.g. IPTV channels) before deleting.
     if let Some(runtime) = state.ctx.addons.get(id).await {
@@ -283,7 +280,7 @@ pub async fn get_addon_catalogs(
 ) -> Result<Json<Vec<AddonCatalogDto>>> {
     let addon_row = Addon::get(&state.ctx.db, id)
         .await?
-        .context_not_found("Not Found", "Addon not found")?;
+        .context_not_found("Addon not found")?;
 
     let catalog = state
         .ctx
@@ -291,12 +288,12 @@ pub async fn get_addon_catalogs(
         .get_catalog(id)
         .await
         .ok_or_else(|| anyhow::anyhow!("addon not instantiated"))
-        .context_bad_request("Bad Request", "Addon could not be instantiated")?;
+        .context_bad_request("Addon could not be instantiated")?;
 
     let available = catalog
         .catalog_list(&state.ctx)
         .await
-        .context_internal("Catalog Error", "Failed to list addon catalogs")?;
+        .context_internal("Failed to list addon catalogs")?;
 
     let states = addon_row.catalog_states();
     let prefix = format!("addon:{id}:");
@@ -338,7 +335,7 @@ pub async fn update_addon_catalogs(
 ) -> Result<StatusCode> {
     let mut addon = Addon::get(&state.ctx.db, id)
         .await?
-        .context_not_found("Not Found", "Addon not found")?;
+        .context_not_found("Addon not found")?;
 
     let prefix = format!("addon:{id}:");
     let mut states = addon.catalog_states();

@@ -40,32 +40,29 @@ impl Task for CleanTranscodeFolderTask {
         let base = ctx.sessions.base_dir();
         let mut removed = 0usize;
 
-        if let Ok(entries) = std::fs::read_dir(base) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if !active.contains(&name) {
-                    // Kill any orphaned ffmpeg process before removing the dir.
-                    #[cfg(unix)]
-                    if let Ok(pid_str) =
-                        std::fs::read_to_string(entry.path().join(".pid"))
-                    {
-                        if let Ok(pid) = pid_str.trim().parse::<libc::pid_t>() {
-                            if pid > 0 {
-                                unsafe {
-                                    libc::kill(pid, libc::SIGCONT);
-                                    libc::kill(pid, libc::SIGKILL);
-                                }
+        for entry in super::iter_dir(base) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !active.contains(&name) {
+                // Kill any orphaned ffmpeg process before removing the dir.
+                #[cfg(unix)]
+                if let Ok(pid_str) = std::fs::read_to_string(entry.path().join(".pid"))
+                {
+                    if let Ok(pid) = pid_str.trim().parse::<libc::pid_t>() {
+                        if pid > 0 {
+                            unsafe {
+                                libc::kill(pid, libc::SIGCONT);
+                                libc::kill(pid, libc::SIGKILL);
                             }
                         }
                     }
-                    if let Err(e) = std::fs::remove_dir_all(entry.path()) {
-                        tracing::warn!(
-                            "failed to remove transcode dir {}: {e:#}",
-                            entry.path().display()
-                        );
-                    } else {
-                        removed += 1;
-                    }
+                }
+                if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                    tracing::warn!(
+                        "failed to remove transcode dir {}: {e:#}",
+                        entry.path().display()
+                    );
+                } else {
+                    removed += 1;
                 }
             }
         }

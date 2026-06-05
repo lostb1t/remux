@@ -1,6 +1,7 @@
 use axum::response::Html;
 use reqwest;
 
+use crate::{IntoApiError, OptionExt, ResultExt};
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -20,11 +21,7 @@ use axum::{
     response::Redirect,
     routing::{get, post},
 };
-use axum_anyhow::ApiError;
-use axum_anyhow::IntoApiError;
-use axum_anyhow::on_error;
-use axum_anyhow::set_expose_errors;
-use axum_anyhow::{ApiResult, OptionExt, ResultExt};
+use axum_anyhow::{ApiError, ApiResult, on_error, set_expose_errors};
 use chrono::prelude::*;
 use chrono::{Duration, Utc};
 use config;
@@ -308,10 +305,7 @@ impl FromRequestParts<AppState> for AuthSession {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let jfauth = JellyfinAuthHeader::from_request_parts(parts, state).await?;
-        let token = jfauth
-            .token
-            .as_deref()
-            .context_unauthorized("forbidden", "forbidden")?;
+        let token = jfauth.token.as_deref().context_unauthorized("forbidden")?;
         // device_id is optional — query-param-only auth (e.g. ?token=...)
         // doesn't carry a DeviceId. The device is looked up by token alone.
         let _device_id = jfauth.device_id.as_deref();
@@ -339,7 +333,7 @@ impl FromRequestParts<AppState> for AuthSession {
             let _ = device.touch(&state.ctx.db, remote_ip.as_deref()).await;
             let user = db::User::get_by_id(&state.ctx.db, &device.user_id)
                 .await?
-                .context_unauthorized("forbidden", "forbidden")?;
+                .context_unauthorized("forbidden")?;
             tracing::Span::current().record("user", user.username.as_str());
             return Ok(AuthSession { device, user });
         }
@@ -347,14 +341,14 @@ impl FromRequestParts<AppState> for AuthSession {
         // Fall back to the api_keys table. API keys are admin-scoped tokens.
         let api_key = db::ApiKey::get_by_token(&state.ctx.db, token)
             .await?
-            .context_unauthorized("forbidden", "forbidden")?;
+            .context_unauthorized("forbidden")?;
 
         let user = sqlx::query_as::<_, db::User>(
             "SELECT * FROM users WHERE is_admin = 1 LIMIT 1",
         )
         .fetch_optional(&state.ctx.db)
         .await?
-        .context_unauthorized("forbidden", "forbidden")?;
+        .context_unauthorized("forbidden")?;
 
         let synthetic_device = Device {
             id: format!("apikey-{}", api_key.access_token),
@@ -388,8 +382,7 @@ impl FromRequestParts<AppState> for AdminSession {
     ) -> Result<Self, Self::Rejection> {
         let session = AuthSession::from_request_parts(parts, state).await?;
         if !session.user.is_admin {
-            return Err(anyhow::anyhow!("forbidden")
-                .context_unauthorized("forbidden", "forbidden"));
+            return Err(anyhow::anyhow!("forbidden").context_unauthorized("forbidden"));
         }
         Ok(AdminSession(session))
     }
@@ -508,7 +501,6 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
             }
         }
 
-        Err(anyhow::anyhow!("missing auth")
-            .context_unauthorized("forbidden", "forbidden"))
+        Err(anyhow::anyhow!("missing auth").context_unauthorized("forbidden"))
     }
 }

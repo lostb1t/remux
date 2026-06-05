@@ -1,3 +1,4 @@
+use crate::ResultExt;
 /// Axum extractor for Jellyfin-style image uploads.
 ///
 /// Jellyfin clients POST images as a **base64-encoded** body (optionally
@@ -16,7 +17,7 @@
 use axum::body::Bytes;
 use axum::extract::FromRequest;
 use axum::extract::Request;
-use axum_anyhow::{ApiError, ResultExt};
+use axum_anyhow::ApiError;
 use base64::Engine;
 
 pub struct JellyfinImage {
@@ -80,7 +81,7 @@ where
     async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
         let body = axum::body::to_bytes(req.into_body(), 50 * 1024 * 1024)
             .await
-            .context_internal("failed to read request body", "body read error")?;
+            .context_internal("body read error")?;
 
         let decoded = decode_body(&body);
         let content_type = detect_content_type(&decoded);

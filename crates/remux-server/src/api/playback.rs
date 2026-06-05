@@ -37,7 +37,8 @@ use crate::sdks;
 use crate::services::resolve::resolve_item;
 use crate::torrent;
 use crate::transcode::session::{TranscodeSession, TranscodeState};
-use axum_anyhow::{ApiResult as Result, IntoApiError, OptionExt, ResultExt};
+use crate::{IntoApiError, OptionExt, ResultExt};
+use axum_anyhow::ApiResult as Result;
 
 /// Some Stremio addons expose `aiostreams` as an internal hostname not
 /// resolvable from the Remux process. If the user has at least one
@@ -86,7 +87,7 @@ async fn items_playbackinfo_inner(
 
     let mut media = resolve_item(media_source_id.unwrap_or(id), &state.ctx)
         .await?
-        .context_not_found("not found", "not found")?;
+        .context_not_found("not found")?;
 
     // When a StreamGroup UUID is requested, resolve it to the group's best candidate
     // and keep all candidates (including subsequent groups) for probe fallback scope.
@@ -689,7 +690,7 @@ async fn probe_with_fallback(
     port: u16,
     db: &sqlx::SqlitePool,
 ) -> axum_anyhow::ApiResult<api::MediaSourceInfo> {
-    use axum_anyhow::{IntoApiError, ResultExt};
+    use crate::{IntoApiError, ResultExt};
 
     let candidates: Vec<(db::Media, String)> = if auto_next_stream {
         let pri_p2p = primary.stream_info.as_ref().map_or(false, |si| si.is_p2p());
@@ -741,7 +742,7 @@ async fn probe_with_fallback(
             Some(u) => u,
             None => {
                 return Err(anyhow!("stream has no URL"))
-                    .context_internal("probe", "stream has no URL");
+                    .context_internal("stream has no URL");
             }
         };
         if is_retry {
@@ -795,7 +796,7 @@ async fn probe_with_fallback(
         "all probe attempts failed for stream {}",
         primary.id
     ))
-    .context_internal("probe", "stream probe failed — no usable streams found")
+    .context_internal("stream probe failed — no usable streams found")
 }
 
 /// Starts a direct playback for the given media UUID.
@@ -875,7 +876,7 @@ async fn videos_stream_inner(
     let mut media =
         db::Media::get_by_id(&state.ctx.db, &q.media_source_id.unwrap_or(id))
             .await?
-            .context_not_found("not found", "not found")?;
+            .context_not_found("not found")?;
 
     if media.kind == db::MediaKind::Movie
         || media.kind == db::MediaKind::Episode
@@ -888,13 +889,13 @@ async fn videos_stream_inner(
             None
         }
         .or_else(|| sources.into_iter().next())
-        .context_not_found("not found", "no playable source found")?;
+        .context_not_found("no playable source found")?;
     }
 
     let descriptor = media
         .stream_info
         .map(|si| si.descriptor)
-        .context_not_found("no url", "media source has no URL")?;
+        .context_not_found("media source has no URL")?;
 
     // Direct play: serve bytes directly through the StreamSource trait.
     // This handles HTTP, local files, torrents, and opendal without going through
@@ -906,7 +907,7 @@ async fn videos_stream_inner(
                 .addons
                 .get(addon_id)
                 .await
-                .context_not_found("stream", "addon not found")?;
+                .context_not_found("addon not found")?;
             addon.kind.serve_stream(&descriptor, &headers).await?
         } else {
             descriptor
@@ -1073,12 +1074,9 @@ pub async fn report_playback_start(
         .map_err(|e| {
             // Re-raise stream-limit errors as 403 Forbidden; everything else as 500.
             if e.to_string().contains("Stream limit reached") {
-                e.context_forbidden(
-                    "StreamLimitReached",
-                    "Maximum concurrent streams reached",
-                )
+                e.context_forbidden("Maximum concurrent streams reached")
             } else {
-                e.context_internal("playback_start", "failed to start session")
+                e.context_internal("failed to start session")
             }
         })?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -1924,7 +1922,7 @@ pub async fn report_playback_progress(
             .sessions
             .progress(&state.ctx.db, &session.user, psid, &data)
             .await
-            .context_internal("playback_progress", "failed to update progress")?;
+            .context_internal("failed to update progress")?;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -1941,7 +1939,7 @@ pub async fn report_playback_stopped(
             .sessions
             .stopped(&state.ctx.db, &session.user, psid, &data)
             .await
-            .context_internal("playback_stopped", "failed to record stop")?;
+            .context_internal("failed to record stop")?;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -2272,7 +2270,7 @@ pub async fn user_mark_played(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context_not_found("not found", "not found")?;
+        .context_not_found("not found")?;
     let ms = media
         .mark_played(&state.ctx.db, &session.user, true)
         .await?;
@@ -2287,7 +2285,7 @@ pub async fn user_unmark_played(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context_not_found("not found", "not found")?;
+        .context_not_found("not found")?;
     let ms = media
         .mark_unplayed(&state.ctx.db, &session.user, true)
         .await?;
@@ -2357,17 +2355,17 @@ pub async fn master_hls_video(
         let media_source_id = q.media_source_id.unwrap_or(id);
         let media = db::Media::get_by_id(&state.ctx.db, &media_source_id)
             .await?
-            .context_not_found("not found", "media not found")?;
+            .context_not_found("media not found")?;
 
         let mut resolved_media = media.clone();
         if resolved_media.kind == db::MediaKind::StreamGroup {
             let gid = resolved_media.id;
             let candidates =
                 db::StreamGroup::streams_for(&state.ctx.db, &gid, &id).await?;
-            resolved_media = candidates.into_iter().next().context_not_found(
-                "not found",
-                "no streams available for this group",
-            )?;
+            resolved_media = candidates
+                .into_iter()
+                .next()
+                .context_not_found("no streams available for this group")?;
         }
         if matches!(
             resolved_media.kind,
@@ -2380,13 +2378,13 @@ pub async fn master_hls_video(
                 None
             }
             .or_else(|| sources.into_iter().next())
-            .context_not_found("not found", "no playable source found")?;
+            .context_not_found("no playable source found")?;
         } else if resolved_media.kind == db::MediaKind::Track {
             let sources = resolved_media.streams(&state.ctx.db).await?;
             resolved_media = sources
                 .into_iter()
                 .next()
-                .context_not_found("not found", "no stream found for track")?;
+                .context_not_found("no stream found for track")?;
         }
 
         let input_url = resolved_media
@@ -2396,7 +2394,7 @@ pub async fn master_hls_video(
                 si.descriptor
                     .server_input(resolved_media.id, state.ctx.config.port)
             })
-            .context_not_found("no url", "media source has no URL")?;
+            .context_not_found("media source has no URL")?;
 
         let output_dir =
             std::path::PathBuf::from("transcode_sessions").join(&play_session_id);
@@ -2635,13 +2633,13 @@ async fn variant_hls_video_inner(
 ) -> Result<impl IntoResponse> {
     let play_session_id = q
         .play_session_id
-        .context_not_found("missing", "PlaySessionId is required")?;
+        .context_not_found("PlaySessionId is required")?;
 
     let session = state
         .ctx
         .sessions
         .get_transcode(&play_session_id)
-        .context_not_found("not found", "transcode session not found")?;
+        .context_not_found("transcode session not found")?;
 
     // Keep the session alive.
     state.ctx.sessions.ping(&play_session_id);
@@ -2803,7 +2801,7 @@ async fn hls_segment_inner(
 ) -> Result<impl IntoResponse> {
     let play_session_id = q
         .play_session_id
-        .context_not_found("missing", "PlaySessionId is required")?;
+        .context_not_found("PlaySessionId is required")?;
 
     trace!(
         segment_id = %segment_id,
@@ -2834,7 +2832,7 @@ async fn hls_segment_inner(
             }
         }
         if !init_path.exists() {
-            None::<()>.context_not_found("not found", "fMP4 init segment not ready")?;
+            None::<()>.context_not_found("fMP4 init segment not ready")?;
         }
         state.ctx.sessions.ping(&play_session_id);
         let file = tokio::fs::File::open(&init_path).await?;
@@ -3061,18 +3059,15 @@ async fn hls_segment_inner(
 
     if !segment_path.exists() {
         if session.is_none() {
-            None::<()>.context_not_found(
-                "not found",
-                &format!(
-                    "transcode session {} gone and segment {} not on disk",
-                    play_session_id, segment_id
-                ),
-            )?;
+            None::<()>.context_not_found(&format!(
+                "transcode session {} gone and segment {} not on disk",
+                play_session_id, segment_id
+            ))?;
         }
-        None::<()>.context_not_found(
-            "not found",
-            &format!("segment {} not ready after timeout", segment_id),
-        )?;
+        None::<()>.context_not_found(&format!(
+            "segment {} not ready after timeout",
+            segment_id
+        ))?;
     }
 
     // Keep the session alive — the segment request counts as activity.
@@ -3134,7 +3129,7 @@ pub async fn audio_universal(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &id)
         .await?
-        .context_not_found("not found", "track not found")?;
+        .context_not_found("track not found")?;
 
     let play_session_id = q
         .play_session_id
@@ -3226,7 +3221,7 @@ pub async fn subtitles_stream(
 
     let mut media = db::Media::get_by_id(&state.ctx.db, &media_source_id)
         .await?
-        .context_not_found("not found", "media source not found")?;
+        .context_not_found("media source not found")?;
 
     if matches!(
         media.kind,
@@ -3236,7 +3231,7 @@ pub async fn subtitles_stream(
             .streams(&state.ctx.db)
             .await?
             .get(0)
-            .context_not_found("not found", "no sources found")?
+            .context_not_found("no sources found")?
             .clone();
     }
 
@@ -3244,7 +3239,7 @@ pub async fn subtitles_stream(
         .stream_info
         .as_ref()
         .map(|si| si.descriptor.server_input(media.id, state.ctx.config.port))
-        .context_not_found("no url", "media source has no URL")?;
+        .context_not_found("media source has no URL")?;
 
     let output_format = format.to_ascii_lowercase();
     let (ffmpeg_format, content_type) = match output_format.as_str() {

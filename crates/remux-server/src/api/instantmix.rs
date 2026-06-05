@@ -1,7 +1,8 @@
+use crate::OptionExt;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum_anyhow::{ApiResult as Result, OptionExt};
+use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
 use remux_macros::{api_query, get};
 use uuid::Uuid;
@@ -98,7 +99,7 @@ pub async fn instant_mix_song(
 ) -> Result<impl IntoResponse> {
     let track = db::Media::get_by_id(&state.ctx.db, &item_id)
         .await?
-        .context_not_found("Not Found", "Song not found")?;
+        .context_not_found("Song not found")?;
 
     let genre_ids = genre_ids_for(&state.ctx.db, track.id).await;
     let artist_ids = track.grandparent_id.into_iter().collect();
@@ -120,7 +121,7 @@ pub async fn instant_mix_album(
 ) -> Result<impl IntoResponse> {
     let album = db::Media::get_by_id(&state.ctx.db, &item_id)
         .await?
-        .context_not_found("Not Found", "Album not found")?;
+        .context_not_found("Album not found")?;
 
     let genre_ids = genre_ids_for(&state.ctx.db, album.id).await;
     let artist_ids = album.parent_id.into_iter().collect();
@@ -142,7 +143,7 @@ pub async fn instant_mix_artist(
 ) -> Result<impl IntoResponse> {
     db::Media::get_by_id(&state.ctx.db, &item_id)
         .await?
-        .context_not_found("Not Found", "Artist not found")?;
+        .context_not_found("Artist not found")?;
 
     let items = build_mix(&state.ctx, &session, vec![], vec![item_id], q.limit).await?;
     Ok(mix_response(items))
@@ -161,7 +162,7 @@ pub async fn instant_mix_playlist(
 ) -> Result<impl IntoResponse> {
     db::Media::get_by_id(&state.ctx.db, &item_id)
         .await?
-        .context_not_found("Not Found", "Playlist not found")?;
+        .context_not_found("Playlist not found")?;
 
     // Fetch tracks in the playlist to gather their genres and artists.
     let tracks = db::Media::get_by_filter(
@@ -209,7 +210,7 @@ pub async fn instant_mix_item(
 ) -> Result<impl IntoResponse> {
     let media = db::Media::get_by_id(&state.ctx.db, &item_id)
         .await?
-        .context_not_found("Not Found", "Item not found")?;
+        .context_not_found("Item not found")?;
 
     let (genre_ids, artist_ids) = match media.kind {
         db::MediaKind::Track => {
@@ -251,7 +252,7 @@ pub async fn instant_mix_genre(
     .bind(&name)
     .fetch_optional(&state.ctx.db)
     .await?
-    .context_not_found("Not Found", "Genre not found")?;
+    .context_not_found("Genre not found")?;
 
     let items = build_mix(&state.ctx, &session, vec![genre], vec![], q.limit).await?;
     Ok(mix_response(items))

@@ -266,6 +266,13 @@ impl From<crate::stream::StreamInfo> for db::Media {
 pub struct AddonPresetRegistration(pub fn() -> Box<dyn AddonPreset>);
 inventory::collect!(AddonPresetRegistration);
 
+pub(super) fn make_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("remux-server/1.0")
+        .build()
+        .expect("failed to build HTTP client")
+}
+
 pub fn registered_presets() -> Vec<Box<dyn AddonPreset>> {
     inventory::iter::<AddonPresetRegistration>
         .into_iter()
@@ -658,7 +665,6 @@ impl AddonService {
             return None;
         }
         let addon = r.kind.clone();
-        drop(guard);
         Some(Box::new(AddonCatalogStream {
             addon,
             local_id: local_id.to_string(),

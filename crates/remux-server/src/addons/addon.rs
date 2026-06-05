@@ -36,21 +36,22 @@ pub struct Addon {
     pub updated_at: NaiveDateTime,
 }
 
+const ADDON_COLS: &str =
+    "id, name, preset, resources, types, enabled, priority, created_at, updated_at";
+
 impl Addon {
     pub async fn list(db: &SqlitePool) -> Result<Vec<Self>> {
-        Ok(sqlx::query_as::<_, Self>(
-            "SELECT id, name, preset, resources, types, enabled, priority, created_at, updated_at \
-             FROM addons ORDER BY priority ASC, created_at ASC",
-        )
+        Ok(sqlx::query_as::<_, Self>(&format!(
+            "SELECT {ADDON_COLS} FROM addons ORDER BY priority ASC, created_at ASC"
+        ))
         .fetch_all(db)
         .await?)
     }
 
     pub async fn get(db: &SqlitePool, id: Uuid) -> Result<Option<Self>> {
-        Ok(sqlx::query_as::<_, Self>(
-            "SELECT id, name, preset, resources, types, enabled, priority, created_at, updated_at \
-             FROM addons WHERE id = ?1",
-        )
+        Ok(sqlx::query_as::<_, Self>(&format!(
+            "SELECT {ADDON_COLS} FROM addons WHERE id = ?1"
+        ))
         .bind(id)
         .fetch_optional(db)
         .await?)

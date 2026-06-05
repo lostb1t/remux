@@ -1,8 +1,9 @@
+use crate::ResultExt;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::HeaderMap;
 use axum::response::Response;
-use axum_anyhow::{ApiResult as Result, ResultExt};
+use axum_anyhow::ApiResult as Result;
 use futures_util::TryStreamExt;
 use std::io;
 use std::path::PathBuf;
@@ -267,7 +268,7 @@ impl StreamSource for HttpSource {
         let upstream = req
             .send()
             .await
-            .context_bad_request("stream", "upstream request failed")?;
+            .context_bad_request("upstream request failed")?;
 
         let status = upstream.status();
         let upstream_headers = upstream.headers().clone();
@@ -300,11 +301,11 @@ impl StreamSource for LocalSource {
     async fn serve(&self, _state: &AppState, headers: &HeaderMap) -> Result<Response> {
         let file = tokio::fs::File::open(&self.path)
             .await
-            .context_not_found("stream", "file not found")?;
+            .context_not_found("file not found")?;
         let metadata = file
             .metadata()
             .await
-            .context_bad_request("stream", "failed to read file metadata")?;
+            .context_bad_request("failed to read file metadata")?;
         let file_size = metadata.len();
         let content_type = mime_from_path(&self.path);
 
@@ -315,13 +316,13 @@ impl StreamSource for LocalSource {
 
         if let Some(range) = range_str {
             let (start, end) = parse_range(&range, file_size)
-                .context_bad_request("stream", "invalid Range header")?;
+                .context_bad_request("invalid Range header")?;
             let length = end - start + 1;
 
             let mut file = file;
             file.seek(std::io::SeekFrom::Start(start))
                 .await
-                .context_bad_request("stream", "seek failed")?;
+                .context_bad_request("seek failed")?;
 
             let body = Body::from_stream(ReaderStream::new(file.take(length)));
 
@@ -358,7 +359,7 @@ impl StreamSource for TorrentSource {
             .torrent
             .resolve_url(&self.to_magnet())
             .await
-            .context_bad_request("stream", "failed to resolve torrent")?;
+            .context_bad_request("failed to resolve torrent")?;
 
         HttpSource {
             url: resolved,
