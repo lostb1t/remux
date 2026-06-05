@@ -44,8 +44,6 @@ impl Task for RefreshLibraryTask {
             .and_then(|c| c.catalog_max_items)
             .unwrap_or(250) as usize;
 
-        // Phase 0 (0–20%): refresh addon file indexes first so that index-based
-        // catalogs have up-to-date content before catalog import runs.
         ctx.addons
             .refresh_indexes(&ctx, progress.scaled(0.0, 20.0))
             .await?;
@@ -54,7 +52,6 @@ impl Task for RefreshLibraryTask {
         let total_work = addons.len().max(1);
         let mut valid_pairs: HashSet<(String, String)> = HashSet::new();
 
-        // Phase 1 (20–70%): import each catalog; metadata is fetched per chunk inside import_catalog_items
         let catalog_progress = progress.scaled(20.0, 70.0);
         for (addon_idx, runtime) in addons.iter().enumerate() {
             let addon_progress = catalog_progress.step(addon_idx, total_work);
@@ -180,7 +177,6 @@ impl Task for RefreshLibraryTask {
 
         remove_stale_catalog_memberships(&ctx.db, &valid_pairs).await;
 
-        // Phase 2 (70–100%): refresh metadata for remaining stale media
         const CHUNK_SIZE: u32 = 100;
         let mut total: Option<u32> = None;
         let mut processed = 0u32;

@@ -35,7 +35,6 @@ impl Task for CleanTranscodeFolderTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
-        // --- transcode dirs ---
         let active: HashSet<String> =
             ctx.sessions.active_session_ids().into_iter().collect();
         let base = ctx.sessions.base_dir();
@@ -74,7 +73,6 @@ impl Task for CleanTranscodeFolderTask {
 
         progress.set(50.0);
 
-        // --- torrents ---
         // Collect torrent IDs currently being streamed by active sessions so we
         // don't pull the rug out from under an in-progress playback.
         let mut active_torrent_ids = HashSet::new();

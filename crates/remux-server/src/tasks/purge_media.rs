@@ -56,9 +56,8 @@ impl Task for PurgeMediaTask {
             sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
             let t2 = Instant::now();
 
-            // --- Save survivors (non-purge rows) for every table we'll truncate.
-            //     These IN subqueries use existing media_id indexes — fast even for
-            //     large child tables since _keep has only ~1,200 rows.
+            // These IN subqueries use existing media_id indexes — fast even for
+            // large child tables since _keep has only ~1,200 rows.
             sqlx::query(&format!(
                 "CREATE TEMP TABLE _keep AS \
                  SELECT * FROM media WHERE kind NOT IN ({PURGE_KINDS})"

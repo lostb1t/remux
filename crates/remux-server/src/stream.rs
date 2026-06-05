@@ -12,8 +12,6 @@ use uuid::Uuid;
 
 use crate::AppState;
 
-// ── StreamDescriptor (data) ───────────────────────────────────────────────────
-
 /// Typed representation of how a stream is accessed (transport mechanism).
 ///
 /// Each variant maps to a [`StreamSource`] implementation via [`into_source`],
@@ -148,8 +146,6 @@ impl StreamDescriptor {
     }
 }
 
-// ── StreamInfo (stream + metadata) ───────────────────────────────────────────
-
 /// Combined stream descriptor and provider metadata stored in `db::Media.stream_info`.
 ///
 /// Replaces the old split between `db::Media.url` (transport) and
@@ -196,8 +192,6 @@ impl StreamInfo {
     }
 }
 
-// ── StreamSource (service trait) ──────────────────────────────────────────────
-
 /// A runtime service that can serve stream bytes as an HTTP response.
 ///
 /// Implemented by self-contained variants (`Http`, `Local`, `Torrent`).
@@ -206,8 +200,6 @@ impl StreamInfo {
 pub trait StreamSource: Send + Sync {
     async fn serve(&self, state: &AppState, headers: &HeaderMap) -> Result<Response>;
 }
-
-// ── Concrete implementations ──────────────────────────────────────────────────
 
 pub struct HttpSource {
     pub url: String,
@@ -377,8 +369,6 @@ impl StreamSource for TorrentSource {
         .await
     }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 pub fn parse_range(range: &str, file_size: u64) -> anyhow::Result<(u64, u64)> {
     let bytes = range

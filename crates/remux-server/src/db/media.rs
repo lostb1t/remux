@@ -1092,7 +1092,6 @@ impl Media {
             return;
         }
 
-        // Batch-load images for all parent records.
         let mut parent_images =
             super::image::MediaImage::get_for_media_ids(db, &ids_needed)
                 .await
@@ -2265,7 +2264,6 @@ impl Media {
 
         let mut records = records_result?;
 
-        // Batch-load tags for all fetched records
         if !records.is_empty() {
             let ids: Vec<Uuid> = records.iter().map(|m| m.id).collect();
             let mut tags_qb = sqlx::QueryBuilder::new(
@@ -2289,7 +2287,6 @@ impl Media {
                 }
             }
 
-            // Batch-load images
             let mut images_map = MediaImage::get_for_media_ids(db, &ids)
                 .await
                 .unwrap_or_default();
@@ -2298,7 +2295,6 @@ impl Media {
             }
         }
 
-        // Batch-load genre and person relations for Movie/Episode/Series/Season records
         let rel_ids: Vec<Uuid> = records
             .iter()
             .filter(|m| {
@@ -2362,7 +2358,6 @@ impl Media {
                             .or_default()
                             .push((rel, related));
                     }
-                    // Batch-load images for the related nodes (persons, genres)
                     let related_ids: Vec<Uuid> = rels_map
                         .values()
                         .flat_map(|v| v.iter().map(|(_, m)| m.id))

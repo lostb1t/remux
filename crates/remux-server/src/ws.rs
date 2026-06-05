@@ -12,10 +12,6 @@ use crate::common::get_uuid;
 use crate::db;
 use crate::db::auth::AuthSession;
 
-// ---------------------------------------------------------------------------
-// Message type constants
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(transparent)]
 pub struct SessionMessageType(pub i32);
@@ -30,10 +26,6 @@ impl SessionMessageType {
     pub const SESSIONS_STOP: Self = Self(30);
     pub const KEEP_ALIVE: Self = Self(33);
 }
-
-// ---------------------------------------------------------------------------
-// Wire message types
-// ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -51,20 +43,12 @@ struct InboundMessage {
     data: Option<serde_json::Value>,
 }
 
-// ---------------------------------------------------------------------------
-// Broadcast event enum
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub enum WsEvent {
     UserUpdated(Uuid),
     UserDeleted(Uuid),
     LibraryChanged,
 }
-
-// ---------------------------------------------------------------------------
-// Route handler
-// ---------------------------------------------------------------------------
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -73,10 +57,6 @@ pub async fn ws_handler(
 ) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_socket(socket, state, session))
 }
-
-// ---------------------------------------------------------------------------
-// Connection loop
-// ---------------------------------------------------------------------------
 
 async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSession) {
     let mut event_rx = state.ctx.ws_tx.subscribe();
@@ -88,7 +68,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSes
         let tick_at = sessions_deadline;
 
         tokio::select! {
-            // ---- Incoming frame from client ----
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
@@ -116,7 +95,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSes
                 }
             }
 
-            // ---- Sessions ticker ----
             _ = async {
                 match tick_at {
                     Some(at) => tokio::time::sleep_until(at).await,
@@ -130,7 +108,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSes
                 sessions_deadline = Some(Instant::now() + Duration::from_millis(sessions_interval_ms));
             }
 
-            // ---- Broadcast events ----
             result = event_rx.recv() => {
                 match result {
                     Ok(WsEvent::UserUpdated(user_id)) => {
@@ -156,10 +133,6 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSes
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 async fn send_msg<T: Serialize>(
     socket: &mut WebSocket,

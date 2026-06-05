@@ -56,10 +56,6 @@ impl PlaybackSessionManager {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // High-level session lifecycle methods (called by API handlers)
-    // -------------------------------------------------------------------------
-
     /// Handle a `POST /sessions/playing` report.
     ///
     /// Enforces the per-user session limit, resolves the optional StreamGroup
@@ -347,10 +343,6 @@ impl PlaybackSessionManager {
         debug!(play_session_id = psid, "Playback stopped");
         Ok(())
     }
-
-    // -------------------------------------------------------------------------
-    // Low-level session management (unchanged public API)
-    // -------------------------------------------------------------------------
 
     /// Insert (or replace) a playback session, preserving any transcode that was
     /// pre-attached before `report_playback_start` fired.

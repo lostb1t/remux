@@ -132,7 +132,6 @@ pub async fn shows_nextup(
         return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
     }
 
-    // Batch-load play states for this user
     let media_ids: Vec<Uuid> = episodes.iter().map(|e| e.id).collect();
 
     let states: HashMap<Uuid, db::UserMediaState> = if media_ids.is_empty() {
@@ -247,7 +246,6 @@ async fn shows_nextup_all(
 
     let series_ids: Vec<Uuid> = active_series.into_iter().map(|(id,)| id).collect();
 
-    // Batch-load all episodes for all active series in one query.
     let mut ep_qb =
         sqlx::QueryBuilder::new("SELECT * FROM media WHERE grandparent_id IN (");
     {
@@ -263,8 +261,6 @@ async fn shows_nextup_all(
     let all_episodes: Vec<db::Media> =
         ep_qb.build_query_as().fetch_all(&state.ctx.db).await?;
 
-    // Batch-load all user states for all those episodes in one query (chunked to stay
-    // within SQLite's 999-variable limit).
     let all_ep_ids: Vec<Uuid> = all_episodes.iter().map(|e| e.id).collect();
     let mut states_map: HashMap<Uuid, db::UserMediaState> = HashMap::new();
     for chunk in all_ep_ids.chunks(900) {
@@ -324,7 +320,6 @@ async fn shows_nextup_all(
         return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
     }
 
-    // Batch-load parents and images for all next episodes in two queries.
     db::Media::preload_parents(&state.ctx.db, &mut next_eps).await;
     let next_ep_ids: Vec<Uuid> = next_eps.iter().map(|e| e.id).collect();
     let mut images_map = db::MediaImage::get_for_media_ids(&state.ctx.db, &next_ep_ids)

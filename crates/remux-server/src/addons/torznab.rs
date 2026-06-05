@@ -79,10 +79,6 @@ impl AddonPreset for TorznabPreset {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Addon instance
-// ---------------------------------------------------------------------------
-
 pub struct TorznabAddon {
     url: String,
     name: String,
@@ -302,10 +298,6 @@ impl TorznabAddon {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Search descriptor
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 struct MediaSearch {
     title: String,
@@ -313,10 +305,6 @@ struct MediaSearch {
     title_tokens: Vec<String>,
     extra_tokens: Vec<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Torznab item
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default)]
 struct TorznabItem {
@@ -376,10 +364,6 @@ impl TorznabItem {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Scoring & matching
-// ---------------------------------------------------------------------------
-
 fn score_item(item: &TorznabItem, search: &MediaSearch) -> i64 {
     let norm = normalize_for_match(&item.title);
     let mut score = 0i64;
@@ -419,10 +403,6 @@ fn score_item(item: &TorznabItem, search: &MediaSearch) -> i64 {
 fn item_matches_title(item: &TorznabItem, search: &MediaSearch) -> bool {
     contains_all_tokens(&normalize_for_match(&item.title), &search.title_tokens)
 }
-
-// ---------------------------------------------------------------------------
-// XML parsing
-// ---------------------------------------------------------------------------
 
 fn parse_torznab_items(bytes: &[u8]) -> Result<Vec<TorznabItem>> {
     let mut reader = Reader::from_reader(bytes);
@@ -560,10 +540,6 @@ enum Field {
     Size,
 }
 
-// ---------------------------------------------------------------------------
-// Quality / format inference
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy)]
 enum AudioFormatHint {
     Flac,
@@ -649,10 +625,6 @@ fn infer_quality(title: &str) -> Option<&'static str> {
         })
         .or_else(|| infer_video_quality(title))
 }
-
-// ---------------------------------------------------------------------------
-// String utilities
-// ---------------------------------------------------------------------------
 
 fn significant_tokens(input: &str) -> Vec<String> {
     normalize_for_match(input)
@@ -742,10 +714,6 @@ fn build_client() -> reqwest::Client {
         .build()
         .expect("failed to build HTTP client")
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

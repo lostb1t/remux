@@ -13,10 +13,6 @@ use crate::services::stremio as stremio_service;
 use crate::stream::{StreamDescriptor, StreamInfo};
 use crate::{AppContext, db};
 
-// ---------------------------------------------------------------------------
-// Eclipse API response models
-// ---------------------------------------------------------------------------
-
 #[derive(Deserialize)]
 struct EclipseSearchResponse {
     tracks: Vec<EclipseTrack>,
@@ -36,10 +32,6 @@ struct EclipseStreamResponse {
     url: String,
     quality: String,
 }
-
-// ---------------------------------------------------------------------------
-// Preset registration
-// ---------------------------------------------------------------------------
 
 fn eclipse_preset_options(
     default_url: &'static str,
@@ -77,8 +69,6 @@ fn eclipse_from_cfg(
         client,
     }))
 }
-
-// ── Monochrome ───────────────────────────────────────────────────────────────
 
 const MONOCHROME_URL: &str = "https://monochrome1.cyrusna29.workers.dev/u/206f62ce5c9a5c710f2178a16238/manifest.json";
 const MONOCHROME_GENERATE_URL: &str = "https://monochrome1.cyrusna29.workers.dev";
@@ -120,8 +110,6 @@ impl AddonPreset for EclipsePreset {
     }
 }
 
-// ── SpotiFLAC ────────────────────────────────────────────────────────────────
-
 const SPOTIFLAC_URL: &str =
     "https://spotiflac.eclipsemusic.app/5baa7290b334d6e2/manifest.json";
 const SPOTIFLAC_GENERATE_URL: &str = "https://spotiflac.eclipsemusic.app";
@@ -162,10 +150,6 @@ impl AddonPreset for SpotiFLACPreset {
         eclipse_from_cfg(SPOTIFLAC_URL, cfg)
     }
 }
-
-// ---------------------------------------------------------------------------
-// AddonKind implementation
-// ---------------------------------------------------------------------------
 
 pub struct EclipseAddon {
     manifest_url: StremioManifestUrl,
@@ -215,10 +199,6 @@ impl AddonKind for EclipseAddon {
         eclipse_streams(&self.client, self.base_url(), media, ctx).await
     }
 }
-
-// ---------------------------------------------------------------------------
-// Stream resolution
-// ---------------------------------------------------------------------------
 
 async fn eclipse_streams(
     client: &reqwest::Client,
