@@ -178,22 +178,16 @@ impl StreamInfo {
         matches!(self.descriptor, StreamDescriptor::Torrent { .. })
     }
 
-    /// Extract a resolution tag ("2160p", "1080p", "720p", etc.) from the
-    /// filename or name for use in next-stream matching on probe failure.
-    pub fn resolution_tag(&self) -> Option<&'static str> {
+    pub fn resolution_tag(&self) -> Option<String> {
         let src = self
             .filename
             .as_deref()
             .or(self
                 .name
                 .as_deref())?;
-        let lower = src.to_lowercase();
-        for tag in ["2160p", "4k", "1080p", "720p", "480p", "360p"] {
-            if lower.contains(tag) {
-                return Some(tag);
-            }
-        }
-        None
+        hunch::hunch(src)
+            .screen_size()
+            .map(|s| s.to_owned())
     }
 }
 

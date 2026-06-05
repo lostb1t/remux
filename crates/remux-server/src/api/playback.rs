@@ -35,7 +35,7 @@ use crate::{
 
 use crate::{
     IntoApiError, OptionExt, ResultExt,
-    profile::DeviceProfileExt,
+    device_profile::DeviceProfileExt,
     sdks,
     services::resolve::resolve_item,
     torrent,

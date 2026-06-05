@@ -43,9 +43,9 @@ use url::Url;
 use uuid::Uuid;
 
 mod conversions;
+pub mod device_profile;
 mod errors;
 mod keyed_lock;
-pub mod profile;
 pub mod sdks {
     pub use remux_sdks::*;
 }

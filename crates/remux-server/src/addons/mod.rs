@@ -217,50 +217,9 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
     fill!(idx);
     fill!(parent_idx);
 
-    let mut merged_ids = target
+    target
         .external_ids
-        .clone();
-    if source
-        .external_ids
-        .imdb
-        .is_some()
-        && (replace
-            || merged_ids
-                .imdb
-                .is_none())
-    {
-        merged_ids.imdb = source
-            .external_ids
-            .imdb
-            .clone();
-    }
-    if source
-        .external_ids
-        .tmdb
-        .is_some()
-        && (replace
-            || merged_ids
-                .tmdb
-                .is_none())
-    {
-        merged_ids.tmdb = source
-            .external_ids
-            .tmdb;
-    }
-    if source
-        .external_ids
-        .tvdb
-        .is_some()
-        && (replace
-            || merged_ids
-                .tvdb
-                .is_none())
-    {
-        merged_ids.tvdb = source
-            .external_ids
-            .tvdb;
-    }
-    target.external_ids = merged_ids;
+        .merge(&source.external_ids, replace);
 }
 
 pub(crate) fn apply_title_format(media: &mut db::Media) {

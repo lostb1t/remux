@@ -793,40 +793,19 @@ impl ExternalIds {
                 .is_none()
     }
 
-    /// Merge another `ExternalIds` into `self`, with `other` taking precedence
-    /// for any field that is `Some`.
-    pub fn merge(mut self, other: Self) -> Self {
-        if other
-            .imdb
-            .is_some()
-        {
-            self.imdb = other.imdb;
-        }
-        if other
-            .series_imdb
-            .is_some()
-        {
-            self.series_imdb = other.series_imdb;
-        }
-        if other
-            .tmdb
-            .is_some()
-        {
-            self.tmdb = other.tmdb;
-        }
-        if other
-            .series_tmdb
-            .is_some()
-        {
-            self.series_tmdb = other.series_tmdb;
-        }
-        if other
-            .tvdb
-            .is_some()
-        {
-            self.tvdb = other.tvdb;
-        }
-        self
+    pub fn merge(&mut self, source: &Self, replace: bool) {
+        use remux_utils::merge_option;
+        merge_option(&mut self.imdb, &source.imdb, replace);
+        merge_option(&mut self.series_imdb, &source.series_imdb, replace);
+        merge_option(&mut self.tmdb, &source.tmdb, replace);
+        merge_option(&mut self.series_tmdb, &source.series_tmdb, replace);
+        merge_option(&mut self.tvdb, &source.tvdb, replace);
+        merge_option(&mut self.deezer_artist, &source.deezer_artist, replace);
+        merge_option(&mut self.deezer_album, &source.deezer_album, replace);
+        merge_option(&mut self.deezer_track, &source.deezer_track, replace);
+        merge_option(&mut self.youtube_id, &source.youtube_id, replace);
+        merge_option(&mut self.iptv_source_id, &source.iptv_source_id, replace);
+        merge_option(&mut self.iptv_group, &source.iptv_group, replace);
     }
 }
 

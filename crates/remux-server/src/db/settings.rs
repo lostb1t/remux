@@ -43,10 +43,15 @@ impl Settings {
     pub async fn init_server_id(db: &SqlitePool) -> Result<()> {
         let id = match Self::get(db, "server_id").await? {
             Some(existing) => Uuid::parse_str(&existing)
-                .map(|u| u.simple().to_string())
+                .map(|u| {
+                    u.simple()
+                        .to_string()
+                })
                 .unwrap_or(existing),
             None => {
-                let new_id = Uuid::new_v4().simple().to_string();
+                let new_id = Uuid::new_v4()
+                    .simple()
+                    .to_string();
                 Self::set(db, "server_id", &new_id).await?;
                 new_id
             }
