@@ -171,55 +171,26 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
 }
 
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
-    macro_rules! fill {
-        ($field:ident) => {
-            if replace
-                || target
-                    .$field
-                    .is_none()
-            {
-                if source
-                    .$field
-                    .is_some()
-                {
-                    target.$field = source
-                        .$field
-                        .clone();
-                }
-            }
-        };
-    }
-    if replace
-        || target
-            .title
-            .is_empty()
-    {
-        if !source
-            .title
-            .is_empty()
-        {
-            target.title = source
-                .title
-                .clone();
-        }
+    use remux_utils::merge_option;
+
+    if (replace || target.title.is_empty()) && !source.title.is_empty() {
+        target.title = source.title.clone();
     }
 
-    fill!(description);
-    fill!(released_at);
-    fill!(runtime);
-    fill!(rating_audience);
-    fill!(certification);
-    fill!(certification_age);
-    fill!(country);
-    fill!(trailers);
-    fill!(digital_released_at);
-    fill!(status);
-    fill!(idx);
-    fill!(parent_idx);
+    merge_option(&mut target.description, &source.description, replace);
+    merge_option(&mut target.released_at, &source.released_at, replace);
+    merge_option(&mut target.runtime, &source.runtime, replace);
+    merge_option(&mut target.rating_audience, &source.rating_audience, replace);
+    merge_option(&mut target.certification, &source.certification, replace);
+    merge_option(&mut target.certification_age, &source.certification_age, replace);
+    merge_option(&mut target.country, &source.country, replace);
+    merge_option(&mut target.trailers, &source.trailers, replace);
+    merge_option(&mut target.digital_released_at, &source.digital_released_at, replace);
+    merge_option(&mut target.status, &source.status, replace);
+    merge_option(&mut target.idx, &source.idx, replace);
+    merge_option(&mut target.parent_idx, &source.parent_idx, replace);
 
-    target
-        .external_ids
-        .merge(&source.external_ids, replace);
+    target.external_ids.merge(&source.external_ids, replace);
 }
 
 pub(crate) fn apply_title_format(media: &mut db::Media) {
