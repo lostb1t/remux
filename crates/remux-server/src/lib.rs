@@ -218,28 +218,32 @@ pub async fn init_app(
     }
 
     let saved_config = db::Settings::get_config(&conn).await?;
-    let default_web_client = Arc::new(tokio::sync::RwLock::new(
-        web_client::normalize_web_client(saved_config.default_web_client)
-            .as_str()
-            .to_string(),
-    ));
 
-    let (ws_tx, _) = tokio::sync::broadcast::channel(128);
-
-    let torrent_mgr = Arc::new(
-        torrent::TorrentManager::new(
-            std::path::PathBuf::from(
-                config
-                    .torrent_data_dir
-                    .as_deref()
-                    .expect("Config::resolve() must be called before init_app"),
-            ),
-            config.torrent_http_port,
-            config.disable_dht,
-            config.torrent_peer_port,
-        )
-        .await?,
-    );
+    let torrent_mgr = torrent::TorrentManager::new(
+        std::path::PathBuf::from(
+            config
+                .torrent_data_dir
+                .as_deref()
+                .expect("Config::resolve() must be called before init_app"),
+        ),
+        config.torrent_http_port,
+        config.disable_dht,
+        config.torrent_peer_port,
+    )
+    .await?;
+    if saved_config
+        .p2p_enabled
+        .unwrap_or(true)
+    {
+        torrent_mgr.update_limits(
+            saved_config
+                .p2p_upload_speed_kbps
+                .unwrap_or(0),
+            saved_config
+                .p2p_download_speed_kbps
+                .unwrap_or(0),
+        );
+    }
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
     let ctx = AppContext {
@@ -247,29 +251,16 @@ pub async fn init_app(
         db: conn.clone(),
         store: Store::new(100000),
         sessions: playback_session::PlaybackSessionManager::new("transcode_sessions"),
-        torrent: torrent_mgr.clone(),
-        ws_tx,
-        default_web_client,
+        torrent: Arc::new(torrent_mgr),
+        ws_tx: tokio::sync::broadcast::channel(128).0,
+        default_web_client: Arc::new(tokio::sync::RwLock::new(
+            web_client::normalize_web_client(saved_config.default_web_client)
+                .as_str()
+                .to_string(),
+        )),
         web_paths,
         addons,
     };
-
-    // Apply saved P2P speed limits on startup.
-    {
-        if saved_config
-            .p2p_enabled
-            .unwrap_or(true)
-        {
-            torrent_mgr.update_limits(
-                saved_config
-                    .p2p_upload_speed_kbps
-                    .unwrap_or(0),
-                saved_config
-                    .p2p_download_speed_kbps
-                    .unwrap_or(0),
-            );
-        }
-    }
 
     // Kill idle sessions after 30 minutes of no activity.
     // 30 min matches a "stepped away" scenario; pings keep active sessions alive indefinitely.
