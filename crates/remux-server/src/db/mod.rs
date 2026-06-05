@@ -33,7 +33,7 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
         // default 1000. Passive mode so it never blocks, but frequent attempts
         // prevent the WAL from growing into the tens/hundreds of MB which
         // degrades all read performance while it stays large.
-        .pragma("wal_autocheckpoint", "200")
+        .pragma("wal_autocheckpoint", "1000")
         .pragma("auto_vacuum", "incremental")
         .pragma("cache_size", "-65536")
         .pragma("mmap_size", "268435456")
