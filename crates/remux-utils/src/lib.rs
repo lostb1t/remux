@@ -18,3 +18,9 @@ pub fn merge_option<T: Clone>(dst: &mut Option<T>, src: &Option<T>, replace: boo
         *dst = src.clone();
     }
 }
+
+pub fn merge_vec<T>(dst: &mut Vec<T>, src: Vec<T>, replace: bool) {
+    if replace || dst.is_empty() {
+        *dst = src;
+    }
+}

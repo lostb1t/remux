@@ -173,24 +173,47 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     use remux_utils::merge_option;
 
-    if (replace || target.title.is_empty()) && !source.title.is_empty() {
-        target.title = source.title.clone();
+    if (replace
+        || target
+            .title
+            .is_empty())
+        && !source
+            .title
+            .is_empty()
+    {
+        target.title = source
+            .title
+            .clone();
     }
 
     merge_option(&mut target.description, &source.description, replace);
     merge_option(&mut target.released_at, &source.released_at, replace);
     merge_option(&mut target.runtime, &source.runtime, replace);
-    merge_option(&mut target.rating_audience, &source.rating_audience, replace);
+    merge_option(
+        &mut target.rating_audience,
+        &source.rating_audience,
+        replace,
+    );
     merge_option(&mut target.certification, &source.certification, replace);
-    merge_option(&mut target.certification_age, &source.certification_age, replace);
+    merge_option(
+        &mut target.certification_age,
+        &source.certification_age,
+        replace,
+    );
     merge_option(&mut target.country, &source.country, replace);
     merge_option(&mut target.trailers, &source.trailers, replace);
-    merge_option(&mut target.digital_released_at, &source.digital_released_at, replace);
+    merge_option(
+        &mut target.digital_released_at,
+        &source.digital_released_at,
+        replace,
+    );
     merge_option(&mut target.status, &source.status, replace);
     merge_option(&mut target.idx, &source.idx, replace);
     merge_option(&mut target.parent_idx, &source.parent_idx, replace);
 
-    target.external_ids.merge(&source.external_ids, replace);
+    target
+        .external_ids
+        .merge(&source.external_ids, replace);
 }
 
 pub(crate) fn apply_title_format(media: &mut db::Media) {
@@ -215,40 +238,14 @@ pub(crate) fn apply_title_format(media: &mut db::Media) {
 fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
     // Merge images onto the in-memory struct; db::Media::upsert persists them via
     // sync_from_media after the media row is committed, avoiding FK violations.
-    if !patch
-        .images
-        .is_empty()
-    {
+    if !patch.images.is_empty() {
+        use remux_utils::merge_vec;
         let patch_images = std::mem::take(&mut patch.images);
         let imgs = &mut media.images;
-        if replace
-            || imgs
-                .primary
-                .is_empty()
-        {
-            imgs.primary = patch_images.primary;
-        }
-        if replace
-            || imgs
-                .backdrop
-                .is_empty()
-        {
-            imgs.backdrop = patch_images.backdrop;
-        }
-        if replace
-            || imgs
-                .logo
-                .is_empty()
-        {
-            imgs.logo = patch_images.logo;
-        }
-        if replace
-            || imgs
-                .thumb
-                .is_empty()
-        {
-            imgs.thumb = patch_images.thumb;
-        }
+        merge_vec(&mut imgs.primary, patch_images.primary, replace);
+        merge_vec(&mut imgs.backdrop, patch_images.backdrop, replace);
+        merge_vec(&mut imgs.logo, patch_images.logo, replace);
+        merge_vec(&mut imgs.thumb, patch_images.thumb, replace);
     }
 
     merge_media(media, &patch, replace);
