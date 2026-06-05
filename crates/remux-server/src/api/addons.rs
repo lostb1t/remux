@@ -110,9 +110,23 @@ pub async fn list_addons(
     State(state): State<AppState>,
     _session: auth::AdminSession,
 ) -> Result<Json<Vec<AddonDto>>> {
-    let addons = Addon::list(&state.ctx.db).await?;
+    let addons = Addon::list(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     let dtos = futures::future::join_all(
-        addons.into_iter().map(|a| addon_to_dto(a, &state.ctx.config)),
+        addons
+            .into_iter()
+            .map(|a| {
+                addon_to_dto(
+                    a,
+                    &state
+                        .ctx
+                        .config,
+                )
+            }),
     )
     .await;
     Ok(Json(dtos))

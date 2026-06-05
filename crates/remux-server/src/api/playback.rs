@@ -37,7 +37,7 @@ use crate::{
     IntoApiError, OptionExt, ResultExt,
     device_profile::DeviceProfileExt,
     sdks,
-    services::resolve::resolve_item,
+    services::MediaResolveService,
     torrent,
     transcode::session::{TranscodeSession, TranscodeState},
 };
@@ -98,7 +98,7 @@ async fn items_playbackinfo_inner(
     .await
     .unwrap_or_default();
 
-    let mut media = resolve_item(media_source_id.unwrap_or(id), &state.ctx)
+    let mut media = MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
         .await?
         .context_not_found("not found")?;
 

@@ -1,7 +1,4 @@
-use crate::services::{
-    image::ImageService,
-    resolve::{resolve_item, wait_for_persist},
-};
+use crate::services::{MediaResolveService, image::ImageService};
 use anyhow::Context;
 use axum::{
     Json,
@@ -592,7 +589,7 @@ pub async fn get_items(
             .copied()
             .collect();
 
-        if wait_for_persist(&candidates, &state.ctx).await? {
+        if MediaResolveService::wait_for_persist(&candidates, &state.ctx).await? {
             result = db::Media::get_by_jellyfin_filter(
                 &state
                     .ctx
@@ -1301,7 +1298,7 @@ pub async fn item(
     .next()
     {
         Some(m) => m,
-        None => match resolve_item(id, &state.ctx).await? {
+        None => match MediaResolveService::resolve_item(id, &state.ctx).await? {
             Some(m) => m,
             None => return Ok(None),
         },
