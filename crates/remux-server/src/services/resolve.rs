@@ -14,36 +14,58 @@ pub struct MediaResolveService;
 
 impl MediaResolveService {
     async fn resolve_media_imdb(media: &mut db::Media, ctx: &AppContext) -> bool {
-        if media.external_ids.imdb.is_some() {
+        if media
+            .external_ids
+            .imdb
+            .is_some()
+        {
             return true;
         }
         let is_tv = matches!(media.kind, db::MediaKind::Series);
         let Some(client) = crate::common::tmdb_client(&ctx.db).await else {
             return false;
         };
-        let Some(imdb) =
-            crate::addons::tmdb::resolve_imdb_from_ids(&media.external_ids, is_tv, &client).await
+        let Some(imdb) = crate::addons::tmdb::resolve_imdb_from_ids(
+            &media.external_ids,
+            is_tv,
+            &client,
+        )
+        .await
         else {
             return false;
         };
-        media.external_ids.imdb = Some(imdb);
+        media
+            .external_ids
+            .imdb = Some(imdb);
         true
     }
 
     async fn resolve_music_deezer(media: &mut db::Media) -> bool {
         match media.kind {
             db::MediaKind::Track => {
-                if media.external_ids.deezer_track.is_some() {
+                if media
+                    .external_ids
+                    .deezer_track
+                    .is_some()
+                {
                     return true;
                 }
                 let Ok(client) = RestClient::new("https://api.deezer.com/") else {
                     return false;
                 };
                 let hit = match client
-                    .execute(dz::SearchTracksEndpoint { q: media.title.clone(), limit: 1 })
+                    .execute(dz::SearchTracksEndpoint {
+                        q: media
+                            .title
+                            .clone(),
+                        limit: 1,
+                    })
                     .await
                 {
-                    Ok(dz::DeezerResult::Ok(list)) => list.data.into_iter().next(),
+                    Ok(dz::DeezerResult::Ok(list)) => list
+                        .data
+                        .into_iter()
+                        .next(),
                     Ok(dz::DeezerResult::Err { error }) => {
                         warn!(title = %media.title, %error, "Deezer track search returned error");
                         return false;
@@ -54,23 +76,49 @@ impl MediaResolveService {
                     }
                 };
                 let Some(track) = hit else { return false };
-                media.external_ids.deezer_track = Some(track.id as i64);
-                media.external_ids.deezer_album = Some(track.album.id as i64);
-                media.external_ids.deezer_artist = Some(track.artist.id as i64);
+                media
+                    .external_ids
+                    .deezer_track = Some(track.id as i64);
+                media
+                    .external_ids
+                    .deezer_album = Some(
+                    track
+                        .album
+                        .id as i64,
+                );
+                media
+                    .external_ids
+                    .deezer_artist = Some(
+                    track
+                        .artist
+                        .id as i64,
+                );
                 true
             }
             db::MediaKind::Album => {
-                if media.external_ids.deezer_album.is_some() {
+                if media
+                    .external_ids
+                    .deezer_album
+                    .is_some()
+                {
                     return true;
                 }
                 let Ok(client) = RestClient::new("https://api.deezer.com/") else {
                     return false;
                 };
                 let hit = match client
-                    .execute(dz::SearchAlbumsEndpoint { q: media.title.clone(), limit: 1 })
+                    .execute(dz::SearchAlbumsEndpoint {
+                        q: media
+                            .title
+                            .clone(),
+                        limit: 1,
+                    })
                     .await
                 {
-                    Ok(dz::DeezerResult::Ok(list)) => list.data.into_iter().next(),
+                    Ok(dz::DeezerResult::Ok(list)) => list
+                        .data
+                        .into_iter()
+                        .next(),
                     Ok(dz::DeezerResult::Err { error }) => {
                         warn!(title = %media.title, %error, "Deezer album search returned error");
                         return false;
@@ -81,8 +129,16 @@ impl MediaResolveService {
                     }
                 };
                 let Some(album) = hit else { return false };
-                media.external_ids.deezer_album = Some(album.id as i64);
-                media.external_ids.deezer_artist = Some(album.artist.id as i64);
+                media
+                    .external_ids
+                    .deezer_album = Some(album.id as i64);
+                media
+                    .external_ids
+                    .deezer_artist = Some(
+                    album
+                        .artist
+                        .id as i64,
+                );
                 true
             }
             _ => false,
@@ -95,11 +151,18 @@ impl MediaResolveService {
     /// - Track/Album: builds artist root from `external_ids.deezer_artist`, runs
     ///   `process_meta_item` which triggers `sync_tree` → full discography.
     /// - Artist/Person: passed directly to `process_meta_item`.
-    async fn persist_from_store(id: Uuid, ctx: &AppContext) -> anyhow::Result<Option<db::Media>> {
-        let Some(mut media) = ctx.store.get::<db::Media>(id.to_string()) else {
+    async fn persist_from_store(
+        id: Uuid,
+        ctx: &AppContext,
+    ) -> anyhow::Result<Option<db::Media>> {
+        let Some(mut media) = ctx
+            .store
+            .get::<db::Media>(id.to_string())
+        else {
             return Ok(None);
         };
-        ctx.store.delete(id.to_string());
+        ctx.store
+            .delete(id.to_string());
 
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
             if !Self::resolve_media_imdb(&mut media, ctx).await {
@@ -107,7 +170,11 @@ impl MediaResolveService {
             }
             // Recompute the stable UUID now that we have the IMDB ID. Use the authoritative
             // path (media_id_raw → From<MediaIdRaw>) which correctly handles all kinds.
-            if media.external_ids.imdb.is_some() {
+            if media
+                .external_ids
+                .imdb
+                .is_some()
+            {
                 media.id = uuid::Uuid::from(&media.media_id_raw());
             }
         }
@@ -119,8 +186,12 @@ impl MediaResolveService {
             }
         }
 
-        let root = if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album) {
-            let Some(deezer_artist_id) = media.external_ids.deezer_artist else {
+        let root = if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album)
+        {
+            let Some(deezer_artist_id) = media
+                .external_ids
+                .deezer_artist
+            else {
                 tracing::debug!(%id, kind = ?media.kind, "persist_from_store: no deezer_artist id on music child");
                 return Ok(None);
             };
@@ -129,7 +200,14 @@ impl MediaResolveService {
                     &db::MediaKind::Artist,
                     &deezer_artist_id.to_string(),
                 ),
-                title: media.grandparent.as_ref().map(|gp| gp.title.clone()).unwrap_or_default(),
+                title: media
+                    .grandparent
+                    .as_ref()
+                    .map(|gp| {
+                        gp.title
+                            .clone()
+                    })
+                    .unwrap_or_default(),
                 kind: db::MediaKind::Artist,
                 external_ids: db::ExternalIds {
                     deezer_artist: Some(deezer_artist_id),
@@ -147,19 +225,27 @@ impl MediaResolveService {
         // If the caller's fake UUID differs from the resolved real UUID, keep an alias so
         // future lookups for the fake ID still resolve to the persisted row.
         if id != resolved_id {
-            ctx.store.save(
-                id.to_string(),
-                resolved_id,
-                std::time::Duration::from_secs(7 * 24 * 3600),
-            );
+            ctx.store
+                .save(
+                    id.to_string(),
+                    resolved_id,
+                    std::time::Duration::from_secs(7 * 24 * 3600),
+                );
         }
 
         let config = std::sync::Arc::new(
-            crate::db::Settings::get_config(&ctx.db).await.unwrap_or_default(),
+            crate::db::Settings::get_config(&ctx.db)
+                .await
+                .unwrap_or_default(),
         );
-        let processed = ctx.addons.process_meta_item(root, ctx, false, config).await;
+        let processed = ctx
+            .addons
+            .process_meta_item(root, ctx, false, config)
+            .await;
         if !processed.is_empty() {
-            db::Media::upsert(&ctx.db, &processed).await.ok();
+            db::Media::upsert(&ctx.db, &processed)
+                .await
+                .ok();
             crate::addons::save_pending_relations(ctx, &processed).await;
         }
         Ok(db::Media::get_by_id(&ctx.db, &resolved_id).await?)
@@ -172,14 +258,26 @@ impl MediaResolveService {
         ctx: &AppContext,
     ) -> anyhow::Result<bool> {
         for &id in ids {
-            let in_db = db::Media::get_by_id(&ctx.db, &id).await?.is_some();
+            let in_db = db::Media::get_by_id(&ctx.db, &id)
+                .await?
+                .is_some();
             if !in_db {
-                let _guard = PERSIST_LOCKS.lock(id).await;
-                if db::Media::get_by_id(&ctx.db, &id).await?.is_none() {
-                    Self::persist_from_store(id, ctx).await.ok();
+                let _guard = PERSIST_LOCKS
+                    .lock(id)
+                    .await;
+                if db::Media::get_by_id(&ctx.db, &id)
+                    .await?
+                    .is_none()
+                {
+                    Self::persist_from_store(id, ctx)
+                        .await
+                        .ok();
                 }
                 return Ok(true);
-            } else if let Some(_guard) = PERSIST_LOCKS.lock_if_exists(&id).await {
+            } else if let Some(_guard) = PERSIST_LOCKS
+                .lock_if_exists(&id)
+                .await
+            {
                 return Ok(true);
             }
         }
@@ -199,7 +297,10 @@ impl MediaResolveService {
                 if let Some(media) = db::Media::get_by_id(&ctx.db, &id).await? {
                     return Ok(Some(media));
                 }
-                if let Some(real_id) = ctx.store.get::<Uuid>(id.to_string()) {
+                if let Some(real_id) = ctx
+                    .store
+                    .get::<Uuid>(id.to_string())
+                {
                     return Ok(db::Media::get_by_id(&ctx.db, &real_id).await?);
                 }
                 Ok(None)
@@ -217,7 +318,9 @@ impl MediaResolveService {
         for &id in ids {
             match Self::resolve_item(id, ctx).await {
                 Ok(Some(media)) => resolved.push(media.id),
-                Ok(None) => tracing::warn!(%id, "resolve_ids: could not resolve item, skipping"),
+                Ok(None) => {
+                    tracing::warn!(%id, "resolve_ids: could not resolve item, skipping")
+                }
                 Err(e) => {
                     tracing::warn!(%id, err = %e, "resolve_ids: error resolving item, skipping")
                 }
@@ -250,7 +353,9 @@ where
     }
 
     let result = {
-        let _guard = PERSIST_LOCKS.lock(id).await;
+        let _guard = PERSIST_LOCKS
+            .lock(id)
+            .await;
         if let Some(media) = lookup().await? {
             Ok(Some(media))
         } else {
@@ -347,8 +452,17 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.unwrap().id, media.id);
-        assert_eq!(persist_calls.load(Ordering::SeqCst), 0, "persist must not be called");
+        assert_eq!(
+            result
+                .unwrap()
+                .id,
+            media.id
+        );
+        assert_eq!(
+            persist_calls.load(Ordering::SeqCst),
+            0,
+            "persist must not be called"
+        );
     }
 
     // --- slow path: item not in DB, persist saves it ---
@@ -373,7 +487,12 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.unwrap().id, media.id);
+        assert_eq!(
+            result
+                .unwrap()
+                .id,
+            media.id
+        );
         assert_eq!(persist_calls.load(Ordering::SeqCst), 1);
     }
 
@@ -383,7 +502,9 @@ mod tests {
     async fn slow_path_propagates_none() {
         let id = Uuid::new_v4();
         let result =
-            resolve_item_core(id, || async { Ok(None) }, || async { Ok(None) }).await.unwrap();
+            resolve_item_core(id, || async { Ok(None) }, || async { Ok(None) })
+                .await
+                .unwrap();
         assert!(result.is_none());
     }
 
@@ -418,7 +539,8 @@ mod tests {
 
         let (pc1, saved1, b1) = (persist_calls.clone(), saved.clone(), barrier.clone());
         let t1 = tokio::spawn(async move {
-            b1.wait().await;
+            b1.wait()
+                .await;
             resolve_item_core(
                 id,
                 {
@@ -426,7 +548,16 @@ mod tests {
                     move || {
                         let s = saved.clone();
                         async move {
-                            Ok(if *s.read().await { Some(make_media()) } else { None })
+                            Ok(
+                                if *s
+                                    .read()
+                                    .await
+                                {
+                                    Some(make_media())
+                                } else {
+                                    None
+                                },
+                            )
                         }
                     }
                 },
@@ -436,7 +567,9 @@ mod tests {
                     async move {
                         // Simulate slow persist.
                         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                        *saved.write().await = true;
+                        *saved
+                            .write()
+                            .await = true;
                         Ok(Some(make_media()))
                     }
                 },
@@ -446,7 +579,8 @@ mod tests {
 
         let (pc2, saved2, b2) = (persist_calls.clone(), saved.clone(), barrier.clone());
         let t2 = tokio::spawn(async move {
-            b2.wait().await;
+            b2.wait()
+                .await;
             resolve_item_core(
                 id,
                 {
@@ -454,7 +588,16 @@ mod tests {
                     move || {
                         let s = saved.clone();
                         async move {
-                            Ok(if *s.read().await { Some(make_media()) } else { None })
+                            Ok(
+                                if *s
+                                    .read()
+                                    .await
+                                {
+                                    Some(make_media())
+                                } else {
+                                    None
+                                },
+                            )
                         }
                     }
                 },
@@ -462,7 +605,9 @@ mod tests {
                     pc2.fetch_add(1, Ordering::SeqCst);
                     let saved = saved2.clone();
                     async move {
-                        *saved.write().await = true;
+                        *saved
+                            .write()
+                            .await = true;
                         Ok(Some(make_media()))
                     }
                 },
@@ -471,8 +616,18 @@ mod tests {
         });
 
         let (r1, r2) = tokio::join!(t1, t2);
-        assert!(r1.unwrap().unwrap().is_some(), "t1 must resolve");
-        assert!(r2.unwrap().unwrap().is_some(), "t2 must resolve");
+        assert!(
+            r1.unwrap()
+                .unwrap()
+                .is_some(),
+            "t1 must resolve"
+        );
+        assert!(
+            r2.unwrap()
+                .unwrap()
+                .is_some(),
+            "t2 must resolve"
+        );
         assert_eq!(
             persist_calls.load(Ordering::SeqCst),
             1,

@@ -4,7 +4,10 @@ pub mod xtream;
 
 pub use m3u::{M3uChannel, parse_m3u_stream};
 pub use xmltv::{EpgProgram, parse_xmltv};
-pub use xtream::{fetch_xtream_categories, fetch_xtream_channels};
+pub use xtream::{
+    fetch_series_list, fetch_vod_streams, fetch_xtream_categories,
+    fetch_xtream_channels,
+};
 
 use anyhow::Result;
 use futures::TryStreamExt;
@@ -37,6 +40,18 @@ pub async fn stream_import_epg(
         .get(url)
         .send()
         .await?;
+    let is_gzip = resp
+        .headers()
+        .get(reqwest::header::CONTENT_ENCODING)
+        .and_then(|v| {
+            v.to_str()
+                .ok()
+        })
+        .map(|s| s.contains("gzip"))
+        .unwrap_or(false)
+        || url
+            .to_lowercase()
+            .ends_with(".gz");
     let byte_stream = resp
         .bytes_stream()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
@@ -47,11 +62,20 @@ pub async fn stream_import_epg(
 
     let parse_handle = tokio::task::spawn_blocking(move || -> Result<()> {
         let sync_reader = SyncIoBridge::new_with_handle(async_reader, handle);
-        let buf_reader = std::io::BufReader::with_capacity(256 * 1024, sync_reader);
-        parse_xmltv(buf_reader, |prog| {
-            tx.blocking_send(prog)
-                .ok();
-        })
+        if is_gzip {
+            let gz = flate2::read::GzDecoder::new(sync_reader);
+            let buf_reader = std::io::BufReader::with_capacity(256 * 1024, gz);
+            parse_xmltv(buf_reader, |prog| {
+                tx.blocking_send(prog)
+                    .ok();
+            })
+        } else {
+            let buf_reader = std::io::BufReader::with_capacity(256 * 1024, sync_reader);
+            parse_xmltv(buf_reader, |prog| {
+                tx.blocking_send(prog)
+                    .ok();
+            })
+        }
     });
 
     let mut batch: Vec<db::Media> = Vec::with_capacity(2000);

@@ -13,7 +13,7 @@ pub struct M3uChannel {
     pub name: String,
     /// tvg-logo URL
     pub logo: Option<String>,
-    /// group-title attribute
+    /// group-title attribute (first segment if semicolon-delimited)
     pub group: Option<String>,
     /// tvg-chno or ch-number attribute
     pub channel_number: Option<i64>,
@@ -21,6 +21,14 @@ pub struct M3uChannel {
     pub url: String,
     /// Derived from group-title (and Xtream category for Xtream sources)
     pub program_kind: Option<ProgramKind>,
+    /// tvg-language attribute
+    pub language: Option<String>,
+    /// Catchup type (e.g. "default", "append", "shift", "flussonic")
+    pub catchup: Option<String>,
+    /// Number of days of catchup content available
+    pub catchup_days: Option<i64>,
+    /// Catchup URL template (`catchup-source` attribute)
+    pub catchup_source: Option<String>,
 }
 
 /// Stream-parse an M3U playlist from a reqwest response without loading the
@@ -64,7 +72,19 @@ fn parse_extinf(line: &str) -> M3uChannel {
     };
     let tvg_id = extract_attr(attrs_part, "tvg-id");
     let logo = extract_attr(attrs_part, "tvg-logo");
-    let group = extract_attr(attrs_part, "group-title");
+    // group-title may be semicolon-delimited; use the first segment as the primary group.
+    let group_raw = extract_attr(attrs_part, "group-title");
+    let group = group_raw
+        .as_deref()
+        .and_then(|g| {
+            g.split(';')
+                .next()
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.trim()
+                .to_string()
+        });
     let tvg_name = extract_attr(attrs_part, "tvg-name");
     let channel_number = extract_attr(attrs_part, "tvg-chno")
         .or_else(|| extract_attr(attrs_part, "ch-number"))
@@ -72,6 +92,13 @@ fn parse_extinf(line: &str) -> M3uChannel {
             s.parse::<i64>()
                 .ok()
         });
+    let language = extract_attr(attrs_part, "tvg-language");
+    let catchup = extract_attr(attrs_part, "catchup");
+    let catchup_days = extract_attr(attrs_part, "catchup-days").and_then(|s| {
+        s.parse::<i64>()
+            .ok()
+    });
+    let catchup_source = extract_attr(attrs_part, "catchup-source");
     let program_kind = group
         .as_deref()
         .and_then(super::parse_program_kind);
@@ -83,6 +110,10 @@ fn parse_extinf(line: &str) -> M3uChannel {
         channel_number,
         url: String::new(),
         program_kind,
+        language,
+        catchup,
+        catchup_days,
+        catchup_source,
     }
 }
 

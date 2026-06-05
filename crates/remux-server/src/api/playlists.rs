@@ -62,7 +62,8 @@ pub async fn create_playlist(
         .context_bad_request("Failed to create playlist")?;
 
     if !ids.is_empty() {
-        let resolved = crate::services::MediaResolveService::resolve_ids(&ids, &state.ctx).await;
+        let resolved =
+            crate::services::MediaResolveService::resolve_ids(&ids, &state.ctx).await;
         if !resolved.is_empty() {
             db::MediaRelation::add_playlist_items(
                 &state
@@ -271,7 +272,8 @@ pub async fn add_playlist_items(
     .filter(|m| m.kind == db::MediaKind::Playlist)
     .context_not_found("Playlist not found")?;
 
-    let resolved = crate::services::MediaResolveService::resolve_ids(&q.ids, &state.ctx).await;
+    let resolved =
+        crate::services::MediaResolveService::resolve_ids(&q.ids, &state.ctx).await;
     db::MediaRelation::add_playlist_items(
         &state
             .ctx

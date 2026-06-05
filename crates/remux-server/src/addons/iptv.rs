@@ -80,6 +80,8 @@ impl AddonPreset for IptvM3uPreset {
             xtream_username: None,
             xtream_password: None,
             is_xtream: false,
+            sync_vod: false,
+            sync_series: false,
         }))
     }
 }
@@ -136,6 +138,22 @@ impl AddonPreset for IptvXstreamPreset {
                     default: None,
                     kind: AddonOptionType::Password,
                 },
+                AddonOption {
+                    id: "sync_vod".to_string(),
+                    name: "Import VOD movies".to_string(),
+                    description: Some("Fetch and import VOD movies from this provider.".to_string()),
+                    required: false,
+                    default: Some(serde_json::Value::Bool(false)),
+                    kind: AddonOptionType::Boolean,
+                },
+                AddonOption {
+                    id: "sync_series".to_string(),
+                    name: "Import TV series".to_string(),
+                    description: Some("Fetch and import TV series from this provider.".to_string()),
+                    required: false,
+                    default: Some(serde_json::Value::Bool(false)),
+                    kind: AddonOptionType::Boolean,
+                },
             ],
         }
     }
@@ -162,6 +180,13 @@ impl AddonPreset for IptvXstreamPreset {
             .ok_or_else(|| anyhow::anyhow!("iptv-xtream: password is required"))?
             .to_string();
 
+        let sync_vod = cfg["sync_vod"]
+            .as_bool()
+            .unwrap_or(false);
+        let sync_series = cfg["sync_series"]
+            .as_bool()
+            .unwrap_or(false);
+
         Ok(Arc::new(IptvAddon {
             addon_id,
             m3u_url: server_url,
@@ -169,6 +194,8 @@ impl AddonPreset for IptvXstreamPreset {
             xtream_username: Some(username),
             xtream_password: Some(password),
             is_xtream: true,
+            sync_vod,
+            sync_series,
         }))
     }
 }
@@ -189,6 +216,8 @@ struct IptvAddon {
     xtream_username: Option<String>,
     xtream_password: Option<String>,
     is_xtream: bool,
+    sync_vod: bool,
+    sync_series: bool,
 }
 
 #[async_trait]
@@ -373,6 +402,10 @@ impl AddonKind for IptvAddon {
                                 ch.url
                                     .clone(),
                             ),
+                            catchup_source: ch
+                                .catchup_source
+                                .clone(),
+                            catchup_days: ch.catchup_days,
                             ..Default::default()
                         }),
                         tvg_id: ch
@@ -473,6 +506,85 @@ impl AddonKind for IptvAddon {
                 .await?;
         }
 
+        progress.set(65.0);
+
+        // Fetch VOD and/or series for Xtream addons.
+        if self.is_xtream {
+            let user = self
+                .xtream_username
+                .as_deref()
+                .unwrap_or("");
+            let pass = self
+                .xtream_password
+                .as_deref()
+                .unwrap_or("");
+
+            if self.sync_vod {
+                debug!("fetching Xtream VOD streams");
+                match iptv::fetch_vod_streams(
+                    &client,
+                    &self.m3u_url,
+                    user,
+                    pass,
+                    self.addon_id,
+                    &source_id,
+                )
+                .await
+                {
+                    Ok(items) => {
+                        let vod_count = items.len();
+                        for chunk in items.chunks(500) {
+                            db::Media::upsert(&ctx.db, chunk).await?;
+                        }
+                        // Prune stale VOD items for this addon.
+                        sqlx::query(
+                            "DELETE FROM media \
+                             WHERE kind = 'movie' \
+                               AND json_extract(external_ids, '$.iptv_source_id') = ? \
+                               AND updated_at < datetime('now', '-1 minute')",
+                        )
+                        .bind(&source_id)
+                        .execute(&ctx.db)
+                        .await?;
+                        info!(count = vod_count, "imported Xtream VOD");
+                    }
+                    Err(e) => warn!(error = %e, "failed to fetch Xtream VOD"),
+                }
+            }
+
+            if self.sync_series {
+                debug!("fetching Xtream series");
+                match iptv::fetch_series_list(
+                    &client,
+                    &self.m3u_url,
+                    user,
+                    pass,
+                    self.addon_id,
+                    &source_id,
+                )
+                .await
+                {
+                    Ok(items) => {
+                        let series_count = items.len();
+                        for chunk in items.chunks(500) {
+                            db::Media::upsert(&ctx.db, chunk).await?;
+                        }
+                        sqlx::query(
+                            "DELETE FROM media \
+                             WHERE kind = 'series' \
+                               AND json_extract(external_ids, '$.iptv_source_id') = ? \
+                               AND updated_at < datetime('now', '-1 minute')",
+                        )
+                        .bind(&source_id)
+                        .execute(&ctx.db)
+                        .await?;
+                        info!(count = series_count, "imported Xtream series");
+                    }
+                    Err(e) => warn!(error = %e, "failed to fetch Xtream series"),
+                }
+            }
+        }
+
         progress.set(70.0);
 
         // Fetch EPG.
@@ -541,6 +653,15 @@ impl AddonKind for IptvAddon {
         sqlx::query(
             "DELETE FROM media \
              WHERE kind = 'tv_channel' \
+               AND json_extract(external_ids, '$.iptv_source_id') = ?",
+        )
+        .bind(&source_id)
+        .execute(&ctx.db)
+        .await?;
+
+        sqlx::query(
+            "DELETE FROM media \
+             WHERE kind IN ('movie', 'series') \
                AND json_extract(external_ids, '$.iptv_source_id') = ?",
         )
         .bind(&source_id)

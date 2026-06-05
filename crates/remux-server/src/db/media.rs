@@ -4306,6 +4306,8 @@ impl From<sdks::stremio::Stream> for Media {
                 .clone(),
             probe_data: None,
             source: None,
+            catchup_source: None,
+            catchup_days: None,
         });
 
         // Merge name + description: AIOStreams puts the provider/addon name in `name`

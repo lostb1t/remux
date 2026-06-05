@@ -167,6 +167,13 @@ pub struct StreamInfo {
     pub duration: Option<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subtitles: Vec<crate::sdks::stremio::Subtitle>,
+    /// Catchup URL template from M3U `catchup-source` attribute.
+    /// `{utc}` / `{utcend}` placeholders are substituted at playback time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catchup_source: Option<String>,
+    /// Number of days of catchup available (`catchup-days` attribute).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catchup_days: Option<i64>,
     /// Pre-probed codec/bitrate metadata from the addon.
     /// Extracted into `db::Media.probe_data` on conversion; not persisted here.
     #[serde(default, skip_serializing_if = "Option::is_none")]

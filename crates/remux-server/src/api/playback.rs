@@ -98,9 +98,10 @@ async fn items_playbackinfo_inner(
     .await
     .unwrap_or_default();
 
-    let mut media = MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
-        .await?
-        .context_not_found("not found")?;
+    let mut media =
+        MediaResolveService::resolve_item(media_source_id.unwrap_or(id), &state.ctx)
+            .await?
+            .context_not_found("not found")?;
 
     // When a StreamGroup UUID is requested, resolve it to the group's best candidate
     // and keep all candidates (including subsequent groups) for probe fallback scope.
