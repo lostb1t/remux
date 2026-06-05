@@ -193,7 +193,7 @@ pub async fn init_app(
         .execute(&conn)
         .await
         .ok();
-    crate::common::init_server_id(&conn).await?;
+    crate::db::Settings::init_server_id(&conn).await?;
 
     // Probe hardware and persist results at startup.
     // vaapi_driver is always re-detected (regardless of auto_detect) because

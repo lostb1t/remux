@@ -39,27 +39,8 @@ use uuid::Uuid;
 
 static SERVER_ID: OnceLock<String> = OnceLock::new();
 
-pub async fn init_server_id(db: &sqlx::SqlitePool) -> anyhow::Result<()> {
-    let id = match crate::db::Settings::get(db, "server_id").await? {
-        Some(existing) => {
-            // Normalize: parse back to UUID and emit simple (no-hyphen) form.
-            Uuid::parse_str(&existing)
-                .map(|u| {
-                    u.simple()
-                        .to_string()
-                })
-                .unwrap_or(existing)
-        }
-        None => {
-            let new_id = Uuid::new_v4()
-                .simple()
-                .to_string();
-            crate::db::Settings::set(db, "server_id", &new_id).await?;
-            new_id
-        }
-    };
+pub(crate) fn set_server_id(id: String) {
     let _ = SERVER_ID.set(id);
-    Ok(())
 }
 
 pub fn server_id() -> String {
