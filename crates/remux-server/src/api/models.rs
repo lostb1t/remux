@@ -242,6 +242,7 @@ pub fn db_state_to_dto(
     state: db::UserMediaState,
     media: &db::Media,
 ) -> UserItemDataDto {
+    use crate::common::ToRunTimeTicks;
     let played_percentage = media
         .runtime
         .filter(|&r| r > 0)
@@ -254,7 +255,10 @@ pub fn db_state_to_dto(
             .last_played_at
             .or(state.played_at)
             .map(|x| x.and_utc()),
-        playback_position_ticks: state.playback_position * 10_000_000,
+        playback_position_ticks: state
+            .playback_position
+            .to_ticks(common::TickUnit::Seconds)
+            .unwrap_or(0),
         play_count: state.play_count as i32,
         is_favorite: state.favorite,
         played_percentage,
@@ -497,7 +501,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 if let (Some(start), Some(end)) = (media.live_start, media.live_end) {
                     let secs = (end - start).num_seconds();
                     if secs > 0 {
-                        Some(secs * 10_000_000)
+                        secs.to_ticks(common::TickUnit::Seconds)
                     } else {
                         None
                     }

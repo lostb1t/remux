@@ -8,7 +8,10 @@ use super::{
     AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, LyricSearchRequest,
     MediaKind, ResourceType,
 };
-use crate::db;
+use crate::{
+    common::{TickUnit, ToRunTimeTicks},
+    db,
+};
 use remux_sdks::remux::{LyricDto, LyricLine, LyricMetadata, RemoteLyricInfoDto};
 
 pub struct LrcLibPreset;
@@ -51,7 +54,6 @@ pub struct LrcLibAddon {
 }
 
 const BASE: &str = "https://lrclib.net/api";
-const TICKS_PER_SECOND: f64 = 10_000_000.0;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,7 +83,9 @@ fn parse_lrc(lrc: &str) -> Vec<LyricLine> {
             let secs: f64 = secs_str
                 .parse()
                 .ok()?;
-            let ticks = ((mins * 60.0 + secs) * TICKS_PER_SECOND) as i64;
+            let ticks = (mins * 60.0 + secs)
+                .to_ticks(TickUnit::Seconds)
+                .unwrap_or(0);
             Some(LyricLine {
                 text,
                 start: Some(ticks),
@@ -124,7 +128,7 @@ fn track_to_dto(data: &LrcLibTrack) -> Option<LyricDto> {
                 .clone(),
             length: data
                 .duration
-                .map(|d| (d * TICKS_PER_SECOND) as i64),
+                .and_then(|d| d.to_ticks(TickUnit::Seconds)),
             is_synced: Some(is_synced),
         },
         lyrics,

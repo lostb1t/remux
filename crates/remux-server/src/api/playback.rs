@@ -24,7 +24,14 @@ use tracing::{debug, error, info, trace};
 use url::Url;
 use uuid::Uuid;
 
-use crate::{AppState, api, api::MediaSourceInfoExt, common, db, db::auth};
+use crate::{
+    AppState, api,
+    api::MediaSourceInfoExt,
+    common,
+    common::{TickUnit, ToRunTimeTicks},
+    db,
+    db::auth,
+};
 
 use crate::{
     IntoApiError, OptionExt, ResultExt,
@@ -2594,13 +2601,17 @@ pub async fn get_sessions(
 
                 // Compute completion percentage from transcode progress.
                 let completion_percentage = if ts.runtime_ticks > 0 {
-                    let start_ticks = ts.start_time_secs as i64 * 10_000_000;
+                    let start_ticks = (ts.start_time_secs as i64)
+                        .to_ticks(TickUnit::Seconds)
+                        .unwrap_or(0);
                     let last_seg = ts
                         .last_segment_index
                         .load(std::sync::atomic::Ordering::Relaxed)
                         as i64;
                     let transcoded_ticks = start_ticks
-                        + (last_seg + 1) * ts.segment_length as i64 * 10_000_000;
+                        + ((last_seg + 1) * ts.segment_length as i64)
+                            .to_ticks(TickUnit::Seconds)
+                            .unwrap_or(0);
                     Some(
                         (transcoded_ticks as f64 / ts.runtime_ticks as f64 * 100.0)
                             .min(100.0),
@@ -3035,7 +3046,7 @@ pub async fn master_hls_video(
                 .runtime
                 .or(media.runtime)
                 .filter(|&r| r > 0)
-                .map(|r| r * 10_000_000);
+                .and_then(|r| r.to_ticks(TickUnit::Seconds));
             let probe_ticks = resolved_media
                 .probe_data
                 .as_ref()
@@ -3058,7 +3069,7 @@ pub async fn master_hls_video(
                 .flatten()
                 .and_then(|m| m.runtime)
                 .filter(|&r| r > 0)
-                .map(|r| r * 10_000_000)
+                .and_then(|r| r.to_ticks(TickUnit::Seconds))
                 .unwrap_or(0),
             }
         };
@@ -3697,7 +3708,9 @@ async fn hls_segment_inner(
                     let start_time_ticks = q
                         .runtime_ticks
                         .unwrap_or_else(|| {
-                            requested_idx as i64 * segment_length as i64 * 10_000_000
+                            (requested_idx as i64 * segment_length as i64)
+                                .to_ticks(TickUnit::Seconds)
+                                .unwrap_or(0)
                         });
 
                     let encoding_opts = crate::db::Settings::get_encoding_config(

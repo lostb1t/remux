@@ -1,4 +1,7 @@
-use crate::api;
+use crate::{
+    api,
+    common::{TickUnit, ToRunTimeTicks},
+};
 use anyhow::{Result, anyhow};
 use isolang::Language;
 use remux_sdks::remux::{MediaSegmentType, MediaSegments, Segment};
@@ -292,13 +295,6 @@ fn parse_frame_rate(s: &str) -> Option<f64> {
     if fps > 0.0 { Some(fps) } else { None }
 }
 
-fn secs_to_ticks(s: &str) -> Option<i64> {
-    let secs: f64 = s
-        .parse()
-        .ok()?;
-    Some((secs * 10_000_000.0) as i64)
-}
-
 fn chapter_title_to_type(title: &str) -> Option<MediaSegmentType> {
     let t = title.to_ascii_lowercase();
     if t.contains("intro") {
@@ -327,10 +323,16 @@ fn chapters_to_segments(chapters: &[FfprobeChapter]) -> MediaSegments {
         let Some(kind) = chapter_title_to_type(title) else {
             continue;
         };
-        let Some(start) = secs_to_ticks(&ch.start_time) else {
+        let Some(start) = ch
+            .start_time
+            .to_ticks(TickUnit::Seconds)
+        else {
             continue;
         };
-        let Some(end) = secs_to_ticks(&ch.end_time) else {
+        let Some(end) = ch
+            .end_time
+            .to_ticks(TickUnit::Seconds)
+        else {
             continue;
         };
         let seg = Segment {

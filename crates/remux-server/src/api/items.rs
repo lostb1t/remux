@@ -17,8 +17,12 @@ use tracing::{debug, error, info, trace, warn};
 use uuid::{Uuid, uuid};
 
 use crate::{
-    AppState, IntoApiError, OptionExt, ResultExt, api, common::IntoVec, db, db::auth,
-    errors::LogErr, sdks,
+    AppState, IntoApiError, OptionExt, ResultExt, api,
+    common::{IntoVec, TickUnit, ToRunTimeTicks},
+    db,
+    db::auth,
+    errors::LogErr,
+    sdks,
 };
 use axum_anyhow::ApiResult as Result;
 use chrono::{Datelike, Utc};
@@ -1490,7 +1494,7 @@ pub async fn item(
             transcoding_container: Some("ts".to_string()),
             run_time_ticks: media
                 .runtime
-                .map(|s| s * 10_000_000),
+                .and_then(|s| s.to_ticks(TickUnit::Seconds)),
             media_streams,
             ..Default::default()
         };

@@ -12,6 +12,7 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use crate::common::{TickUnit, ToRunTimeTicks};
 use remux_sdks::remux::{EncodingPreset, HardwareAccelerationType, VideoRangeType};
 
 use super::session::{TranscodeSession, TranscodeState};
@@ -1749,7 +1750,9 @@ pub fn generate_variant_playlist(
         return buf;
     }
 
-    let seg_length_ticks = segment_length as i64 * 10_000_000;
+    let seg_length_ticks = (segment_length as i64)
+        .to_ticks(TickUnit::Seconds)
+        .unwrap_or(0);
     let whole_segments = runtime_ticks / seg_length_ticks;
     let remaining_ticks = runtime_ticks % seg_length_ticks;
     let total_segments = whole_segments + if remaining_ticks > 0 { 1 } else { 0 };
@@ -2210,7 +2213,9 @@ mod tests {
     #[test]
     fn hls_seek_offset_placed_before_input() {
         let dir = PathBuf::from("/tmp/test_seek");
-        let ticks: i64 = 30 * 10_000_000; // 30 seconds
+        let ticks: i64 = 30i64
+            .to_ticks(TickUnit::Seconds)
+            .unwrap();
         let args = build_hls_args(&TranscodeParams {
             start_time_ticks: Some(ticks),
             ..default_hls(dir)
@@ -2533,7 +2538,9 @@ mod tests {
 
     #[test]
     fn progressive_seek_before_input() {
-        let ticks: i64 = 60 * 10_000_000; // 60 s
+        let ticks: i64 = 60i64
+            .to_ticks(TickUnit::Seconds)
+            .unwrap();
         let args = build_progressive_args(&ProgressiveTranscodeParams {
             start_time_ticks: Some(ticks),
             ..default_progressive()

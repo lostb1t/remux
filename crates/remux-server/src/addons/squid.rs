@@ -11,7 +11,11 @@ use super::{
     AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, MediaKind,
     ResourceType,
 };
-use crate::{AppContext, api, db};
+use crate::{
+    AppContext, api,
+    common::{TickUnit, ToRunTimeTicks},
+    db,
+};
 
 const TIDAL_CLIENT: &str = "BiniLossless/v3.4";
 
@@ -241,7 +245,7 @@ async fn try_instance(
             container: mime_to_container(&manifest.mime_type),
             run_time_ticks: parent
                 .runtime
-                .map(|r| r * 10_000_000),
+                .and_then(|r| r.to_ticks(TickUnit::Seconds)),
             media_streams: vec![api::MediaStream {
                 index: 0,
                 type_: Some(api::MediaStreamType::Audio),

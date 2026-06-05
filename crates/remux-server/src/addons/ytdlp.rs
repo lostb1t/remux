@@ -10,7 +10,11 @@ use super::{
     AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
     AddonPresetRegistration, MediaKind, ResourceType,
 };
-use crate::{AppContext, api, db};
+use crate::{
+    AppContext, api,
+    common::{TickUnit, ToRunTimeTicks},
+    db,
+};
 
 pub struct YtDlpPreset;
 
@@ -834,7 +838,7 @@ impl YtDlpAddon {
                     container: f.container(),
                     run_time_ticks: media
                         .runtime
-                        .map(|r| r * 10_000_000),
+                        .and_then(|r| r.to_ticks(TickUnit::Seconds)),
                     bitrate: f.bitrate(),
                     media_streams: vec![api::MediaStream {
                         index: 0,
