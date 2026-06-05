@@ -29,10 +29,6 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
     let opts = SqliteConnectOptions::from_str(url)?
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
-        // Keep WAL small: checkpoint every 200 pages (~800 KB) instead of the
-        // default 1000. Passive mode so it never blocks, but frequent attempts
-        // prevent the WAL from growing into the tens/hundreds of MB which
-        // degrades all read performance while it stays large.
         .pragma("wal_autocheckpoint", "1000")
         .pragma("auto_vacuum", "incremental")
         .pragma("cache_size", "-65536")
