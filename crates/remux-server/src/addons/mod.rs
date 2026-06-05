@@ -328,7 +328,10 @@ fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
         if !relations.is_empty()
             && matches!(
                 media.kind,
-                db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
+                db::MediaKind::Movie
+                    | db::MediaKind::Series
+                    | db::MediaKind::Episode
+                    | db::MediaKind::Album
             )
         {
             let pending: Vec<(db::MediaRelation, db::Media)> = relations

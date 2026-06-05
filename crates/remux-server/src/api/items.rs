@@ -1959,28 +1959,140 @@ pub async fn genres(
     _session: auth::AuthSession,
     Query(q): Query<api::GetItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let related_kinds: Vec<db::MediaKind> = q
-        .include_item_types
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|t| db::MediaKind::try_from(t).ok())
-        .collect();
+    let parent = if let Some(pid) = q.parent_id {
+        db::Media::get_by_id(
+            &state
+                .ctx
+                .db,
+            &pid,
+        )
+        .await?
+    } else {
+        None
+    };
 
-    let genres = db::Media::get_genres(
+    // Smart collections have no parent_id-linked children; scope genres by content kind.
+    let is_music = parent
+        .as_ref()
+        .map_or(false, |p| {
+            p.collection_media_kind == Some(db::CollectionMediaKind::Music)
+        });
+    let genre_related_kinds = parent
+        .as_ref()
+        .and_then(|p| {
+            if p.kind != db::MediaKind::Collection
+                || p.collection_kind == Some(db::CollectionKind::Manual)
+            {
+                return None;
+            }
+            Some(match &p.collection_media_kind {
+                Some(db::CollectionMediaKind::Music) => vec![
+                    db::MediaKind::Track,
+                    db::MediaKind::Album,
+                    db::MediaKind::Artist,
+                ],
+                Some(db::CollectionMediaKind::Movie) => vec![db::MediaKind::Movie],
+                Some(db::CollectionMediaKind::Series) => {
+                    vec![db::MediaKind::Series, db::MediaKind::Episode]
+                }
+                _ => vec![
+                    db::MediaKind::Movie,
+                    db::MediaKind::Series,
+                    db::MediaKind::Episode,
+                ],
+            })
+        });
+
+    let kind_filter = if is_music {
+        vec![db::MediaKind::MusicGenre]
+    } else {
+        vec![db::MediaKind::Genre, db::MediaKind::MusicGenre]
+    };
+
+    let result = db::Media::get_by_filter(
         &state
             .ctx
             .db,
-        &related_kinds,
+        &db::MediaFilter {
+            kind: Some(kind_filter),
+            limit: q.limit,
+            offset: q.start_index,
+            total_count: true,
+            genre_related_kinds,
+            sort_by: q
+                .sort_by
+                .unwrap_or_default(),
+            sort_order: q
+                .sort_order
+                .unwrap_or_default(),
+            title_contains: q.search_term,
+            ..Default::default()
+        },
     )
     .await?;
-    let total = genres.len() as i64;
 
     Ok(Json(api::BaseItemDtoQueryResult {
-        items: genres
+        items: result
+            .records
             .into_iter()
             .map(api::db_media_to_item)
             .collect(),
-        total_record_count: total,
+        total_record_count: result.total_count as i64,
+        start_index: q
+            .start_index
+            .unwrap_or(0),
+        ..Default::default()
+    }))
+}
+
+#[get("/musicgenres")]
+pub async fn music_genres(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Query(q): Query<api::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    let genre_related_kinds = if q
+        .parent_id
+        .is_some()
+    {
+        Some(vec![
+            db::MediaKind::Track,
+            db::MediaKind::Album,
+            db::MediaKind::Artist,
+        ])
+    } else {
+        None
+    };
+
+    let result = db::Media::get_by_filter(
+        &state
+            .ctx
+            .db,
+        &db::MediaFilter {
+            kind: Some(vec![db::MediaKind::MusicGenre]),
+            limit: q.limit,
+            offset: q.start_index,
+            total_count: true,
+            genre_related_kinds,
+            sort_by: q
+                .sort_by
+                .unwrap_or_default(),
+            sort_order: q
+                .sort_order
+                .unwrap_or_default(),
+            title_contains: q.search_term,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    Ok(Json(api::BaseItemDtoQueryResult {
+        items: result
+            .records
+            .into_iter()
+            .map(api::db_media_to_item)
+            .collect(),
+        total_record_count: result.total_count as i64,
         start_index: q
             .start_index
             .unwrap_or(0),

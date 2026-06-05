@@ -365,7 +365,42 @@ impl DeezerAddon {
         if let Some(url) = a.cover_xl {
             patch.set_image(db::ImageKind::Primary, url);
         }
+        if let Some(names) = genre_names {
+            if !names.is_empty() {
+                patch.relations = Some(Self::build_genre_relations(patch.id, &names));
+            }
+        }
         Ok(Some(patch))
+    }
+
+    // --- Helpers ---
+
+    fn build_genre_relations(
+        media_id: Uuid,
+        genre_names: &[String],
+    ) -> Vec<(db::MediaRelation, db::Media)> {
+        genre_names
+            .iter()
+            .map(|name| {
+                let genre_id = common::stable_media_uuid(
+                    &db::MediaKind::Genre,
+                    &name.to_lowercase(),
+                );
+                (
+                    db::MediaRelation {
+                        left_media_id: media_id,
+                        right_media_id: genre_id,
+                        ..Default::default()
+                    },
+                    db::Media {
+                        id: genre_id,
+                        title: name.clone(),
+                        kind: db::MediaKind::MusicGenre,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect()
     }
 
     // --- Hierarchy ---
@@ -665,6 +700,13 @@ impl DeezerAddon {
                         .or(artist_poster.clone())
                     {
                         album_media.set_image(db::ImageKind::Primary, url);
+                    }
+
+                    if !genre_names.is_empty() {
+                        album_media.relations = Some(Self::build_genre_relations(
+                            album_media.id,
+                            &genre_names,
+                        ));
                     }
 
                     let tracks = Self::build_album_children(

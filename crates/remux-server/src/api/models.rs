@@ -146,6 +146,7 @@ impl Into<MediaType> for db::MediaKind {
             db::MediaKind::Collection => MediaType::BoxSet,
             db::MediaKind::Folder => MediaType::Folder,
             db::MediaKind::Genre => MediaType::Genre,
+            db::MediaKind::MusicGenre => MediaType::MusicGenre,
             db::MediaKind::Person => MediaType::Person,
             db::MediaKind::Studio => MediaType::Studio,
             db::MediaKind::TvChannel => MediaType::TvChannel,
@@ -509,7 +510,12 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             .as_ref()
             .map(|rels| {
                 rels.iter()
-                    .filter(|(_, m)| m.kind == db::MediaKind::Genre)
+                    .filter(|(_, m)| {
+                        matches!(
+                            m.kind,
+                            db::MediaKind::Genre | db::MediaKind::MusicGenre
+                        )
+                    })
                     .map(|(_, m)| {
                         m.title
                             .clone()
@@ -522,7 +528,12 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             .as_ref()
             .map(|rels| {
                 rels.iter()
-                    .filter(|(_, m)| m.kind == db::MediaKind::Genre)
+                    .filter(|(_, m)| {
+                        matches!(
+                            m.kind,
+                            db::MediaKind::Genre | db::MediaKind::MusicGenre
+                        )
+                    })
                     .map(|(_, m)| NameIdPair {
                         id: m.id,
                         name: m

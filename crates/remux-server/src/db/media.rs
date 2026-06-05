@@ -121,6 +121,7 @@ pub enum MediaKind {
     Person,
     Studio,
     Genre,
+    MusicGenre,
     Collection,
     // purely here for jf
     Folder,
@@ -207,7 +208,7 @@ impl Into<sdks::remux::MediaKind> for MediaKind {
             MediaKind::Episode => sdks::remux::MediaKind::Episode,
             MediaKind::Collection => sdks::remux::MediaKind::Collection,
             MediaKind::Folder => sdks::remux::MediaKind::Folder,
-            MediaKind::Genre => sdks::remux::MediaKind::Genre,
+            MediaKind::Genre | MediaKind::MusicGenre => sdks::remux::MediaKind::Genre,
             MediaKind::Person => sdks::remux::MediaKind::Person,
             MediaKind::Studio => sdks::remux::MediaKind::Studio,
             MediaKind::Stream => sdks::remux::MediaKind::Stream,
@@ -264,7 +265,8 @@ impl TryFrom<api::MediaType> for MediaKind {
             | api::MediaType::CollectionFolder
             | api::MediaType::UserView
             | api::MediaType::UserRootFolder => Ok(MediaKind::Folder),
-            api::MediaType::Genre | api::MediaType::MusicGenre => Ok(MediaKind::Genre),
+            api::MediaType::Genre => Ok(MediaKind::Genre),
+            api::MediaType::MusicGenre => Ok(MediaKind::MusicGenre),
             api::MediaType::Person => Ok(MediaKind::Person),
             api::MediaType::Studio => Ok(MediaKind::Studio),
             api::MediaType::Audio => Ok(MediaKind::Track),
@@ -928,6 +930,10 @@ pub struct MediaFilter {
     /// manual collections and switches to a JOIN on media_relations.
     /// If `parent_id` is set but this is `None`, the non-JOIN path is used.
     pub parent: Option<Media>,
+    /// Restrict Genre records to those related (via media_relations) to items
+    /// of these content kinds. Used for smart-collection genre queries where
+    /// items float freely and cannot be scoped via parent_id / CTE.
+    pub genre_related_kinds: Option<Vec<MediaKind>>,
 }
 
 /// Normalise any country string to an ISO 3166-1 alpha-2 code (e.g. "US").
@@ -1823,14 +1829,14 @@ impl Media {
         if !related_kinds.is_empty() {
             qb.push(" JOIN media_relations mr ON mr.right_media_id = g.id");
             qb.push(" JOIN media m ON mr.left_media_id = m.id");
-            qb.push(" WHERE g.kind = 'genre' AND m.kind IN (");
+            qb.push(" WHERE g.kind IN ('genre', 'music_genre') AND m.kind IN (");
             let mut sep = qb.separated(", ");
             for k in related_kinds {
                 sep.push_bind(k);
             }
             qb.push(")");
         } else {
-            qb.push(" WHERE g.kind = 'genre'");
+            qb.push(" WHERE g.kind IN ('genre', 'music_genre')");
         }
 
         qb.push(" ORDER BY g.title ASC");
@@ -1923,10 +1929,28 @@ impl Media {
                 .is_some()
             && !is_manual_collection;
 
+        // Genres are flat global records linked to content via media_relations, not
+        // via parent_id. When scoping a genre query to a parent collection/folder we
+        // must filter by relation instead of by the normal parent_id/CTE scope.
+        let is_genre_scope_query = filter
+            .parent_id
+            .is_some()
+            && filter
+                .kind
+                .as_ref()
+                .map(|k| {
+                    !k.is_empty()
+                        && k.iter()
+                            .all(|k| {
+                                matches!(k, MediaKind::Genre | MediaKind::MusicGenre)
+                            })
+                })
+                .unwrap_or(false);
+
         let mut count_qb;
         let mut records_qb;
 
-        if use_recursive {
+        if use_recursive && !is_genre_scope_query {
             let parent_id = filter
                 .parent_id
                 .as_ref()
@@ -1948,6 +1972,31 @@ impl Media {
             records_qb.push(
                 " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
                 ) SELECT * FROM media WHERE id IN (SELECT id FROM subtree) AND 1=1",
+            );
+        } else if use_recursive && is_genre_scope_query {
+            // CTE at top level so we can reference it in the relation subquery below,
+            // but the base query is plain — no id IN subtree baked in.
+            let parent_id = filter
+                .parent_id
+                .as_ref()
+                .unwrap();
+
+            count_qb = sqlx::QueryBuilder::new(
+                "WITH RECURSIVE subtree AS (SELECT id FROM media WHERE parent_id = ",
+            );
+            count_qb.push_bind(parent_id);
+            count_qb.push(
+                " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
+                ) SELECT COUNT(*) as count FROM media WHERE 1=1",
+            );
+
+            records_qb = sqlx::QueryBuilder::new(
+                "WITH RECURSIVE subtree AS (SELECT id FROM media WHERE parent_id = ",
+            );
+            records_qb.push_bind(parent_id);
+            records_qb.push(
+                " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
+                ) SELECT * FROM media WHERE 1=1",
             );
         } else if is_manual_collection {
             let collection_id = filter
@@ -2044,7 +2093,31 @@ impl Media {
         };
 
         for qb in [&mut count_qb, &mut records_qb] {
-            if !use_recursive && !is_manual_collection {
+            if is_genre_scope_query {
+                // Filter genres by their media_relations to items within the parent scope.
+                if use_recursive {
+                    qb.push(
+                        " AND id IN (\
+                            SELECT DISTINCT mr.right_media_id FROM media_relations mr \
+                            WHERE mr.left_media_id IN (SELECT id FROM subtree)\
+                        )",
+                    );
+                } else if is_manual_collection {
+                    let cid = filter
+                        .parent_id
+                        .as_ref()
+                        .unwrap();
+                    qb.push(
+                        " AND id IN (\
+                            SELECT DISTINCT mr.right_media_id FROM media_relations mr \
+                            WHERE mr.left_media_id IN (\
+                                SELECT right_media_id FROM media_relations \
+                                WHERE left_media_id = ",
+                    );
+                    qb.push_bind(cid);
+                    qb.push(" AND role = 'collection'))");
+                }
+            } else if !use_recursive && !is_manual_collection {
                 if let Some(parent_id) = &filter.parent_id {
                     qb.push(" AND parent_id = ")
                         .push_bind(parent_id);
@@ -2058,6 +2131,21 @@ impl Media {
                         }
                         qb.push(")");
                     }
+                }
+            }
+            if let Some(related_kinds) = &filter.genre_related_kinds {
+                if !related_kinds.is_empty() {
+                    qb.push(
+                        " AND id IN (\
+                            SELECT DISTINCT mr.right_media_id FROM media_relations mr \
+                            JOIN media item ON item.id = mr.left_media_id \
+                            WHERE item.kind IN (",
+                    );
+                    let mut sep = qb.separated(", ");
+                    for k in related_kinds {
+                        sep.push_bind(k);
+                    }
+                    qb.push("))");
                 }
             }
             if let Some(grandparent_id) = &filter.grandparent_id {
@@ -2556,7 +2644,12 @@ impl Media {
                         let Ok(kind) = MediaKind::try_from(kind_str) else {
                             continue;
                         };
-                        if !matches!(kind, MediaKind::Genre | MediaKind::Person) {
+                        if !matches!(
+                            kind,
+                            MediaKind::Genre
+                                | MediaKind::MusicGenre
+                                | MediaKind::Person
+                        ) {
                             continue;
                         }
                         let left_media_id: Uuid = row.get(0);
@@ -3066,10 +3159,16 @@ impl Media {
         }
 
         let kinds = if let Some(include_item_types) = &filter.include_item_types {
-            let ikt_kinds: Vec<MediaKind> = include_item_types
+            let mut ikt_kinds: Vec<MediaKind> = include_item_types
                 .iter()
                 .filter_map(|t| MediaKind::try_from(t.clone()).ok())
                 .collect();
+            // Genre and MusicGenre are two sides of the same concept; always expand.
+            if ikt_kinds.contains(&MediaKind::Genre)
+                && !ikt_kinds.contains(&MediaKind::MusicGenre)
+            {
+                ikt_kinds.push(MediaKind::MusicGenre);
+            }
             // If types were specified but none map to a known kind (e.g. MusicVideo),
             // return empty rather than falling through to an unbounded query.
             if ikt_kinds.is_empty() {
