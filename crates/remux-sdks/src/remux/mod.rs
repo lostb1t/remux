@@ -2712,7 +2712,7 @@ pub struct PlaybackInfo {
     pub event_type: Option<PlaybackEventKind>,
 
     pub can_seek: bool,
-    pub item_id: Option<Uuid>,
+    pub item_id: Uuid,
     pub session_id: Option<String>,
     pub media_source_id: Option<String>,
     pub audio_stream_index: Option<i32>,

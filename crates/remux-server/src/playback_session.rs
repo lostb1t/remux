@@ -98,16 +98,14 @@ impl PlaybackSessionManager {
             }
         }
 
-        let Some(item_id) = data
-            .item_id
-            .filter(|id| !id.is_nil())
-        else {
+        let item_id = data.item_id;
+        if item_id.is_nil() {
             warn!(
                 client = %auth_session.device.app_name,
                 "PlaybackStart missing item_id, skipping session creation"
             );
             return Ok(());
-        };
+        }
 
         // If the client selected a StreamGroup source, record its group UUID.
         let group_id: Option<Uuid> = if let Some(ref sid) = data.media_source_id {
@@ -258,22 +256,13 @@ impl PlaybackSessionManager {
         // If the session has no valid item and the progress report can't supply one,
         // it's a ghost (e.g. an unclaimed transcode stub). Evict it instead of
         // keeping it alive via last_activity.
-        if ps
-            .item_id
-            .is_nil()
-            && data
-                .item_id
-                .map(|id| id.is_nil())
-                .unwrap_or(true)
-        {
+        if ps.item_id.is_nil() && data.item_id.is_nil() {
             self.sessions
                 .remove(psid);
             return Ok(());
         }
 
-        let item_id = data
-            .item_id
-            .unwrap_or(ps.item_id);
+        let item_id = if !data.item_id.is_nil() { data.item_id } else { ps.item_id };
 
         // Detect encode-parameter changes and log them once.
         // We ignore pause/unpause — those are not encode changes.
@@ -318,10 +307,8 @@ impl PlaybackSessionManager {
         }
 
         self.update(psid, |ps| {
-            if let Some(id) = data.item_id {
-                if !id.is_nil() {
-                    ps.item_id = id;
-                }
+            if !data.item_id.is_nil() {
+                ps.item_id = data.item_id;
             }
             ps.position_ticks = data
                 .position_ticks
@@ -400,12 +387,9 @@ impl PlaybackSessionManager {
             .stop(psid)
             .await;
 
-        let item_id = data
-            .item_id
-            .or_else(|| {
-                ps.as_ref()
-                    .map(|s| s.item_id)
-            });
+        let item_id = Some(data.item_id)
+            .filter(|id| !id.is_nil())
+            .or_else(|| ps.as_ref().map(|s| s.item_id));
         let final_ticks = data
             .position_ticks
             .or_else(|| {
