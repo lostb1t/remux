@@ -18,6 +18,8 @@ Jellyfin-compatible media server written in Rust.
 - **State**: `AppState` → `AppContext` → `Config`. Handlers receive `State(state): State<AppState>` and access config via `state.ctx.config`.
 - **Database**: SQLite via SQLx. Connection string lives in `Config.database_url`.
 
+In general use Parse, don't Validate and Type-Driven Design in Rust.
+
 ## Configuration
 
 All operator-configurable settings must be fields on `Config` (in `crates/remux-server/src/lib.rs`), loaded via the `config` crate from a config file and environment variables. Do **not** read runtime settings with bare `std::env::var` — add a field to `Config` instead so it participates in the full config system (file, env var, serde default, serialize for logging).
