@@ -527,6 +527,163 @@ impl AddonKind for OpendalAddon {
         Ok(streams)
     }
 
+    fn supports_children(&self, root: &db::Media) -> bool {
+        self.media_kind == "episode"
+            && matches!(root.kind, db::MediaKind::Series | db::MediaKind::Season)
+    }
+
+    async fn get_children(
+        &self,
+        root: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Option<Vec<db::Media>>> {
+        if self.media_kind != "episode" {
+            return Ok(None);
+        }
+
+        match root.kind {
+            db::MediaKind::Series => {
+                let Some(imdb_id) = root
+                    .external_ids
+                    .imdb
+                    .as_deref()
+                else {
+                    return Ok(None);
+                };
+                let season_nums: Vec<i64> = sqlx::query_scalar(
+                    "SELECT DISTINCT season FROM opendal_files \
+                     WHERE addon_id = ? AND media_kind = 'episode' \
+                       AND imdb_id = ? AND season IS NOT NULL \
+                     ORDER BY season",
+                )
+                .bind(self.addon_id)
+                .bind(imdb_id)
+                .fetch_all(&ctx.db)
+                .await?;
+
+                if season_nums.is_empty() {
+                    return Ok(None);
+                }
+
+                let seasons = season_nums
+                    .into_iter()
+                    .map(|s| db::Media {
+                        id: common::get_stable_uuid(format!(
+                            "season:{}:{}",
+                            imdb_id, s
+                        )),
+                        title: format!("Season {}", s),
+                        kind: db::MediaKind::Season,
+                        parent_id: Some(root.id),
+                        grandparent_id: Some(root.id),
+                        idx: Some(s),
+                        parent_idx: Some(s),
+                        external_ids: db::ExternalIds {
+                            imdb: Some(imdb_id.to_string()),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .collect();
+
+                Ok(Some(seasons))
+            }
+
+            db::MediaKind::Season => {
+                let Some(series_imdb) = root
+                    .external_ids
+                    .imdb
+                    .as_deref()
+                else {
+                    return Ok(None);
+                };
+                let Some(season_num) = root.idx else {
+                    return Ok(None);
+                };
+                let series_id = root
+                    .parent_id
+                    .unwrap_or(root.id);
+
+                let files: Vec<OpendalFile> = sqlx::query_as(
+                    "SELECT path, name, title, imdb_id, season, episode, \
+                            track_number, year, size \
+                     FROM opendal_files \
+                     WHERE addon_id = ? AND media_kind = 'episode' \
+                       AND imdb_id = ? AND season = ? \
+                     ORDER BY episode",
+                )
+                .bind(self.addon_id)
+                .bind(series_imdb)
+                .bind(season_num)
+                .fetch_all(&ctx.db)
+                .await?;
+
+                if files.is_empty() {
+                    return Ok(None);
+                }
+
+                let now = Utc::now().naive_utc();
+                let episodes: Vec<db::Media> = files
+                    .into_iter()
+                    .filter_map(|f| {
+                        let ep_num = f.episode?;
+                        let title = match f
+                            .title
+                            .as_deref()
+                        {
+                            Some(t) => {
+                                format!("S{:02}E{:02} - {}", season_num, ep_num, t)
+                            }
+                            None => format!("S{:02}E{:02}", season_num, ep_num),
+                        };
+                        let descriptor = if self.backend == "local" {
+                            crate::stream::StreamDescriptor::Local(
+                                std::path::PathBuf::from(&f.path),
+                            )
+                        } else {
+                            crate::stream::StreamDescriptor::Opendal {
+                                addon_id: self.addon_id,
+                                path: f
+                                    .path
+                                    .clone(),
+                            }
+                        };
+                        Some(db::Media {
+                            id: common::get_stable_uuid(format!(
+                                "episode:{}:{}:{}",
+                                series_imdb, season_num, ep_num
+                            )),
+                            title,
+                            kind: db::MediaKind::Episode,
+                            parent_id: Some(root.id),
+                            grandparent_id: Some(series_id),
+                            idx: Some(ep_num),
+                            parent_idx: Some(season_num),
+                            external_ids: db::ExternalIds {
+                                imdb: Some(series_imdb.to_string()),
+                                ..Default::default()
+                            },
+                            stream_info: Some(crate::stream::StreamInfo {
+                                descriptor,
+                                name: Some(
+                                    f.name
+                                        .clone(),
+                                ),
+                                ..Default::default()
+                            }),
+                            refreshed_at: Some(now),
+                            ..Default::default()
+                        })
+                    })
+                    .collect();
+
+                Ok(Some(episodes))
+            }
+
+            _ => Ok(None),
+        }
+    }
+
     async fn serve_stream(
         &self,
         descriptor: &crate::stream::StreamDescriptor,
@@ -1079,7 +1236,441 @@ async fn prune_stale_paths(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, atomic::AtomicU64};
+
+    use chrono::Utc;
+    use futures::StreamExt;
     use regex::Regex;
+    use remux_sdks::stremio::ResourceType;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::{
+        addons::{Addon, AddonPresetRef},
+        common::ProgressReporter,
+        db,
+        integration_test::new_test_server,
+        stream::StreamDescriptor,
+    };
+
+    fn noop_progress() -> ProgressReporter {
+        ProgressReporter::new(Arc::new(AtomicU64::new(0)))
+    }
+
+    async fn make_local_addon(
+        ctx: &AppContext,
+        dir: &std::path::Path,
+        media_kind: &str,
+    ) -> (OpendalAddon, Addon) {
+        let addon_id = Uuid::new_v4();
+        let root = dir
+            .to_str()
+            .unwrap()
+            .to_string();
+        let now = Utc::now().naive_utc();
+
+        let db_addon = Addon {
+            id: addon_id,
+            name: "test-local".to_string(),
+            preset: AddonPresetRef {
+                kind: "opendal-local".to_string(),
+                config: serde_json::json!({
+                    "media_kind": media_kind,
+                    "paths": [root],
+                }),
+            },
+            resources: vec![ResourceType::Stream, ResourceType::Catalog],
+            types: vec![],
+            enabled: true,
+            priority: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        db_addon
+            .insert(&ctx.db)
+            .await
+            .unwrap();
+
+        let operator =
+            opendal::Operator::new(opendal::services::Fs::default().root(&root))
+                .unwrap()
+                .finish();
+        let addon_kind = OpendalAddon {
+            addon_id,
+            operator: Arc::new(operator),
+            root,
+            backend: "local".to_string(),
+            media_kind: media_kind.to_string(),
+        };
+
+        (addon_kind, db_addon)
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: movies — index multiple files with varied naming and verify
+    // each is scanned and streams correctly.
+    // -----------------------------------------------------------------------
+
+    struct MovieFixture {
+        /// Path relative to tempdir root (directories are created automatically).
+        rel_path: &'static str,
+        expected_imdb: &'static str,
+    }
+
+    #[tokio::test]
+    async fn opendal_local_movie_index_and_stream() {
+        // Each fixture exercises a different naming convention.
+        // The [imdbid-...] tag may appear anywhere in the path — file name,
+        // parent folder, or grandparent folder.
+        let fixtures: &[MovieFixture] = &[
+            // IMDB tag embedded in the file name itself
+            MovieFixture {
+                rel_path: "[imdbid-tt0133093] The Matrix (1999).mkv",
+                expected_imdb: "tt0133093",
+            },
+            // IMDB tag in a parent folder; filename uses dot-separated title + year
+            MovieFixture {
+                rel_path: "[imdbid-tt0816692] Interstellar (2014)/Interstellar.2014.1080p.BluRay.x264.mkv",
+                expected_imdb: "tt0816692",
+            },
+            // IMDB tag appended at the end of the file name (before extension)
+            MovieFixture {
+                rel_path: "The.Wolf.of.Wall.Street.2013 [imdbid-tt0993846].mp4",
+                expected_imdb: "tt0993846",
+            },
+            // .avi extension
+            MovieFixture {
+                rel_path: "[imdbid-tt1375666] Inception (2010)/Inception.2010.BluRay.avi",
+                expected_imdb: "tt1375666",
+            },
+            // .mov extension
+            MovieFixture {
+                rel_path: "A Beautiful Mind [imdbid-tt0268978].mov",
+                expected_imdb: "tt0268978",
+            },
+            // Deeply nested folder, IMDB in grandparent
+            MovieFixture {
+                rel_path: "[imdbid-tt0109830] Forrest Gump (1994)/Extras/Forrest.Gump.1994.mkv",
+                expected_imdb: "tt0109830",
+            },
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        for f in fixtures {
+            let full = dir
+                .path()
+                .join(f.rel_path);
+            std::fs::create_dir_all(
+                full.parent()
+                    .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(&full, b"fake").unwrap();
+        }
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        for f in fixtures {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM opendal_files \
+                 WHERE addon_id = ? AND media_kind = 'movie' AND imdb_id = ?",
+            )
+            .bind(db_addon.id)
+            .bind(f.expected_imdb)
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
+            assert_eq!(
+                count, 1,
+                "{}: expected 1 row for imdb {}",
+                f.rel_path, f.expected_imdb
+            );
+
+            let stub = db::Media {
+                id: common::get_stable_uuid(format!("movie:{}", f.expected_imdb)),
+                kind: db::MediaKind::Movie,
+                external_ids: db::ExternalIds {
+                    imdb: Some(
+                        f.expected_imdb
+                            .to_string(),
+                    ),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let streams = addon
+                .get_streams(&stub, ctx)
+                .await
+                .unwrap();
+            assert!(
+                !streams.is_empty(),
+                "{}: get_streams returned nothing for imdb {}",
+                f.rel_path,
+                f.expected_imdb
+            );
+            for s in &streams {
+                assert!(
+                    matches!(s.descriptor, StreamDescriptor::Local(_)),
+                    "{}: expected Local descriptor",
+                    f.rel_path
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: episodes — index multiple files with varied naming across two
+    // series, verify scan results, catalog structure, and full tree from
+    // get_children (Series → Seasons → Episodes).
+    // -----------------------------------------------------------------------
+
+    struct EpisodeFixture {
+        rel_path: &'static str,
+        expected_imdb: &'static str,
+        expected_season: i64,
+        expected_episode: i64,
+    }
+
+    #[tokio::test]
+    async fn opendal_local_episode_index_has_seasons() {
+        let fixtures: &[EpisodeFixture] = &[
+            // --- Breaking Bad (tt0903747) ---
+            // Standard SxxExx with quality suffix
+            EpisodeFixture {
+                rel_path: "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.S01E01.720p.BluRay.mkv",
+                expected_imdb: "tt0903747",
+                expected_season: 1,
+                expected_episode: 1,
+            },
+            // Lowercase sXXeXX
+            EpisodeFixture {
+                rel_path: "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.s01e02.mkv",
+                expected_imdb: "tt0903747",
+                expected_season: 1,
+                expected_episode: 2,
+            },
+            // NxNN alternative format
+            EpisodeFixture {
+                rel_path: "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.1x03.1080p.mkv",
+                expected_imdb: "tt0903747",
+                expected_season: 1,
+                expected_episode: 3,
+            },
+            // Second season, .avi extension
+            EpisodeFixture {
+                rel_path: "[imdbid-tt0903747] Breaking Bad/Season 02/Breaking.Bad.S02E01.WEB-DL.mkv",
+                expected_imdb: "tt0903747",
+                expected_season: 2,
+                expected_episode: 1,
+            },
+            // Underscore separators instead of dots
+            EpisodeFixture {
+                rel_path: "[imdbid-tt0903747] Breaking Bad/Season 02/Breaking_Bad_S02E02.avi",
+                expected_imdb: "tt0903747",
+                expected_season: 2,
+                expected_episode: 2,
+            },
+            // --- Game of Thrones (tt0944947) — no Season sub-folders ---
+            // Standard SxxExx
+            EpisodeFixture {
+                rel_path: "[imdbid-tt0944947] Game of Thrones/Game.of.Thrones.S01E01.mkv",
+                expected_imdb: "tt0944947",
+                expected_season: 1,
+                expected_episode: 1,
+            },
+            // Mixed year + episode code
+            EpisodeFixture {
+                rel_path: "[imdbid-tt0944947] Game of Thrones/Game.of.Thrones.2011.S01E02.mkv",
+                expected_imdb: "tt0944947",
+                expected_season: 1,
+                expected_episode: 2,
+            },
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        for f in fixtures {
+            let full = dir
+                .path()
+                .join(f.rel_path);
+            std::fs::create_dir_all(
+                full.parent()
+                    .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(&full, b"fake ep").unwrap();
+        }
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        // Every fixture must produce exactly one opendal_files row.
+        for f in fixtures {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM opendal_files \
+                 WHERE addon_id = ? AND media_kind = 'episode' \
+                   AND imdb_id = ? AND season = ? AND episode = ?",
+            )
+            .bind(db_addon.id)
+            .bind(f.expected_imdb)
+            .bind(f.expected_season)
+            .bind(f.expected_episode)
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
+            assert_eq!(
+                count, 1,
+                "{}: expected row with imdb={} s={} e={}",
+                f.rel_path, f.expected_imdb, f.expected_season, f.expected_episode
+            );
+        }
+
+        // Catalog must yield one Series per distinct IMDB.
+        let stream = addon
+            .catalog_stream(ctx, "files")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut series_items: Vec<db::Media> = stream
+            .collect()
+            .await;
+        series_items.sort_by(|a, b| {
+            a.external_ids
+                .imdb
+                .cmp(
+                    &b.external_ids
+                        .imdb,
+                )
+        });
+        assert_eq!(series_items.len(), 2, "catalog should contain two Series");
+        assert!(
+            series_items
+                .iter()
+                .all(|s| s.kind == db::MediaKind::Series)
+        );
+
+        // For each series verify full tree via get_children.
+        for series in &series_items {
+            let imdb = series
+                .external_ids
+                .imdb
+                .as_deref()
+                .unwrap();
+
+            let seasons = addon
+                .get_children(series, ctx)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| {
+                    panic!("{imdb}: get_children(Series) returned None")
+                });
+            assert!(!seasons.is_empty(), "{imdb}: expected at least one Season");
+            assert!(
+                seasons
+                    .iter()
+                    .all(|s| s.kind == db::MediaKind::Season),
+                "{imdb}: all children of a Series must be Seasons"
+            );
+
+            let expected_season_nums: Vec<i64> = {
+                let mut v: Vec<i64> = fixtures
+                    .iter()
+                    .filter(|f| f.expected_imdb == imdb)
+                    .map(|f| f.expected_season)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                v.sort();
+                v
+            };
+            let mut got_season_nums: Vec<i64> = seasons
+                .iter()
+                .filter_map(|s| s.idx)
+                .collect();
+            got_season_nums.sort();
+            assert_eq!(
+                got_season_nums, expected_season_nums,
+                "{imdb}: wrong set of season numbers"
+            );
+
+            for season in &seasons {
+                let season_num = season
+                    .idx
+                    .unwrap();
+                let episodes = addon
+                    .get_children(season, ctx)
+                    .await
+                    .unwrap()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{imdb} s{season_num}: get_children(Season) returned None"
+                        )
+                    });
+                assert!(
+                    !episodes.is_empty(),
+                    "{imdb} s{season_num}: expected episodes"
+                );
+                assert!(
+                    episodes
+                        .iter()
+                        .all(|e| e.kind == db::MediaKind::Episode),
+                    "{imdb} s{season_num}: all children of a Season must be Episodes"
+                );
+
+                let expected_ep_nums: Vec<i64> = {
+                    let mut v: Vec<i64> = fixtures
+                        .iter()
+                        .filter(|f| {
+                            f.expected_imdb == imdb && f.expected_season == season_num
+                        })
+                        .map(|f| f.expected_episode)
+                        .collect();
+                    v.sort();
+                    v
+                };
+                let mut got_ep_nums: Vec<i64> = episodes
+                    .iter()
+                    .filter_map(|e| e.idx)
+                    .collect();
+                got_ep_nums.sort();
+                assert_eq!(
+                    got_ep_nums, expected_ep_nums,
+                    "{imdb} s{season_num}: wrong set of episode numbers"
+                );
+
+                // Every episode must carry a Local stream descriptor.
+                for ep in &episodes {
+                    let info = ep
+                        .stream_info
+                        .as_ref()
+                        .unwrap_or_else(|| {
+                            panic!("{imdb} s{season_num} e{:?}: no stream_info", ep.idx)
+                        });
+                    assert!(
+                        matches!(info.descriptor, StreamDescriptor::Local(_)),
+                        "{imdb} s{season_num} e{:?}: expected Local stream",
+                        ep.idx
+                    );
+                }
+            }
+        }
+    }
 
     // ---------------------------------------------------------------------------
     // Movie filename parsing (title + year via hunch)
