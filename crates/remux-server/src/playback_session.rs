@@ -256,13 +256,26 @@ impl PlaybackSessionManager {
         // If the session has no valid item and the progress report can't supply one,
         // it's a ghost (e.g. an unclaimed transcode stub). Evict it instead of
         // keeping it alive via last_activity.
-        if ps.item_id.is_nil() && data.item_id.is_nil() {
+        if ps
+            .item_id
+            .is_nil()
+            && data
+                .item_id
+                .is_nil()
+        {
             self.sessions
                 .remove(psid);
             return Ok(());
         }
 
-        let item_id = if !data.item_id.is_nil() { data.item_id } else { ps.item_id };
+        let item_id = if !data
+            .item_id
+            .is_nil()
+        {
+            data.item_id
+        } else {
+            ps.item_id
+        };
 
         // Detect encode-parameter changes and log them once.
         // We ignore pause/unpause — those are not encode changes.
@@ -307,7 +320,10 @@ impl PlaybackSessionManager {
         }
 
         self.update(psid, |ps| {
-            if !data.item_id.is_nil() {
+            if !data
+                .item_id
+                .is_nil()
+            {
                 ps.item_id = data.item_id;
             }
             ps.position_ticks = data
@@ -389,7 +405,10 @@ impl PlaybackSessionManager {
 
         let item_id = Some(data.item_id)
             .filter(|id| !id.is_nil())
-            .or_else(|| ps.as_ref().map(|s| s.item_id));
+            .or_else(|| {
+                ps.as_ref()
+                    .map(|s| s.item_id)
+            });
         let final_ticks = data
             .position_ticks
             .or_else(|| {
