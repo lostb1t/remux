@@ -151,14 +151,21 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         .await
         .ok();
 
+    // Always use m.id as left_media_id — relations may have been built against a
+    // temporary UUID (e.g. before IMDB resolution in stremio_search) that was later
+    // recomputed to the stable UUID. m.id is the authoritative current identity.
     let all_rels: Vec<db::MediaRelation> = items_with_rels
         .iter()
         .flat_map(|m| {
+            let current_id = m.id;
             m.relations
                 .as_ref()
                 .unwrap()
                 .iter()
-                .map(|(r, _)| r.clone())
+                .map(move |(r, _)| db::MediaRelation {
+                    left_media_id: current_id,
+                    ..r.clone()
+                })
         })
         // Don't link relations that point to name-keyed person stubs.
         .filter(|r| !name_keyed_person_ids.contains(&r.right_media_id))
