@@ -98,15 +98,16 @@ impl PlaybackSessionManager {
             }
         }
 
-        let item_id = data
+        let Some(item_id) = data
             .item_id
-            .unwrap_or_else(|| {
-                warn!(
-                    client = %auth_session.device.app_name,
-                    "PlaybackStart missing item_id"
-                );
-                Uuid::default()
-            });
+            .filter(|id| !id.is_nil())
+        else {
+            warn!(
+                client = %auth_session.device.app_name,
+                "PlaybackStart missing item_id, skipping session creation"
+            );
+            return Ok(());
+        };
 
         // If the client selected a StreamGroup source, record its group UUID.
         let group_id: Option<Uuid> = if let Some(ref sid) = data.media_source_id {
@@ -253,6 +254,22 @@ impl PlaybackSessionManager {
             Some(ps) => ps,
             None => return Ok(()),
         };
+
+        // If the session has no valid item and the progress report can't supply one,
+        // it's a ghost (e.g. an unclaimed transcode stub). Evict it instead of
+        // keeping it alive via last_activity.
+        if ps
+            .item_id
+            .is_nil()
+            && data
+                .item_id
+                .map(|id| id.is_nil())
+                .unwrap_or(true)
+        {
+            self.sessions
+                .remove(psid);
+            return Ok(());
+        }
 
         let item_id = data
             .item_id

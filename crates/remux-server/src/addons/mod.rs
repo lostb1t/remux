@@ -454,6 +454,13 @@ pub trait AddonKind: Send + Sync {
                 .await,
         )
     }
+    /// Whether this addon fetches its capabilities from a remote manifest at creation time.
+    /// When `true`, an empty `available_info()` result is treated as a failed fetch and
+    /// `create_addon` returns an error. Static addons keep the default `false` and fall
+    /// back to the preset's `metadata().supported_*` instead.
+    fn requires_remote_manifest(&self) -> bool {
+        false
+    }
 
     // subtitle
     fn subtitle_supports(&self, _media: &db::Media) -> bool {

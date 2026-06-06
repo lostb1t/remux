@@ -213,9 +213,9 @@ pub async fn create_addon(
     // Default resources/types to the live available set (e.g. upstream manifest for
     // Stremio/Eclipse). Call available_info() once — addons that fetch a manifest
     // override this single method, not the separate available_resources/types helpers.
-    // If the caller provided explicit values those take precedence. If the live fetch
-    // returns nothing and the caller provided nothing, fail rather than silently storing
-    // preset defaults — those would persist wrong values into the DB.
+    // For addons that require a remote manifest (Stremio/Eclipse), an empty result means
+    // the fetch failed and we error. For static addons we fall back to the preset's
+    // declared metadata capabilities.
     let metadata = preset.metadata();
     let (avail_resources, avail_types) = kind
         .available_info()
@@ -225,16 +225,21 @@ pub async fn create_addon(
         .resources
         .is_empty()
     {
-        if avail_resources.is_empty()
-            && !metadata
-                .supported_resources
-                .is_empty()
-        {
-            return Err(anyhow::anyhow!("addon manifest returned no resources")
-                .context_bad_request("Could not fetch addon capabilities — is the manifest URL reachable?",
-                ));
+        if avail_resources.is_empty() {
+            if kind.requires_remote_manifest()
+                && !metadata
+                    .supported_resources
+                    .is_empty()
+            {
+                return Err(anyhow::anyhow!("addon manifest returned no resources")
+                    .context_bad_request(
+                        "Could not fetch addon capabilities — is the manifest URL reachable?",
+                    ));
+            }
+            metadata.supported_resources
+        } else {
+            avail_resources
         }
-        avail_resources
     } else {
         payload.resources
     };
@@ -242,19 +247,28 @@ pub async fn create_addon(
         .types
         .is_empty()
     {
-        if avail_types.is_empty()
-            && !metadata
+        if avail_types.is_empty() {
+            if kind.requires_remote_manifest()
+                && !metadata
+                    .supported_types
+                    .is_empty()
+            {
+                return Err(anyhow::anyhow!("addon manifest returned no types")
+                    .context_bad_request(
+                        "Could not fetch addon capabilities — is the manifest URL reachable?",
+                    ));
+            }
+            metadata
                 .supported_types
-                .is_empty()
-        {
-            return Err(anyhow::anyhow!("addon manifest returned no types")
-                .context_bad_request("Could not fetch addon capabilities — is the manifest URL reachable?",
-                ));
+                .into_iter()
+                .map(DbMediaKind::from)
+                .collect()
+        } else {
+            avail_types
+                .into_iter()
+                .filter_map(|t| DbMediaKind::try_from(t).ok())
+                .collect()
         }
-        avail_types
-            .into_iter()
-            .filter_map(|t| DbMediaKind::try_from(t).ok())
-            .collect()
     } else {
         payload
             .types

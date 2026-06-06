@@ -268,7 +268,7 @@ pub async fn init_app(
         .clone()
         .spawn_cleanup_task(
             std::time::Duration::from_secs(60),
-            std::time::Duration::from_secs(60 * 30),
+            std::time::Duration::from_secs(60 * 15),
         );
 
     db::StreamGroup::migrate_from_settings(&conn).await;

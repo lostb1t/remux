@@ -176,6 +176,10 @@ impl AddonKind for EclipseAddon {
         "eclipse"
     }
 
+    fn requires_remote_manifest(&self) -> bool {
+        true
+    }
+
     async fn available_info(
         &self,
     ) -> (Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>) {
