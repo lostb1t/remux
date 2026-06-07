@@ -695,7 +695,7 @@ impl TreeAddon for OpendalAddon {
                         idx: Some(s),
                         parent_idx: Some(s),
                         external_ids: db::ExternalIds {
-                            imdb: Some(imdb_id.to_string()),
+                            series_imdb: Some(imdb_id.to_string()),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -708,7 +708,7 @@ impl TreeAddon for OpendalAddon {
             db::MediaKind::Season => {
                 let Some(series_imdb) = root
                     .external_ids
-                    .imdb
+                    .series_imdb
                     .as_deref()
                 else {
                     return Ok(None);
@@ -776,7 +776,7 @@ impl TreeAddon for OpendalAddon {
                             idx: Some(ep_num),
                             parent_idx: Some(season_num),
                             external_ids: db::ExternalIds {
-                                imdb: Some(series_imdb.to_string()),
+                                series_imdb: Some(series_imdb.to_string()),
                                 ..Default::default()
                             },
                             stream_info: Some(crate::stream::StreamInfo {
@@ -1524,6 +1524,13 @@ mod tests {
                 expected_season: 1,
                 expected_episode: 2,
             },
+            // [imdb-tt...] tag (no "id" suffix), title with year + episode title suffix
+            EpisodeFixture {
+                rel_path: "Derry Girls (2018) [imdb-tt7120662]/Season 01 [imdb-tt7120662]/Derry Girls (2018) - S01E01 - Episode 1 [WEBDL-1080p][EAC3 2.0][h265]-MZABI [imdb-tt7120662].mkv",
+                expected_imdb: "tt7120662",
+                expected_season: 1,
+                expected_episode: 1,
+            },
         ];
 
         let dir = tempfile::tempdir().unwrap();
@@ -1588,7 +1595,7 @@ mod tests {
                         .imdb,
                 )
         });
-        assert_eq!(series_items.len(), 2, "catalog should contain two Series");
+        assert_eq!(series_items.len(), 3, "catalog should contain three Series");
         assert!(
             series_items
                 .iter()
@@ -1616,6 +1623,12 @@ mod tests {
                     .iter()
                     .all(|s| s.kind == db::MediaKind::Season),
                 "{imdb}: all children of a Series must be Seasons"
+            );
+            assert!(
+                seasons
+                    .iter()
+                    .all(|s| s.external_ids.series_imdb.as_deref() == Some(imdb)),
+                "{imdb}: Season items must carry series_imdb"
             );
 
             let expected_season_nums: Vec<i64> = {
@@ -1662,6 +1675,12 @@ mod tests {
                         .all(|e| e.kind == db::MediaKind::Episode),
                     "{imdb} s{season_num}: all children of a Season must be Episodes"
                 );
+                assert!(
+                    episodes
+                        .iter()
+                        .all(|e| e.external_ids.series_imdb.as_deref() == Some(imdb)),
+                    "{imdb} s{season_num}: Episode items must carry series_imdb"
+                );
 
                 let expected_ep_nums: Vec<i64> = {
                     let mut v: Vec<i64> = fixtures
@@ -1700,6 +1719,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Non-video files (e.g. thumbnails) must be silently skipped — no error,
+    // no opendal_files row.
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_local_skips_thumbnail_jpg() {
+        let rel_path = "3 Body Problem (2024) [imdb-tt13016388]/3 Body Problem (2024) - S01E01 - Countdown [HDTV-2160p][EAC3 5.1][h265] [imdb-tt13016388]-thumb.jpg";
+
+        let dir = tempfile::tempdir().unwrap();
+        let full = dir.path().join(rel_path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, b"fake thumb").unwrap();
+
+        let (_, guard) = new_test_server().await.unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM opendal_files WHERE addon_id = ?",
+        )
+        .bind(db_addon.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(count, 0, "thumbnail jpg must not produce any opendal_files row");
     }
 
     // ---------------------------------------------------------------------------
