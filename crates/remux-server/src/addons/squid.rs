@@ -8,8 +8,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, MediaKind,
-    ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
+    MediaKind, ResourceType, StreamAddon,
 };
 use crate::{
     AppContext, api,
@@ -289,12 +289,17 @@ impl AddonPreset for SquidPreset {
         _addon_id: Uuid,
         _cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         let client = reqwest::Client::builder()
             .user_agent("remux-server/1.0")
             .timeout(std::time::Duration::from_secs(8))
             .build()?;
-        Ok(Arc::new(SquidAddon { client }))
+        let addon = Arc::new(SquidAddon { client });
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            stream: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -313,7 +318,10 @@ impl AddonKind for SquidAddon {
     fn id(&self) -> &'static str {
         "squid"
     }
+}
 
+#[async_trait]
+impl StreamAddon for SquidAddon {
     fn stream_supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::Track
     }

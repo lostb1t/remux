@@ -7,8 +7,9 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, CatalogInfo, MediaKind, ProgressReporter, ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
+    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, IndexAddon,
+    MediaKind, ProgressReporter, ResourceType, StreamAddon,
 };
 use crate::{AppContext, addons::Addon, db, iptv};
 
@@ -62,7 +63,7 @@ impl AddonPreset for IptvM3uPreset {
         addon_id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         let url = cfg["url"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -73,7 +74,7 @@ impl AddonPreset for IptvM3uPreset {
             .filter(|s| !s.is_empty())
             .map(str::to_string);
 
-        Ok(Arc::new(IptvAddon {
+        let addon = Arc::new(IptvAddon {
             addon_id,
             m3u_url: url,
             epg_url,
@@ -82,7 +83,14 @@ impl AddonPreset for IptvM3uPreset {
             is_xtream: false,
             sync_vod: false,
             sync_series: false,
-        }))
+        });
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            catalog: Some(addon.clone()),
+            stream: Some(addon.clone()),
+            index: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -163,7 +171,7 @@ impl AddonPreset for IptvXstreamPreset {
         addon_id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         let server_url = cfg["server_url"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -187,7 +195,7 @@ impl AddonPreset for IptvXstreamPreset {
             .as_bool()
             .unwrap_or(false);
 
-        Ok(Arc::new(IptvAddon {
+        let addon = Arc::new(IptvAddon {
             addon_id,
             m3u_url: server_url,
             epg_url: None,
@@ -196,7 +204,14 @@ impl AddonPreset for IptvXstreamPreset {
             is_xtream: true,
             sync_vod,
             sync_series,
-        }))
+        });
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            catalog: Some(addon.clone()),
+            stream: Some(addon.clone()),
+            index: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -226,13 +241,18 @@ impl AddonKind for IptvAddon {
         "iptv"
     }
 
-    async fn available_info(&self) -> (Vec<ResourceType>, Vec<StremioMediaType>) {
-        (
+    async fn available_info(
+        &self,
+    ) -> Result<Option<(Vec<ResourceType>, Vec<StremioMediaType>)>> {
+        Ok(Some((
             vec![ResourceType::Stream, ResourceType::Catalog],
             vec![StremioMediaType::Tv],
-        )
+        )))
     }
+}
 
+#[async_trait]
+impl CatalogAddon for IptvAddon {
     async fn catalog_list(&self, ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         let source_id = self
             .addon_id
@@ -310,7 +330,10 @@ impl AddonKind for IptvAddon {
 
         Ok(Some(Box::pin(futures::stream::iter(items))))
     }
+}
 
+#[async_trait]
+impl StreamAddon for IptvAddon {
     fn stream_supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::TvChannel
     }
@@ -325,7 +348,10 @@ impl AddonKind for IptvAddon {
         };
         Ok(vec![si.clone()])
     }
+}
 
+#[async_trait]
+impl IndexAddon for IptvAddon {
     async fn refresh_index(
         &self,
         ctx: &AppContext,

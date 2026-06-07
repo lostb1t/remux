@@ -10,8 +10,9 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, CatalogInfo, MediaKind, ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
+    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, MediaKind,
+    MetaAddon, ResourceType, SearchAddon, TreeAddon,
 };
 use crate::{
     AppContext, common, db,
@@ -78,7 +79,7 @@ impl AddonPreset for DeezerPreset {
         _addon_id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         let playlists = cfg
             .get("playlists")
             .and_then(|v| v.as_array())
@@ -94,10 +95,18 @@ impl AddonPreset for DeezerPreset {
             .into_iter()
             .filter_map(|s| extract_playlist_id(&s))
             .collect();
-        Ok(Arc::new(DeezerAddon {
+        let addon = Arc::new(DeezerAddon {
             playlists,
             client: dz::client(),
-        }))
+        });
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            catalog: Some(addon.clone()),
+            meta: Some(addon.clone()),
+            search: Some(addon.clone()),
+            tree: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -1037,7 +1046,10 @@ impl AddonKind for DeezerAddon {
     fn id(&self) -> &'static str {
         "deezer"
     }
+}
 
+#[async_trait]
+impl CatalogAddon for DeezerAddon {
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         Ok(self
             .playlists()
@@ -1063,7 +1075,10 @@ impl AddonKind for DeezerAddon {
                 .await?,
         ))
     }
+}
 
+#[async_trait]
+impl MetaAddon for DeezerAddon {
     async fn meta_supports(&self, media: &db::Media) -> bool {
         self.meta_can_refresh(media)
     }
@@ -1098,7 +1113,10 @@ impl AddonKind for DeezerAddon {
             _ => Ok(None),
         }
     }
+}
 
+#[async_trait]
+impl TreeAddon for DeezerAddon {
     fn supports_children(&self, root: &db::Media) -> bool {
         matches!(root.kind, db::MediaKind::Artist | db::MediaKind::Album)
     }
@@ -1128,7 +1146,10 @@ impl AddonKind for DeezerAddon {
             Ok(Some(children))
         }
     }
+}
 
+#[async_trait]
+impl SearchAddon for DeezerAddon {
     async fn search_supports(&self, kind: &db::MediaKind) -> bool {
         matches!(
             kind,

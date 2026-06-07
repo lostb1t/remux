@@ -50,8 +50,7 @@ impl Task for RefreshLibraryTask {
 
         let addons = ctx
             .addons
-            .catalog_addons()
-            .await;
+            .catalog_addons();
         let total_work = addons
             .len()
             .max(1);
@@ -72,7 +71,9 @@ impl Task for RefreshLibraryTask {
             let prefix = format!("addon:{addon_id}:");
 
             let available = match runtime
-                .kind
+                .catalog
+                .as_ref()
+                .expect("catalog_addons() guarantees catalog slot")
                 .catalog_list(&ctx)
                 .await
             {
@@ -131,7 +132,6 @@ impl Task for RefreshLibraryTask {
                 let source = match ctx
                     .addons
                     .make_catalog_stream(&full_id)
-                    .await
                 {
                     Some(s) => s,
                     None => {

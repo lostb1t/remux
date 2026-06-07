@@ -250,7 +250,6 @@ pub async fn import_catalog(
         .ctx
         .addons
         .get_catalog(body.addon_id)
-        .await
         .context_not_found("Addon not found or has no catalog")?;
 
     let stream = addon

@@ -40,22 +40,32 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                 .config,
             config,
         ) {
-            Ok(kind) => {
-                let (resources, raw_types) = kind
-                    .available_info()
-                    .await;
-                let types: Vec<MediaKind> = raw_types
-                    .into_iter()
-                    .filter_map(|t| {
-                        DbMediaKind::try_from(t)
-                            .ok()
-                            .map(Into::into)
-                    })
-                    .collect();
-                if !resources.is_empty() {
-                    (resources, types)
+            Ok(caps) => {
+                let kind = caps
+                    .kind
+                    .as_ref()
+                    .map(|k| k.as_ref());
+                let info = if let Some(k) = kind {
+                    k.available_info()
+                        .await
+                        .ok()
+                        .flatten()
                 } else {
-                    (meta.supported_resources, meta.supported_types)
+                    None
+                };
+                match info {
+                    Some((resources, raw_types)) => {
+                        let types = raw_types
+                            .into_iter()
+                            .filter_map(|t| {
+                                DbMediaKind::try_from(t)
+                                    .ok()
+                                    .map(Into::into)
+                            })
+                            .collect();
+                        (resources, types)
+                    }
+                    None => (meta.supported_resources, meta.supported_types),
                 }
             }
             Err(_) => (meta.supported_resources, meta.supported_types),
@@ -198,7 +208,7 @@ pub async fn create_addon(
     payload
         .preset
         .config = normalized_config;
-    let kind = preset
+    let caps = preset
         .from_cfg(
             addon_id,
             &payload
@@ -209,36 +219,27 @@ pub async fn create_addon(
                 .config,
         )
         .context_bad_request("Invalid addon configuration")?;
+    let kind_ref = caps
+        .kind
+        .as_deref();
 
-    // Default resources/types to the live available set (e.g. upstream manifest for
-    // Stremio/Eclipse). Call available_info() once — addons that fetch a manifest
-    // override this single method, not the separate available_resources/types helpers.
-    // For addons that require a remote manifest (Stremio/Eclipse), an empty result means
-    // the fetch failed and we error. For static addons we fall back to the preset's
-    // declared metadata capabilities.
     let metadata = preset.metadata();
-    let (avail_resources, avail_types) = kind
-        .available_info()
-        .await;
+    let avail_info =
+        if let Some(k) = kind_ref {
+            k.available_info().await.context_bad_request(
+            "Could not fetch addon capabilities — is the manifest URL reachable?",
+        )?
+        } else {
+            None
+        };
 
     let resources = if payload
         .resources
         .is_empty()
     {
-        if avail_resources.is_empty() {
-            if kind.requires_remote_manifest()
-                && !metadata
-                    .supported_resources
-                    .is_empty()
-            {
-                return Err(anyhow::anyhow!("addon manifest returned no resources")
-                    .context_bad_request(
-                        "Could not fetch addon capabilities — is the manifest URL reachable?",
-                    ));
-            }
-            metadata.supported_resources
-        } else {
-            avail_resources
+        match &avail_info {
+            Some((r, _)) => r.clone(),
+            None => metadata.supported_resources,
         }
     } else {
         payload.resources
@@ -247,27 +248,16 @@ pub async fn create_addon(
         .types
         .is_empty()
     {
-        if avail_types.is_empty() {
-            if kind.requires_remote_manifest()
-                && !metadata
-                    .supported_types
-                    .is_empty()
-            {
-                return Err(anyhow::anyhow!("addon manifest returned no types")
-                    .context_bad_request(
-                        "Could not fetch addon capabilities — is the manifest URL reachable?",
-                    ));
-            }
-            metadata
+        match avail_info {
+            Some((_, t)) => t
+                .into_iter()
+                .filter_map(|t| DbMediaKind::try_from(t).ok())
+                .collect(),
+            None => metadata
                 .supported_types
                 .into_iter()
                 .map(DbMediaKind::from)
-                .collect()
-        } else {
-            avail_types
-                .into_iter()
-                .filter_map(|t| DbMediaKind::try_from(t).ok())
-                .collect()
+                .collect(),
         }
     } else {
         payload
@@ -453,14 +443,14 @@ pub async fn delete_addon(
         .ctx
         .addons
         .get(id)
-        .await
     {
-        if let Err(e) = runtime
-            .kind
-            .purge_index(&state.ctx, &addon_row)
-            .await
-        {
-            tracing::warn!(addon = %id, error = %e, "purge_index failed on addon delete");
+        if let Some(index) = &runtime.index {
+            if let Err(e) = index
+                .purge_index(&state.ctx, &addon_row)
+                .await
+            {
+                tracing::warn!(addon = %id, error = %e, "purge_index failed on addon delete");
+            }
         }
     }
 
@@ -522,7 +512,6 @@ pub async fn get_addon_catalogs(
         .ctx
         .addons
         .get_catalog(id)
-        .await
         .ok_or_else(|| anyhow::anyhow!("addon not instantiated"))
         .context_bad_request("Addon could not be instantiated")?;
 
@@ -658,7 +647,6 @@ pub async fn update_addon_catalogs(
                 .ctx
                 .addons
                 .get_catalog(id)
-                .await
             {
                 kind.catalog_list(&state.ctx)
                     .await
@@ -827,7 +815,6 @@ mod test {
             ctx.0
                 .addons
                 .get(created.id)
-                .await
                 .is_some(),
             "registry did not pick up the new addon"
         );
@@ -866,7 +853,6 @@ mod test {
             ctx.0
                 .addons
                 .get(created.id)
-                .await
                 .is_none(),
             "registry should have dropped the deleted addon"
         );

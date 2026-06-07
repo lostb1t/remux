@@ -5795,6 +5795,7 @@ version = "0.0.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
+ "arc-swap",
  "argon2",
  "async-compression",
  "async-trait",

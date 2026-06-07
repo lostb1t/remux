@@ -12,9 +12,9 @@ use remux_sdks::stremio::MediaType as StremioMediaType;
 use tracing::{debug, info, warn};
 
 use super::{
-    AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, AddonSelectOption, CatalogInfo, MediaKind,
-    ProgressReporter, ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
+    AddonPreset, AddonPresetRegistration, AddonSelectOption, CatalogAddon, CatalogInfo,
+    IndexAddon, MediaKind, ProgressReporter, ResourceType, StreamAddon, TreeAddon,
 };
 use crate::{AppContext, addons::Addon, common, db, sdks, sdks::CachedEndpoint};
 
@@ -131,7 +131,7 @@ impl AddonPreset for OpendalLocalPreset {
         addon_id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         let media_kind = cfg["media_kind"]
             .as_str()
             .unwrap_or("movie")
@@ -145,13 +145,21 @@ impl AddonPreset for OpendalLocalPreset {
             opendal::Operator::new(opendal::services::Fs::default().root(&first))?
                 .finish();
 
-        Ok(Arc::new(OpendalAddon {
+        let addon = Arc::new(OpendalAddon {
             addon_id,
             operator: Arc::new(operator),
             root: first,
             backend: "local".to_string(),
             media_kind,
-        }))
+        });
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            catalog: Some(addon.clone()),
+            stream: Some(addon.clone()),
+            tree: Some(addon.clone()),
+            index: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -226,7 +234,7 @@ impl AddonPreset for OpendalWebdavPreset {
         addon_id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         let media_kind = cfg["media_kind"]
             .as_str()
             .unwrap_or("movie")
@@ -251,13 +259,21 @@ impl AddonPreset for OpendalWebdavPreset {
         }
         let operator = opendal::Operator::new(builder)?.finish();
 
-        Ok(Arc::new(OpendalAddon {
+        let addon = Arc::new(OpendalAddon {
             addon_id,
             operator: Arc::new(operator),
             root: endpoint.to_string(),
             backend: "webdav".to_string(),
             media_kind,
-        }))
+        });
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            catalog: Some(addon.clone()),
+            stream: Some(addon.clone()),
+            tree: Some(addon.clone()),
+            index: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -296,7 +312,9 @@ impl AddonKind for OpendalAddon {
         "opendal"
     }
 
-    async fn available_info(&self) -> (Vec<ResourceType>, Vec<StremioMediaType>) {
+    async fn available_info(
+        &self,
+    ) -> Result<Option<(Vec<ResourceType>, Vec<StremioMediaType>)>> {
         let media_type = match self
             .media_kind
             .as_str()
@@ -305,12 +323,15 @@ impl AddonKind for OpendalAddon {
             "track" => StremioMediaType::Track,
             _ => StremioMediaType::Movie,
         };
-        (
+        Ok(Some((
             vec![ResourceType::Stream, ResourceType::Catalog],
             vec![media_type],
-        )
+        )))
     }
+}
 
+#[async_trait]
+impl CatalogAddon for OpendalAddon {
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         Ok(vec![CatalogInfo {
             provider_catalog_id: "files".to_string(),
@@ -323,26 +344,6 @@ impl AddonKind for OpendalAddon {
                     .into(),
             ),
         }])
-    }
-
-    async fn refresh_index(
-        &self,
-        ctx: &AppContext,
-        addon: &Addon,
-        progress: ProgressReporter,
-    ) -> Result<()> {
-        let tmdb = common::tmdb_client(&ctx.db).await;
-        scan_addon(ctx, &tmdb, addon).await?;
-        progress.set(100.0);
-        Ok(())
-    }
-
-    async fn purge_index(&self, ctx: &AppContext, addon: &Addon) -> Result<()> {
-        sqlx::query("DELETE FROM opendal_files WHERE addon_id = ?")
-            .bind(addon.id)
-            .execute(&ctx.db)
-            .await?;
-        Ok(())
     }
 
     async fn catalog_stream(
@@ -422,7 +423,33 @@ impl AddonKind for OpendalAddon {
 
         Ok(Some(Box::pin(futures::stream::iter(items))))
     }
+}
 
+#[async_trait]
+impl IndexAddon for OpendalAddon {
+    async fn refresh_index(
+        &self,
+        ctx: &AppContext,
+        addon: &Addon,
+        progress: ProgressReporter,
+    ) -> Result<()> {
+        let tmdb = common::tmdb_client(&ctx.db).await;
+        scan_addon(ctx, &tmdb, addon).await?;
+        progress.set(100.0);
+        Ok(())
+    }
+
+    async fn purge_index(&self, ctx: &AppContext, addon: &Addon) -> Result<()> {
+        sqlx::query("DELETE FROM opendal_files WHERE addon_id = ?")
+            .bind(addon.id)
+            .execute(&ctx.db)
+            .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl StreamAddon for OpendalAddon {
     fn stream_supports(&self, media: &db::Media) -> bool {
         match self
             .media_kind
@@ -527,6 +554,95 @@ impl AddonKind for OpendalAddon {
         Ok(streams)
     }
 
+    async fn serve_stream(
+        &self,
+        descriptor: &crate::stream::StreamDescriptor,
+        headers: &axum::http::HeaderMap,
+    ) -> axum_anyhow::ApiResult<axum::response::Response> {
+        use crate::ResultExt;
+        use axum::body::Body;
+        use futures_util::TryStreamExt;
+        use std::io;
+
+        let path = match descriptor {
+            crate::stream::StreamDescriptor::Opendal { path, .. } => path,
+            _ => {
+                return Err(axum_anyhow::ApiError::builder()
+                    .status(axum::http::StatusCode::BAD_REQUEST)
+                    .title("stream")
+                    .detail("descriptor is not an Opendal path")
+                    .build());
+            }
+        };
+
+        let meta = self
+            .operator
+            .stat(path)
+            .await
+            .context_not_found("file not found in opendal backend")?;
+        let file_size = meta.content_length();
+        let content_type = crate::stream::mime_from_path(std::path::Path::new(path));
+
+        let range_str = headers
+            .get(http::header::RANGE)
+            .and_then(|v| {
+                v.to_str()
+                    .ok()
+            })
+            .map(str::to_owned);
+
+        if let Some(range) = range_str {
+            let (start, end) = crate::stream::parse_range(&range, file_size)
+                .context_bad_request("invalid Range header")?;
+            let length = end - start + 1;
+
+            let reader = self
+                .operator
+                .reader_with(path)
+                .await
+                .context_bad_request("failed to open opendal reader")?;
+            let bytes_stream = reader
+                .into_bytes_stream(start..start + length)
+                .await
+                .context_bad_request("failed to create opendal byte stream")?
+                .map_err(io::Error::other);
+
+            Ok(axum::response::Response::builder()
+                .status(http::StatusCode::PARTIAL_CONTENT)
+                .header(http::header::CONTENT_TYPE, content_type)
+                .header(http::header::CONTENT_LENGTH, length)
+                .header(http::header::ACCEPT_RANGES, "bytes")
+                .header(
+                    http::header::CONTENT_RANGE,
+                    format!("bytes {}-{}/{}", start, end, file_size),
+                )
+                .body(Body::from_stream(bytes_stream))
+                .unwrap())
+        } else {
+            let reader = self
+                .operator
+                .reader(path)
+                .await
+                .context_bad_request("failed to open opendal reader")?;
+            let bytes_stream = reader
+                .into_bytes_stream(..)
+                .await
+                .context_bad_request("failed to create opendal byte stream")?
+                .map_err(io::Error::other);
+
+            Ok(axum::response::Response::builder()
+                .status(http::StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, content_type)
+                .header(http::header::CONTENT_LENGTH, file_size)
+                .header(http::header::ACCEPT_RANGES, "bytes")
+                .body(Body::from_stream(bytes_stream))
+                .unwrap())
+        }
+    }
+}
+
+#[async_trait]
+impl TreeAddon for OpendalAddon {
     fn supports_children(&self, root: &db::Media) -> bool {
         self.media_kind == "episode"
             && matches!(root.kind, db::MediaKind::Series | db::MediaKind::Season)
@@ -681,92 +797,6 @@ impl AddonKind for OpendalAddon {
             }
 
             _ => Ok(None),
-        }
-    }
-
-    async fn serve_stream(
-        &self,
-        descriptor: &crate::stream::StreamDescriptor,
-        headers: &axum::http::HeaderMap,
-    ) -> axum_anyhow::ApiResult<axum::response::Response> {
-        use crate::ResultExt;
-        use axum::body::Body;
-        use futures_util::TryStreamExt;
-        use std::io;
-
-        let path = match descriptor {
-            crate::stream::StreamDescriptor::Opendal { path, .. } => path,
-            _ => {
-                return Err(axum_anyhow::ApiError::builder()
-                    .status(axum::http::StatusCode::BAD_REQUEST)
-                    .title("stream")
-                    .detail("descriptor is not an Opendal path")
-                    .build());
-            }
-        };
-
-        let meta = self
-            .operator
-            .stat(path)
-            .await
-            .context_not_found("file not found in opendal backend")?;
-        let file_size = meta.content_length();
-        let content_type = crate::stream::mime_from_path(std::path::Path::new(path));
-
-        let range_str = headers
-            .get(http::header::RANGE)
-            .and_then(|v| {
-                v.to_str()
-                    .ok()
-            })
-            .map(str::to_owned);
-
-        if let Some(range) = range_str {
-            let (start, end) = crate::stream::parse_range(&range, file_size)
-                .context_bad_request("invalid Range header")?;
-            let length = end - start + 1;
-
-            let reader = self
-                .operator
-                .reader_with(path)
-                .await
-                .context_bad_request("failed to open opendal reader")?;
-            let bytes_stream = reader
-                .into_bytes_stream(start..start + length)
-                .await
-                .context_bad_request("failed to create opendal byte stream")?
-                .map_err(io::Error::other);
-
-            Ok(axum::response::Response::builder()
-                .status(http::StatusCode::PARTIAL_CONTENT)
-                .header(http::header::CONTENT_TYPE, content_type)
-                .header(http::header::CONTENT_LENGTH, length)
-                .header(http::header::ACCEPT_RANGES, "bytes")
-                .header(
-                    http::header::CONTENT_RANGE,
-                    format!("bytes {}-{}/{}", start, end, file_size),
-                )
-                .body(Body::from_stream(bytes_stream))
-                .unwrap())
-        } else {
-            let reader = self
-                .operator
-                .reader(path)
-                .await
-                .context_bad_request("failed to open opendal reader")?;
-            let bytes_stream = reader
-                .into_bytes_stream(..)
-                .await
-                .context_bad_request("failed to create opendal byte stream")?
-                .map_err(io::Error::other);
-
-            Ok(axum::response::Response::builder()
-                .status(http::StatusCode::OK)
-                .header(http::header::CONTENT_TYPE, content_type)
-                .header(http::header::CONTENT_LENGTH, file_size)
-                .header(http::header::ACCEPT_RANGES, "bytes")
-                .body(Body::from_stream(bytes_stream))
-                .unwrap())
         }
     }
 }

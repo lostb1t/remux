@@ -105,6 +105,7 @@ tokio-cron-scheduler = "*"
 inventory = "0.3"
 remux-macros = { path = "../remux-macros" }
 dashmap = "5.5"
+arc-swap = "1"
 rust_iso3166 = "0.1.14"
 quick-xml = { version = "0.37", features = ["encoding"] }
 opendal = { version = "0.52", features = ["services-webdav", "services-fs"] }

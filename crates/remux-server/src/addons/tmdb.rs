@@ -5,8 +5,8 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, MediaKind,
-    ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
+    MediaKind, MetaAddon, ResourceType, SearchAddon,
 };
 use crate::{
     AppContext, api, common, db, sdks,
@@ -45,8 +45,14 @@ impl AddonPreset for TmdbPreset {
         _addon_id: Uuid,
         _cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
-        Ok(Arc::new(TmdbAddon {}))
+    ) -> Result<AddonCapabilities> {
+        let addon = Arc::new(TmdbAddon {});
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            meta: Some(addon.clone()),
+            search: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -68,7 +74,10 @@ impl AddonKind for TmdbAddon {
     fn id(&self) -> &'static str {
         "tmdb"
     }
+}
 
+#[async_trait]
+impl MetaAddon for TmdbAddon {
     async fn meta_supports(&self, media: &db::Media) -> bool {
         matches!(
             media.kind,
@@ -99,7 +108,10 @@ impl AddonKind for TmdbAddon {
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
         tmdb_remote_images(ctx, media).await
     }
+}
 
+#[async_trait]
+impl SearchAddon for TmdbAddon {
     async fn search_supports(&self, kind: &db::MediaKind) -> bool {
         matches!(kind, db::MediaKind::Person)
     }

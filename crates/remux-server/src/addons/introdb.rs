@@ -5,8 +5,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, MediaKind,
-    ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
+    MediaKind, ResourceType, SegmentAddon,
 };
 use crate::{AppContext, db};
 
@@ -36,8 +36,13 @@ impl AddonPreset for IntroDbPreset {
         _addon_id: Uuid,
         _cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
-        Ok(Arc::new(IntroDbAddon))
+    ) -> Result<AddonCapabilities> {
+        let addon = Arc::new(IntroDbAddon);
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            segment: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -52,7 +57,10 @@ impl AddonKind for IntroDbAddon {
     fn id(&self) -> &'static str {
         "introdb"
     }
+}
 
+#[async_trait]
+impl SegmentAddon for IntroDbAddon {
     fn segment_supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Stream)
             && media

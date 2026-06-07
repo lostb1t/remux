@@ -16,6 +16,7 @@ pub mod torznab;
 pub mod ytdlp;
 
 use anyhow::{Result, anyhow};
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use futures::Stream;
 use sqlx::SqlitePool;
@@ -24,7 +25,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::RwLock;
 
 use crate::keyed_lock::KeyedLock;
 use tracing::info;
@@ -327,7 +327,7 @@ pub fn registered_presets() -> Vec<Box<dyn AddonPreset>> {
 }
 
 // ---------------------------------------------------------------------------
-// AddonPreset trait — kind descriptor + sync factory
+// AddonPreset trait — kind descriptor + factory
 // ---------------------------------------------------------------------------
 
 pub trait AddonPreset: Send + Sync {
@@ -338,7 +338,7 @@ pub trait AddonPreset: Send + Sync {
         addon_id: Uuid,
         cfg: &serde_json::Value,
         config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>>;
+    ) -> Result<AddonCapabilities>;
 
     /// Transform the config before it is persisted to the DB.
     /// Use this to convert inline secrets into file references, strip write-only fields, etc.
@@ -353,145 +353,120 @@ pub trait AddonPreset: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// AddonKind trait — god trait with all capability methods (no-op defaults)
+// AddonKind — lean identity + manifest trait
 // ---------------------------------------------------------------------------
 
 #[async_trait]
 pub trait AddonKind: Send + Sync {
     fn id(&self) -> &'static str;
 
-    // index
-    async fn refresh_index(
+    /// Returns `Ok(Some((resources, types)))` when the addon can determine its
+    /// own capabilities (e.g. by fetching a remote manifest).
+    /// Returns `Ok(None)` to signal "no override — caller should fall back to
+    /// the preset's `metadata().supported_*`".
+    /// Returns `Err` when a required remote fetch fails and the addon cannot
+    /// be used (the error propagates to the API caller).
+    async fn available_info(
         &self,
-        _ctx: &AppContext,
-        _addon: &Addon,
-        _progress: ProgressReporter,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    async fn purge_index(&self, _ctx: &AppContext, _addon: &Addon) -> Result<()> {
-        Ok(())
-    }
-
-    // catalog
-    async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
-        Ok(vec![])
-    }
-    async fn catalog_stream(
-        &self,
-        _ctx: &AppContext,
-        _local_id: &str,
-    ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>> {
+    ) -> Result<Option<(Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>)>> {
         Ok(None)
     }
+}
 
-    // meta
-    async fn meta_supports(&self, _media: &db::Media) -> bool {
-        false
-    }
+// ---------------------------------------------------------------------------
+// Capability traits
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+pub trait IndexAddon: Send + Sync {
+    async fn refresh_index(
+        &self,
+        ctx: &AppContext,
+        addon: &Addon,
+        progress: ProgressReporter,
+    ) -> Result<()>;
+    async fn purge_index(&self, ctx: &AppContext, addon: &Addon) -> Result<()>;
+}
+
+#[async_trait]
+pub trait CatalogAddon: Send + Sync {
+    async fn catalog_list(&self, ctx: &AppContext) -> Result<Vec<CatalogInfo>>;
+    async fn catalog_stream(
+        &self,
+        ctx: &AppContext,
+        local_id: &str,
+    ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>>;
+}
+
+#[async_trait]
+pub trait MetaAddon: Send + Sync {
+    async fn meta_supports(&self, media: &db::Media) -> bool;
     /// Fetch metadata for `media` and return a partial `db::Media` patch.
     /// Only the fields the addon knows about need to be populated; the caller
     /// merges the patch into the existing record via `merge_media`.
     /// Populate `patch.images` for images, `patch.relations` for people/genres.
     async fn meta_fetch(
         &self,
-        _media: &db::Media,
-        _ctx: &AppContext,
-        _config: &api::ServerConfiguration,
-    ) -> Result<Option<db::Media>> {
-        Ok(None)
-    }
-
-    // remote images (for manual image selection in the UI)
+        media: &db::Media,
+        ctx: &AppContext,
+        config: &api::ServerConfiguration,
+    ) -> Result<Option<db::Media>>;
+    /// Fetch remote image candidates for manual image selection in the UI.
     async fn images_fetch(
         &self,
-        _media: &db::Media,
-        _ctx: &AppContext,
+        media: &db::Media,
+        ctx: &AppContext,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
         Ok(vec![])
     }
+}
 
-    // tree
-    fn supports_children(&self, _root: &db::Media) -> bool {
-        false
-    }
+#[async_trait]
+pub trait TreeAddon: Send + Sync {
+    fn supports_children(&self, root: &db::Media) -> bool;
     async fn get_children(
         &self,
-        _root: &db::Media,
-        _ctx: &AppContext,
-    ) -> Result<Option<Vec<db::Media>>> {
-        Ok(None)
-    }
+        root: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Option<Vec<db::Media>>>;
+}
 
-    // search
-    async fn search_supports(&self, _kind: &db::MediaKind) -> bool {
-        false
-    }
+#[async_trait]
+pub trait SearchAddon: Send + Sync {
+    async fn search_supports(&self, kind: &db::MediaKind) -> bool;
     async fn search(
         &self,
-        _kind: &db::MediaKind,
-        _query: &str,
-        _limit: usize,
-        _ctx: &AppContext,
-    ) -> Result<Option<Vec<db::Media>>> {
-        Ok(None)
-    }
-    async fn available_resources(&self) -> Vec<ResourceType> {
-        vec![]
-    }
-    async fn available_types(&self) -> Vec<remux_sdks::stremio::MediaType> {
-        vec![]
-    }
-    /// Returns (resources, types) in a single call. Override to avoid double fetches.
-    async fn available_info(
-        &self,
-    ) -> (Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>) {
-        (
-            self.available_resources()
-                .await,
-            self.available_types()
-                .await,
-        )
-    }
-    /// Whether this addon fetches its capabilities from a remote manifest at creation time.
-    /// When `true`, an empty `available_info()` result is treated as a failed fetch and
-    /// `create_addon` returns an error. Static addons keep the default `false` and fall
-    /// back to the preset's `metadata().supported_*` instead.
-    fn requires_remote_manifest(&self) -> bool {
-        false
-    }
+        kind: &db::MediaKind,
+        query: &str,
+        limit: usize,
+        ctx: &AppContext,
+    ) -> Result<Option<Vec<db::Media>>>;
+}
 
-    // subtitle
-    fn subtitle_supports(&self, _media: &db::Media) -> bool {
-        false
-    }
+#[async_trait]
+pub trait SubtitleAddon: Send + Sync {
+    fn subtitle_supports(&self, media: &db::Media) -> bool;
     async fn subtitle_fetch(
         &self,
-        _media: &db::Media,
-        _db: &SqlitePool,
-    ) -> Result<Vec<sdks::stremio::Subtitle>> {
-        Ok(vec![])
-    }
+        media: &db::Media,
+        db: &SqlitePool,
+    ) -> Result<Vec<sdks::stremio::Subtitle>>;
+}
 
-    // stream
-    fn stream_supports(&self, _media: &db::Media) -> bool {
-        false
-    }
+#[async_trait]
+pub trait StreamAddon: Send + Sync {
+    fn stream_supports(&self, media: &db::Media) -> bool;
     async fn get_streams(
         &self,
-        _media: &db::Media,
-        _ctx: &AppContext,
-    ) -> Result<Vec<crate::stream::StreamInfo>> {
-        Ok(vec![])
-    }
-
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Vec<crate::stream::StreamInfo>>;
     /// Serve bytes for a stream that requires this addon's config (e.g. credentials).
     /// Only called when `StreamDescriptor::addon_id()` points to this addon.
     async fn serve_stream(
         &self,
-        _descriptor: &crate::stream::StreamDescriptor,
-        _headers: &axum::http::HeaderMap,
+        descriptor: &crate::stream::StreamDescriptor,
+        headers: &axum::http::HeaderMap,
     ) -> axum_anyhow::ApiResult<axum::response::Response> {
         Err(axum_anyhow::ApiError::builder()
             .status(axum::http::StatusCode::BAD_REQUEST)
@@ -499,35 +474,45 @@ pub trait AddonKind: Send + Sync {
             .detail("serve_stream not implemented for this addon")
             .build())
     }
+}
 
-    // segment
-    fn segment_supports(&self, _media: &db::Media) -> bool {
-        false
-    }
+#[async_trait]
+pub trait SegmentAddon: Send + Sync {
+    fn segment_supports(&self, media: &db::Media) -> bool;
     async fn segment_fetch(
         &self,
-        _media: &db::Media,
-        _ctx: &AppContext,
-    ) -> Result<MediaSegments> {
-        Ok(MediaSegments::default())
-    }
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<MediaSegments>;
+}
 
-    // lyric
-    fn lyric_provider_id(&self) -> Option<String> {
-        None
-    }
-    async fn lyric_fetch(&self, _req: &LyricSearchRequest) -> Result<Option<LyricDto>> {
-        Ok(None)
-    }
+#[async_trait]
+pub trait LyricAddon: Send + Sync {
+    fn provider_id(&self) -> String;
+    async fn lyric_fetch(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>>;
     async fn lyric_search(
         &self,
-        _req: &LyricSearchRequest,
-    ) -> Result<Vec<RemoteLyricInfoDto>> {
-        Ok(vec![])
-    }
-    async fn lyric_get_by_id(&self, _id: &str) -> Result<Option<LyricDto>> {
-        Ok(None)
-    }
+        req: &LyricSearchRequest,
+    ) -> Result<Vec<RemoteLyricInfoDto>>;
+    async fn lyric_get_by_id(&self, id: &str) -> Result<Option<LyricDto>>;
+}
+
+// ---------------------------------------------------------------------------
+// AddonCapabilities — produced by AddonPreset::from_cfg
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Default)]
+pub struct AddonCapabilities {
+    pub kind: Option<Arc<dyn AddonKind>>,
+    pub catalog: Option<Arc<dyn CatalogAddon>>,
+    pub meta: Option<Arc<dyn MetaAddon>>,
+    pub stream: Option<Arc<dyn StreamAddon>>,
+    pub search: Option<Arc<dyn SearchAddon>>,
+    pub subtitle: Option<Arc<dyn SubtitleAddon>>,
+    pub tree: Option<Arc<dyn TreeAddon>>,
+    pub segment: Option<Arc<dyn SegmentAddon>>,
+    pub lyric: Option<Arc<dyn LyricAddon>>,
+    pub index: Option<Arc<dyn IndexAddon>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -537,19 +522,20 @@ pub trait AddonKind: Send + Sync {
 #[derive(Clone)]
 pub struct AddonRuntime {
     pub row: Addon,
-    pub kind: Arc<dyn AddonKind>,
     /// Live capabilities fetched from the addon at load time (e.g. remote manifest).
     /// Acts as a hard upper bound — overrides whatever is stored in `row.types`.
     manifest_types: Option<Vec<db::MediaKind>>,
+    pub caps: AddonCapabilities,
+}
+
+impl std::ops::Deref for AddonRuntime {
+    type Target = AddonCapabilities;
+    fn deref(&self) -> &Self::Target {
+        &self.caps
+    }
 }
 
 impl AddonRuntime {
-    pub fn supports(&self, r: ResourceType) -> bool {
-        self.row
-            .resources
-            .contains(&r)
-    }
-
     pub fn supports_type(&self, kind: &db::MediaKind) -> bool {
         // Manifest types (if available) are the authoritative upper bound.
         // "Series" in a type list covers Episode and Season too (Stremio model).
@@ -582,11 +568,21 @@ fn kind_in_type_list(kind: &db::MediaKind, list: &[db::MediaKind]) -> bool {
 
 #[derive(Clone)]
 pub struct AddonService {
-    inner: Arc<RwLock<Vec<AddonRuntime>>>,
+    inner: Arc<ArcSwap<Vec<AddonRuntime>>>,
 }
 
 impl AddonService {
     pub async fn from_db(db: &SqlitePool, config: &crate::Config) -> Result<Self> {
+        let runtimes = Self::load_runtimes(db, config).await?;
+        Ok(Self {
+            inner: Arc::new(ArcSwap::from_pointee(runtimes)),
+        })
+    }
+
+    async fn load_runtimes(
+        db: &SqlitePool,
+        config: &crate::Config,
+    ) -> Result<Vec<AddonRuntime>> {
         let presets = registered_presets();
         let addons = Addon::list(db).await?;
         let mut runtimes = Vec::new();
@@ -604,7 +600,11 @@ impl AddonService {
                             .kind
                 })
             else {
-                tracing::warn!(addon_id = %addon.id, kind = %addon.preset.kind, "skipping addon with unknown preset kind");
+                tracing::warn!(
+                    addon_id = %addon.id,
+                    kind = %addon.preset.kind,
+                    "skipping addon with unknown preset kind"
+                );
                 continue;
             };
             match preset.from_cfg(
@@ -614,24 +614,27 @@ impl AddonService {
                     .config,
                 config,
             ) {
-                Ok(kind) => {
-                    let (_, raw_types) = kind
-                        .available_info()
-                        .await;
-                    let manifest_types = if raw_types.is_empty() {
-                        None
+                Ok(caps) => {
+                    let manifest_types = if let Some(ref kind) = caps.kind {
+                        match kind
+                            .available_info()
+                            .await
+                        {
+                            Ok(Some((_, raw_types))) if !raw_types.is_empty() => Some(
+                                raw_types
+                                    .into_iter()
+                                    .filter_map(|t| db::MediaKind::try_from(t).ok())
+                                    .collect(),
+                            ),
+                            _ => None,
+                        }
                     } else {
-                        Some(
-                            raw_types
-                                .into_iter()
-                                .filter_map(|t| db::MediaKind::try_from(t).ok())
-                                .collect(),
-                        )
+                        None
                     };
                     runtimes.push(AddonRuntime {
                         row: addon,
-                        kind,
                         manifest_types,
+                        caps,
                     });
                 }
                 Err(e) => tracing::warn!(
@@ -642,40 +645,24 @@ impl AddonService {
                 ),
             }
         }
-
-        Ok(Self {
-            inner: Arc::new(RwLock::new(runtimes)),
-        })
+        Ok(runtimes)
     }
 
     pub async fn reload(&self, db: &SqlitePool, config: &crate::Config) -> Result<()> {
-        let new = Self::from_db(db, config).await?;
-        let mut guard = self
-            .inner
-            .write()
-            .await;
-        *guard = new
-            .inner
-            .read()
-            .await
-            .clone();
+        let runtimes = Self::load_runtimes(db, config).await?;
+        self.inner
+            .store(Arc::new(runtimes));
         Ok(())
     }
 
-    pub async fn list(&self) -> Vec<AddonRuntime> {
-        let guard = self
-            .inner
-            .read()
-            .await;
-        guard.clone()
+    pub fn list(&self) -> arc_swap::Guard<Arc<Vec<AddonRuntime>>> {
+        self.inner
+            .load()
     }
 
-    pub async fn get(&self, id: Uuid) -> Option<AddonRuntime> {
-        let guard = self
-            .inner
-            .read()
-            .await;
-        guard
+    pub fn get(&self, id: Uuid) -> Option<AddonRuntime> {
+        self.inner
+            .load()
             .iter()
             .find(|r| {
                 r.row
@@ -685,14 +672,14 @@ impl AddonService {
             .cloned()
     }
 
-    pub async fn catalog_addons(&self) -> Vec<AddonRuntime> {
-        let guard = self
-            .inner
-            .read()
-            .await;
-        guard
+    pub fn catalog_addons(&self) -> Vec<AddonRuntime> {
+        self.inner
+            .load()
             .iter()
-            .filter(|r| r.supports(ResourceType::Catalog))
+            .filter(|r| {
+                r.catalog
+                    .is_some()
+            })
             .cloned()
             .collect()
     }
@@ -700,16 +687,18 @@ impl AddonService {
     pub async fn purge_indexes(&self, ctx: &AppContext) -> Result<()> {
         let addons: Vec<AddonRuntime> = self
             .inner
-            .read()
-            .await
-            .clone();
+            .load()
+            .iter()
+            .cloned()
+            .collect();
         for runtime in &addons {
-            if let Err(e) = runtime
-                .kind
-                .purge_index(ctx, &runtime.row)
-                .await
-            {
-                tracing::warn!(addon = %runtime.row.name, error = %e, "purge_index failed");
+            if let Some(index) = &runtime.index {
+                if let Err(e) = index
+                    .purge_index(ctx, &runtime.row)
+                    .await
+                {
+                    tracing::warn!(addon = %runtime.row.name, error = %e, "purge_index failed");
+                }
             }
         }
         Ok(())
@@ -720,118 +709,97 @@ impl AddonService {
         ctx: &AppContext,
         progress: ProgressReporter,
     ) -> Result<()> {
-        let addons: Vec<AddonRuntime> = {
-            let guard = self
-                .inner
-                .read()
-                .await;
-            guard
-                .iter()
-                .filter(|r| {
-                    r.row
-                        .enabled
-                })
-                .cloned()
-                .collect()
-        };
+        let addons: Vec<AddonRuntime> = self
+            .inner
+            .load()
+            .iter()
+            .filter(|r| {
+                r.row
+                    .enabled
+            })
+            .cloned()
+            .collect();
         let total = addons.len();
         for (idx, runtime) in addons
             .iter()
             .enumerate()
         {
-            let sub = progress.step(idx, total);
-            if let Err(e) = runtime
-                .kind
-                .refresh_index(ctx, &runtime.row, sub)
-                .await
-            {
-                tracing::warn!(addon = %runtime.row.name, error = %e, "refresh_index failed");
+            if let Some(index) = &runtime.index {
+                let sub = progress.step(idx, total);
+                if let Err(e) = index
+                    .refresh_index(ctx, &runtime.row, sub)
+                    .await
+                {
+                    tracing::warn!(addon = %runtime.row.name, error = %e, "refresh_index failed");
+                }
             }
         }
         progress.set(100.0);
         Ok(())
     }
 
-    pub async fn get_catalog(&self, id: Uuid) -> Option<Arc<dyn AddonKind>> {
-        let guard = self
-            .inner
-            .read()
-            .await;
-        let r = guard
+    pub fn get_catalog(&self, id: Uuid) -> Option<Arc<dyn CatalogAddon>> {
+        self.inner
+            .load()
             .iter()
             .find(|r| {
                 r.row
                     .id
                     == id
-            })?;
-        if r.supports(ResourceType::Catalog) {
-            Some(
-                r.kind
-                    .clone(),
-            )
-        } else {
-            None
-        }
+            })
+            .and_then(|r| {
+                r.catalog
+                    .clone()
+            })
     }
 
     /// Return the tags configured for a specific catalog within an addon.
     /// `addon_uuid` is the simple (no-dashes) UUID string stored in `media_catalog_items.addon_id`.
-    pub async fn catalog_tags(
-        &self,
-        addon_uuid: &str,
-        local_cat_id: &str,
-    ) -> Vec<String> {
+    pub fn catalog_tags(&self, addon_uuid: &str, local_cat_id: &str) -> Vec<String> {
         let Ok(id) = Uuid::parse_str(addon_uuid) else {
             return vec![];
         };
-        let guard = self
-            .inner
-            .read()
-            .await;
-        let Some(r) = guard
+        self.inner
+            .load()
             .iter()
             .find(|r| {
                 r.row
                     .id
                     == id
             })
-        else {
-            return vec![];
-        };
-        r.row
-            .catalog_states()
-            .get(local_cat_id)
-            .map(|s| {
-                s.tags
-                    .clone()
+            .map(|r| {
+                r.row
+                    .catalog_states()
+                    .get(local_cat_id)
+                    .map(|s| {
+                        s.tags
+                            .clone()
+                    })
+                    .unwrap_or_default()
             })
             .unwrap_or_default()
     }
 
-    pub async fn make_catalog_stream(
+    pub fn make_catalog_stream(
         &self,
         media_id: &str,
     ) -> Option<Box<dyn RemoteMediaStream>> {
         let rest = media_id.strip_prefix("addon:")?;
         let (uuid_str, local_id) = rest.split_once(':')?;
         let id = Uuid::parse_str(uuid_str).ok()?;
-        let guard = self
+        let addon = self
             .inner
-            .read()
-            .await;
-        let r = guard
+            .load()
             .iter()
             .find(|r| {
                 r.row
                     .id
                     == id
+            })
+            .and_then(|r| {
+                r.catalog
+                    .clone()
             })?;
-        if !r.supports(ResourceType::Catalog) {
-            return None;
-        }
-        let addon = r
-            .kind
-            .clone();
         Some(Box::new(AddonCatalogStream {
             addon,
             local_id: local_id.to_string(),
@@ -846,32 +814,30 @@ impl AddonService {
         force_refresh: bool,
         config: &api::ServerConfiguration,
     ) -> Result<()> {
-        let guard = self
-            .inner
-            .read()
-            .await;
-        let applicable: Vec<(String, Arc<dyn AddonKind>)> = {
+        let applicable: Vec<(String, Arc<dyn MetaAddon>)> = {
             let mut v = Vec::new();
-            for r in guard
+            for r in self
+                .inner
+                .load()
                 .iter()
                 .filter(|r| r.supports_type(&media.kind))
             {
-                if r.kind
-                    .meta_supports(media)
-                    .await
-                {
-                    v.push((
-                        r.row
-                            .name
-                            .clone(),
-                        r.kind
-                            .clone(),
-                    ));
+                if let Some(meta) = &r.meta {
+                    if meta
+                        .meta_supports(media)
+                        .await
+                    {
+                        v.push((
+                            r.row
+                                .name
+                                .clone(),
+                            meta.clone(),
+                        ));
+                    }
                 }
             }
             v
         };
-        drop(guard);
 
         if applicable.is_empty() {
             return Ok(());
@@ -919,22 +885,17 @@ impl AddonService {
         let mut all = Vec::new();
         let mut queue = vec![root.clone()];
         while let Some(node) = queue.pop() {
-            let guard = self
+            let applicable: Vec<Arc<dyn TreeAddon>> = self
                 .inner
-                .read()
-                .await;
-            let applicable: Vec<Arc<dyn AddonKind>> = guard
+                .load()
                 .iter()
-                .filter(|r| {
-                    r.kind
-                        .supports_children(&node)
-                })
-                .map(|r| {
-                    r.kind
-                        .clone()
+                .filter_map(|r| {
+                    r.tree
+                        .as_ref()
+                        .filter(|t| t.supports_children(&node))
+                        .cloned()
                 })
                 .collect();
-            drop(guard);
 
             for addon in &applicable {
                 match addon
@@ -1062,24 +1023,28 @@ impl AddonService {
         limit: usize,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let guard = self
+        let addons: Vec<(String, Arc<dyn SearchAddon>)> = self
             .inner
-            .read()
-            .await;
-        let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
+            .load()
             .iter()
-            .filter(|r| r.supports(ResourceType::Search) && r.supports_type(kind))
-            .map(|r| {
-                (
-                    r.row
-                        .name
-                        .clone(),
-                    r.kind
-                        .clone(),
-                )
+            .filter(|r| {
+                r.search
+                    .is_some()
+                    && r.supports_type(kind)
+            })
+            .filter_map(|r| {
+                r.search
+                    .as_ref()
+                    .map(|s| {
+                        (
+                            r.row
+                                .name
+                                .clone(),
+                            s.clone(),
+                        )
+                    })
             })
             .collect();
-        drop(guard);
 
         for (name, addon) in addons {
             if !addon
@@ -1118,24 +1083,28 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
-        let guard = self
+        let addons: Vec<(String, Arc<dyn MetaAddon>)> = self
             .inner
-            .read()
-            .await;
-        let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
+            .load()
             .iter()
-            .filter(|r| r.supports_type(&media.kind))
-            .map(|r| {
-                (
-                    r.row
-                        .name
-                        .clone(),
-                    r.kind
-                        .clone(),
-                )
+            .filter(|r| {
+                r.meta
+                    .is_some()
+                    && r.supports_type(&media.kind)
+            })
+            .filter_map(|r| {
+                r.meta
+                    .as_ref()
+                    .map(|m| {
+                        (
+                            r.row
+                                .name
+                                .clone(),
+                            m.clone(),
+                        )
+                    })
             })
             .collect();
-        drop(guard);
 
         let mut out = Vec::new();
         for (name, addon) in addons {
@@ -1158,29 +1127,25 @@ impl AddonService {
         media: &db::Media,
         db: &SqlitePool,
     ) -> Vec<sdks::stremio::Subtitle> {
-        let guard = self
+        let addons: Vec<(String, Arc<dyn SubtitleAddon>)> = self
             .inner
-            .read()
-            .await;
-        let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
+            .load()
             .iter()
-            .filter(|r| {
-                r.supports(ResourceType::Subtitles)
-                    && r.supports_type(&media.kind)
-                    && r.kind
-                        .subtitle_supports(media)
-            })
-            .map(|r| {
-                (
-                    r.row
-                        .name
-                        .clone(),
-                    r.kind
-                        .clone(),
-                )
+            .filter(|r| r.supports_type(&media.kind))
+            .filter_map(|r| {
+                r.subtitle
+                    .as_ref()
+                    .filter(|s| s.subtitle_supports(media))
+                    .map(|s| {
+                        (
+                            r.row
+                                .name
+                                .clone(),
+                            s.clone(),
+                        )
+                    })
             })
             .collect();
-        drop(guard);
 
         let mut subs = vec![];
         for (name, addon) in addons {
@@ -1202,39 +1167,35 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let guard = self
+        let addons: Vec<(String, Arc<dyn StreamAddon>)> = self
             .inner
-            .read()
-            .await;
-        let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
+            .load()
             .iter()
-            .filter(|r| {
-                let has_resource = r.supports(ResourceType::Stream);
-                let has_type = r.supports_type(&media.kind);
-                let kind_supports = r
-                    .kind
-                    .stream_supports(media);
-                tracing::debug!(
-                    addon = %r.row.name,
-                    media_kind = ?media.kind,
-                    has_resource,
-                    has_type,
-                    kind_supports,
-                    "stream addon filter"
-                );
-                has_resource && has_type && kind_supports
-            })
-            .map(|r| {
-                (
-                    r.row
-                        .name
-                        .clone(),
-                    r.kind
-                        .clone(),
-                )
+            .filter(|r| r.supports_type(&media.kind))
+            .filter_map(|r| {
+                r.stream
+                    .as_ref()
+                    .and_then(|s| {
+                        let supports = s.stream_supports(media);
+                        tracing::debug!(
+                            addon = %r.row.name,
+                            media_kind = ?media.kind,
+                            supports,
+                            "stream addon filter"
+                        );
+                        if supports {
+                            Some((
+                                r.row
+                                    .name
+                                    .clone(),
+                                s.clone(),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
             })
             .collect();
-        drop(guard);
 
         tracing::debug!(
             media_id = %media.id,
@@ -1410,37 +1371,34 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
     ) -> MediaSegments {
-        let guard = self
+        let addons: Vec<(String, Arc<dyn SegmentAddon>)> = self
             .inner
-            .read()
-            .await;
-        let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
+            .load()
             .iter()
-            .filter(|r| {
-                let has_resource = r.supports(ResourceType::Segment);
-                let kind_supports = r
-                    .kind
-                    .segment_supports(media);
-                tracing::debug!(
-                    addon = %r.row.name,
-                    media_kind = ?media.kind,
-                    has_resource,
-                    kind_supports,
-                    "segment addon filter"
-                );
-                has_resource && kind_supports
-            })
-            .map(|r| {
-                (
-                    r.row
-                        .name
-                        .clone(),
-                    r.kind
-                        .clone(),
-                )
+            .filter_map(|r| {
+                r.segment
+                    .as_ref()
+                    .and_then(|s| {
+                        let supports = s.segment_supports(media);
+                        tracing::debug!(
+                            addon = %r.row.name,
+                            media_kind = ?media.kind,
+                            supports,
+                            "segment addon filter"
+                        );
+                        if supports {
+                            Some((
+                                r.row
+                                    .name
+                                    .clone(),
+                                s.clone(),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
             })
             .collect();
-        drop(guard);
 
         let mut merged = MediaSegments::default();
         for (name, addon) in addons {
@@ -1462,24 +1420,23 @@ impl AddonService {
         &self,
         req: &LyricSearchRequest,
     ) -> Result<Option<LyricDto>> {
-        let guard = self
+        let addons: Vec<(String, Arc<dyn LyricAddon>)> = self
             .inner
-            .read()
-            .await;
-        let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
+            .load()
             .iter()
-            .filter(|r| r.supports(ResourceType::Lyrics))
-            .map(|r| {
-                (
-                    r.row
-                        .name
-                        .clone(),
-                    r.kind
-                        .clone(),
-                )
+            .filter_map(|r| {
+                r.lyric
+                    .as_ref()
+                    .map(|l| {
+                        (
+                            r.row
+                                .name
+                                .clone(),
+                            l.clone(),
+                        )
+                    })
             })
             .collect();
-        drop(guard);
 
         for (name, addon) in addons {
             match addon
@@ -1500,24 +1457,23 @@ impl AddonService {
         &self,
         req: &LyricSearchRequest,
     ) -> Result<Vec<RemoteLyricInfoDto>> {
-        let guard = self
+        let addons: Vec<(String, Arc<dyn LyricAddon>)> = self
             .inner
-            .read()
-            .await;
-        let addons: Vec<(String, Arc<dyn AddonKind>)> = guard
+            .load()
             .iter()
-            .filter(|r| r.supports(ResourceType::Lyrics))
-            .map(|r| {
-                (
-                    r.row
-                        .name
-                        .clone(),
-                    r.kind
-                        .clone(),
-                )
+            .filter_map(|r| {
+                r.lyric
+                    .as_ref()
+                    .map(|l| {
+                        (
+                            r.row
+                                .name
+                                .clone(),
+                            l.clone(),
+                        )
+                    })
             })
             .collect();
-        drop(guard);
 
         let mut out = Vec::new();
         for (name, addon) in addons {
@@ -1538,28 +1494,22 @@ impl AddonService {
         &self,
         composite_id: &str,
     ) -> Result<Option<LyricDto>> {
-        let guard = self
+        let addons: Vec<Arc<dyn LyricAddon>> = self
             .inner
-            .read()
-            .await;
-        let addons: Vec<Arc<dyn AddonKind>> = guard
+            .load()
             .iter()
-            .filter(|r| r.supports(ResourceType::Lyrics))
-            .map(|r| {
-                r.kind
+            .filter_map(|r| {
+                r.lyric
                     .clone()
             })
             .collect();
-        drop(guard);
 
         for addon in addons {
-            if let Some(provider_id) = addon.lyric_provider_id() {
-                let prefix = format!("{}_", provider_id);
-                if let Some(inner) = composite_id.strip_prefix(&prefix) {
-                    return addon
-                        .lyric_get_by_id(inner)
-                        .await;
-                }
+            let prefix = format!("{}_", addon.provider_id());
+            if let Some(inner) = composite_id.strip_prefix(&prefix) {
+                return addon
+                    .lyric_get_by_id(inner)
+                    .await;
             }
         }
         Ok(None)
@@ -1571,7 +1521,7 @@ impl AddonService {
 // ---------------------------------------------------------------------------
 
 struct AddonCatalogStream {
-    addon: Arc<dyn AddonKind>,
+    addon: Arc<dyn CatalogAddon>,
     local_id: String,
 }
 

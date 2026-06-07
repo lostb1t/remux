@@ -121,8 +121,7 @@ where
             // Fetch tags configured for this catalog.
             let catalog_tags: Vec<String> = ctx
                 .addons
-                .catalog_tags(addon_uuid, local_cat_id)
-                .await;
+                .catalog_tags(addon_uuid, local_cat_id);
 
             for id in &top_ids {
                 if let Err(e) = sqlx::query(

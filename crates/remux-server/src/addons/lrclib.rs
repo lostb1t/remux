@@ -5,8 +5,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration, LyricSearchRequest,
-    MediaKind, ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
+    LyricAddon, LyricSearchRequest, MediaKind, ResourceType,
 };
 use crate::{
     common::{TickUnit, ToRunTimeTicks},
@@ -39,9 +39,15 @@ impl AddonPreset for LrcLibPreset {
         _addon_id: Uuid,
         _cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
-        let client = super::make_http_client();
-        Ok(Arc::new(LrcLibAddon { client }))
+    ) -> Result<AddonCapabilities> {
+        let addon = Arc::new(LrcLibAddon {
+            client: super::make_http_client(),
+        });
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            lyric: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -180,9 +186,12 @@ impl AddonKind for LrcLibAddon {
     fn id(&self) -> &'static str {
         "lrclib"
     }
+}
 
-    fn lyric_provider_id(&self) -> Option<String> {
-        Some("lrclib".to_string())
+#[async_trait]
+impl LyricAddon for LrcLibAddon {
+    fn provider_id(&self) -> String {
+        "lrclib".to_string()
     }
 
     async fn lyric_fetch(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>> {

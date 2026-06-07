@@ -5,8 +5,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, MediaKind, ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
+    AddonPreset, AddonPresetRegistration, MediaKind, ResourceType, StreamAddon,
 };
 use crate::{AppContext, api, db};
 
@@ -58,7 +58,7 @@ impl AddonPreset for TorznabPreset {
         _addon_id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         let url = cfg["url"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -70,11 +70,16 @@ impl AddonPreset for TorznabPreset {
             .unwrap_or("torznab")
             .to_string();
 
-        Ok(Arc::new(TorznabAddon {
+        let addon = Arc::new(TorznabAddon {
             url,
             name,
             client: build_client(),
-        }))
+        });
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            stream: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -89,7 +94,10 @@ impl AddonKind for TorznabAddon {
     fn id(&self) -> &'static str {
         "torznab"
     }
+}
 
+#[async_trait]
+impl StreamAddon for TorznabAddon {
     fn stream_supports(&self, media: &db::Media) -> bool {
         matches!(
             media.kind,

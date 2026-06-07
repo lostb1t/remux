@@ -5,8 +5,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, MediaKind, ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
+    AddonPreset, AddonPresetRegistration, MediaKind, ResourceType, StreamAddon,
     stremio::{StremioManifestUrl, parse_manifest_info},
 };
 use crate::{
@@ -54,7 +54,7 @@ fn eclipse_preset_options(
 fn eclipse_from_cfg(
     default_url: &'static str,
     cfg: &serde_json::Value,
-) -> Result<Arc<dyn AddonKind>> {
+) -> Result<AddonCapabilities> {
     let raw_url = cfg
         .get("manifest_url")
         .and_then(|v| v.as_str())
@@ -67,10 +67,15 @@ fn eclipse_from_cfg(
     let manifest_url = StremioManifestUrl::try_new(raw_url)
         .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
     let client = super::make_http_client();
-    Ok(Arc::new(EclipseAddon {
+    let addon = Arc::new(EclipseAddon {
         manifest_url,
         client,
-    }))
+    });
+    Ok(AddonCapabilities {
+        kind: Some(addon.clone()),
+        stream: Some(addon),
+        ..Default::default()
+    })
 }
 
 const MONOCHROME_URL: &str = "https://monochrome1.cyrusna29.workers.dev/u/206f62ce5c9a5c710f2178a16238/manifest.json";
@@ -108,7 +113,7 @@ impl AddonPreset for EclipsePreset {
         _id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         eclipse_from_cfg(MONOCHROME_URL, cfg)
     }
 }
@@ -149,7 +154,7 @@ impl AddonPreset for SpotiFLACPreset {
         _id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         eclipse_from_cfg(SPOTIFLAC_URL, cfg)
     }
 }
@@ -176,25 +181,19 @@ impl AddonKind for EclipseAddon {
         "eclipse"
     }
 
-    fn requires_remote_manifest(&self) -> bool {
-        true
-    }
-
     async fn available_info(
         &self,
-    ) -> (Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>) {
-        let Ok(svc) = self.service() else {
-            return (vec![], vec![]);
-        };
-        let Ok(manifest) = svc
+    ) -> Result<Option<(Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>)>> {
+        let svc = self.service()?;
+        let manifest = svc
             .get_manifest()
-            .await
-        else {
-            return (vec![], vec![]);
-        };
-        parse_manifest_info(&manifest)
+            .await?;
+        Ok(Some(parse_manifest_info(&manifest)))
     }
+}
 
+#[async_trait]
+impl StreamAddon for EclipseAddon {
     fn stream_supports(&self, media: &db::Media) -> bool {
         matches!(
             media.kind,

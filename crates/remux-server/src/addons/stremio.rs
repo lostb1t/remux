@@ -15,8 +15,9 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, CatalogInfo, MediaKind, ResourceType, addon,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
+    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, MediaKind,
+    MetaAddon, ResourceType, SearchAddon, StreamAddon, SubtitleAddon, TreeAddon, addon,
 };
 use crate::{
     AppContext, common, db, sdks,
@@ -63,7 +64,7 @@ impl AddonPreset for StremioPreset {
         _addon_id: Uuid,
         cfg: &serde_json::Value,
         _config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         let raw_url = cfg
             .get("manifest_url")
             .and_then(|v| v.as_str())
@@ -72,10 +73,20 @@ impl AddonPreset for StremioPreset {
         let manifest_url = StremioManifestUrl::try_new(raw_url)
             .map_err(|e| anyhow!("Invalid manifest_url: {e}"))?;
         let client = super::make_http_client();
-        Ok(Arc::new(StremioAddon {
+        let addon = Arc::new(StremioAddon {
             manifest_url,
             client,
-        }))
+        });
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            catalog: Some(addon.clone()),
+            meta: Some(addon.clone()),
+            search: Some(addon.clone()),
+            subtitle: Some(addon.clone()),
+            stream: Some(addon.clone()),
+            tree: Some(addon),
+            ..Default::default()
+        })
     }
 }
 
@@ -179,25 +190,19 @@ impl AddonKind for StremioAddon {
         "stremio"
     }
 
-    fn requires_remote_manifest(&self) -> bool {
-        true
-    }
-
     async fn available_info(
         &self,
-    ) -> (Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>) {
-        let Ok(svc) = self.service() else {
-            return (vec![], vec![]);
-        };
-        let Ok(manifest) = svc
+    ) -> Result<Option<(Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>)>> {
+        let svc = self.service()?;
+        let manifest = svc
             .get_manifest()
-            .await
-        else {
-            return (vec![], vec![]);
-        };
-        parse_manifest_info(&manifest)
+            .await?;
+        Ok(Some(parse_manifest_info(&manifest)))
     }
+}
 
+#[async_trait]
+impl CatalogAddon for StremioAddon {
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
         let svc = self.service()?;
         let manifest = svc
@@ -310,7 +315,10 @@ impl AddonKind for StremioAddon {
 
         Ok(Some(Box::pin(stream)))
     }
+}
 
+#[async_trait]
+impl MetaAddon for StremioAddon {
     async fn meta_supports(&self, media: &db::Media) -> bool {
         stremio_type_for_kind(&media.kind).is_some()
     }
@@ -324,7 +332,10 @@ impl AddonKind for StremioAddon {
         let svc = self.service()?;
         stremio_meta_fetch(&svc, media, ctx).await
     }
+}
 
+#[async_trait]
+impl TreeAddon for StremioAddon {
     fn supports_children(&self, root: &db::Media) -> bool {
         root.kind == db::MediaKind::Series
     }
@@ -345,7 +356,10 @@ impl AddonKind for StremioAddon {
             Ok(Some(children))
         }
     }
+}
 
+#[async_trait]
+impl SearchAddon for StremioAddon {
     async fn search_supports(&self, kind: &db::MediaKind) -> bool {
         stremio_type_for_kind(kind).is_some()
     }
@@ -361,7 +375,10 @@ impl AddonKind for StremioAddon {
         let results = stremio_search(&svc, kind, query, limit, ctx).await?;
         Ok(Some(results))
     }
+}
 
+#[async_trait]
+impl SubtitleAddon for StremioAddon {
     fn subtitle_supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
     }
@@ -374,7 +391,10 @@ impl AddonKind for StremioAddon {
         let svc = self.service()?;
         stremio_subtitles(&svc, media).await
     }
+}
 
+#[async_trait]
+impl StreamAddon for StremioAddon {
     fn stream_supports(&self, media: &db::Media) -> bool {
         stremio_type_for_kind(&media.kind).is_some()
     }

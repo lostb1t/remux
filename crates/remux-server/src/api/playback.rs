@@ -781,13 +781,18 @@ async fn items_playbackinfo_inner(
             // Swiftfin skips the video-stream URL path for live items and falls back to
             // path, which is now a fake strm path. Always provide a real transcode_url
             // so Swiftfin takes that branch instead.
-            if source.transcoding_url.is_none() {
+            if source
+                .transcoding_url
+                .is_none()
+            {
                 source.transcoding_url = Some(format!(
                     "/videos/{}/stream?Static=true&PlaySessionId={}&MediaSourceId={}&ApiKey={}",
                     id,
                     play_session_id,
                     source.id,
-                    session.device.access_token,
+                    session
+                        .device
+                        .access_token,
                 ));
             }
         }
@@ -1118,10 +1123,11 @@ async fn videos_stream_inner(
                 .ctx
                 .addons
                 .get(addon_id)
-                .await
                 .context_not_found("addon not found")?;
             addon
-                .kind
+                .stream
+                .as_ref()
+                .context_not_found("addon does not support streams")?
                 .serve_stream(&descriptor, &headers)
                 .await?
         } else {

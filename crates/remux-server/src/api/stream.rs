@@ -40,10 +40,12 @@ pub async fn stream_proxy(
             .ctx
             .addons
             .get(addon_id)
-            .await
             .context_not_found("addon not found")?;
-        return addon
-            .kind
+        let stream = addon
+            .stream
+            .as_ref()
+            .context_not_found("addon does not support streams")?;
+        return stream
             .serve_stream(&descriptor, &headers)
             .await;
     }

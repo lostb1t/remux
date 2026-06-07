@@ -268,7 +268,9 @@ pub async fn livetv_programs(
         }));
     }
 
-    let channel_ids: Vec<Uuid> = q.channel_ids.to_vec();
+    let channel_ids: Vec<Uuid> = q
+        .channel_ids
+        .to_vec();
 
     let parse_dt = |s: &str| {
         chrono::DateTime::parse_from_rfc3339(s)

@@ -456,7 +456,11 @@ where
                     data: v
                         .split(',')
                         .filter(|s| !s.is_empty())
-                        .filter_map(|s| s.trim().parse::<T>().ok())
+                        .filter_map(|s| {
+                            s.trim()
+                                .parse::<T>()
+                                .ok()
+                        })
                         .collect(),
                 })
             }
@@ -470,7 +474,11 @@ where
                     data.extend(
                         val.split(',')
                             .filter(|s| !s.is_empty())
-                            .filter_map(|s| s.trim().parse::<T>().ok()),
+                            .filter_map(|s| {
+                                s.trim()
+                                    .parse::<T>()
+                                    .ok()
+                            }),
                     );
                 }
                 Ok(CommaSeparatedList { data })

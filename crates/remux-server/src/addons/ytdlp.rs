@@ -7,8 +7,9 @@ use tokio::process::Command;
 use uuid::Uuid;
 
 use super::{
-    AddonKind, AddonMetadata, AddonOption, AddonOptionType, AddonPreset,
-    AddonPresetRegistration, MediaKind, ResourceType,
+    AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
+    AddonPreset, AddonPresetRegistration, MediaKind, MetaAddon, ResourceType,
+    SearchAddon, StreamAddon,
 };
 use crate::{
     AppContext, api,
@@ -68,7 +69,7 @@ impl AddonPreset for YtDlpPreset {
         _addon_id: Uuid,
         cfg: &serde_json::Value,
         config: &crate::Config,
-    ) -> Result<Arc<dyn AddonKind>> {
+    ) -> Result<AddonCapabilities> {
         let cookies = cfg
             .get("cookies")
             .and_then(|v| v.as_str())
@@ -89,13 +90,20 @@ impl AddonPreset for YtDlpPreset {
                         .into_owned(),
                 )
             });
-        Ok(Arc::new(YtDlpAddon {
+        let addon = Arc::new(YtDlpAddon {
             cookies,
             executable: PathBuf::from("yt-dlp"),
             bgutil_script_path: config
                 .bgutil_script_path
                 .clone(),
-        }))
+        });
+        Ok(AddonCapabilities {
+            kind: Some(addon.clone()),
+            meta: Some(addon.clone()),
+            search: Some(addon.clone()),
+            stream: Some(addon),
+            ..Default::default()
+        })
     }
 
     fn normalize_cfg(
@@ -896,7 +904,10 @@ impl AddonKind for YtDlpAddon {
     fn id(&self) -> &'static str {
         "ytdlp"
     }
+}
 
+#[async_trait]
+impl MetaAddon for YtDlpAddon {
     async fn meta_supports(&self, media: &db::Media) -> bool {
         self.meta_can_refresh(media)
     }
@@ -910,7 +921,10 @@ impl AddonKind for YtDlpAddon {
         self.fetch_meta(media)
             .await
     }
+}
 
+#[async_trait]
+impl SearchAddon for YtDlpAddon {
     async fn search_supports(&self, kind: &db::MediaKind) -> bool {
         matches!(kind, db::MediaKind::Track | db::MediaKind::Album)
     }
@@ -934,7 +948,10 @@ impl AddonKind for YtDlpAddon {
             _ => Ok(None),
         }
     }
+}
 
+#[async_trait]
+impl StreamAddon for YtDlpAddon {
     fn stream_supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::Track
     }
