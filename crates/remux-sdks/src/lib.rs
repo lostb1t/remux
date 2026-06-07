@@ -431,17 +431,53 @@ where
     T: std::str::FromStr,
 {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = Option::<String>::deserialize(d)?.unwrap_or_default();
-        let data = s
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| {
-                s.trim()
-                    .parse::<T>()
-                    .ok()
-            })
-            .collect();
-        Ok(Self { data })
+        use serde::de::Visitor;
+        use std::marker::PhantomData;
+
+        struct CslVisitor<T>(PhantomData<T>);
+
+        impl<'de, T: std::str::FromStr> Visitor<'de> for CslVisitor<T> {
+            type Value = CommaSeparatedList<T>;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "a comma-separated string or sequence of strings")
+            }
+
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(CommaSeparatedList::new())
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(CommaSeparatedList::new())
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(CommaSeparatedList {
+                    data: v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .filter_map(|s| s.trim().parse::<T>().ok())
+                        .collect(),
+                })
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut data = Vec::new();
+                while let Some(val) = seq.next_element::<String>()? {
+                    data.extend(
+                        val.split(',')
+                            .filter(|s| !s.is_empty())
+                            .filter_map(|s| s.trim().parse::<T>().ok()),
+                    );
+                }
+                Ok(CommaSeparatedList { data })
+            }
+        }
+
+        d.deserialize_any(CslVisitor(PhantomData))
     }
 }
 

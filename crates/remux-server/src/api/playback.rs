@@ -778,6 +778,18 @@ async fn items_playbackinfo_inner(
             // Route through our proxy so clients don't hit the raw IPTV URL directly
             // (which may redirect and confuse players that don't follow 302 on streams).
             source.is_remote = false;
+            // Swiftfin skips the video-stream URL path for live items and falls back to
+            // path, which is now a fake strm path. Always provide a real transcode_url
+            // so Swiftfin takes that branch instead.
+            if source.transcoding_url.is_none() {
+                source.transcoding_url = Some(format!(
+                    "/videos/{}/stream?Static=true&PlaySessionId={}&MediaSourceId={}&ApiKey={}",
+                    id,
+                    play_session_id,
+                    source.id,
+                    session.device.access_token,
+                ));
+            }
         }
     }
 
