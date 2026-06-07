@@ -126,7 +126,7 @@ pub(crate) fn select_hw_accel(
 /// Max seconds to buffer ahead of the current playback position.
 const MAX_BUFFER_SECS: u32 = 300;
 /// Seconds behind the playback position before a segment is eligible for deletion.
-const SEGMENT_KEEP_SECS: u32 = 300;
+const SEGMENT_KEEP_SECS: u32 = 30;
 
 fn ffmpeg_bin() -> String {
     std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
@@ -206,7 +206,7 @@ fn spawn_buffer_monitor(
     });
 }
 
-/// Delete `.ts` segment files whose index is less than `cutoff_idx`.
+/// Delete segment files whose index is less than `cutoff_idx`.
 fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -214,14 +214,12 @@ fn delete_old_segments(dir: &PathBuf, cutoff_idx: u32) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.ends_with(".ts") {
-            continue;
-        }
-        // segment_00042.ts → parse the numeric suffix
+        // segment_00042.ts / segment_00042.m4s / etc. — strip everything after the last '_'
         let Some(idx_str) = name
-            .strip_suffix(".ts")
+            .rsplit('_')
+            .next()
             .and_then(|s| {
-                s.rsplit('_')
+                s.split('.')
                     .next()
             })
         else {
