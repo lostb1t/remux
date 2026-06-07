@@ -135,16 +135,13 @@ fn fallback_media_streams(source: &db::Media) -> Vec<api::MediaStream> {
 
 impl From<db::Media> for api::MediaSourceInfo {
     fn from(source: db::Media) -> Self {
-        let is_remote = source.is_remote_url();
-        let protocol = if is_remote {
-            api::MediaProtocol::Http
-        } else {
-            api::MediaProtocol::File
-        };
         let descriptor = source
             .stream_info
             .as_ref()
             .map(|si| &si.descriptor);
+        let is_stub = descriptor
+            .and_then(|d| d.as_http_url())
+            .is_none();
         let container = descriptor
             .and_then(|d| d.as_http_url())
             .and_then(infer_container_from_url);
@@ -156,12 +153,9 @@ impl From<db::Media> for api::MediaSourceInfo {
                 .and_then(|si| serde_json::to_value(si).ok()),
         });
 
-        let url_path = descriptor.and_then(|d| {
-            d.as_http_url()
-                .map(str::to_owned)
-        });
-        let is_stub = url_path.is_none();
-        let path = url_path.or_else(|| Some(format!("remux://{}", source.id)));
+        let path = Some(format!("/remux/{}", source.id));
+        let is_remote = false;
+        let protocol = api::MediaProtocol::File;
 
         let client_id = source
             .group_id

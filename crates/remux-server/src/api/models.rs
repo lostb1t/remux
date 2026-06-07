@@ -917,10 +917,8 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             .media_sources
             .as_ref()
             .and_then(|s| s.first())
-            .and_then(|s| {
-                s.path
-                    .clone()
-            });
+            .and_then(|s| s.path.as_deref())
+            .map(|p| format!("{}.strm", p));
         if media.kind != db::MediaKind::Track {
             item.video_type = Some(VideoType::VideoFile);
         }

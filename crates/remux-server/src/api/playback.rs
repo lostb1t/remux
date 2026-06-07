@@ -353,9 +353,8 @@ async fn items_playbackinfo_inner(
                 .clone(),
         );
         source.has_segments = true;
-        if let Some(u) = url_opt {
-            source.path = Some(u);
-        }
+        source.path = Some(format!("/remux/{}", sm.id));
+        source.is_remote = false;
 
         // Re-apply binge-group headers on top of the probed result —
         // ffmpeg probing produces a fresh `MediaSourceInfo` and would
