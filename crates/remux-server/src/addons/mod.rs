@@ -932,9 +932,7 @@ impl AddonService {
         let config = db::Settings::get_config(&ctx.db)
             .await
             .unwrap_or_default();
-        let concurrency = config
-            .meta_concurrency
-            .unwrap_or(5) as usize;
+        let concurrency = config.meta_concurrency as usize;
         let config = Arc::new(config);
         let mut stream = stream::iter(media)
             .map(|m| {

@@ -16,7 +16,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut metadata_country = use_signal(|| "US".to_string());
     let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
-    let mut meta_concurrency = use_signal(|| 25_i64);
+    let mut meta_concurrency = use_signal(|| 4_i64);
     let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
@@ -51,10 +51,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                         cfg.catalog_max_items
                             .unwrap_or(100),
                     );
-                    meta_concurrency.set(
-                        cfg.meta_concurrency
-                            .unwrap_or(25),
-                    );
+                    meta_concurrency.set(cfg.meta_concurrency);
                     filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
@@ -109,7 +106,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.metadata_country_code = Some(country);
         cfg.quick_connect_available = Some(qc_enabled);
         cfg.catalog_max_items = Some(max);
-        cfg.meta_concurrency = Some(concurrency);
+        cfg.meta_concurrency = concurrency;
         cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
         cfg.subtitle_languages = Some(
@@ -210,7 +207,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                                 },
                             }
                             p { class: "field-hint",
-                                "Number of items to enrich with metadata concurrently during library import. Higher values are faster but may trigger rate limits on metadata sources. Default: 50."
+                                "Number of items to enrich with metadata concurrently during library import. Higher values are faster but increase memory usage and may trigger rate limits on metadata sources. Default: 4."
                             }
                         }
 

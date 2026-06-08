@@ -1627,7 +1627,11 @@ mod tests {
             assert!(
                 seasons
                     .iter()
-                    .all(|s| s.external_ids.series_imdb.as_deref() == Some(imdb)),
+                    .all(|s| s
+                        .external_ids
+                        .series_imdb
+                        .as_deref()
+                        == Some(imdb)),
                 "{imdb}: Season items must carry series_imdb"
             );
 
@@ -1678,7 +1682,11 @@ mod tests {
                 assert!(
                     episodes
                         .iter()
-                        .all(|e| e.external_ids.series_imdb.as_deref() == Some(imdb)),
+                        .all(|e| e
+                            .external_ids
+                            .series_imdb
+                            .as_deref()
+                            == Some(imdb)),
                     "{imdb} s{season_num}: Episode items must carry series_imdb"
                 );
 
@@ -1731,11 +1739,19 @@ mod tests {
         let rel_path = "3 Body Problem (2024) [imdb-tt13016388]/3 Body Problem (2024) - S01E01 - Countdown [HDTV-2160p][EAC3 5.1][h265] [imdb-tt13016388]-thumb.jpg";
 
         let dir = tempfile::tempdir().unwrap();
-        let full = dir.path().join(rel_path);
-        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        let full = dir
+            .path()
+            .join(rel_path);
+        std::fs::create_dir_all(
+            full.parent()
+                .unwrap(),
+        )
+        .unwrap();
         std::fs::write(&full, b"fake thumb").unwrap();
 
-        let (_, guard) = new_test_server().await.unwrap();
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
         let ctx = &guard.0;
 
         let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
@@ -1744,14 +1760,16 @@ mod tests {
             .await
             .unwrap();
 
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM opendal_files WHERE addon_id = ?",
-        )
-        .bind(db_addon.id)
-        .fetch_one(&ctx.db)
-        .await
-        .unwrap();
-        assert_eq!(count, 0, "thumbnail jpg must not produce any opendal_files row");
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM opendal_files WHERE addon_id = ?")
+                .bind(db_addon.id)
+                .fetch_one(&ctx.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            count, 0,
+            "thumbnail jpg must not produce any opendal_files row"
+        );
     }
 
     // ---------------------------------------------------------------------------
