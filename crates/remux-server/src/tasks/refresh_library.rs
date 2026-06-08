@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use chrono::Utc;
 use std::{collections::HashSet, sync::Arc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -102,6 +103,12 @@ impl Task for RefreshLibraryTask {
                 "importing enabled catalogs"
             );
 
+            let is_iptv = runtime
+                .row
+                .preset
+                .kind
+                .starts_with("iptv-");
+
             for (cat_idx, cat_info) in enabled
                 .iter()
                 .enumerate()
@@ -142,6 +149,8 @@ impl Task for RefreshLibraryTask {
 
                 debug!(catalog = %full_id, max, "importing catalog items");
 
+                let import_start = Utc::now().naive_utc();
+
                 let stream = match source
                     .stream(&ctx)
                     .await
@@ -164,6 +173,39 @@ impl Task for RefreshLibraryTask {
                 .await?;
 
                 info!(catalog = %full_id, ?counts, "catalog import complete");
+
+                if is_iptv {
+                    let source_id = addon_id
+                        .simple()
+                        .to_string();
+                    match sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM media \
+                         WHERE kind = 'tv_channel' \
+                           AND json_extract(external_ids, '$.iptv_source_id') = ? \
+                           AND updated_at < ?",
+                    )
+                    .bind(&source_id)
+                    .bind(import_start)
+                    .fetch_one(&ctx.db)
+                    .await
+                    {
+                        Ok(n) if n > 0 => {
+                            sqlx::query(
+                                "DELETE FROM media \
+                                 WHERE kind = 'tv_channel' \
+                                   AND json_extract(external_ids, '$.iptv_source_id') = ? \
+                                   AND updated_at < ?",
+                            )
+                            .bind(&source_id)
+                            .bind(import_start)
+                            .execute(&ctx.db)
+                            .await
+                            .ok();
+                            info!(source_id = %source_id, count = n, "pruned stale IPTV channels");
+                        }
+                        _ => {}
+                    }
+                }
 
                 // Sync collection relations if this catalog has a linked collection.
                 if catalog_states

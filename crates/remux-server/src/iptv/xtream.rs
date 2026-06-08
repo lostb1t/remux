@@ -387,19 +387,6 @@ fn vod_to_media(
     let stream_url =
         format!("{}/{}/{}/{}.{}", base, username, password, stream_id, ext);
 
-    let program_kind = v
-        .category_id
-        .as_ref()
-        .and_then(json_value_to_string)
-        .as_deref()
-        .and_then(|id| category_kinds.get(id))
-        .cloned()
-        .or_else(|| {
-            v.category_name
-                .as_deref()
-                .and_then(super::parse_program_kind)
-        });
-
     let released_at = v
         .releasedate
         .as_deref()
@@ -413,7 +400,7 @@ fn vod_to_media(
     let mut media = db::Media {
         id: media_id,
         title: name,
-        kind: db::MediaKind::Movie,
+        kind: db::MediaKind::TvChannel,
         description: v
             .plot
             .filter(|s| !s.is_empty()),
@@ -430,7 +417,7 @@ fn vod_to_media(
             descriptor: crate::stream::StreamDescriptor::http(stream_url),
             ..Default::default()
         }),
-        program_kind,
+        program_kind: Some(db::ProgramKind::Movie),
         ..Default::default()
     };
     if let Some(url) = v
@@ -586,19 +573,6 @@ fn series_to_media(
         .filter(|n| !n.is_empty())?;
     let series_id = stream_id_to_string(&s.series_id?)?;
 
-    let program_kind = s
-        .category_id
-        .as_ref()
-        .and_then(json_value_to_string)
-        .as_deref()
-        .and_then(|id| category_kinds.get(id))
-        .cloned()
-        .or_else(|| {
-            s.category_name
-                .as_deref()
-                .and_then(super::parse_program_kind)
-        });
-
     let released_at = s
         .releasedate
         .as_deref()
@@ -612,7 +586,7 @@ fn series_to_media(
     let mut media = db::Media {
         id: media_id,
         title: name,
-        kind: db::MediaKind::Series,
+        kind: db::MediaKind::TvChannel,
         description: s
             .plot
             .filter(|s| !s.is_empty()),
@@ -625,7 +599,7 @@ fn series_to_media(
                 .filter(|s| !s.is_empty()),
             ..Default::default()
         },
-        program_kind,
+        program_kind: Some(db::ProgramKind::Series),
         ..Default::default()
     };
     if let Some(url) = s

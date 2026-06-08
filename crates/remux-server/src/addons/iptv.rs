@@ -2,16 +2,16 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
 use remux_sdks::stremio::MediaType as StremioMediaType;
-use std::{pin::Pin, sync::Arc, time::Instant};
-use tracing::{debug, info, warn};
+use std::{pin::Pin, sync::Arc};
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
-    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, IndexAddon,
-    MediaKind, ProgressReporter, ResourceType, StreamAddon,
+    AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, MediaKind,
+    ProgressReporter, ResourceType, StreamAddon,
 };
-use crate::{AppContext, addons::Addon, db, iptv};
+use crate::{AppContext, db, iptv};
 
 // ---------------------------------------------------------------------------
 // IptvM3uPreset
@@ -87,8 +87,7 @@ impl AddonPreset for IptvM3uPreset {
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),
             catalog: Some(addon.clone()),
-            stream: Some(addon.clone()),
-            index: Some(addon),
+            stream: Some(addon),
             ..Default::default()
         })
     }
@@ -208,8 +207,7 @@ impl AddonPreset for IptvXstreamPreset {
         Ok(AddonCapabilities {
             kind: Some(addon.clone()),
             catalog: Some(addon.clone()),
-            stream: Some(addon.clone()),
-            index: Some(addon),
+            stream: Some(addon),
             ..Default::default()
         })
     }
@@ -223,16 +221,77 @@ inventory::submit! {
 // Shared runtime
 // ---------------------------------------------------------------------------
 
-struct IptvAddon {
-    addon_id: Uuid,
+pub(crate) struct IptvAddon {
+    pub(crate) addon_id: Uuid,
     /// M3U URL for M3U addons; Xtream server base URL for Xtream addons.
-    m3u_url: String,
-    epg_url: Option<String>,
-    xtream_username: Option<String>,
-    xtream_password: Option<String>,
-    is_xtream: bool,
-    sync_vod: bool,
-    sync_series: bool,
+    pub(crate) m3u_url: String,
+    pub(crate) epg_url: Option<String>,
+    pub(crate) xtream_username: Option<String>,
+    pub(crate) xtream_password: Option<String>,
+    pub(crate) is_xtream: bool,
+    pub(crate) sync_vod: bool,
+    pub(crate) sync_series: bool,
+}
+
+impl IptvAddon {
+    pub(crate) fn source_id(&self) -> String {
+        self.addon_id
+            .simple()
+            .to_string()
+    }
+}
+
+fn channel_to_media(
+    ch: &iptv::M3uChannel,
+    addon_id: Uuid,
+    source_id: &str,
+) -> db::Media {
+    let tvg_key = ch
+        .tvg_id
+        .as_deref()
+        .unwrap_or(&ch.name);
+    let id = Uuid::new_v5(&addon_id, tvg_key.as_bytes());
+    let mut media = db::Media {
+        id,
+        title: ch
+            .name
+            .clone(),
+        kind: db::MediaKind::TvChannel,
+        stream_info: Some(crate::stream::StreamInfo {
+            descriptor: crate::stream::StreamDescriptor::http(
+                ch.url
+                    .clone(),
+            ),
+            catchup_source: ch
+                .catchup_source
+                .clone(),
+            catchup_days: ch.catchup_days,
+            ..Default::default()
+        }),
+        tvg_id: ch
+            .tvg_id
+            .clone(),
+        channel_number: ch.channel_number,
+        external_ids: db::ExternalIds {
+            iptv_source_id: Some(source_id.to_owned()),
+            iptv_group: ch
+                .group
+                .clone(),
+            ..Default::default()
+        },
+        enabled: false,
+        program_kind: ch
+            .program_kind
+            .clone(),
+        ..Default::default()
+    };
+    if let Some(url) = ch
+        .logo
+        .clone()
+    {
+        media.set_image(db::ImageKind::Primary, url);
+    }
+    media
 }
 
 #[async_trait]
@@ -253,80 +312,122 @@ impl AddonKind for IptvAddon {
 
 #[async_trait]
 impl CatalogAddon for IptvAddon {
-    async fn catalog_list(&self, ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
-        let source_id = self
-            .addon_id
-            .simple()
-            .to_string();
-        let groups: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT json_extract(external_ids, '$.iptv_group') AS grp \
-             FROM media \
-             WHERE kind = 'tv_channel' \
-               AND json_extract(external_ids, '$.iptv_source_id') = ? \
-               AND grp IS NOT NULL AND grp != '' \
-             ORDER BY grp",
-        )
-        .bind(&source_id)
-        .fetch_all(&ctx.db)
-        .await?;
-
-        let mut catalogs = vec![CatalogInfo {
+    async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
+        Ok(vec![CatalogInfo {
             provider_catalog_id: "all".to_string(),
             name: "All Channels".to_string(),
             default_enabled: true,
             default_max_items: Some(999999999),
             collection_media_kind: None,
-        }];
-
-        for group in groups {
-            catalogs.push(CatalogInfo {
-                provider_catalog_id: format!("group:{}", group),
-                name: group,
-                default_enabled: false,
-                default_max_items: Some(999999999),
-                collection_media_kind: None,
-            });
-        }
-
-        Ok(catalogs)
+        }])
     }
 
     async fn catalog_stream(
         &self,
-        ctx: &AppContext,
+        _ctx: &AppContext,
         local_id: &str,
     ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>> {
-        let source_id = self
-            .addon_id
-            .simple()
-            .to_string();
-
-        let items: Vec<db::Media> = if let Some(group) = local_id.strip_prefix("group:")
-        {
-            sqlx::query_as::<_, db::Media>(
-                "SELECT * FROM media \
-                 WHERE kind = 'tv_channel' \
-                   AND json_extract(external_ids, '$.iptv_source_id') = ? \
-                   AND json_extract(external_ids, '$.iptv_group') = ? \
-                 ORDER BY (sort_order IS NULL), COALESCE(sort_order, channel_number, 999999), title COLLATE NOCASE",
-            )
-            .bind(&source_id)
-            .bind(group)
-            .fetch_all(&ctx.db)
-            .await?
-        } else if local_id == "all" {
-            sqlx::query_as::<_, db::Media>(
-                "SELECT * FROM media \
-                 WHERE kind = 'tv_channel' \
-                   AND json_extract(external_ids, '$.iptv_source_id') = ? \
-                 ORDER BY (sort_order IS NULL), COALESCE(sort_order, channel_number, 999999), title COLLATE NOCASE",
-            )
-            .bind(&source_id)
-            .fetch_all(&ctx.db)
-            .await?
-        } else {
+        if local_id != "all" {
             return Ok(None);
+        }
+
+        let client = reqwest::Client::new();
+        let source_id = self.source_id();
+        let addon_id = self.addon_id;
+
+        let mut items: Vec<db::Media> = if self.is_xtream {
+            let user = self
+                .xtream_username
+                .as_deref()
+                .unwrap_or("");
+            let pass = self
+                .xtream_password
+                .as_deref()
+                .unwrap_or("");
+
+            let category_kinds =
+                iptv::fetch_xtream_categories(&client, &self.m3u_url, user, pass).await;
+            debug!(
+                categories = category_kinds.len(),
+                "fetched Xtream categories"
+            );
+
+            match iptv::fetch_xtream_channels(
+                &client,
+                &self.m3u_url,
+                user,
+                pass,
+                &category_kinds,
+            )
+            .await
+            {
+                Ok(channels) => channels
+                    .iter()
+                    .map(|ch| channel_to_media(ch, addon_id, &source_id))
+                    .collect(),
+                Err(e) => {
+                    warn!(error = %e, "failed to fetch Xtream channels");
+                    return Err(e);
+                }
+            }
+        } else {
+            debug!(url = %self.m3u_url, "fetching M3U playlist");
+            let resp = client
+                .get(&self.m3u_url)
+                .send()
+                .await?;
+            let channels = iptv::parse_m3u_stream(resp).await?;
+            channels
+                .iter()
+                .map(|ch| channel_to_media(ch, addon_id, &source_id))
+                .collect()
         };
+
+        // For Xtream: optionally append VOD and series as TvChannel items.
+        if self.is_xtream {
+            let user = self
+                .xtream_username
+                .as_deref()
+                .unwrap_or("");
+            let pass = self
+                .xtream_password
+                .as_deref()
+                .unwrap_or("");
+
+            if self.sync_vod {
+                debug!("fetching Xtream VOD streams");
+                match iptv::fetch_vod_streams(
+                    &client,
+                    &self.m3u_url,
+                    user,
+                    pass,
+                    addon_id,
+                    &source_id,
+                )
+                .await
+                {
+                    Ok(vod) => items.extend(vod),
+                    Err(e) => warn!(error = %e, "failed to fetch Xtream VOD"),
+                }
+            }
+
+            if self.sync_series {
+                debug!("fetching Xtream series");
+                match iptv::fetch_series_list(
+                    &client,
+                    &self.m3u_url,
+                    user,
+                    pass,
+                    addon_id,
+                    &source_id,
+                )
+                .await
+                {
+                    Ok(series) => items.extend(series),
+                    Err(e) => warn!(error = %e, "failed to fetch Xtream series"),
+                }
+            }
+        }
 
         Ok(Some(Box::pin(futures::stream::iter(items))))
     }
@@ -350,350 +451,9 @@ impl StreamAddon for IptvAddon {
     }
 }
 
-#[async_trait]
-impl IndexAddon for IptvAddon {
-    async fn refresh_index(
-        &self,
-        ctx: &AppContext,
-        _addon: &Addon,
-        progress: ProgressReporter,
-    ) -> Result<()> {
-        let start = Instant::now();
-        let client = reqwest::Client::new();
-        let source_id = self
-            .addon_id
-            .simple()
-            .to_string();
-
-        let channels_parsed = if self.is_xtream {
-            let user = self
-                .xtream_username
-                .as_deref()
-                .unwrap_or("");
-            let pass = self
-                .xtream_password
-                .as_deref()
-                .unwrap_or("");
-            let category_kinds =
-                iptv::fetch_xtream_categories(&client, &self.m3u_url, user, pass).await;
-            debug!(
-                categories = category_kinds.len(),
-                "fetched Xtream categories"
-            );
-            match iptv::fetch_xtream_channels(
-                &client,
-                &self.m3u_url,
-                user,
-                pass,
-                &category_kinds,
-            )
-            .await
-            {
-                Ok(ch) => ch,
-                Err(e) => {
-                    warn!(error = %e, "failed to fetch Xtream channels");
-                    return Err(e);
-                }
-            }
-        } else {
-            debug!(url = %self.m3u_url, "fetching M3U playlist");
-            let resp = client
-                .get(&self.m3u_url)
-                .send()
-                .await?;
-            iptv::parse_m3u_stream(resp).await?
-        };
-
-        let channel_count = channels_parsed.len();
-        let mut channel_refs: Vec<(Uuid, Option<String>)> =
-            Vec::with_capacity(channel_count);
-
-        for chunk in channels_parsed.chunks(1000) {
-            let media_chunk: Vec<db::Media> = chunk
-                .iter()
-                .map(|ch| {
-                    let tvg_key = ch
-                        .tvg_id
-                        .as_deref()
-                        .unwrap_or(&ch.name);
-                    let channel_id = Uuid::new_v5(&self.addon_id, tvg_key.as_bytes());
-                    let mut media = db::Media {
-                        id: channel_id,
-                        title: ch
-                            .name
-                            .clone(),
-                        kind: db::MediaKind::TvChannel,
-                        stream_info: Some(crate::stream::StreamInfo {
-                            descriptor: crate::stream::StreamDescriptor::http(
-                                ch.url
-                                    .clone(),
-                            ),
-                            catchup_source: ch
-                                .catchup_source
-                                .clone(),
-                            catchup_days: ch.catchup_days,
-                            ..Default::default()
-                        }),
-                        tvg_id: ch
-                            .tvg_id
-                            .clone(),
-                        channel_number: ch.channel_number,
-                        external_ids: db::ExternalIds {
-                            iptv_source_id: Some(source_id.clone()),
-                            iptv_group: ch
-                                .group
-                                .clone(),
-                            ..Default::default()
-                        },
-                        enabled: false,
-                        program_kind: ch
-                            .program_kind
-                            .clone(),
-                        ..Default::default()
-                    };
-                    if let Some(url) = ch
-                        .logo
-                        .clone()
-                    {
-                        media.set_image(db::ImageKind::Primary, url);
-                    }
-                    media
-                })
-                .collect();
-
-            db::Media::upsert(&ctx.db, &media_chunk).await?;
-            channel_refs.extend(
-                media_chunk
-                    .iter()
-                    .map(|c| {
-                        (
-                            c.id,
-                            c.tvg_id
-                                .clone(),
-                        )
-                    }),
-            );
-        }
-        drop(channels_parsed);
-
-        progress.set(60.0);
-
-        // Prune stale channels for this addon only.
-        if !channel_refs.is_empty() {
-            let mut tx = ctx
-                .db
-                .begin()
-                .await?;
-            sqlx::query(
-                "CREATE TEMPORARY TABLE IF NOT EXISTS _iptv_kept (id BLOB NOT NULL PRIMARY KEY)",
-            )
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query("DELETE FROM _iptv_kept")
-                .execute(&mut *tx)
-                .await?;
-
-            for chunk in channel_refs.chunks(500) {
-                let mut qb =
-                    sqlx::QueryBuilder::new("INSERT OR IGNORE INTO _iptv_kept (id) ");
-                qb.push_values(chunk.iter(), |mut b, (id, _)| {
-                    b.push_bind(*id);
-                });
-                qb.build()
-                    .execute(&mut *tx)
-                    .await?;
-            }
-
-            sqlx::query(
-                "DELETE FROM media \
-                 WHERE kind = 'tv_program' \
-                   AND parent_id IN ( \
-                       SELECT id FROM media \
-                       WHERE kind = 'tv_channel' \
-                         AND json_extract(external_ids, '$.iptv_source_id') = ? \
-                         AND id NOT IN (SELECT id FROM _iptv_kept) \
-                   )",
-            )
-            .bind(&source_id)
-            .execute(&mut *tx)
-            .await?;
-
-            sqlx::query(
-                "DELETE FROM media \
-                 WHERE kind = 'tv_channel' \
-                   AND json_extract(external_ids, '$.iptv_source_id') = ? \
-                   AND id NOT IN (SELECT id FROM _iptv_kept)",
-            )
-            .bind(&source_id)
-            .execute(&mut *tx)
-            .await?;
-
-            tx.commit()
-                .await?;
-        }
-
-        progress.set(65.0);
-
-        // Fetch VOD and/or series for Xtream addons.
-        if self.is_xtream {
-            let user = self
-                .xtream_username
-                .as_deref()
-                .unwrap_or("");
-            let pass = self
-                .xtream_password
-                .as_deref()
-                .unwrap_or("");
-
-            if self.sync_vod {
-                debug!("fetching Xtream VOD streams");
-                match iptv::fetch_vod_streams(
-                    &client,
-                    &self.m3u_url,
-                    user,
-                    pass,
-                    self.addon_id,
-                    &source_id,
-                )
-                .await
-                {
-                    Ok(items) => {
-                        let vod_count = items.len();
-                        for chunk in items.chunks(500) {
-                            db::Media::upsert(&ctx.db, chunk).await?;
-                        }
-                        // Prune stale VOD items for this addon.
-                        sqlx::query(
-                            "DELETE FROM media \
-                             WHERE kind = 'movie' \
-                               AND json_extract(external_ids, '$.iptv_source_id') = ? \
-                               AND updated_at < datetime('now', '-1 minute')",
-                        )
-                        .bind(&source_id)
-                        .execute(&ctx.db)
-                        .await?;
-                        info!(count = vod_count, "imported Xtream VOD");
-                    }
-                    Err(e) => warn!(error = %e, "failed to fetch Xtream VOD"),
-                }
-            }
-
-            if self.sync_series {
-                debug!("fetching Xtream series");
-                match iptv::fetch_series_list(
-                    &client,
-                    &self.m3u_url,
-                    user,
-                    pass,
-                    self.addon_id,
-                    &source_id,
-                )
-                .await
-                {
-                    Ok(items) => {
-                        let series_count = items.len();
-                        for chunk in items.chunks(500) {
-                            db::Media::upsert(&ctx.db, chunk).await?;
-                        }
-                        sqlx::query(
-                            "DELETE FROM media \
-                             WHERE kind = 'series' \
-                               AND json_extract(external_ids, '$.iptv_source_id') = ? \
-                               AND updated_at < datetime('now', '-1 minute')",
-                        )
-                        .bind(&source_id)
-                        .execute(&ctx.db)
-                        .await?;
-                        info!(count = series_count, "imported Xtream series");
-                    }
-                    Err(e) => warn!(error = %e, "failed to fetch Xtream series"),
-                }
-            }
-        }
-
-        progress.set(70.0);
-
-        // Fetch EPG.
-        let mut epg_programs = 0usize;
-
-        let epg_url = if self.is_xtream {
-            // Xtream auto-derives the EPG URL.
-            let user = self
-                .xtream_username
-                .as_deref()
-                .unwrap_or("");
-            let pass = self
-                .xtream_password
-                .as_deref()
-                .unwrap_or("");
-            let base = self
-                .m3u_url
-                .trim_end_matches('/');
-            Some(format!(
-                "{}/xmltv.php?username={}&password={}",
-                base, user, pass
-            ))
-        } else {
-            self.epg_url
-                .clone()
-        };
-
-        if let Some(url) = epg_url {
-            match iptv::stream_import_epg(&client, &url, &channel_refs, ctx).await {
-                Ok(count) => epg_programs = count,
-                Err(e) => warn!(error = %e, "failed to import EPG"),
-            }
-        }
-
-        info!(
-            channels = channel_count,
-            programs = epg_programs,
-            elapsed_s = start
-                .elapsed()
-                .as_secs(),
-            "IPTV addon refresh complete"
-        );
-
-        progress.set(100.0);
-        Ok(())
-    }
-
-    async fn purge_index(&self, ctx: &AppContext, _addon: &Addon) -> Result<()> {
-        let source_id = self
-            .addon_id
-            .simple()
-            .to_string();
-        sqlx::query(
-            "DELETE FROM media \
-             WHERE kind = 'tv_program' \
-               AND parent_id IN ( \
-                   SELECT id FROM media \
-                   WHERE kind = 'tv_channel' \
-                     AND json_extract(external_ids, '$.iptv_source_id') = ? \
-               )",
-        )
-        .bind(&source_id)
-        .execute(&ctx.db)
-        .await?;
-
-        sqlx::query(
-            "DELETE FROM media \
-             WHERE kind = 'tv_channel' \
-               AND json_extract(external_ids, '$.iptv_source_id') = ?",
-        )
-        .bind(&source_id)
-        .execute(&ctx.db)
-        .await?;
-
-        sqlx::query(
-            "DELETE FROM media \
-             WHERE kind IN ('movie', 'series') \
-               AND json_extract(external_ids, '$.iptv_source_id') = ?",
-        )
-        .bind(&source_id)
-        .execute(&ctx.db)
-        .await?;
-
-        Ok(())
-    }
-}
+// ---------------------------------------------------------------------------
+// Unused import suppression — ProgressReporter is used by the EPG task
+// ---------------------------------------------------------------------------
+const _: fn() = || {
+    let _ = std::mem::size_of::<ProgressReporter>();
+};
