@@ -10,6 +10,7 @@ pub use xtream::{
 };
 
 use anyhow::Result;
+use chrono::Utc;
 use futures::TryStreamExt;
 use tokio_util::io::{StreamReader, SyncIoBridge};
 use uuid::Uuid;
@@ -58,7 +59,7 @@ pub async fn stream_import_epg(
     let async_reader = StreamReader::new(byte_stream);
     let handle = tokio::runtime::Handle::current();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<EpgProgram>(2000);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<EpgProgram>(500);
 
     let parse_handle = tokio::task::spawn_blocking(move || -> Result<()> {
         let sync_reader = SyncIoBridge::new_with_handle(async_reader, handle);
@@ -78,8 +79,11 @@ pub async fn stream_import_epg(
         }
     });
 
-    let mut batch: Vec<db::Media> = Vec::with_capacity(2000);
-    let mut kept_ids: Vec<Uuid> = Vec::new();
+    // Record time before the first upsert so that any program not re-imported
+    // during this run (updated_at will be older) can be pruned at the end.
+    let import_start = Utc::now().naive_utc();
+
+    let mut batch: Vec<db::Media> = Vec::with_capacity(500);
     let mut total = 0usize;
 
     while let Some(prog) = rx
@@ -114,13 +118,16 @@ pub async fn stream_import_epg(
         if let Some(poster_url) = prog.poster {
             media.set_image(db::ImageKind::Primary, poster_url);
         }
-        kept_ids.push(prog_id);
         batch.push(media);
         total += 1;
 
-        if batch.len() >= 2000 {
+        if batch.len() >= 500 {
             db::Media::upsert(&ctx.db, &batch).await?;
             batch.clear();
+            sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                .execute(&ctx.db)
+                .await
+                .ok();
         }
     }
 
@@ -131,46 +138,21 @@ pub async fn stream_import_epg(
 
     parse_handle.await??;
 
-    {
-        let mut tx = ctx
-            .db
-            .begin()
-            .await?;
-        sqlx::query(
-            "CREATE TEMPORARY TABLE IF NOT EXISTS _epg_kept (id BLOB NOT NULL PRIMARY KEY)",
-        )
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query("DELETE FROM _epg_kept")
-            .execute(&mut *tx)
-            .await?;
-
-        for chunk in kept_ids.chunks(500) {
-            let mut qb =
-                sqlx::QueryBuilder::new("INSERT OR IGNORE INTO _epg_kept (id) ");
-            qb.push_values(chunk.iter(), |mut b, id| {
-                b.push_bind(*id);
-            });
-            qb.build()
-                .execute(&mut *tx)
-                .await?;
+    // Delete programs for these channels that were not re-imported in this run.
+    // Programs upserted above have updated_at >= import_start; stale ones do not.
+    for chunk in channels.chunks(200) {
+        let mut qb = sqlx::QueryBuilder::new(
+            "DELETE FROM media WHERE kind = 'tv_program' AND updated_at < ",
+        );
+        qb.push_bind(import_start);
+        qb.push(" AND parent_id IN (");
+        let mut sep = qb.separated(", ");
+        for (id, _) in chunk {
+            sep.push_bind(*id);
         }
-
-        for chunk in channels.chunks(500) {
-            let mut qb = sqlx::QueryBuilder::new(
-                "DELETE FROM media WHERE kind = 'tv_program' AND id NOT IN (SELECT id FROM _epg_kept) AND parent_id IN (",
-            );
-            let mut sep = qb.separated(", ");
-            for (id, _) in chunk {
-                sep.push_bind(*id);
-            }
-            qb.push(")");
-            qb.build()
-                .execute(&mut *tx)
-                .await?;
-        }
-
-        tx.commit()
+        qb.push(")");
+        qb.build()
+            .execute(&ctx.db)
             .await?;
     }
 

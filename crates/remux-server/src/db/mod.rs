@@ -49,7 +49,11 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
 }
 
 pub async fn migrate(pool: &SqlitePool) -> Result<()> {
-    sqlx::migrate!("./migrations")
+    // ignore_missing: migration 202506080001 was applied under the wrong timestamp
+    // and renamed to 202606080001; ignore the now-orphaned DB record on existing installs.
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.set_ignore_missing(true);
+    migrator
         .run(pool)
         .await?;
     vacuum_if_needed(pool).await?;
