@@ -400,7 +400,7 @@ pub struct ServerConfiguration {
     pub transcoding_temp_path: Option<String>,
     pub catalog_max_items: Option<i64>,
     /// Number of items to process concurrently during metadata fetch (default: 5).
-    #[default(Some(5_i64))]
+    #[default(Some(4_i64))]
     pub meta_concurrency: Option<i64>,
     #[default(Some(true))]
     pub p2p_enabled: Option<bool>,
