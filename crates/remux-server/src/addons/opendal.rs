@@ -916,6 +916,81 @@ async fn scan_addon(
                 continue;
             }
 
+            // Skip files inside special-feature subdirectories or with extra-file names.
+            // Aligned with Jellyfin's NamingOptions.VideoExtraRules.
+            const SKIP_DIRS: &[&str] = &[
+                "trailers",
+                "trailer",
+                "backdrops",
+                "behind the scenes",
+                "deleted scenes",
+                "interviews",
+                "interview",
+                "scenes",
+                "samples",
+                "shorts",
+                "featurettes",
+                "featurette",
+                "extras",
+                "extra",
+                "other",
+                "clips",
+                "specials",
+            ];
+            const SKIP_STEMS: &[&str] = &["trailer", "sample", "theme"];
+            const SKIP_SUFFIXES: &[&str] = &[
+                "-trailer",
+                ".trailer",
+                "_trailer",
+                "- trailer",
+                "-sample",
+                ".sample",
+                "_sample",
+                "- sample",
+                "-scene",
+                "-clip",
+                "-interview",
+                "-behindthescenes",
+                "-deleted",
+                "-deletedscene",
+                "-featurette",
+                "-short",
+                "-extra",
+                "-other",
+            ];
+            let path_components: Vec<&str> = entry_rel
+                .trim_end_matches('/')
+                .split('/')
+                .collect();
+            let dir_components = path_components
+                .len()
+                .saturating_sub(1);
+            if path_components[..dir_components]
+                .iter()
+                .any(|c| {
+                    let lower = c.to_lowercase();
+                    SKIP_DIRS
+                        .iter()
+                        .any(|s| lower == *s)
+                })
+            {
+                debug!(path, "opendal: skipping file in special-feature subdir");
+                continue;
+            }
+            let stem_lower = std::path::Path::new(&name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if SKIP_STEMS.contains(&stem_lower.as_str())
+                || SKIP_SUFFIXES
+                    .iter()
+                    .any(|s| stem_lower.ends_with(s))
+            {
+                debug!(path, "opendal: skipping extra file by filename");
+                continue;
+            }
+
             let row_id = common::get_stable_uuid(format!("{}:{}", addon.id, path));
             seen_ids.push(row_id);
 
@@ -1389,7 +1464,7 @@ mod tests {
             },
             // Deeply nested folder, IMDB in grandparent
             MovieFixture {
-                rel_path: "[imdbid-tt0109830] Forrest Gump (1994)/Extras/Forrest.Gump.1994.mkv",
+                rel_path: "[imdbid-tt0109830] Forrest Gump (1994)/1080p/Forrest.Gump.1994.mkv",
                 expected_imdb: "tt0109830",
             },
         ];
@@ -1852,6 +1927,79 @@ mod tests {
         assert!(
             !addon.stream_supports(&ep_with_imdb_only),
             "stream_supports must be false for episode with only imdb (not series_imdb)"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Files inside special-feature subdirs (trailers/, extras/, etc.) must be
+    // skipped — they are not episodes or movies.
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_skips_special_feature_subdirs() {
+        // A valid episode alongside trailer and extras files for the same show.
+        let valid =
+            "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.S01E01.720p.mkv";
+        let skip_cases = &[
+            // directory-based skips
+            "[imdbid-tt0903747] Breaking Bad/trailers/Final Trailer.mkv",
+            "[imdbid-tt0903747] Breaking Bad/Trailers/Final Trailer 2.mkv", // capital T
+            "[imdbid-tt0903747] Breaking Bad/extras/Gag Reel.mkv",
+            "[imdbid-tt0903747] Breaking Bad/behind the scenes/Making Of.mkv",
+            "[imdbid-tt0903747] Breaking Bad/featurettes/Chemistry.mkv",
+            "[imdbid-tt0903747] Breaking Bad/interviews/Bryan Cranston.mkv",
+            "[imdbid-tt0903747] Breaking Bad/deleted scenes/Cut S01E01.mkv",
+            "[imdbid-tt0903747] Breaking Bad/backdrops/Backdrop.mkv",
+            "[imdbid-tt0903747] Breaking Bad/clips/Clip.mkv",
+            "[imdbid-tt0903747] Breaking Bad/other/Other.mkv",
+            // filename exact-stem skips
+            "[imdbid-tt0903747] Breaking Bad/Season 01/trailer.mkv",
+            "[imdbid-tt0903747] Breaking Bad/Season 01/sample.mkv",
+            // filename suffix skips
+            "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.S01E01-trailer.mkv",
+            "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.S01E01-sample.mkv",
+            "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.S01E01-featurette.mkv",
+            "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.S01E01-deleted.mkv",
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        for rel in std::iter::once(valid).chain(
+            skip_cases
+                .iter()
+                .copied(),
+        ) {
+            let full = dir
+                .path()
+                .join(rel);
+            std::fs::create_dir_all(
+                full.parent()
+                    .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(&full, b"fake").unwrap();
+        }
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        // Only the valid episode file must have a row.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM opendal_files WHERE addon_id = ?")
+                .bind(db_addon.id)
+                .fetch_one(&ctx.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            count, 1,
+            "expected exactly 1 row (the valid episode); trailers/extras must be skipped"
         );
     }
 
