@@ -466,7 +466,7 @@ impl StreamAddon for OpendalAddon {
                 media.kind == db::MediaKind::Episode
                     && media
                         .external_ids
-                        .imdb
+                        .series_imdb
                         .is_some()
             }
             "track" => media.kind == db::MediaKind::Track,
@@ -490,11 +490,20 @@ impl StreamAddon for OpendalAddon {
             .fetch_all(&ctx.db)
             .await?
         } else {
-            let imdb_id = match media
-                .external_ids
-                .imdb
-                .as_deref()
-            {
+            // Episodes are identified by series_imdb (the show's IMDB ID scraped from the
+            // filename tag); movies use their own imdb directly.
+            let imdb_id = if self.media_kind == "episode" {
+                media
+                    .external_ids
+                    .series_imdb
+                    .as_deref()
+            } else {
+                media
+                    .external_ids
+                    .imdb
+                    .as_deref()
+            };
+            let imdb_id = match imdb_id {
                 Some(id) => id,
                 None => return Ok(vec![]),
             };
@@ -1727,6 +1736,123 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Episode stream_supports + get_streams must use series_imdb, not imdb.
+    // The existing tree-walk test only exercises get_children; this test covers
+    // the separate path used when the server resolves streams for a known media row.
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_episode_stream_supports_and_get_streams() {
+        let fixtures: &[(&str, &str, i64, i64)] = &[
+            // (rel_path, series_imdb, season, episode)
+            (
+                "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.S01E01.720p.mkv",
+                "tt0903747",
+                1,
+                1,
+            ),
+            (
+                "[imdbid-tt0903747] Breaking Bad/Season 01/Breaking.Bad.S01E02.mkv",
+                "tt0903747",
+                1,
+                2,
+            ),
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, _, _, _) in fixtures {
+            let full = dir
+                .path()
+                .join(rel);
+            std::fs::create_dir_all(
+                full.parent()
+                    .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(&full, b"fake ep").unwrap();
+        }
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        // Walk Series → Season → Episodes to get real Episode rows with series_imdb set.
+        let stream = addon
+            .catalog_stream(ctx, "files")
+            .await
+            .unwrap()
+            .unwrap();
+        let series_items: Vec<db::Media> = stream
+            .collect()
+            .await;
+        assert_eq!(series_items.len(), 1);
+
+        let seasons = addon
+            .get_children(&series_items[0], ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(seasons.len(), 1);
+
+        let episodes = addon
+            .get_children(&seasons[0], ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(episodes.len(), 2);
+
+        for ep in &episodes {
+            // stream_supports must return true — this was the bug: it returned false when
+            // it checked .imdb instead of .series_imdb.
+            assert!(
+                addon.stream_supports(ep),
+                "stream_supports must be true for episode with series_imdb set (e{:?})",
+                ep.idx
+            );
+
+            let streams = addon
+                .get_streams(ep, ctx)
+                .await
+                .unwrap();
+            assert!(
+                !streams.is_empty(),
+                "get_streams must return at least one stream for e{:?}",
+                ep.idx
+            );
+            for s in &streams {
+                assert!(
+                    matches!(s.descriptor, StreamDescriptor::Local(_)),
+                    "expected Local stream descriptor for e{:?}",
+                    ep.idx
+                );
+            }
+        }
+
+        // Negative: an Episode row that only has `imdb` set (not `series_imdb`) must
+        // return false — the opendal_files table stores series IMDB, not episode IMDB.
+        let ep_with_imdb_only = db::Media {
+            kind: db::MediaKind::Episode,
+            external_ids: db::ExternalIds {
+                imdb: Some("tt0903747".to_string()),
+                series_imdb: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(
+            !addon.stream_supports(&ep_with_imdb_only),
+            "stream_supports must be false for episode with only imdb (not series_imdb)"
+        );
     }
 
     // ---------------------------------------------------------------------------
