@@ -18,7 +18,10 @@ pub struct SessionMessageType(pub i32);
 
 impl SessionMessageType {
     pub const FORCE_KEEP_ALIVE: Self = Self(0);
+    pub const GENERAL_COMMAND: Self = Self(1);
     pub const SESSIONS: Self = Self(3);
+    pub const PLAY: Self = Self(4);
+    pub const PLAYSTATE: Self = Self(7);
     pub const LIBRARY_CHANGED: Self = Self(11);
     pub const USER_DELETED: Self = Self(12);
     pub const USER_UPDATED: Self = Self(13);
@@ -48,6 +51,19 @@ pub enum WsEvent {
     UserUpdated(Uuid),
     UserDeleted(Uuid),
     LibraryChanged,
+    SessionsChanged,
+    RemotePlay {
+        device_id: String,
+        data: serde_json::Value,
+    },
+    RemotePlaystate {
+        device_id: String,
+        data: serde_json::Value,
+    },
+    RemoteCommand {
+        device_id: String,
+        data: serde_json::Value,
+    },
 }
 
 pub async fn ws_handler(
@@ -58,7 +74,11 @@ pub async fn ws_handler(
     ws.on_upgrade(|socket| handle_socket(socket, state, session))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSession) {
+async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSession) {
+    let my_device_id = session
+        .device
+        .id
+        .clone();
     let mut event_rx = state
         .ctx
         .ws_tx
@@ -126,9 +146,32 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, _session: AuthSes
                         }
                     }
                     Ok(WsEvent::LibraryChanged) => {
-                        // LibraryChanged (type 11) is not registered in the Jellyfin Android TV
-                        // SDK's polymorphic deserializer, causing a crash. Skip it for now.
+                        if !send_msg::<()>(&mut socket, SessionMessageType::LIBRARY_CHANGED, None).await {
+                            return;
+                        }
                     }
+                    Ok(WsEvent::SessionsChanged) => {
+                        let sessions = build_sessions(&state).await;
+                        if !send_msg(&mut socket, SessionMessageType::SESSIONS, Some(sessions)).await {
+                            return;
+                        }
+                    }
+                    Ok(WsEvent::RemotePlay { device_id, data }) if device_id == my_device_id => {
+                        if !send_msg(&mut socket, SessionMessageType::PLAY, Some(data)).await {
+                            return;
+                        }
+                    }
+                    Ok(WsEvent::RemotePlaystate { device_id, data }) if device_id == my_device_id => {
+                        if !send_msg(&mut socket, SessionMessageType::PLAYSTATE, Some(data)).await {
+                            return;
+                        }
+                    }
+                    Ok(WsEvent::RemoteCommand { device_id, data }) if device_id == my_device_id => {
+                        if !send_msg(&mut socket, SessionMessageType::GENERAL_COMMAND, Some(data)).await {
+                            return;
+                        }
+                    }
+                    Ok(WsEvent::RemotePlay { .. } | WsEvent::RemotePlaystate { .. } | WsEvent::RemoteCommand { .. }) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }

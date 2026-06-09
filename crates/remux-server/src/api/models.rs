@@ -1019,3 +1019,55 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
 
     item
 }
+
+// ── Remote Search DTOs ──────────────────────────────────────────────────────
+
+#[remux_macros::api_query]
+#[derive(Debug, Clone, Default)]
+pub struct ItemLookupInfo {
+    pub name: Option<String>,
+    pub year: Option<i64>,
+    pub provider_ids: Option<std::collections::HashMap<String, String>>,
+}
+
+#[remux_macros::api_query]
+#[derive(Debug, Clone, Default)]
+pub struct RemoteSearchQuery {
+    pub search_info: Option<ItemLookupInfo>,
+    pub item_id: Option<uuid::Uuid>,
+    pub search_provider_name: Option<String>,
+    pub include_disabled_providers: Option<bool>,
+}
+
+#[remux_macros::api_query]
+#[derive(Debug, Clone, Default)]
+pub struct ApplySearchResultRequest {
+    pub name: Option<String>,
+    pub provider_ids: Option<std::collections::HashMap<String, String>>,
+    pub production_year: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RemoteSearchResult {
+    pub name: Option<String>,
+    pub production_year: Option<i64>,
+    pub image_url: Option<String>,
+    pub search_provider_name: Option<String>,
+    pub provider_ids: std::collections::HashMap<String, String>,
+    pub overview: Option<String>,
+    pub premiere_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct RemoteSubtitleInfo {
+    pub id: String,
+    pub name: Option<String>,
+    pub provider_name: Option<String>,
+    pub three_letter_iso_language_name: Option<String>,
+    pub format: Option<String>,
+    pub is_hash_match: Option<bool>,
+    pub ai_translated: Option<bool>,
+    pub machine_translated: Option<bool>,
+}

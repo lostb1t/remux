@@ -221,6 +221,7 @@ pub struct SeriesSearchResult {
     pub name: String,
     #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub first_air_date: Option<NaiveDate>,
+    pub poster_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

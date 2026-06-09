@@ -1338,6 +1338,24 @@ pub async fn delete_user_image_indexed(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+// ── Auth providers (stubs) ──────────────────────────────────────────────────
+
+#[get("/auth/providers")]
+pub async fn get_auth_providers(
+    State(_state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(Vec::<serde_json::Value>::new()))
+}
+
+#[get("/auth/passwordresetproviders")]
+pub async fn get_password_reset_providers(
+    State(_state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    Ok(Json(Vec::<serde_json::Value>::new()))
+}
+
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
