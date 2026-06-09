@@ -171,7 +171,7 @@ async fn items_playbackinfo_inner(
         state
             .ctx
             .addons
-            .refresh_streams(&media, &state.ctx)
+            .refresh_streams(&mut media, &state.ctx)
             .await
             .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
         let sources = media

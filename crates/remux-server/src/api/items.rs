@@ -813,7 +813,7 @@ pub async fn refresh_item(
         state
             .ctx
             .addons
-            .refresh_streams(&media, &state.ctx)
+            .refresh_streams(&mut media, &state.ctx)
             .await
             .inspect_err(|e| error!("Could not refresh streams: {e:#}"));
 
@@ -1304,51 +1304,23 @@ pub async fn item(
         },
     };
 
-    let mut need_refresh = media
-        .refreshed_at
-        .is_none()
-        && matches!(
-            media.kind,
-            db::MediaKind::Movie | db::MediaKind::Series | db::MediaKind::Episode
-        );
-    // disable for now
-    need_refresh = false;
     let needs_streams = want_streams
         && matches!(
             media.kind,
             db::MediaKind::Movie | db::MediaKind::Episode | db::MediaKind::Track
         );
 
-    tokio::join!(
-        async {
-            if need_refresh {
-                state
-                    .ctx
-                    .addons
-                    .process_meta_batch(vec![media.clone()], &state.ctx, false)
-                    .await
-                    .log_err("failed to refresh metadata")
-            } else {
-                Ok(())
-            }
-        },
-        async {
-            if needs_streams {
-                if media.kind == db::MediaKind::Movie
-                    || media.kind == db::MediaKind::Episode
-                {
-                    warm_providers_cache(&state.ctx, &media);
-                }
-                state
-                    .ctx
-                    .addons
-                    .refresh_streams(&media, &state.ctx)
-                    .await
-                    .log_err("failed to refresh sources");
-            }
-            Ok::<(), anyhow::Error>(())
+    if needs_streams {
+        if media.kind == db::MediaKind::Movie || media.kind == db::MediaKind::Episode {
+            warm_providers_cache(&state.ctx, &media);
         }
-    );
+        state
+            .ctx
+            .addons
+            .refresh_streams(&mut media, &state.ctx)
+            .await
+            .log_err("failed to refresh sources");
+    }
 
     let user_stream_filter = session
         .user

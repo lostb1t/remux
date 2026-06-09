@@ -1243,7 +1243,8 @@ impl AddonService {
                 Some(format!("torrent:{}", info_hash.to_lowercase()))
             }
             crate::stream::StreamDescriptor::Http { url, .. } => {
-                Some(format!("http:{url}"))
+                let stable = url.split('?').next().unwrap_or(url.as_str());
+                Some(format!("http:{stable}"))
             }
             crate::stream::StreamDescriptor::Local(path) => {
                 Some(format!("local:{}", path.display()))
@@ -1260,7 +1261,7 @@ impl AddonService {
     #[tracing::instrument(skip_all, fields(title = %media.title, kind = %media.kind))]
     pub async fn refresh_streams(
         &self,
-        media: &db::Media,
+        media: &mut db::Media,
         ctx: &AppContext,
     ) -> Result<()> {
         const STREAMS_TTL_SECS: i64 = 60;
@@ -1292,6 +1293,7 @@ impl AddonService {
         .flatten()
         .flatten();
         if is_fresh(refreshed_at) {
+            media.streams_refreshed_at = refreshed_at;
             return Ok(());
         }
 
@@ -1355,6 +1357,7 @@ impl AddonService {
         .bind(media.id)
         .execute(&ctx.db)
         .await?;
+        media.streams_refreshed_at = Some(now);
         sqlx::query(
             "DELETE FROM media WHERE kind = 'stream' AND parent_id = ? AND updated_at < datetime('now', '-7 days')",
         )
