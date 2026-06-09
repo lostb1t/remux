@@ -22,6 +22,7 @@ mod clear_cache;
 mod clear_image_cache;
 mod iptv_epg_refresh;
 mod jellyfin_import;
+mod purge_iptv;
 mod purge_media;
 mod refresh_all_meta;
 mod refresh_library;
@@ -33,6 +34,7 @@ use clear_cache::ClearCacheTask;
 use clear_image_cache::ClearImageCacheTask;
 use iptv_epg_refresh::IptvEpgRefreshTask;
 use jellyfin_import::JellyfinImportTask;
+use purge_iptv::PurgeIptvTask;
 use purge_media::PurgeMediaTask;
 use refresh_all_meta::RefreshAllMetaTask;
 use refresh_library::RefreshLibraryTask;
@@ -263,6 +265,9 @@ impl TaskService {
         // service.register_task(Arc::new(SeriesSyncTask)).await?;
         service
             .register_task(Arc::new(PurgeMediaTask))
+            .await?;
+        service
+            .register_task(Arc::new(PurgeIptvTask))
             .await?;
         service
             .register_task(Arc::new(JellyfinImportTask))

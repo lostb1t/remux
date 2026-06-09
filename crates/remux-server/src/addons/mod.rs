@@ -1243,7 +1243,10 @@ impl AddonService {
                 Some(format!("torrent:{}", info_hash.to_lowercase()))
             }
             crate::stream::StreamDescriptor::Http { url, .. } => {
-                let stable = url.split('?').next().unwrap_or(url.as_str());
+                let stable = url
+                    .split('?')
+                    .next()
+                    .unwrap_or(url.as_str());
                 Some(format!("http:{stable}"))
             }
             crate::stream::StreamDescriptor::Local(path) => {
