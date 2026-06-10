@@ -7,7 +7,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use http::StatusCode;
-use remux_macros::get;
+use remux_macros::{api_query, get};
 use uuid::Uuid;
 
 use crate::{AppState, OptionExt, ResultExt, api, db, db::auth};
@@ -462,4 +462,46 @@ pub async fn shows_upcoming(
     _session: auth::AuthSession,
 ) -> impl IntoResponse {
     Json(api::BaseItemDtoQueryResult::default())
+}
+
+// --------------------------------------------------------------------------
+// GET /shows/recommendations
+// --------------------------------------------------------------------------
+
+#[api_query]
+#[derive(Debug, Default)]
+pub struct GetShowRecommendationsQuery {
+    pub user_id: Option<Uuid>,
+    pub parent_id: Option<Uuid>,
+    pub category_limit: Option<u32>,
+    pub item_limit: Option<u32>,
+}
+
+#[get("/shows/recommendations")]
+pub async fn shows_recommendations(
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Query(q): Query<GetShowRecommendationsQuery>,
+) -> Result<impl IntoResponse> {
+    let user_id = q
+        .user_id
+        .unwrap_or(
+            session
+                .user
+                .id,
+        );
+    let categories = super::movies::build_recommendations(
+        &state
+            .ctx
+            .db,
+        user_id,
+        q.parent_id,
+        db::MediaKind::Series,
+        q.category_limit
+            .unwrap_or(5) as usize,
+        q.item_limit
+            .unwrap_or(8),
+    )
+    .await?;
+    Ok(Json(categories))
 }

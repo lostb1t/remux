@@ -221,6 +221,17 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
     target
         .external_ids
         .merge(&source.external_ids, replace);
+    merge_option(
+        &mut target.external_ratings,
+        &source.external_ratings,
+        replace,
+    );
+    if source
+        .external_ratings
+        .is_some()
+    {
+        merge_option(&mut target.rating_audience, &source.rating_audience, true);
+    }
 }
 
 pub(crate) fn apply_title_format(media: &mut db::Media) {

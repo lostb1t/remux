@@ -1436,6 +1436,42 @@ pub struct ThemeMediaResult {
     pub total_record_count: i64,
 }
 
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[strum(ascii_case_insensitive)]
+#[serde(rename_all = "PascalCase")]
+pub enum RecommendationType {
+    #[default]
+    SimilarToRecentlyPlayed,
+    SimilarToLikedItem,
+    HasDirectorFromRecentlyPlayed,
+    HasActorFromRecentlyPlayed,
+    HasLikedDirector,
+    HasLikedActor,
+}
+
+#[skip_serializing_none]
+#[derive(Default, Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct RecommendationDto {
+    pub category_id: Option<Uuid>,
+    pub recommendation_type: RecommendationType,
+    pub baseline_item_name: Option<String>,
+    pub baseline_item_id: Option<Uuid>,
+    #[serde(default)]
+    pub items: Vec<BaseItemDto>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum TranscodeReason {
     ContainerNotSupported(String),

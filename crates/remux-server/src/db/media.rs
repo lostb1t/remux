@@ -683,6 +683,39 @@ impl MediaRelation {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Rating {
+    pub score: f64,
+    pub vote_count: Option<u32>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExternalRatings {
+    pub tmdb: Option<Rating>,
+}
+
+impl ExternalRatings {
+    pub fn audience_rating(&self) -> Option<f64> {
+        const PRIOR: f64 = 6.5;
+        const M: f64 = 500.0;
+
+        let mut weighted_sum = 0.0;
+        let mut total_weight = 0.0;
+
+        if let Some(r) = &self.tmdb {
+            let v = r
+                .vote_count
+                .unwrap_or(0) as f64;
+            let bayesian = (v / (v + M)) * r.score + (M / (v + M)) * PRIOR;
+            weighted_sum += bayesian * 1.0;
+            total_weight += 1.0;
+        }
+
+        (total_weight > 0.0).then(|| weighted_sum / total_weight)
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExternalIds {
@@ -997,6 +1030,8 @@ pub struct Media {
     // NOTE: SQLx requires this to be valid JSON in the DB. Empty strings ('')
     // will cause decoding to fail with EOF. Use migration to fix existing rows.
     pub external_ids: ExternalIds,
+    #[sqlx(json(nullable))]
+    pub external_ratings: Option<ExternalRatings>,
     pub grandparent_id: Option<Uuid>,
     //pub season_id: Option<Uuid>,
     //pub description: Option<String>,
@@ -1440,11 +1475,11 @@ impl Media {
         INSERT INTO media (
             id, title, kind, parent_id, idx, released_at, runtime,
             rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
-            external_ids, created_at, updated_at, certification, certification_age, parent_idx,
+            external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -1463,6 +1498,7 @@ impl Media {
             END,
             grandparent_id = excluded.grandparent_id,
             external_ids = excluded.external_ids,
+            external_ratings = excluded.external_ratings,
             promoted = excluded.promoted,
             collection_kind = excluded.collection_kind,
             collection_media_kind = excluded.collection_media_kind,
@@ -1505,6 +1541,7 @@ impl Media {
         .bind(&self.collection_media_kind)
         .bind(self.collection_max_items)
         .bind(sqlx::types::Json(&self.external_ids))
+        .bind(sqlx::types::Json(&self.external_ratings))
         .bind(self.created_at)
         .bind(updated_at)
         .bind(&self.certification)
@@ -1575,7 +1612,7 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
-                external_ids, created_at, updated_at, certification, certification_age, parent_idx,
+                external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital
             )",
         );
@@ -1600,6 +1637,7 @@ impl Media {
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
                     .push_bind(sqlx::types::Json(&item.external_ids))
+                    .push_bind(sqlx::types::Json(&item.external_ratings))
                     .push_bind(&item.created_at)
                     .push_bind(Utc::now())
                     .push_bind(&item.certification)
@@ -1670,7 +1708,7 @@ impl Media {
             "INSERT INTO media (
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
-                external_ids, created_at, updated_at, certification, certification_age, parent_idx,
+                external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital
             )",
         );
@@ -1693,6 +1731,7 @@ impl Media {
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
                     .push_bind(sqlx::types::Json(&item.external_ids))
+                    .push_bind(sqlx::types::Json(&item.external_ratings))
                     .push_bind(&item.created_at)
                     .push_bind(Utc::now())
                     .push_bind(&item.certification)
@@ -1732,6 +1771,7 @@ impl Media {
                 trailers = excluded.trailers,
                 stream_info = excluded.stream_info,
                 external_ids = excluded.external_ids,
+                external_ratings = excluded.external_ratings,
                 probe_data = CASE
                 WHEN excluded.stream_info IS NOT media.stream_info THEN NULL
                 ELSE COALESCE(excluded.probe_data, media.probe_data)
@@ -2479,6 +2519,17 @@ impl Media {
                         }
                         api::ItemSortBy::Runtime => {
                             format!("COALESCE(runtime, 0) {}", dir)
+                        }
+                        api::ItemSortBy::DatePlayed => {
+                            if let Some(uid) = &filter.user_id {
+                                format!(
+                                    "(SELECT ums.last_played_at FROM user_media_state ums \
+                                     WHERE ums.media_id = media.id AND ums.user_id = '{}') {}",
+                                    uid, dir
+                                )
+                            } else {
+                                format!("title COLLATE NOCASE {}", dir)
+                            }
                         }
                         api::ItemSortBy::Random => "RANDOM()".to_string(),
                         api::ItemSortBy::ChannelOrder => {

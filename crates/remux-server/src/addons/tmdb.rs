@@ -460,6 +460,16 @@ async fn fetch_tmdb_meta(
                             .min()
                     })
                     .map(|dt| dt.naive_utc());
+                let external_ratings = db::ExternalRatings {
+                    tmdb: movie_details
+                        .vote_average
+                        .map(|score| db::Rating {
+                            score,
+                            vote_count: movie_details
+                                .vote_count
+                                .map(|v| v as u32),
+                        }),
+                };
                 let mut patch = db::Media {
                     title: movie_details.title,
                     description: movie_details.overview,
@@ -470,7 +480,8 @@ async fn fetch_tmdb_meta(
                     runtime: movie_details
                         .runtime
                         .map(|r| r * 60),
-                    rating_audience: movie_details.vote_average,
+                    rating_audience: external_ratings.audience_rating(),
+                    external_ratings: Some(external_ratings),
                     certification,
                     certification_age,
                     external_ids: external_ids,
@@ -598,13 +609,22 @@ async fn fetch_tmdb_meta(
                         (Some(label), age)
                     })
                     .unwrap_or((None, None));
+                let external_ratings = db::ExternalRatings {
+                    tmdb: tv_details
+                        .vote_average
+                        .map(|score| db::Rating {
+                            score,
+                            vote_count: Some(tv_details.vote_count as u32),
+                        }),
+                };
                 let mut patch = db::Media {
                     title: tv_details.name,
                     description: tv_details.overview,
                     released_at: tv_details
                         .first_air_date
                         .and_then(|d| d.and_hms_opt(0, 0, 0)),
-                    rating_audience: tv_details.vote_average,
+                    rating_audience: external_ratings.audience_rating(),
+                    external_ratings: Some(external_ratings),
                     certification,
                     certification_age,
                     country,
@@ -772,6 +792,16 @@ async fn fetch_tmdb_meta(
                             .clone()
                     });
                 let still_url = tmdb_image(best_still.as_deref());
+                let external_ratings = db::ExternalRatings {
+                    tmdb: ep_details
+                        .vote_average
+                        .map(|score| db::Rating {
+                            score,
+                            vote_count: ep_details
+                                .vote_count
+                                .map(|v| v as u32),
+                        }),
+                };
                 let mut patch = db::Media {
                     title: ep_details.name,
                     description: ep_details.overview,
@@ -781,7 +811,8 @@ async fn fetch_tmdb_meta(
                     runtime: ep_details
                         .runtime
                         .map(|r| r * 60),
-                    rating_audience: ep_details.vote_average,
+                    rating_audience: external_ratings.audience_rating(),
+                    external_ratings: Some(external_ratings),
                     external_ids: external_ids,
                     ..Default::default()
                 };
