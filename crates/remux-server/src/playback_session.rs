@@ -33,6 +33,8 @@ pub struct PlaybackSession {
     pub transcode: Option<Arc<tokio::sync::RwLock<TranscodeSession>>>,
     /// Stream group UUID that the selected source belongs to, if any.
     pub group_id: Option<Uuid>,
+    /// Kind of the item being played, used to populate NowPlayingItem in session broadcasts.
+    pub item_kind: Option<db::MediaKind>,
 }
 
 #[derive(Clone)]
@@ -123,6 +125,12 @@ impl PlaybackSessionManager {
             None
         };
 
+        let item_kind = db::Media::get_by_id(db, &item_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|m| m.kind);
+
         let ps = PlaybackSession {
             play_session_id: play_session_id.clone(),
             user_id: auth_session
@@ -168,6 +176,7 @@ impl PlaybackSessionManager {
             last_activity: Utc::now(),
             transcode: None,
             group_id,
+            item_kind,
         };
 
         self.insert(ps);
@@ -623,6 +632,7 @@ impl PlaybackSessionManager {
                         started_at: Utc::now(),
                         last_activity: Utc::now(),
                         group_id: None,
+                        item_kind: None,
                     },
                 );
         }

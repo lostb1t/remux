@@ -13,21 +13,20 @@ use uuid::Uuid;
 use crate::{AppState, api, common::get_uuid, db, db::auth::AuthSession};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[serde(transparent)]
-pub struct SessionMessageType(pub i32);
-
-impl SessionMessageType {
-    pub const FORCE_KEEP_ALIVE: Self = Self(0);
-    pub const GENERAL_COMMAND: Self = Self(1);
-    pub const SESSIONS: Self = Self(3);
-    pub const PLAY: Self = Self(4);
-    pub const PLAYSTATE: Self = Self(7);
-    pub const LIBRARY_CHANGED: Self = Self(11);
-    pub const USER_DELETED: Self = Self(12);
-    pub const USER_UPDATED: Self = Self(13);
-    pub const SESSIONS_START: Self = Self(29);
-    pub const SESSIONS_STOP: Self = Self(30);
-    pub const KEEP_ALIVE: Self = Self(33);
+pub enum SessionMessageType {
+    ForceKeepAlive,
+    GeneralCommand,
+    Sessions,
+    Play,
+    Playstate,
+    LibraryChanged,
+    UserDeleted,
+    UserUpdated,
+    SessionsStart,
+    SessionsStop,
+    KeepAlive,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Serialize)]
@@ -96,17 +95,17 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(inbound) = serde_json::from_str::<InboundMessage>(&text) {
                             match inbound.message_type {
-                                SessionMessageType::KEEP_ALIVE => {
-                                    if !send_msg::<()>(&mut socket, SessionMessageType::KEEP_ALIVE, None).await {
+                                SessionMessageType::KeepAlive => {
+                                    if !send_msg::<()>(&mut socket, SessionMessageType::KeepAlive, None).await {
                                         return;
                                     }
                                 }
-                                SessionMessageType::SESSIONS_START => {
+                                SessionMessageType::SessionsStart => {
                                     let (initial_ms, interval_ms) = parse_sessions_data(inbound.data.as_ref());
                                     sessions_interval_ms = interval_ms;
                                     sessions_deadline = Some(Instant::now() + Duration::from_millis(initial_ms));
                                 }
-                                SessionMessageType::SESSIONS_STOP => {
+                                SessionMessageType::SessionsStop => {
                                     sessions_deadline = None;
                                 }
                                 _ => {}
@@ -125,7 +124,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
                 }
             } => {
                 let sessions = build_sessions(&state).await;
-                if !send_msg(&mut socket, SessionMessageType::SESSIONS, Some(sessions)).await {
+                if !send_msg(&mut socket, SessionMessageType::Sessions, Some(sessions)).await {
                     return;
                 }
                 sessions_deadline = Some(Instant::now() + Duration::from_millis(sessions_interval_ms));
@@ -135,39 +134,39 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session: AuthSess
                 match result {
                     Ok(WsEvent::UserUpdated(user_id)) => {
                         if let Ok(Some(user)) = db::User::get_by_id(&state.ctx.db, &user_id).await {
-                            if !send_msg(&mut socket, SessionMessageType::USER_UPDATED, Some(api::db_user_to_dto(&state.ctx.config.data_dir, user))).await {
+                            if !send_msg(&mut socket, SessionMessageType::UserUpdated, Some(api::db_user_to_dto(&state.ctx.config.data_dir, user))).await {
                                 return;
                             }
                         }
                     }
                     Ok(WsEvent::UserDeleted(user_id)) => {
-                        if !send_msg(&mut socket, SessionMessageType::USER_DELETED, Some(user_id.to_string())).await {
+                        if !send_msg(&mut socket, SessionMessageType::UserDeleted, Some(user_id.to_string())).await {
                             return;
                         }
                     }
                     Ok(WsEvent::LibraryChanged) => {
-                        if !send_msg::<()>(&mut socket, SessionMessageType::LIBRARY_CHANGED, None).await {
+                        if !send_msg::<()>(&mut socket, SessionMessageType::LibraryChanged, None).await {
                             return;
                         }
                     }
                     Ok(WsEvent::SessionsChanged) => {
                         let sessions = build_sessions(&state).await;
-                        if !send_msg(&mut socket, SessionMessageType::SESSIONS, Some(sessions)).await {
+                        if !send_msg(&mut socket, SessionMessageType::Sessions, Some(sessions)).await {
                             return;
                         }
                     }
                     Ok(WsEvent::RemotePlay { device_id, data }) if device_id == my_device_id => {
-                        if !send_msg(&mut socket, SessionMessageType::PLAY, Some(data)).await {
+                        if !send_msg(&mut socket, SessionMessageType::Play, Some(data)).await {
                             return;
                         }
                     }
                     Ok(WsEvent::RemotePlaystate { device_id, data }) if device_id == my_device_id => {
-                        if !send_msg(&mut socket, SessionMessageType::PLAYSTATE, Some(data)).await {
+                        if !send_msg(&mut socket, SessionMessageType::Playstate, Some(data)).await {
                             return;
                         }
                     }
                     Ok(WsEvent::RemoteCommand { device_id, data }) if device_id == my_device_id => {
-                        if !send_msg(&mut socket, SessionMessageType::GENERAL_COMMAND, Some(data)).await {
+                        if !send_msg(&mut socket, SessionMessageType::GeneralCommand, Some(data)).await {
                             return;
                         }
                     }
@@ -365,10 +364,32 @@ async fn build_sessions(state: &AppState) -> Vec<api::SessionInfoDto> {
                 supported_commands,
                 supports_media_control,
                 supports_remote_control,
-                now_playing_item: Some(api::BaseItemDto {
-                    id: session.item_id,
-                    ..Default::default()
+                now_playing_item: Some({
+                    let kind = session
+                        .item_kind
+                        .clone();
+                    let media_type = match &kind {
+                        Some(
+                            db::MediaKind::Movie
+                            | db::MediaKind::Episode
+                            | db::MediaKind::TvChannel
+                            | db::MediaKind::TvProgram
+                            | db::MediaKind::Stream
+                            | db::MediaKind::StreamGroup,
+                        ) => api::MediaType::Video,
+                        Some(db::MediaKind::Track) => api::MediaType::Audio,
+                        _ => api::MediaType::Video,
+                    };
+                    api::BaseItemDto {
+                        id: session.item_id,
+                        type_: kind
+                            .map(|k| k.into())
+                            .unwrap_or(api::MediaType::Movie),
+                        media_type,
+                        ..Default::default()
+                    }
                 }),
+
                 now_playing_queue: session
                     .now_playing_queue
                     .clone()
