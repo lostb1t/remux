@@ -1,3 +1,34 @@
+# [0.5.0](https://github.com/lostb1t/remux-server/compare/v0.4.0...v0.5.0) (2026-06-10)
+
+
+### Bug Fixes
+
+* add music kinds to the media refresh task ([d62f2ea](https://github.com/lostb1t/remux-server/commit/d62f2ea3c5c6ed23049dbae30a8da294c81694ba))
+* deezer track numbers ([133f099](https://github.com/lostb1t/remux-server/commit/133f099bc371dc054c84ce7cdcd490861f3a5eb7))
+* deleted segments regardless of extension ([7052375](https://github.com/lostb1t/remux-server/commit/7052375a7f06c727c1aa9414985b7c89a52c872c))
+* missing streams for local episodes ([722244f](https://github.com/lostb1t/remux-server/commit/722244fb206f0dafbd16e211b1da62f4f5a3e3be))
+* music genres  ([#78](https://github.com/lostb1t/remux-server/issues/78)) ([eaa88ec](https://github.com/lostb1t/remux-server/commit/eaa88ecf1bd0b132214b1137ecbdd6aaae1e7d62))
+* playlist crud ([7bb0d7b](https://github.com/lostb1t/remux-server/commit/7bb0d7b98f87d83333a12840567a69e211922b21))
+* remove country code from parental rating ([df88ea6](https://github.com/lostb1t/remux-server/commit/df88ea62dd6cd89ec482c620e1ee93346e6c842c))
+
+
+### Features
+
+* add clear image cache task ([62834be](https://github.com/lostb1t/remux-server/commit/62834be14353c103fd08ed7a399ff58264e424fc))
+* Add eclipse spotiFLAC and Monochrome addons ([#77](https://github.com/lostb1t/remux-server/issues/77)) ([2cf26b8](https://github.com/lostb1t/remux-server/commit/2cf26b8aeda27ea98b98fe164e4f321cc8b15688))
+* Add option to disable video transcoding ([#76](https://github.com/lostb1t/remux-server/issues/76)) ([8ea1f71](https://github.com/lostb1t/remux-server/commit/8ea1f7166cfe0d6806c392ef727efe65644dc3d6))
+* add sort and filter options for latest endpoints ([#75](https://github.com/lostb1t/remux-server/issues/75)) ([424e3b0](https://github.com/lostb1t/remux-server/commit/424e3b03e725939c6b1b33d0ad51e81e7f044774))
+* add support for rtsp streams ([19013f7](https://github.com/lostb1t/remux-server/commit/19013f7fe703714159ad3afc402702e4654caff2))
+* adding remote control endpoints and subtitle search endpoints ([#82](https://github.com/lostb1t/remux-server/issues/82)) ([8c31373](https://github.com/lostb1t/remux-server/commit/8c313734418aa69b4fd969fae18ecf1fcc0ed88b))
+* import media during jellyfin favorites sync ([#79](https://github.com/lostb1t/remux-server/issues/79)) ([bf3d44b](https://github.com/lostb1t/remux-server/commit/bf3d44bea23405997d6e4e162a4dd15e12d889db))
+* set sane homescreen defaults ([9acb85d](https://github.com/lostb1t/remux-server/commit/9acb85ddc1245ff4802c54362c5211f4c76aa081))
+* support multiple paths in opendal addons ([6e6995e](https://github.com/lostb1t/remux-server/commit/6e6995ebb39bc51edc539375aea59babec8ec6d7))
+
+
+### Performance Improvements
+
+* add composite index on media_relations(left_media_id, weight) ([0aa7077](https://github.com/lostb1t/remux-server/commit/0aa70776a1acd7266348d555eeb5aece28169ed1))
+
 # [0.4.0](https://github.com/lostb1t/remux-server/compare/v0.3.0...v0.4.0) (2026-05-30)
 
 
