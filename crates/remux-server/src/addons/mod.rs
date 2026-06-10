@@ -1361,6 +1361,8 @@ impl AddonService {
         .execute(&ctx.db)
         .await?;
         media.streams_refreshed_at = Some(now);
+        
+        // delete stale items
         sqlx::query(
             "DELETE FROM media WHERE kind = 'stream' AND parent_id = ? AND updated_at < datetime('now', '-7 days')",
         )
