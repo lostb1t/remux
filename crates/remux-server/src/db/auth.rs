@@ -86,16 +86,16 @@ impl Device {
         Ok(Self {
             id: header
                 .device_id
-                .context("missing device id")?,
+                .unwrap_or_else(|| get_uuid().to_string()),
             name: header
                 .device
-                .context("missing device name")?,
+                .unwrap_or_else(|| "Unknown Device".to_string()),
             app_name: header
                 .client
-                .context("missing device name")?,
+                .unwrap_or_else(|| "Unknown Client".to_string()),
             app_version: header
                 .version
-                .context("missing device name")?,
+                .unwrap_or_else(|| "1.0".to_string()),
             user_id: user
                 .id
                 .clone(),
@@ -587,6 +587,6 @@ impl FromRequestParts<AppState> for JellyfinAuthHeader {
             }
         }
 
-        Err(anyhow::anyhow!("missing auth").context_unauthorized("forbidden"))
+        Ok(JellyfinAuthHeader::default())
     }
 }
