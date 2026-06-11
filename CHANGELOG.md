@@ -1,3 +1,15 @@
+# [0.6.0](https://github.com/lostb1t/remux-server/compare/v0.5.0...v0.6.0) (2026-06-11)
+
+
+### Bug Fixes
+
+* auth for jellyfin desktop ([0f644e6](https://github.com/lostb1t/remux-server/commit/0f644e670676bfbba0aac1491e7ee9fae4ff2414))
+
+
+### Features
+
+* add recommendations endpoints ([#83](https://github.com/lostb1t/remux-server/issues/83)) ([57b8226](https://github.com/lostb1t/remux-server/commit/57b82267e2665aeca263250dd5e08998206e0228))
+
 # [0.5.0](https://github.com/lostb1t/remux-server/compare/v0.4.0...v0.5.0) (2026-06-10)
 
 
