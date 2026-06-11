@@ -132,6 +132,72 @@ impl SearchAddon for TmdbAddon {
 }
 
 // ---------------------------------------------------------------------------
+// TMDB SDK type → db::Media conversions
+// ---------------------------------------------------------------------------
+
+impl From<&sdks::tmdb::Season> for db::Media {
+    fn from(s: &sdks::tmdb::Season) -> Self {
+        let air_date = s
+            .air_date
+            .and_then(|d| d.and_hms_opt(0, 0, 0));
+        let mut media = db::Media {
+            kind: db::MediaKind::Season,
+            title: format!("Season {}", s.season_number),
+            description: s
+                .overview
+                .clone()
+                .filter(|o| !o.is_empty()),
+            idx: Some(s.season_number),
+            external_ids: db::ExternalIds {
+                tmdb: Some(s.id),
+                ..Default::default()
+            },
+            released_at: air_date,
+            digital_released_at: air_date,
+            ..Default::default()
+        };
+        if let Some(url) = tmdb_image(
+            s.poster_path
+                .as_deref(),
+        ) {
+            media.set_image(db::ImageKind::Primary, url);
+        }
+        media
+    }
+}
+
+impl From<&sdks::tmdb::Episode> for db::Media {
+    fn from(ep: &sdks::tmdb::Episode) -> Self {
+        let mut media = db::Media {
+            kind: db::MediaKind::Episode,
+            title: format!("S{}E{} - {}", ep.season_number, ep.episode_number, ep.name),
+            description: ep
+                .overview
+                .clone()
+                .filter(|o| !o.is_empty()),
+            idx: Some(ep.episode_number),
+            parent_idx: Some(ep.season_number),
+            external_ids: db::ExternalIds {
+                tmdb: Some(ep.id),
+                ..Default::default()
+            },
+            released_at: ep
+                .air_date
+                .and_then(|d| d.and_hms_opt(0, 0, 0)),
+            refreshed_at: Some(chrono::Utc::now().naive_utc()),
+            ..Default::default()
+        };
+        if let Some(url) = tmdb_image(
+            ep.still_path
+                .as_deref(),
+        ) {
+            media.set_image(db::ImageKind::Primary, url);
+        }
+        media
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TMDB tree (seasons + episodes)
 // ---------------------------------------------------------------------------
 
@@ -154,15 +220,21 @@ impl TreeAddon for TmdbAddon {
     }
 }
 
-async fn tmdb_tree_client(
+fn tmdb_client(api_key: &str) -> Result<sdks::RestClient<sdks::BearerAuth>> {
+    Ok(
+        sdks::RestClient::new("https://api.themoviedb.org/3/")?.with_auth(
+            sdks::BearerAuth {
+                token: api_key.to_string(),
+            },
+        ),
+    )
+}
+
+async fn tmdb_client_from_ctx(
     ctx: &AppContext,
 ) -> Result<sdks::RestClient<sdks::BearerAuth>> {
     let config = crate::db::Settings::get_config(&ctx.db).await?;
-    let api_key = config
-        .get_tmdb_key()
-        .to_string();
-    Ok(sdks::RestClient::new("https://api.themoviedb.org/3/")?
-        .with_auth(sdks::BearerAuth { token: api_key }))
+    tmdb_client(config.get_tmdb_key())
 }
 
 async fn tmdb_series_seasons(
@@ -175,7 +247,7 @@ async fn tmdb_series_seasons(
     else {
         return Ok(None);
     };
-    let client = tmdb_tree_client(ctx).await?;
+    let client = tmdb_client_from_ctx(ctx).await?;
     let tv = client
         .execute(
             sdks::tmdb::SeriesEndpoint::new(tmdb_id)
@@ -198,40 +270,17 @@ async fn tmdb_series_seasons(
         .seasons
         .iter()
         .map(|s| {
-            let season_id = common::stable_media_uuid(
+            let mut stub = db::Media::from(s);
+            stub.id = common::stable_media_uuid(
                 &db::MediaKind::Season,
                 &format!("{}:{}", series_imdb, s.season_number),
             );
-            let air_date = s
-                .air_date
-                .and_then(|d| d.and_hms_opt(0, 0, 0));
-            let mut stub = db::Media {
-                id: season_id,
-                kind: db::MediaKind::Season,
-                title: format!("Season {}", s.season_number),
-                description: s
-                    .overview
-                    .clone()
-                    .filter(|o| !o.is_empty()),
-                idx: Some(s.season_number),
-                parent_id: Some(series.id),
-                grandparent_id: Some(series.id),
-                external_ids: db::ExternalIds {
-                    tmdb: Some(s.id),
-                    series_tmdb: Some(tmdb_id),
-                    series_imdb: Some(series_imdb.clone()),
-                    ..Default::default()
-                },
-                released_at: air_date,
-                digital_released_at: air_date,
-                ..Default::default()
-            };
-            if let Some(url) = tmdb_image(
-                s.poster_path
-                    .as_deref(),
-            ) {
-                stub.set_image(db::ImageKind::Primary, url);
-            }
+            stub.parent_id = Some(series.id);
+            stub.grandparent_id = Some(series.id);
+            stub.external_ids
+                .series_imdb = Some(series_imdb.clone());
+            stub.external_ids
+                .series_tmdb = Some(tmdb_id);
             stub
         })
         .collect();
@@ -259,7 +308,7 @@ async fn tmdb_season_episodes(
     ) else {
         return Ok(None);
     };
-    let client = tmdb_tree_client(ctx).await?;
+    let client = tmdb_client_from_ctx(ctx).await?;
     let season_details = client
         .execute(
             sdks::tmdb::SeasonEndpoint {
@@ -277,50 +326,20 @@ async fn tmdb_season_episodes(
         .unwrap_or_default()
         .into_iter()
         .map(|ep| {
-            let episode_id = common::stable_media_uuid(
+            let mut stub = db::Media::from(&ep);
+            stub.id = common::stable_media_uuid(
                 &db::MediaKind::Episode,
                 &format!("{}:{}:{}", series_imdb, ep.season_number, ep.episode_number),
             );
-            let season_id = common::stable_media_uuid(
+            stub.parent_id = Some(common::stable_media_uuid(
                 &db::MediaKind::Season,
                 &format!("{}:{}", series_imdb, ep.season_number),
-            );
-            let mut stub = db::Media {
-                id: episode_id,
-                kind: db::MediaKind::Episode,
-                title: format!(
-                    "S{}E{} - {}",
-                    ep.season_number, ep.episode_number, ep.name
-                ),
-                description: ep
-                    .overview
-                    .clone()
-                    .filter(|o| !o.is_empty()),
-                idx: Some(ep.episode_number),
-                parent_idx: Some(ep.season_number),
-                parent_id: Some(season_id),
-                grandparent_id: season.parent_id,
-                external_ids: db::ExternalIds {
-                    tmdb: Some(ep.id),
-                    series_tmdb: Some(series_tmdb_id),
-                    series_imdb: season
-                        .external_ids
-                        .series_imdb
-                        .clone(),
-                    ..Default::default()
-                },
-                released_at: ep
-                    .air_date
-                    .and_then(|d| d.and_hms_opt(0, 0, 0)),
-                refreshed_at: Some(chrono::Utc::now().naive_utc()),
-                ..Default::default()
-            };
-            if let Some(url) = tmdb_image(
-                ep.still_path
-                    .as_deref(),
-            ) {
-                stub.set_image(db::ImageKind::Primary, url);
-            }
+            ));
+            stub.grandparent_id = season.parent_id;
+            stub.external_ids
+                .series_imdb = Some(series_imdb.clone());
+            stub.external_ids
+                .series_tmdb = Some(series_tmdb_id);
             stub
         })
         .collect();
@@ -536,9 +555,6 @@ async fn fetch_tmdb_meta(
     ctx: &AppContext,
     config: &crate::api::ServerConfiguration,
 ) -> Result<Option<db::Media>> {
-    let api_key = config
-        .get_tmdb_key()
-        .to_string();
     let metadata_country = config
         .metadata_country_code
         .as_deref()
@@ -547,8 +563,7 @@ async fn fetch_tmdb_meta(
 
     let ids = &media.external_ids;
 
-    let client = sdks::RestClient::new("https://api.themoviedb.org/3/")?
-        .with_auth(sdks::BearerAuth { token: api_key });
+    let client = tmdb_client(config.get_tmdb_key())?;
 
     match media.kind {
         db::MediaKind::Movie => {
@@ -1290,12 +1305,7 @@ async fn search_tmdb_person(
     ctx: &AppContext,
 ) -> Result<Vec<db::Media>> {
     let config = crate::db::Settings::get_config(&ctx.db).await?;
-    let api_key = config
-        .get_tmdb_key()
-        .to_string();
-
-    let client = sdks::RestClient::new("https://api.themoviedb.org/3/")?
-        .with_auth(sdks::BearerAuth { token: api_key });
+    let client = tmdb_client(config.get_tmdb_key())?;
 
     let resp = match client
         .execute(sdks::tmdb::PersonSearchEndpoint {
@@ -1358,14 +1368,11 @@ async fn tmdb_remote_images(
     media: &db::Media,
 ) -> Result<Vec<api::RemoteImageInfo>> {
     let config = crate::db::Settings::get_config(&ctx.db).await?;
-    let api_key = config
-        .get_tmdb_key()
-        .to_string();
+    let api_key = config.get_tmdb_key();
     if api_key.is_empty() {
         return Ok(vec![]);
     }
-    let client = sdks::RestClient::new("https://api.themoviedb.org/3/")?
-        .with_auth(sdks::BearerAuth { token: api_key });
+    let client = tmdb_client(api_key)?;
 
     let lookup_for_find = || -> Option<(String, &'static str)> {
         let ids = &media.external_ids;
