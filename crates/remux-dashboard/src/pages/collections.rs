@@ -470,19 +470,23 @@ pub fn CollectionForm(
             .peek()
             .clone();
         let default_sort_payload: Option<Vec<ItemSortBy>> = if ds.is_empty() {
-            None
+            Some(vec![])
         } else {
             ds.parse::<ItemSortBy>()
                 .ok()
                 .map(|s| vec![s])
         };
-        let default_sort_order_payload: Option<Vec<SortOrder>> = default_sort_payload
-            .as_ref()
-            .map(|_| {
-                vec![dso
-                    .parse::<SortOrder>()
-                    .unwrap_or(SortOrder::Ascending)]
-            });
+        let default_sort_order_payload: Option<Vec<SortOrder>> = if ds.is_empty() {
+            Some(vec![])
+        } else {
+            default_sort_payload
+                .as_ref()
+                .map(|_| {
+                    vec![dso
+                        .parse::<SortOrder>()
+                        .unwrap_or(SortOrder::Ascending)]
+                })
+        };
         saving.set(true);
         err.set(None);
         let pending_bytes = pending_image_bytes

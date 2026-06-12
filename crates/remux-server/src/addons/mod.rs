@@ -32,6 +32,41 @@ use uuid::Uuid;
 
 use crate::{AppContext, api, common::ProgressReporter, db, sdks};
 pub use addon::{Addon, CatalogState};
+
+/// Read process RSS in MB. Linux reads current VmRSS; macOS reads peak ru_maxrss.
+fn rss_mb() -> f64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
+            for line in s.lines() {
+                if line.starts_with("VmRSS:") {
+                    if let Some(kb) = line
+                        .split_whitespace()
+                        .nth(1)
+                    {
+                        if let Ok(kb) = kb.parse::<f64>() {
+                            return (kb / 1024.0 * 10.0).round() / 10.0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+        unsafe {
+            if libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) == 0 {
+                // ru_maxrss is in bytes on macOS
+                let bytes = usage
+                    .assume_init()
+                    .ru_maxrss as f64;
+                return (bytes / 1024.0 / 1024.0 * 10.0).round() / 10.0;
+            }
+        }
+    }
+    0.0
+}
 pub use remux_sdks::remux::AddonPresetRef;
 use remux_sdks::remux::{LyricDto, MediaSegments, RemoteLyricInfoDto};
 
@@ -944,21 +979,40 @@ impl AddonService {
             .unwrap_or_default();
         let concurrency = config.meta_concurrency as usize;
         let config = Arc::new(config);
+
+        tracing::info!(
+            rss_mb = rss_mb(),
+            batch_len = media.len(),
+            "process_meta_batch start"
+        );
+
         let mut stream = stream::iter(media)
             .map(|m| {
                 let cfg = Arc::clone(&config);
                 self.process_meta_item(m, ctx, force_refresh, cfg)
             })
             .buffer_unordered(concurrency);
+        let mut n = 0usize;
         while let Some(items) = stream
             .next()
             .await
         {
+            n += 1;
+            tracing::info!(
+                rss_mb = rss_mb(),
+                item = n,
+                items_len = items.len(),
+                "after future"
+            );
             if !items.is_empty() {
                 db::Media::upsert(&ctx.db, &items).await?;
+                tracing::info!(rss_mb = rss_mb(), item = n, "after upsert");
                 save_pending_relations(ctx, &items).await;
+                tracing::info!(rss_mb = rss_mb(), item = n, "after save_relations");
             }
         }
+
+        tracing::info!(rss_mb = rss_mb(), "process_meta_batch end");
         Ok(())
     }
 
@@ -995,19 +1049,29 @@ impl AddonService {
         let tree = self
             .get_tree(&media, ctx)
             .await;
+        tracing::info!(rss_mb = rss_mb(), kind = %media.kind, title = %media.title, tree_len = tree.len(), "after get_tree");
         if tree.is_empty() {
             if media.kind == db::MediaKind::Series {
-                tracing::debug!(id = %media.id, title = %media.title, "series has no seasons yet, skipping import");
+                tracing::info!(id = %media.id, title = %media.title, "series has no seasons yet, skipping import");
                 return vec![];
             }
             return vec![media];
         }
 
-        // Keep a reference to the series so child items (episodes/seasons) can
-        // resolve the series TMDB ID in-memory without hitting the DB.
+        // Commit the root series to DB immediately so children can reference it via parent_id FK.
+        // Then flush children in fixed-size sub-batches so we never hold the full tree in memory
+        // (a soap opera with 8000+ episodes would otherwise spike hundreds of MB at once).
+        if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
+            tracing::warn!(id = %media.id, error = %e, "failed to upsert series root, skipping tree");
+            return vec![];
+        }
+        save_pending_relations(ctx, &[media.clone()]).await;
+
         let grandparent = Some(Box::new(media.clone()));
 
-        let mut items = vec![media.clone()];
+        const CHILD_FLUSH_SIZE: usize = 250;
+        let mut batch: Vec<db::Media> = Vec::with_capacity(CHILD_FLUSH_SIZE);
+
         for mut item in tree {
             item.grandparent = grandparent.clone();
             if force_refresh
@@ -1022,10 +1086,27 @@ impl AddonService {
                     tracing::warn!(id = %item.id, error = %e, "failed to refresh child meta");
                 }
             }
-            item.grandparent = None; // drop before pushing — not persisted, no reason to hold
-            items.push(item);
+            item.grandparent = None;
+            batch.push(item);
+
+            if batch.len() >= CHILD_FLUSH_SIZE {
+                if let Err(e) = db::Media::upsert(&ctx.db, &batch).await {
+                    tracing::warn!(error = %e, "failed to upsert child batch");
+                }
+                save_pending_relations(ctx, &batch).await;
+                batch.clear();
+            }
         }
-        items
+
+        if !batch.is_empty() {
+            if let Err(e) = db::Media::upsert(&ctx.db, &batch).await {
+                tracing::warn!(error = %e, "failed to upsert child batch");
+            }
+            save_pending_relations(ctx, &batch).await;
+        }
+
+        tracing::info!(rss_mb = rss_mb(), kind = %media.kind, "process_meta_item done");
+        vec![]
     }
 
     pub async fn search(
@@ -1189,7 +1270,7 @@ impl AddonService {
                     .as_ref()
                     .and_then(|s| {
                         let supports = s.stream_supports(media);
-                        tracing::debug!(
+                        tracing::info!(
                             addon = %r.row.name,
                             media_kind = ?media.kind,
                             supports,
@@ -1209,7 +1290,7 @@ impl AddonService {
             })
             .collect();
 
-        tracing::debug!(
+        tracing::info!(
             media_id = %media.id,
             media_kind = ?media.kind,
             addon_count = addons.len(),
@@ -1222,9 +1303,9 @@ impl AddonService {
                 match addon.get_streams(media, ctx).await {
                     Ok(mut streams) => {
                         if streams.is_empty() {
-                            tracing::debug!(addon = %name, "addon: no streams");
+                            tracing::info!(addon = %name, "addon: no streams");
                         } else {
-                            tracing::debug!(addon = %name, count = streams.len(), "addon: streams found");
+                            tracing::info!(addon = %name, count = streams.len(), "addon: streams found");
                             for s in &mut streams {
                                 s.source = Some(name.clone());
                             }
@@ -1318,7 +1399,7 @@ impl AddonService {
         let raw = self
             .get_streams(media, ctx)
             .await?;
-        tracing::debug!(raw_count = raw.len(), "raw streams fetched");
+        tracing::info!(raw_count = raw.len(), "raw streams fetched");
 
         // Dedup by descriptor content; order preserves addon priority (DB load order).
         // First occurrence wins, so higher-priority addons' streams survive.
@@ -1400,7 +1481,7 @@ impl AddonService {
                     .as_ref()
                     .and_then(|s| {
                         let supports = s.segment_supports(media);
-                        tracing::debug!(
+                        tracing::info!(
                             addon = %r.row.name,
                             media_kind = ?media.kind,
                             supports,

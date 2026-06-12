@@ -31,8 +31,8 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
         .synchronous(SqliteSynchronous::Normal)
         .pragma("wal_autocheckpoint", "1000")
         .pragma("auto_vacuum", "incremental")
-        .pragma("cache_size", "-65536")
-        .pragma("mmap_size", "268435456")
+        .pragma("cache_size", "-16384")
+        .pragma("mmap_size", "33554432")
         .pragma("temp_store", "memory")
         // Allow up to 10s of retrying when blocked by another connection's
         // write lock. This is what makes wal_checkpoint(TRUNCATE) actually

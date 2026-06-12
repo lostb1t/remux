@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::AppContext;
@@ -33,13 +33,13 @@ impl Task for PurgeMediaTask {
         _tasks: Arc<TaskService>,
         _progress: ProgressReporter,
     ) -> Result<()> {
-        let t = Instant::now();
-
-        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        // PASSIVE: checkpoints what it can without blocking readers or acquiring
+        // an exclusive lock. TRUNCATE would hold exclusive for the full WAL flush
+        // (potentially minutes after a large refresh), locking all connections.
+        sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
             .execute(&ctx.db)
             .await
             .ok();
-        tracing::debug!(elapsed = ?t.elapsed(), "checkpoint done");
 
         // Acquire a dedicated connection so we can toggle foreign_keys around the
         // transaction. PRAGMA foreign_keys cannot be changed inside a transaction,
@@ -58,16 +58,18 @@ impl Task for PurgeMediaTask {
             sqlx::query("BEGIN IMMEDIATE")
                 .execute(&mut *conn)
                 .await?;
-            let t2 = Instant::now();
 
-            // These IN subqueries use existing media_id indexes — fast even for
-            // large child tables since _keep has only ~1,200 rows.
             sqlx::query(&format!(
                 "CREATE TEMP TABLE _keep AS \
                  SELECT * FROM media WHERE kind NOT IN ({PURGE_KINDS})"
             ))
             .execute(&mut *conn)
             .await?;
+            // Index so subsequent IN (SELECT id FROM _keep) subqueries use index
+            // lookups instead of full scans — critical when media_relations is large.
+            sqlx::query("CREATE INDEX _keep_id ON _keep(id)")
+                .execute(&mut *conn)
+                .await?;
 
             sqlx::query(
                 "CREATE TEMP TABLE _keep_images AS \
@@ -85,14 +87,12 @@ impl Task for PurgeMediaTask {
 
             sqlx::query(
                 "CREATE TEMP TABLE _keep_relations AS \
-                 SELECT * FROM media_relations \
-                 WHERE left_media_id  IN (SELECT id FROM _keep) \
-                   AND right_media_id IN (SELECT id FROM _keep)",
+                 SELECT mr.* FROM media_relations mr \
+                 INNER JOIN _keep k1 ON mr.left_media_id  = k1.id \
+                 INNER JOIN _keep k2 ON mr.right_media_id = k2.id",
             )
             .execute(&mut *conn)
             .await?;
-
-            tracing::debug!(elapsed = ?t2.elapsed(), "survivors saved");
 
             // Snapshot media index definitions before dropping them.
             let indexes: Vec<(String, String)> = sqlx::query_as(
@@ -123,8 +123,6 @@ impl Task for PurgeMediaTask {
                 .execute(&mut *conn)
                 .await?;
 
-            tracing::debug!(elapsed = ?t2.elapsed(), "tables truncated");
-
             // Reinsert survivors and clean up temp tables.
             sqlx::query("INSERT INTO media SELECT * FROM _keep")
                 .execute(&mut *conn)
@@ -151,8 +149,6 @@ impl Task for PurgeMediaTask {
                 .execute(&mut *conn)
                 .await?;
 
-            tracing::debug!(elapsed = ?t2.elapsed(), "survivors reinserted");
-
             // Rebuild media indexes over ~1,200 surviving rows — near-instant.
             for (_, sql) in &indexes {
                 sqlx::query(sql)
@@ -163,7 +159,6 @@ impl Task for PurgeMediaTask {
             sqlx::query("COMMIT")
                 .execute(&mut *conn)
                 .await?;
-            tracing::debug!(elapsed = ?t2.elapsed(), "committed");
 
             Ok(())
         }
@@ -180,12 +175,6 @@ impl Task for PurgeMediaTask {
         ctx.addons
             .purge_indexes(&ctx)
             .await?;
-        tracing::debug!(elapsed = ?t.elapsed(), "purge_indexes done");
-
-        sqlx::query("PRAGMA incremental_vacuum")
-            .execute(&ctx.db)
-            .await
-            .ok();
 
         Ok(())
     }

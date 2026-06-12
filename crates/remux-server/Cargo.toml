@@ -116,11 +116,13 @@ hunch = "2"
 log = "0.4"
 env_logger = "0.11"
 nutype = { version = "0.6", features = ["serde"] }
+tikv-jemallocator = { version = "0.6", optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 imageproc = { version = "0.26", default-features = false, features = ["text"] }
 ab_glyph = "0.2"
 [features]
-default = []
+default = ["jemalloc"]
+jemalloc = ["tikv-jemallocator"]
 desktop = ["include_dir"]
 
 [dev-dependencies]
