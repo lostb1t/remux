@@ -14,8 +14,6 @@ pub struct CatalogState {
     pub max_items: Option<i64>,
     #[serde(default)]
     pub tags: Vec<String>,
-    #[serde(default)]
-    pub create_collection: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

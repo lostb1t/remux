@@ -56,8 +56,101 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
     migrator
         .run(pool)
         .await?;
+    migrate_catalog_collections(pool).await;
     vacuum_if_needed(pool).await?;
     Ok(())
+}
+
+/// One-time migration: convert old manual collections (created by the removed
+/// `create_collection` addon feature) into smart collections with a catalog
+/// filter rule and CatalogOrder as the default sort.
+///
+/// Idempotent — the UPDATE is guarded by `collection_kind = 'manual'`, so it
+/// only fires once per collection and is a no-op on subsequent startups.
+async fn migrate_catalog_collections(pool: &SqlitePool) {
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    // Read addon IDs and their raw preset JSON to extract catalog local_ids.
+    let rows: Vec<(Uuid, String)> = match sqlx::query_as(
+        "SELECT id, preset FROM addons",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "migrate_catalog_collections: failed to list addons");
+            return;
+        }
+    };
+
+    for (addon_id, preset_json) in rows {
+        let catalog_keys: Vec<String> =
+            serde_json::from_str::<serde_json::Value>(&preset_json)
+                .ok()
+                .and_then(|v| {
+                    v.get("config")
+                        .and_then(|c| c.get("catalogs"))
+                        .and_then(|c| c.as_object())
+                        .map(|m| {
+                            m.keys()
+                                .cloned()
+                                .collect()
+                        })
+                })
+                .unwrap_or_default();
+
+        for local_id in catalog_keys {
+            let old_manual_id = Uuid::new_v5(&addon_id, local_id.as_bytes());
+
+            let collection_source = format!("{}:{}", addon_id, local_id);
+            let collection_id: Uuid = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM media WHERE collection_kind = 'catalog' AND collection_source = ?",
+            )
+            .bind(&collection_source)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(old_manual_id);
+
+            let smart_filter = serde_json::json!({
+                "match_mode": "all",
+                "rules": [{"field": "catalog", "collection_id": collection_id}]
+            });
+
+            let migrated = sqlx::query(
+                "UPDATE media SET \
+                 collection_kind = 'smart', \
+                 collection_smart_filter = ?, \
+                 collection_default_sort = COALESCE(collection_default_sort, '[\"CatalogOrder\"]'), \
+                 collection_default_sort_order = COALESCE(collection_default_sort_order, '[\"Ascending\"]') \
+                 WHERE id = ? AND collection_kind = 'manual'",
+            )
+            .bind(serde_json::to_string(&smart_filter).unwrap_or_default())
+            .bind(old_manual_id)
+            .execute(pool)
+            .await
+            .map(|r| r.rows_affected())
+            .unwrap_or(0);
+
+            if migrated > 0 {
+                tracing::info!(
+                    addon = %addon_id,
+                    catalog = %local_id,
+                    collection_id = %collection_id,
+                    "migrated manual collection to smart catalog collection"
+                );
+                sqlx::query(
+                    "DELETE FROM media_relations WHERE left_media_id = ? AND role = 'collection'",
+                )
+                .bind(old_manual_id)
+                .execute(pool)
+                .await
+                .ok();
+            }
+        }
+    }
 }
 
 async fn vacuum_if_needed(pool: &SqlitePool) -> Result<()> {

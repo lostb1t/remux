@@ -12,6 +12,7 @@ jellyfin-openapi-stable.json
 db.sqlite
 db.sqlite*
 db.backup
+backup.sqlite
 *.big
 config.toml
 .git

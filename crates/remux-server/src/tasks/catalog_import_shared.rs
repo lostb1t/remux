@@ -34,6 +34,7 @@ where
         .chunks(250);
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut total = 0usize;
+    let mut catalog_position = 0i64;
     let membership = catalog_membership(media_id);
 
     while let Some(items) = chunks
@@ -117,31 +118,47 @@ where
             .ok();
 
         // Record catalog membership and apply catalog tags for the original top-level IDs.
-        if let Some((addon_uuid, local_cat_id)) = membership {
+        if catalog_id != Uuid::nil() {
             // Fetch tags configured for this catalog.
-            let catalog_tags: Vec<String> = ctx
-                .addons
-                .catalog_tags(addon_uuid, local_cat_id);
+            let catalog_tags: Vec<String> =
+                if let Some((addon_uuid, local_cat_id)) = membership {
+                    ctx.addons
+                        .catalog_tags(addon_uuid, local_cat_id)
+                } else {
+                    vec![]
+                };
 
-            for id in &top_ids {
+            info!(
+                catalog_id = %catalog_id,
+                catalog_id_hex = %catalog_id.simple(),
+                items = top_ids.len(),
+                "inserting catalog relations"
+            );
+
+            for item_id in &top_ids {
+                let relation_id = Uuid::new_v5(&catalog_id, item_id.as_bytes());
+                debug!(catalog_id = %catalog_id, item_id = %item_id, weight = catalog_position, "inserting catalog relation");
                 if let Err(e) = sqlx::query(
-                    "INSERT OR IGNORE INTO media_catalog_items (media_id, addon_id, catalog_id) \
-                     SELECT id, ?1, ?2 FROM media WHERE id = ?3 LIMIT 1",
+                    "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, role, weight) \
+                     VALUES (?, ?, ?, 'catalog', ?) \
+                     ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight",
                 )
-                .bind(addon_uuid)
-                .bind(local_cat_id)
-                .bind(id)
+                .bind(relation_id)
+                .bind(catalog_id)
+                .bind(item_id)
+                .bind(catalog_position)
                 .execute(&ctx.db)
                 .await
                 {
                     error!(catalog = media_id, error = %e, "failed to record catalog membership");
                 }
+                catalog_position += 1;
 
                 for tag in &catalog_tags {
                     if let Err(e) = sqlx::query(
                         "INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)",
                     )
-                    .bind(id)
+                    .bind(item_id)
                     .bind(tag)
                     .execute(&ctx.db)
                     .await
@@ -203,13 +220,13 @@ async fn fetch_already_refreshed_ids(
         .collect()
 }
 
-/// Delete rows from `media_catalog_items` whose (addon_id, catalog_id) pair is not in `valid_pairs`.
+/// Delete rows from `media_relations` (role='catalog') whose left_media_id is not in `valid_collection_ids`.
 pub async fn remove_stale_catalog_memberships(
     db: &sqlx::SqlitePool,
-    valid_pairs: &HashSet<(String, String)>,
+    valid_collection_ids: &HashSet<Uuid>,
 ) {
-    let existing: Vec<(String, String)> = match sqlx::query_as(
-        "SELECT DISTINCT addon_id, catalog_id FROM media_catalog_items",
+    let existing: Vec<Uuid> = match sqlx::query_scalar(
+        "SELECT DISTINCT left_media_id FROM media_relations WHERE role = 'catalog'",
     )
     .fetch_all(db)
     .await
@@ -221,9 +238,9 @@ pub async fn remove_stale_catalog_memberships(
         }
     };
 
-    let stale: Vec<&(String, String)> = existing
+    let stale: Vec<&Uuid> = existing
         .iter()
-        .filter(|p| !valid_pairs.contains(*p))
+        .filter(|id| !valid_collection_ids.contains(*id))
         .collect();
 
     if stale.is_empty() {
@@ -231,16 +248,15 @@ pub async fn remove_stale_catalog_memberships(
     }
 
     info!(count = stale.len(), "removing stale catalog memberships");
-    for (addon_id, catalog_id) in stale {
+    for collection_id in stale {
         if let Err(e) = sqlx::query(
-            "DELETE FROM media_catalog_items WHERE addon_id = ? AND catalog_id = ?",
+            "DELETE FROM media_relations WHERE left_media_id = ? AND role = 'catalog'",
         )
-        .bind(addon_id)
-        .bind(catalog_id)
+        .bind(collection_id)
         .execute(db)
         .await
         {
-            warn!(addon = %addon_id, catalog = %catalog_id, error = %e, "failed to remove stale catalog membership");
+            warn!(collection = %collection_id, error = %e, "failed to remove stale catalog membership");
         }
     }
 }

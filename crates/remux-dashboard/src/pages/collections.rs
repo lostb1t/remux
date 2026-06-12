@@ -99,8 +99,9 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                         None => "Unknown",
                                     };
                                     let col_kind_label = match col.remux.as_ref().and_then(|r| r.collection_kind.as_ref()) {
-                                        Some(remux_sdks::remux::RemuxCollectionKind::Smart)  => "Smart",
-                                        Some(remux_sdks::remux::RemuxCollectionKind::Manual) => "Manual",
+                                        Some(remux_sdks::remux::RemuxCollectionKind::Smart)   => "Smart",
+                                        Some(remux_sdks::remux::RemuxCollectionKind::Manual)  => "Manual",
+                                        Some(remux_sdks::remux::RemuxCollectionKind::Catalog) => "Catalog",
                                         None => "",
                                     };
                                     rsx! {
@@ -332,11 +333,6 @@ pub fn CollectionForm(
             })
             .unwrap_or_default()
     });
-    let mut sort_order = use_signal(|| {
-        existing
-            .as_ref()
-            .and_then(|f| f.index_number)
-    });
     let mut latest_auto_unplayed = use_signal(|| {
         existing
             .as_ref()
@@ -356,6 +352,37 @@ pub fn CollectionForm(
             })
             .and_then(|r| r.latest_sort_digital)
             .unwrap_or(false)
+    });
+    // Default sort for catalog / smart collections
+    let mut default_sort = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
+            .and_then(|r| {
+                r.collection_default_sort
+                    .as_ref()
+            })
+            .and_then(|v| v.first())
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+    });
+    let mut default_sort_order = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
+            .and_then(|r| {
+                r.collection_default_sort_order
+                    .as_ref()
+            })
+            .and_then(|v| v.first())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "Ascending".to_string())
     });
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
@@ -419,13 +446,12 @@ pub fn CollectionForm(
             .peek()
             .clone();
         let prm = *promoted.peek();
-        let so = *sort_order.peek();
         let auto_unplayed = *latest_auto_unplayed.peek();
         let sort_digital = *latest_sort_digital.peek();
         let current_tags = tags
             .peek()
             .clone();
-        let smart_filter_payload = if ck == "smart" {
+        let smart_filter_payload = if ck == "smart" || ck == "catalog" {
             Some(CollectionFilter {
                 match_mode: sf_match
                     .peek()
@@ -437,6 +463,26 @@ pub fn CollectionForm(
         } else {
             None
         };
+        let ds = default_sort
+            .peek()
+            .clone();
+        let dso = default_sort_order
+            .peek()
+            .clone();
+        let default_sort_payload: Option<Vec<ItemSortBy>> = if ds.is_empty() {
+            None
+        } else {
+            ds.parse::<ItemSortBy>()
+                .ok()
+                .map(|s| vec![s])
+        };
+        let default_sort_order_payload: Option<Vec<SortOrder>> = default_sort_payload
+            .as_ref()
+            .map(|_| {
+                vec![dso
+                    .parse::<SortOrder>()
+                    .unwrap_or(SortOrder::Ascending)]
+            });
         saving.set(true);
         err.set(None);
         let pending_bytes = pending_image_bytes
@@ -454,9 +500,11 @@ pub fn CollectionForm(
                             smart_filter: smart_filter_payload,
                             promoted: Some(prm),
                             tags: Some(current_tags),
-                            sort_order: so,
+                            sort_order: None,
                             latest_auto_unplayed: Some(auto_unplayed),
                             latest_sort_digital: Some(sort_digital),
+                            collection_default_sort: default_sort_payload,
+                            collection_default_sort_order: default_sort_order_payload,
                         },
                     })
                     .await;
@@ -482,7 +530,7 @@ pub fn CollectionForm(
                             collection_type: Some(ct),
                             collection_kind: Some(ck),
                             promoted: Some(prm),
-                            sort_order: so,
+                            sort_order: None,
                         },
                     })
                     .await
@@ -516,18 +564,6 @@ pub fn CollectionForm(
                     required: true,
                     value: "{title}",
                     oninput: move |e| title.set(e.value()),
-                }
-            }
-
-            div { class: "field",
-                label { class: "field-label", r#for: "col-sort-order", "Sort Order" }
-                input {
-                    id: "col-sort-order",
-                    r#type: "number",
-                    class: "field-input",
-                    placeholder: "0",
-                    value: sort_order.read().as_ref().map(|n| n.to_string()).unwrap_or_default(),
-                    oninput: move |e| sort_order.set(e.value().parse::<i64>().ok()),
                 }
             }
 
@@ -664,8 +700,41 @@ pub fn CollectionForm(
                 on_change: move |v| latest_sort_digital.set(v),
             }
 
-            if col_kind.read().as_str() == "smart" && col_type.read().as_str() != "collections" {
+            if (col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog") && col_type.read().as_str() != "collections" {
                 FilterRuleEditor { match_mode: sf_match, rules: sf_rules }
+
+                div { class: "field",
+                    label { class: "field-label", "Default Sort Override" }
+                    p { class: "field-hint", "Overrides the sort order when the client sends no preference or its default (Sort Name). Note: the client UI may still show its own sort label." }
+                    div { style: "display:flex;gap:8px",
+                        select {
+                            class: "select-input",
+                            style: "flex:1;min-width:0",
+                            value: "{default_sort}",
+                            onchange: move |e| default_sort.set(e.value()),
+                            option { value: "", selected: default_sort.read().is_empty(), "— None —" }
+                            if sf_rules.read().iter().any(|r| matches!(r, FilterRule::Catalog { .. })) {
+                                option { value: "CatalogOrder", selected: *default_sort.read() == "CatalogOrder", "Catalog Order" }
+                            }
+                            option { value: "SortName",           selected: *default_sort.read() == "SortName",           "Name" }
+                            option { value: "PremiereDate",       selected: *default_sort.read() == "PremiereDate",       "Release Date" }
+                            option { value: "DigitalReleaseDate", selected: *default_sort.read() == "DigitalReleaseDate", "Digital Release Date" }
+                            option { value: "DateCreated",        selected: *default_sort.read() == "DateCreated",        "Date Added" }
+                            option { value: "CommunityRating",    selected: *default_sort.read() == "CommunityRating",    "Community Rating" }
+                            option { value: "Random",             selected: *default_sort.read() == "Random",             "Random" }
+                        }
+                        if !default_sort.read().is_empty() && *default_sort.read() != "Random" {
+                            select {
+                                class: "select-input",
+                                style: "flex:0 0 auto;width:auto",
+                                value: "{default_sort_order}",
+                                onchange: move |e| default_sort_order.set(e.value()),
+                                option { value: "Ascending",  selected: *default_sort_order.read() == "Ascending",  "Asc" }
+                                option { value: "Descending", selected: *default_sort_order.read() == "Descending", "Desc" }
+                            }
+                        }
+                    }
+                }
             }
 
             if let Some(e) = err.read().as_ref() {

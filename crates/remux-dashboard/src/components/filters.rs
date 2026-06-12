@@ -2,12 +2,13 @@ use crate::state::AppState;
 use dioxus::prelude::*;
 use remux_sdks::{
     remux::{
-        FilterMatchMode, FilterRule, GetCertificationSuggestions, GetCountries,
-        GetLocalSuggestions, GetParentalRatings, GetTagSuggestions, JellyfinAuth,
-        NumericOp, ParentalRating, SetOp,
+        FilterMatchMode, FilterRule, GetAddonCatalogs, GetCertificationSuggestions,
+        GetCountries, GetLocalSuggestions, GetParentalRatings, GetTagSuggestions,
+        JellyfinAuth, ListAddons, NumericOp, ParentalRating, SetOp,
     },
     RestClient,
 };
+use uuid::Uuid;
 
 fn rule_values(rule: &FilterRule) -> Vec<String> {
     match rule {
@@ -124,6 +125,7 @@ fn field_label(key: &str) -> &'static str {
         "has_trailer" => "Has Trailer",
         "country" => "Country",
         "person" => "Person",
+        "catalog" => "Catalog",
         _ => "",
     }
 }
@@ -133,7 +135,7 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "parental_rating" | "has_trailer" => vec![],
+        "parental_rating" | "has_trailer" | "catalog" => vec![],
         _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
@@ -151,6 +153,9 @@ fn value_placeholder(field_key: &str) -> &'static str {
 
 fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
     match rule {
+        FilterRule::Catalog { collection_id } => {
+            ("catalog".into(), "is".into(), collection_id.to_string())
+        }
         FilterRule::Year { op, value } => {
             let op_str = match op {
                 NumericOp::Eq => "eq",
@@ -288,6 +293,9 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
         },
         "has_trailer" => FilterRule::HasTrailer {
             value: value_str == "true",
+        },
+        "catalog" => FilterRule::Catalog {
+            collection_id: Uuid::parse_str(value_str).unwrap_or(Uuid::nil()),
         },
         _ => FilterRule::Genre {
             op: set_op,
@@ -546,11 +554,15 @@ pub fn FilterRuleRow(
     rules: Signal<Vec<FilterRule>>,
 ) -> Element {
     let app_state = use_context::<AppState>();
+    let client_for_ratings = app_state
+        .client
+        .clone();
+    let client_for_catalogs = app_state
+        .client
+        .clone();
     let mut parental_ratings: Signal<Vec<ParentalRating>> = use_signal(Vec::new);
     use_effect(move || {
-        let client = app_state
-            .client
-            .clone();
+        let client = client_for_ratings.clone();
         spawn(async move {
             if let Ok(ratings) = client
                 .execute(GetParentalRatings)
@@ -561,11 +573,47 @@ pub fn FilterRuleRow(
         });
     });
 
+    let mut catalog_options: Signal<Vec<(String, String)>> = use_signal(Vec::new);
+    use_effect(move || {
+        let client = client_for_catalogs.clone();
+        spawn(async move {
+            let Ok(addons) = client
+                .execute(ListAddons)
+                .await
+            else {
+                return;
+            };
+            let mut options = vec![];
+            for addon in addons {
+                if !addon.enabled {
+                    continue;
+                }
+                let Ok(catalogs) = client
+                    .execute(GetAddonCatalogs { id: addon.id })
+                    .await
+                else {
+                    continue;
+                };
+                for cat in catalogs {
+                    if !cat.enabled {
+                        continue;
+                    }
+                    if let Some(cid) = cat.collection_id {
+                        let label = format!("{} — {}", addon.name, cat.name);
+                        options.push((label, cid.to_string()));
+                    }
+                }
+            }
+            catalog_options.set(options);
+        });
+    });
+
     let (field_val, op_val, value_val) = rule_to_raw(&rule);
     let ops = ops_for_field(&field_val);
     let is_trailer = field_val == "has_trailer";
     let is_parental_rating = field_val == "parental_rating";
-    let hide_operator = is_trailer || is_parental_rating;
+    let is_catalog = field_val == "catalog";
+    let hide_operator = is_trailer || is_parental_rating || is_catalog;
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -637,6 +685,7 @@ pub fn FilterRuleRow(
                 option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
                 option { value: "country",         selected: field_val == "country",         { field_label("country") } }
                 option { value: "person",          selected: field_val == "person",          { field_label("person") } }
+                option { value: "catalog",         selected: field_val == "catalog",         { field_label("catalog") } }
             }
             if !hide_operator {
                 select {
@@ -653,7 +702,30 @@ pub fn FilterRuleRow(
                     }
                 }
             }
-            if is_trailer {
+            if is_catalog {
+                select {
+                    class: "select-input",
+                    style: "flex:1.5",
+                    onchange: move |e| {
+                        if let Some(row) = rules.write().get_mut(idx) {
+                            *row = raw_to_rule("catalog", "", &e.value());
+                        }
+                    },
+                    option {
+                        value: "",
+                        disabled: true,
+                        selected: value_val.is_empty(),
+                        "Select catalog…"
+                    }
+                    for (label, combined) in catalog_options.read().iter() {
+                        option {
+                            value: "{combined}",
+                            selected: value_val == *combined,
+                            "{label}"
+                        }
+                    }
+                }
+            } else if is_trailer {
                 select {
                     class: "select-input",
                     style: "flex:1",

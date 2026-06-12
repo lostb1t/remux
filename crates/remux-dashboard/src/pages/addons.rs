@@ -48,9 +48,9 @@ pub fn AddonsPage(app_state: AppState) -> Element {
     // Catalogs loaded for the addon being edited
     let mut edit_catalogs: Signal<Vec<AddonCatalogDto>> = use_signal(Vec::new);
     let mut edit_catalogs_loading = use_signal(|| false);
-    // Per-catalog overrides: catalog_id -> (enabled, max_items_str, tags_str, create_collection)
+    // Per-catalog overrides: catalog_id -> (enabled, max_items_str, tags_str)
     let mut edit_catalog_settings: Signal<
-        std::collections::HashMap<String, (bool, String, String, bool)>,
+        std::collections::HashMap<String, (bool, String, String)>,
     > = use_signal(std::collections::HashMap::new);
 
     // Confirm-delete state
@@ -243,7 +243,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                 spawn(async move {
                                                                     match c.execute(GetAddonCatalogs { id }).await {
                                                                         Ok(cats) => {
-                                                                            let settings: std::collections::HashMap<String, (bool, String, String, bool)> = cats
+                                                                            let settings: std::collections::HashMap<String, (bool, String, String)> = cats
                                                                                 .iter()
                                                                                 .map(|cat| (
                                                                                     cat.catalog_id.clone(),
@@ -251,7 +251,6 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                                         cat.enabled,
                                                                                         cat.max_items.map(|n| n.to_string()).unwrap_or_default(),
                                                                                         cat.tags.join(", "),
-                                                                                        cat.create_collection,
                                                                                     ),
                                                                                 ))
                                                                                 .collect();
@@ -546,7 +545,6 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                             th { "Enabled" }
                                                             th { "Max items" }
                                                             th { "Tags" }
-                                                            th { "Collection" }
                                                         }
                                                     }
                                                     tbody {
@@ -556,11 +554,10 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                 let cid_toggle = cid.clone();
                                                                 let cid_max = cid.clone();
                                                                 let cid_tags = cid.clone();
-                                                                let cid_coll = cid.clone();
-                                                                let (enabled, max_str, tags_str, create_coll) = edit_catalog_settings.read()
+                                                                let (enabled, max_str, tags_str) = edit_catalog_settings.read()
                                                                     .get(&cid)
                                                                     .cloned()
-                                                                    .unwrap_or((false, String::new(), String::new(), false));
+                                                                    .unwrap_or((false, String::new(), String::new()));
                                                                 rsx! {
                                                                     tr {
                                                                         td { class: "catalog-name", "{cat.name}" }
@@ -597,17 +594,6 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                                                     let mut map = edit_catalog_settings.write();
                                                                                     let entry = map.entry(cid_tags.clone()).or_default();
                                                                                     entry.2 = e.value();
-                                                                                },
-                                                                            }
-                                                                        }
-                                                                        td {
-                                                                            input {
-                                                                                r#type: "checkbox",
-                                                                                checked: create_coll,
-                                                                                onchange: move |e| {
-                                                                                    let mut map = edit_catalog_settings.write();
-                                                                                    let entry = map.entry(cid_coll.clone()).or_default();
-                                                                                    entry.3 = e.checked();
                                                                                 },
                                                                             }
                                                                         }
@@ -654,7 +640,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                             let catalog_updates: Vec<UpdateAddonCatalogRequest> = edit_catalog_settings
                                                 .read()
                                                 .iter()
-                                                .map(|(catalog_id, (enabled, max_str, tags_str, create_coll))| {
+                                                .map(|(catalog_id, (enabled, max_str, tags_str))| {
                                                     let tags: Vec<String> = tags_str
                                                         .split(',')
                                                         .map(|t| t.trim().to_string())
@@ -665,7 +651,6 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                         enabled: *enabled,
                                                         max_items: max_str.trim().parse::<i64>().ok().filter(|&n| n > 0),
                                                         tags: Some(tags),
-                                                        create_collection: Some(*create_coll),
                                                     }
                                                 })
                                                 .collect();

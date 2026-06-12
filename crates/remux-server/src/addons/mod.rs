@@ -765,7 +765,6 @@ impl AddonService {
     }
 
     /// Return the tags configured for a specific catalog within an addon.
-    /// `addon_uuid` is the simple (no-dashes) UUID string stored in `media_catalog_items.addon_id`.
     pub fn catalog_tags(&self, addon_uuid: &str, local_cat_id: &str) -> Vec<String> {
         let Ok(id) = Uuid::parse_str(addon_uuid) else {
             return vec![];

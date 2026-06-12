@@ -92,14 +92,6 @@ impl Task for PurgeMediaTask {
             .execute(&mut *conn)
             .await?;
 
-            sqlx::query(
-                "CREATE TEMP TABLE _keep_catalog AS \
-                 SELECT * FROM media_catalog_items \
-                 WHERE media_id IN (SELECT id FROM _keep)",
-            )
-            .execute(&mut *conn)
-            .await?;
-
             tracing::debug!(elapsed = ?t2.elapsed(), "survivors saved");
 
             // Snapshot media index definitions before dropping them.
@@ -127,9 +119,6 @@ impl Task for PurgeMediaTask {
             sqlx::query("DELETE FROM media_relations")
                 .execute(&mut *conn)
                 .await?;
-            sqlx::query("DELETE FROM media_catalog_items")
-                .execute(&mut *conn)
-                .await?;
             sqlx::query("DELETE FROM media")
                 .execute(&mut *conn)
                 .await?;
@@ -149,10 +138,6 @@ impl Task for PurgeMediaTask {
             sqlx::query("INSERT INTO media_relations SELECT * FROM _keep_relations")
                 .execute(&mut *conn)
                 .await?;
-            sqlx::query("INSERT INTO media_catalog_items SELECT * FROM _keep_catalog")
-                .execute(&mut *conn)
-                .await?;
-
             sqlx::query("DROP TABLE _keep")
                 .execute(&mut *conn)
                 .await?;
@@ -163,9 +148,6 @@ impl Task for PurgeMediaTask {
                 .execute(&mut *conn)
                 .await?;
             sqlx::query("DROP TABLE _keep_relations")
-                .execute(&mut *conn)
-                .await?;
-            sqlx::query("DROP TABLE _keep_catalog")
                 .execute(&mut *conn)
                 .await?;
 

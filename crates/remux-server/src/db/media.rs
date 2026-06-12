@@ -296,6 +296,7 @@ pub enum CollectionKind {
     #[default]
     Manual,
     Smart,
+    Catalog,
 }
 
 impl TryFrom<String> for CollectionKind {
@@ -1093,6 +1094,12 @@ pub struct Media {
     pub collection_max_items: Option<i64>,
     #[sqlx(json(nullable))]
     pub collection_smart_filter: Option<remux_sdks::remux::CollectionFilter>,
+    /// For CollectionKind::Catalog: "addon_uuid:local_catalog_id" of the source catalog.
+    pub collection_source: Option<String>,
+    #[sqlx(json(nullable))]
+    pub collection_default_sort: Option<Vec<sdks::remux::ItemSortBy>>,
+    #[sqlx(json(nullable))]
+    pub collection_default_sort_order: Option<Vec<sdks::remux::SortOrder>>,
 
     // IPTV / Live TV
     pub live_start: Option<NaiveDateTime>,
@@ -1477,9 +1484,10 @@ impl Media {
             rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind, collection_max_items,
             external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
-            collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital
+            collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
+            collection_source, collection_default_sort, collection_default_sort_order
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -1506,6 +1514,9 @@ impl Media {
             collection_smart_filter = excluded.collection_smart_filter,
             collection_latest_auto_unplayed = excluded.collection_latest_auto_unplayed,
             collection_latest_sort_digital = excluded.collection_latest_sort_digital,
+            collection_source = excluded.collection_source,
+            collection_default_sort = excluded.collection_default_sort,
+            collection_default_sort_order = excluded.collection_default_sort_order,
             country = excluded.country,
             updated_at = excluded.updated_at,
             certification = excluded.certification,
@@ -1563,6 +1574,9 @@ impl Media {
         .bind(&self.program_kind)
         .bind(self.collection_latest_auto_unplayed)
         .bind(self.collection_latest_sort_digital)
+        .bind(&self.collection_source)
+        .bind(sqlx::types::Json(&self.collection_default_sort))
+        .bind(sqlx::types::Json(&self.collection_default_sort_order))
         .execute(db)
         .await?;
 
@@ -1613,7 +1627,8 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
+                collection_source, collection_default_sort, collection_default_sort_order
             )",
         );
             for item in chunk {
@@ -1660,7 +1675,10 @@ impl Media {
                     )
                     .push_bind(&item.program_kind)
                     .push_bind(&item.collection_latest_auto_unplayed)
-                    .push_bind(&item.collection_latest_sort_digital);
+                    .push_bind(&item.collection_latest_sort_digital)
+                    .push_bind(&item.collection_source)
+                    .push_bind(sqlx::types::Json(&item.collection_default_sort))
+                    .push_bind(sqlx::types::Json(&item.collection_default_sort_order));
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -1709,7 +1727,8 @@ impl Media {
                 id, title, kind, parent_id, idx, released_at, runtime,
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
-                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital
+                live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
+                collection_source, collection_default_sort, collection_default_sort_order
             )",
         );
 
@@ -1755,7 +1774,10 @@ impl Media {
                     )
                     .push_bind(&item.program_kind)
                     .push_bind(&item.collection_latest_auto_unplayed)
-                    .push_bind(&item.collection_latest_sort_digital);
+                    .push_bind(&item.collection_latest_sort_digital)
+                    .push_bind(&item.collection_source)
+                    .push_bind(sqlx::types::Json(&item.collection_default_sort))
+                    .push_bind(sqlx::types::Json(&item.collection_default_sort_order));
             });
 
             query_builder.push(
@@ -1942,11 +1964,40 @@ impl Media {
             .map(|p| p.collection_kind == Some(CollectionKind::Manual))
             .unwrap_or(false);
 
+        let is_smart_collection = filter
+            .parent
+            .as_ref()
+            .map(|p| {
+                matches!(
+                    p.collection_kind,
+                    Some(CollectionKind::Smart) | Some(CollectionKind::Catalog)
+                )
+            })
+            .unwrap_or(false);
+
         let use_recursive = filter.recursive
             && filter
                 .parent_id
                 .is_some()
-            && !is_manual_collection;
+            && !is_manual_collection
+            && !is_smart_collection;
+
+        if !filter
+            .filter_rules
+            .is_empty()
+            || filter
+                .parent_id
+                .is_some()
+        {
+            debug!(
+                parent_id = ?filter.parent_id,
+                is_smart_collection,
+                is_manual_collection,
+                use_recursive,
+                filter_rules = ?filter.filter_rules,
+                "get_by_filter: resolved query path"
+            );
+        }
 
         // Genres are flat global records linked to content via media_relations, not
         // via parent_id. When scoping a genre query to a parent collection/folder we
@@ -2136,7 +2187,7 @@ impl Media {
                     qb.push_bind(cid);
                     qb.push(" AND role = 'collection'))");
                 }
-            } else if !use_recursive && !is_manual_collection {
+            } else if !use_recursive && !is_manual_collection && !is_smart_collection {
                 if let Some(parent_id) = &filter.parent_id {
                     qb.push(" AND parent_id = ")
                         .push_bind(parent_id);
@@ -2534,6 +2585,23 @@ impl Media {
                         api::ItemSortBy::Random => "RANDOM()".to_string(),
                         api::ItemSortBy::ChannelOrder => {
                             format!("(sort_order IS NULL), COALESCE(sort_order, channel_number, 999999) {dir}, title COLLATE NOCASE")
+                        }
+                        api::ItemSortBy::CatalogOrder => {
+                            let src = filter.filter_rules.iter().find_map(|r| {
+                                if let sdks::remux::FilterRule::Catalog { collection_id } = r {
+                                    Some(collection_id.simple().to_string())
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some(cid_hex) = src {
+                                format!(
+                                    "COALESCE((SELECT mr.weight FROM media_relations mr \
+                                     WHERE mr.right_media_id = media.id AND mr.role = 'catalog' AND mr.left_media_id = X'{cid_hex}'), 999999) ASC"
+                                )
+                            } else {
+                                format!("title COLLATE NOCASE {dir}")
+                            }
                         }
                         // Default fallback
                         _ => format!("title COLLATE NOCASE {}", dir),
@@ -4941,6 +5009,17 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                 }
             };
             Some((sql, negated))
+        }
+        R::Catalog { collection_id } => {
+            let cid_hex = collection_id
+                .simple()
+                .to_string();
+            let sql = format!(
+                "EXISTS (SELECT 1 FROM media_relations mr \
+                 WHERE mr.right_media_id = media.id AND mr.role = 'catalog' AND mr.left_media_id = X'{cid_hex}')"
+            );
+            tracing::debug!(collection_id = %collection_id, cid_hex = %cid_hex, sql = %sql, "catalog filter rule SQL");
+            Some((sql, false))
         }
     }
 }

@@ -770,6 +770,15 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                 .map(|d| d.and_utc()),
             latest_auto_unplayed: media.collection_latest_auto_unplayed,
             latest_sort_digital: media.collection_latest_sort_digital,
+            collection_source: media
+                .collection_source
+                .clone(),
+            collection_default_sort: media
+                .collection_default_sort
+                .clone(),
+            collection_default_sort_order: media
+                .collection_default_sort_order
+                .clone(),
         }),
         date_created: Some(
             media

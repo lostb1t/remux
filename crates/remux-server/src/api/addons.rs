@@ -474,16 +474,19 @@ pub async fn delete_addon(
         )
         .await?;
 
-    // Remove catalog memberships for this addon so items are no longer
+    // Remove catalog relations for this addon so items are no longer
     // associated with catalogs that no longer exist.
-    if let Err(e) = sqlx::query("DELETE FROM media_catalog_items WHERE addon_id = ?")
-        .bind(id.to_string())
-        .execute(
-            &state
-                .ctx
-                .db,
-        )
-        .await
+    if let Err(e) = sqlx::query(
+        "DELETE FROM media_relations WHERE role = 'catalog' \
+         AND left_media_id IN (SELECT id FROM media WHERE collection_kind = 'catalog' AND collection_source LIKE ?)",
+    )
+    .bind(format!("{id}:%"))
+    .execute(
+        &state
+            .ctx
+            .db,
+    )
+    .await
     {
         tracing::warn!(addon = %id, error = %e, "failed to clean up catalog memberships on addon delete");
     }
@@ -530,6 +533,7 @@ pub async fn get_addon_catalogs(
             let local_id = full_id
                 .strip_prefix(&prefix)
                 .unwrap_or(&full_id);
+            let collection_id = Uuid::new_v5(&id, local_id.as_bytes());
             let state_entry = states
                 .get(local_id)
                 .cloned()
@@ -537,7 +541,6 @@ pub async fn get_addon_catalogs(
                     enabled: cat_info.default_enabled,
                     max_items: cat_info.default_max_items,
                     tags: vec![],
-                    create_collection: false,
                 });
             AddonCatalogDto {
                 catalog_id: full_id,
@@ -549,7 +552,7 @@ pub async fn get_addon_catalogs(
                 tags: state_entry
                     .tags
                     .clone(),
-                create_collection: state_entry.create_collection,
+                collection_id: Some(collection_id),
             }
         })
         .collect();
@@ -595,37 +598,25 @@ pub async fn update_addon_catalogs(
                     })
                     .unwrap_or_default()
             });
-        let new_create_collection = req
-            .create_collection
-            .unwrap_or_else(|| {
-                states
-                    .get(&local_id)
-                    .map(|s| s.create_collection)
-                    .unwrap_or(false)
-            });
         states.insert(
             local_id.clone(),
             crate::addons::CatalogState {
                 enabled: req.enabled,
                 max_items: req.max_items,
                 tags: new_tags.clone(),
-                create_collection: new_create_collection,
             },
         );
 
-        // addon_id in media_catalog_items uses the hyphenated UUID string.
-        let addon_id_str = id.to_string();
-
         // Apply tags immediately to all media already in this catalog.
+        let collection_id = Uuid::new_v5(&id, local_id.as_bytes());
         for tag in &new_tags {
             if let Err(e) = sqlx::query(
                 "INSERT OR IGNORE INTO media_tags (media_id, tag) \
-                 SELECT mci.media_id, ? FROM media_catalog_items mci \
-                 WHERE mci.addon_id = ? AND mci.catalog_id = ?",
+                 SELECT mr.right_media_id, ? FROM media_relations mr \
+                 WHERE mr.left_media_id = ? AND mr.role = 'catalog'",
             )
             .bind(tag)
-            .bind(&addon_id_str)
-            .bind(&local_id)
+            .bind(collection_id)
             .execute(
                 &state
                     .ctx
@@ -634,78 +625,6 @@ pub async fn update_addon_catalogs(
             .await
             {
                 tracing::warn!(addon = %id, catalog = %local_id, tag = %tag, error = %e, "failed to apply catalog tag");
-            }
-        }
-
-        // Create/repopulate the manual collection for this catalog.
-        if new_create_collection {
-            // Deterministic collection ID: stable per addon+catalog.
-            let collection_id = Uuid::new_v5(&id, local_id.as_bytes());
-
-            // Get catalog name and media kind (fall back to local_id if addon isn't loaded yet).
-            let (catalog_name, catalog_media_kind) = if let Some(kind) = state
-                .ctx
-                .addons
-                .get_catalog(id)
-            {
-                kind.catalog_list(&state.ctx)
-                    .await
-                    .ok()
-                    .and_then(|list| {
-                        list.into_iter()
-                            .find(|c| c.provider_catalog_id == local_id)
-                            .map(|c| (c.name, c.collection_media_kind))
-                    })
-                    .unwrap_or_else(|| (local_id.clone(), None))
-            } else {
-                (local_id.clone(), None)
-            };
-
-            // Insert the collection row only if it doesn't exist yet.
-            // Using INSERT OR IGNORE so user edits (description, images, etc.)
-            // are never overwritten on subsequent saves.
-            let now = Utc::now().naive_utc();
-            if let Err(e) = sqlx::query(
-                "INSERT OR IGNORE INTO media \
-                 (id, title, kind, collection_kind, collection_media_kind, external_ids, created_at, updated_at) \
-                 VALUES (?, ?, 'collection', 'manual', ?, '{}', ?, ?)",
-            )
-            .bind(collection_id)
-            .bind(&catalog_name)
-            .bind(catalog_media_kind)
-            .bind(now)
-            .bind(now)
-            .execute(&state.ctx.db)
-            .await
-            {
-                tracing::warn!(addon = %id, catalog = %local_id, error = %e, "failed to create catalog collection");
-            }
-
-            // Populate collection items from indexed catalog membership.
-            let media_ids: Vec<Uuid> = sqlx::query_scalar(
-                "SELECT media_id FROM media_catalog_items \
-                 WHERE addon_id = ? AND catalog_id = ?",
-            )
-            .bind(&addon_id_str)
-            .bind(&local_id)
-            .fetch_all(
-                &state
-                    .ctx
-                    .db,
-            )
-            .await
-            .unwrap_or_default();
-
-            if let Err(e) = crate::db::MediaRelation::replace_collection_items(
-                &state
-                    .ctx
-                    .db,
-                &collection_id,
-                &media_ids,
-            )
-            .await
-            {
-                tracing::warn!(addon = %id, catalog = %local_id, error = %e, "failed to populate catalog collection");
             }
         }
     }

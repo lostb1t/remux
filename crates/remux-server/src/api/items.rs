@@ -83,6 +83,34 @@ pub async fn get_items(
         None
     };
 
+    // Apply the collection's default sort override when the client sends no sort
+    // preference or sends SortName as the primary sort (Jellyfin clients use
+    // SortName as their generic default, so we treat it as "no preference").
+    if let Some(ref p) = parent {
+        if let Some(ref default_sort) = p.collection_default_sort {
+            if !default_sort.is_empty() {
+                let is_client_default = q
+                    .sort_by
+                    .as_deref()
+                    .map(|s| {
+                        s.is_empty()
+                            || matches!(
+                                s.first(),
+                                Some(api::ItemSortBy::SortName)
+                                    | Some(api::ItemSortBy::Name)
+                            )
+                    })
+                    .unwrap_or(true);
+                if is_client_default {
+                    q.sort_by = Some(default_sort.clone());
+                    q.sort_order = p
+                        .collection_default_sort_order
+                        .clone();
+                }
+            }
+        }
+    }
+
     let server_config = db::Settings::get_config(
         &state
             .ctx
@@ -492,12 +520,14 @@ pub async fn get_items(
 
             // Smart collection: extract stored filter rules so they are applied
             // alongside the Jellyfin query (sort, pagination, user-state, etc.).
-            let smart_filter =
-                if parent.collection_kind == Some(db::CollectionKind::Smart) {
-                    parent.parse_smart_filter()
-                } else {
-                    None
-                };
+            let smart_filter = if matches!(
+                parent.collection_kind,
+                Some(db::CollectionKind::Smart) | Some(db::CollectionKind::Catalog)
+            ) {
+                parent.parse_smart_filter()
+            } else {
+                None
+            };
 
             let result = db::Media::get_by_jellyfin_filter(
                 &state
@@ -672,6 +702,27 @@ pub async fn items_flat(
             if parent.collection_latest_sort_digital == Some(true) {
                 q.sort_by = Some(vec![api::ItemSortBy::DigitalReleaseDate]);
                 q.sort_order = Some(vec![api::SortOrder::Descending]);
+            } else if let Some(ref default_sort) = parent.collection_default_sort {
+                if !default_sort.is_empty() {
+                    let is_client_default = q
+                        .sort_by
+                        .as_deref()
+                        .map(|s| {
+                            s.is_empty()
+                                || matches!(
+                                    s.first(),
+                                    Some(api::ItemSortBy::SortName)
+                                        | Some(api::ItemSortBy::Name)
+                                )
+                        })
+                        .unwrap_or(true);
+                    if is_client_default {
+                        q.sort_by = Some(default_sort.clone());
+                        q.sort_order = parent
+                            .collection_default_sort_order
+                            .clone();
+                    }
+                }
             }
         }
     }
@@ -2161,6 +2212,8 @@ struct PatchItemRequest {
     sort_order: Option<i64>,
     latest_auto_unplayed: Option<bool>,
     latest_sort_digital: Option<bool>,
+    collection_default_sort: Option<Vec<api::ItemSortBy>>,
+    collection_default_sort_order: Option<Vec<api::SortOrder>>,
 }
 
 #[patch("/items/{id}")]
@@ -2214,6 +2267,14 @@ pub async fn patch_item(
     if let Some(v) = payload.latest_sort_digital {
         qb.push(", collection_latest_sort_digital = ")
             .push_bind(v);
+    }
+    if let Some(ref v) = payload.collection_default_sort {
+        qb.push(", collection_default_sort = ")
+            .push_bind(sqlx::types::Json(v));
+    }
+    if let Some(ref v) = payload.collection_default_sort_order {
+        qb.push(", collection_default_sort_order = ")
+            .push_bind(sqlx::types::Json(v));
     }
 
     qb.push(" WHERE id = ")

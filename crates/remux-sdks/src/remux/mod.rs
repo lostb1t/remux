@@ -208,8 +208,8 @@ pub struct AddonCatalogDto {
     /// Tags applied to all media in this catalog.
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Whether a manual collection backed by this catalog is maintained.
-    pub create_collection: bool,
+    /// Deterministic UUID of the catalog collection item for this catalog.
+    pub collection_id: Option<Uuid>,
 }
 
 /// Per-catalog settings update — one entry in `POST /addons/{id}/catalogs`.
@@ -223,8 +223,6 @@ pub struct UpdateAddonCatalogRequest {
     pub max_items: Option<i64>,
     /// Tags to assign to all media in this catalog.
     pub tags: Option<Vec<String>>,
-    /// When true, a manual collection is created/repopulated from this catalog's indexed items.
-    pub create_collection: Option<bool>,
 }
 
 fn deserialize_optional<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
@@ -896,6 +894,8 @@ pub struct PatchItemPayload {
     pub sort_order: Option<i64>,
     pub latest_auto_unplayed: Option<bool>,
     pub latest_sort_digital: Option<bool>,
+    pub collection_default_sort: Option<Vec<ItemSortBy>>,
+    pub collection_default_sort_order: Option<Vec<SortOrder>>,
 }
 
 #[skip_serializing_none]
@@ -2288,6 +2288,7 @@ pub enum RemuxCollectionKind {
     #[default]
     Manual,
     Smart,
+    Catalog,
 }
 
 #[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2411,17 +2412,53 @@ pub enum SetOp {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "field", rename_all = "snake_case")]
 pub enum FilterRule {
-    Genre { op: SetOp, values: Vec<String> },
-    Year { op: NumericOp, value: i64 },
-    RatingAudience { op: NumericOp, value: f64 },
-    RatingCritic { op: NumericOp, value: f64 },
-    ParentalRating { op: NumericOp, value: i64 },
-    Certification { op: SetOp, values: Vec<String> },
-    Tag { op: SetOp, values: Vec<String> },
-    Studio { op: SetOp, values: Vec<String> },
-    HasTrailer { value: bool },
-    Country { op: SetOp, values: Vec<String> },
-    Person { op: SetOp, values: Vec<String> },
+    Genre {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    Year {
+        op: NumericOp,
+        value: i64,
+    },
+    RatingAudience {
+        op: NumericOp,
+        value: f64,
+    },
+    RatingCritic {
+        op: NumericOp,
+        value: f64,
+    },
+    ParentalRating {
+        op: NumericOp,
+        value: i64,
+    },
+    Certification {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    Tag {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    Studio {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    HasTrailer {
+        value: bool,
+    },
+    Country {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    Person {
+        op: SetOp,
+        values: Vec<String>,
+    },
+    /// Matches items that belong to the given catalog collection.
+    Catalog {
+        collection_id: Uuid,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).
@@ -2469,6 +2506,9 @@ pub struct RemuxInfo {
     pub digital_release_date: Option<DateTime<Utc>>,
     pub latest_auto_unplayed: Option<bool>,
     pub latest_sort_digital: Option<bool>,
+    pub collection_source: Option<String>,
+    pub collection_default_sort: Option<Vec<ItemSortBy>>,
+    pub collection_default_sort_order: Option<Vec<SortOrder>>,
 }
 
 #[skip_serializing_none]
@@ -2952,6 +2992,7 @@ pub enum ItemSortBy {
     SimilarityScore,
     SearchScore,
     ChannelOrder,
+    CatalogOrder,
 }
 
 #[derive(

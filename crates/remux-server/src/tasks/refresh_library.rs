@@ -7,9 +7,7 @@ use uuid::Uuid;
 
 use super::{
     ProgressReporter, Task, TaskService,
-    catalog_import_shared::{
-        catalog_membership, import_catalog_items, remove_stale_catalog_memberships,
-    },
+    catalog_import_shared::{import_catalog_items, remove_stale_catalog_memberships},
 };
 use crate::{AppContext, addons::make_media_id, db};
 
@@ -55,7 +53,7 @@ impl Task for RefreshLibraryTask {
         let total_work = addons
             .len()
             .max(1);
-        let mut valid_pairs: HashSet<(String, String)> = HashSet::new();
+        let mut valid_collection_ids: HashSet<Uuid> = HashSet::new();
 
         let catalog_progress = progress.scaled(20.0, 70.0);
         for (addon_idx, runtime) in addons
@@ -131,10 +129,26 @@ impl Task for RefreshLibraryTask {
                     .map(|n| n as usize)
                     .unwrap_or(global_max);
 
-                if let Some((addon_uuid, local_cat_id)) = catalog_membership(&full_id) {
-                    valid_pairs
-                        .insert((addon_uuid.to_string(), local_cat_id.to_string()));
-                }
+                // Use the existing catalog collection's media row UUID if one exists,
+                // so relations and collection_smart_filter stay in sync with what
+                // was stored by the migration. Fall back to new_v5 for new catalogs
+                // that never had a collection row.
+                let collection_source = format!("{}:{}", addon_id, local_id);
+                let collection_id: Uuid = sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM media WHERE collection_kind = 'catalog' AND collection_source = ?",
+                )
+                .bind(&collection_source)
+                .fetch_optional(&ctx.db)
+                .await
+                .unwrap_or(None)
+                .unwrap_or_else(|| Uuid::new_v5(&addon_id, local_id.as_bytes()));
+
+                debug!(
+                    catalog = %full_id,
+                    collection_id = %collection_id,
+                    "resolved catalog collection_id"
+                );
+                valid_collection_ids.insert(collection_id);
 
                 let source = match ctx
                     .addons
@@ -164,7 +178,7 @@ impl Task for RefreshLibraryTask {
 
                 let counts = import_catalog_items(
                     &ctx,
-                    Uuid::nil(),
+                    collection_id,
                     &full_id,
                     max,
                     stream,
@@ -206,51 +220,10 @@ impl Task for RefreshLibraryTask {
                         _ => {}
                     }
                 }
-
-                // Sync collection relations if this catalog has a linked collection.
-                if catalog_states
-                    .get(local_id)
-                    .map(|s| s.create_collection)
-                    .unwrap_or(false)
-                {
-                    let collection_id = Uuid::new_v5(&addon_id, local_id.as_bytes());
-                    let addon_id_str = addon_id.to_string();
-                    let media_ids: Vec<Uuid> = sqlx::query_scalar(
-                        "SELECT media_id FROM media_catalog_items WHERE addon_id = ? AND catalog_id = ?",
-                    )
-                    .bind(&addon_id_str)
-                    .bind(local_id)
-                    .fetch_all(&ctx.db)
-                    .await
-                    .unwrap_or_default();
-
-                    if let Err(e) = db::MediaRelation::replace_collection_items(
-                        &ctx.db,
-                        &collection_id,
-                        &media_ids,
-                    )
-                    .await
-                    {
-                        warn!(catalog = %full_id, error = %e, "failed to sync catalog collection relations");
-                    }
-
-                    // Backfill collection_media_kind for collections created before this field existed.
-                    if let Some(kind) = &cat_info.collection_media_kind {
-                        sqlx::query(
-                            "UPDATE media SET collection_media_kind = ? \
-                             WHERE id = ? AND collection_media_kind IS NULL",
-                        )
-                        .bind(kind)
-                        .bind(collection_id)
-                        .execute(&ctx.db)
-                        .await
-                        .ok();
-                    }
-                }
             }
         }
 
-        remove_stale_catalog_memberships(&ctx.db, &valid_pairs).await;
+        remove_stale_catalog_memberships(&ctx.db, &valid_collection_ids).await;
 
         const CHUNK_SIZE: u32 = 100;
         let mut total: Option<u32> = None;

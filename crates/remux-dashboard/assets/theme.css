@@ -1160,9 +1160,11 @@ html, body {
   inset: 0;
   background: rgba(0,0,0,.35);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   z-index: 100;
+  overflow-y: auto;
+  padding: 16px 0;
 }
 
 .modal {
@@ -1176,6 +1178,7 @@ html, body {
   flex-direction: column;
   gap: 16px;
   box-shadow: var(--shadow-md);
+  margin: auto;
 }
 
 .modal-title {
