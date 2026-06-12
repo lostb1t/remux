@@ -4283,7 +4283,7 @@ pub async fn audio_universal(
     Path(id): Path<Uuid>,
     Query(q): Query<api::HlsVideoQuery>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(
+    let mut media = db::Media::get_by_id(
         &state
             .ctx
             .db,
@@ -4291,6 +4291,13 @@ pub async fn audio_universal(
     )
     .await?
     .context_not_found("track not found")?;
+
+    state
+        .ctx
+        .addons
+        .refresh_streams(&mut media, &state.ctx)
+        .await
+        .inspect_err(|e| error!("refresh_streams failed: {e:#}"));
 
     let play_session_id = q
         .play_session_id
