@@ -128,13 +128,6 @@ where
                     vec![]
                 };
 
-            info!(
-                catalog_id = %catalog_id,
-                catalog_id_hex = %catalog_id.simple(),
-                items = top_ids.len(),
-                "inserting catalog relations"
-            );
-
             for item_id in &top_ids {
                 let relation_id = Uuid::new_v5(&catalog_id, item_id.as_bytes());
                 debug!(catalog_id = %catalog_id, item_id = %item_id, weight = catalog_position, "inserting catalog relation");

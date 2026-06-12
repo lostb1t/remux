@@ -997,7 +997,7 @@ impl AddonService {
             .await;
         if tree.is_empty() {
             if media.kind == db::MediaKind::Series {
-                tracing::warn!(id = %media.id, title = %media.title, "skipping series import — no seasons or episodes found");
+                tracing::debug!(id = %media.id, title = %media.title, "series has no seasons yet, skipping import");
                 return vec![];
             }
             return vec![media];

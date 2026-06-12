@@ -2138,6 +2138,20 @@ mod tests {
                 season: Some(4),
                 episode: Some(3),
             },
+            // Space-dash-space separators; episode title whose first token looks like a
+            // timecode — reported as not producing streams.
+            EpisodeCase {
+                stem: "Chernobyl - S01E01 - 1 23 45",
+                title: "Chernobyl",
+                season: Some(1),
+                episode: Some(1),
+            },
+            EpisodeCase {
+                stem: "Chernobyl - S01E02 - Please Remain Calm",
+                title: "Chernobyl",
+                season: Some(1),
+                episode: Some(2),
+            },
         ];
 
         for c in &cases {

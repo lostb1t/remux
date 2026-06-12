@@ -255,16 +255,12 @@ async fn tmdb_series_seasons(
         )
         .await?;
 
-    let series_imdb = tv
+    let series_imdb: String = tv
         .external_ids
         .as_ref()
-        .and_then(|e| {
-            e.imdb_id
-                .clone()
-        });
-    let Some(ref series_imdb) = series_imdb else {
-        return Ok(None);
-    };
+        .and_then(|e| e.imdb_id.clone())
+        .or_else(|| series.external_ids.imdb.clone())
+        .unwrap_or_else(|| format!("tmdb:{}", tmdb_id));
 
     let seasons: Vec<db::Media> = tv
         .seasons
