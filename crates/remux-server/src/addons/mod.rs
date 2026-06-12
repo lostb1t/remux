@@ -33,40 +33,6 @@ use uuid::Uuid;
 use crate::{AppContext, api, common::ProgressReporter, db, sdks};
 pub use addon::{Addon, CatalogState};
 
-/// Read process RSS in MB. Linux reads current VmRSS; macOS reads peak ru_maxrss.
-fn rss_mb() -> f64 {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
-            for line in s.lines() {
-                if line.starts_with("VmRSS:") {
-                    if let Some(kb) = line
-                        .split_whitespace()
-                        .nth(1)
-                    {
-                        if let Ok(kb) = kb.parse::<f64>() {
-                            return (kb / 1024.0 * 10.0).round() / 10.0;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
-        unsafe {
-            if libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) == 0 {
-                // ru_maxrss is in bytes on macOS
-                let bytes = usage
-                    .assume_init()
-                    .ru_maxrss as f64;
-                return (bytes / 1024.0 / 1024.0 * 10.0).round() / 10.0;
-            }
-        }
-    }
-    0.0
-}
 pub use remux_sdks::remux::AddonPresetRef;
 use remux_sdks::remux::{LyricDto, MediaSegments, RemoteLyricInfoDto};
 
@@ -980,39 +946,21 @@ impl AddonService {
         let concurrency = config.meta_concurrency as usize;
         let config = Arc::new(config);
 
-        tracing::info!(
-            rss_mb = rss_mb(),
-            batch_len = media.len(),
-            "process_meta_batch start"
-        );
-
         let mut stream = stream::iter(media)
             .map(|m| {
                 let cfg = Arc::clone(&config);
                 self.process_meta_item(m, ctx, force_refresh, cfg)
             })
             .buffer_unordered(concurrency);
-        let mut n = 0usize;
         while let Some(items) = stream
             .next()
             .await
         {
-            n += 1;
-            tracing::info!(
-                rss_mb = rss_mb(),
-                item = n,
-                items_len = items.len(),
-                "after future"
-            );
             if !items.is_empty() {
                 db::Media::upsert(&ctx.db, &items).await?;
-                tracing::info!(rss_mb = rss_mb(), item = n, "after upsert");
                 save_pending_relations(ctx, &items).await;
-                tracing::info!(rss_mb = rss_mb(), item = n, "after save_relations");
             }
         }
-
-        tracing::info!(rss_mb = rss_mb(), "process_meta_batch end");
         Ok(())
     }
 
@@ -1049,7 +997,6 @@ impl AddonService {
         let tree = self
             .get_tree(&media, ctx)
             .await;
-        tracing::info!(rss_mb = rss_mb(), kind = %media.kind, title = %media.title, tree_len = tree.len(), "after get_tree");
         if tree.is_empty() {
             if media.kind == db::MediaKind::Series {
                 tracing::info!(id = %media.id, title = %media.title, "series has no seasons yet, skipping import");
@@ -1105,7 +1052,6 @@ impl AddonService {
             save_pending_relations(ctx, &batch).await;
         }
 
-        tracing::info!(rss_mb = rss_mb(), kind = %media.kind, "process_meta_item done");
         vec![]
     }
 
