@@ -54,4 +54,15 @@ pub static JS: &str = r#"
   window.addEventListener('popstate', checkCurrent);
   window.addEventListener('hashchange', checkCurrent);
 }());
+
+(function () {
+  var _get = Storage.prototype.getItem;
+  Storage.prototype.getItem = function (key) {
+    var val = _get.call(this, key);
+    if (typeof key === 'string' && /maxbitrate-video-false/i.test(key) && (val === null || val === '15000')) {
+      return '0';
+    }
+    return val;
+  };
+}());
 "#;
