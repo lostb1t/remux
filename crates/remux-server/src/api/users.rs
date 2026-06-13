@@ -10,7 +10,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use http::StatusCode;
-use remux_macros::{delete, get, post};
+use remux_macros::{api_query, delete, get, post};
 use serde::Deserialize;
 use sqlx::Row;
 use uuid::Uuid;
@@ -43,6 +43,37 @@ pub async fn user_configuration_update(
             .ctx
             .db,
         &session
+            .user
+            .id,
+        &payload,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Jellyfin SDK-compatible route: POST /Users/Configuration?userId=<id>
+///
+/// The URL-rewrite middleware lowercases all non-file paths, so the registered
+/// route is `/users/configuration`.  Auth is via session (same as the canonical
+/// `/users/{user_id}/configuration` route above).
+#[api_query]
+#[derive(Debug, Default)]
+struct UserConfigurationQuery {
+    user_id: Option<Uuid>,
+}
+
+#[post("/users/configuration")]
+pub async fn user_configuration_legacy(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    _query: Query<UserConfigurationQuery>,
+    Json(payload): Json<api::UserConfiguration>,
+) -> Result<impl IntoResponse> {
+    db::User::save_configuration(
+        &state
+            .ctx
+            .db,
+        &_session
             .user
             .id,
         &payload,
@@ -1542,5 +1573,59 @@ mod e2e_tests {
         assert_eq!(user["Configuration"]["SubtitleLanguagePreference"], "eng");
         assert_eq!(user["Configuration"]["EnableNextEpisodeAutoPlay"], true);
         assert_eq!(user["Configuration"]["HidePlayedInLatest"], true);
+    }
+
+    #[tokio::test]
+    async fn test_update_user_configuration_jellyfin_sdk_route() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        let resp = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let user: serde_json::Value = resp.json();
+        let user_id = user["Id"].as_str().unwrap();
+
+        // POST via the Jellyfin SDK-compatible route with userId query param
+        let resp = server
+            .post("/users/configuration")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[("userId", user_id)])
+            .json(&json!({
+                "PlayDefaultAudioTrack": true,
+                "SubtitleLanguagePreference": "fre",
+                "DisplayMissingEpisodes": false,
+                "SubtitleMode": "Default",
+                "EnableLocalPassword": false,
+                "HidePlayedInLatest": false,
+                "RememberAudioSelections": true,
+                "RememberSubtitleSelections": true,
+                "EnableNextEpisodeAutoPlay": false,
+                "DisplayCollectionsView": true
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::NO_CONTENT);
+
+        // Verify configuration was persisted
+        let resp = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let user: serde_json::Value = resp.json();
+        assert_eq!(user["Configuration"]["SubtitleLanguagePreference"], "fre");
+        assert_eq!(user["Configuration"]["DisplayCollectionsView"], true);
     }
 }
