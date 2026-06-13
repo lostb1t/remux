@@ -1107,10 +1107,15 @@ impl AddonService {
             .inner
             .load()
             .iter()
+            .filter(|r| r.supports_type(kind))
+            .filter(|r| {
+                r.row
+                    .resources
+                    .contains(&ResourceType::Search)
+            })
             .filter(|r| {
                 r.search
                     .is_some()
-                    && r.supports_type(kind)
             })
             .filter_map(|r| {
                 r.search
@@ -1212,6 +1217,11 @@ impl AddonService {
             .load()
             .iter()
             .filter(|r| r.supports_type(&media.kind))
+            .filter(|r| {
+                r.row
+                    .resources
+                    .contains(&ResourceType::Subtitles)
+            })
             .filter_map(|r| {
                 r.subtitle
                     .as_ref()
@@ -1468,6 +1478,11 @@ impl AddonService {
             .inner
             .load()
             .iter()
+            .filter(|r| {
+                r.row
+                    .resources
+                    .contains(&ResourceType::Segment)
+            })
             .filter_map(|r| {
                 r.segment
                     .as_ref()
@@ -1517,6 +1532,11 @@ impl AddonService {
             .inner
             .load()
             .iter()
+            .filter(|r| {
+                r.row
+                    .resources
+                    .contains(&ResourceType::Lyrics)
+            })
             .filter_map(|r| {
                 r.lyric
                     .as_ref()
@@ -1554,6 +1574,11 @@ impl AddonService {
             .inner
             .load()
             .iter()
+            .filter(|r| {
+                r.row
+                    .resources
+                    .contains(&ResourceType::Lyrics)
+            })
             .filter_map(|r| {
                 r.lyric
                     .as_ref()
