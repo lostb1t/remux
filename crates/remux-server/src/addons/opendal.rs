@@ -747,20 +747,13 @@ impl TreeAddon for OpendalAddon {
                     return Ok(None);
                 }
 
-                let now = Utc::now().naive_utc();
                 let episodes: Vec<db::Media> = files
                     .into_iter()
                     .filter_map(|f| {
                         let ep_num = f.episode?;
-                        let title = match f
-                            .title
-                            .as_deref()
-                        {
-                            Some(t) => {
-                                format!("S{:02}E{:02} - {}", season_num, ep_num, t)
-                            }
-                            None => format!("S{:02}E{:02}", season_num, ep_num),
-                        };
+                        // Leave title empty so the TMDB meta addon can fill in the proper
+                        // episode name via refresh_meta (which apply_title_format then wraps).
+                        let title = String::new();
                         let descriptor = if self.backend == "local" {
                             crate::stream::StreamDescriptor::Local(
                                 std::path::PathBuf::from(&f.path),
@@ -796,7 +789,6 @@ impl TreeAddon for OpendalAddon {
                                 ),
                                 ..Default::default()
                             }),
-                            refreshed_at: Some(now),
                             ..Default::default()
                         })
                     })

@@ -2149,11 +2149,18 @@ pub async fn items_similar(
     Path(id): Path<Uuid>,
     Query(q): Query<GetSimilarItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    let limit = q.limit.unwrap_or(12).min(50) as u32;
-    let offset = q.start_index.unwrap_or(0);
+    let limit = q
+        .limit
+        .unwrap_or(12)
+        .min(50) as u32;
+    let offset = q
+        .start_index
+        .unwrap_or(0);
 
     let (scored_ids, total) = db::Media::get_similar_by_genres(
-        &state.ctx.db,
+        &state
+            .ctx
+            .db,
         &id,
         limit,
         offset,
@@ -2167,17 +2174,34 @@ pub async fn items_similar(
     }
 
     // Fetch full items in score order.
-    let ids: Vec<Uuid> = scored_ids.iter().map(|(id, _)| *id).collect();
+    let ids: Vec<Uuid> = scored_ids
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
     let filter = db::MediaFilter {
         id: Some(ids),
-        user_id: q.user_id.or(Some(session.user.id)),
+        user_id: q
+            .user_id
+            .or(Some(
+                session
+                    .user
+                    .id,
+            )),
         include_user_state: true,
         ..Default::default()
     };
-    let result = db::Media::get_by_filter(&state.ctx.db, &filter).await?;
+    let result = db::Media::get_by_filter(
+        &state
+            .ctx
+            .db,
+        &filter,
+    )
+    .await?;
 
     // Reorder results to match score order.
-    let score_map: std::collections::HashMap<Uuid, i64> = scored_ids.into_iter().collect();
+    let score_map: std::collections::HashMap<Uuid, i64> = scored_ids
+        .into_iter()
+        .collect();
     let mut items: Vec<api::BaseItemDto> = result
         .records
         .into_iter()
@@ -2185,7 +2209,12 @@ pub async fn items_similar(
         .collect();
     items.sort_by_key(|item| {
         let id = item.id;
-        std::cmp::Reverse(score_map.get(&id).copied().unwrap_or(0))
+        std::cmp::Reverse(
+            score_map
+                .get(&id)
+                .copied()
+                .unwrap_or(0),
+        )
     });
 
     Ok(Json(api::BaseItemDtoQueryResult {

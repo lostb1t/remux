@@ -282,7 +282,6 @@ fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
     }
 
     merge_media(media, &patch, replace);
-    apply_title_format(media);
 
     if let Some(relations) = patch.relations {
         if !relations.is_empty()
@@ -885,6 +884,10 @@ impl AddonService {
             }
         }
 
+        // Apply SxxExx / "Season N" title formatting once, after all patches are merged.
+        // Calling it inside apply_meta would re-apply the prefix on every patch.
+        apply_title_format(media);
+
         // Recompute stable UUID for Person once TMDB ID is resolved.
         if media.kind == db::MediaKind::Person {
             if let Some(tmdb_id) = media
@@ -1249,6 +1252,11 @@ impl AddonService {
             .load()
             .iter()
             .filter(|r| r.supports_type(&media.kind))
+            .filter(|r| {
+                r.row
+                    .resources
+                    .contains(&ResourceType::Stream)
+            })
             .filter_map(|r| {
                 r.stream
                     .as_ref()

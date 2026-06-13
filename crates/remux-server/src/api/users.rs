@@ -1589,7 +1589,9 @@ mod e2e_tests {
             .await;
         resp.assert_status_ok();
         let user: serde_json::Value = resp.json();
-        let user_id = user["Id"].as_str().unwrap();
+        let user_id = user["Id"]
+            .as_str()
+            .unwrap();
 
         // POST via the Jellyfin SDK-compatible route with userId query param
         let resp = server

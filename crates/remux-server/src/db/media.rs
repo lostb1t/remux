@@ -1492,21 +1492,21 @@ impl Media {
             title = excluded.title,
             kind = excluded.kind,
             idx = COALESCE(excluded.idx, media.idx),
-            released_at = excluded.released_at,
-            digital_released_at = excluded.digital_released_at,
-            runtime = excluded.runtime,
-            rating_critic = excluded.rating_critic,
-            rating_audience = excluded.rating_audience,
-            description = excluded.description,
-            trailers = excluded.trailers,
-            stream_info = excluded.stream_info,
+            released_at = COALESCE(excluded.released_at, media.released_at),
+            digital_released_at = COALESCE(excluded.digital_released_at, media.digital_released_at),
+            runtime = COALESCE(excluded.runtime, media.runtime),
+            rating_critic = COALESCE(excluded.rating_critic, media.rating_critic),
+            rating_audience = COALESCE(excluded.rating_audience, media.rating_audience),
+            description = COALESCE(excluded.description, media.description),
+            trailers = COALESCE(excluded.trailers, media.trailers),
+            stream_info = COALESCE(excluded.stream_info, media.stream_info),
             probe_data = CASE
                 WHEN excluded.stream_info IS NOT media.stream_info THEN NULL
                 ELSE COALESCE(excluded.probe_data, media.probe_data)
             END,
             grandparent_id = excluded.grandparent_id,
             external_ids = excluded.external_ids,
-            external_ratings = excluded.external_ratings,
+            external_ratings = COALESCE(excluded.external_ratings, media.external_ratings),
             promoted = excluded.promoted,
             collection_kind = excluded.collection_kind,
             collection_media_kind = excluded.collection_media_kind,
@@ -1517,7 +1517,7 @@ impl Media {
             collection_source = excluded.collection_source,
             collection_default_sort = excluded.collection_default_sort,
             collection_default_sort_order = excluded.collection_default_sort_order,
-            country = excluded.country,
+            country = COALESCE(excluded.country, media.country),
             updated_at = excluded.updated_at,
             certification = excluded.certification,
             certification_age = excluded.certification_age,
@@ -1529,7 +1529,7 @@ impl Media {
             enabled = excluded.enabled,
             sort_order = excluded.sort_order,
             custom_name = excluded.custom_name,
-            status = excluded.status,
+            status = COALESCE(excluded.status, media.status),
             refreshed_at = COALESCE(excluded.refreshed_at, media.refreshed_at),
             program_kind = excluded.program_kind
         "#,
@@ -1784,16 +1784,16 @@ impl Media {
                 " ON CONFLICT DO UPDATE SET
                 title = excluded.title,
                 idx = COALESCE(excluded.idx, media.idx),
-                released_at = excluded.released_at,
-                digital_released_at = excluded.digital_released_at,
-                runtime = excluded.runtime,
-                rating_critic = excluded.rating_critic,
-                rating_audience = excluded.rating_audience,
-                description = excluded.description,
-                trailers = excluded.trailers,
-                stream_info = excluded.stream_info,
+                released_at = COALESCE(excluded.released_at, media.released_at),
+                digital_released_at = COALESCE(excluded.digital_released_at, media.digital_released_at),
+                runtime = COALESCE(excluded.runtime, media.runtime),
+                rating_critic = COALESCE(excluded.rating_critic, media.rating_critic),
+                rating_audience = COALESCE(excluded.rating_audience, media.rating_audience),
+                description = COALESCE(excluded.description, media.description),
+                trailers = COALESCE(excluded.trailers, media.trailers),
+                stream_info = COALESCE(excluded.stream_info, media.stream_info),
                 external_ids = excluded.external_ids,
-                external_ratings = excluded.external_ratings,
+                external_ratings = COALESCE(excluded.external_ratings, media.external_ratings),
                 probe_data = CASE
                 WHEN excluded.stream_info IS NOT media.stream_info THEN NULL
                 ELSE COALESCE(excluded.probe_data, media.probe_data)
@@ -1809,8 +1809,8 @@ impl Media {
                 live_end = excluded.live_end,
                 tvg_id = excluded.tvg_id,
                 channel_number = excluded.channel_number,
-                status = excluded.status,
-                country = excluded.country,
+                status = COALESCE(excluded.status, media.status),
+                country = COALESCE(excluded.country, media.country),
                 refreshed_at = COALESCE(excluded.refreshed_at, media.refreshed_at),
                 -- preserve user overrides: only update name/enabled/sort_order if not set by user
                 title = CASE WHEN custom_name IS NOT NULL THEN media.title ELSE excluded.title END,
@@ -1870,12 +1870,11 @@ impl Media {
         offset: u32,
     ) -> Result<(Vec<(Uuid, i64)>, i64)> {
         // Get the source item's kind — only primary media types are supported.
-        let kind_str: Option<String> = sqlx::query_scalar(
-            "SELECT kind FROM media WHERE id = ?"
-        )
-        .bind(source_id)
-        .fetch_optional(db)
-        .await?;
+        let kind_str: Option<String> =
+            sqlx::query_scalar("SELECT kind FROM media WHERE id = ?")
+                .bind(source_id)
+                .fetch_optional(db)
+                .await?;
         let Some(kind_str) = kind_str else {
             return Ok((vec![], 0));
         };
@@ -1890,7 +1889,7 @@ impl Media {
         let genre_ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT mr.right_media_id FROM media_relations mr \
              JOIN media g ON g.id = mr.right_media_id \
-             WHERE mr.left_media_id = ? AND g.kind IN ('genre', 'music_genre')"
+             WHERE mr.left_media_id = ? AND g.kind IN ('genre', 'music_genre')",
         )
         .bind(source_id)
         .fetch_all(db)
@@ -1899,37 +1898,46 @@ impl Media {
             return Ok((vec![], 0));
         }
 
-        // Build the similarity query — items of the same kind sharing genres,
-        // scored by distinct genre overlap count.
-        let sql = format!(
-            "SELECT m.id, COUNT(DISTINCT mr.right_media_id) as score FROM media m \
-             JOIN media_relations mr ON mr.left_media_id = m.id \
-             JOIN media g ON g.id = mr.right_media_id \
-             WHERE m.kind = ? AND g.kind IN ('genre', 'music_genre') \
-             AND mr.right_media_id IN ({}) AND m.id != ? \
-             GROUP BY m.id ORDER BY score DESC",
-            genre_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
-        );
+        // Build the similarity query using QueryBuilder throughout — never embed
+        // raw `?` placeholders in the initial string, as push_bind appends its
+        // own markers and the pre-baked ones would cause a syntax error.
+        let base = "SELECT m.id, COUNT(DISTINCT mr.right_media_id) as score \
+                    FROM media m \
+                    JOIN media_relations mr ON mr.left_media_id = m.id \
+                    JOIN media g ON g.id = mr.right_media_id \
+                    WHERE m.kind = ";
 
         // Count total.
-        let count_sql = format!("SELECT COUNT(*) FROM ({}) sub", sql);
-        let mut count_qb = sqlx::QueryBuilder::new(&count_sql);
+        let mut count_qb =
+            sqlx::QueryBuilder::new(format!("SELECT COUNT(*) FROM ({} ", base));
         count_qb.push_bind(&kind_str);
+        count_qb
+            .push(" AND g.kind IN ('genre', 'music_genre') AND mr.right_media_id IN (");
+        let mut sep = count_qb.separated(", ");
         for gid in &genre_ids {
-            count_qb.push_bind(*gid);
+            sep.push_bind(*gid);
         }
+        count_qb.push(") AND m.id != ");
         count_qb.push_bind(source_id);
-        let total: i64 = count_qb.build_query_scalar().fetch_one(db).await?;
+        count_qb.push(" GROUP BY m.id) sub");
+        let total: i64 = count_qb
+            .build_query_scalar()
+            .fetch_one(db)
+            .await?;
 
         // Fetch scored page.
-        let page_sql = format!("{} LIMIT ? OFFSET ?", sql);
-        let mut qb = sqlx::QueryBuilder::new(&page_sql);
+        let mut qb = sqlx::QueryBuilder::new(base);
         qb.push_bind(&kind_str);
+        qb.push(" AND g.kind IN ('genre', 'music_genre') AND mr.right_media_id IN (");
+        let mut sep = qb.separated(", ");
         for gid in &genre_ids {
-            qb.push_bind(*gid);
+            sep.push_bind(*gid);
         }
+        qb.push(") AND m.id != ");
         qb.push_bind(source_id);
+        qb.push(" GROUP BY m.id ORDER BY score DESC LIMIT ");
         qb.push_bind(limit as i64);
+        qb.push(" OFFSET ");
         qb.push_bind(offset as i64);
 
         let scored: Vec<(Uuid, i64)> = qb
