@@ -1295,9 +1295,9 @@ impl AddonService {
                 match addon.get_streams(media, ctx).await {
                     Ok(mut streams) => {
                         if streams.is_empty() {
-                            tracing::info!(addon = %name, "addon: no streams");
+                            tracing::debug!(addon = %name, "addon: no streams");
                         } else {
-                            tracing::info!(addon = %name, count = streams.len(), "addon: streams found");
+                            tracing::debug!(addon = %name, count = streams.len(), "addon: streams found");
                             for s in &mut streams {
                                 s.source = Some(name.clone());
                             }
