@@ -5,7 +5,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::{ProgressReporter, Task, TaskService};
-use crate::{AppContext, iptv};
+use crate::{AppContext, db, iptv};
 
 pub struct IptvEpgRefreshTask;
 
@@ -37,12 +37,7 @@ impl Task for IptvEpgRefreshTask {
             .addons
             .list()
             .iter()
-            .filter(|r| {
-                r.row
-                    .preset
-                    .kind
-                    .starts_with("iptv-")
-            })
+            .filter(|r| r.supports_type(&db::MediaKind::TvChannel))
             .map(|r| {
                 (
                     r.row

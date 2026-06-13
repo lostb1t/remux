@@ -101,11 +101,7 @@ impl Task for RefreshLibraryTask {
                 "importing enabled catalogs"
             );
 
-            let is_iptv = runtime
-                .row
-                .preset
-                .kind
-                .starts_with("iptv-");
+            let is_iptv = runtime.supports_type(&db::MediaKind::TvChannel);
 
             for (cat_idx, cat_info) in enabled
                 .iter()
