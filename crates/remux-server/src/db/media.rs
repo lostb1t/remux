@@ -1859,6 +1859,87 @@ impl Media {
         Ok(())
     }
 
+    /// Return items of the same kind that share genres with `source_id`, scored by
+    /// genre overlap count (descending).  Both `genre` and `music_genre` kinds are
+    /// included.  Returns empty for episodes and items with no genres (matching
+    /// Jellyfin behaviour).
+    pub async fn get_similar_by_genres(
+        db: &SqlitePool,
+        source_id: &Uuid,
+        limit: u32,
+        offset: u32,
+    ) -> Result<(Vec<(Uuid, i64)>, i64)> {
+        // Get the source item's kind — only primary media types are supported.
+        let kind_str: Option<String> = sqlx::query_scalar(
+            "SELECT kind FROM media WHERE id = ?"
+        )
+        .bind(source_id)
+        .fetch_optional(db)
+        .await?;
+        let Some(kind_str) = kind_str else {
+            return Ok((vec![], 0));
+        };
+        let Ok(kind) = kind_str.parse::<MediaKind>() else {
+            return Ok((vec![], 0));
+        };
+        if matches!(kind, MediaKind::Episode) {
+            return Ok((vec![], 0));
+        }
+
+        // Collect genre IDs shared with the source item (both genre + music_genre).
+        let genre_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT mr.right_media_id FROM media_relations mr \
+             JOIN media g ON g.id = mr.right_media_id \
+             WHERE mr.left_media_id = ? AND g.kind IN ('genre', 'music_genre')"
+        )
+        .bind(source_id)
+        .fetch_all(db)
+        .await?;
+        if genre_ids.is_empty() {
+            return Ok((vec![], 0));
+        }
+
+        // Build the similarity query — items of the same kind sharing genres,
+        // scored by distinct genre overlap count.
+        let sql = format!(
+            "SELECT m.id, COUNT(DISTINCT mr.right_media_id) as score FROM media m \
+             JOIN media_relations mr ON mr.left_media_id = m.id \
+             JOIN media g ON g.id = mr.right_media_id \
+             WHERE m.kind = ? AND g.kind IN ('genre', 'music_genre') \
+             AND mr.right_media_id IN ({}) AND m.id != ? \
+             GROUP BY m.id ORDER BY score DESC",
+            genre_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
+        );
+
+        // Count total.
+        let count_sql = format!("SELECT COUNT(*) FROM ({}) sub", sql);
+        let mut count_qb = sqlx::QueryBuilder::new(&count_sql);
+        count_qb.push_bind(&kind_str);
+        for gid in &genre_ids {
+            count_qb.push_bind(*gid);
+        }
+        count_qb.push_bind(source_id);
+        let total: i64 = count_qb.build_query_scalar().fetch_one(db).await?;
+
+        // Fetch scored page.
+        let page_sql = format!("{} LIMIT ? OFFSET ?", sql);
+        let mut qb = sqlx::QueryBuilder::new(&page_sql);
+        qb.push_bind(&kind_str);
+        for gid in &genre_ids {
+            qb.push_bind(*gid);
+        }
+        qb.push_bind(source_id);
+        qb.push_bind(limit as i64);
+        qb.push_bind(offset as i64);
+
+        let scored: Vec<(Uuid, i64)> = qb
+            .build_query_as()
+            .fetch_all(db)
+            .await?;
+
+        Ok((scored, total))
+    }
+
     /// Return distinct Genre records linked (via media_relations) to media of the given kinds.
     /// If `related_kinds` is empty, all genres are returned.
     pub async fn get_genres(

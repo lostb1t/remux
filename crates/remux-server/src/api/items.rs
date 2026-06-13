@@ -2133,12 +2133,67 @@ pub async fn items_metadata_editor(
     Ok(Json(api::MetadataEditorInfo::default()))
 }
 
+#[api_query]
+#[derive(Debug, Default)]
+struct GetSimilarItemsQuery {
+    pub user_id: Option<Uuid>,
+    pub limit: Option<u32>,
+    pub start_index: Option<u32>,
+    pub fields: Option<Vec<api::ItemFields>>,
+}
+
 #[get("/items/{id}/similar")]
 pub async fn items_similar(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
+    Path(id): Path<Uuid>,
+    Query(q): Query<GetSimilarItemsQuery>,
 ) -> Result<impl IntoResponse> {
-    mock_items(State(state)).await
+    let limit = q.limit.unwrap_or(12).min(50) as u32;
+    let offset = q.start_index.unwrap_or(0);
+
+    let (scored_ids, total) = db::Media::get_similar_by_genres(
+        &state.ctx.db,
+        &id,
+        limit,
+        offset,
+    )
+    .await?;
+
+    if scored_ids.is_empty() {
+        return Ok(Json(api::BaseItemDtoQueryResult {
+            ..Default::default()
+        }));
+    }
+
+    // Fetch full items in score order.
+    let ids: Vec<Uuid> = scored_ids.iter().map(|(id, _)| *id).collect();
+    let filter = db::MediaFilter {
+        id: Some(ids),
+        user_id: q.user_id.or(Some(session.user.id)),
+        include_user_state: true,
+        ..Default::default()
+    };
+    let result = db::Media::get_by_filter(&state.ctx.db, &filter).await?;
+
+    // Reorder results to match score order.
+    let score_map: std::collections::HashMap<Uuid, i64> = scored_ids.into_iter().collect();
+    let mut items: Vec<api::BaseItemDto> = result
+        .records
+        .into_iter()
+        .map(api::db_media_to_item)
+        .collect();
+    items.sort_by_key(|item| {
+        let id = item.id;
+        std::cmp::Reverse(score_map.get(&id).copied().unwrap_or(0))
+    });
+
+    Ok(Json(api::BaseItemDtoQueryResult {
+        items,
+        total_record_count: total,
+        start_index: offset,
+        ..Default::default()
+    }))
 }
 
 #[get("/items/{id}/thememedia")]
