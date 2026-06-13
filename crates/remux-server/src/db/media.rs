@@ -1,6 +1,6 @@
 use super::{FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt};
 
-const CHUNK_SIZE: usize = 500;
+pub const CHUNK_SIZE: usize = 500;
 const SQLITE_VAR_LIMIT: usize = 999;
 use crate::{
     OptionExt, ResultExt, api,

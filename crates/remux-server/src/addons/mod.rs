@@ -977,7 +977,7 @@ impl AddonService {
             })
             .buffer_unordered(concurrency);
 
-        let mut batch = Vec::with_capacity(500);
+        let mut batch = vec![];
 
         while let Some(items) = stream
             .next()
@@ -989,9 +989,9 @@ impl AddonService {
 
             batch.extend(items);
 
-            while batch.len() >= 500 {
+            while batch.len() >= db::CHUNK_SIZE {
                 let items: Vec<_> = batch
-                    .drain(..500)
+                    .drain(..db::CHUNK_SIZE)
                     .collect();
 
                 let _permit = ctx
