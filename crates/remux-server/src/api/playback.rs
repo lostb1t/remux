@@ -4273,9 +4273,6 @@ pub async fn video_additional_parts(
     Ok(Json(api::BaseItemDtoQueryResult::default()))
 }
 
-/// Audio universal stream endpoint used by Jellyfin mobile/web clients for music tracks.
-/// Resolves the track's CDN stream URL via yt-dlp and redirects to it so the server
-/// acts as the origin (clients cannot reach IP-locked YouTube CDN URLs directly).
 #[get("/audio/{id}/universal")]
 pub async fn audio_universal(
     State(state): State<AppState>,
