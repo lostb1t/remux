@@ -216,6 +216,7 @@ impl Task for RefreshLibraryTask {
                 total.is_none(),
             )
             .await?;
+            dbg!(&count);
             if let Some(c) = count {
                 total = Some(c.max(1));
             }
@@ -235,7 +236,7 @@ impl Task for RefreshLibraryTask {
             }
             offset += CHUNK_SIZE;
         }
-        dbg!("IEUEUE");
+
         Ok(())
     }
 }

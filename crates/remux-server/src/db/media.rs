@@ -3276,8 +3276,8 @@ impl Media {
         WHERE kind IN (?, ?)
           AND (
             refreshed_at IS NULL
-            OR (kind = 'series' AND (status IS NULL OR status != 'ended') AND refreshed_at < datetime('now', '-1 hour'))
-            OR digital_released_at IS NULL
+            OR (kind = 'series' AND (status IS NULL OR status != 'ended') AND datetime(created_at) < datetime('now', '-1 hour'))
+            OR (digital_released_at IS NULL AND datetime(created_at) < datetime('now', '-1 hour'))
           )"#;
 
         let total = if total_count {
