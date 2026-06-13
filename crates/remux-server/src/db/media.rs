@@ -2677,8 +2677,8 @@ impl Media {
                         }
                         api::ItemSortBy::CatalogOrder => {
                             let src = filter.filter_rules.iter().find_map(|r| {
-                                if let sdks::remux::FilterRule::Catalog { collection_id } = r {
-                                    Some(collection_id.simple().to_string())
+                                if let sdks::remux::FilterRule::Catalog { catalog_id } = r {
+                                    Some(catalog_id.simple().to_string())
                                 } else {
                                     None
                                 }
@@ -3276,7 +3276,7 @@ impl Media {
         WHERE kind IN (?, ?)
           AND (
             refreshed_at IS NULL
-            OR (kind = 'series' AND (status IS NULL OR status != 'ended'))
+            OR (kind = 'series' AND (status IS NULL OR status != 'ended') AND refreshed_at < datetime('now', '-1 hour'))
             OR digital_released_at IS NULL
           )"#;
 
@@ -5099,15 +5099,15 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             };
             Some((sql, negated))
         }
-        R::Catalog { collection_id } => {
-            let cid_hex = collection_id
+        R::Catalog { catalog_id } => {
+            let cid_hex = catalog_id
                 .simple()
                 .to_string();
             let sql = format!(
                 "EXISTS (SELECT 1 FROM media_relations mr \
                  WHERE mr.right_media_id = media.id AND mr.role = 'catalog' AND mr.left_media_id = X'{cid_hex}')"
             );
-            debug!(collection_id = %collection_id, cid_hex = %cid_hex, sql = %sql, "catalog filter rule SQL");
+            debug!(catalog_id = %catalog_id, cid_hex = %cid_hex, sql = %sql, "catalog filter rule SQL");
             Some((sql, false))
         }
     }

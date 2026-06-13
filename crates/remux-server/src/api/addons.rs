@@ -475,23 +475,6 @@ pub async fn delete_addon(
         )
         .await?;
 
-    // Remove catalog relations for this addon so items are no longer
-    // associated with catalogs that no longer exist.
-    if let Err(e) = sqlx::query(
-        "DELETE FROM media_relations WHERE role = 'catalog' \
-         AND left_media_id IN (SELECT id FROM media WHERE collection_kind = 'catalog' AND collection_source LIKE ?)",
-    )
-    .bind(format!("{id}:%"))
-    .execute(
-        &state
-            .ctx
-            .db,
-    )
-    .await
-    {
-        warn!(addon = %id, error = %e, "failed to clean up catalog memberships on addon delete");
-    }
-
     Ok(StatusCode::NO_CONTENT)
 }
 

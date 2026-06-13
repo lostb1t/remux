@@ -5,20 +5,14 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::ProgressReporter;
-use crate::{AppContext, db};
+use crate::{AppContext, addons::CatalogInfo, db};
 
 /// Consume `stream`, fetching metadata + full tree for new items and upserting everything.
-///
-/// For each chunk from the stream:
-/// - Items already in DB with `refreshed_at` set are upserted as-is (basic field update).
-/// - New items go through `process_meta_item` which fetches metadata and builds the full
-///   tree (seasons, episodes). The tree is upserted in one shot so items appear in the DB
-///   with complete data from the start.
 ///
 /// Returns a map of `kind -> count` for top-level items imported.
 pub async fn import_catalog_items<S>(
     ctx: &AppContext,
-    catalog_id: Uuid,
+    _catalog: &CatalogInfo,
     media_id: &str,
     max: usize,
     stream: S,
@@ -37,6 +31,13 @@ where
     let mut catalog_position = 0i64;
     let membership = catalog_membership(media_id);
 
+    let collection_id: Uuid = match membership {
+        Some((addon_str, local_id)) => Uuid::parse_str(addon_str)
+            .map(|addon_uuid| Uuid::new_v5(&addon_uuid, local_id.as_bytes()))
+            .unwrap_or(Uuid::nil()),
+        None => Uuid::nil(),
+    };
+
     while let Some(items) = chunks
         .next()
         .await
@@ -48,7 +49,7 @@ where
             break;
         }
 
-        let items: Vec<db::Media> = items
+        let mut items: Vec<db::Media> = items
             .into_iter()
             .take(remaining)
             .collect();
@@ -56,26 +57,38 @@ where
             break;
         }
 
-        // Separate top-level items (series/movies) from any sub-items in the stream.
-        let top_level: Vec<db::Media> = items
-            .iter()
-            .filter(|m| {
-                m.parent_id
-                    .is_none()
-            })
-            .cloned()
-            .collect();
-        let top_ids: Vec<Uuid> = top_level
-            .iter()
-            .map(|m| m.id)
-            .collect();
+        // Only process top-level content kinds.
+        items.retain(|m| {
+            matches!(
+                m.kind,
+                db::MediaKind::Movie
+                    | db::MediaKind::Series
+                    | db::MediaKind::Artist
+                    | db::MediaKind::TvChannel
+                    | db::MediaKind::Album
+            )
+        });
 
-        // One batch query: which of these are already in DB with metadata?
-        let already_refreshed = fetch_already_refreshed_ids(&ctx.db, &top_ids).await;
-
-        let (new_items, existing_items): (Vec<db::Media>, Vec<db::Media>) = top_level
+        // Partition: only new items need meta-batch processing.
+        let existing_ids: HashSet<Uuid> = if items.is_empty() {
+            HashSet::new()
+        } else {
+            let mut qb = sqlx::QueryBuilder::new("SELECT id FROM media WHERE id IN (");
+            let mut sep = qb.separated(", ");
+            for m in &items {
+                sep.push_bind(m.id);
+            }
+            qb.push(")");
+            qb.build_query_scalar()
+                .fetch_all(&ctx.db)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .collect()
+        };
+        let (new_items, existing_items): (Vec<db::Media>, Vec<db::Media>) = items
             .into_iter()
-            .partition(|m| !already_refreshed.contains(&m.id));
+            .partition(|m| !existing_ids.contains(&m.id));
 
         debug!(
             catalog = media_id,
@@ -84,30 +97,23 @@ where
             "processing chunk"
         );
 
-        // New items: fetch meta + save via process_meta_batch (handles upsert + relations).
         let new_series_ids: Vec<Uuid> = new_items
             .iter()
             .filter(|m| m.kind == db::MediaKind::Series)
             .map(|m| m.id)
             .collect();
+
         if let Err(e) = ctx
             .addons
-            .process_meta_batch(new_items, ctx, false)
+            .process_meta_batch(new_items.clone(), ctx, false)
             .await
         {
             error!(catalog = media_id, error = %e, "failed to process new items chunk");
             continue;
         }
+
         for id in new_series_ids {
             db::reconcile_series_played_state(&ctx.db, id).await;
-        }
-
-        // Existing items: already have metadata, just ensure they're current in DB.
-        if !existing_items.is_empty() {
-            if let Err(e) = db::Media::upsert(&ctx.db, &existing_items).await {
-                error!(catalog = media_id, error = %e, "failed to upsert existing chunk");
-                continue;
-            }
         }
 
         // Checkpoint the WAL after each chunk so it doesn't balloon to hundreds of MB
@@ -117,9 +123,9 @@ where
             .await
             .ok();
 
-        // Record catalog membership and apply catalog tags for the original top-level IDs.
-        if catalog_id != Uuid::nil() {
-            // Fetch tags configured for this catalog.
+        // Record catalog membership and apply catalog tags for all top-level IDs.
+        // Upsert for both new and existing items to keep positions accurate on re-import.
+        if collection_id != Uuid::nil() {
             let catalog_tags: Vec<String> =
                 if let Some((addon_uuid, local_cat_id)) = membership {
                     ctx.addons
@@ -128,17 +134,24 @@ where
                     vec![]
                 };
 
-            for item_id in &top_ids {
-                let relation_id = Uuid::new_v5(&catalog_id, item_id.as_bytes());
-                debug!(catalog_id = %catalog_id, item_id = %item_id, weight = catalog_position, "inserting catalog relation");
+            for item in new_items
+                .iter()
+                .chain(existing_items.iter())
+            {
+                let relation_id = Uuid::new_v5(
+                    &collection_id,
+                    item.id
+                        .as_bytes(),
+                );
+                debug!(catalog_id = %collection_id, item_id = %item.id, weight = catalog_position, "inserting catalog relation");
                 if let Err(e) = sqlx::query(
                     "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, role, weight) \
                      VALUES (?, ?, ?, 'catalog', ?) \
                      ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight",
                 )
                 .bind(relation_id)
-                .bind(catalog_id)
-                .bind(item_id)
+                .bind(collection_id)
+                .bind(item.id)
                 .bind(catalog_position)
                 .execute(&ctx.db)
                 .await
@@ -151,7 +164,7 @@ where
                     if let Err(e) = sqlx::query(
                         "INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)",
                     )
-                    .bind(item_id)
+                    .bind(item.id)
                     .bind(tag)
                     .execute(&ctx.db)
                     .await
@@ -162,12 +175,9 @@ where
             }
         }
 
-        for item in items
+        for item in new_items
             .iter()
-            .filter(|m| {
-                m.parent_id
-                    .is_none()
-            })
+            .chain(existing_items.iter())
         {
             *counts
                 .entry(
@@ -185,32 +195,6 @@ where
     }
 
     Ok(counts)
-}
-
-/// Returns the set of IDs from `ids` that are already in the DB with `refreshed_at` set.
-async fn fetch_already_refreshed_ids(
-    db: &sqlx::SqlitePool,
-    ids: &[Uuid],
-) -> HashSet<Uuid> {
-    if ids.is_empty() {
-        return HashSet::new();
-    }
-    let mut qb = sqlx::QueryBuilder::new(
-        "SELECT id FROM media WHERE refreshed_at IS NOT NULL AND id IN (",
-    );
-    let mut sep = qb.separated(", ");
-    for id in ids {
-        sep.push_bind(*id);
-    }
-    qb.push(")");
-    let rows: Vec<(Uuid,)> = qb
-        .build_query_as()
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
-    rows.into_iter()
-        .map(|(id,)| id)
-        .collect()
 }
 
 /// Delete rows from `media_relations` (role='catalog') whose left_media_id is not in `valid_collection_ids`.

@@ -2457,7 +2457,7 @@ pub enum FilterRule {
     },
     /// Matches items that belong to the given catalog collection.
     Catalog {
-        collection_id: Uuid,
+        catalog_id: Uuid,
     },
 }
 

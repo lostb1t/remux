@@ -125,25 +125,7 @@ impl Task for RefreshLibraryTask {
                     .map(|n| n as usize)
                     .unwrap_or(global_max);
 
-                // Use the existing catalog collection's media row UUID if one exists,
-                // so relations and collection_smart_filter stay in sync with what
-                // was stored by the migration. Fall back to new_v5 for new catalogs
-                // that never had a collection row.
-                let collection_source = format!("{}:{}", addon_id, local_id);
-                let collection_id: Uuid = sqlx::query_scalar::<_, Uuid>(
-                    "SELECT id FROM media WHERE collection_kind = 'catalog' AND collection_source = ?",
-                )
-                .bind(&collection_source)
-                .fetch_optional(&ctx.db)
-                .await
-                .unwrap_or(None)
-                .unwrap_or_else(|| Uuid::new_v5(&addon_id, local_id.as_bytes()));
-
-                debug!(
-                    catalog = %full_id,
-                    collection_id = %collection_id,
-                    "resolved catalog collection_id"
-                );
+                let collection_id = Uuid::new_v5(&addon_id, local_id.as_bytes());
                 valid_collection_ids.insert(collection_id);
 
                 let source = match ctx
@@ -174,7 +156,7 @@ impl Task for RefreshLibraryTask {
 
                 let counts = import_catalog_items(
                     &ctx,
-                    collection_id,
+                    cat_info,
                     &full_id,
                     max,
                     stream,
@@ -253,6 +235,7 @@ impl Task for RefreshLibraryTask {
             }
             offset += CHUNK_SIZE;
         }
+        dbg!("IEUEUE");
         Ok(())
     }
 }

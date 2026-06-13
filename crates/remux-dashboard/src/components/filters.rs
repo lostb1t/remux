@@ -153,8 +153,13 @@ fn value_placeholder(field_key: &str) -> &'static str {
 
 fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
     match rule {
-        FilterRule::Catalog { collection_id } => {
-            ("catalog".into(), "is".into(), collection_id.to_string())
+        FilterRule::Catalog { catalog_id } => {
+            let val = if catalog_id.is_nil() {
+                String::new()
+            } else {
+                catalog_id.to_string()
+            };
+            ("catalog".into(), "is".into(), val)
         }
         FilterRule::Year { op, value } => {
             let op_str = match op {
@@ -295,7 +300,7 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
             value: value_str == "true",
         },
         "catalog" => FilterRule::Catalog {
-            collection_id: Uuid::parse_str(value_str).unwrap_or(Uuid::nil()),
+            catalog_id: Uuid::parse_str(value_str).unwrap_or(Uuid::nil()),
         },
         _ => FilterRule::Genre {
             op: set_op,
@@ -706,6 +711,7 @@ pub fn FilterRuleRow(
                 select {
                     class: "select-input",
                     style: "flex:1.5",
+                    value: "{value_val}",
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
                             *row = raw_to_rule("catalog", "", &e.value());

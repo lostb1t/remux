@@ -116,7 +116,7 @@ async fn migrate_catalog_collections(pool: &SqlitePool) {
 
             let smart_filter = serde_json::json!({
                 "match_mode": "all",
-                "rules": [{"field": "catalog", "collection_id": collection_id}]
+                "rules": [{"field": "catalog", "catalog_id": collection_id}]
             });
 
             let migrated = sqlx::query(
