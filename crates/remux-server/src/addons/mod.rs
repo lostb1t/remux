@@ -125,7 +125,11 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         .filter(|m| !name_keyed_person_ids.contains(&m.id))
         .collect();
     if !all_rel_media.is_empty() {
-        let _permit = ctx.db_write_semaphore.acquire().await.unwrap();
+        let _permit = ctx
+            .db_write_semaphore
+            .acquire()
+            .await
+            .unwrap();
         if let Err(e) = db::Media::upsert(&ctx.db, &all_rel_media).await {
             tracing::warn!(error = %e, "failed to upsert relation media batch");
         }
@@ -169,7 +173,11 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         .filter(|r| !name_keyed_person_ids.contains(&r.right_media_id))
         .collect();
     {
-        let _permit = ctx.db_write_semaphore.acquire().await.unwrap();
+        let _permit = ctx
+            .db_write_semaphore
+            .acquire()
+            .await
+            .unwrap();
         db::MediaRelation::delete_by_left_ids(&ctx.db, &all_ids)
             .await
             .ok();
@@ -960,7 +968,11 @@ impl AddonService {
             .await
         {
             if !items.is_empty() {
-                let _permit = ctx.db_write_semaphore.acquire().await.unwrap();
+                let _permit = ctx
+                    .db_write_semaphore
+                    .acquire()
+                    .await
+                    .unwrap();
                 db::Media::upsert(&ctx.db, &items).await?;
                 drop(_permit);
                 save_pending_relations(ctx, &items).await;
@@ -1014,7 +1026,11 @@ impl AddonService {
         // Then flush children in fixed-size sub-batches so we never hold the full tree in memory
         // (a soap opera with 8000+ episodes would otherwise spike hundreds of MB at once).
         {
-            let _permit = ctx.db_write_semaphore.acquire().await.unwrap();
+            let _permit = ctx
+                .db_write_semaphore
+                .acquire()
+                .await
+                .unwrap();
             if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
                 tracing::warn!(id = %media.id, error = %e, "failed to upsert series root, skipping tree");
                 return vec![];
@@ -1046,7 +1062,11 @@ impl AddonService {
 
             if batch.len() >= CHILD_FLUSH_SIZE {
                 {
-                    let _permit = ctx.db_write_semaphore.acquire().await.unwrap();
+                    let _permit = ctx
+                        .db_write_semaphore
+                        .acquire()
+                        .await
+                        .unwrap();
                     if let Err(e) = db::Media::upsert(&ctx.db, &batch).await {
                         tracing::warn!(error = %e, "failed to upsert child batch");
                     }
@@ -1058,7 +1078,11 @@ impl AddonService {
 
         if !batch.is_empty() {
             {
-                let _permit = ctx.db_write_semaphore.acquire().await.unwrap();
+                let _permit = ctx
+                    .db_write_semaphore
+                    .acquire()
+                    .await
+                    .unwrap();
                 if let Err(e) = db::Media::upsert(&ctx.db, &batch).await {
                     tracing::warn!(error = %e, "failed to upsert child batch");
                 }
