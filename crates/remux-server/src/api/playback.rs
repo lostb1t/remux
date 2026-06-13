@@ -685,13 +685,6 @@ async fn items_playbackinfo_inner(
             // index (e.g. PGS burn-in) even when direct-play is otherwise fine.
             source.supports_transcoding = true;
             source.supports_direct_play = true;
-            // Route track direct play through the server (CDN URLs are IP-restricted).
-            if is_track {
-                source.path = Some(format!(
-                    "/audio/{}/stream?Static=true&MediaSourceId={}",
-                    id, source.id
-                ));
-            }
         }
 
         // Set delivery URL on text subtitle streams so clients can download them.
