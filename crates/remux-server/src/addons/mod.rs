@@ -1391,7 +1391,7 @@ impl AddonService {
         let raw = self
             .get_streams(media, ctx)
             .await?;
-        tracing::info!(raw_count = raw.len(), "raw streams fetched");
+        tracing::debug!(raw_count = raw.len(), "raw streams fetched");
 
         // Dedup by descriptor content; order preserves addon priority (DB load order).
         // First occurrence wins, so higher-priority addons' streams survive.
