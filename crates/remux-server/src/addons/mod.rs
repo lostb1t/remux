@@ -905,10 +905,13 @@ impl AddonService {
         Ok(())
     }
 
-    /// Returns all descendants depth-first as minimal stubs — no DB writes, no enrichment.
     pub async fn get_tree(&self, root: &db::Media, ctx: &AppContext) -> Vec<db::Media> {
+        let mut seen: std::collections::HashSet<uuid::Uuid> =
+            std::collections::HashSet::new();
+        seen.insert(root.id);
         let mut all = Vec::new();
         let mut queue = vec![root.clone()];
+
         while let Some(node) = queue.pop() {
             let applicable: Vec<Arc<dyn TreeAddon>> = self
                 .inner
@@ -928,12 +931,17 @@ impl AddonService {
                     .await
                 {
                     Ok(Some(children)) if !children.is_empty() => {
-                        queue.extend(
-                            children
-                                .iter()
-                                .cloned(),
-                        );
-                        all.extend(children);
+                        for mut child in children {
+                            // dbg!(&child.title);
+                            //child.parent_id = Some(node.id);
+                            //if node.parent_id.is_some() {
+                            //  child.grandparent_id = node.parent_id;
+                            //}
+                            if seen.insert(child.id) {
+                                queue.push(child.clone());
+                                all.push(child);
+                            }
+                        }
                         break;
                     }
                     Ok(_) => continue,
@@ -954,9 +962,11 @@ impl AddonService {
         force_refresh: bool,
     ) -> Result<()> {
         use futures::stream::{self, StreamExt};
+
         let config = db::Settings::get_config(&ctx.db)
             .await
             .unwrap_or_default();
+
         let concurrency = config.meta_concurrency as usize;
         let config = Arc::new(config);
 
@@ -966,24 +976,63 @@ impl AddonService {
                 self.process_meta_item(m, ctx, force_refresh, cfg)
             })
             .buffer_unordered(concurrency);
+
+        let mut batch = Vec::with_capacity(500);
+
         while let Some(items) = stream
             .next()
             .await
         {
-            if !items.is_empty() {
+            if items.is_empty() {
+                continue;
+            }
+
+            batch.extend(items);
+
+            while batch.len() >= 500 {
+                let items: Vec<_> = batch
+                    .drain(..500)
+                    .collect();
+
                 let _permit = ctx
                     .db_write_semaphore
                     .acquire()
                     .await
                     .unwrap();
-                db::Media::upsert(&ctx.db, &items).await?;
-                drop(_permit);
-                save_pending_relations(ctx, &items).await;
+
+                match db::Media::upsert(&ctx.db, &items).await {
+                    Ok(_) => {
+                        drop(_permit);
+                        save_pending_relations(ctx, &items).await;
+                    }
+                    Err(e) => {
+                        dbg!(&items[..3.min(items.len())]);
+                        error!(error = %e, "failed to upsert media batch");
+                    }
+                }
             }
         }
+
+        if !batch.is_empty() {
+            let _permit = ctx
+                .db_write_semaphore
+                .acquire()
+                .await
+                .unwrap();
+
+            match db::Media::upsert(&ctx.db, &batch).await {
+                Ok(_) => {
+                    drop(_permit);
+                    save_pending_relations(ctx, &batch).await;
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to upsert final media batch");
+                }
+            }
+        }
+
         Ok(())
     }
-
     pub(crate) async fn process_meta_item(
         &self,
         mut media: db::Media,
@@ -1014,7 +1063,7 @@ impl AddonService {
             }
         }
 
-        let tree = self
+        let mut tree = self
             .get_tree(&media, ctx)
             .await;
         if tree.is_empty() {
@@ -1025,75 +1074,24 @@ impl AddonService {
             return vec![media];
         }
 
-        // Commit the root series to DB immediately so children can reference it via parent_id FK.
-        // Then flush children in fixed-size sub-batches so we never hold the full tree in memory
-        // (a soap opera with 8000+ episodes would otherwise spike hundreds of MB at once).
-        {
-            let _permit = ctx
-                .db_write_semaphore
-                .acquire()
-                .await
-                .unwrap();
-            if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
-                warn!(id = %media.id, error = %e, "failed to upsert series root, skipping tree");
-                return vec![];
-            }
-        }
-        save_pending_relations(ctx, &[media.clone()]).await;
-
-        let grandparent = Some(Box::new(media.clone()));
-
-        const CHILD_FLUSH_SIZE: usize = 250;
-        let mut batch: Vec<db::Media> = Vec::with_capacity(CHILD_FLUSH_SIZE);
-
-        for mut item in tree {
-            item.grandparent = grandparent.clone();
+        for item in &mut tree {
             if force_refresh
                 || item
                     .refreshed_at
                     .is_none()
             {
                 if let Err(e) = self
-                    .refresh_meta(&mut item, ctx, force_refresh, &config)
+                    .refresh_meta(item, ctx, force_refresh, &config)
                     .await
                 {
                     warn!(id = %item.id, error = %e, "failed to refresh child meta");
                 }
             }
-            item.grandparent = None;
-            batch.push(item);
-
-            if batch.len() >= CHILD_FLUSH_SIZE {
-                {
-                    let _permit = ctx
-                        .db_write_semaphore
-                        .acquire()
-                        .await
-                        .unwrap();
-                    if let Err(e) = db::Media::upsert(&ctx.db, &batch).await {
-                        warn!(error = %e, "failed to upsert child batch");
-                    }
-                }
-                save_pending_relations(ctx, &batch).await;
-                batch.clear();
-            }
         }
 
-        if !batch.is_empty() {
-            {
-                let _permit = ctx
-                    .db_write_semaphore
-                    .acquire()
-                    .await
-                    .unwrap();
-                if let Err(e) = db::Media::upsert(&ctx.db, &batch).await {
-                    warn!(error = %e, "failed to upsert child batch");
-                }
-            }
-            save_pending_relations(ctx, &batch).await;
-        }
+        tree.insert(0, media);
 
-        vec![]
+        tree
     }
 
     pub async fn search(

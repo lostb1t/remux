@@ -794,7 +794,7 @@ async fn stremio_sync_children(
             gp.title = root
                 .title
                 .clone();
-            child.grandparent = Some(Box::new(gp));
+            //child.grandparent = Some(Box::new(gp));
         }
     }
 
