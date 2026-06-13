@@ -1262,7 +1262,7 @@ impl AddonService {
                     .as_ref()
                     .and_then(|s| {
                         let supports = s.stream_supports(media);
-                        tracing::info!(
+                        tracing::debug!(
                             addon = %r.row.name,
                             media_kind = ?media.kind,
                             supports,
@@ -1282,7 +1282,7 @@ impl AddonService {
             })
             .collect();
 
-        tracing::info!(
+        tracing::debug!(
             media_id = %media.id,
             media_kind = ?media.kind,
             addon_count = addons.len(),
