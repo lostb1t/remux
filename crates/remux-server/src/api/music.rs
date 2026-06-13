@@ -2,6 +2,7 @@ use axum::{Json, extract::State, response::IntoResponse};
 use axum_extra::extract::Query;
 use remux_macros::{api_query, get, post};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::{AppState, api, db, db::auth};
 use axum_anyhow::ApiResult as Result;
@@ -139,7 +140,7 @@ pub async fn insert_track(
         .refresh_meta(&mut media, &state.ctx, true, &meta_config)
         .await
     {
-        tracing::warn!(id = %media.id, error = %e, "yt-dlp metadata enrichment failed during track insert");
+        warn!(id = %media.id, error = %e, "yt-dlp metadata enrichment failed during track insert");
     }
 
     db::Media::upsert(

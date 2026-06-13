@@ -7,6 +7,7 @@ use sqlx::{
     },
 };
 use std::{str::FromStr, time::Duration};
+use tracing::{info, warn};
 pub mod api_key;
 pub mod auth;
 pub mod image;
@@ -72,18 +73,17 @@ async fn migrate_catalog_collections(pool: &SqlitePool) {
     use uuid::Uuid;
 
     // Read addon IDs and their raw preset JSON to extract catalog local_ids.
-    let rows: Vec<(Uuid, String)> = match sqlx::query_as(
-        "SELECT id, preset FROM addons",
-    )
-    .fetch_all(pool)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(error = %e, "migrate_catalog_collections: failed to list addons");
-            return;
-        }
-    };
+    let rows: Vec<(Uuid, String)> =
+        match sqlx::query_as("SELECT id, preset FROM addons")
+            .fetch_all(pool)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(error = %e, "migrate_catalog_collections: failed to list addons");
+                return;
+            }
+        };
 
     for (addon_id, preset_json) in rows {
         let catalog_keys: Vec<String> =
@@ -135,7 +135,7 @@ async fn migrate_catalog_collections(pool: &SqlitePool) {
             .unwrap_or(0);
 
             if migrated > 0 {
-                tracing::info!(
+                info!(
                     addon = %addon_id,
                     catalog = %local_id,
                     collection_id = %collection_id,
@@ -159,7 +159,7 @@ async fn vacuum_if_needed(pool: &SqlitePool) -> Result<()> {
         .await
         .unwrap_or(0);
     if freelist > 100 {
-        tracing::info!(
+        info!(
             freelist_pages = freelist,
             "vacuuming database to apply auto_vacuum mode and reclaim freed pages"
         );

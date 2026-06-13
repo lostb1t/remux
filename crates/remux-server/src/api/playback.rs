@@ -20,7 +20,7 @@ use serde_json::json;
 use serde_with::{DurationSeconds, serde_as};
 use std::{io, time::Duration};
 use tokio_util::io::ReaderStream;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use url::Url;
 use uuid::Uuid;
 
@@ -210,7 +210,7 @@ async fn items_playbackinfo_inner(
             {
                 let before = sources.len();
                 let filtered = db::apply_stream_filter(sf, sources);
-                tracing::debug!(
+                debug!(
                     user = %session.user.username,
                     sources_before = before,
                     sources_after = filtered.len(),
@@ -219,7 +219,7 @@ async fn items_playbackinfo_inner(
                 );
                 filtered
             } else {
-                tracing::debug!(
+                debug!(
                     user = %session.user.username,
                     has_policy = session.user.policy.is_some(),
                     has_stream_filter = session.user.policy.as_ref().and_then(|p| p.stream_filter.as_ref()).is_some(),
@@ -452,7 +452,7 @@ async fn items_playbackinfo_inner(
             && q.enable_transcoding
                 .unwrap_or(true);
 
-        tracing::debug!(
+        debug!(
             source_id = %sm.id,
             transcode_reasons = ?transcode_reasons,
             "playback decision"
@@ -822,10 +822,10 @@ async fn probe_source(
             .video_stream()
             .is_some()
         {
-            tracing::debug!(id = %sm.id, "probe cache hit");
+            debug!(id = %sm.id, "probe cache hit");
             return Ok(cached.clone());
         }
-        tracing::debug!(id = %sm.id, "probe cache stale (no video stream), re-probing");
+        debug!(id = %sm.id, "probe cache stale (no video stream), re-probing");
     }
     probe_with_fallback(
         sm.clone(),
@@ -926,7 +926,7 @@ async fn probe_with_fallback(
             }
         };
         if is_retry {
-            tracing::info!(
+            info!(
                 failed_id = %primary.id,
                 next_id = %sm.id,
                 next_url = %url,
@@ -959,21 +959,21 @@ async fn probe_with_fallback(
                     if let Err(e) =
                         db::Media::save_probe_data(&db2, &sm2.id, &probed).await
                     {
-                        tracing::warn!(id = %sm2.id, error = %e, "failed to save probe data");
+                        warn!(id = %sm2.id, error = %e, "failed to save probe data");
                     }
                 } else {
-                    tracing::warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
+                    warn!(id = %sm2.id, "probe returned no audio or video stream, not caching");
                 }
                 return Ok(probed);
             }
             Ok(Ok(Err(e))) => {
-                tracing::warn!(url = %url, error = %e, "probe failed");
+                warn!(url = %url, error = %e, "probe failed");
             }
             Ok(Err(e)) => {
-                tracing::warn!(url = %url, error = %e, "probe task panicked");
+                warn!(url = %url, error = %e, "probe task panicked");
             }
             Err(_) => {
-                tracing::warn!(url = %url, timeout = timeout_secs, "probe timed out");
+                warn!(url = %url, timeout = timeout_secs, "probe timed out");
             }
         }
     }
@@ -2947,10 +2947,9 @@ pub async fn master_hls_video(
     debug!("master_hls_video: item_id={}, q={:?}", id, q);
 
     // Add debugging info for crash diagnosis
-    tracing::debug!(
+    debug!(
         "Starting HLS session setup for item {} with session ID: {:?}",
-        id,
-        q.play_session_id
+        id, q.play_session_id
     );
 
     let play_session_id = q
@@ -2961,7 +2960,7 @@ pub async fn master_hls_video(
                 .to_string()
         });
 
-    tracing::debug!("Using play session ID: {}", play_session_id);
+    debug!("Using play session ID: {}", play_session_id);
 
     let encoding_opts_hls = crate::db::Settings::get_encoding_config(
         &state
@@ -3004,7 +3003,7 @@ pub async fn master_hls_video(
             .get_transcode(&play_session_id)
             .is_some()
         {
-            tracing::debug!(
+            debug!(
                 play_session_id = %play_session_id,
                 start_time_ticks = ?q.start_time_ticks,
                 "seek detected — stopping old transcode session and restarting"
@@ -3372,7 +3371,7 @@ pub async fn master_hls_video(
             if let Err(e) =
                 crate::transcode::engine::start_transcode(session_clone, params).await
             {
-                tracing::error!("Transcode failed: {:#}", e);
+                error!("Transcode failed: {:#}", e);
             }
         });
 
@@ -3904,7 +3903,7 @@ async fn hls_segment_inner(
                         )
                         .await
                         {
-                            tracing::error!("Transcode restart failed: {:#}", e);
+                            error!("Transcode restart failed: {:#}", e);
                         }
                     });
                 } // else: has_running_ffmpeg
@@ -4491,7 +4490,7 @@ pub async fn subtitles_stream(
         .success()
     {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!(
+        error!(
             media_source_id = %media_source_id,
             stream_index,
             map = %map_spec,

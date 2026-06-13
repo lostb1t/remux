@@ -6,7 +6,7 @@ use futures::{
     stream::{self, StreamExt},
 };
 use std::{pin::Pin, sync::Arc, time::Duration};
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::{
@@ -220,7 +220,7 @@ impl DeezerAddon {
                         }
                         return Ok(Some(patch));
                     }
-                    tracing::debug!(
+                    debug!(
                         deezer_id,
                         album_id,
                         "track not found in cached album, falling back to track endpoint"
@@ -253,7 +253,7 @@ impl DeezerAddon {
                         .release_date
                         .as_deref())
                     .and_then(parse_release_date);
-                tracing::debug!(deezer_id, "Deezer track detail fetched");
+                debug!(deezer_id, "Deezer track detail fetched");
                 let mut patch = db::Media {
                     id: base.id,
                     title: t.title,
@@ -354,7 +354,7 @@ impl DeezerAddon {
         if let Some(label) = &a.label {
             desc_parts.push(label.clone());
         }
-        tracing::debug!(deezer_id, nb_tracks = ?a.nb_tracks, "Deezer album detail fetched");
+        debug!(deezer_id, nb_tracks = ?a.nb_tracks, "Deezer album detail fetched");
         let mut patch = db::Media {
             id: base.id,
             title: a.title,
@@ -811,7 +811,7 @@ impl DeezerAddon {
         _ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
         let t = std::time::Instant::now();
-        tracing::debug!(query, limit, "Deezer track search starting");
+        debug!(query, limit, "Deezer track search starting");
 
         let data = match self
             .client
@@ -836,7 +836,7 @@ impl DeezerAddon {
             .into_iter()
             .map(track_to_result)
             .collect();
-        tracing::debug!(
+        debug!(
             query,
             count = results.len(),
             elapsed_ms = t
@@ -854,7 +854,7 @@ impl DeezerAddon {
         _ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
         let t = std::time::Instant::now();
-        tracing::debug!(query, limit, "Deezer album search starting");
+        debug!(query, limit, "Deezer album search starting");
 
         let data = match self
             .client
@@ -879,7 +879,7 @@ impl DeezerAddon {
             .into_iter()
             .map(album_to_result)
             .collect();
-        tracing::debug!(
+        debug!(
             query,
             count = results.len(),
             elapsed_ms = t
@@ -897,7 +897,7 @@ impl DeezerAddon {
         _ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
         let t = std::time::Instant::now();
-        tracing::debug!(query, limit, "Deezer artist search starting");
+        debug!(query, limit, "Deezer artist search starting");
 
         let data = match self
             .client
@@ -942,7 +942,7 @@ impl DeezerAddon {
             })
             .collect();
 
-        tracing::debug!(
+        debug!(
             query,
             count = results.len(),
             elapsed_ms = t

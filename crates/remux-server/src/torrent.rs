@@ -6,7 +6,7 @@ use librqbit::{
     api::{Api, TorrentIdOrHash},
     http_api::HttpApi,
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub struct TorrentManager {
     session: Arc<Session>,
@@ -157,7 +157,7 @@ impl TorrentManager {
                 .api_torrent_action_delete(TorrentIdOrHash::Id(id))
                 .await
             {
-                tracing::warn!(id, "failed to delete torrent: {e:#}");
+                warn!(id, "failed to delete torrent: {e:#}");
             }
         }
         Ok(count)

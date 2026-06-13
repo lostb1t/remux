@@ -5,6 +5,7 @@ use axum::{
     response::IntoResponse,
 };
 use chrono::Utc;
+use tracing::warn;
 
 use remux_macros::{delete, get, post};
 use uuid::Uuid;
@@ -449,7 +450,7 @@ pub async fn delete_addon(
                 .purge_index(&state.ctx, &addon_row)
                 .await
             {
-                tracing::warn!(addon = %id, error = %e, "purge_index failed on addon delete");
+                warn!(addon = %id, error = %e, "purge_index failed on addon delete");
             }
         }
     }
@@ -488,7 +489,7 @@ pub async fn delete_addon(
     )
     .await
     {
-        tracing::warn!(addon = %id, error = %e, "failed to clean up catalog memberships on addon delete");
+        warn!(addon = %id, error = %e, "failed to clean up catalog memberships on addon delete");
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -624,7 +625,7 @@ pub async fn update_addon_catalogs(
             )
             .await
             {
-                tracing::warn!(addon = %id, catalog = %local_id, tag = %tag, error = %e, "failed to apply catalog tag");
+                warn!(addon = %id, catalog = %local_id, tag = %tag, error = %e, "failed to apply catalog tag");
             }
         }
     }

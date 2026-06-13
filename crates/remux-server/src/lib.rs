@@ -35,7 +35,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     services::{ServeDir, ServeFile},
 };
-use tracing::{self, debug, info, instrument, warn};
+use tracing::{self, debug, error, info, instrument, warn};
 use tracing_subscriber::{
     EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
 };
@@ -156,7 +156,7 @@ pub async fn serve(config: Config, paths: FilesystemPaths) -> Result<()> {
 pub async fn bind_and_serve(router: Router, port: u16) -> Result<()> {
     let addr = format!("0.0.0.0:{port}");
     let app = MapRequestLayer::new(rewrite_request_uri).layer(router);
-    tracing::info!("starting webserver at {addr}");
+    info!("starting webserver at {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
@@ -312,7 +312,7 @@ pub async fn init_app(
                     tracing::info_span!("request", user = tracing::field::Empty)
                 })
                 .on_request(|request: &axum::http::Request<axum::body::Body>, _span: &tracing::Span| {
-                    tracing::debug!(method = %request.method(), uri = %request.uri().path(), "incoming request");
+                    debug!(method = %request.method(), uri = %request.uri().path(), "incoming request");
                 }),
         )
         .layer(cors);
@@ -550,7 +550,7 @@ fn log_api_error(err: &axum_anyhow::ApiError) {
     let is_server_error = status.is_server_error();
     if let Some(cause) = err.error() {
         if is_server_error {
-            tracing::error!(
+            error!(
                 status = %status,
                 title = %err.title(),
                 detail = %err.detail(),
@@ -558,7 +558,7 @@ fn log_api_error(err: &axum_anyhow::ApiError) {
                 "api error"
             );
         } else {
-            tracing::debug!(
+            debug!(
                 status = %status,
                 title = %err.title(),
                 detail = %err.detail(),
@@ -567,14 +567,14 @@ fn log_api_error(err: &axum_anyhow::ApiError) {
             );
         }
     } else if is_server_error {
-        tracing::error!(
+        error!(
             status = %status,
             title = %err.title(),
             detail = %err.detail(),
             "api error"
         );
     } else {
-        tracing::debug!(
+        debug!(
             status = %status,
             title = %err.title(),
             detail = %err.detail(),
@@ -584,7 +584,7 @@ fn log_api_error(err: &axum_anyhow::ApiError) {
 }
 
 async fn handle_static_404(req: Request<Body>) -> ApiResult<impl IntoResponse> {
-    tracing::debug!(
+    debug!(
         "Static 404 Not Found: {} {}",
         req.method(),
         req.uri()

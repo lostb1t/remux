@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use quick_xml::{events::Event, reader::Reader};
+use tracing::debug;
 
 use super::parse_program_kind;
 use crate::db::ProgramKind; // used by EpgProgram
@@ -97,7 +98,7 @@ pub fn parse_xmltv<R: std::io::BufRead, F: FnMut(EpgProgram)>(
                             .is_none()
                     {
                         let kind = parse_program_kind(&text);
-                        tracing::debug!(category = %text, matched = ?kind, "xmltv category");
+                        debug!(category = %text, matched = ?kind, "xmltv category");
                         prog.program_kind = kind;
                     }
                 }
@@ -166,7 +167,7 @@ pub fn parse_xmltv<R: std::io::BufRead, F: FnMut(EpgProgram)>(
         }
     }
 
-    tracing::debug!(total, with_program_kind = with_kind, "xmltv parse complete");
+    debug!(total, with_program_kind = with_kind, "xmltv parse complete");
     Ok(())
 }
 

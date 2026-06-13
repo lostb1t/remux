@@ -4,6 +4,7 @@ use http::StatusCode;
 use remux_macros::post;
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
+use tracing::info;
 
 use crate::{AppState, db::auth};
 use axum_anyhow::ApiResult as Result;
@@ -56,7 +57,7 @@ pub async fn log_document(
         .await
         .map_err(|e| anyhow::anyhow!("failed to write log file: {e}"))?;
 
-    tracing::info!(
+    info!(
         file_name = %file_name,
         client = %session.device.app_name,
         version = %session.device.app_version,

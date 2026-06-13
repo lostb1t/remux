@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::Arc;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::{
@@ -157,7 +158,7 @@ impl LrcLibAddon {
                 q.append_pair("duration", &format!("{d:.2}"));
             }
         }
-        tracing::debug!(url = %url, "lrclib: exact-match request");
+        debug!(url = %url, "lrclib: exact-match request");
         let resp = self
             .client
             .get(url)
@@ -170,7 +171,7 @@ impl LrcLibAddon {
             .status()
             .is_success()
         {
-            tracing::warn!(status = %resp.status(), "lrclib /get returned error");
+            warn!(status = %resp.status(), "lrclib /get returned error");
             return Ok(None);
         }
         Ok(resp
@@ -195,7 +196,7 @@ impl LyricAddon for LrcLibAddon {
     }
 
     async fn lyric_fetch(&self, req: &LyricSearchRequest) -> Result<Option<LyricDto>> {
-        tracing::debug!(
+        debug!(
             title = %req.title,
             artist = ?req.artist,
             album = ?req.album,
@@ -207,11 +208,11 @@ impl LyricAddon for LrcLibAddon {
             .fetch_exact(req)
             .await?
         {
-            tracing::debug!(title = %req.title, "lrclib: exact match found");
+            debug!(title = %req.title, "lrclib: exact match found");
             return Ok(Some(dto));
         }
 
-        tracing::debug!(title = %req.title, "lrclib: exact match missed, trying search fallback");
+        debug!(title = %req.title, "lrclib: exact match missed, trying search fallback");
         let results = self
             .lyric_search(req)
             .await?;
@@ -220,9 +221,9 @@ impl LyricAddon for LrcLibAddon {
             .next()
             .map(|r| r.lyrics);
         if first.is_some() {
-            tracing::info!(title = %req.title, "lrclib: found via search fallback");
+            info!(title = %req.title, "lrclib: found via search fallback");
         } else {
-            tracing::debug!(title = %req.title, "lrclib: no lyrics found");
+            debug!(title = %req.title, "lrclib: no lyrics found");
         }
         Ok(first)
     }
@@ -242,7 +243,7 @@ impl LyricAddon for LrcLibAddon {
                 q.append_pair("album_name", a);
             }
         }
-        tracing::debug!(url = %url, "lrclib: search request");
+        debug!(url = %url, "lrclib: search request");
         let resp = self
             .client
             .get(url)
@@ -252,13 +253,13 @@ impl LyricAddon for LrcLibAddon {
             .status()
             .is_success()
         {
-            tracing::warn!(status = %resp.status(), "lrclib /search returned error");
+            warn!(status = %resp.status(), "lrclib /search returned error");
             return Ok(vec![]);
         }
         let tracks: Vec<LrcLibTrack> = resp
             .json()
             .await?;
-        tracing::debug!(
+        debug!(
             count = tracks.len(),
             "lrclib: search returned {} results",
             tracks.len()
@@ -277,7 +278,7 @@ impl LyricAddon for LrcLibAddon {
 
     async fn lyric_get_by_id(&self, id: &str) -> Result<Option<LyricDto>> {
         let url = format!("{}/get/{}", BASE, id);
-        tracing::debug!(id, "lrclib: get by id");
+        debug!(id, "lrclib: get by id");
         let resp = self
             .client
             .get(&url)
@@ -290,7 +291,7 @@ impl LyricAddon for LrcLibAddon {
             .status()
             .is_success()
         {
-            tracing::warn!(status = %resp.status(), "lrclib /get/{id} returned error");
+            warn!(status = %resp.status(), "lrclib /get/{id} returned error");
             return Ok(None);
         }
         Ok(resp

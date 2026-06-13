@@ -27,7 +27,7 @@ use std::{
 };
 
 use crate::keyed_lock::KeyedLock;
-use tracing::info;
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{AppContext, api, common::ProgressReporter, db, sdks};
@@ -131,7 +131,7 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
             .await
             .unwrap();
         if let Err(e) = db::Media::upsert(&ctx.db, &all_rel_media).await {
-            tracing::warn!(error = %e, "failed to upsert relation media batch");
+            warn!(error = %e, "failed to upsert relation media batch");
         }
     }
 
@@ -183,7 +183,7 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
             .ok();
         if !all_rels.is_empty() {
             if let Err(e) = db::MediaRelation::upsert(&ctx.db, &all_rels).await {
-                tracing::warn!(error = %e, "failed to upsert relations batch");
+                warn!(error = %e, "failed to upsert relations batch");
             }
         }
     }
@@ -622,7 +622,7 @@ impl AddonService {
                             .kind
                 })
             else {
-                tracing::warn!(
+                warn!(
                     addon_id = %addon.id,
                     kind = %addon.preset.kind,
                     "skipping addon with unknown preset kind"
@@ -659,7 +659,7 @@ impl AddonService {
                         caps,
                     });
                 }
-                Err(e) => tracing::warn!(
+                Err(e) => warn!(
                     addon_id = %addon.id,
                     kind = %addon.preset.kind,
                     error = %e,
@@ -719,7 +719,7 @@ impl AddonService {
                     .purge_index(ctx, &runtime.row)
                     .await
                 {
-                    tracing::warn!(addon = %runtime.row.name, error = %e, "purge_index failed");
+                    warn!(addon = %runtime.row.name, error = %e, "purge_index failed");
                 }
             }
         }
@@ -752,7 +752,7 @@ impl AddonService {
                     .refresh_index(ctx, &runtime.row, sub)
                     .await
                 {
-                    tracing::warn!(addon = %runtime.row.name, error = %e, "refresh_index failed");
+                    warn!(addon = %runtime.row.name, error = %e, "refresh_index failed");
                 }
             }
         }
@@ -879,7 +879,7 @@ impl AddonService {
                 Ok(Some(patch)) => apply_meta(media, patch, force_refresh),
                 Ok(None) => {}
                 Err(e) => {
-                    tracing::error!(addon = %name, error = %e, "meta addon error")
+                    error!(addon = %name, error = %e, "meta addon error")
                 }
             }
         }
@@ -938,7 +938,7 @@ impl AddonService {
                     }
                     Ok(_) => continue,
                     Err(e) => {
-                        tracing::warn!(id = %node.id, error = %e, "get_children failed");
+                        warn!(id = %node.id, error = %e, "get_children failed");
                         continue;
                     }
                 }
@@ -997,7 +997,7 @@ impl AddonService {
             .refresh_meta(&mut media, ctx, force_refresh, &config)
             .await
         {
-            tracing::warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
+            warn!(id = %media.id, error = %e, "failed to refresh metadata, keeping as-is");
             return vec![media];
         }
 
@@ -1005,7 +1005,7 @@ impl AddonService {
         // delete the stale name-keyed row so it doesn't linger as a duplicate.
         if media.kind == db::MediaKind::Person && media.id != original_id {
             if let Err(e) = db::Media::delete(&ctx.db, &original_id).await {
-                tracing::warn!(
+                warn!(
                     old_id = %original_id,
                     new_id = %media.id,
                     error = %e,
@@ -1019,7 +1019,7 @@ impl AddonService {
             .await;
         if tree.is_empty() {
             if media.kind == db::MediaKind::Series {
-                tracing::info!(id = %media.id, title = %media.title, "series has no seasons yet, skipping import");
+                info!(id = %media.id, title = %media.title, "series has no seasons yet, skipping import");
                 return vec![];
             }
             return vec![media];
@@ -1035,7 +1035,7 @@ impl AddonService {
                 .await
                 .unwrap();
             if let Err(e) = db::Media::upsert(&ctx.db, &[media.clone()]).await {
-                tracing::warn!(id = %media.id, error = %e, "failed to upsert series root, skipping tree");
+                warn!(id = %media.id, error = %e, "failed to upsert series root, skipping tree");
                 return vec![];
             }
         }
@@ -1057,7 +1057,7 @@ impl AddonService {
                     .refresh_meta(&mut item, ctx, force_refresh, &config)
                     .await
                 {
-                    tracing::warn!(id = %item.id, error = %e, "failed to refresh child meta");
+                    warn!(id = %item.id, error = %e, "failed to refresh child meta");
                 }
             }
             item.grandparent = None;
@@ -1071,7 +1071,7 @@ impl AddonService {
                         .await
                         .unwrap();
                     if let Err(e) = db::Media::upsert(&ctx.db, &batch).await {
-                        tracing::warn!(error = %e, "failed to upsert child batch");
+                        warn!(error = %e, "failed to upsert child batch");
                     }
                 }
                 save_pending_relations(ctx, &batch).await;
@@ -1087,7 +1087,7 @@ impl AddonService {
                     .await
                     .unwrap();
                 if let Err(e) = db::Media::upsert(&ctx.db, &batch).await {
-                    tracing::warn!(error = %e, "failed to upsert child batch");
+                    warn!(error = %e, "failed to upsert child batch");
                 }
             }
             save_pending_relations(ctx, &batch).await;
@@ -1155,7 +1155,7 @@ impl AddonService {
                 }
                 Ok(None) => continue,
                 Err(e) => {
-                    tracing::warn!(addon = %name, error = %e, "search addon error")
+                    warn!(addon = %name, error = %e, "search addon error")
                 }
             }
         }
@@ -1199,7 +1199,7 @@ impl AddonService {
             {
                 Ok(images) => out.extend(images),
                 Err(e) => {
-                    tracing::warn!(addon = %name, error = %e, "images_fetch failed")
+                    warn!(addon = %name, error = %e, "images_fetch failed")
                 }
             }
         }
@@ -1245,7 +1245,7 @@ impl AddonService {
             {
                 Ok(s) => subs.extend(s),
                 Err(e) => {
-                    tracing::warn!(addon = %name, error = %e, "subtitle addon failed")
+                    warn!(addon = %name, error = %e, "subtitle addon failed")
                 }
             }
         }
@@ -1272,7 +1272,7 @@ impl AddonService {
                     .as_ref()
                     .and_then(|s| {
                         let supports = s.stream_supports(media);
-                        tracing::debug!(
+                        debug!(
                             addon = %r.row.name,
                             media_kind = ?media.kind,
                             supports,
@@ -1292,7 +1292,7 @@ impl AddonService {
             })
             .collect();
 
-        tracing::debug!(
+        debug!(
             media_id = %media.id,
             media_kind = ?media.kind,
             addon_count = addons.len(),
@@ -1305,9 +1305,9 @@ impl AddonService {
                 match addon.get_streams(media, ctx).await {
                     Ok(mut streams) => {
                         if streams.is_empty() {
-                            tracing::debug!(addon = %name, "addon: no streams");
+                            debug!(addon = %name, "addon: no streams");
                         } else {
-                            tracing::debug!(addon = %name, count = streams.len(), "addon: streams found");
+                            debug!(addon = %name, count = streams.len(), "addon: streams found");
                             for s in &mut streams {
                                 s.source = Some(name.clone());
                             }
@@ -1315,7 +1315,7 @@ impl AddonService {
                         streams
                     }
                     Err(e) => {
-                        tracing::warn!(addon = %name, error = %e, "stream addon failed");
+                        warn!(addon = %name, error = %e, "stream addon failed");
                         vec![]
                     }
                 }
@@ -1401,7 +1401,7 @@ impl AddonService {
         let raw = self
             .get_streams(media, ctx)
             .await?;
-        tracing::debug!(raw_count = raw.len(), "raw streams fetched");
+        debug!(raw_count = raw.len(), "raw streams fetched");
 
         // Dedup by descriptor content; order preserves addon priority (DB load order).
         // First occurrence wins, so higher-priority addons' streams survive.
@@ -1488,7 +1488,7 @@ impl AddonService {
                     .as_ref()
                     .and_then(|s| {
                         let supports = s.segment_supports(media);
-                        tracing::info!(
+                        info!(
                             addon = %r.row.name,
                             media_kind = ?media.kind,
                             supports,
@@ -1517,7 +1517,7 @@ impl AddonService {
                 Ok(segs) if !segs.is_empty() => merged.merge_from(segs),
                 Ok(_) => {}
                 Err(e) => {
-                    tracing::error!(addon = %name, item = %media.id, error = %e, "segment addon failed")
+                    error!(addon = %name, item = %media.id, error = %e, "segment addon failed")
                 }
             }
         }
@@ -1559,7 +1559,7 @@ impl AddonService {
                 Ok(Some(l)) => return Ok(Some(l)),
                 Ok(None) => continue,
                 Err(e) => {
-                    tracing::warn!(addon = %name, error = %e, "lyric addon fetch failed")
+                    warn!(addon = %name, error = %e, "lyric addon fetch failed")
                 }
             }
         }
@@ -1601,7 +1601,7 @@ impl AddonService {
             {
                 Ok(items) => out.extend(items),
                 Err(e) => {
-                    tracing::warn!(addon = %name, error = %e, "lyric addon search failed")
+                    warn!(addon = %name, error = %e, "lyric addon search failed")
                 }
             }
         }

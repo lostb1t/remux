@@ -3,7 +3,7 @@ use async_trait::async_trait;
 #[cfg(unix)]
 use libc;
 use std::{collections::HashSet, sync::Arc};
-use tracing::info;
+use tracing::{info, warn};
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::AppContext;
@@ -70,7 +70,7 @@ impl Task for CleanTranscodeFolderTask {
                     }
                 }
                 if let Err(e) = std::fs::remove_dir_all(entry.path()) {
-                    tracing::warn!(
+                    warn!(
                         "failed to remove transcode dir {}: {e:#}",
                         entry
                             .path()
@@ -111,7 +111,7 @@ impl Task for CleanTranscodeFolderTask {
             .delete_unused_with_files(&active_torrent_ids)
             .await
             .unwrap_or_else(|e| {
-                tracing::warn!("failed to clean torrents: {e:#}");
+                warn!("failed to clean torrents: {e:#}");
                 0
             });
         info!(deleted, "cleaned torrent sessions");

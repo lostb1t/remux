@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use async_compression::tokio::bufread::GzipDecoder;
+use tracing::{info, warn};
 
 //use futures::Stream;
 //use futures::StreamExt;
@@ -112,12 +113,12 @@ where
                         Ok(line) => match serde_json::from_str::<T>(&line) {
                             Ok(obj) => Some(Ok(obj)),
                             Err(e) => {
-                                tracing::warn!("Line read error: {e} — skipping line");
+                                warn!("Line read error: {e} — skipping line");
                                 None
                             }
                         },
                         Err(e) => {
-                            tracing::warn!("Line read error: {e} — skipping line");
+                            warn!("Line read error: {e} — skipping line");
                             None
                         }
                     }
@@ -143,11 +144,11 @@ where
             .then(|res| async move {
                 match res {
                     Ok(row) => {
-                        // tracing::info!("sucess");
+                        // info!("sucess");
                         Some(Ok(row))
                     }
                     Err(e) => {
-                        tracing::warn!("CSV parse error: {e} — skipping row");
+                        warn!("CSV parse error: {e} — skipping row");
                         None
                     }
                 }
@@ -162,7 +163,7 @@ where
         //         match res {
         //             Ok(row) => Some(Ok(row)),
         //             Err(e) => {
-        //                 tracing::warn!("CSV parse error: {e} — skipping row");
+        //                 warn!("CSV parse error: {e} — skipping row");
         //                 None
         //             }
         //         }

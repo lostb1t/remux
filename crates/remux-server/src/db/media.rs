@@ -49,7 +49,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     services::ServeDir,
 };
-use tracing::{self, debug, info, instrument, trace, warn};
+use tracing::{self, debug, error, info, instrument, trace, warn};
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 use url::Url;
@@ -1704,7 +1704,7 @@ impl Media {
             .filter(|item| match item.validate() {
                 Ok(()) => true,
                 Err(e) => {
-                    tracing::error!(error = %e, "skipping media item with invalid UUID");
+                    error!(error = %e, "skipping media item with invalid UUID");
                     false
                 }
             })
@@ -2887,7 +2887,7 @@ impl Media {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("failed to batch-load relations: {e}");
+                    warn!("failed to batch-load relations: {e}");
                 }
             }
         }
@@ -2936,7 +2936,7 @@ impl Media {
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("failed to load child counts: {e}");
+                        warn!("failed to load child counts: {e}");
                     }
                 }
             }
@@ -2979,7 +2979,7 @@ impl Media {
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("failed to load playlist child counts: {e}");
+                        warn!("failed to load playlist child counts: {e}");
                     }
                 }
             }
@@ -3253,7 +3253,7 @@ impl Media {
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("failed to load unplayed counts: {e}");
+                            warn!("failed to load unplayed counts: {e}");
                         }
                     }
                 }
@@ -4339,7 +4339,7 @@ async fn bulk_mark_played(
             .execute(db)
             .await
         {
-            tracing::warn!(error = %e, "bulk_mark_played failed for chunk");
+            warn!(error = %e, "bulk_mark_played failed for chunk");
         }
     }
 }
@@ -4368,7 +4368,7 @@ async fn bulk_mark_unplayed(db: &SqlitePool, user_id: Uuid, media_ids: &[Uuid]) 
             .execute(db)
             .await
         {
-            tracing::warn!(error = %e, "bulk_mark_unplayed failed for chunk");
+            warn!(error = %e, "bulk_mark_unplayed failed for chunk");
         }
     }
 }
@@ -5107,7 +5107,7 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                 "EXISTS (SELECT 1 FROM media_relations mr \
                  WHERE mr.right_media_id = media.id AND mr.role = 'catalog' AND mr.left_media_id = X'{cid_hex}')"
             );
-            tracing::debug!(collection_id = %collection_id, cid_hex = %cid_hex, sql = %sql, "catalog filter rule SQL");
+            debug!(collection_id = %collection_id, cid_hex = %cid_hex, sql = %sql, "catalog filter rule SQL");
             Some((sql, false))
         }
     }

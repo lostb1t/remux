@@ -5,7 +5,7 @@ use axum::{
 use axum_anyhow::{ApiError, ApiResult as Result};
 use http::StatusCode;
 use remux_sdks::{RestClient, deezer as dz};
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::{AppContext, AppState, db, keyed_lock::KeyedLock};
@@ -166,7 +166,7 @@ impl MediaResolveService {
 
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
             if !Self::resolve_media_imdb(&mut media, ctx).await {
-                tracing::warn!(%id, kind = ?media.kind, "persist_from_store: IMDB resolution failed, saving without IMDB ID");
+                warn!(%id, kind = ?media.kind, "persist_from_store: IMDB resolution failed, saving without IMDB ID");
             }
             // Recompute the stable UUID now that we have the IMDB ID. Use the authoritative
             // path (media_id_raw → From<MediaIdRaw>) which correctly handles all kinds.
@@ -181,7 +181,7 @@ impl MediaResolveService {
 
         if matches!(media.kind, db::MediaKind::Track | db::MediaKind::Album) {
             if !Self::resolve_music_deezer(&mut media).await {
-                tracing::warn!(%id, kind = ?media.kind, title = %media.title,
+                warn!(%id, kind = ?media.kind, title = %media.title,
                     "persist_from_store: Deezer ID resolution failed");
             }
         }
@@ -192,7 +192,7 @@ impl MediaResolveService {
                 .external_ids
                 .deezer_artist
             else {
-                tracing::debug!(%id, kind = ?media.kind, "persist_from_store: no deezer_artist id on music child");
+                debug!(%id, kind = ?media.kind, "persist_from_store: no deezer_artist id on music child");
                 return Ok(None);
             };
             db::Media {
@@ -319,10 +319,10 @@ impl MediaResolveService {
             match Self::resolve_item(id, ctx).await {
                 Ok(Some(media)) => resolved.push(media.id),
                 Ok(None) => {
-                    tracing::warn!(%id, "resolve_ids: could not resolve item, skipping")
+                    warn!(%id, "resolve_ids: could not resolve item, skipping")
                 }
                 Err(e) => {
-                    tracing::warn!(%id, err = %e, "resolve_ids: error resolving item, skipping")
+                    warn!(%id, err = %e, "resolve_ids: error resolving item, skipping")
                 }
             }
         }

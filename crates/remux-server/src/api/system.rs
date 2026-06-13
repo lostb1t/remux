@@ -9,6 +9,7 @@ use remux_macros::{api_query, get, post, route};
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
+use tracing::info;
 use uuid::Uuid;
 
 use crate::{
@@ -572,7 +573,7 @@ pub async fn get_utc_time() -> impl IntoResponse {
 /// Restart the server (Admin only)
 #[post("/system/restart")]
 pub async fn system_restart(session: auth::AdminSession) -> Result<impl IntoResponse> {
-    tracing::info!(
+    info!(
         "Server restart requested by user: {}",
         session
             .user
@@ -590,13 +591,13 @@ pub async fn system_restart(session: auth::AdminSession) -> Result<impl IntoResp
 
 /// Actually restart the server process
 async fn restart_server() -> Result<()> {
-    tracing::info!("Initiating server restart...");
+    info!("Initiating server restart...");
 
     // Get the current executable path and arguments
     let current_exe = std::env::current_exe()?;
     let args: Vec<String> = std::env::args().collect();
 
-    tracing::info!("Restarting with: {:?} {:?}", current_exe, args);
+    info!("Restarting with: {:?} {:?}", current_exe, args);
 
     // Spawn the new process
     let mut command = std::process::Command::new(current_exe);
@@ -610,7 +611,7 @@ async fn restart_server() -> Result<()> {
     // Start the new process
     let mut child = command.spawn()?;
 
-    tracing::info!("New server process started with PID: {}", child.id());
+    info!("New server process started with PID: {}", child.id());
 
     // Give the new process a moment to start
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -622,7 +623,7 @@ async fn restart_server() -> Result<()> {
 /// Shutdown the server (Admin only)
 #[post("/system/shutdown")]
 pub async fn system_shutdown(session: auth::AdminSession) -> Result<impl IntoResponse> {
-    tracing::info!(
+    info!(
         "Server shutdown requested by user: {}",
         session
             .user
@@ -640,10 +641,10 @@ pub async fn system_shutdown(session: auth::AdminSession) -> Result<impl IntoRes
 
 /// Actually shutdown the server process
 async fn shutdown_server() -> Result<()> {
-    tracing::info!("Initiating server shutdown...");
+    info!("Initiating server shutdown...");
 
     // Perform graceful shutdown
-    tracing::info!("Server is shutting down gracefully");
+    info!("Server is shutting down gracefully");
 
     // Give a moment for cleanup
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

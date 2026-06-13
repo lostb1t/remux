@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use quick_xml::{Reader, events::Event};
 use std::sync::Arc;
+use tracing::debug;
 use uuid::Uuid;
 
 use super::{
@@ -162,7 +163,7 @@ impl TorznabAddon {
                 .clone(),
         };
 
-        tracing::debug!(query, title = %media.title, "torznab track stream lookup");
+        debug!(query, title = %media.title, "torznab track stream lookup");
 
         let mut items = self
             .fetch_items(&query, "3000")
@@ -254,7 +255,7 @@ impl TorznabAddon {
                 .clone(),
         };
 
-        tracing::debug!(query, title = %media.title, "torznab movie stream lookup");
+        debug!(query, title = %media.title, "torznab movie stream lookup");
 
         let search = MediaSearch {
             title: media
@@ -327,7 +328,7 @@ impl TorznabAddon {
         let se = format!("S{:02}E{:02}", season, episode);
         let query = format!("{} {}", media.title, se);
 
-        tracing::debug!(query, title = %media.title, %se, "torznab episode stream lookup");
+        debug!(query, title = %media.title, %se, "torznab episode stream lookup");
 
         let search = MediaSearch {
             title: media

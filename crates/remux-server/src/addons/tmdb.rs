@@ -1322,7 +1322,7 @@ async fn search_tmdb_person(
         // status 200 for person searches. Treat as zero results rather than surfacing
         // a spurious WARN on every general search that includes the Person type.
         Err(ClientError::Json { ref source, .. }) => {
-            tracing::debug!(error = %source, query, "tmdb person search returned non-JSON body");
+            debug!(error = %source, query, "tmdb person search returned non-JSON body");
             return Ok(vec![]);
         }
         Err(e) => return Err(e.into()),

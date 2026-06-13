@@ -4,6 +4,7 @@ use serde::Deserialize;
 use sqlx::types::Json;
 use std::{path::PathBuf, sync::Arc};
 use tokio::process::Command;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::{
@@ -445,7 +446,7 @@ impl YtDlpAddon {
         } else {
             format!("ytsearch1:{} {}", media.title, artist_part)
         };
-        tracing::debug!(?query, "searching YouTube for track");
+        debug!(?query, "searching YouTube for track");
         let video = self
             .dump_json(&query)
             .await?;
@@ -597,7 +598,7 @@ impl YtDlpAddon {
         {
             Ok(p) => p,
             Err(e) => {
-                tracing::warn!(query, error = %e, "yt-dlp search failed");
+                warn!(query, error = %e, "yt-dlp search failed");
                 return Err(e);
             }
         };
@@ -653,7 +654,7 @@ impl YtDlpAddon {
             })
             .collect();
 
-        tracing::debug!(
+        debug!(
             query,
             count = results.len(),
             elapsed_ms = t
@@ -665,7 +666,7 @@ impl YtDlpAddon {
     }
 
     async fn search_albums(&self, query: &str, limit: usize) -> Result<Vec<db::Media>> {
-        tracing::debug!(query, limit, "yt-dlp album search starting");
+        debug!(query, limit, "yt-dlp album search starting");
         let t = std::time::Instant::now();
 
         let search_url = format!(
@@ -693,7 +694,7 @@ impl YtDlpAddon {
             .success()
         {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!(query, error = %stderr.trim(), "yt-dlp album stub search failed");
+            warn!(query, error = %stderr.trim(), "yt-dlp album stub search failed");
             return Ok(vec![]);
         }
 
@@ -711,7 +712,7 @@ impl YtDlpAddon {
             })
             .unwrap_or_default();
 
-        tracing::debug!(
+        debug!(
             query,
             count = album_urls.len(),
             elapsed_ms = t
@@ -806,7 +807,7 @@ impl YtDlpAddon {
             })
             .collect();
 
-        tracing::debug!(
+        debug!(
             query,
             count = results.len(),
             elapsed_ms = t

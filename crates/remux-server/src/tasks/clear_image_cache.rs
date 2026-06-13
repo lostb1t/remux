@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::AppContext;
@@ -41,7 +41,7 @@ impl Task for ClearImageCacheTask {
 
         for entry in super::iter_dir(&cache_dir) {
             if let Err(e) = std::fs::remove_file(entry.path()) {
-                tracing::warn!(path = %entry.path().display(), error = %e, "failed to remove cached image");
+                warn!(path = %entry.path().display(), error = %e, "failed to remove cached image");
             } else {
                 removed += 1;
             }

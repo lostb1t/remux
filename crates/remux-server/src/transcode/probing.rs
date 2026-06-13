@@ -7,6 +7,7 @@ use isolang::Language;
 use remux_sdks::remux::{MediaSegmentType, MediaSegments, Segment};
 use serde::Deserialize;
 use std::{collections::HashMap, str::FromStr};
+use tracing::debug;
 
 fn ffprobe_bin() -> String {
     std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".into())
@@ -384,7 +385,7 @@ fn chapters_to_segments(chapters: &[FfprobeChapter]) -> MediaSegments {
 /// Probe a media URL with ffprobe and return a Jellyfin `MediaSourceInfo`
 /// alongside any chapter-derived `MediaSegments`.
 pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
-    tracing::debug!(url, "probing media");
+    debug!(url, "probing media");
 
     let output = std::process::Command::new(ffprobe_bin())
         .args([
@@ -450,7 +451,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         })
         .and_then(nonzero);
 
-    tracing::debug!(?run_time_ticks, ?container, "probe container info");
+    debug!(?run_time_ticks, ?container, "probe container info");
 
     let mut streams: Vec<api::MediaStream> = Vec::new();
     let mut video_idx: i64 = 0;

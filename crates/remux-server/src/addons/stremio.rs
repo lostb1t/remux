@@ -495,7 +495,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                 Ok(()) => {}
                 Err(e) => warn!(id = %meta.id, error = %e, "AIO resolve failed"),
             }
-            tracing::debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after AIO resolve");
+            debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after AIO resolve");
         }
     }
 
@@ -518,7 +518,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                 meta.imdb_id =
                     crate::addons::tmdb::resolve_imdb_from_ids(&ids, is_tv, client)
                         .await;
-                tracing::debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after TMDB id resolve");
+                debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after TMDB id resolve");
             }
         }
     }

@@ -8,6 +8,7 @@ use std::{
     pin::Pin,
     time::{Duration, Instant},
 };
+use tracing::{debug, error};
 
 #[derive(Clone)]
 pub struct StremioService {
@@ -147,7 +148,7 @@ impl StremioService {
         let page_size = first_page
             .metas
             .len() as u32;
-        tracing::debug!(kind = %kind, id = %id, page_size, elapsed = ?t0.elapsed(), "catalog first page");
+        debug!(kind = %kind, id = %id, page_size, elapsed = ?t0.elapsed(), "catalog first page");
         if page_size == 0 {
             return Ok(Box::pin(stream::empty()));
         }
@@ -193,7 +194,7 @@ impl StremioService {
                 match result {
                     Ok(response) => Some(stream::iter(response.metas)),
                     Err(e) => {
-                        tracing::error!("Failed to fetch catalog page: {}", e);
+                        error!("Failed to fetch catalog page: {}", e);
                         None
                     }
                 }

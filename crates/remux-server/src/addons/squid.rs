@@ -4,6 +4,7 @@ use base64::Engine as _;
 use serde::Deserialize;
 use sqlx::types::Json;
 use std::sync::Arc;
+use tracing::{debug, warn};
 
 use uuid::Uuid;
 
@@ -156,12 +157,12 @@ async fn try_instance(
     let track_id = match track_id {
         Some(id) => id,
         None => {
-            tracing::debug!(query, base, "squid: no tracks in search result");
+            debug!(query, base, "squid: no tracks in search result");
             return Ok(None);
         }
     };
 
-    tracing::debug!(track_id, "squid: fetching manifest");
+    debug!(track_id, "squid: fetching manifest");
 
     let manifest_url = format!(
         "{}/track/?id={}&quality=LOSSLESS",
@@ -197,7 +198,7 @@ async fn try_instance(
             .trim_start()
             .starts_with('<')
     {
-        tracing::debug!(track_id, "squid: DASH manifest, skipping");
+        debug!(track_id, "squid: DASH manifest, skipping");
         return Ok(None);
     }
 
@@ -332,7 +333,7 @@ impl StreamAddon for SquidAddon {
         _ctx: &AppContext,
     ) -> Result<Vec<crate::stream::StreamInfo>> {
         let query = build_query(media);
-        tracing::debug!(query, title = %media.title, "squid stream lookup");
+        debug!(query, title = %media.title, "squid stream lookup");
 
         let (tx, mut rx) =
             tokio::sync::mpsc::channel::<(crate::stream::StreamInfo, String)>(1);
@@ -355,7 +356,7 @@ impl StreamAddon for SquidAddon {
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        tracing::debug!(base, error = %e, "squid: instance failed")
+                        debug!(base, error = %e, "squid: instance failed")
                     }
                 }
             }));
@@ -366,10 +367,10 @@ impl StreamAddon for SquidAddon {
             .recv()
             .await
         {
-            tracing::debug!(query, base, label = ?source.name, "squid: stream resolved");
+            debug!(query, base, label = ?source.name, "squid: stream resolved");
             Ok(vec![source])
         } else {
-            tracing::warn!(query, "squid: all instances failed");
+            warn!(query, "squid: all instances failed");
             Ok(vec![])
         };
 

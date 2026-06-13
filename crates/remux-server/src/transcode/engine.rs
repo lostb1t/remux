@@ -1882,7 +1882,7 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
         _ => String::new(),
     };
 
-    tracing::debug!(
+    debug!(
         source_video_codec = ?session.source_video_codec,
         source_video_profile = ?session.source_video_profile,
         source_video_level = ?session.source_video_level,
