@@ -1728,11 +1728,11 @@ impl Media {
             return Ok(());
         }
 
-        let _permit = DB_WRITE_SEMAPHORE
-            .acquire()
-            .await
-            .unwrap();
         for chunk in items.chunks(CHUNK_SIZE) {
+            let _permit = DB_WRITE_SEMAPHORE
+                .acquire()
+                .await
+                .unwrap();
             let mut tx = db
                 .begin()
                 .await?;

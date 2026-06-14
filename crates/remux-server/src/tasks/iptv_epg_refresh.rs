@@ -98,7 +98,8 @@ impl Task for IptvEpgRefreshTask {
             let channel_refs: Vec<(Uuid, Option<String>)> = sqlx::query_as(
                 "SELECT id, tvg_id FROM media \
                  WHERE kind = 'tv_channel' \
-                   AND json_extract(external_ids, '$.iptv_source_id') = ?",
+                   AND json_extract(external_ids, '$.iptv_source_id') = ? \
+                   AND enabled = TRUE",
             )
             .bind(&source_id)
             .fetch_all(&ctx.db)

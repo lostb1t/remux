@@ -124,10 +124,6 @@ pub async fn stream_import_epg(
         if batch.len() >= 500 {
             db::Media::upsert(&ctx.db, &batch).await?;
             batch.clear();
-            sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-                .execute(&ctx.db)
-                .await
-                .ok();
         }
     }
 
