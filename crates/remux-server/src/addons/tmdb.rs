@@ -255,20 +255,23 @@ async fn tmdb_series_seasons(
         )
         .await?;
 
-    let series_imdb: String = tv
+    let series_imdb: db::NonEmptyString = tv
         .external_ids
         .as_ref()
         .and_then(|e| {
             e.imdb_id
-                .clone()
+                .as_deref()
         })
+        .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok())
         .or_else(|| {
             series
                 .external_ids
                 .imdb
                 .clone()
         })
-        .unwrap_or_else(|| format!("tmdb:{}", tmdb_id));
+        .unwrap_or_else(|| {
+            db::NonEmptyString::try_new(format!("tmdb:{}", tmdb_id)).unwrap()
+        });
 
     let seasons: Vec<db::Media> = tv
         .seasons
@@ -287,7 +290,7 @@ async fn tmdb_series_seasons(
                 .series_tmdb = Some(tmdb_id);
             stub
         })
-        .collect();
+        .collect::<Vec<_>>();
 
     if seasons.is_empty() {
         Ok(None)
@@ -346,7 +349,7 @@ async fn tmdb_season_episodes(
                 .series_tmdb = Some(series_tmdb_id);
             stub
         })
-        .collect();
+        .collect::<Vec<_>>();
 
     if episodes.is_empty() {
         Ok(None)
@@ -576,7 +579,11 @@ async fn fetch_tmdb_meta(
                 Some(id)
             } else {
                 let (external_id, external_source) = if let Some(ref imdb) = ids.imdb {
-                    (imdb.clone(), "imdb_id")
+                    (
+                        imdb.clone()
+                            .into(),
+                        "imdb_id",
+                    )
                 } else if let Some(tvdb) = ids.tvdb {
                     (tvdb.to_string(), "tvdb_id")
                 } else {
@@ -611,10 +618,12 @@ async fn fetch_tmdb_meta(
                     tmdb: Some(movie_details.id),
                     imdb: movie_details
                         .imdb_id
-                        .clone()
-                        .or(ids
-                            .imdb
-                            .clone()),
+                        .as_deref()
+                        .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok())
+                        .or_else(|| {
+                            ids.imdb
+                                .clone()
+                        }),
                     tvdb: ids.tvdb,
                     ..Default::default()
                 };
@@ -747,7 +756,11 @@ async fn fetch_tmdb_meta(
                 Some(id)
             } else {
                 let (external_id, external_source) = if let Some(ref imdb) = ids.imdb {
-                    (imdb.clone(), "imdb_id")
+                    (
+                        imdb.clone()
+                            .into(),
+                        "imdb_id",
+                    )
                 } else if let Some(tvdb) = ids.tvdb {
                     (tvdb.to_string(), "tvdb_id")
                 } else {
@@ -783,10 +796,12 @@ async fn fetch_tmdb_meta(
                     .as_ref();
                 let external_ids = db::ExternalIds {
                     tmdb: Some(tv_details.id),
-                    imdb: tmdb_ext.and_then(|e| {
-                        e.imdb_id
-                            .clone()
-                    }),
+                    imdb: tmdb_ext
+                        .and_then(|e| {
+                            e.imdb_id
+                                .as_deref()
+                        })
+                        .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok()),
                     tvdb: tmdb_ext.and_then(|e| e.tvdb_id),
                     ..Default::default()
                 };
@@ -953,7 +968,9 @@ async fn fetch_tmdb_meta(
                     let find = client
                         .execute(
                             sdks::tmdb::FindByIdEndpoint {
-                                external_id: series_imdb.clone(),
+                                external_id: series_imdb
+                                    .clone()
+                                    .into(),
                                 external_source: "imdb_id".to_string(),
                             }
                             .with_cache(Duration::from_secs(360)),
@@ -984,10 +1001,12 @@ async fn fetch_tmdb_meta(
                     .as_ref();
                 let external_ids = db::ExternalIds {
                     tmdb: Some(ep_details.id),
-                    imdb: tmdb_ext.and_then(|e| {
-                        e.imdb_id
-                            .clone()
-                    }),
+                    imdb: tmdb_ext
+                        .and_then(|e| {
+                            e.imdb_id
+                                .as_deref()
+                        })
+                        .and_then(|s| db::NonEmptyString::try_new(s.to_string()).ok()),
                     tvdb: tmdb_ext.and_then(|e| e.tvdb_id),
                     ..Default::default()
                 };
@@ -1194,7 +1213,9 @@ async fn fetch_tmdb_meta(
                     .filter(|p| !p.is_empty()),
                 external_ids: db::ExternalIds {
                     tmdb: Some(tmdb_id),
-                    imdb: details.imdb_id,
+                    imdb: details
+                        .imdb_id
+                        .and_then(|s| db::NonEmptyString::try_new(s).ok()),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1252,7 +1273,9 @@ async fn fetch_tmdb_season_meta(
             client
                 .execute(
                     sdks::tmdb::FindByIdEndpoint {
-                        external_id: imdb.clone(),
+                        external_id: imdb
+                            .clone()
+                            .into(),
                         external_source: "imdb_id".to_string(),
                     }
                     .with_cache(Duration::from_secs(86400)),
@@ -1384,10 +1407,19 @@ async fn tmdb_remote_images(
             return Some((tmdb_id.to_string(), "tmdb_id"));
         }
         if let Some(ref imdb) = ids.imdb {
-            return Some((imdb.clone(), "imdb_id"));
+            return Some((
+                imdb.clone()
+                    .into(),
+                "imdb_id",
+            ));
         }
         if let Some(ref series_imdb) = ids.series_imdb {
-            return Some((series_imdb.clone(), "imdb_id"));
+            return Some((
+                series_imdb
+                    .clone()
+                    .into(),
+                "imdb_id",
+            ));
         }
         if let Some(tvdb_id) = ids.tvdb {
             return Some((tvdb_id.to_string(), "tvdb_id"));
@@ -1585,7 +1617,9 @@ async fn tmdb_remote_images(
                     let find = client
                         .execute(
                             sdks::tmdb::FindByIdEndpoint {
-                                external_id: series_imdb.clone(),
+                                external_id: series_imdb
+                                    .clone()
+                                    .into(),
                                 external_source: "imdb_id".to_string(),
                             }
                             .with_cache(Duration::from_secs(360)),
@@ -1664,7 +1698,7 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
     ids: &db::ExternalIds,
     is_tv: bool,
     client: &sdks::RestClient<A>,
-) -> Option<String> {
+) -> Option<db::NonEmptyString> {
     if let Some(ref imdb) = ids.imdb {
         return Some(imdb.clone());
     }
@@ -1682,6 +1716,7 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
                     if let Some(imdb) = series
                         .external_ids
                         .and_then(|e| e.imdb_id)
+                        .and_then(|s| db::NonEmptyString::try_new(s).ok())
                     {
                         return Some(imdb);
                     }
@@ -1698,7 +1733,10 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
                 .await
             {
                 Ok(movie) => {
-                    if let Some(imdb) = movie.imdb_id {
+                    if let Some(imdb) = movie
+                        .imdb_id
+                        .and_then(|s| db::NonEmptyString::try_new(s).ok())
+                    {
                         return Some(imdb);
                     }
                     debug!(tmdb_id, "TMDB movie has no imdb_id");
@@ -1727,12 +1765,14 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
                 .next()
                 .and_then(|s| s.external_ids)
                 .and_then(|e| e.imdb_id)
+                .and_then(|s| db::NonEmptyString::try_new(s).ok())
         } else {
             find_resp
                 .movie_results
                 .into_iter()
                 .next()
                 .and_then(|m| m.imdb_id)
+                .and_then(|s| db::NonEmptyString::try_new(s).ok())
         };
     }
 

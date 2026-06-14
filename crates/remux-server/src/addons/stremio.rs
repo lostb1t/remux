@@ -479,7 +479,7 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
         .is_none()
     {
         if let Some(imdb) = db::ExternalIds::from_stremio_id(&meta.id).imdb {
-            meta.imdb_id = Some(imdb);
+            meta.imdb_id = Some(imdb.into());
         }
     }
 
@@ -517,7 +517,8 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
                 let is_tv = meta.media_type == sdks::stremio::MediaType::Series;
                 meta.imdb_id =
                     crate::addons::tmdb::resolve_imdb_from_ids(&ids, is_tv, client)
-                        .await;
+                        .await
+                        .map(Into::into);
                 debug!(id = %meta.id, elapsed = ?t.elapsed(), resolved = meta.imdb_id.is_some(), "after TMDB id resolve");
             }
         }
@@ -647,7 +648,14 @@ async fn stremio_meta_fetch(
     {
         meta.imdb_id = db::ExternalIds::from_stremio_id(&meta.id)
             .imdb
-            .or_else(|| Some(imdb_id.clone()));
+            .map(Into::into)
+            .or_else(|| {
+                Some(
+                    imdb_id
+                        .clone()
+                        .into(),
+                )
+            });
     }
 
     let meta_raw = meta.clone();
@@ -734,7 +742,14 @@ async fn stremio_sync_children(
     {
         meta.imdb_id = db::ExternalIds::from_stremio_id(&meta.id)
             .imdb
-            .or_else(|| Some(imdb_id.clone()));
+            .map(Into::into)
+            .or_else(|| {
+                Some(
+                    imdb_id
+                        .clone()
+                        .into(),
+                )
+            });
     }
 
     let meta_clone = meta.clone();
@@ -1230,7 +1245,8 @@ async fn stremio_streams(
             let id = media
                 .external_ids
                 .imdb
-                .clone()
+                .as_deref()
+                .map(|s| s.to_string())
                 .ok_or_else(|| {
                     anyhow!("media has no identifiable ID for Stremio stream lookup")
                 })?;

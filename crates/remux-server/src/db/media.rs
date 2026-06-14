@@ -728,11 +728,13 @@ impl ExternalRatings {
     }
 }
 
+pub use remux_utils::NonEmptyString;
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExternalIds {
-    pub imdb: Option<String>,
-    pub series_imdb: Option<String>,
+    pub imdb: Option<NonEmptyString>,
+    pub series_imdb: Option<NonEmptyString>,
     pub tmdb: Option<i64>,
     pub series_tmdb: Option<i64>,
     pub tvdb: Option<i64>,
@@ -750,7 +752,7 @@ impl ExternalIds {
     pub fn from_stremio_id(id: &str) -> Self {
         if id.starts_with("tt") {
             return Self {
-                imdb: Some(id.to_string()),
+                imdb: NonEmptyString::try_new(id.to_string()).ok(),
                 ..Default::default()
             };
         }
@@ -805,7 +807,7 @@ impl ExternalIds {
                         .imdb
                         .is_none()
                     {
-                        result.imdb = Some(value);
+                        result.imdb = NonEmptyString::try_new(value).ok();
                     }
                 }
                 "tvdb" | "tvdbid" => {
@@ -4665,7 +4667,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             external_ids: {
                 let mut ids = ExternalIds::from_stremio_id(&meta.id);
                 if let Some(ref imdb) = meta.imdb_id {
-                    ids.imdb = Some(imdb.clone());
+                    ids.imdb = NonEmptyString::try_new(imdb.clone()).ok();
                 }
                 ids
             },
@@ -4681,9 +4683,10 @@ impl TryFrom<sdks::stremio::Meta> for Media {
             id: {
                 // Prefer the explicit imdb_id field; fall back to extracting it from
                 // meta.id (e.g. Cinemeta returns id="tt0076759" without imdb_id set).
-                let imdb_id = meta
+                let imdb_id: Option<NonEmptyString> = meta
                     .imdb_id
-                    .clone()
+                    .as_deref()
+                    .and_then(|s| NonEmptyString::try_new(s.to_string()).ok())
                     .or_else(|| ExternalIds::from_stremio_id(&meta.id).imdb);
                 imdb_id
                     .as_ref()
@@ -4691,7 +4694,7 @@ impl TryFrom<sdks::stremio::Meta> for Media {
                         Uuid::from(&super::MediaIdRaw {
                             kind: media_kind.clone(),
                             external_ids: ExternalIds {
-                                imdb: Some(mid.to_string()),
+                                imdb: Some(mid.clone()),
                                 ..Default::default()
                             },
                             season: None,
@@ -4728,10 +4731,11 @@ impl TryFrom<sdks::stremio::Meta> for Media {
 }
 
 pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
-    let imdb_id = meta
+    let imdb_id: NonEmptyString = meta
         .imdb_id
-        .clone()
-        .context("imdb_id is missing")?;
+        .as_deref()
+        .and_then(|s| NonEmptyString::try_new(s.to_string()).ok())
+        .context("imdb_id is missing or empty")?;
 
     let mut media: Media = meta
         .clone()

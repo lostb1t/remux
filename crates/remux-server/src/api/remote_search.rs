@@ -205,7 +205,7 @@ pub async fn remote_search_apply(
         if let Some(s) = pids.get("Imdb") {
             media
                 .external_ids
-                .imdb = Some(s.clone());
+                .imdb = db::NonEmptyString::try_new(s.clone()).ok();
         }
         if let Some(s) = pids.get("Tvdb") {
             if let Ok(n) = s.parse::<i64>() {

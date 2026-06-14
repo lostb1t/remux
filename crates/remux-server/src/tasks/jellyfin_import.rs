@@ -305,7 +305,11 @@ impl Task for JellyfinImportTask {
                     }
 
                     let ext = db::ExternalIds {
-                        imdb: top_imdb.clone(),
+                        imdb: top_imdb
+                            .as_deref()
+                            .and_then(|s| {
+                                db::NonEmptyString::try_new(s.to_string()).ok()
+                            }),
                         tmdb: top_tmdb,
                         tvdb: top_tvdb,
                         ..Default::default()
@@ -465,7 +469,11 @@ impl Task for JellyfinImportTask {
                             kind,
                             db::MediaKind::Movie | db::MediaKind::Series
                         )
-                        .then(|| imdb.map(String::from))
+                        .then(|| {
+                            imdb.and_then(|s| {
+                                db::NonEmptyString::try_new(s.to_string()).ok()
+                            })
+                        })
                         .flatten(),
                         // For episodes/seasons, resolve series IMDB via:
                         // 1. SeriesProviderIds["Imdb"] (authoritative when set)
@@ -479,13 +487,14 @@ impl Task for JellyfinImportTask {
                             item.series_provider_ids
                                 .as_ref()
                                 .and_then(|p| p.get("Imdb"))
-                                .map(String::from)
+                                .map(|s| s.to_string())
                                 .or_else(|| {
                                     item.series_id
                                         .as_deref()
                                         .and_then(|sid| series_imdb_map.get(sid))
                                         .cloned()
                                 })
+                                .and_then(|s| db::NonEmptyString::try_new(s).ok())
                         })
                         .flatten(),
                         tmdb,

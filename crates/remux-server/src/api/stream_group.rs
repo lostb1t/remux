@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    db::{ExternalIds, Media, MediaKind, StreamGroup, auth},
+    db::{ExternalIds, Media, MediaKind, NonEmptyString, StreamGroup, auth},
 };
 use axum_anyhow::ApiResult as Result;
 
@@ -175,7 +175,7 @@ pub async fn stream_group_preview(
     let stub = Media {
         kind: MediaKind::Movie,
         external_ids: ExternalIds {
-            imdb: Some(q.imdb_id),
+            imdb: NonEmptyString::try_new(q.imdb_id).ok(),
             ..Default::default()
         },
         ..Default::default()

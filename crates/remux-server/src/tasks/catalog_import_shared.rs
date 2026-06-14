@@ -146,13 +146,13 @@ where
                 debug!(catalog_id = %collection_id, item_id = %item.id, weight = catalog_position, "inserting catalog relation");
                 if let Err(e) = sqlx::query(
                     "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, role, weight) \
-                     VALUES (?, ?, ?, 'catalog', ?) \
+                     SELECT ?, ?, id, 'catalog', ? FROM media WHERE id = ? \
                      ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight",
                 )
                 .bind(relation_id)
                 .bind(collection_id)
-                .bind(item.id)
                 .bind(catalog_position)
+                .bind(item.id)
                 .execute(&ctx.db)
                 .await
                 {

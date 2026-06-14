@@ -370,7 +370,7 @@ impl CatalogAddon for OpendalAddon {
                     title: title.unwrap_or_default(),
                     kind: db::MediaKind::Series,
                     external_ids: db::ExternalIds {
-                        imdb: Some(imdb_id),
+                        imdb: db::NonEmptyString::try_new(imdb_id).ok(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -412,7 +412,7 @@ impl CatalogAddon for OpendalAddon {
                     title: title.unwrap_or_default(),
                     kind: db::MediaKind::Movie,
                     external_ids: db::ExternalIds {
-                        imdb: Some(imdb_id),
+                        imdb: db::NonEmptyString::try_new(imdb_id).ok(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -704,7 +704,10 @@ impl TreeAddon for OpendalAddon {
                         idx: Some(s),
                         parent_idx: Some(s),
                         external_ids: db::ExternalIds {
-                            series_imdb: Some(imdb_id.to_string()),
+                            series_imdb: db::NonEmptyString::try_new(
+                                imdb_id.to_string(),
+                            )
+                            .ok(),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -778,7 +781,10 @@ impl TreeAddon for OpendalAddon {
                             idx: Some(ep_num),
                             parent_idx: Some(season_num),
                             external_ids: db::ExternalIds {
-                                series_imdb: Some(series_imdb.to_string()),
+                                series_imdb: db::NonEmptyString::try_new(
+                                    series_imdb.to_string(),
+                                )
+                                .ok(),
                                 ..Default::default()
                             },
                             stream_info: Some(crate::stream::StreamInfo {
@@ -1072,10 +1078,12 @@ async fn scan_addon(
                                 client,
                             )
                             .await
+                            .map(Into::into)
                         } else {
                             jellyfin_ids
                                 .imdb
                                 .clone()
+                                .map(Into::into)
                         }
                     } else {
                         resolve_imdb(tmdb, &clean_title, None, true).await
@@ -1111,10 +1119,12 @@ async fn scan_addon(
                                 client,
                             )
                             .await
+                            .map(Into::into)
                         } else {
                             jellyfin_ids
                                 .imdb
                                 .clone()
+                                .map(Into::into)
                         }
                     } else {
                         resolve_imdb(tmdb, &clean_title, year, false).await

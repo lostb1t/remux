@@ -315,7 +315,8 @@ impl MediaIdRaw {
             MediaKind::Movie | MediaKind::Series | MediaKind::TvProgram => self
                 .external_ids
                 .imdb
-                .clone(),
+                .as_deref()
+                .map(|s| s.to_string()),
             MediaKind::Season => {
                 let series_imdb = self
                     .external_ids
@@ -449,7 +450,7 @@ impl UserMediaState {
                             .kind
                             .to_string(),
                     )
-                    .bind(imdb)
+                    .bind(imdb.as_ref())
                     .fetch_optional(db)
                     .await?
                 } else {
@@ -473,7 +474,7 @@ impl UserMediaState {
                     )
                     .bind(user.id)
                     .bind(media.kind.to_string())
-                    .bind(series_imdb)
+                    .bind(series_imdb.as_ref())
                     .bind(season)
                     .fetch_optional(db)
                     .await?
@@ -500,7 +501,7 @@ impl UserMediaState {
                     )
                     .bind(user.id)
                     .bind(media.kind.to_string())
-                    .bind(series_imdb)
+                    .bind(series_imdb.as_ref())
                     .bind(season)
                     .bind(episode)
                     .fetch_optional(db)

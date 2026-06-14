@@ -5875,6 +5875,8 @@ name = "remux-utils"
 version = "0.0.0"
 dependencies = [
  "moka",
+ "nutype",
+ "serde",
  "uuid",
 ]
 

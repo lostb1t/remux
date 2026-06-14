@@ -36,7 +36,7 @@ impl MediaResolveService {
         };
         media
             .external_ids
-            .imdb = Some(imdb);
+            .imdb = db::NonEmptyString::try_new(imdb).ok();
         true
     }
 

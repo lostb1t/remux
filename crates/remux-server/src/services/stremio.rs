@@ -38,14 +38,14 @@ impl StremioService {
     pub async fn get_meta(
         &self,
         media_type: sdks::stremio::MediaType,
-        id: String,
+        id: impl Into<String>,
     ) -> Result<sdks::stremio::Meta> {
         Ok(self
             .client
             .execute(
                 sdks::stremio::MetaEndpoint {
                     media_type,
-                    id,
+                    id: id.into(),
                     season: None,
                     episode: None,
                 }
@@ -88,14 +88,14 @@ impl StremioService {
     pub async fn get_streams(
         &self,
         media_type: sdks::stremio::MediaType,
-        id: String,
+        id: impl Into<String>,
     ) -> Result<Vec<sdks::stremio::Stream>> {
         Ok(self
             .client
             .execute(
                 sdks::stremio::StreamEndpoint {
                     kind: media_type,
-                    id,
+                    id: id.into(),
                 }
                 .with_cache(Duration::from_secs(300)),
             )

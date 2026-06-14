@@ -467,7 +467,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
             imdb: media
                 .external_ids
                 .imdb
-                .clone()
+                .as_deref()
                 .or_else(|| {
                     if matches!(
                         media.kind,
@@ -476,11 +476,12 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
                         media
                             .external_ids
                             .series_imdb
-                            .clone()
+                            .as_deref()
                     } else {
                         None
                     }
-                }),
+                })
+                .map(|s| s.to_string()),
             tmdb: media
                 .external_ids
                 .tmdb
