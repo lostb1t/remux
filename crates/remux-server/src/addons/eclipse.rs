@@ -81,20 +81,20 @@ fn eclipse_from_cfg(
 const MONOCHROME_URL: &str = "https://monochrome1.cyrusna29.workers.dev/u/206f62ce5c9a5c710f2178a16238/manifest.json";
 const MONOCHROME_GENERATE_URL: &str = "https://monochrome1.cyrusna29.workers.dev";
 
-pub struct EclipsePreset;
+pub struct MonochromePreset;
 
 inventory::submit! {
-    AddonPresetRegistration(|| Box::new(EclipsePreset))
+    AddonPresetRegistration(|| Box::new(MonochromePreset))
 }
 
-impl AddonPreset for EclipsePreset {
+impl AddonPreset for MonochromePreset {
     fn id(&self) -> &'static str {
-        "eclipse"
+        "monochrome"
     }
 
     fn metadata(&self) -> AddonMetadata {
         AddonMetadata {
-            id: "eclipse".to_string(),
+            id: "monochrome".to_string(),
             display_name: "Monochrome".to_string(),
             description: "Search and stream music".to_string(),
             icon: None,
