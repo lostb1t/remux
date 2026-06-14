@@ -61,7 +61,7 @@ impl AddonKind for ProbeAddon {
 
 #[async_trait]
 impl SegmentAddon for ProbeAddon {
-    fn segment_supports(&self, media: &db::Media) -> bool {
+    fn supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Episode | db::MediaKind::Movie)
     }
 

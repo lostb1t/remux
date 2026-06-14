@@ -450,7 +450,7 @@ impl IndexAddon for OpendalAddon {
 
 #[async_trait]
 impl StreamAddon for OpendalAddon {
-    fn stream_supports(&self, media: &db::Media) -> bool {
+    fn supports(&self, media: &db::Media) -> bool {
         match self
             .media_kind
             .as_str()
@@ -652,7 +652,7 @@ impl StreamAddon for OpendalAddon {
 
 #[async_trait]
 impl TreeAddon for OpendalAddon {
-    fn supports_children(&self, root: &db::Media) -> bool {
+    fn supports(&self, root: &db::Media) -> bool {
         self.media_kind == "episode"
             && matches!(root.kind, db::MediaKind::Series | db::MediaKind::Season)
     }
@@ -1882,7 +1882,7 @@ mod tests {
             // stream_supports must return true — this was the bug: it returned false when
             // it checked .imdb instead of .series_imdb.
             assert!(
-                addon.stream_supports(ep),
+                addon.supports(ep),
                 "stream_supports must be true for episode with series_imdb set (e{:?})",
                 ep.idx
             );
@@ -1917,7 +1917,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            !addon.stream_supports(&ep_with_imdb_only),
+            !addon.supports(&ep_with_imdb_only),
             "stream_supports must be false for episode with only imdb (not series_imdb)"
         );
     }

@@ -79,7 +79,7 @@ impl AddonKind for TmdbAddon {
 
 #[async_trait]
 impl MetaAddon for TmdbAddon {
-    async fn meta_supports(&self, media: &db::Media) -> bool {
+    async fn supports(&self, media: &db::Media) -> bool {
         matches!(
             media.kind,
             db::MediaKind::Movie
@@ -203,7 +203,7 @@ impl From<&sdks::tmdb::Episode> for db::Media {
 
 #[async_trait]
 impl TreeAddon for TmdbAddon {
-    fn supports_children(&self, root: &db::Media) -> bool {
+    fn supports(&self, root: &db::Media) -> bool {
         matches!(root.kind, db::MediaKind::Series | db::MediaKind::Season)
     }
 

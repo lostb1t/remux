@@ -319,7 +319,7 @@ impl CatalogAddon for StremioAddon {
 
 #[async_trait]
 impl MetaAddon for StremioAddon {
-    async fn meta_supports(&self, media: &db::Media) -> bool {
+    async fn supports(&self, media: &db::Media) -> bool {
         stremio_type_for_kind(&media.kind).is_some()
     }
 
@@ -336,7 +336,7 @@ impl MetaAddon for StremioAddon {
 
 #[async_trait]
 impl TreeAddon for StremioAddon {
-    fn supports_children(&self, root: &db::Media) -> bool {
+    fn supports(&self, root: &db::Media) -> bool {
         root.kind == db::MediaKind::Series
     }
 
@@ -379,7 +379,7 @@ impl SearchAddon for StremioAddon {
 
 #[async_trait]
 impl SubtitleAddon for StremioAddon {
-    fn subtitle_supports(&self, media: &db::Media) -> bool {
+    fn supports(&self, media: &db::Media) -> bool {
         matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
     }
 
@@ -395,7 +395,7 @@ impl SubtitleAddon for StremioAddon {
 
 #[async_trait]
 impl StreamAddon for StremioAddon {
-    fn stream_supports(&self, media: &db::Media) -> bool {
+    fn supports(&self, media: &db::Media) -> bool {
         stremio_type_for_kind(&media.kind).is_some()
     }
 

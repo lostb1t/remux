@@ -99,7 +99,7 @@ impl AddonKind for TorznabAddon {
 
 #[async_trait]
 impl StreamAddon for TorznabAddon {
-    fn stream_supports(&self, media: &db::Media) -> bool {
+    fn supports(&self, media: &db::Media) -> bool {
         matches!(
             media.kind,
             db::MediaKind::Track | db::MediaKind::Movie | db::MediaKind::Episode

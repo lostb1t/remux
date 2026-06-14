@@ -323,7 +323,7 @@ impl AddonKind for SquidAddon {
 
 #[async_trait]
 impl StreamAddon for SquidAddon {
-    fn stream_supports(&self, media: &db::Media) -> bool {
+    fn supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::Track
     }
 

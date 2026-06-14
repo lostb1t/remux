@@ -435,7 +435,7 @@ impl CatalogAddon for IptvAddon {
 
 #[async_trait]
 impl StreamAddon for IptvAddon {
-    fn stream_supports(&self, media: &db::Media) -> bool {
+    fn supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::TvChannel
     }
 

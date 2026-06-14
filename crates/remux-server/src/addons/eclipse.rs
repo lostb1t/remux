@@ -194,7 +194,7 @@ impl AddonKind for EclipseAddon {
 
 #[async_trait]
 impl StreamAddon for EclipseAddon {
-    fn stream_supports(&self, media: &db::Media) -> bool {
+    fn supports(&self, media: &db::Media) -> bool {
         matches!(
             media.kind,
             db::MediaKind::Track | db::MediaKind::Album | db::MediaKind::Artist

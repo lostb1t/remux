@@ -2,6 +2,9 @@ use super::{FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt};
 
 pub const CHUNK_SIZE: usize = 500;
 const SQLITE_VAR_LIMIT: usize = 999;
+
+static DB_WRITE_SEMAPHORE: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
 use crate::{
     OptionExt, ResultExt, api,
     api::MediaSourceInfo,
@@ -394,6 +397,10 @@ impl MediaRelation {
             return Ok(());
         }
 
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
         let mut tx = db
             .begin()
             .await?;
@@ -453,6 +460,10 @@ impl MediaRelation {
         if ids.is_empty() {
             return Ok(());
         }
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
         for chunk in ids.chunks(SQLITE_VAR_LIMIT) {
             let mut qb = sqlx::QueryBuilder::new(
                 "DELETE FROM media_relations WHERE left_media_id IN (",
@@ -1715,6 +1726,10 @@ impl Media {
             return Ok(());
         }
 
+        let _permit = DB_WRITE_SEMAPHORE
+            .acquire()
+            .await
+            .unwrap();
         for chunk in items.chunks(CHUNK_SIZE) {
             let mut tx = db
                 .begin()

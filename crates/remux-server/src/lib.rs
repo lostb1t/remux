@@ -260,7 +260,6 @@ pub async fn init_app(
         )),
         web_paths,
         addons,
-        db_write_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
     };
 
     // Kill idle sessions after 30 minutes of no activity.
@@ -332,10 +331,6 @@ pub struct AppContext {
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
     pub addons: addons::AddonService,
-    /// Serializes concurrent DB writers. SQLite allows only one writer at a time;
-    /// holding this permit before any write ensures concurrent metadata-fetch futures
-    /// don't race for the write lock and hit busy_timeout.
-    pub db_write_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppContext {

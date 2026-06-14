@@ -909,7 +909,7 @@ impl AddonKind for YtDlpAddon {
 
 #[async_trait]
 impl MetaAddon for YtDlpAddon {
-    async fn meta_supports(&self, media: &db::Media) -> bool {
+    async fn supports(&self, media: &db::Media) -> bool {
         self.meta_can_refresh(media)
     }
 
@@ -953,7 +953,7 @@ impl SearchAddon for YtDlpAddon {
 
 #[async_trait]
 impl StreamAddon for YtDlpAddon {
-    fn stream_supports(&self, media: &db::Media) -> bool {
+    fn supports(&self, media: &db::Media) -> bool {
         media.kind == db::MediaKind::Track
     }
 

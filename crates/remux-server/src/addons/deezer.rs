@@ -1079,7 +1079,7 @@ impl CatalogAddon for DeezerAddon {
 
 #[async_trait]
 impl MetaAddon for DeezerAddon {
-    async fn meta_supports(&self, media: &db::Media) -> bool {
+    async fn supports(&self, media: &db::Media) -> bool {
         self.meta_can_refresh(media)
     }
 
@@ -1117,7 +1117,7 @@ impl MetaAddon for DeezerAddon {
 
 #[async_trait]
 impl TreeAddon for DeezerAddon {
-    fn supports_children(&self, root: &db::Media) -> bool {
+    fn supports(&self, root: &db::Media) -> bool {
         matches!(root.kind, db::MediaKind::Artist | db::MediaKind::Album)
     }
 
@@ -1126,7 +1126,7 @@ impl TreeAddon for DeezerAddon {
         root: &db::Media,
         _ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
-        if !self.supports_children(root) {
+        if !TreeAddon::supports(self, root) {
             return Ok(None);
         }
         let children = match root.kind {

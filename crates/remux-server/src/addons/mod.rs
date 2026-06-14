@@ -125,11 +125,6 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         .filter(|m| !name_keyed_person_ids.contains(&m.id))
         .collect();
     if !all_rel_media.is_empty() {
-        let _permit = ctx
-            .db_write_semaphore
-            .acquire()
-            .await
-            .unwrap();
         if let Err(e) = db::Media::upsert(&ctx.db, &all_rel_media).await {
             warn!(error = %e, "failed to upsert relation media batch");
         }
@@ -172,19 +167,12 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         // Don't link relations that point to name-keyed person stubs.
         .filter(|r| !name_keyed_person_ids.contains(&r.right_media_id))
         .collect();
-    {
-        let _permit = ctx
-            .db_write_semaphore
-            .acquire()
-            .await
-            .unwrap();
-        db::MediaRelation::delete_by_left_ids(&ctx.db, &all_ids)
-            .await
-            .ok();
-        if !all_rels.is_empty() {
-            if let Err(e) = db::MediaRelation::upsert(&ctx.db, &all_rels).await {
-                warn!(error = %e, "failed to upsert relations batch");
-            }
+    db::MediaRelation::delete_by_left_ids(&ctx.db, &all_ids)
+        .await
+        .ok();
+    if !all_rels.is_empty() {
+        if let Err(e) = db::MediaRelation::upsert(&ctx.db, &all_rels).await {
+            warn!(error = %e, "failed to upsert relations batch");
         }
     }
 }
@@ -422,7 +410,7 @@ pub trait CatalogAddon: Send + Sync {
 
 #[async_trait]
 pub trait MetaAddon: Send + Sync {
-    async fn meta_supports(&self, media: &db::Media) -> bool;
+    async fn supports(&self, media: &db::Media) -> bool;
     /// Fetch metadata for `media` and return a partial `db::Media` patch.
     /// Only the fields the addon knows about need to be populated; the caller
     /// merges the patch into the existing record via `merge_media`.
@@ -445,7 +433,7 @@ pub trait MetaAddon: Send + Sync {
 
 #[async_trait]
 pub trait TreeAddon: Send + Sync {
-    fn supports_children(&self, root: &db::Media) -> bool;
+    fn supports(&self, root: &db::Media) -> bool;
     async fn get_children(
         &self,
         root: &db::Media,
@@ -467,7 +455,7 @@ pub trait SearchAddon: Send + Sync {
 
 #[async_trait]
 pub trait SubtitleAddon: Send + Sync {
-    fn subtitle_supports(&self, media: &db::Media) -> bool;
+    fn supports(&self, media: &db::Media) -> bool;
     async fn subtitle_fetch(
         &self,
         media: &db::Media,
@@ -477,7 +465,7 @@ pub trait SubtitleAddon: Send + Sync {
 
 #[async_trait]
 pub trait StreamAddon: Send + Sync {
-    fn stream_supports(&self, media: &db::Media) -> bool;
+    fn supports(&self, media: &db::Media) -> bool;
     async fn get_streams(
         &self,
         media: &db::Media,
@@ -500,7 +488,7 @@ pub trait StreamAddon: Send + Sync {
 
 #[async_trait]
 pub trait SegmentAddon: Send + Sync {
-    fn segment_supports(&self, media: &db::Media) -> bool;
+    fn supports(&self, media: &db::Media) -> bool;
     async fn segment_fetch(
         &self,
         media: &db::Media,
@@ -593,7 +581,90 @@ pub struct AddonService {
     inner: Arc<ArcSwap<Vec<AddonRuntime>>>,
 }
 
+#[async_trait]
+trait PickCap<T: ?Sized + Send + Sync> {
+    async fn pick(&self, media: &db::Media) -> bool;
+}
+
+#[async_trait]
+impl PickCap<dyn MetaAddon> for AddonRuntime {
+    async fn pick(&self, media: &db::Media) -> bool {
+        match self
+            .caps
+            .meta
+            .as_ref()
+        {
+            Some(cap) => {
+                cap.supports(media)
+                    .await
+            }
+            None => false,
+        }
+    }
+}
+
+#[async_trait]
+impl PickCap<dyn StreamAddon> for AddonRuntime {
+    async fn pick(&self, media: &db::Media) -> bool {
+        if !self
+            .row
+            .resources
+            .contains(&ResourceType::Stream)
+        {
+            return false;
+        }
+        match self
+            .caps
+            .stream
+            .as_ref()
+        {
+            Some(cap) => cap.supports(media),
+            None => false,
+        }
+    }
+}
+
+#[async_trait]
+impl PickCap<dyn SubtitleAddon> for AddonRuntime {
+    async fn pick(&self, media: &db::Media) -> bool {
+        if !self
+            .row
+            .resources
+            .contains(&ResourceType::Subtitles)
+        {
+            return false;
+        }
+        match self
+            .caps
+            .subtitle
+            .as_ref()
+        {
+            Some(cap) => cap.supports(media),
+            None => false,
+        }
+    }
+}
+
 impl AddonService {
+    async fn addons_for<T>(&self, media: &db::Media) -> Vec<AddonRuntime>
+    where
+        T: ?Sized + Send + Sync + 'static,
+        AddonRuntime: PickCap<T>,
+    {
+        let mut out = Vec::new();
+        for r in self
+            .inner
+            .load()
+            .iter()
+            .filter(|r| r.supports_type(&media.kind))
+        {
+            if PickCap::<T>::pick(r, media).await {
+                out.push(r.clone());
+            }
+        }
+        out
+    }
+
     pub async fn from_db(db: &SqlitePool, config: &crate::Config) -> Result<Self> {
         let runtimes = Self::load_runtimes(db, config).await?;
         Ok(Self {
@@ -835,30 +906,9 @@ impl AddonService {
         force_refresh: bool,
         config: &api::ServerConfiguration,
     ) -> Result<()> {
-        let applicable: Vec<(String, Arc<dyn MetaAddon>)> = {
-            let mut v = Vec::new();
-            for r in self
-                .inner
-                .load()
-                .iter()
-                .filter(|r| r.supports_type(&media.kind))
-            {
-                if let Some(meta) = &r.meta {
-                    if meta
-                        .meta_supports(media)
-                        .await
-                    {
-                        v.push((
-                            r.row
-                                .name
-                                .clone(),
-                            meta.clone(),
-                        ));
-                    }
-                }
-            }
-            v
-        };
+        let applicable = self
+            .addons_for::<dyn MetaAddon>(media)
+            .await;
 
         if applicable.is_empty() {
             return Ok(());
@@ -867,11 +917,16 @@ impl AddonService {
         let results = futures::future::join_all(
             applicable
                 .iter()
-                .map(|(_, addon)| addon.meta_fetch(media, ctx, config)),
+                .map(|r| {
+                    r.meta
+                        .as_ref()
+                        .unwrap()
+                        .meta_fetch(media, ctx, config)
+                }),
         )
         .await;
 
-        for ((name, _), result) in applicable
+        for (r, result) in applicable
             .iter()
             .zip(results)
         {
@@ -879,7 +934,7 @@ impl AddonService {
                 Ok(Some(patch)) => apply_meta(media, patch, force_refresh),
                 Ok(None) => {}
                 Err(e) => {
-                    error!(addon = %name, error = %e, "meta addon error")
+                    error!(addon = %r.row.name, error = %e, "meta addon error")
                 }
             }
         }
@@ -920,7 +975,7 @@ impl AddonService {
                 .filter_map(|r| {
                     r.tree
                         .as_ref()
-                        .filter(|t| t.supports_children(&node))
+                        .filter(|t| t.supports(&node))
                         .cloned()
                 })
                 .collect();
@@ -994,15 +1049,8 @@ impl AddonService {
                     .drain(..db::CHUNK_SIZE)
                     .collect();
 
-                let _permit = ctx
-                    .db_write_semaphore
-                    .acquire()
-                    .await
-                    .unwrap();
-
                 match db::Media::upsert(&ctx.db, &items).await {
                     Ok(_) => {
-                        drop(_permit);
                         save_pending_relations(ctx, &items).await;
                     }
                     Err(e) => {
@@ -1014,15 +1062,8 @@ impl AddonService {
         }
 
         if !batch.is_empty() {
-            let _permit = ctx
-                .db_write_semaphore
-                .acquire()
-                .await
-                .unwrap();
-
             match db::Media::upsert(&ctx.db, &batch).await {
                 Ok(_) => {
-                    drop(_permit);
                     save_pending_relations(ctx, &batch).await;
                 }
                 Err(e) => {
@@ -1101,42 +1142,35 @@ impl AddonService {
         limit: usize,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let addons: Vec<(String, Arc<dyn SearchAddon>)> = self
+        let addons: Vec<AddonRuntime> = self
             .inner
             .load()
             .iter()
-            .filter(|r| r.supports_type(kind))
             .filter(|r| {
-                r.row
-                    .resources
-                    .contains(&ResourceType::Search)
+                r.supports_type(kind)
+                    && r.row
+                        .resources
+                        .contains(&ResourceType::Search)
+                    && r.search
+                        .is_some()
             })
-            .filter(|r| {
-                r.search
-                    .is_some()
-            })
-            .filter_map(|r| {
-                r.search
-                    .as_ref()
-                    .map(|s| {
-                        (
-                            r.row
-                                .name
-                                .clone(),
-                            s.clone(),
-                        )
-                    })
-            })
+            .cloned()
             .collect();
 
-        for (name, addon) in addons {
-            if !addon
+        for r in addons {
+            if !r
+                .search
+                .as_ref()
+                .unwrap()
                 .search_supports(kind)
                 .await
             {
                 continue;
             }
-            match addon
+            match r
+                .search
+                .as_ref()
+                .unwrap()
                 .search(kind, query, limit, ctx)
                 .await
             {
@@ -1153,7 +1187,7 @@ impl AddonService {
                 }
                 Ok(None) => continue,
                 Err(e) => {
-                    warn!(addon = %name, error = %e, "search addon error")
+                    warn!(addon = %r.row.name, error = %e, "search addon error")
                 }
             }
         }
@@ -1166,38 +1200,22 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<crate::api::RemoteImageInfo>> {
-        let addons: Vec<(String, Arc<dyn MetaAddon>)> = self
-            .inner
-            .load()
-            .iter()
-            .filter(|r| {
-                r.meta
-                    .is_some()
-                    && r.supports_type(&media.kind)
-            })
-            .filter_map(|r| {
-                r.meta
-                    .as_ref()
-                    .map(|m| {
-                        (
-                            r.row
-                                .name
-                                .clone(),
-                            m.clone(),
-                        )
-                    })
-            })
-            .collect();
+        let addons = self
+            .addons_for::<dyn MetaAddon>(media)
+            .await;
 
         let mut out = Vec::new();
-        for (name, addon) in addons {
-            match addon
+        for r in addons {
+            match r
+                .meta
+                .as_ref()
+                .unwrap()
                 .images_fetch(media, ctx)
                 .await
             {
                 Ok(images) => out.extend(images),
                 Err(e) => {
-                    warn!(addon = %name, error = %e, "images_fetch failed")
+                    warn!(addon = %r.row.name, error = %e, "images_fetch failed")
                 }
             }
         }
@@ -1210,40 +1228,22 @@ impl AddonService {
         media: &db::Media,
         db: &SqlitePool,
     ) -> Vec<sdks::stremio::Subtitle> {
-        let addons: Vec<(String, Arc<dyn SubtitleAddon>)> = self
-            .inner
-            .load()
-            .iter()
-            .filter(|r| r.supports_type(&media.kind))
-            .filter(|r| {
-                r.row
-                    .resources
-                    .contains(&ResourceType::Subtitles)
-            })
-            .filter_map(|r| {
-                r.subtitle
-                    .as_ref()
-                    .filter(|s| s.subtitle_supports(media))
-                    .map(|s| {
-                        (
-                            r.row
-                                .name
-                                .clone(),
-                            s.clone(),
-                        )
-                    })
-            })
-            .collect();
+        let addons = self
+            .addons_for::<dyn SubtitleAddon>(media)
+            .await;
 
         let mut subs = vec![];
-        for (name, addon) in addons {
-            match addon
+        for r in addons {
+            match r
+                .subtitle
+                .as_ref()
+                .unwrap()
                 .subtitle_fetch(media, db)
                 .await
             {
                 Ok(s) => subs.extend(s),
                 Err(e) => {
-                    warn!(addon = %name, error = %e, "subtitle addon failed")
+                    warn!(addon = %r.row.name, error = %e, "subtitle addon failed")
                 }
             }
         }
@@ -1255,40 +1255,9 @@ impl AddonService {
         media: &db::Media,
         ctx: &AppContext,
     ) -> Result<Vec<db::Media>> {
-        let addons: Vec<(String, Arc<dyn StreamAddon>)> = self
-            .inner
-            .load()
-            .iter()
-            .filter(|r| r.supports_type(&media.kind))
-            .filter(|r| {
-                r.row
-                    .resources
-                    .contains(&ResourceType::Stream)
-            })
-            .filter_map(|r| {
-                r.stream
-                    .as_ref()
-                    .and_then(|s| {
-                        let supports = s.stream_supports(media);
-                        debug!(
-                            addon = %r.row.name,
-                            media_kind = ?media.kind,
-                            supports,
-                            "stream addon filter"
-                        );
-                        if supports {
-                            Some((
-                                r.row
-                                    .name
-                                    .clone(),
-                                s.clone(),
-                            ))
-                        } else {
-                            None
-                        }
-                    })
-            })
-            .collect();
+        let addons = self
+            .addons_for::<dyn StreamAddon>(media)
+            .await;
 
         debug!(
             media_id = %media.id,
@@ -1299,8 +1268,9 @@ impl AddonService {
 
         let tasks: Vec<_> = addons
             .into_iter()
-            .map(|(name, addon)| async move {
-                match addon.get_streams(media, ctx).await {
+            .map(|r| async move {
+                let name = &r.row.name;
+                match r.stream.as_ref().unwrap().get_streams(media, ctx).await {
                     Ok(mut streams) => {
                         if streams.is_empty() {
                             debug!(addon = %name, "addon: no streams");
@@ -1485,7 +1455,7 @@ impl AddonService {
                 r.segment
                     .as_ref()
                     .and_then(|s| {
-                        let supports = s.segment_supports(media);
+                        let supports = s.supports(media);
                         info!(
                             addon = %r.row.name,
                             media_kind = ?media.kind,
