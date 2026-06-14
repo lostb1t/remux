@@ -483,7 +483,8 @@ mod tests {
             updated
                 .external_ids
                 .imdb
-                .as_deref(),
+                .as_ref()
+                .map(|s| s.as_str()),
             Some("tt1375666")
         );
     }

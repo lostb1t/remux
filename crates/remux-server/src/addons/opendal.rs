@@ -1515,10 +1515,11 @@ mod tests {
                 id: common::get_stable_uuid(format!("movie:{}", f.expected_imdb)),
                 kind: db::MediaKind::Movie,
                 external_ids: db::ExternalIds {
-                    imdb: Some(
+                    imdb: db::NonEmptyString::try_new(
                         f.expected_imdb
                             .to_string(),
-                    ),
+                    )
+                    .ok(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1892,7 +1893,7 @@ mod tests {
             // stream_supports must return true — this was the bug: it returned false when
             // it checked .imdb instead of .series_imdb.
             assert!(
-                addon.supports(ep),
+                StreamAddon::supports(&addon, ep),
                 "stream_supports must be true for episode with series_imdb set (e{:?})",
                 ep.idx
             );
@@ -1920,14 +1921,14 @@ mod tests {
         let ep_with_imdb_only = db::Media {
             kind: db::MediaKind::Episode,
             external_ids: db::ExternalIds {
-                imdb: Some("tt0903747".to_string()),
+                imdb: db::NonEmptyString::try_new("tt0903747").ok(),
                 series_imdb: None,
                 ..Default::default()
             },
             ..Default::default()
         };
         assert!(
-            !addon.supports(&ep_with_imdb_only),
+            !StreamAddon::supports(&addon, &ep_with_imdb_only),
             "stream_supports must be false for episode with only imdb (not series_imdb)"
         );
     }

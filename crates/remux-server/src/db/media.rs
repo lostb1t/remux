@@ -5230,7 +5230,8 @@ mod tests {
         let ids = ExternalIds::from_path("[imdbid-tt0133093] The Matrix 1999.mkv");
         assert_eq!(
             ids.imdb
-                .as_deref(),
+                .as_ref()
+                .map(|s| s.as_str()),
             Some("tt0133093")
         );
     }

@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
         Clone,
         PartialEq,
         Eq,
+        PartialOrd,
+        Ord,
         Hash,
         Display,
         Serialize,
