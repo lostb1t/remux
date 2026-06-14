@@ -1,3 +1,19 @@
+# [0.7.0](https://github.com/lostb1t/remux-server/compare/v0.6.0...v0.7.0) (2026-06-14)
+
+
+### Bug Fixes
+
+* enable download flag ([3ddf38d](https://github.com/lostb1t/remux-server/commit/3ddf38d1ac73bd89a5554117951c68ac6f078437))
+* implement tree trait to tmdb addon ([a56c8ba](https://github.com/lostb1t/remux-server/commit/a56c8ba171cc630e0258a257faecc09b5817a356))
+* make sure to load streams on audio endpoints ([0865b82](https://github.com/lostb1t/remux-server/commit/0865b8290076e75cef32384dc8b74cfa826cbbd1))
+
+
+### Features
+
+* add Jellyfin SDK-compatible user config route ([#89](https://github.com/lostb1t/remux-server/issues/89)) ([02414e9](https://github.com/lostb1t/remux-server/commit/02414e9ea35fb204030fbbc5acc4ef416ef25a93))
+* implement /Items/{id}/Similar endpoint ([#87](https://github.com/lostb1t/remux-server/issues/87)) ([e765b3e](https://github.com/lostb1t/remux-server/commit/e765b3ee205d7feaf866ade8c418765de4bf333d))
+* set default internet quality for jellyfin web to auto ([4c7bc9c](https://github.com/lostb1t/remux-server/commit/4c7bc9c88c5e1bf5d5e8558a44165fce9523932a))
+
 # [0.6.0](https://github.com/lostb1t/remux-server/compare/v0.5.0...v0.6.0) (2026-06-11)
 
 
