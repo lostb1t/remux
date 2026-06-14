@@ -896,6 +896,7 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
         || media.kind == db::MediaKind::Episode
         || media.kind == db::MediaKind::Track
     {
+        item.can_download = Some(true);
         item.media_sources = match media
             .sources
             .clone()
