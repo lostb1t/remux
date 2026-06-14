@@ -1039,7 +1039,7 @@ pub async fn library_refresh(
 ) -> Result<StatusCode> {
     let _ = state
         .tasks
-        .run_task("CatalogImport")
+        .run_task("RefreshLibraryTask")
         .await;
     Ok(StatusCode::NO_CONTENT)
 }
