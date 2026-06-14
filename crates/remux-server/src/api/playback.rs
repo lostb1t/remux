@@ -1073,7 +1073,21 @@ async fn videos_stream_inner(
     .await?
     .context_not_found("not found")?;
 
-    if media.kind == db::MediaKind::Movie
+    if media.kind == db::MediaKind::StreamGroup {
+        let group_id = media.id;
+        let candidates = db::StreamGroup::streams_for(
+            &state
+                .ctx
+                .db,
+            &group_id,
+            &id,
+        )
+        .await?;
+        media = candidates
+            .into_iter()
+            .next()
+            .context_not_found("no streams available for this group")?;
+    } else if media.kind == db::MediaKind::Movie
         || media.kind == db::MediaKind::Episode
         || media.kind == db::MediaKind::Track
     {
