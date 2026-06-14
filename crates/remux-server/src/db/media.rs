@@ -2088,23 +2088,6 @@ impl Media {
             && !is_manual_collection
             && !is_smart_collection;
 
-        if !filter
-            .filter_rules
-            .is_empty()
-            || filter
-                .parent_id
-                .is_some()
-        {
-            debug!(
-                parent_id = ?filter.parent_id,
-                is_smart_collection,
-                is_manual_collection,
-                use_recursive,
-                filter_rules = ?filter.filter_rules,
-                "get_by_filter: resolved query path"
-            );
-        }
-
         // Genres are flat global records linked to content via media_relations, not
         // via parent_id. When scoping a genre query to a parent collection/folder we
         // must filter by relation instead of by the normal parent_id/CTE scope.
