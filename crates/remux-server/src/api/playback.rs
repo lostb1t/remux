@@ -1057,6 +1057,36 @@ pub async fn videos_stream_by_container(
     videos_stream_inner(headers, state, id, q).await
 }
 
+fn ext_from_descriptor(descriptor: &crate::stream::StreamDescriptor) -> String {
+    match descriptor {
+        crate::stream::StreamDescriptor::Local(path) => path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mkv")
+            .to_string(),
+        crate::stream::StreamDescriptor::Http { url, .. }
+        | crate::stream::StreamDescriptor::Rtsp { url } => url
+            .split('?')
+            .next()
+            .unwrap_or(url.as_str())
+            .rsplit('.')
+            .next()
+            .filter(|e| !e.is_empty() && e.len() <= 5)
+            .unwrap_or("mkv")
+            .to_string(),
+        crate::stream::StreamDescriptor::Torrent { file_hint, .. } => file_hint
+            .as_deref()
+            .and_then(|h| {
+                std::path::Path::new(h)
+                    .extension()
+                    .and_then(|e| e.to_str())
+            })
+            .unwrap_or("mkv")
+            .to_string(),
+        _ => "mkv".to_string(),
+    }
+}
+
 async fn videos_stream_inner(
     headers: headers::HeaderMap,
     state: AppState,
@@ -1114,10 +1144,11 @@ async fn videos_stream_inner(
         .context_not_found("no playable source found")?;
     }
 
-    let descriptor = media
+    let si = media
         .stream_info
-        .map(|si| si.descriptor)
         .context_not_found("media source has no URL")?;
+    let filename_hint = si.filename;
+    let descriptor = si.descriptor;
 
     // Direct play: serve bytes directly through the StreamSource trait.
     // This handles HTTP, local files, torrents, and opendal without going through
@@ -1144,7 +1175,21 @@ async fn videos_stream_inner(
                 .serve(&state, &headers)
                 .await?
         };
-        return Ok(resp);
+        let filename = filename_hint.unwrap_or_else(|| {
+            format!("{}.{}", media.title, ext_from_descriptor(&descriptor))
+        });
+        let safe = filename
+            .replace('"', "")
+            .replace('\\', "");
+        let mut response = resp.into_response();
+        if let Ok(val) =
+            http::HeaderValue::from_str(&format!("attachment; filename=\"{}\"", safe))
+        {
+            response
+                .headers_mut()
+                .insert(http::header::CONTENT_DISPOSITION, val);
+        }
+        return Ok(response);
     }
 
     let url = descriptor.server_input(
