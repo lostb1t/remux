@@ -1054,7 +1054,6 @@ impl AddonService {
                         save_pending_relations(ctx, &items).await;
                     }
                     Err(e) => {
-                        dbg!(&items[..3.min(items.len())]);
                         error!(error = %e, "failed to upsert media batch");
                     }
                 }

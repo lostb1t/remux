@@ -279,18 +279,22 @@ async fn shows_nextup_all(
         .enable_resumable
         .unwrap_or(true);
 
-    // Drive from user_media_state (small, indexed by user_id) via a UNION subquery
-    // to avoid a full media table scan. The OR on play_count/playback_position prevents
-    // a single index range scan, so we split it into two index-friendly legs.
+    // CROSS JOIN forces SQLite to drive from the (small, user-filtered) UNION
+    // result rather than scanning all episodes via idx_media_kind_grandparent.
+    // Without CROSS JOIN the planner often picks the episode scan because it
+    // can't estimate the cardinality of the derived table. idx_media_id_kind_gp
+    // makes each media lookup a single covering-index hop instead of two hops
+    // (pk-index → rowid → main table). UNION keeps two index-friendly legs on
+    // idx_ums_user_play_state.
     let active_series: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT DISTINCT m.grandparent_id \
-         FROM media m \
-         WHERE m.id IN ( \
+         FROM ( \
            SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count > 0 \
            UNION \
            SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count = 0 AND playback_position > 0 \
-         ) \
-         AND m.kind = 'episode' \
+         ) AS active \
+         CROSS JOIN media m ON m.id = active.media_id \
+         WHERE m.kind = 'episode' \
          AND m.grandparent_id IS NOT NULL \
          LIMIT ?",
     )
