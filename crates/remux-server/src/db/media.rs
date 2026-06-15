@@ -1515,10 +1515,7 @@ impl Media {
             description = COALESCE(excluded.description, media.description),
             trailers = COALESCE(excluded.trailers, media.trailers),
             stream_info = COALESCE(excluded.stream_info, media.stream_info),
-            probe_data = CASE
-                WHEN excluded.stream_info IS NOT media.stream_info THEN NULL
-                ELSE COALESCE(excluded.probe_data, media.probe_data)
-            END,
+            probe_data = COALESCE(excluded.probe_data, media.probe_data),
             grandparent_id = excluded.grandparent_id,
             external_ids = excluded.external_ids,
             external_ratings = COALESCE(excluded.external_ratings, media.external_ratings),
@@ -1561,7 +1558,7 @@ impl Media {
         .bind(&self.description)
         .bind(sqlx::types::Json(&self.trailers))
         .bind(sqlx::types::Json(&self.stream_info))
-        .bind(sqlx::types::Json(&self.probe_data))
+        .bind(self.probe_data.as_ref().map(sqlx::types::Json))
         .bind(self.promoted)
         .bind(&self.collection_kind)
         .bind(&self.collection_media_kind)
@@ -1662,7 +1659,11 @@ impl Media {
                     .push_bind(&item.description)
                     .push_bind(sqlx::types::Json(&item.trailers))
                     .push_bind(sqlx::types::Json(&item.stream_info))
-                    .push_bind(sqlx::types::Json(&item.probe_data))
+                    .push_bind(
+                        item.probe_data
+                            .as_ref()
+                            .map(sqlx::types::Json),
+                    )
                     .push_bind(&item.promoted)
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
@@ -1764,7 +1765,11 @@ impl Media {
                     .push_bind(&item.description)
                     .push_bind(sqlx::types::Json(&item.trailers))
                     .push_bind(sqlx::types::Json(&item.stream_info))
-                    .push_bind(sqlx::types::Json(&item.probe_data))
+                    .push_bind(
+                        item.probe_data
+                            .as_ref()
+                            .map(sqlx::types::Json),
+                    )
                     .push_bind(&item.promoted)
                     .push_bind(&item.collection_kind)
                     .push_bind(&item.collection_media_kind)
@@ -1813,10 +1818,7 @@ impl Media {
                 stream_info = COALESCE(excluded.stream_info, media.stream_info),
                 external_ids = excluded.external_ids,
                 external_ratings = COALESCE(excluded.external_ratings, media.external_ratings),
-                probe_data = CASE
-                WHEN excluded.stream_info IS NOT media.stream_info THEN NULL
-                ELSE COALESCE(excluded.probe_data, media.probe_data)
-            END,
+                probe_data = COALESCE(excluded.probe_data, media.probe_data),
                 grandparent_id = excluded.grandparent_id,
                 updated_at = excluded.updated_at,
                 promoted = excluded.promoted,
