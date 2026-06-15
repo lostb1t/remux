@@ -2237,6 +2237,17 @@ mod tests {
             .await
             .expect("save track");
 
+        // Mark streams as already-refreshed so refresh_streams exits via the
+        // TTL fast-path and never sets streams_refreshed_at to CURRENT_TIMESTAMP
+        // (second-granularity). Without this, a second boundary crossed in slow
+        // CI would make the staleness filter drop the test streams.
+        sqlx::query("UPDATE media SET streams_refreshed_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(movie.id)
+            .execute(&ctx.db)
+            .await
+            .expect("set streams_refreshed_at");
+
         let mut source_a = db::Media {
             title: "1080p".to_string(),
             kind: db::MediaKind::Stream,
