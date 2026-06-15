@@ -1,3 +1,16 @@
+# [0.8.0](https://github.com/lostb1t/remux-server/compare/v0.7.0...v0.8.0) (2026-06-15)
+
+
+### Bug Fixes
+
+* missing channel guides ([e9bf908](https://github.com/lostb1t/remux-server/commit/e9bf9081aeac9865b1ee8aff2827bfa33ac47ca6))
+* stream group lookup ([34ecf5e](https://github.com/lostb1t/remux-server/commit/34ecf5ec4595bd2b10c87f3d9a03c80e3a3de90c))
+
+
+### Features
+
+* downloads uses filename if avaiable ([1afc5f9](https://github.com/lostb1t/remux-server/commit/1afc5f93951e27d3eea35234503d492c47bdd258))
+
 # [0.7.0](https://github.com/lostb1t/remux-server/compare/v0.6.0...v0.7.0) (2026-06-14)
 
 
