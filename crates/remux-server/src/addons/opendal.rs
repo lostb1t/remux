@@ -481,102 +481,73 @@ impl SubtitleAddon for OpendalAddon {
         media: &db::Media,
         db: &sqlx::SqlitePool,
     ) -> Result<Vec<SubtitleInfo>> {
-        // Resolve the video paths for this media item (mirrors get_streams logic).
-        let video_paths: Vec<String> = {
-            let imdb_id = if self.media_kind == "episode" {
-                media
-                    .external_ids
-                    .series_imdb
-                    .as_deref()
-            } else {
-                media
-                    .external_ids
-                    .imdb
-                    .as_deref()
-            };
-            let Some(imdb_id) = imdb_id else {
-                return Ok(vec![]);
-            };
-            if self.media_kind == "episode" {
-                let season = media
-                    .parent_idx
-                    .unwrap_or(0);
-                let episode = media
-                    .idx
-                    .unwrap_or(0);
-                sqlx::query_scalar(
-                    "SELECT path FROM opendal_files \
-                     WHERE addon_id = ? AND media_kind = 'episode' \
-                     AND imdb_id = ? AND season = ? AND episode = ?",
-                )
-                .bind(self.addon_id)
-                .bind(imdb_id)
-                .bind(season)
-                .bind(episode)
-                .fetch_all(db)
-                .await?
-            } else {
-                sqlx::query_scalar(
-                    "SELECT path FROM opendal_files \
-                     WHERE addon_id = ? AND media_kind = 'movie' AND imdb_id = ?",
-                )
-                .bind(self.addon_id)
-                .bind(imdb_id)
-                .fetch_all(db)
-                .await?
-            }
-        };
-
-        if video_paths.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Fetch subtitle rows whose `title` column points to one of those video paths.
-        let mut qb = sqlx::QueryBuilder::new(
-            "SELECT id, path, name, imdb_id, season, episode FROM opendal_files \
-             WHERE addon_id = ",
-        );
-        qb.push_bind(self.addon_id);
-        qb.push(" AND media_kind = 'subtitle' AND title IN (");
-        let mut sep = qb.separated(", ");
-        for p in &video_paths {
-            sep.push_bind(p);
-        }
-        qb.push(")");
-
         #[derive(sqlx::FromRow)]
         struct SubRow {
             id: Uuid,
             path: String,
-            imdb_id: Option<String>,
-            season: Option<i64>,
-            episode: Option<i64>,
+            name: String,
         }
 
-        let rows: Vec<SubRow> = qb
-            .build_query_as()
+        let rows: Vec<SubRow> = if self.media_kind == "episode" {
+            let Some(imdb_id) = media
+                .external_ids
+                .series_imdb
+                .as_deref()
+            else {
+                return Ok(vec![]);
+            };
+            let season = media
+                .parent_idx
+                .unwrap_or(0);
+            let episode = media
+                .idx
+                .unwrap_or(0);
+            sqlx::query_as(
+                "SELECT id, path, name FROM opendal_files \
+                 WHERE addon_id = ? AND media_kind = 'subtitle' \
+                 AND imdb_id = ? AND season = ? AND episode = ?",
+            )
+            .bind(self.addon_id)
+            .bind(imdb_id)
+            .bind(season)
+            .bind(episode)
             .fetch_all(db)
-            .await?;
+            .await?
+        } else {
+            let Some(imdb_id) = media
+                .external_ids
+                .imdb
+                .as_deref()
+            else {
+                return Ok(vec![]);
+            };
+            sqlx::query_as(
+                "SELECT id, path, name FROM opendal_files \
+                 WHERE addon_id = ? AND media_kind = 'subtitle' AND imdb_id = ?",
+            )
+            .bind(self.addon_id)
+            .bind(imdb_id)
+            .fetch_all(db)
+            .await?
+        };
 
         Ok(rows
             .into_iter()
-            .map(|r| SubtitleInfo {
-                id: r
-                    .id
-                    .to_string(),
-                url: Some(crate::stream::StreamDescriptor::Opendal {
-                    addon_id: self.addon_id,
-                    path: r.path,
-                }),
-                lang: r.imdb_id,
-                is_forced: r
-                    .season
-                    .unwrap_or(0)
-                    != 0,
-                is_hi: r
-                    .episode
-                    .unwrap_or(0)
-                    != 0,
+            .map(|r| {
+                let stem = stem_without_ext(&r.name);
+                let (_, lang, is_forced, is_hi) = split_subtitle_stem(&stem);
+                SubtitleInfo {
+                    id: r
+                        .id
+                        .to_string(),
+                    url: Some(crate::stream::StreamDescriptor::Opendal {
+                        addon_id: self.addon_id,
+                        path: r.path,
+                    }),
+                    lang,
+                    is_forced,
+                    is_hi,
+                }
             })
             .collect())
     }
@@ -964,39 +935,59 @@ fn stem_without_ext(name: &str) -> String {
     }
 }
 
-/// Parse the Jellyfin-style subtitle suffix from a subtitle file stem.
+/// Split a subtitle stem (filename without its subtitle extension) into its base and subtitle metadata.
 ///
-/// For a subtitle named `Movie.en.forced.srt`, the stem is `Movie.en.forced`.
-/// After stripping the video stem (`Movie`), the remaining suffix is `.en.forced`.
-///
-/// Returns `(lang, is_forced, is_hi)`.
-fn parse_subtitle_suffix(suffix: &str) -> (Option<String>, bool, bool) {
-    // suffix looks like ".en.forced" or ".fr.hi" or ".srt" (no lang), etc.
-    let parts: Vec<&str> = suffix
-        .trim_start_matches('.')
+/// For `Breaking.Bad.S01E01.en.forced` returns `("Breaking.Bad.S01E01", Some("en"), true, false)`.
+/// Scans right-to-left: known flags first, then a 2–3-letter lang code, remainder is the base.
+fn split_subtitle_stem(stem: &str) -> (String, Option<String>, bool, bool) {
+    let parts: Vec<&str> = stem
         .split('.')
-        .filter(|s| !s.is_empty())
         .collect();
-
-    let mut lang: Option<String> = None;
+    if parts.is_empty() {
+        return (stem.to_string(), None, false, false);
+    }
+    let mut suffix_start = parts.len();
     let mut is_forced = false;
     let mut is_hi = false;
 
-    for part in &parts {
-        let lc = part.to_ascii_lowercase();
-        if lc == "forced" {
-            is_forced = true;
-        } else if lc == "hi" || lc == "sdh" || lc == "cc" {
-            is_hi = true;
-        } else if lc == "default" {
-            // "default" is a Jellyfin flag, not a language tag; skip
-        } else if lang.is_none() {
-            // First non-flag, non-format token is the language code
-            lang = Some(part.to_string());
+    while suffix_start > 0 {
+        match parts[suffix_start - 1]
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "forced" => {
+                is_forced = true;
+                suffix_start -= 1;
+            }
+            "hi" | "sdh" | "cc" => {
+                is_hi = true;
+                suffix_start -= 1;
+            }
+            "default" => {
+                suffix_start -= 1;
+            }
+            _ => break,
         }
     }
 
-    (lang, is_forced, is_hi)
+    let lang = if suffix_start > 0 {
+        let part = parts[suffix_start - 1];
+        if part.len() >= 2
+            && part.len() <= 3
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphabetic())
+        {
+            suffix_start -= 1;
+            Some(part.to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    (parts[..suffix_start].join("."), lang, is_forced, is_hi)
 }
 
 async fn scan_addon(
@@ -1049,14 +1040,6 @@ async fn scan_addon(
 
     let mut seen_ids: Vec<Uuid> = Vec::new();
     let mut upserted = 0usize;
-    // Subtitle sidecar files deferred until the video pass is complete so we can
-    // match them against indexed video stems.
-    let mut pending_subs: Vec<(String, String)> = Vec::new(); // (path, name)
-    // dir (lowercased) → HashMap<video_stem (lowercased), video_path>
-    let mut video_stems: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, String>,
-    > = std::collections::HashMap::new();
 
     for (operator, list_from, path_prefix) in scan_roots {
         let mut lister = operator
@@ -1097,9 +1080,123 @@ async fn scan_addon(
                 .unwrap_or("")
                 .to_lowercase();
 
-            // Collect subtitle sidecars for post-processing.
+            // Subtitle files: parse IMDB from filename (same convention as video files).
             if SUBTITLE_EXTENSIONS.contains(&ext.as_str()) {
-                pending_subs.push((path, name));
+                let stem = stem_without_ext(&name);
+                let (base_stem, _, _, _) = split_subtitle_stem(&stem);
+                let jellyfin_ids = db::ExternalIds::from_path(&path);
+                let parsed = hunch::hunch(&base_stem);
+
+                let (imdb_id, season, episode, year, title_str) =
+                    match media_kind.as_str() {
+                        "episode" => {
+                            let season = parsed
+                                .season()
+                                .map(|s| s as i64);
+                            let episode = parsed
+                                .episode()
+                                .map(|e| e as i64);
+                            let year = parsed
+                                .year()
+                                .map(|y| y as i64);
+                            let clean_title = parsed
+                                .title()
+                                .unwrap_or(base_stem.as_str())
+                                .to_string();
+                            let existing_imdb =
+                                fetch_existing_imdb(ctx, addon.id, &path).await?;
+                            let imdb_id = if let Some(id) = existing_imdb {
+                                Some(id)
+                            } else if !jellyfin_ids.is_empty() {
+                                if let Some(client) = tmdb {
+                                    crate::addons::tmdb::resolve_imdb_from_ids(
+                                        &jellyfin_ids,
+                                        true,
+                                        client,
+                                    )
+                                    .await
+                                    .map(Into::into)
+                                } else {
+                                    jellyfin_ids
+                                        .imdb
+                                        .clone()
+                                        .map(Into::into)
+                                }
+                            } else {
+                                resolve_imdb(tmdb, &clean_title, None, true).await
+                            };
+                            (imdb_id, season, episode, year, clean_title)
+                        }
+                        _ => {
+                            let year = parsed
+                                .year()
+                                .map(|y| y as i64);
+                            let clean_title = parsed
+                                .title()
+                                .unwrap_or(base_stem.as_str())
+                                .to_string();
+                            let existing_imdb =
+                                fetch_existing_imdb(ctx, addon.id, &path).await?;
+                            let imdb_id = if let Some(id) = existing_imdb {
+                                Some(id)
+                            } else if !jellyfin_ids.is_empty() {
+                                if let Some(client) = tmdb {
+                                    crate::addons::tmdb::resolve_imdb_from_ids(
+                                        &jellyfin_ids,
+                                        false,
+                                        client,
+                                    )
+                                    .await
+                                    .map(Into::into)
+                                } else {
+                                    jellyfin_ids
+                                        .imdb
+                                        .clone()
+                                        .map(Into::into)
+                                }
+                            } else {
+                                resolve_imdb(tmdb, &clean_title, year, false).await
+                            };
+                            (imdb_id, None, None, year, clean_title)
+                        }
+                    };
+
+                if imdb_id.is_none() {
+                    debug!(path, "opendal: subtitle has no IMDB id, skipping");
+                    continue;
+                }
+
+                let sub_id = common::get_stable_uuid(format!("{}:{}", addon.id, path));
+                seen_ids.push(sub_id);
+                let now = Utc::now()
+                    .naive_utc()
+                    .to_string();
+                sqlx::query(
+                    "INSERT INTO opendal_files \
+                     (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at) \
+                     VALUES (?, ?, 'subtitle', ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                       path = excluded.path, name = excluded.name, \
+                       title = excluded.title, \
+                       imdb_id = COALESCE(opendal_files.imdb_id, excluded.imdb_id), \
+                       season = excluded.season, episode = excluded.episode, \
+                       year = excluded.year, scanned_at = excluded.scanned_at",
+                )
+                .bind(sub_id)
+                .bind(addon.id)
+                .bind(&path)
+                .bind(&name)
+                .bind(&title_str)
+                .bind(imdb_id.as_deref())
+                .bind(season)
+                .bind(episode)
+                .bind(year)
+                .bind(&now)
+                .execute(&ctx.db)
+                .await?;
+
+                debug!(path, "opendal: indexed subtitle");
+                upserted += 1;
                 continue;
             }
 
@@ -1371,100 +1468,7 @@ async fn scan_addon(
             .await?;
 
             upserted += 1;
-
-            // Record video stem for subtitle association.
-            let dir = std::path::Path::new(&path)
-                .parent()
-                .map(|p| {
-                    p.to_string_lossy()
-                        .to_string()
-                })
-                .unwrap_or_default()
-                .to_lowercase();
-            let vstem = stem_without_ext(&name).to_lowercase();
-            video_stems
-                .entry(dir)
-                .or_default()
-                .insert(vstem, path.clone());
         }
-    }
-
-    // Process subtitle sidecar files collected during the scan.
-    let now_str = Utc::now()
-        .naive_utc()
-        .to_string();
-    let mut sub_upserted = 0usize;
-    for (sub_path, sub_name) in pending_subs {
-        let sub_stem = stem_without_ext(&sub_name); // e.g. "Movie (2010).en"
-        let dir = std::path::Path::new(&sub_path)
-            .parent()
-            .map(|p| {
-                p.to_string_lossy()
-                    .to_string()
-            })
-            .unwrap_or_default()
-            .to_lowercase();
-
-        // Find the video file in the same directory whose stem is a prefix of this subtitle stem.
-        let Some(video_stems_in_dir) = video_stems.get(&dir) else {
-            continue;
-        };
-        let sub_stem_lc = sub_stem.to_lowercase();
-        let Some(video_path) = video_stems_in_dir
-            .iter()
-            .find_map(|(vstem, vpath)| {
-                let rest = sub_stem_lc.strip_prefix(vstem.as_str())?;
-                if rest.starts_with('.') {
-                    Some(vpath)
-                } else {
-                    None
-                }
-            })
-        else {
-            debug!(
-                sub_path,
-                "opendal: subtitle has no matching video, skipping"
-            );
-            continue;
-        };
-
-        // Parse language/flags from the suffix after the video stem.
-        let suffix = &sub_stem[video_path
-            .rsplit('/')
-            .next()
-            .map(|n| stem_without_ext(n).len())
-            .unwrap_or(0)..];
-        let (lang, is_forced, is_hi) = parse_subtitle_suffix(suffix);
-
-        let sub_id = common::get_stable_uuid(format!("{}:{}", addon.id, sub_path));
-        seen_ids.push(sub_id);
-
-        sqlx::query(
-            "INSERT INTO opendal_files \
-             (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at) \
-             VALUES (?, ?, 'subtitle', ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?) \
-             ON CONFLICT(id) DO UPDATE SET \
-               path = excluded.path, name = excluded.name, \
-               title = excluded.title, imdb_id = excluded.imdb_id, \
-               season = excluded.season, episode = excluded.episode, \
-               scanned_at = excluded.scanned_at",
-        )
-        .bind(sub_id)
-        .bind(addon.id)
-        .bind(&sub_path)
-        .bind(&sub_name)
-        .bind(video_path)            // title col → associated video path
-        .bind(lang.as_deref())       // imdb_id col → language code
-        .bind(is_forced as i64)      // season col → is_forced flag
-        .bind(is_hi as i64)          // episode col → is_hi flag
-        .bind(&now_str)
-        .execute(&ctx.db)
-        .await?;
-
-        if let Some(l) = &lang {
-            debug!(sub_path, lang = %l, is_forced, is_hi, "opendal: indexed subtitle");
-        }
-        sub_upserted += 1;
     }
 
     let deleted = prune_stale_paths(ctx, addon.id, &seen_ids).await?;
@@ -1472,7 +1476,6 @@ async fn scan_addon(
     info!(
         addon = %addon.name,
         upserted,
-        sub_upserted,
         deleted,
         "opendal: scan complete"
     );
@@ -2539,13 +2542,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Subtitle suffix parser unit tests
+    // Subtitle stem splitter unit tests
     // -----------------------------------------------------------------------
 
     #[test]
     fn opendal_subtitle_suffix_parser() {
         struct Case {
-            suffix: &'static str,
+            stem: &'static str,
+            base: &'static str,
             lang: Option<&'static str>,
             is_forced: bool,
             is_hi: bool,
@@ -2553,37 +2557,50 @@ mod tests {
 
         let cases = &[
             Case {
-                suffix: ".en",
+                stem: "The.Matrix.1999.en",
+                base: "The.Matrix.1999",
                 lang: Some("en"),
                 is_forced: false,
                 is_hi: false,
             },
             Case {
-                suffix: ".fr.forced",
+                stem: "The.Matrix.1999.fr.forced",
+                base: "The.Matrix.1999",
                 lang: Some("fr"),
                 is_forced: true,
                 is_hi: false,
             },
             Case {
-                suffix: ".de.hi",
+                stem: "The.Matrix.1999.de.hi",
+                base: "The.Matrix.1999",
                 lang: Some("de"),
                 is_forced: false,
                 is_hi: true,
             },
             Case {
-                suffix: "",
+                stem: "The.Matrix.1999",
+                base: "The.Matrix.1999",
                 lang: None,
                 is_forced: false,
                 is_hi: false,
             },
             Case {
-                suffix: ".en.forced.hi",
+                stem: "The.Matrix.1999.en.forced.hi",
+                base: "The.Matrix.1999",
                 lang: Some("en"),
                 is_forced: true,
                 is_hi: true,
             },
             Case {
-                suffix: ".sdh",
+                stem: "Breaking.Bad.S01E01.en.forced",
+                base: "Breaking.Bad.S01E01",
+                lang: Some("en"),
+                is_forced: true,
+                is_hi: false,
+            },
+            Case {
+                stem: "Movie.sdh",
+                base: "Movie",
                 lang: None,
                 is_forced: false,
                 is_hi: true,
@@ -2591,19 +2608,15 @@ mod tests {
         ];
 
         for c in cases {
-            let (lang, is_forced, is_hi) = parse_subtitle_suffix(c.suffix);
-            assert_eq!(
-                lang.as_deref(),
-                c.lang,
-                "lang mismatch for suffix {:?}",
-                c.suffix
-            );
+            let (base, lang, is_forced, is_hi) = split_subtitle_stem(c.stem);
+            assert_eq!(base, c.base, "base mismatch for {:?}", c.stem);
+            assert_eq!(lang.as_deref(), c.lang, "lang mismatch for {:?}", c.stem);
             assert_eq!(
                 is_forced, c.is_forced,
                 "is_forced mismatch for {:?}",
-                c.suffix
+                c.stem
             );
-            assert_eq!(is_hi, c.is_hi, "is_hi mismatch for {:?}", c.suffix);
+            assert_eq!(is_hi, c.is_hi, "is_hi mismatch for {:?}", c.stem);
         }
     }
 
@@ -2615,14 +2628,7 @@ mod tests {
     async fn opendal_subtitle_scan_and_fetch() {
         let dir = tempfile::tempdir().unwrap();
         let base = "[imdbid-tt0133093] The Matrix (1999)";
-        // Video file
-        std::fs::write(
-            dir.path()
-                .join(format!("{base}.mkv")),
-            b"fake",
-        )
-        .unwrap();
-        // Subtitle sidecars
+        // Subtitle files only — no video required.
         std::fs::write(
             dir.path()
                 .join(format!("{base}.en.srt")),
@@ -2653,36 +2659,16 @@ mod tests {
             .await
             .unwrap();
 
-        // Three subtitle rows should be indexed.
+        // Three subtitle rows should be indexed with the correct IMDB id.
         let sub_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM opendal_files WHERE addon_id = ? AND media_kind = 'subtitle'",
+            "SELECT COUNT(*) FROM opendal_files \
+             WHERE addon_id = ? AND media_kind = 'subtitle' AND imdb_id = 'tt0133093'",
         )
         .bind(db_addon.id)
         .fetch_one(&ctx.db)
         .await
         .unwrap();
         assert_eq!(sub_count, 3, "expected 3 subtitle rows");
-
-        // Verify flags are stored correctly (season = is_forced, episode = is_hi).
-        let forced_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM opendal_files \
-             WHERE addon_id = ? AND media_kind = 'subtitle' AND season = 1",
-        )
-        .bind(db_addon.id)
-        .fetch_one(&ctx.db)
-        .await
-        .unwrap();
-        assert_eq!(forced_count, 1, "expected 1 forced subtitle");
-
-        let hi_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM opendal_files \
-             WHERE addon_id = ? AND media_kind = 'subtitle' AND episode = 1",
-        )
-        .bind(db_addon.id)
-        .fetch_one(&ctx.db)
-        .await
-        .unwrap();
-        assert_eq!(hi_count, 1, "expected 1 HI subtitle");
 
         // subtitle_fetch returns SubtitleInfo with Opendal descriptors.
         let movie_media = db::Media {
@@ -2742,25 +2728,26 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // E2E: subtitle with no matching video in same dir is not indexed
+    // E2E: subtitle without an IMDB id is not indexed
     // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn opendal_subtitle_no_orphan() {
         let dir = tempfile::tempdir().unwrap();
-        // Video in one dir, subtitle for a *different* name in another
-        let sub_dir = dir
-            .path()
-            .join("subs");
-        std::fs::create_dir_all(&sub_dir).unwrap();
+        // No [imdbid-...] tag and no TMDB client → cannot resolve IMDB → skipped.
         std::fs::write(
             dir.path()
-                .join("[imdbid-tt0133093] The Matrix (1999).mkv"),
-            b"fake",
+                .join("unresolvable.en.srt"),
+            b"subtitle",
         )
         .unwrap();
-        // This subtitle lives in a subdirectory with no matching video stem
-        std::fs::write(sub_dir.join("unrelated.en.srt"), b"subtitle").unwrap();
+        // This one has an IMDB tag and must be indexed.
+        std::fs::write(
+            dir.path()
+                .join("[imdbid-tt0133093] The Matrix (1999).en.srt"),
+            b"subtitle",
+        )
+        .unwrap();
 
         let (_, guard) = new_test_server()
             .await
@@ -2780,7 +2767,10 @@ mod tests {
         .fetch_one(&ctx.db)
         .await
         .unwrap();
-        assert_eq!(sub_count, 0, "orphan subtitle should not be indexed");
+        assert_eq!(
+            sub_count, 1,
+            "only the subtitle with an IMDB tag should be indexed"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2790,13 +2780,9 @@ mod tests {
     #[tokio::test]
     async fn opendal_subtitle_stale_prune() {
         let dir = tempfile::tempdir().unwrap();
-        let video = dir
-            .path()
-            .join("[imdbid-tt0133093] The Matrix (1999).mkv");
         let sub = dir
             .path()
             .join("[imdbid-tt0133093] The Matrix (1999).en.srt");
-        std::fs::write(&video, b"fake").unwrap();
         std::fs::write(&sub, b"subtitle").unwrap();
 
         let (_, guard) = new_test_server()
