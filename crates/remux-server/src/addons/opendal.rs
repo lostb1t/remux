@@ -107,7 +107,11 @@ impl AddonPreset for OpendalLocalPreset {
             description: "Index and stream video or audio files from a local path."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream, ResourceType::Catalog],
+            supported_resources: vec![
+                ResourceType::Stream,
+                ResourceType::Catalog,
+                ResourceType::Subtitles,
+            ],
             supported_types: vec![
                 MediaKind::Movie,
                 MediaKind::Episode,
@@ -187,7 +191,11 @@ impl AddonPreset for OpendalWebdavPreset {
             description: "Index and stream video or audio files from a WebDAV server."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream, ResourceType::Catalog],
+            supported_resources: vec![
+                ResourceType::Stream,
+                ResourceType::Catalog,
+                ResourceType::Subtitles,
+            ],
             supported_types: vec![
                 MediaKind::Movie,
                 MediaKind::Episode,
@@ -481,14 +489,7 @@ impl SubtitleAddon for OpendalAddon {
         media: &db::Media,
         db: &sqlx::SqlitePool,
     ) -> Result<Vec<SubtitleInfo>> {
-        #[derive(sqlx::FromRow)]
-        struct SubRow {
-            id: Uuid,
-            path: String,
-            name: String,
-        }
-
-        let rows: Vec<SubRow> = if self.media_kind == "episode" {
+        let files: Vec<OpendalFile> = if self.media_kind == "episode" {
             let Some(imdb_id) = media
                 .external_ids
                 .series_imdb
@@ -503,7 +504,8 @@ impl SubtitleAddon for OpendalAddon {
                 .idx
                 .unwrap_or(0);
             sqlx::query_as(
-                "SELECT id, path, name FROM opendal_files \
+                "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
+                 FROM opendal_files \
                  WHERE addon_id = ? AND media_kind = 'subtitle' \
                  AND imdb_id = ? AND season = ? AND episode = ?",
             )
@@ -522,7 +524,8 @@ impl SubtitleAddon for OpendalAddon {
                 return Ok(vec![]);
             };
             sqlx::query_as(
-                "SELECT id, path, name FROM opendal_files \
+                "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
+                 FROM opendal_files \
                  WHERE addon_id = ? AND media_kind = 'subtitle' AND imdb_id = ?",
             )
             .bind(self.addon_id)
@@ -531,18 +534,18 @@ impl SubtitleAddon for OpendalAddon {
             .await?
         };
 
-        Ok(rows
+        Ok(files
             .into_iter()
-            .map(|r| {
-                let stem = stem_without_ext(&r.name);
+            .map(|f| {
+                let stem = stem_without_ext(&f.name);
                 let (_, lang, is_forced, is_hi) = split_subtitle_stem(&stem);
                 SubtitleInfo {
-                    id: r
-                        .id
-                        .to_string(),
+                    id: f
+                        .path
+                        .clone(),
                     url: Some(crate::stream::StreamDescriptor::Opendal {
                         addon_id: self.addon_id,
-                        path: r.path,
+                        path: f.path,
                     }),
                     lang,
                     is_forced,

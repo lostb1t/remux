@@ -155,7 +155,24 @@ impl From<db::Media> for api::MediaSourceInfo {
                 .and_then(|si| serde_json::to_value(si).ok()),
         });
 
-        let path = Some(format!("/remux/{}", source.id));
+        let path = Some({
+            let stem = source
+                .stream_info
+                .as_ref()
+                .and_then(|si| {
+                    si.filename
+                        .as_deref()
+                })
+                .and_then(|f| {
+                    std::path::Path::new(f)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                });
+            match stem {
+                Some(s) => format!("/remux/{}/{}", source.id, s),
+                None => format!("/remux/{}", source.id),
+            }
+        });
         let is_remote = false;
         let protocol = api::MediaProtocol::File;
 

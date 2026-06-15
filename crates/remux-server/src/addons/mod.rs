@@ -1239,8 +1239,11 @@ impl AddonService {
             .addons_for::<dyn SubtitleAddon>(media)
             .await;
 
+        debug!(count = addons.len(), "subtitle addons matched");
+
         let mut subs = vec![];
         for r in addons {
+            debug!(addon = %r.row.name, "fetching subtitles from addon");
             match r
                 .subtitle
                 .as_ref()
@@ -1248,7 +1251,10 @@ impl AddonService {
                 .subtitle_fetch(media, db)
                 .await
             {
-                Ok(s) => subs.extend(s),
+                Ok(s) => {
+                    debug!(addon = %r.row.name, count = s.len(), "subtitle addon returned results");
+                    subs.extend(s);
+                }
                 Err(e) => {
                     warn!(addon = %r.row.name, error = %e, "subtitle addon failed")
                 }
