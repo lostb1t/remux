@@ -17,7 +17,8 @@ use uuid::Uuid;
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
     AddonPreset, AddonPresetRegistration, CatalogAddon, CatalogInfo, MediaKind,
-    MetaAddon, ResourceType, SearchAddon, StreamAddon, SubtitleAddon, TreeAddon, addon,
+    MetaAddon, ResourceType, SearchAddon, StreamAddon, SubtitleAddon, SubtitleInfo,
+    TreeAddon, addon,
 };
 use crate::{
     AppContext, common, db, sdks,
@@ -387,9 +388,19 @@ impl SubtitleAddon for StremioAddon {
         &self,
         media: &db::Media,
         _db: &SqlitePool,
-    ) -> Result<Vec<sdks::stremio::Subtitle>> {
+    ) -> Result<Vec<SubtitleInfo>> {
         let svc = self.service()?;
-        stremio_subtitles(&svc, media).await
+        let subs = stremio_subtitles(&svc, media).await?;
+        Ok(subs
+            .into_iter()
+            .map(|s| SubtitleInfo {
+                id: s.id,
+                url: Some(crate::stream::StreamDescriptor::http(s.url)),
+                lang: s.lang,
+                is_forced: false,
+                is_hi: false,
+            })
+            .collect())
     }
 }
 

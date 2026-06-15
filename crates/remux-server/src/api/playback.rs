@@ -4438,12 +4438,39 @@ pub async fn subtitles_stream(
             "vtt" | "webvtt" => "text/vtt; charset=utf-8",
             _ => "text/plain; charset=utf-8",
         };
-        let body = reqwest::get(&source_url)
+
+        let descriptor: crate::stream::StreamDescriptor =
+            serde_json::from_str(&source_url).unwrap_or_else(|_| {
+                crate::stream::StreamDescriptor::http(source_url.clone())
+            });
+
+        let resp = match &descriptor {
+            crate::stream::StreamDescriptor::Opendal { addon_id, .. } => {
+                let addon = state
+                    .ctx
+                    .addons
+                    .get(*addon_id)
+                    .ok_or_else(|| anyhow!("addon not found for subtitle"))?;
+                let stream_cap = addon
+                    .stream
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("addon has no stream capability"))?;
+                stream_cap
+                    .serve_stream(&descriptor, &axum::http::HeaderMap::new())
+                    .await
+                    .map_err(|e| anyhow!("{e:?}"))?
+            }
+            _ => descriptor
+                .into_source()
+                .serve(&state, &axum::http::HeaderMap::new())
+                .await
+                .map_err(|e| anyhow!("{e:?}"))?,
+        };
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
-            .map_err(|e| anyhow!("failed to fetch external subtitle: {e}"))?
-            .text()
-            .await
-            .map_err(|e| anyhow!("failed to read external subtitle: {e}"))?;
+            .map_err(|e| anyhow!("read subtitle bytes: {e}"))?;
+        let body = String::from_utf8_lossy(&bytes).into_owned();
+
         let converted = if matches!(output_format.as_str(), "vtt" | "webvtt") {
             srt_to_vtt(&body)
         } else {
@@ -4644,8 +4671,26 @@ pub(crate) fn lang_to_two_letter(lang: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+pub(crate) fn subtitle_path_hint(sub: &crate::addons::SubtitleInfo) -> &str {
+    match &sub.url {
+        Some(crate::stream::StreamDescriptor::Http { url, .. }) => url.as_str(),
+        Some(crate::stream::StreamDescriptor::Local(p)) => p
+            .to_str()
+            .unwrap_or(""),
+        Some(crate::stream::StreamDescriptor::Opendal { path, .. }) => path.as_str(),
+        _ => "",
+    }
+}
+
+pub(crate) fn descriptor_to_subtitle_url(sub: &crate::addons::SubtitleInfo) -> String {
+    match &sub.url {
+        Some(d) => serde_json::to_string(d).unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
 fn score_sub_url(
-    sub_url: &str,
+    sub: &crate::addons::SubtitleInfo,
     source_name: &Option<String>,
     source_path: &Option<String>,
 ) -> i32 {
@@ -4655,10 +4700,11 @@ fn score_sub_url(
             .map(|t| t.to_lowercase())
             .collect()
     }
-    let sub_file = sub_url
+    let hint = subtitle_path_hint(sub);
+    let sub_file = hint
         .rsplit('/')
         .next()
-        .unwrap_or(sub_url);
+        .unwrap_or(hint);
     let sub_tok = tokens(sub_file);
     let mut src_tok = tokens(
         source_name
@@ -4714,7 +4760,6 @@ pub(super) async fn inject_external_subtitles(
         return;
     }
 
-    use crate::sdks;
     for source in media_sources.iter_mut() {
         let next_idx = source
             .media_streams
@@ -4725,10 +4770,10 @@ pub(super) async fn inject_external_subtitles(
 
         let mut scored: Vec<_> = filtered
             .iter()
-            .map(|s| (score_sub_url(&s.url, &source.name, &source.path), s))
+            .map(|s| (score_sub_url(s, &source.name, &source.path), s))
             .collect();
         scored.sort_by(|(sa, a), (sb, b)| {
-            let rank = |s: &&sdks::stremio::Subtitle| {
+            let rank = |s: &&crate::addons::SubtitleInfo| {
                 let two = s
                     .lang
                     .as_deref()
@@ -4775,11 +4820,11 @@ pub(super) async fn inject_external_subtitles(
             .iter()
             .enumerate()
         {
-            let mut stream =
-                crate::conversions::subtitle_to_media_stream((*sub).clone());
+            let mut stream = crate::conversions::subtitle_to_media_stream(sub);
             let idx = next_idx + i as i64;
             stream.index = idx;
-            let encoded_url = urlencoding::encode(&sub.url);
+            let raw_url = descriptor_to_subtitle_url(sub);
+            let encoded_url = urlencoding::encode(&raw_url);
             stream.delivery_url = Some(format!(
                 "/Videos/{item_id}/{source_id}/Subtitles/{idx}/0/Stream.vtt?ApiKey={api_key}&SubtitleUrl={encoded_url}",
                 source_id = source.id,

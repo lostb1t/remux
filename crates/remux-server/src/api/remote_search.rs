@@ -283,13 +283,13 @@ pub async fn search_remote_subtitles(
         })
         .map(|s| {
             let id = Uuid::new_v4().to_string();
+            let url_str = crate::api::playback::descriptor_to_subtitle_url(&s);
             state
                 .ctx
                 .store
                 .save(
                     format!("subtitle:{}", id),
-                    s.url
-                        .clone(),
+                    url_str,
                     std::time::Duration::from_secs(3600),
                 );
             let three_letter = lang_three_letter(
@@ -297,7 +297,8 @@ pub async fn search_remote_subtitles(
                     .as_deref()
                     .unwrap_or(""),
             );
-            let format = subtitle_format_from_url(&s.url);
+            let hint = crate::api::playback::subtitle_path_hint(&s);
+            let format = subtitle_format_from_url(hint);
             api::RemoteSubtitleInfo {
                 id,
                 name: Some(s.id.clone()),

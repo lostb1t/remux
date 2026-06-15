@@ -14,7 +14,8 @@ use tracing::{debug, info, warn};
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonOption, AddonOptionType,
     AddonPreset, AddonPresetRegistration, AddonSelectOption, CatalogAddon, CatalogInfo,
-    IndexAddon, MediaKind, ProgressReporter, ResourceType, StreamAddon, TreeAddon,
+    IndexAddon, MediaKind, ProgressReporter, ResourceType, StreamAddon, SubtitleAddon,
+    SubtitleInfo, TreeAddon,
 };
 use crate::{AppContext, addons::Addon, common, db, sdks, sdks::CachedEndpoint};
 
@@ -106,7 +107,11 @@ impl AddonPreset for OpendalLocalPreset {
             description: "Index and stream video or audio files from a local path."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream, ResourceType::Catalog],
+            supported_resources: vec![
+                ResourceType::Stream,
+                ResourceType::Catalog,
+                ResourceType::Subtitles,
+            ],
             supported_types: vec![
                 MediaKind::Movie,
                 MediaKind::Episode,
@@ -157,7 +162,8 @@ impl AddonPreset for OpendalLocalPreset {
             catalog: Some(addon.clone()),
             stream: Some(addon.clone()),
             tree: Some(addon.clone()),
-            index: Some(addon),
+            index: Some(addon.clone()),
+            subtitle: Some(addon),
             ..Default::default()
         })
     }
@@ -185,7 +191,11 @@ impl AddonPreset for OpendalWebdavPreset {
             description: "Index and stream video or audio files from a WebDAV server."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream, ResourceType::Catalog],
+            supported_resources: vec![
+                ResourceType::Stream,
+                ResourceType::Catalog,
+                ResourceType::Subtitles,
+            ],
             supported_types: vec![
                 MediaKind::Movie,
                 MediaKind::Episode,
@@ -271,7 +281,8 @@ impl AddonPreset for OpendalWebdavPreset {
             catalog: Some(addon.clone()),
             stream: Some(addon.clone()),
             tree: Some(addon.clone()),
-            index: Some(addon),
+            index: Some(addon.clone()),
+            subtitle: Some(addon),
             ..Default::default()
         })
     }
@@ -445,6 +456,103 @@ impl IndexAddon for OpendalAddon {
             .execute(&ctx.db)
             .await?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl SubtitleAddon for OpendalAddon {
+    fn supports(&self, media: &db::Media) -> bool {
+        match self
+            .media_kind
+            .as_str()
+        {
+            "movie" => {
+                media.kind == db::MediaKind::Movie
+                    && media
+                        .external_ids
+                        .imdb
+                        .is_some()
+            }
+            "episode" => {
+                media.kind == db::MediaKind::Episode
+                    && media
+                        .external_ids
+                        .series_imdb
+                        .is_some()
+            }
+            _ => false,
+        }
+    }
+
+    async fn subtitle_fetch(
+        &self,
+        media: &db::Media,
+        db: &sqlx::SqlitePool,
+    ) -> Result<Vec<SubtitleInfo>> {
+        let files: Vec<OpendalFile> = if self.media_kind == "episode" {
+            let Some(imdb_id) = media
+                .external_ids
+                .series_imdb
+                .as_deref()
+            else {
+                return Ok(vec![]);
+            };
+            let season = media
+                .parent_idx
+                .unwrap_or(0);
+            let episode = media
+                .idx
+                .unwrap_or(0);
+            sqlx::query_as(
+                "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
+                 FROM opendal_files \
+                 WHERE addon_id = ? AND media_kind = 'subtitle' \
+                 AND imdb_id = ? AND season = ? AND episode = ?",
+            )
+            .bind(self.addon_id)
+            .bind(imdb_id)
+            .bind(season)
+            .bind(episode)
+            .fetch_all(db)
+            .await?
+        } else {
+            let Some(imdb_id) = media
+                .external_ids
+                .imdb
+                .as_deref()
+            else {
+                return Ok(vec![]);
+            };
+            sqlx::query_as(
+                "SELECT path, name, title, imdb_id, season, episode, track_number, year, size \
+                 FROM opendal_files \
+                 WHERE addon_id = ? AND media_kind = 'subtitle' AND imdb_id = ?",
+            )
+            .bind(self.addon_id)
+            .bind(imdb_id)
+            .fetch_all(db)
+            .await?
+        };
+
+        Ok(files
+            .into_iter()
+            .map(|f| {
+                let stem = stem_without_ext(&f.name);
+                let (_, lang, is_forced, is_hi) = split_subtitle_stem(&stem);
+                SubtitleInfo {
+                    id: f
+                        .path
+                        .clone(),
+                    url: Some(crate::stream::StreamDescriptor::Opendal {
+                        addon_id: self.addon_id,
+                        path: f.path,
+                    }),
+                    lang,
+                    is_forced,
+                    is_hi,
+                }
+            })
+            .collect())
     }
 }
 
@@ -820,6 +928,71 @@ const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "m4a", "ogg", "opus", "wav", "aac", "wv", "strm",
 ];
 
+const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "vtt", "sub", "sup"];
+
+/// Extract the file stem (filename without the last extension).
+fn stem_without_ext(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, _)) => stem.to_string(),
+        None => name.to_string(),
+    }
+}
+
+/// Split a subtitle stem (filename without its subtitle extension) into its base and subtitle metadata.
+///
+/// For `Breaking.Bad.S01E01.en.forced` returns `("Breaking.Bad.S01E01", Some("en"), true, false)`.
+/// Scans right-to-left: known flags first, then a 2–3-letter lang code, remainder is the base.
+fn split_subtitle_stem(stem: &str) -> (String, Option<String>, bool, bool) {
+    let parts: Vec<&str> = stem
+        .split('.')
+        .collect();
+    if parts.is_empty() {
+        return (stem.to_string(), None, false, false);
+    }
+    let mut suffix_start = parts.len();
+    let mut is_forced = false;
+    let mut is_hi = false;
+
+    while suffix_start > 0 {
+        match parts[suffix_start - 1]
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "forced" => {
+                is_forced = true;
+                suffix_start -= 1;
+            }
+            "hi" | "sdh" | "cc" => {
+                is_hi = true;
+                suffix_start -= 1;
+            }
+            "default" => {
+                suffix_start -= 1;
+            }
+            _ => break,
+        }
+    }
+
+    let lang = if suffix_start > 0 {
+        let part = parts[suffix_start - 1];
+        if part.len() >= 2
+            && part.len() <= 3
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphabetic())
+        {
+            suffix_start -= 1;
+            Some(part.to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    (parts[..suffix_start].join("."), lang, is_forced, is_hi)
+}
+
 async fn scan_addon(
     ctx: &AppContext,
     tmdb: &Option<sdks::RestClient<sdks::BearerAuth>>,
@@ -909,6 +1082,126 @@ async fn scan_addon(
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
                 .to_lowercase();
+
+            // Subtitle files: parse IMDB from filename (same convention as video files).
+            if SUBTITLE_EXTENSIONS.contains(&ext.as_str()) {
+                let stem = stem_without_ext(&name);
+                let (base_stem, _, _, _) = split_subtitle_stem(&stem);
+                let jellyfin_ids = db::ExternalIds::from_path(&path);
+                let parsed = hunch::hunch(&base_stem);
+
+                let (imdb_id, season, episode, year, title_str) =
+                    match media_kind.as_str() {
+                        "episode" => {
+                            let season = parsed
+                                .season()
+                                .map(|s| s as i64);
+                            let episode = parsed
+                                .episode()
+                                .map(|e| e as i64);
+                            let year = parsed
+                                .year()
+                                .map(|y| y as i64);
+                            let clean_title = parsed
+                                .title()
+                                .unwrap_or(base_stem.as_str())
+                                .to_string();
+                            let existing_imdb =
+                                fetch_existing_imdb(ctx, addon.id, &path).await?;
+                            let imdb_id = if let Some(id) = existing_imdb {
+                                Some(id)
+                            } else if !jellyfin_ids.is_empty() {
+                                if let Some(client) = tmdb {
+                                    crate::addons::tmdb::resolve_imdb_from_ids(
+                                        &jellyfin_ids,
+                                        true,
+                                        client,
+                                    )
+                                    .await
+                                    .map(Into::into)
+                                } else {
+                                    jellyfin_ids
+                                        .imdb
+                                        .clone()
+                                        .map(Into::into)
+                                }
+                            } else {
+                                resolve_imdb(tmdb, &clean_title, None, true).await
+                            };
+                            (imdb_id, season, episode, year, clean_title)
+                        }
+                        _ => {
+                            let year = parsed
+                                .year()
+                                .map(|y| y as i64);
+                            let clean_title = parsed
+                                .title()
+                                .unwrap_or(base_stem.as_str())
+                                .to_string();
+                            let existing_imdb =
+                                fetch_existing_imdb(ctx, addon.id, &path).await?;
+                            let imdb_id = if let Some(id) = existing_imdb {
+                                Some(id)
+                            } else if !jellyfin_ids.is_empty() {
+                                if let Some(client) = tmdb {
+                                    crate::addons::tmdb::resolve_imdb_from_ids(
+                                        &jellyfin_ids,
+                                        false,
+                                        client,
+                                    )
+                                    .await
+                                    .map(Into::into)
+                                } else {
+                                    jellyfin_ids
+                                        .imdb
+                                        .clone()
+                                        .map(Into::into)
+                                }
+                            } else {
+                                resolve_imdb(tmdb, &clean_title, year, false).await
+                            };
+                            (imdb_id, None, None, year, clean_title)
+                        }
+                    };
+
+                if imdb_id.is_none() {
+                    debug!(path, "opendal: subtitle has no IMDB id, skipping");
+                    continue;
+                }
+
+                let sub_id = common::get_stable_uuid(format!("{}:{}", addon.id, path));
+                seen_ids.push(sub_id);
+                let now = Utc::now()
+                    .naive_utc()
+                    .to_string();
+                sqlx::query(
+                    "INSERT INTO opendal_files \
+                     (id, addon_id, media_kind, path, name, title, imdb_id, season, episode, track_number, year, size, scanned_at) \
+                     VALUES (?, ?, 'subtitle', ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                       path = excluded.path, name = excluded.name, \
+                       title = excluded.title, \
+                       imdb_id = COALESCE(opendal_files.imdb_id, excluded.imdb_id), \
+                       season = excluded.season, episode = excluded.episode, \
+                       year = excluded.year, scanned_at = excluded.scanned_at",
+                )
+                .bind(sub_id)
+                .bind(addon.id)
+                .bind(&path)
+                .bind(&name)
+                .bind(&title_str)
+                .bind(imdb_id.as_deref())
+                .bind(season)
+                .bind(episode)
+                .bind(year)
+                .bind(&now)
+                .execute(&ctx.db)
+                .await?;
+
+                debug!(path, "opendal: indexed subtitle");
+                upserted += 1;
+                continue;
+            }
 
             if !extensions.contains(&ext.as_str()) {
                 continue;
@@ -2249,5 +2542,286 @@ mod tests {
                 c.stem
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Subtitle stem splitter unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn opendal_subtitle_suffix_parser() {
+        struct Case {
+            stem: &'static str,
+            base: &'static str,
+            lang: Option<&'static str>,
+            is_forced: bool,
+            is_hi: bool,
+        }
+
+        let cases = &[
+            Case {
+                stem: "The.Matrix.1999.en",
+                base: "The.Matrix.1999",
+                lang: Some("en"),
+                is_forced: false,
+                is_hi: false,
+            },
+            Case {
+                stem: "The.Matrix.1999.fr.forced",
+                base: "The.Matrix.1999",
+                lang: Some("fr"),
+                is_forced: true,
+                is_hi: false,
+            },
+            Case {
+                stem: "The.Matrix.1999.de.hi",
+                base: "The.Matrix.1999",
+                lang: Some("de"),
+                is_forced: false,
+                is_hi: true,
+            },
+            Case {
+                stem: "The.Matrix.1999",
+                base: "The.Matrix.1999",
+                lang: None,
+                is_forced: false,
+                is_hi: false,
+            },
+            Case {
+                stem: "The.Matrix.1999.en.forced.hi",
+                base: "The.Matrix.1999",
+                lang: Some("en"),
+                is_forced: true,
+                is_hi: true,
+            },
+            Case {
+                stem: "Breaking.Bad.S01E01.en.forced",
+                base: "Breaking.Bad.S01E01",
+                lang: Some("en"),
+                is_forced: true,
+                is_hi: false,
+            },
+            Case {
+                stem: "Movie.sdh",
+                base: "Movie",
+                lang: None,
+                is_forced: false,
+                is_hi: true,
+            },
+        ];
+
+        for c in cases {
+            let (base, lang, is_forced, is_hi) = split_subtitle_stem(c.stem);
+            assert_eq!(base, c.base, "base mismatch for {:?}", c.stem);
+            assert_eq!(lang.as_deref(), c.lang, "lang mismatch for {:?}", c.stem);
+            assert_eq!(
+                is_forced, c.is_forced,
+                "is_forced mismatch for {:?}",
+                c.stem
+            );
+            assert_eq!(is_hi, c.is_hi, "is_hi mismatch for {:?}", c.stem);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: subtitle scan + subtitle_fetch
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_subtitle_scan_and_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = "[imdbid-tt0133093] The Matrix (1999)";
+        // Subtitle files only — no video required.
+        std::fs::write(
+            dir.path()
+                .join(format!("{base}.en.srt")),
+            b"subtitle",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path()
+                .join(format!("{base}.fr.forced.vtt")),
+            b"subtitle",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path()
+                .join(format!("{base}.de.hi.ass")),
+            b"subtitle",
+        )
+        .unwrap();
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        // Three subtitle rows should be indexed with the correct IMDB id.
+        let sub_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM opendal_files \
+             WHERE addon_id = ? AND media_kind = 'subtitle' AND imdb_id = 'tt0133093'",
+        )
+        .bind(db_addon.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(sub_count, 3, "expected 3 subtitle rows");
+
+        // subtitle_fetch returns SubtitleInfo with Opendal descriptors.
+        let movie_media = db::Media {
+            id: crate::common::get_stable_uuid("movie:tt0133093".to_string()),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0133093".to_string()).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let infos = addon
+            .subtitle_fetch(&movie_media, &ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(infos.len(), 3, "subtitle_fetch should return 3 subtitles");
+
+        for info in &infos {
+            assert!(
+                matches!(info.url, Some(StreamDescriptor::Opendal { .. })),
+                "expected Opendal descriptor"
+            );
+        }
+
+        let en = infos
+            .iter()
+            .find(|s| {
+                s.lang
+                    .as_deref()
+                    == Some("en")
+            })
+            .expect("English subtitle not found");
+        assert!(!en.is_forced);
+        assert!(!en.is_hi);
+
+        let fr = infos
+            .iter()
+            .find(|s| {
+                s.lang
+                    .as_deref()
+                    == Some("fr")
+            })
+            .expect("French subtitle not found");
+        assert!(fr.is_forced);
+        assert!(!fr.is_hi);
+
+        let de = infos
+            .iter()
+            .find(|s| {
+                s.lang
+                    .as_deref()
+                    == Some("de")
+            })
+            .expect("German subtitle not found");
+        assert!(!de.is_forced);
+        assert!(de.is_hi);
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: subtitle without an IMDB id is not indexed
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_subtitle_no_orphan() {
+        let dir = tempfile::tempdir().unwrap();
+        // No [imdbid-...] tag and no TMDB client → cannot resolve IMDB → skipped.
+        std::fs::write(
+            dir.path()
+                .join("unresolvable.en.srt"),
+            b"subtitle",
+        )
+        .unwrap();
+        // This one has an IMDB tag and must be indexed.
+        std::fs::write(
+            dir.path()
+                .join("[imdbid-tt0133093] The Matrix (1999).en.srt"),
+            b"subtitle",
+        )
+        .unwrap();
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let sub_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM opendal_files WHERE addon_id = ? AND media_kind = 'subtitle'",
+        )
+        .bind(db_addon.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            sub_count, 1,
+            "only the subtitle with an IMDB tag should be indexed"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: stale subtitle rows are pruned on re-index
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_subtitle_stale_prune() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir
+            .path()
+            .join("[imdbid-tt0133093] The Matrix (1999).en.srt");
+        std::fs::write(&sub, b"subtitle").unwrap();
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let sub_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM opendal_files WHERE addon_id = ? AND media_kind = 'subtitle'",
+        )
+        .bind(db_addon.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(sub_count, 1, "subtitle should be indexed after first scan");
+
+        // Delete the subtitle file and re-index.
+        std::fs::remove_file(&sub).unwrap();
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let sub_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM opendal_files WHERE addon_id = ? AND media_kind = 'subtitle'",
+        )
+        .bind(db_addon.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(sub_count, 0, "stale subtitle row should be pruned");
     }
 }
