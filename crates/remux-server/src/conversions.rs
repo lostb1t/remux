@@ -1,8 +1,10 @@
 use crate::{
+    addons::SubtitleInfo,
     api, common,
     common::{ToRunTimeTicks, get_uuid},
     db,
     sdks::stremio,
+    stream::StreamDescriptor,
 };
 use anyhow::Result;
 use std::{
@@ -237,14 +239,22 @@ impl TryFrom<stremio::Episode> for db::Media {
     }
 }
 
-pub fn subtitle_to_media_stream(sub: stremio::Subtitle) -> api::MediaStream {
-    let lc = sub
-        .url
-        .to_ascii_lowercase();
+pub fn subtitle_to_media_stream(sub: &SubtitleInfo) -> api::MediaStream {
+    let path_hint = match &sub.url {
+        Some(StreamDescriptor::Http { url, .. }) => url.as_str(),
+        Some(StreamDescriptor::Local(p)) => p
+            .to_str()
+            .unwrap_or(""),
+        Some(StreamDescriptor::Opendal { path, .. }) => path.as_str(),
+        _ => "",
+    };
+    let lc = path_hint.to_ascii_lowercase();
     let codec = if lc.ends_with(".vtt") {
         "webvtt"
     } else if lc.ends_with(".srt") {
         "subrip"
+    } else if lc.ends_with(".ass") || lc.ends_with(".ssa") {
+        "ass"
     } else {
         "webvtt"
     };
@@ -263,15 +273,12 @@ pub fn subtitle_to_media_stream(sub: stremio::Subtitle) -> api::MediaStream {
             format!("{} - {} - External", lang, codec.to_uppercase())
         }),
         is_default: Some(false),
-        is_forced: false,
+        is_forced: sub.is_forced,
+        is_hearing_impaired: sub.is_hi,
         is_external: true,
         is_text_subtitle_stream: true,
         supports_external_stream: true,
         delivery_method: Some(api::SubtitleDeliveryMethod::External),
-        delivery_url: Some(
-            sub.url
-                .clone(),
-        ),
         is_external_url: Some(true),
         ..Default::default()
     }

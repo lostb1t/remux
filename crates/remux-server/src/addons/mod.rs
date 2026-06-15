@@ -453,6 +453,14 @@ pub trait SearchAddon: Send + Sync {
     ) -> Result<Option<Vec<db::Media>>>;
 }
 
+pub struct SubtitleInfo {
+    pub id: String,
+    pub url: Option<crate::stream::StreamDescriptor>,
+    pub lang: Option<String>,
+    pub is_forced: bool,
+    pub is_hi: bool,
+}
+
 #[async_trait]
 pub trait SubtitleAddon: Send + Sync {
     fn supports(&self, media: &db::Media) -> bool;
@@ -460,7 +468,7 @@ pub trait SubtitleAddon: Send + Sync {
         &self,
         media: &db::Media,
         db: &SqlitePool,
-    ) -> Result<Vec<sdks::stremio::Subtitle>>;
+    ) -> Result<Vec<SubtitleInfo>>;
 }
 
 #[async_trait]
@@ -1226,7 +1234,7 @@ impl AddonService {
         &self,
         media: &db::Media,
         db: &SqlitePool,
-    ) -> Vec<sdks::stremio::Subtitle> {
+    ) -> Vec<SubtitleInfo> {
         let addons = self
             .addons_for::<dyn SubtitleAddon>(media)
             .await;

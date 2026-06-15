@@ -156,6 +156,7 @@ impl Into<MediaType> for db::MediaKind {
             db::MediaKind::Artist => MediaType::MusicArtist,
             db::MediaKind::Playlist => MediaType::Playlist,
             db::MediaKind::Stream | db::MediaKind::StreamGroup => MediaType::Video,
+            db::MediaKind::Subtitle => MediaType::Video,
         }
     }
 }
