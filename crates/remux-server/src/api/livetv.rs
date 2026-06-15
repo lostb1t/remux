@@ -297,10 +297,7 @@ pub async fn livetv_programs(
 
     let mut filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::TvProgram]),
-        limit: Some(
-            q.limit
-                .unwrap_or(500),
-        ),
+        limit: q.limit,
         offset: q.start_index,
         total_count: q
             .enable_total_record_count
@@ -381,10 +378,7 @@ pub async fn livetv_programs_post(
 
     let mut filter = db::MediaFilter {
         kind: Some(vec![db::MediaKind::TvProgram]),
-        limit: Some(
-            body.limit
-                .unwrap_or(500),
-        ),
+        limit: body.limit,
         offset: body.start_index,
         total_count: body
             .enable_total_record_count
