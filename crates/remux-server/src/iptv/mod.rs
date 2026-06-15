@@ -161,9 +161,20 @@ pub async fn stream_import_epg(
     .execute(&ctx.db)
     .await?;
 
-    sqlx::query("DELETE FROM media WHERE kind = 'tv_program' AND live_end < datetime('now', '-1 day')")
-        .execute(&ctx.db)
-        .await?;
+    for chunk in channels.chunks(200) {
+        let mut qb = sqlx::QueryBuilder::new(
+            "DELETE FROM media WHERE kind = 'tv_program' AND live_end < datetime('now', '-1 day') AND parent_id IN (",
+        );
+        let mut sep = qb.separated(", ");
+        for (id, _) in chunk {
+            sep.push_bind(*id);
+        }
+        qb.push(")");
+        qb.build()
+            .execute(&ctx.db)
+            .await?;
+    }
+
     sqlx::query("PRAGMA incremental_vacuum(500)")
         .execute(&ctx.db)
         .await?;
