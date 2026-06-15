@@ -49,12 +49,40 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
         .await?)
 }
 
+const MIN_SQUASHABLE: i64 = 202606140001; // minimum version (v0.7.0) that can upgrade via squash
+const LAST_PRE_SQUASH: i64 = 202606140004; // last migration on main before this PR
+const SQUASH_VERSION: i64 = 202606140005; // squash migration version
+
+async fn prepare_squash(pool: &SqlitePool) -> Result<()> {
+    let last: Option<i64> = sqlx::query_scalar(
+        "SELECT version FROM _sqlx_migrations \
+         WHERE success = TRUE ORDER BY version DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+
+    match last {
+        None => {}
+        Some(v) if v >= SQUASH_VERSION => {}
+        Some(v) if v >= MIN_SQUASHABLE => {
+            // Any DB from v0.7.0 through current main (versions 001–004) — clear and let squash run.
+            sqlx::query("DELETE FROM _sqlx_migrations")
+                .execute(pool)
+                .await?;
+        }
+        Some(_) => anyhow::bail!(
+            "Database schema is outdated. Please update to remux v0.8.0 first, \
+             then upgrade to this version."
+        ),
+    }
+    Ok(())
+}
+
 pub async fn migrate(pool: &SqlitePool) -> Result<()> {
-    // ignore_missing: migration 202506080001 was applied under the wrong timestamp
-    // and renamed to 202606080001; ignore the now-orphaned DB record on existing installs.
-    let mut migrator = sqlx::migrate!("./migrations");
-    migrator.set_ignore_missing(true);
-    migrator
+    prepare_squash(pool).await?;
+    sqlx::migrate!("./migrations")
         .run(pool)
         .await?;
     migrate_catalog_collections(pool).await;
