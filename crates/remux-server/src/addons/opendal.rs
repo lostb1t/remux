@@ -472,7 +472,6 @@ impl SubtitleAddon for OpendalAddon {
                         .series_imdb
                         .is_some()
             }
-            "track" => media.kind == db::MediaKind::Track,
             _ => false,
         }
     }
@@ -483,16 +482,7 @@ impl SubtitleAddon for OpendalAddon {
         db: &sqlx::SqlitePool,
     ) -> Result<Vec<SubtitleInfo>> {
         // Resolve the video paths for this media item (mirrors get_streams logic).
-        let video_paths: Vec<String> = if self.media_kind == "track" {
-            sqlx::query_scalar(
-                "SELECT path FROM opendal_files \
-                 WHERE addon_id = ? AND media_kind = 'track' AND LOWER(title) = LOWER(?)",
-            )
-            .bind(self.addon_id)
-            .bind(&media.title)
-            .fetch_all(db)
-            .await?
-        } else {
+        let video_paths: Vec<String> = {
             let imdb_id = if self.media_kind == "episode" {
                 media
                     .external_ids
