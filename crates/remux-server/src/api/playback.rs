@@ -4439,49 +4439,37 @@ pub async fn subtitles_stream(
             _ => "text/plain; charset=utf-8",
         };
 
-        let body = if let Some(rest) = source_url.strip_prefix("opendal://") {
-            // Serve subtitle bytes directly via the OpenDAL addon's operator.
-            let (addon_id_str, enc_path) = rest
-                .split_once('/')
-                .ok_or_else(|| anyhow!("invalid opendal subtitle url"))?;
-            let addon_id: Uuid = addon_id_str
-                .parse()
-                .map_err(|_| anyhow!("invalid addon id in subtitle url"))?;
-            let path = urlencoding::decode(enc_path)
-                .map(|s| s.into_owned())
-                .unwrap_or_else(|_| enc_path.to_string());
-            let addon = state
-                .ctx
-                .addons
-                .get(addon_id)
-                .ok_or_else(|| anyhow!("addon not found for subtitle"))?;
-            let stream_cap = addon
-                .stream
-                .as_ref()
-                .ok_or_else(|| anyhow!("addon has no stream capability"))?;
-            let descriptor =
-                crate::stream::StreamDescriptor::Opendal { addon_id, path };
-            let resp = stream_cap
-                .serve_stream(&descriptor, &axum::http::HeaderMap::new())
+        let descriptor: crate::stream::StreamDescriptor =
+            serde_json::from_str(&source_url).unwrap_or_else(|_| {
+                crate::stream::StreamDescriptor::http(source_url.clone())
+            });
+
+        let resp = match &descriptor {
+            crate::stream::StreamDescriptor::Opendal { addon_id, .. } => {
+                let addon = state
+                    .ctx
+                    .addons
+                    .get(*addon_id)
+                    .ok_or_else(|| anyhow!("addon not found for subtitle"))?;
+                let stream_cap = addon
+                    .stream
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("addon has no stream capability"))?;
+                stream_cap
+                    .serve_stream(&descriptor, &axum::http::HeaderMap::new())
+                    .await
+                    .map_err(|e| anyhow!("{e:?}"))?
+            }
+            _ => descriptor
+                .into_source()
+                .serve(&state, &axum::http::HeaderMap::new())
                 .await
-                .map_err(|e| anyhow!("{e:?}"))?;
-            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-                .await
-                .map_err(|e| anyhow!("read subtitle bytes: {e}"))?;
-            String::from_utf8_lossy(&bytes).into_owned()
-        } else if let Some(path) = source_url.strip_prefix("file://") {
-            // Local filesystem subtitle — read directly without HTTP round-trip.
-            tokio::fs::read_to_string(path)
-                .await
-                .map_err(|e| anyhow!("read local subtitle file: {e}"))?
-        } else {
-            reqwest::get(&source_url)
-                .await
-                .map_err(|e| anyhow!("failed to fetch external subtitle: {e}"))?
-                .text()
-                .await
-                .map_err(|e| anyhow!("failed to read external subtitle: {e}"))?
+                .map_err(|e| anyhow!("{e:?}"))?,
         };
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .map_err(|e| anyhow!("read subtitle bytes: {e}"))?;
+        let body = String::from_utf8_lossy(&bytes).into_owned();
 
         let converted = if matches!(output_format.as_str(), "vtt" | "webvtt") {
             srt_to_vtt(&body)
@@ -4696,14 +4684,8 @@ pub(crate) fn subtitle_path_hint(sub: &crate::addons::SubtitleInfo) -> &str {
 
 pub(crate) fn descriptor_to_subtitle_url(sub: &crate::addons::SubtitleInfo) -> String {
     match &sub.url {
-        Some(crate::stream::StreamDescriptor::Http { url, .. }) => url.clone(),
-        Some(crate::stream::StreamDescriptor::Local(path)) => {
-            format!("file://{}", path.to_string_lossy())
-        }
-        Some(crate::stream::StreamDescriptor::Opendal { addon_id, path }) => {
-            format!("opendal://{}/{}", addon_id, urlencoding::encode(path))
-        }
-        _ => String::new(),
+        Some(d) => serde_json::to_string(d).unwrap_or_default(),
+        None => String::new(),
     }
 }
 
