@@ -8,7 +8,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: ghcr.io/lostb1t/remux-server
+  REGISTRY_IMAGE: ghcr.io/lostb1t/remux
 
 jobs:
   semantic-release:
@@ -53,9 +53,6 @@ jobs:
       version: ${{ needs.semantic-release.outputs.new_release_version }}
       cargo_version: ${{ needs.semantic-release.outputs.new_release_version }}
       docker_tags: >-
-        -t ghcr.io/lostb1t/remux-server:${{ needs.semantic-release.outputs.new_release_version }}
-        -t ghcr.io/lostb1t/remux-server:latest
-      public_docker_tags: >-
         -t ghcr.io/lostb1t/remux:${{ needs.semantic-release.outputs.new_release_version }}
         -t ghcr.io/lostb1t/remux:latest
       ref: ${{ needs.semantic-release.outputs.new_release_git_tag }}
@@ -79,18 +76,18 @@ jobs:
           name: server-linux-arm64
           path: artifacts/arm64/
 
-      - name: Prepare release assets
-        run: |
-          VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
-          cp artifacts/amd64/remux-server "remux-server-${VERSION}-linux-amd64"
-          cp artifacts/arm64/remux-server "remux-server-${VERSION}-linux-arm64"
-          chmod +x "remux-server-${VERSION}-linux-amd64" "remux-server-${VERSION}-linux-arm64"
-
       - name: Checkout source
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.semantic-release.outputs.new_release_git_tag }}
           path: source
+
+      - name: Prepare release assets
+        run: |
+          VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
+          cp artifacts/amd64/remux-server "remux-${VERSION}-linux-amd64"
+          cp artifacts/arm64/remux-server "remux-${VERSION}-linux-arm64"
+          chmod +x "remux-${VERSION}-linux-amd64" "remux-${VERSION}-linux-arm64"
 
       - name: Extract changelog for this release
         run: |
@@ -102,38 +99,14 @@ jobs:
             echo "Release ${VERSION}" > release-notes.md
           fi
 
-      - name: Create release on public repo
+      - name: Create release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
           TAG="${{ needs.semantic-release.outputs.new_release_git_tag }}"
           gh release create "${TAG}" \
-            --repo "lostb1t/remux" \
             --title "${TAG}" \
             --notes-file release-notes.md \
-            "remux-server-${VERSION}-linux-amd64" \
-            "remux-server-${VERSION}-linux-arm64"
-
-      - name: Checkout public repo
-        uses: actions/checkout@v4
-        with:
-          repository: lostb1t/remux
-          token: ${{ secrets.GH_TOKEN }}
-          path: public-repo
-
-      - name: Push README to public repo
-        run: |
-          cp source/README.md public-repo/README.md
-          cd public-repo
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          if git diff --quiet -- README.md; then
-            echo "README.md is already up to date"
-            exit 0
-          fi
-
-          git add README.md
-          git commit -m "docs: sync README from ${{ needs.semantic-release.outputs.new_release_git_tag }}"
-          git push
+            "remux-${VERSION}-linux-amd64" \
+            "remux-${VERSION}-linux-arm64"

@@ -10,16 +10,9 @@ on:
       docker_tags:
         description: >-
           Space-separated imagetools tag flags,
-          e.g. "-t ghcr.io/lostb1t/remux-server:1.2.3 -t ghcr.io/lostb1t/remux-server:latest"
+          e.g. "-t ghcr.io/lostb1t/remux:1.2.3 -t ghcr.io/lostb1t/remux:latest"
         type: string
         required: true
-      public_docker_tags:
-        description: >-
-          Optional space-separated imagetools tag flags for the public GHCR
-          package, e.g. "-t ghcr.io/lostb1t/remux:1.2.3 -t ghcr.io/lostb1t/remux:latest"
-        type: string
-        required: false
-        default: ""
       cargo_version:
         description: >-
           Semver string to inject into all workspace Cargo.toml files before
@@ -35,8 +28,7 @@ on:
         default: ""
 
 env:
-  REGISTRY_IMAGE: ghcr.io/lostb1t/remux-server
-  PUBLIC_REGISTRY_IMAGE: ghcr.io/lostb1t/remux
+  REGISTRY_IMAGE: ghcr.io/lostb1t/remux
 
 jobs:
   build-jellyfin-web:
@@ -398,9 +390,3 @@ jobs:
           docker buildx imagetools create ${{ inputs.docker_tags }} \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
 
-      - name: Create and push public manifest
-        if: inputs.public_docker_tags != ''
-        working-directory: ${{ runner.temp }}/digests
-        run: |
-          docker buildx imagetools create ${{ inputs.public_docker_tags }} \
-            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
