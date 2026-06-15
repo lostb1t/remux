@@ -1512,9 +1512,18 @@ pub async fn item(
             transcoding_url: Some(transcoding_url),
             transcoding_sub_protocol: "hls".to_string(),
             transcoding_container: Some("ts".to_string()),
-            run_time_ticks: media
-                .runtime
-                .and_then(|s| s.to_ticks(TickUnit::Seconds)),
+            run_time_ticks: sources
+                .first()
+                .and_then(|s| {
+                    s.probe_data
+                        .as_ref()
+                })
+                .and_then(|p| p.run_time_ticks)
+                .or_else(|| {
+                    media
+                        .runtime
+                        .and_then(|r| r.to_ticks(TickUnit::Seconds))
+                }),
             media_streams,
             ..Default::default()
         };

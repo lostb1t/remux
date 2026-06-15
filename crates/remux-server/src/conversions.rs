@@ -179,6 +179,14 @@ impl From<db::Media> for api::MediaSourceInfo {
         let client_id = source
             .group_id
             .unwrap_or(source.id);
+        let probe_ticks = source
+            .probe_data
+            .as_ref()
+            .and_then(|p| p.run_time_ticks);
+        let meta_ticks = source
+            .runtime
+            .and_then(|r| r.to_ticks(common::TickUnit::Seconds));
+        let run_time_ticks = probe_ticks.or(meta_ticks);
         api::MediaSourceInfo {
             id: client_id,
             e_tag: client_id,
@@ -198,9 +206,7 @@ impl From<db::Media> for api::MediaSourceInfo {
             has_segments: !is_stub,
             formats: Some(vec![]),
             required_http_headers: Some(HashMap::new()),
-            run_time_ticks: source
-                .runtime
-                .and_then(|r| r.to_ticks(common::TickUnit::Seconds)),
+            run_time_ticks,
             media_streams: source
                 .probe_data
                 .map(|p| p.media_streams)
