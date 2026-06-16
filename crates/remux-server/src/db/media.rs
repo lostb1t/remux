@@ -3266,7 +3266,7 @@ impl Media {
 
         Ok(FilterResult {
             records,
-            total_count: if filter.total_count { count? } else { 0 },
+            total_count: count?,
         })
     }
 
