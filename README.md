@@ -95,3 +95,10 @@ run
 ```
 cargo make dev
 ```
+
+### ❤️ Support the Project
+
+- ⭐ **[Star the repository](https://github.com/lostb1t/remux)** on GitHub.
+- 🤝 **Contribute**: Report issues, suggest features, or submit pull requests.
+- ☕ **Donate**:
+  - **[Ko-fi](https://ko-fi.com/lostb1t)**
