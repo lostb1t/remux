@@ -55,6 +55,8 @@ pub struct CatalogInfo {
     pub default_max_items: Option<i64>,
     /// Media kind for auto-created collections backed by this catalog.
     pub collection_media_kind: Option<db::CollectionMediaKind>,
+    /// The MediaKind of items this specific catalog yields.
+    pub media_kind: Option<db::MediaKind>,
 }
 
 impl CatalogInfo {
@@ -68,8 +70,28 @@ impl CatalogInfo {
             default_enabled: false,
             default_max_items: None,
             collection_media_kind: None,
+            media_kind: None,
         }
     }
+}
+
+/// A `CatalogInfo` merged with its persisted `CatalogState` override (if any) —
+/// the single, fully-resolved view of a catalog that callers should use. Avoids
+/// every caller re-implementing "use the stored override, else fall back to the
+/// provider's declared default" itself.
+#[derive(Debug, Clone)]
+pub struct ResolvedCatalog {
+    pub provider_catalog_id: String,
+    /// Full "addon:{addon_id}:{provider_catalog_id}" id, usable with `make_catalog_stream()`.
+    pub catalog_id: String,
+    /// Deterministic collection id for this catalog's `media_relations` membership.
+    pub collection_id: Uuid,
+    pub name: String,
+    pub media_kind: Option<db::MediaKind>,
+    pub collection_media_kind: Option<db::CollectionMediaKind>,
+    pub enabled: bool,
+    pub max_items: Option<i64>,
+    pub tags: Vec<String>,
 }
 
 #[async_trait]
@@ -554,6 +576,58 @@ impl std::ops::Deref for AddonRuntime {
 }
 
 impl AddonRuntime {
+    /// Fetches this addon's live catalog list and merges in its persisted
+    /// per-catalog overrides (enabled/max_items/tags). Catalogs without a
+    /// stored override fall back to the provider's own declared defaults.
+    pub async fn resolve_catalogs(
+        &self,
+        ctx: &AppContext,
+    ) -> Result<Vec<ResolvedCatalog>> {
+        let catalog = self
+            .catalog
+            .as_ref()
+            .ok_or_else(|| anyhow!("addon has no catalog capability"))?;
+        let available = catalog
+            .catalog_list(ctx)
+            .await?;
+        let states = self
+            .row
+            .catalog_states();
+        let addon_id = self
+            .row
+            .id;
+        Ok(available
+            .into_iter()
+            .map(|info| {
+                let state = states.get(&info.provider_catalog_id);
+                ResolvedCatalog {
+                    catalog_id: make_media_id(addon_id, &info.provider_catalog_id),
+                    collection_id: Uuid::new_v5(
+                        &addon_id,
+                        info.provider_catalog_id
+                            .as_bytes(),
+                    ),
+                    enabled: state
+                        .map(|s| s.enabled)
+                        .unwrap_or(info.default_enabled),
+                    max_items: state
+                        .and_then(|s| s.max_items)
+                        .or(info.default_max_items),
+                    tags: state
+                        .map(|s| {
+                            s.tags
+                                .clone()
+                        })
+                        .unwrap_or_default(),
+                    provider_catalog_id: info.provider_catalog_id,
+                    name: info.name,
+                    media_kind: info.media_kind,
+                    collection_media_kind: info.collection_media_kind,
+                }
+            })
+            .collect())
+    }
+
     pub fn supports_type(&self, kind: &db::MediaKind) -> bool {
         // Manifest types (if available) are the authoritative upper bound.
         // "Series" in a type list covers Episode and Season too (Stremio model).
@@ -783,6 +857,51 @@ impl AddonService {
             })
             .cloned()
             .collect()
+    }
+
+    /// Returns `(addon, catalogs)` pairs for every catalog-capable addon that could
+    /// produce any of `kinds`, with each addon's catalog list already filtered down to
+    /// catalogs whose own `media_kind` is one of `kinds`. Addons are pre-filtered via
+    /// `supports_type` as a cheap upper-bound check before calling `catalog_list()`
+    /// (which may hit the network); per-addon listing errors are logged and skipped.
+    pub async fn catalogs_for_kinds(
+        &self,
+        ctx: &AppContext,
+        kinds: &[db::MediaKind],
+    ) -> Vec<(AddonRuntime, Vec<ResolvedCatalog>)> {
+        let mut out = Vec::new();
+        for runtime in self
+            .catalog_addons()
+            .into_iter()
+            .filter(|r| {
+                kinds
+                    .iter()
+                    .any(|k| r.supports_type(k))
+            })
+        {
+            let addon_id = runtime
+                .row
+                .id;
+            let resolved = match runtime
+                .resolve_catalogs(ctx)
+                .await
+            {
+                Ok(v) => v
+                    .into_iter()
+                    .filter(|c| {
+                        c.media_kind
+                            .as_ref()
+                            .is_some_and(|mk| kinds.contains(mk))
+                    })
+                    .collect(),
+                Err(e) => {
+                    warn!(addon = %addon_id, error = %e, "failed to list addon catalogs, skipping");
+                    continue;
+                }
+            };
+            out.push((runtime, resolved));
+        }
+        out
     }
 
     pub async fn purge_indexes(&self, ctx: &AppContext) -> Result<()> {

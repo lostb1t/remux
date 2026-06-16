@@ -14,8 +14,7 @@ use crate::{
     AppState, IntoApiError, OptionExt, ResultExt,
     addons::{
         Addon, AddonCatalogDto, AddonDto, AddonMetadata, CreateAddonRequest,
-        UpdateAddonCatalogRequest, UpdateAddonRequest, make_media_id,
-        registered_presets,
+        UpdateAddonCatalogRequest, UpdateAddonRequest, registered_presets,
     },
     db::{MediaKind as DbMediaKind, auth},
 };
@@ -486,58 +485,27 @@ pub async fn get_addon_catalogs(
     _session: auth::AdminSession,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<AddonCatalogDto>>> {
-    let addon_row = Addon::get(
-        &state
-            .ctx
-            .db,
-        id,
-    )
-    .await?
-    .context_not_found("Addon not found")?;
-
-    let catalog = state
+    let runtime = state
         .ctx
         .addons
-        .get_catalog(id)
+        .get(id)
         .ok_or_else(|| anyhow::anyhow!("addon not instantiated"))
         .context_bad_request("Addon could not be instantiated")?;
 
-    let available = catalog
-        .catalog_list(&state.ctx)
+    let resolved = runtime
+        .resolve_catalogs(&state.ctx)
         .await
         .context_internal("Failed to list addon catalogs")?;
 
-    let states = addon_row.catalog_states();
-    let prefix = format!("addon:{id}:");
-
-    let result = available
-        .iter()
-        .map(|cat_info| {
-            let full_id = make_media_id(id, &cat_info.provider_catalog_id);
-            let local_id = full_id
-                .strip_prefix(&prefix)
-                .unwrap_or(&full_id);
-            let collection_id = Uuid::new_v5(&id, local_id.as_bytes());
-            let state_entry = states
-                .get(local_id)
-                .cloned()
-                .unwrap_or_else(|| crate::addons::CatalogState {
-                    enabled: cat_info.default_enabled,
-                    max_items: cat_info.default_max_items,
-                    tags: vec![],
-                });
-            AddonCatalogDto {
-                catalog_id: full_id,
-                name: cat_info
-                    .name
-                    .clone(),
-                enabled: state_entry.enabled,
-                max_items: state_entry.max_items,
-                tags: state_entry
-                    .tags
-                    .clone(),
-                collection_id: Some(collection_id),
-            }
+    let result = resolved
+        .into_iter()
+        .map(|c| AddonCatalogDto {
+            catalog_id: c.catalog_id,
+            name: c.name,
+            enabled: c.enabled,
+            max_items: c.max_items,
+            tags: c.tags,
+            collection_id: Some(c.collection_id),
         })
         .collect();
 

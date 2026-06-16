@@ -232,6 +232,17 @@ impl CatalogAddon for StremioAddon {
                         None => String::new(),
                     }
                 };
+                let stremio_kind: remux_sdks::stremio::MediaType =
+                    serde_json::from_value(serde_json::Value::String(
+                        c.kind
+                            .clone(),
+                    ))
+                    .unwrap_or(
+                        remux_sdks::stremio::MediaType::Unknown(
+                            c.kind
+                                .clone(),
+                        ),
+                    );
                 CatalogInfo {
                     collection_media_kind: matches!(
                         c.kind
@@ -245,6 +256,7 @@ impl CatalogAddon for StremioAddon {
                             .as_str()
                             .into()
                     }),
+                    media_kind: db::MediaKind::try_from(stremio_kind).ok(),
                     ..CatalogInfo::new(
                         format!(
                             "{}:{}",

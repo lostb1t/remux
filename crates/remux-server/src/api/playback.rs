@@ -43,6 +43,12 @@ use crate::{
 };
 use axum_anyhow::ApiResult as Result;
 
+/// Serializes the lookup-or-create-transcode sequence per play_session_id so
+/// two racing requests for the same session can't each spawn their own
+/// ffmpeg process. See `master_hls_video`.
+static TRANSCODE_CREATE_LOCKS: crate::keyed_lock::KeyedLock<String> =
+    crate::keyed_lock::KeyedLock::new();
+
 /// Some Stremio addons expose `aiostreams` as an internal hostname not
 /// resolvable from the Remux process. If the user has at least one
 /// `kind=stremio` addon configured, rewrite that hostname to the addon's
@@ -3063,6 +3069,16 @@ pub async fn master_hls_video(
     // StartTimeTicks.  In that case we must stop the old transcode job and
     // restart from the requested position — otherwise the player waits for
     // segments that the old job will never produce at the new offset.
+    //
+    // Serialize the whole stop/lookup/create/attach sequence per
+    // play_session_id: the lookup-or-create path below awaits DB queries and
+    // filesystem ops with no lock held, so two requests racing for the same
+    // session would otherwise both see no existing transcode and each spawn
+    // their own ffmpeg process, with the loser's session silently overwritten
+    // (and its ffmpeg process orphaned) by attach_transcode.
+    let _create_guard = TRANSCODE_CREATE_LOCKS
+        .lock(play_session_id.clone())
+        .await;
     let is_seeking = q
         .start_time_ticks
         .is_some_and(|t| t > 0);

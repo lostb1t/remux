@@ -319,6 +319,7 @@ impl CatalogAddon for IptvAddon {
             default_enabled: true,
             default_max_items: Some(999999999),
             collection_media_kind: None,
+            media_kind: Some(db::MediaKind::TvChannel),
         }])
     }
 

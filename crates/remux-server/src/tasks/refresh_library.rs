@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::Utc;
 use std::{collections::HashSet, sync::Arc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -9,7 +8,7 @@ use super::{
     ProgressReporter, Task, TaskService,
     catalog_import_shared::{import_catalog_items, remove_stale_catalog_memberships},
 };
-use crate::{AppContext, addons::make_media_id, db};
+use crate::{AppContext, db};
 
 pub struct RefreshLibraryTask;
 
@@ -47,16 +46,28 @@ impl Task for RefreshLibraryTask {
             .refresh_indexes(&ctx, progress.scaled(0.0, 20.0))
             .await?;
 
+        // Keep in sync with the top-level kinds import_catalog_items() actually
+        // persists (catalog_import_shared.rs's retain filter), minus TvChannel
+        // (owned by RefreshIptv).
+        const LIBRARY_KINDS: &[db::MediaKind] = &[
+            db::MediaKind::Movie,
+            db::MediaKind::Series,
+            db::MediaKind::Artist,
+            db::MediaKind::Album,
+            db::MediaKind::Track,
+        ];
         let addons = ctx
             .addons
-            .catalog_addons();
+            .catalogs_for_kinds(&ctx, LIBRARY_KINDS)
+            .await;
         let total_work = addons
             .len()
             .max(1);
         let mut valid_collection_ids: HashSet<Uuid> = HashSet::new();
+        let mut domain_collection_ids: HashSet<Uuid> = HashSet::new();
 
         let catalog_progress = progress.scaled(20.0, 70.0);
-        for (addon_idx, runtime) in addons
+        for (addon_idx, (runtime, available)) in addons
             .iter()
             .enumerate()
         {
@@ -64,34 +75,14 @@ impl Task for RefreshLibraryTask {
             let addon_id = runtime
                 .row
                 .id;
-            let catalog_states = runtime
-                .row
-                .catalog_states();
-            let prefix = format!("addon:{addon_id}:");
 
-            let available = match runtime
-                .catalog
-                .as_ref()
-                .expect("catalog_addons() guarantees catalog slot")
-                .catalog_list(&ctx)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!(addon = %addon_id, error = %e, "failed to list addon catalogs, skipping");
-                    continue;
-                }
-            };
+            for cat_info in available {
+                domain_collection_ids.insert(cat_info.collection_id);
+            }
 
             let enabled: Vec<_> = available
                 .iter()
-                .filter(|cat_info| {
-                    let local_id = &cat_info.provider_catalog_id;
-                    catalog_states
-                        .get(local_id.as_str())
-                        .map(|s| s.enabled)
-                        .unwrap_or(cat_info.default_enabled)
-                })
+                .filter(|cat_info| cat_info.enabled)
                 .collect();
 
             debug!(
@@ -100,8 +91,6 @@ impl Task for RefreshLibraryTask {
                 enabled = enabled.len(),
                 "importing enabled catalogs"
             );
-
-            let is_iptv = runtime.supports_type(&db::MediaKind::TvChannel);
 
             for (cat_idx, cat_info) in enabled
                 .iter()
@@ -114,23 +103,17 @@ impl Task for RefreshLibraryTask {
                         .max(1),
                 );
 
-                let full_id = make_media_id(addon_id, &cat_info.provider_catalog_id);
-                let local_id = full_id
-                    .strip_prefix(&prefix)
-                    .unwrap_or(&full_id);
-                let max = catalog_states
-                    .get(local_id)
-                    .and_then(|s| s.max_items)
-                    .or(cat_info.default_max_items)
+                let full_id = &cat_info.catalog_id;
+                let max = cat_info
+                    .max_items
                     .map(|n| n as usize)
                     .unwrap_or(global_max);
 
-                let collection_id = Uuid::new_v5(&addon_id, local_id.as_bytes());
-                valid_collection_ids.insert(collection_id);
+                valid_collection_ids.insert(cat_info.collection_id);
 
                 let source = match ctx
                     .addons
-                    .make_catalog_stream(&full_id)
+                    .make_catalog_stream(full_id)
                 {
                     Some(s) => s,
                     None => {
@@ -140,8 +123,6 @@ impl Task for RefreshLibraryTask {
                 };
 
                 debug!(catalog = %full_id, max, "importing catalog items");
-
-                let import_start = Utc::now().naive_utc();
 
                 let stream = match source
                     .stream(&ctx)
@@ -157,7 +138,7 @@ impl Task for RefreshLibraryTask {
                 let counts = import_catalog_items(
                     &ctx,
                     cat_info,
-                    &full_id,
+                    full_id,
                     max,
                     stream,
                     &addon_progress,
@@ -165,43 +146,15 @@ impl Task for RefreshLibraryTask {
                 .await?;
 
                 info!(catalog = %full_id, ?counts, "catalog import complete");
-
-                if is_iptv {
-                    let source_id = addon_id
-                        .simple()
-                        .to_string();
-                    match sqlx::query_scalar::<_, i64>(
-                        "SELECT COUNT(*) FROM media \
-                         WHERE kind = 'tv_channel' \
-                           AND json_extract(external_ids, '$.iptv_source_id') = ? \
-                           AND updated_at < ?",
-                    )
-                    .bind(&source_id)
-                    .bind(import_start)
-                    .fetch_one(&ctx.db)
-                    .await
-                    {
-                        Ok(n) if n > 0 => {
-                            sqlx::query(
-                                "DELETE FROM media \
-                                 WHERE kind = 'tv_channel' \
-                                   AND json_extract(external_ids, '$.iptv_source_id') = ? \
-                                   AND updated_at < ?",
-                            )
-                            .bind(&source_id)
-                            .bind(import_start)
-                            .execute(&ctx.db)
-                            .await
-                            .ok();
-                            info!(source_id = %source_id, count = n, "pruned stale IPTV channels");
-                        }
-                        _ => {}
-                    }
-                }
             }
         }
 
-        remove_stale_catalog_memberships(&ctx.db, &valid_collection_ids).await;
+        remove_stale_catalog_memberships(
+            &ctx.db,
+            &valid_collection_ids,
+            &domain_collection_ids,
+        )
+        .await;
 
         const CHUNK_SIZE: u32 = 100;
         let mut total: Option<u32> = None;

@@ -1,18 +1,19 @@
 use anyhow::Result;
+use chrono::NaiveDateTime;
 use futures::stream::StreamExt;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::ProgressReporter;
-use crate::{AppContext, addons::CatalogInfo, db};
+use crate::{AppContext, addons::ResolvedCatalog, db};
 
 /// Consume `stream`, fetching metadata + full tree for new items and upserting everything.
 ///
 /// Returns a map of `kind -> count` for top-level items imported.
 pub async fn import_catalog_items<S>(
     ctx: &AppContext,
-    _catalog: &CatalogInfo,
+    _catalog: &ResolvedCatalog,
     media_id: &str,
     max: usize,
     stream: S,
@@ -66,6 +67,7 @@ where
                     | db::MediaKind::Artist
                     | db::MediaKind::TvChannel
                     | db::MediaKind::Album
+                    | db::MediaKind::Track
             )
         });
 
@@ -116,6 +118,23 @@ where
             db::reconcile_series_played_state(&ctx.db, id).await;
         }
 
+        // Re-upsert already-known TV channels too (skipping the metadata-fetch step
+        // `process_meta_batch` does for new items — a no-op for this kind anyway).
+        // Without this, a channel's `updated_at` is frozen from its first import, so
+        // the stale-channel prune in `prune_stale_iptv_channels` would treat every
+        // still-present channel as stale and delete it. Other kinds (movie/series/
+        // etc.) deliberately skip this to avoid re-running their (real) metadata fetch.
+        let existing_tv_channels: Vec<db::Media> = existing_items
+            .iter()
+            .filter(|m| m.kind == db::MediaKind::TvChannel)
+            .cloned()
+            .collect();
+        if !existing_tv_channels.is_empty() {
+            if let Err(e) = db::Media::upsert(&ctx.db, &existing_tv_channels).await {
+                warn!(catalog = media_id, error = %e, "failed to refresh existing tv channels");
+            }
+        }
+
         // Checkpoint the WAL after each chunk so it doesn't balloon to hundreds of MB
         // during large imports, which would make concurrent reads increasingly slow.
         sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
@@ -125,6 +144,14 @@ where
 
         // Record catalog membership and apply catalog tags for all top-level IDs.
         // Upsert for both new and existing items to keep positions accurate on re-import.
+        //
+        // Batched (rather than one INSERT per item/tag): on large catalogs (tens of
+        // thousands of items) a per-row loop fires that many individual autocommit
+        // writes back-to-back, which starves other connections of SQLite's
+        // single-writer lock — a busy connection that immediately re-requests the
+        // lock after releasing it tends to keep winning the race over a connection
+        // that just started waiting, so unrelated writes (e.g. login) can time out
+        // even though no single statement holds the lock for long.
         if collection_id != Uuid::nil() {
             let catalog_tags: Vec<String> =
                 if let Some((addon_uuid, local_cat_id)) = membership {
@@ -134,42 +161,82 @@ where
                     vec![]
                 };
 
-            for item in new_items
+            let relation_rows: Vec<(Uuid, Uuid, i64, Uuid)> = new_items
                 .iter()
                 .chain(existing_items.iter())
-            {
-                let relation_id = Uuid::new_v5(
-                    &collection_id,
-                    item.id
-                        .as_bytes(),
-                );
-                debug!(catalog_id = %collection_id, item_id = %item.id, weight = catalog_position, "inserting catalog relation");
-                if let Err(e) = sqlx::query(
-                    "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, role, weight) \
-                     SELECT ?, ?, id, 'catalog', ? FROM media WHERE id = ? \
-                     ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight",
-                )
-                .bind(relation_id)
-                .bind(collection_id)
-                .bind(catalog_position)
-                .bind(item.id)
-                .execute(&ctx.db)
-                .await
-                {
-                    error!(catalog = media_id, error = %e, "failed to record catalog membership");
-                }
-                catalog_position += 1;
+                .map(|item| {
+                    let relation_id = Uuid::new_v5(
+                        &collection_id,
+                        item.id
+                            .as_bytes(),
+                    );
+                    let weight = catalog_position;
+                    catalog_position += 1;
+                    (relation_id, collection_id, weight, item.id)
+                })
+                .collect();
 
-                for tag in &catalog_tags {
-                    if let Err(e) = sqlx::query(
-                        "INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)",
-                    )
-                    .bind(item.id)
-                    .bind(tag)
+            // 4 bind params/row; chunk well under SQLite's ~999 bound-parameter limit.
+            const RELATION_CHUNK: usize = 200;
+            for rows in relation_rows.chunks(RELATION_CHUNK) {
+                debug!(catalog_id = %collection_id, count = rows.len(), "batch-inserting catalog relations");
+                // SQLite doesn't support naming columns of a VALUES table-value
+                // constructor (`AS v(a, b)`); its anonymous columns are referenced
+                // as column1, column2, ... in binding order.
+                let mut qb = sqlx::QueryBuilder::new(
+                    "INSERT INTO media_relations (relation_id, left_media_id, right_media_id, role, weight) \
+                     SELECT v.column1, v.column2, media.id, 'catalog', v.column3 FROM (",
+                );
+                qb.push_values(
+                    rows.iter(),
+                    |mut b, (relation_id, collection_id, weight, item_id)| {
+                        b.push_bind(relation_id)
+                            .push_bind(collection_id)
+                            .push_bind(weight)
+                            .push_bind(item_id);
+                    },
+                );
+                qb.push(
+                    ") AS v \
+                     JOIN media ON media.id = v.column4 \
+                     ON CONFLICT (left_media_id, right_media_id, COALESCE(role, '')) DO UPDATE SET weight = excluded.weight",
+                );
+                if let Err(e) = qb
+                    .build()
                     .execute(&ctx.db)
                     .await
+                {
+                    error!(catalog = media_id, error = %e, "failed to record catalog membership batch");
+                }
+            }
+
+            if !catalog_tags.is_empty() {
+                let tag_rows: Vec<(Uuid, &String)> = new_items
+                    .iter()
+                    .chain(existing_items.iter())
+                    .flat_map(|item| {
+                        catalog_tags
+                            .iter()
+                            .map(move |tag| (item.id, tag))
+                    })
+                    .collect();
+
+                // 2 bind params/row; chunk well under SQLite's ~999 bound-parameter limit.
+                const TAG_CHUNK: usize = 400;
+                for rows in tag_rows.chunks(TAG_CHUNK) {
+                    let mut qb = sqlx::QueryBuilder::new(
+                        "INSERT OR IGNORE INTO media_tags (media_id, tag) ",
+                    );
+                    qb.push_values(rows.iter(), |mut b, (item_id, tag)| {
+                        b.push_bind(item_id)
+                            .push_bind(*tag);
+                    });
+                    if let Err(e) = qb
+                        .build()
+                        .execute(&ctx.db)
+                        .await
                     {
-                        warn!(catalog = media_id, tag = %tag, error = %e, "failed to apply catalog tag");
+                        warn!(catalog = media_id, error = %e, "failed to apply catalog tags batch");
                     }
                 }
             }
@@ -197,10 +264,22 @@ where
     Ok(counts)
 }
 
-/// Delete rows from `media_relations` (role='catalog') whose left_media_id is not in `valid_collection_ids`.
+/// Delete rows from `media_relations` (role='catalog') whose left_media_id is in
+/// `domain_collection_ids` (every catalog — enabled or disabled — belonging to the
+/// addons this caller is responsible for) but not in `valid_collection_ids` (the
+/// catalogs actually imported this run).
+///
+/// Scoping by `domain_collection_ids` is required because callers (e.g.
+/// `RefreshLibraryTask` and `RefreshIptvTask`) each only import a subset of catalog
+/// addons; without scoping, one task's cleanup pass would delete the other's
+/// still-valid catalog memberships simply because they're absent from its own
+/// partial `valid_collection_ids` set. There's no FK/column linking a collection's
+/// synthetic id (`Uuid::new_v5(addon_id, local_catalog_id)`) back to its owning addon
+/// in the DB, so the scope has to be computed by the caller and passed in.
 pub async fn remove_stale_catalog_memberships(
     db: &sqlx::SqlitePool,
     valid_collection_ids: &HashSet<Uuid>,
+    domain_collection_ids: &HashSet<Uuid>,
 ) {
     let existing: Vec<Uuid> = match sqlx::query_scalar(
         "SELECT DISTINCT left_media_id FROM media_relations WHERE role = 'catalog'",
@@ -217,7 +296,9 @@ pub async fn remove_stale_catalog_memberships(
 
     let stale: Vec<&Uuid> = existing
         .iter()
-        .filter(|id| !valid_collection_ids.contains(*id))
+        .filter(|id| {
+            domain_collection_ids.contains(*id) && !valid_collection_ids.contains(*id)
+        })
         .collect();
 
     if stale.is_empty() {
@@ -235,6 +316,25 @@ pub async fn remove_stale_catalog_memberships(
         {
             warn!(collection = %collection_id, error = %e, "failed to remove stale catalog membership");
         }
+    }
+}
+
+pub async fn prune_stale_iptv_channels(db: &sqlx::SqlitePool, cutoff: NaiveDateTime) {
+    let mut qb = sqlx::QueryBuilder::new(
+        "DELETE FROM media WHERE kind = 'tv_channel' AND updated_at < ",
+    );
+    qb.push_bind(cutoff);
+
+    match qb
+        .build()
+        .execute(db)
+        .await
+    {
+        Ok(res) if res.rows_affected() > 0 => {
+            info!(count = res.rows_affected(), "pruned stale IPTV channels");
+        }
+        Ok(_) => {}
+        Err(e) => warn!(error = %e, "failed to prune stale IPTV channels"),
     }
 }
 

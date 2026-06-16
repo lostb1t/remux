@@ -20,11 +20,11 @@ mod catalog_import_shared;
 mod clean_transcode_folder;
 mod clear_cache;
 mod clear_image_cache;
-mod iptv_epg_refresh;
 mod jellyfin_import;
 mod purge_iptv;
 mod purge_media;
 mod refresh_all_meta;
+mod refresh_iptv;
 mod refresh_library;
 mod series_sync;
 
@@ -32,11 +32,11 @@ pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
 use clear_cache::ClearCacheTask;
 use clear_image_cache::ClearImageCacheTask;
-use iptv_epg_refresh::IptvEpgRefreshTask;
 use jellyfin_import::JellyfinImportTask;
 use purge_iptv::PurgeIptvTask;
 use purge_media::PurgeMediaTask;
 use refresh_all_meta::RefreshAllMetaTask;
+use refresh_iptv::RefreshIptvTask;
 use refresh_library::RefreshLibraryTask;
 use series_sync::SeriesSyncTask;
 
@@ -273,7 +273,7 @@ impl TaskService {
             .register_task(Arc::new(JellyfinImportTask))
             .await?;
         service
-            .register_task(Arc::new(IptvEpgRefreshTask))
+            .register_task(Arc::new(RefreshIptvTask))
             .await?;
 
         let triggers = db::TaskTrigger::get_all(

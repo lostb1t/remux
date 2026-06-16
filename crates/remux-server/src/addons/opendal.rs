@@ -354,6 +354,10 @@ impl CatalogAddon for OpendalAddon {
                     .as_str()
                     .into(),
             ),
+            media_kind: self
+                .media_kind
+                .parse()
+                .ok(),
         }])
     }
 

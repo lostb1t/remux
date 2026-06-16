@@ -1054,7 +1054,10 @@ impl CatalogAddon for DeezerAddon {
         Ok(self
             .playlists()
             .iter()
-            .map(|id| CatalogInfo::new(id.clone(), format!("Deezer playlist {id}")))
+            .map(|id| CatalogInfo {
+                media_kind: Some(db::MediaKind::Track),
+                ..CatalogInfo::new(id.clone(), format!("Deezer playlist {id}"))
+            })
             .collect())
     }
 
