@@ -2395,9 +2395,6 @@ pub async fn patch_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Fire-and-forget: populate the 24-hour subtitle cache for a movie/episode so
-/// Fire-and-forget: warm all external provider caches for a movie/episode.
-/// Runs subtitles (addons) and segment data (IntroDb) in parallel inside a single task.
 fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
     let media = media.clone();
     let ctx = ctx.clone();
