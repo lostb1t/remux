@@ -31,7 +31,6 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
         .pragma("wal_autocheckpoint", "1000")
-        .pragma("auto_vacuum", "incremental")
         .pragma("cache_size", "-16384")
         .pragma("mmap_size", "33554432")
         .pragma("temp_store", "memory")
