@@ -4748,7 +4748,7 @@ pub(super) async fn inject_external_subtitles(
 ) {
     let subs = ctx
         .addons
-        .fetch_subtitles(subtitle_media, &ctx.db)
+        .fetch_subtitles(subtitle_media, &ctx.db, false)
         .await;
     if subs.is_empty() {
         return;

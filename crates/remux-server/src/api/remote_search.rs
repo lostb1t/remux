@@ -267,6 +267,7 @@ pub async fn search_remote_subtitles(
             &state
                 .ctx
                 .db,
+            false,
         )
         .await;
 

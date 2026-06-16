@@ -1353,15 +1353,16 @@ impl AddonService {
         &self,
         media: &db::Media,
         db: &SqlitePool,
+        background: bool,
     ) -> Vec<SubtitleInfo> {
         let addons = self
             .addons_for::<dyn SubtitleAddon>(media)
             .await;
 
         debug!(count = addons.len(), "subtitle addons matched");
-
+        let instant = Instant::now();
         let mut subs = vec![];
-        for r in addons {
+        for r in &addons {
             debug!(addon = %r.row.name, "fetching subtitles from addon");
             match r
                 .subtitle
@@ -1378,6 +1379,11 @@ impl AddonService {
                     warn!(addon = %r.row.name, error = %e, "subtitle addon failed")
                 }
             }
+        }
+        if background {
+            debug!(subs = subs.len(), addons = addons.len(), elapsed = ?instant.elapsed(), "subtitles fetched");
+        } else {
+            info!(subs = subs.len(), addons = addons.len(), elapsed = ?instant.elapsed(), "subtitles fetched");
         }
         subs
     }
@@ -1573,6 +1579,7 @@ impl AddonService {
         &self,
         media: &db::Media,
         ctx: &AppContext,
+        background: bool,
     ) -> MediaSegments {
         let addons: Vec<(String, Arc<dyn SegmentAddon>)> = self
             .inner
@@ -1588,7 +1595,7 @@ impl AddonService {
                     .as_ref()
                     .and_then(|s| {
                         let supports = s.supports(media);
-                        info!(
+                        debug!(
                             addon = %r.row.name,
                             media_kind = ?media.kind,
                             supports,
@@ -1608,6 +1615,8 @@ impl AddonService {
             })
             .collect();
 
+        let addon_count = addons.len();
+        let instant = Instant::now();
         let mut merged = MediaSegments::default();
         for (name, addon) in addons {
             match addon
@@ -1620,6 +1629,21 @@ impl AddonService {
                     error!(addon = %name, item = %media.id, error = %e, "segment addon failed")
                 }
             }
+        }
+        let found = [
+            &merged.intro,
+            &merged.outro,
+            &merged.recap,
+            &merged.preview,
+            &merged.commercial,
+        ]
+        .iter()
+        .filter(|s| s.is_some())
+        .count();
+        if background {
+            debug!(segments = found, addons = addon_count, elapsed = ?instant.elapsed(), "segments fetched");
+        } else {
+            info!(segments = found, addons = addon_count, elapsed = ?instant.elapsed(), "segments fetched");
         }
         merged
     }
