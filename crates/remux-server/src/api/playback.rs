@@ -1285,9 +1285,13 @@ async fn videos_stream_inner(
         max_height: q
             .max_height
             .map(|v| v as u32),
-        video_bitrate: q
-            .video_bit_rate
-            .map(|v| v as u32),
+        video_bitrate: source_video_stream
+            .and_then(|s| s.bit_rate)
+            .map(|b| {
+                let source = b as u32;
+                q.video_bit_rate
+                    .map_or(source, |v| source.min(v as u32))
+            }),
         audio_bitrate: q
             .audio_bit_rate
             .map(|v| v as u32),
@@ -3341,14 +3345,15 @@ pub async fn master_hls_video(
             max_height: q
                 .max_height
                 .map(|v| v as u32),
-            // Prefer an explicit VideoBitRate; fall back to MaxStreamingBitrate so
-            // the encoder targets the client-requested cap rather than CRF mode.
-            video_bitrate: q
-                .video_bit_rate
-                .map(|v| v as u32)
-                .or_else(|| {
+            video_bitrate: source_video_stream
+                .and_then(|s| s.bit_rate)
+                .map(|b| {
+                    let source = b as u32;
+                    let target = q
+                        .video_bit_rate
+                        .map_or(source, |v| source.min(v as u32));
                     q.max_streaming_bitrate
-                        .map(|b| b as u32)
+                        .map_or(target, |c| target.min(c as u32))
                 }),
             audio_bitrate: q
                 .audio_bit_rate
@@ -3897,11 +3902,7 @@ async fn hls_segment_inner(
                             .map(|v| v as u32),
                         video_bitrate: q
                             .video_bit_rate
-                            .map(|v| v as u32)
-                            .or_else(|| {
-                                q.max_streaming_bitrate
-                                    .map(|b| b as u32)
-                            }),
+                            .map(|v| v as u32),
                         audio_bitrate: q
                             .audio_bit_rate
                             .map(|v| v as u32),
