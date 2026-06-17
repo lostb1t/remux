@@ -185,11 +185,8 @@ impl AddonKind for EclipseAddon {
         &self,
     ) -> Result<
         Option<(
-            Vec<ResourceType>,
+            Vec<remux_sdks::stremio::ResourceRef>,
             Vec<remux_sdks::stremio::MediaType>,
-            Option<Vec<String>>,
-            Option<Vec<String>>,
-            Option<Vec<String>>,
         )>,
     > {
         let svc = self.service()?;

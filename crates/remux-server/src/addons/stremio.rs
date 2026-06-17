@@ -98,61 +98,26 @@ inventory::submit! {
 pub(super) fn parse_manifest_info(
     manifest: &remux_sdks::stremio::Manifest,
 ) -> (
-    Vec<ResourceType>,
+    Vec<remux_sdks::stremio::ResourceRef>,
     Vec<remux_sdks::stremio::MediaType>,
-    Option<Vec<String>>,
-    Option<Vec<String>>,
-    Option<Vec<String>>,
 ) {
-    let mut resources = Vec::new();
-    let mut meta_id_prefixes: Option<Vec<String>> = None;
-    let mut stream_id_prefixes: Option<Vec<String>> = None;
-    let mut subtitle_id_prefixes: Option<Vec<String>> = None;
-    for res in &manifest.resources {
-        match res.resource_type() {
-            ResourceType::Catalog => {
-                if !resources.contains(&ResourceType::Catalog) {
-                    resources.push(ResourceType::Catalog);
-                }
-            }
-            ResourceType::Meta => {
-                if !resources.contains(&ResourceType::Meta) {
-                    resources.push(ResourceType::Meta);
-                }
-                if let remux_sdks::stremio::Resource::Detailed(rr) = res {
-                    meta_id_prefixes = rr
-                        .id_prefixes
-                        .clone();
-                }
-            }
-            ResourceType::Subtitles => {
-                if !resources.contains(&ResourceType::Subtitles) {
-                    resources.push(ResourceType::Subtitles);
-                }
-                if let remux_sdks::stremio::Resource::Detailed(rr) = res {
-                    subtitle_id_prefixes = rr
-                        .id_prefixes
-                        .clone();
-                }
-            }
-            ResourceType::Stream => {
-                if !resources.contains(&ResourceType::Stream) {
-                    resources.push(ResourceType::Stream);
-                }
-                if let remux_sdks::stremio::Resource::Detailed(rr) = res {
-                    stream_id_prefixes = rr
-                        .id_prefixes
-                        .clone();
-                }
-            }
-            ResourceType::Search => {
-                if !resources.contains(&ResourceType::Search) {
-                    resources.push(ResourceType::Search);
-                }
-            }
-            _ => {}
+    let mut seen_names: Vec<ResourceType> = Vec::new();
+    let mut resources: Vec<remux_sdks::stremio::ResourceRef> = Vec::new();
+
+    for res in manifest
+        .resources
+        .iter()
+        .cloned()
+    {
+        let name = res.resource_type();
+        if seen_names.contains(&name) {
+            continue;
         }
+        seen_names.push(name.clone());
+        resources.push(res.into_ref());
     }
+
+    // Detect search support via catalog extras and synthesise a Search resource if needed.
     if manifest
         .catalogs
         .iter()
@@ -161,11 +126,15 @@ pub(super) fn parse_manifest_info(
                 .iter()
                 .any(|e| e.name == "search")
         })
+        && !seen_names.contains(&ResourceType::Search)
     {
-        if !resources.contains(&ResourceType::Search) {
-            resources.push(ResourceType::Search);
-        }
+        resources.push(remux_sdks::stremio::ResourceRef {
+            name: ResourceType::Search,
+            types: vec![],
+            id_prefixes: None,
+        });
     }
+
     let types = manifest
         .types
         .iter()
@@ -174,13 +143,7 @@ pub(super) fn parse_manifest_info(
                 .unwrap_or(remux_sdks::stremio::MediaType::Unknown(s.clone()))
         })
         .collect();
-    (
-        resources,
-        types,
-        meta_id_prefixes,
-        stream_id_prefixes,
-        subtitle_id_prefixes,
-    )
+    (resources, types)
 }
 
 #[nutype(
@@ -225,11 +188,8 @@ impl AddonKind for StremioAddon {
         &self,
     ) -> Result<
         Option<(
-            Vec<ResourceType>,
+            Vec<remux_sdks::stremio::ResourceRef>,
             Vec<remux_sdks::stremio::MediaType>,
-            Option<Vec<String>>,
-            Option<Vec<String>>,
-            Option<Vec<String>>,
         )>,
     > {
         let svc = self.service()?;

@@ -860,6 +860,31 @@ impl ExternalIds {
                 .is_none()
     }
 
+    /// Returns the best Stremio ID for use as a lookup key or idPrefix match.
+    /// Priority: series_imdb → imdb → tmdb:{n} → series_custom_stremio_id → custom_stremio_id
+    pub fn stremio_lookup_id(&self) -> Option<String> {
+        self.series_imdb
+            .as_deref()
+            .map(|s| s.to_string())
+            .or_else(|| {
+                self.imdb
+                    .as_deref()
+                    .map(|s| s.to_string())
+            })
+            .or_else(|| {
+                self.tmdb
+                    .map(|n| format!("tmdb:{}", n))
+            })
+            .or_else(|| {
+                self.series_custom_stremio_id
+                    .clone()
+            })
+            .or_else(|| {
+                self.custom_stremio_id
+                    .clone()
+            })
+    }
+
     pub fn merge(&mut self, source: &Self, replace: bool) {
         use remux_utils::merge_option;
         merge_option(&mut self.imdb, &source.imdb, replace);

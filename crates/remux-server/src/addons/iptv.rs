@@ -302,21 +302,19 @@ impl AddonKind for IptvAddon {
 
     async fn available_info(
         &self,
-    ) -> Result<
-        Option<(
-            Vec<ResourceType>,
-            Vec<StremioMediaType>,
-            Option<Vec<String>>,
-            Option<Vec<String>>,
-            Option<Vec<String>>,
-        )>,
-    > {
+    ) -> Result<Option<(Vec<remux_sdks::stremio::ResourceRef>, Vec<StremioMediaType>)>>
+    {
+        let make_ref = |name| remux_sdks::stremio::ResourceRef {
+            name,
+            types: vec![],
+            id_prefixes: None,
+        };
         Ok(Some((
-            vec![ResourceType::Stream, ResourceType::Catalog],
+            vec![
+                make_ref(ResourceType::Stream),
+                make_ref(ResourceType::Catalog),
+            ],
             vec![StremioMediaType::Tv],
-            None,
-            None,
-            None,
         )))
     }
 }

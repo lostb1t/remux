@@ -140,6 +140,19 @@ impl Resource {
                 .clone(),
         }
     }
+
+    /// Converts into a `ResourceRef`, promoting a Simple resource to one with
+    /// empty types and no idPrefixes.
+    pub fn into_ref(self) -> ResourceRef {
+        match self {
+            Resource::Simple(name) => ResourceRef {
+                name,
+                types: vec![],
+                id_prefixes: None,
+            },
+            Resource::Detailed(r) => r,
+        }
+    }
 }
 
 #[skip_serializing_none]

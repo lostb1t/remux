@@ -402,11 +402,8 @@ pub trait AddonKind: Send + Sync {
         &self,
     ) -> Result<
         Option<(
-            Vec<ResourceType>,
+            Vec<remux_sdks::stremio::ResourceRef>,
             Vec<remux_sdks::stremio::MediaType>,
-            Option<Vec<String>>,
-            Option<Vec<String>>,
-            Option<Vec<String>>,
         )>,
     > {
         Ok(None)
@@ -570,19 +567,6 @@ pub struct AddonCapabilities {
 #[derive(Clone)]
 pub struct AddonRuntime {
     pub row: Addon,
-    /// Live capabilities fetched from the addon at load time (e.g. remote manifest).
-    /// Acts as a hard upper bound — overrides whatever is stored in `row.types`.
-    manifest_types: Option<Vec<db::MediaKind>>,
-    /// idPrefixes for the `meta` resource, as declared in the addon manifest.
-    /// `None`           — manifest could not be fetched at load time; no filter applied.
-    /// `Some(None)`     — manifest loaded, no idPrefixes declared; all types accepted.
-    /// `Some(Some(ps))` — manifest loaded; only items whose lookup ID starts with one
-    ///                    of `ps` are handled by this addon's meta resource.
-    pub meta_id_prefixes: Option<Option<Vec<String>>>,
-    /// Same tri-state as `meta_id_prefixes` but for the `stream` resource.
-    pub stream_id_prefixes: Option<Option<Vec<String>>>,
-    /// Same tri-state as `meta_id_prefixes` but for the `subtitles` resource.
-    pub subtitle_id_prefixes: Option<Option<Vec<String>>>,
     pub caps: AddonCapabilities,
 }
 
@@ -647,13 +631,8 @@ impl AddonRuntime {
     }
 
     pub fn supports_type(&self, kind: &db::MediaKind) -> bool {
-        // Manifest types (if available) are the authoritative upper bound.
+        // row.types is the authoritative upper bound (set from the manifest at load time).
         // "Series" in a type list covers Episode and Season too (Stremio model).
-        if let Some(ref mt) = self.manifest_types {
-            if !kind_in_type_list(kind, mt) {
-                return false;
-            }
-        }
         self.row
             .types
             .is_empty()
@@ -696,49 +675,22 @@ impl PickCap<dyn MetaAddon> for AddonRuntime {
         else {
             return false;
         };
-        match &self.meta_id_prefixes {
-            None => {
-                // Manifest unavailable at load time — fall back to type check.
-                cap.supports(media)
-                    .await
-            }
-            Some(None) => {
-                // Manifest loaded; no idPrefixes declared — accept all types.
-                cap.supports(media)
-                    .await
-            }
-            Some(Some(prefixes)) => {
-                // Manifest loaded; only accept items whose lookup ID matches a prefix.
-                let lookup_id = media
-                    .external_ids
-                    .series_imdb
-                    .as_deref()
-                    .map(|s| s.to_string())
-                    .or_else(|| {
-                        media
-                            .external_ids
-                            .imdb
-                            .as_deref()
-                            .map(|s| s.to_string())
-                    })
-                    .or_else(|| {
-                        media
-                            .external_ids
-                            .tmdb
-                            .map(|n| format!("tmdb:{}", n))
-                    })
-                    .or_else(|| {
-                        media
-                            .external_ids
-                            .custom_stremio_id
-                            .clone()
-                    });
-                let Some(id) = lookup_id else { return false };
-                prefixes
-                    .iter()
-                    .any(|p| id.starts_with(p.as_str()))
-            }
+        if let Some(prefixes) = self
+            .row
+            .resource_id_prefixes(&ResourceType::Meta)
+        {
+            let Some(id) = media
+                .external_ids
+                .stremio_lookup_id()
+            else {
+                return false;
+            };
+            return prefixes
+                .iter()
+                .any(|p| id.starts_with(p.as_str()));
         }
+        cap.supports(media)
+            .await
     }
 }
 
@@ -747,37 +699,20 @@ impl PickCap<dyn StreamAddon> for AddonRuntime {
     async fn pick(&self, media: &db::Media) -> bool {
         if !self
             .row
-            .resources
-            .contains(&ResourceType::Stream)
+            .has_resource(&ResourceType::Stream)
         {
             return false;
         }
-        if let Some(Some(prefixes)) = &self.stream_id_prefixes {
-            let lookup_id = media
+        if let Some(prefixes) = self
+            .row
+            .resource_id_prefixes(&ResourceType::Stream)
+        {
+            let Some(id) = media
                 .external_ids
-                .series_imdb
-                .as_deref()
-                .map(|s| s.to_string())
-                .or_else(|| {
-                    media
-                        .external_ids
-                        .imdb
-                        .as_deref()
-                        .map(|s| s.to_string())
-                })
-                .or_else(|| {
-                    media
-                        .external_ids
-                        .series_custom_stremio_id
-                        .clone()
-                })
-                .or_else(|| {
-                    media
-                        .external_ids
-                        .custom_stremio_id
-                        .clone()
-                });
-            let Some(id) = lookup_id else { return false };
+                .stremio_lookup_id()
+            else {
+                return false;
+            };
             return prefixes
                 .iter()
                 .any(|p| id.starts_with(p.as_str()));
@@ -798,37 +733,20 @@ impl PickCap<dyn SubtitleAddon> for AddonRuntime {
     async fn pick(&self, media: &db::Media) -> bool {
         if !self
             .row
-            .resources
-            .contains(&ResourceType::Subtitles)
+            .has_resource(&ResourceType::Subtitles)
         {
             return false;
         }
-        if let Some(Some(prefixes)) = &self.subtitle_id_prefixes {
-            let lookup_id = media
+        if let Some(prefixes) = self
+            .row
+            .resource_id_prefixes(&ResourceType::Subtitles)
+        {
+            let Some(id) = media
                 .external_ids
-                .series_imdb
-                .as_deref()
-                .map(|s| s.to_string())
-                .or_else(|| {
-                    media
-                        .external_ids
-                        .imdb
-                        .as_deref()
-                        .map(|s| s.to_string())
-                })
-                .or_else(|| {
-                    media
-                        .external_ids
-                        .series_custom_stremio_id
-                        .clone()
-                })
-                .or_else(|| {
-                    media
-                        .external_ids
-                        .custom_stremio_id
-                        .clone()
-                });
-            let Some(id) = lookup_id else { return false };
+                .stremio_lookup_id()
+            else {
+                return false;
+            };
             return prefixes
                 .iter()
                 .any(|p| id.starts_with(p.as_str()));
@@ -879,7 +797,7 @@ impl AddonService {
         let addons = Addon::list(db).await?;
         let mut runtimes = Vec::new();
 
-        for addon in addons
+        for mut addon in addons
             .into_iter()
             .filter(|a| a.enabled)
         {
@@ -907,89 +825,46 @@ impl AddonService {
                 config,
             ) {
                 Ok(caps) => {
-                    let (
-                        manifest_types,
-                        meta_id_prefixes,
-                        stream_id_prefixes,
-                        subtitle_id_prefixes,
-                    ) = if let Some(ref kind) = caps.kind {
+                    if let Some(ref kind) = caps.kind {
                         match kind
                             .available_info()
                             .await
                         {
-                            Ok(Some((
-                                _,
-                                raw_types,
-                                meta_prefixes,
-                                stream_prefixes,
-                                subtitle_prefixes,
-                            ))) if !raw_types.is_empty() => {
+                            Ok(Some((resource_refs, raw_types))) => {
+                                let new_types: Vec<db::MediaKind> = raw_types
+                                    .into_iter()
+                                    .filter_map(|t| db::MediaKind::try_from(t).ok())
+                                    .collect();
                                 info!(
                                     addon_id = %addon.id,
                                     name = %addon.name,
-                                    meta_id_prefixes = ?meta_prefixes,
-                                    stream_id_prefixes = ?stream_prefixes,
-                                    subtitle_id_prefixes = ?subtitle_prefixes,
+                                    resources = ?resource_refs.iter().map(|r| &r.name).collect::<Vec<_>>(),
                                     "addon manifest loaded"
                                 );
-                                (
-                                    Some(
-                                        raw_types
-                                            .into_iter()
-                                            .filter_map(|t| {
-                                                db::MediaKind::try_from(t).ok()
-                                            })
-                                            .collect(),
-                                    ),
-                                    Some(meta_prefixes),
-                                    Some(stream_prefixes),
-                                    Some(subtitle_prefixes),
-                                )
+                                addon.resources = resource_refs;
+                                if !new_types.is_empty() {
+                                    addon.types = new_types;
+                                }
+                                addon.updated_at = chrono::Utc::now().naive_utc();
+                                if let Err(e) = addon
+                                    .update(db)
+                                    .await
+                                {
+                                    warn!(addon_id = %addon.id, error = %e, "failed to persist addon manifest data");
+                                }
                             }
-                            Ok(Some((
-                                _,
-                                _,
-                                meta_prefixes,
-                                stream_prefixes,
-                                subtitle_prefixes,
-                            ))) => {
-                                info!(
-                                    addon_id = %addon.id,
-                                    name = %addon.name,
-                                    meta_id_prefixes = ?meta_prefixes,
-                                    stream_id_prefixes = ?stream_prefixes,
-                                    subtitle_id_prefixes = ?subtitle_prefixes,
-                                    "addon manifest loaded (no types)"
-                                );
-                                (
-                                    None,
-                                    Some(meta_prefixes),
-                                    Some(stream_prefixes),
-                                    Some(subtitle_prefixes),
-                                )
-                            }
-                            Ok(None) => (None, None, None, None),
+                            Ok(None) => {}
                             Err(e) => {
                                 warn!(
                                     addon_id = %addon.id,
                                     name = %addon.name,
                                     error = %e,
-                                    "failed to fetch addon manifest at load time; id_prefixes unavailable"
+                                    "failed to fetch addon manifest at load time"
                                 );
-                                (None, None, None, None)
                             }
                         }
-                    } else {
-                        (None, None, None, None)
-                    };
-                    runtimes.push(AddonRuntime {
-                        row: addon,
-                        manifest_types,
-                        meta_id_prefixes,
-                        stream_id_prefixes,
-                        subtitle_id_prefixes,
-                        caps,
-                    });
+                    }
+                    runtimes.push(AddonRuntime { row: addon, caps });
                 }
                 Err(e) => warn!(
                     addon_id = %addon.id,
@@ -1288,18 +1163,16 @@ impl AddonService {
                         return None;
                     }
                     // Apply the same meta idPrefixes guard used for MetaAddon.
-                    if let Some(Some(prefixes)) = &r.meta_id_prefixes {
-                        let lookup_id = node
+                    if let Some(prefixes) = r
+                        .row
+                        .resource_id_prefixes(&ResourceType::Meta)
+                    {
+                        let Some(id) = node
                             .external_ids
-                            .imdb
-                            .as_deref()
-                            .map(|s| s.to_string())
-                            .or_else(|| {
-                                node.external_ids
-                                    .custom_stremio_id
-                                    .clone()
-                            });
-                        let Some(id) = lookup_id else { return None };
+                            .stremio_lookup_id()
+                        else {
+                            return None;
+                        };
                         if !prefixes
                             .iter()
                             .any(|p| id.starts_with(p.as_str()))
@@ -1481,8 +1354,7 @@ impl AddonService {
             .filter(|r| {
                 r.supports_type(kind)
                     && r.row
-                        .resources
-                        .contains(&ResourceType::Search)
+                        .has_resource(&ResourceType::Search)
                     && r.search
                         .is_some()
             })
@@ -1793,8 +1665,7 @@ impl AddonService {
             .iter()
             .filter(|r| {
                 r.row
-                    .resources
-                    .contains(&ResourceType::Segment)
+                    .has_resource(&ResourceType::Segment)
             })
             .filter_map(|r| {
                 r.segment
@@ -1864,8 +1735,7 @@ impl AddonService {
             .iter()
             .filter(|r| {
                 r.row
-                    .resources
-                    .contains(&ResourceType::Lyrics)
+                    .has_resource(&ResourceType::Lyrics)
             })
             .filter_map(|r| {
                 r.lyric
@@ -1906,8 +1776,7 @@ impl AddonService {
             .iter()
             .filter(|r| {
                 r.row
-                    .resources
-                    .contains(&ResourceType::Lyrics)
+                    .has_resource(&ResourceType::Lyrics)
             })
             .filter_map(|r| {
                 r.lyric

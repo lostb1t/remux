@@ -23,7 +23,7 @@ pub struct Addon {
     #[sqlx(json)]
     pub preset: AddonPresetRef,
     #[sqlx(json)]
-    pub resources: Vec<remux_sdks::stremio::ResourceType>,
+    pub resources: Vec<remux_sdks::stremio::ResourceRef>,
     /// Content types the user has enabled for this addon (e.g. `"movie"`, `"series"`).
     /// Empty means all types are enabled.
     #[sqlx(json)]
@@ -101,6 +101,25 @@ impl Addon {
             .execute(db)
             .await?;
         Ok(())
+    }
+
+    pub fn has_resource(&self, kind: &remux_sdks::stremio::ResourceType) -> bool {
+        self.resources
+            .iter()
+            .any(|r| &r.name == kind)
+    }
+
+    pub fn resource_id_prefixes(
+        &self,
+        kind: &remux_sdks::stremio::ResourceType,
+    ) -> Option<&[String]> {
+        self.resources
+            .iter()
+            .find(|r| &r.name == kind)
+            .and_then(|r| {
+                r.id_prefixes
+                    .as_deref()
+            })
     }
 
     pub fn catalog_states(&self) -> HashMap<String, CatalogState> {
