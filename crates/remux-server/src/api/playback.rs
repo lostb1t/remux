@@ -4499,10 +4499,6 @@ pub async fn subtitles_stream(
             .map(|s| s.into_owned())
             .unwrap_or_else(|_| source_url.clone());
         let output_format = format.to_ascii_lowercase();
-        let content_type = match output_format.as_str() {
-            "vtt" | "webvtt" => "text/vtt; charset=utf-8",
-            _ => "text/plain; charset=utf-8",
-        };
 
         let descriptor: crate::stream::StreamDescriptor =
             serde_json::from_str(&source_url).unwrap_or_else(|_| {
@@ -4536,10 +4532,18 @@ pub async fn subtitles_stream(
             .map_err(|e| anyhow!("read subtitle bytes: {e}"))?;
         let body = String::from_utf8_lossy(&bytes).into_owned();
 
-        let converted = if matches!(output_format.as_str(), "vtt" | "webvtt") {
-            crate::conversions::srt_to_vtt(&body)
-        } else {
-            body
+        let (converted, content_type) = match output_format.as_str() {
+            "vtt" | "webvtt" => (
+                crate::conversions::srt_to_vtt(&body),
+                "text/vtt; charset=utf-8",
+            ),
+            // Jellyfin Web fetches subtitle cue data as Stream.js and expects
+            // {"TrackEvents":[{StartPositionTicks,EndPositionTicks,Text}]}.
+            "js" => (
+                crate::conversions::srt_to_jellyfin_json(&body),
+                "application/json",
+            ),
+            _ => (body, "text/plain; charset=utf-8"),
         };
         return Ok(Response::builder()
             .status(StatusCode::OK)

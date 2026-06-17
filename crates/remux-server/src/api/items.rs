@@ -1592,7 +1592,7 @@ pub async fn item(
     //    .ok()
     //    .and_then(|c| c.enable_subtitles_detail)
     //    .unwrap_or(true);
-    let enable_subtitles_detail = false;
+    let enable_subtitles_detail = true;
     if enable_subtitles_detail {
         if let Some(ref mut sources) = base_item.media_sources {
             if !sources.is_empty() {
