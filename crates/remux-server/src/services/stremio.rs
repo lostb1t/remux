@@ -149,7 +149,7 @@ impl StremioService {
         let page_size = first_page
             .metas
             .len() as u32;
-        debug!(kind = %kind, id = %id, page_size, supports_skip, elapsed = ?t0.elapsed(), "catalog first page");
+        debug!(kind = %kind, id = %id, page_size, elapsed = ?t0.elapsed(), "catalog first page");
         if page_size == 0 || !supports_skip {
             return Ok(Box::pin(stream::iter(first_page.metas)));
         }

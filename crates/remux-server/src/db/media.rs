@@ -5296,7 +5296,6 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                 "EXISTS (SELECT 1 FROM media_relations mr \
                  WHERE mr.right_media_id = media.id AND mr.role = 'catalog' AND mr.left_media_id = X'{cid_hex}')"
             );
-            debug!(catalog_id = %catalog_id, cid_hex = %cid_hex, sql = %sql, "catalog filter rule SQL");
             Some((sql, false))
         }
     }

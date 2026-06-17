@@ -835,12 +835,6 @@ impl AddonService {
                                     .into_iter()
                                     .filter_map(|t| db::MediaKind::try_from(t).ok())
                                     .collect();
-                                info!(
-                                    addon_id = %addon.id,
-                                    name = %addon.name,
-                                    resources = ?resource_refs.iter().map(|r| &r.name).collect::<Vec<_>>(),
-                                    "addon manifest loaded"
-                                );
                                 addon.resources = resource_refs;
                                 if !new_types.is_empty() {
                                     addon.types = new_types;
