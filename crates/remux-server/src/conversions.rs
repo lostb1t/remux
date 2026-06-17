@@ -336,3 +336,128 @@ fn to_option_bool(flag: i64) -> Option<bool> {
         _ => None,
     }
 }
+
+// --- Subtitle text conversion ---
+//
+// Jellyfin-web fetches subtitles as either JSON TrackEvents (Stream.js)
+// or WebVTT (Stream.vtt).  We extract to SRT via ffmpeg and convert.
+
+/// Convert SRT to WebVTT. Already-valid VTT is passed through unchanged.
+pub fn srt_to_vtt(input: &str) -> String {
+    if input
+        .trim_start()
+        .starts_with("WEBVTT")
+    {
+        return input.to_string();
+    }
+    let mut out = String::from("WEBVTT\n\n");
+    for block in input
+        .trim()
+        .split("\n\n")
+    {
+        let lines: Vec<&str> = block
+            .lines()
+            .collect();
+        if lines.len() < 2 {
+            continue;
+        }
+        let rest = if lines[0]
+            .trim()
+            .chars()
+            .all(|c| c.is_ascii_digit())
+        {
+            &lines[1..]
+        } else {
+            &lines[..]
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        let timecode = rest[0].replace(',', ".");
+        out.push_str(&timecode);
+        out.push('\n');
+        for line in &rest[1..] {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Convert SRT to Jellyfin JSON TrackEvents format (1 tick = 100 ns).
+pub fn srt_to_jellyfin_json(input: &str) -> String {
+    let mut events: Vec<serde_json::Value> = Vec::new();
+    for block in input
+        .trim()
+        .split("\n\n")
+    {
+        let lines: Vec<&str> = block
+            .lines()
+            .collect();
+        if lines.len() < 2 {
+            continue;
+        }
+        let content = if lines[0]
+            .trim()
+            .chars()
+            .all(|c| c.is_ascii_digit())
+        {
+            &lines[1..]
+        } else {
+            &lines[..]
+        };
+        if content.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = content[0]
+            .split("-->")
+            .collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let start = srt_timestamp_to_ticks(parts[0].trim());
+        let end = srt_timestamp_to_ticks(parts[1].trim());
+        let text = content[1..].join("\n");
+        if let (Some(s), Some(e)) = (start, end) {
+            events.push(serde_json::json!({
+                "Id": events.len().to_string(),
+                "Text": text,
+                "StartPositionTicks": s,
+                "EndPositionTicks": e,
+            }));
+        }
+    }
+    serde_json::json!({ "TrackEvents": events }).to_string()
+}
+
+fn srt_timestamp_to_ticks(ts: &str) -> Option<i64> {
+    let cleaned = ts.replace(',', ".");
+    let parts: Vec<&str> = cleaned
+        .split(':')
+        .collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let h: i64 = parts[0]
+        .parse()
+        .ok()?;
+    let m: i64 = parts[1]
+        .parse()
+        .ok()?;
+    let sp: Vec<&str> = parts[2]
+        .split('.')
+        .collect();
+    let s: i64 = sp[0]
+        .parse()
+        .ok()?;
+    let ms: i64 = if sp.len() > 1 {
+        let padded = format!("{:0<3}", sp[1]);
+        padded[..3]
+            .parse()
+            .ok()?
+    } else {
+        0
+    };
+    Some(((h * 3600 + m * 60 + s) * 1000 + ms) * 10_000)
+}

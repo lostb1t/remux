@@ -414,36 +414,49 @@ async fn items_playbackinfo_inner(
         let effective_sub_idx = q
             .subtitle_stream_index
             .or(source.default_subtitle_stream_index);
-        let needs_pgs_burn = effective_sub_idx.map_or(false, |idx| {
-            source
+        // Signal burn-in for image-based subtitle codecs the client does not
+        // declare support for in its device profile. Text codecs are handled via
+        // VTT conversion in the DeliveryUrl loop below.
+        if let Some(idx) = effective_sub_idx {
+            let needs_burn = source
                 .media_streams
                 .iter()
                 .any(|s| {
                     s.index == idx
                         && matches!(s.type_, Some(api::MediaStreamType::Subtitle))
-                        && matches!(
-                            s.codec
-                                .as_deref()
-                                .unwrap_or(""),
-                            "pgssub" | "hdmv_pgs_subtitle" | "dvd_subtitle" | "dvdsub"
-                        )
-                })
-        });
-        if needs_pgs_burn {
-            let codec = effective_sub_idx
-                .and_then(|idx| {
-                    source
-                        .media_streams
-                        .iter()
-                        .find(|s| s.index == idx)
-                })
-                .and_then(|s| {
-                    s.codec
-                        .clone()
-                })
-                .unwrap_or_default();
-            transcode_reasons
-                .insert(api::TranscodeReason::SubtitleCodecNotSupported(codec));
+                        && !s.is_text_subtitle_stream
+                        && !device_profile
+                            .as_ref()
+                            .map(|dp| {
+                                dp.subtitle_profiles
+                                    .iter()
+                                    .filter_map(|p| {
+                                        p.format
+                                            .as_deref()
+                                    })
+                                    .any(|f| {
+                                        s.codec
+                                            .as_deref()
+                                            .map_or(false, |c| {
+                                                f.eq_ignore_ascii_case(c)
+                                            })
+                                    })
+                            })
+                            .unwrap_or(false)
+                });
+            if needs_burn {
+                let codec = source
+                    .media_streams
+                    .iter()
+                    .find(|s| s.index == idx)
+                    .and_then(|s| {
+                        s.codec
+                            .clone()
+                    })
+                    .unwrap_or_default();
+                transcode_reasons
+                    .insert(api::TranscodeReason::SubtitleCodecNotSupported(codec));
+            }
         }
 
         // `EnableTranscoding=true` means "allowed", not "forced".
@@ -705,17 +718,52 @@ async fn items_playbackinfo_inner(
             if stream.type_ != Some(api::MediaStreamType::Subtitle) {
                 continue;
             }
-            if !stream.is_text_subtitle_stream {
-                continue;
-            }
-            // Embedded text subs: Embed delivery — MPV reads from container.
-            // No URL needed; External would cause MPV to double-load the track.
-            stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
+            let codec = stream
+                .codec
+                .as_deref()
+                .unwrap_or_default();
+            let profile_supports = |fmt: &str| -> bool {
+                device_profile
+                    .as_ref()
+                    .map(|dp| {
+                        dp.subtitle_profiles
+                            .iter()
+                            .filter_map(|p| {
+                                p.format
+                                    .as_deref()
+                            })
+                            .any(|f| f.eq_ignore_ascii_case(fmt))
+                    })
+                    .unwrap_or(false)
+            };
+            let format = if stream.is_text_subtitle_stream {
+                if (codec.eq_ignore_ascii_case("ass")
+                    || codec.eq_ignore_ascii_case("ssa"))
+                    && profile_supports("ass")
+                {
+                    "ass"
+                } else {
+                    "vtt"
+                }
+            } else if profile_supports("sup") || profile_supports("pgssub") {
+                "sup"
+            } else {
+                "vtt"
+            };
+            stream.delivery_url = Some(format!(
+                "/Videos/{id}/{source_id}/Subtitles/{idx}/0/Stream.{format}?ApiKey={api_key}",
+                idx = stream.index,
+            ));
+            stream.delivery_method = Some(api::SubtitleDeliveryMethod::External);
+            stream.is_external_url = Some(true);
         }
 
         source.transcoding_reasons = transcode_reasons;
 
         // For group selections, expose the stable group UUID to the client.
+        // Subtitle delivery URLs above use the real source_id (captured before
+        // this point) so the extraction endpoint finds the media by its actual
+        // database UUID, not the group alias.
         // TranscodingUrl already embeds the real source UUID (set before this point).
         if let Some((gid, ref gtitle, _)) = group_source_override {
             source.id = gid;
@@ -4489,7 +4537,7 @@ pub async fn subtitles_stream(
         let body = String::from_utf8_lossy(&bytes).into_owned();
 
         let converted = if matches!(output_format.as_str(), "vtt" | "webvtt") {
-            srt_to_vtt(&body)
+            crate::conversions::srt_to_vtt(&body)
         } else {
             body
         };
@@ -4543,16 +4591,16 @@ pub async fn subtitles_stream(
         .context_not_found("media source has no URL")?;
 
     let output_format = format.to_ascii_lowercase();
+    let is_json = matches!(output_format.as_str(), "js" | "json");
     let (ffmpeg_format, content_type) = match output_format.as_str() {
         "vtt" | "webvtt" => ("webvtt", "text/vtt; charset=utf-8"),
         "srt" | "subrip" => ("srt", "text/plain; charset=utf-8"),
         "ass" | "ssa" => ("ass", "text/plain; charset=utf-8"),
         "pgssub" | "sup" => ("sup", "application/octet-stream"),
+        "js" | "json" => ("srt", "application/json; charset=utf-8"),
         _ => ("srt", "text/plain; charset=utf-8"),
     };
 
-    // FFmpeg expects subtitle-ordinal form (0:s:N) for reliable subtitle mapping.
-    // Clients pass the Jellyfin stream index, so convert when probe metadata exists.
     let map_spec = media
         .probe_data
         .as_ref()
@@ -4563,7 +4611,6 @@ pub async fn subtitles_stream(
                 .filter(|s| matches!(s.type_, Some(api::MediaStreamType::Subtitle)))
                 .map(|s| s.index)
                 .collect();
-
             sub_indexes.sort_unstable();
             sub_indexes
                 .iter()
@@ -4572,103 +4619,150 @@ pub async fn subtitles_stream(
         })
         .unwrap_or_else(|| format!("0:{stream_index}"));
 
-    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
-    cmd.args([
-        "-i",
-        &url,
-        "-map",
-        &map_spec,
-        "-c:s",
-        if ffmpeg_format == "sup" {
-            "copy"
-        } else {
-            ffmpeg_format
-        },
-        "-f",
-        ffmpeg_format,
-        "-",
-    ]);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    let is_passthrough =
+        matches!(output_format.as_str(), "ass" | "ssa" | "sup" | "pgssub");
+    let is_binary = matches!(output_format.as_str(), "sup" | "pgssub");
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| anyhow!("failed to spawn ffmpeg: {e}"))?;
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| anyhow!("ffmpeg failed: {e}"))?;
-
-    if !output
-        .status
-        .success()
-    {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        error!(
-            media_source_id = %media_source_id,
-            stream_index,
-            map = %map_spec,
-            format = %ffmpeg_format,
-            "ffmpeg subtitle extraction failed: {stderr}"
-        );
+    // Binary formats (PGS/SUP): extract on-the-fly as raw bytes.
+    if is_binary {
+        let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+        cmd.args([
+            "-copyts",
+            "-i",
+            &url,
+            "-map",
+            &map_spec,
+            "-an",
+            "-vn",
+            "-c:s",
+            "copy",
+            "-f",
+            output_format.as_str(),
+            "-",
+        ]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
+        if !output
+            .status
+            .success()
+        {
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("subtitle extraction failed"))
+                .unwrap());
+        }
         return Ok(Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::from("subtitle extraction failed"))
+            .status(StatusCode::OK)
+            .header("Content-Type", content_type)
+            .body(Body::from(output.stdout))
             .unwrap());
     }
+
+    // Text formats: cache SRT, convert on-the-fly.
+    let (ext_codec, ext_fmt, ext) = if is_passthrough {
+        ("copy", "ass", "ass")
+    } else {
+        ("srt", "srt", "srt")
+    };
+
+    let cache_dir = state
+        .ctx
+        .config
+        .data_dir
+        .join("subtitle-cache");
+    tokio::fs::create_dir_all(&cache_dir)
+        .await
+        .map_err(|e| anyhow!("failed to create subtitle cache dir: {e}"))?;
+    let cache_path = cache_dir.join(format!("{media_source_id}_{stream_index}.{ext}"));
+
+    let mut cached = if cache_path.exists() {
+        tokio::fs::read(&cache_path)
+            .await
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .filter(|s| {
+                !s.trim()
+                    .is_empty()
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    if cached.is_empty() {
+        let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+        cmd.args([
+            "-copyts",
+            "-i",
+            &url,
+            "-map",
+            &map_spec,
+            "-an",
+            "-vn",
+            "-c:s",
+            ext_codec,
+            "-f",
+            ext_fmt,
+            cache_path
+                .to_str()
+                .ok_or_else(|| anyhow!("invalid cache path"))?,
+        ]);
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::piped());
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| anyhow!("failed to run ffmpeg: {e}"))?;
+        if !output
+            .status
+            .success()
+        {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            error!(%media_source_id, stream_index, %map_spec, "ffmpeg subtitle extraction failed: {stderr}");
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("subtitle extraction failed"))
+                .unwrap());
+        }
+        cached = String::from_utf8_lossy(
+            &tokio::fs::read(&cache_path)
+                .await
+                .map_err(|e| anyhow!("failed to read cached subtitle: {e}"))?,
+        )
+        .into_owned();
+        if cached
+            .trim()
+            .is_empty()
+        {
+            let _ = tokio::fs::remove_file(&cache_path).await;
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("subtitle extraction failed"))
+                .unwrap());
+        }
+    }
+
+    let body = if is_passthrough {
+        cached
+    } else if is_json {
+        crate::conversions::srt_to_jellyfin_json(&cached)
+    } else if ffmpeg_format == "webvtt" {
+        crate::conversions::srt_to_vtt(&cached)
+    } else {
+        cached
+    };
 
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", content_type)
         .header("Cache-Control", "public, max-age=3600")
         .header("Access-Control-Allow-Origin", "*")
-        .body(Body::from(output.stdout))
+        .body(Body::from(body))
         .unwrap())
-}
-
-/// Convert SRT subtitle text to WebVTT. Already-valid VTT is passed through unchanged.
-fn srt_to_vtt(input: &str) -> String {
-    if input
-        .trim_start()
-        .starts_with("WEBVTT")
-    {
-        return input.to_string();
-    }
-    let mut out = String::from("WEBVTT\n\n");
-    for block in input
-        .trim()
-        .split("\n\n")
-    {
-        let lines: Vec<&str> = block
-            .lines()
-            .collect();
-        if lines.len() < 2 {
-            continue;
-        }
-        // Skip the sequence number line (all digits), keep timecodes + text
-        let rest = if lines[0]
-            .trim()
-            .chars()
-            .all(|c| c.is_ascii_digit())
-        {
-            &lines[1..]
-        } else {
-            &lines[..]
-        };
-        if rest.is_empty() {
-            continue;
-        }
-        // Convert SRT timestamp separator , → .
-        let timecode = rest[0].replace(',', ".");
-        out.push_str(&timecode);
-        out.push('\n');
-        for line in &rest[1..] {
-            out.push_str(line);
-            out.push('\n');
-        }
-        out.push('\n');
-    }
-    out
 }
 
 pub(crate) fn lang_to_two_letter(lang: &str) -> Option<String> {
