@@ -390,7 +390,7 @@ pub async fn get_items(
                         total_count: true,
                         include_user_state: q
                             .enable_user_data
-                            .is_none(),
+                            .unwrap_or(true),
                         user_id: Some(
                             session
                                 .user

@@ -6,6 +6,7 @@ use axum::{
     response::IntoResponse,
 };
 use axum_extra::extract::Query;
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use http::StatusCode;
 use remux_macros::{api_query, get};
 use uuid::Uuid;
@@ -28,6 +29,37 @@ pub fn livetv_view_item() -> api::BaseItemDto {
         is_folder: true,
         ..Default::default()
     }
+}
+
+fn normalize_next_up_cutoff(cutoff: Option<&str>) -> Result<String> {
+    let Some(cutoff) = cutoff else {
+        return Ok("1970-01-01 00:00:00".to_string());
+    };
+
+    if let Ok(dt) = DateTime::parse_from_rfc3339(cutoff) {
+        return Ok(dt
+            .naive_utc()
+            .format("%F %T")
+            .to_string());
+    }
+
+    if let Ok(dt) = NaiveDateTime::parse_from_str(cutoff, "%Y-%m-%d %H:%M:%S") {
+        return Ok(dt
+            .format("%F %T")
+            .to_string());
+    }
+
+    if let Ok(date) = NaiveDate::parse_from_str(cutoff, "%Y-%m-%d") {
+        return Ok(date
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is always valid")
+            .format("%F %T")
+            .to_string());
+    }
+
+    Err(anyhow::anyhow!("invalid next_up_date_cutoff")).context_bad_request(
+        "nextUpDateCutoff must be RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS",
+    )
 }
 
 #[get("/shows/{id}/seasons")]
@@ -286,20 +318,30 @@ async fn shows_nextup_all(
     // makes each media lookup a single covering-index hop instead of two hops
     // (pk-index → rowid → main table). UNION keeps two index-friendly legs on
     // idx_ums_user_play_state.
+    let date_cutoff = normalize_next_up_cutoff(
+        q.next_up_date_cutoff
+            .as_deref(),
+    )?;
     let active_series: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT DISTINCT m.grandparent_id \
+        "SELECT m.grandparent_id \
          FROM ( \
            SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count > 0 \
            UNION \
            SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count = 0 AND playback_position > 0 \
          ) AS active \
-         CROSS JOIN media m ON m.id = active.media_id \
+         JOIN user_media_state ums ON ums.media_id = active.media_id AND ums.user_id = ? \
+         JOIN media m ON m.id = active.media_id \
          WHERE m.kind = 'episode' \
          AND m.grandparent_id IS NOT NULL \
+         GROUP BY m.grandparent_id \
+         HAVING MAX(ums.last_played_at) >= ? \
+         ORDER BY MAX(ums.last_played_at) DESC \
          LIMIT ?",
     )
     .bind(user_id)
     .bind(user_id)
+    .bind(user_id)
+    .bind(&date_cutoff)
     .bind(limit)
     .fetch_all(&state.ctx.db)
     .await?;
@@ -508,4 +550,317 @@ pub async fn shows_recommendations(
     )
     .await?;
     Ok(Json(categories))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use chrono::NaiveDate;
+    use sqlx::SqlitePool;
+
+    async fn test_db() -> SqlitePool {
+        let db = db::connect("sqlite::memory:", 10_000)
+            .await
+            .unwrap();
+        db::migrate(&db)
+            .await
+            .unwrap();
+        db
+    }
+
+    async fn insert_series_with_episodes(
+        db: &SqlitePool,
+        series_title: &str,
+        episode_titles: &[&str],
+    ) -> (db::Media, Vec<db::Media>) {
+        let series_imdb = db::NonEmptyString::try_new(format!(
+            "tt{}",
+            series_title
+                .bytes()
+                .fold(0_u32, |acc, byte| acc
+                    .wrapping_mul(31)
+                    .wrapping_add(byte as u32))
+        ))
+        .unwrap();
+        let mut series = db::Media {
+            id: Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Series,
+                external_ids: db::ExternalIds {
+                    imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: None,
+                episode: None,
+            }),
+            title: series_title.to_string(),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut season = db::Media {
+            id: Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Season,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: None,
+            }),
+            title: format!("{series_title} Season 1"),
+            kind: db::MediaKind::Season,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(series.id),
+            idx: Some(1),
+            ..Default::default()
+        };
+        season
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut episodes = Vec::with_capacity(episode_titles.len());
+        for (idx, title) in episode_titles
+            .iter()
+            .enumerate()
+        {
+            let mut episode = db::Media {
+                id: Uuid::from(&db::MediaIdRaw {
+                    kind: db::MediaKind::Episode,
+                    external_ids: db::ExternalIds {
+                        series_imdb: Some(series_imdb.clone()),
+                        ..Default::default()
+                    },
+                    season: Some(1),
+                    episode: Some(idx as i64 + 1),
+                }),
+                title: (*title).to_string(),
+                kind: db::MediaKind::Episode,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                grandparent_id: Some(series.id),
+                parent_id: Some(season.id),
+                parent_idx: Some(1),
+                idx: Some(idx as i64 + 1),
+                ..Default::default()
+            };
+            episode
+                .save(db)
+                .await
+                .unwrap();
+            episodes.push(episode);
+        }
+
+        (series, episodes)
+    }
+
+    async fn insert_user(db: &SqlitePool, username: &str) -> db::User {
+        let mut user = db::User {
+            username: username.to_string(),
+            password_hash: "test".to_string(),
+            ..Default::default()
+        };
+        user.save(db)
+            .await
+            .unwrap();
+        user
+    }
+
+    async fn insert_state(
+        db: &SqlitePool,
+        user_id: Uuid,
+        media_id: Uuid,
+        play_count: i64,
+        playback_position: i64,
+        last_played_at: chrono::NaiveDateTime,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO user_media_state (
+                user_id,
+                media_id,
+                media_raw,
+                stream_id,
+                favorite,
+                play_count,
+                played_at,
+                playback_position,
+                last_played_at,
+                subtitle_idx,
+                audio_idx
+            )
+            VALUES (?1, ?2, NULL, NULL, 0, ?3, ?4, ?5, ?6, NULL, NULL)
+            ON CONFLICT(user_id, media_id)
+            DO UPDATE SET
+                play_count = excluded.play_count,
+                played_at = excluded.played_at,
+                playback_position = excluded.playback_position,
+                last_played_at = excluded.last_played_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(media_id)
+        .bind(play_count)
+        .bind((play_count > 0).then_some(last_played_at))
+        .bind(playback_position)
+        .bind(last_played_at)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    async fn active_series_ids(
+        db: &SqlitePool,
+        user_id: Uuid,
+        cutoff: Option<&str>,
+    ) -> Vec<Uuid> {
+        let date_cutoff = normalize_next_up_cutoff(cutoff).unwrap();
+        let active_series: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT m.grandparent_id \
+             FROM ( \
+               SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count > 0 \
+               UNION \
+               SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count = 0 AND playback_position > 0 \
+             ) AS active \
+             JOIN user_media_state ums ON ums.media_id = active.media_id AND ums.user_id = ? \
+             JOIN media m ON m.id = active.media_id \
+             WHERE m.kind = 'episode' \
+             AND m.grandparent_id IS NOT NULL \
+             GROUP BY m.grandparent_id \
+             HAVING MAX(ums.last_played_at) >= ? \
+             ORDER BY MAX(ums.last_played_at) DESC \
+             LIMIT ?",
+        )
+        .bind(user_id)
+        .bind(user_id)
+        .bind(user_id)
+        .bind(&date_cutoff)
+        .bind(50_i64)
+        .fetch_all(db)
+        .await
+        .unwrap();
+
+        active_series
+            .into_iter()
+            .map(|(id,)| id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn shows_nextup_orders_by_last_played_desc() {
+        let db = test_db().await;
+        let user = insert_user(&db, "test").await;
+
+        let (series_a, episodes_a) = insert_series_with_episodes(
+            &db,
+            "Series A",
+            &["A Episode 1", "A Episode 2"],
+        )
+        .await;
+        let (series_b, episodes_b) = insert_series_with_episodes(
+            &db,
+            "Series B",
+            &["B Episode 1", "B Episode 2"],
+        )
+        .await;
+
+        insert_state(
+            &db,
+            user.id,
+            episodes_a[0].id,
+            1,
+            0,
+            NaiveDate::from_ymd_opt(2026, 6, 16)
+                .unwrap()
+                .and_hms_opt(8, 0, 0)
+                .unwrap(),
+        )
+        .await;
+        insert_state(
+            &db,
+            user.id,
+            episodes_b[0].id,
+            1,
+            0,
+            NaiveDate::from_ymd_opt(2026, 6, 17)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(
+            active_series_ids(&db, user.id, None).await,
+            vec![series_b.id, series_a.id],
+        );
+    }
+
+    #[tokio::test]
+    async fn shows_nextup_accepts_rfc3339_cutoff() {
+        let db = test_db().await;
+        let user = insert_user(&db, "test").await;
+
+        let (_series_old, old_episodes) = insert_series_with_episodes(
+            &db,
+            "Old Series",
+            &["Old Episode 1", "Old Episode 2"],
+        )
+        .await;
+        let (new_series, new_episodes) = insert_series_with_episodes(
+            &db,
+            "New Series",
+            &["New Episode 1", "New Episode 2"],
+        )
+        .await;
+
+        insert_state(
+            &db,
+            user.id,
+            old_episodes[0].id,
+            1,
+            0,
+            NaiveDate::from_ymd_opt(2026, 6, 17)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        )
+        .await;
+        insert_state(
+            &db,
+            user.id,
+            new_episodes[0].id,
+            1,
+            0,
+            NaiveDate::from_ymd_opt(2026, 6, 18)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(
+            active_series_ids(&db, user.id, Some("2026-06-17T23:00:00Z")).await,
+            vec![new_series.id],
+        );
+    }
+
+    #[test]
+    fn shows_nextup_rejects_invalid_cutoff() {
+        let err = normalize_next_up_cutoff(Some("not-a-date")).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
 }
