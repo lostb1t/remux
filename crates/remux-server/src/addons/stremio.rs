@@ -643,15 +643,9 @@ async fn stremio_meta_fetch(
             .external_ids
             .imdb
             .clone());
-    let meta_id: String = imdb_id
-        .as_deref()
-        .map(|s| s.to_string())
-        .or_else(|| {
-            media
-                .external_ids
-                .custom_stremio_id
-                .clone()
-        })
+    let meta_id: String = media
+        .external_ids
+        .stremio_lookup_id()
         .ok_or_else(|| anyhow!("no resolvable meta id for {}", media.id))?;
     let is_custom = imdb_id.is_none();
 

@@ -585,10 +585,12 @@ impl AddonRuntime {
         &self,
         ctx: &AppContext,
     ) -> Result<Vec<ResolvedCatalog>> {
-        let catalog = self
+        let Some(catalog) = self
             .catalog
             .as_ref()
-            .ok_or_else(|| anyhow!("addon has no catalog capability"))?;
+        else {
+            return Ok(vec![]);
+        };
         let available = catalog
             .catalog_list(ctx)
             .await?;
