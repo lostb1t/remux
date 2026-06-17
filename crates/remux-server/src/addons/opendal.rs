@@ -325,7 +325,15 @@ impl AddonKind for OpendalAddon {
 
     async fn available_info(
         &self,
-    ) -> Result<Option<(Vec<ResourceType>, Vec<StremioMediaType>)>> {
+    ) -> Result<
+        Option<(
+            Vec<ResourceType>,
+            Vec<StremioMediaType>,
+            Option<Vec<String>>,
+            Option<Vec<String>>,
+            Option<Vec<String>>,
+        )>,
+    > {
         let media_type = match self
             .media_kind
             .as_str()
@@ -337,6 +345,9 @@ impl AddonKind for OpendalAddon {
         Ok(Some((
             vec![ResourceType::Stream, ResourceType::Catalog],
             vec![media_type],
+            None,
+            None,
+            None,
         )))
     }
 }

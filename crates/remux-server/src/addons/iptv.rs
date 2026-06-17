@@ -302,10 +302,21 @@ impl AddonKind for IptvAddon {
 
     async fn available_info(
         &self,
-    ) -> Result<Option<(Vec<ResourceType>, Vec<StremioMediaType>)>> {
+    ) -> Result<
+        Option<(
+            Vec<ResourceType>,
+            Vec<StremioMediaType>,
+            Option<Vec<String>>,
+            Option<Vec<String>>,
+            Option<Vec<String>>,
+        )>,
+    > {
         Ok(Some((
             vec![ResourceType::Stream, ResourceType::Catalog],
             vec![StremioMediaType::Tv],
+            None,
+            None,
+            None,
         )))
     }
 }

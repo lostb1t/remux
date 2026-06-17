@@ -54,7 +54,7 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                     None
                 };
                 match info {
-                    Some((resources, raw_types)) => {
+                    Some((resources, raw_types, _, _, _)) => {
                         let types = raw_types
                             .into_iter()
                             .filter_map(|t| {
@@ -238,7 +238,7 @@ pub async fn create_addon(
         .is_empty()
     {
         match &avail_info {
-            Some((r, _)) => r.clone(),
+            Some((r, _, _, _, _)) => r.clone(),
             None => metadata.supported_resources,
         }
     } else {
@@ -249,7 +249,7 @@ pub async fn create_addon(
         .is_empty()
     {
         match avail_info {
-            Some((_, t)) => t
+            Some((_, t, _, _, _)) => t
                 .into_iter()
                 .filter_map(|t| DbMediaKind::try_from(t).ok())
                 .collect(),

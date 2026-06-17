@@ -316,27 +316,44 @@ impl MediaIdRaw {
                 .external_ids
                 .imdb
                 .as_deref()
-                .map(|s| s.to_string()),
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    self.external_ids
+                        .custom_stremio_id
+                        .clone()
+                }),
             MediaKind::Season => {
-                let series_imdb = self
+                let anchor = self
                     .external_ids
                     .series_imdb
-                    .as_deref()?;
+                    .as_deref()
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        self.external_ids
+                            .series_custom_stremio_id
+                            .clone()
+                    })?;
                 Some(format!(
                     "{}:{}",
-                    series_imdb,
+                    anchor,
                     self.season
                         .unwrap_or(0)
                 ))
             }
             MediaKind::Episode => {
-                let series_imdb = self
+                let anchor = self
                     .external_ids
                     .series_imdb
-                    .as_deref()?;
+                    .as_deref()
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        self.external_ids
+                            .series_custom_stremio_id
+                            .clone()
+                    })?;
                 Some(format!(
                     "{}:{}:{}",
-                    series_imdb,
+                    anchor,
                     self.season
                         .unwrap_or(0),
                     self.episode

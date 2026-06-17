@@ -144,6 +144,7 @@ impl Resource {
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResourceRef {
     pub name: ResourceType,
     pub types: Vec<String>,

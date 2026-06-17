@@ -183,7 +183,15 @@ impl AddonKind for EclipseAddon {
 
     async fn available_info(
         &self,
-    ) -> Result<Option<(Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>)>> {
+    ) -> Result<
+        Option<(
+            Vec<ResourceType>,
+            Vec<remux_sdks::stremio::MediaType>,
+            Option<Vec<String>>,
+            Option<Vec<String>>,
+            Option<Vec<String>>,
+        )>,
+    > {
         let svc = self.service()?;
         let manifest = svc
             .get_manifest()
