@@ -18,7 +18,7 @@ pub async fn import_catalog_items<S>(
     max: usize,
     stream: S,
     progress: &ProgressReporter,
-) -> Result<HashMap<String, usize>>
+) -> Result<(HashMap<String, usize>, HashMap<String, usize>)>
 where
     S: futures::Stream<Item = db::Media> + Unpin,
 {
@@ -28,6 +28,7 @@ where
         .take(max)
         .chunks(250);
     let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut new_counts: HashMap<String, usize> = HashMap::new();
     let mut total = 0usize;
     let mut catalog_position = 0i64;
     let membership = catalog_membership(media_id);
@@ -242,6 +243,14 @@ where
             }
         }
 
+        for item in new_items.iter() {
+            *new_counts
+                .entry(
+                    item.kind
+                        .to_string(),
+                )
+                .or_insert(0) += 1;
+        }
         for item in new_items
             .iter()
             .chain(existing_items.iter())
@@ -261,7 +270,7 @@ where
         }
     }
 
-    Ok(counts)
+    Ok((counts, new_counts))
 }
 
 /// Delete rows from `media_relations` (role='catalog') whose left_media_id is in
