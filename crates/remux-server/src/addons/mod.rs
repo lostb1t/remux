@@ -400,7 +400,12 @@ pub trait AddonKind: Send + Sync {
     /// be used (the error propagates to the API caller).
     async fn available_info(
         &self,
-    ) -> Result<Option<(Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>)>> {
+    ) -> Result<
+        Option<(
+            Vec<remux_sdks::stremio::ResourceRef>,
+            Vec<remux_sdks::stremio::MediaType>,
+        )>,
+    > {
         Ok(None)
     }
 }
@@ -543,6 +548,7 @@ pub trait LyricAddon: Send + Sync {
 
 #[derive(Clone, Default)]
 pub struct AddonCapabilities {
+    pub metadata: AddonMetadata,
     pub kind: Option<Arc<dyn AddonKind>>,
     pub catalog: Option<Arc<dyn CatalogAddon>>,
     pub meta: Option<Arc<dyn MetaAddon>>,
@@ -562,9 +568,6 @@ pub struct AddonCapabilities {
 #[derive(Clone)]
 pub struct AddonRuntime {
     pub row: Addon,
-    /// Live capabilities fetched from the addon at load time (e.g. remote manifest).
-    /// Acts as a hard upper bound — overrides whatever is stored in `row.types`.
-    manifest_types: Option<Vec<db::MediaKind>>,
     pub caps: AddonCapabilities,
 }
 
@@ -583,10 +586,12 @@ impl AddonRuntime {
         &self,
         ctx: &AppContext,
     ) -> Result<Vec<ResolvedCatalog>> {
-        let catalog = self
+        let Some(catalog) = self
             .catalog
             .as_ref()
-            .ok_or_else(|| anyhow!("addon has no catalog capability"))?;
+        else {
+            return Ok(vec![]);
+        };
         let available = catalog
             .catalog_list(ctx)
             .await?;
@@ -629,12 +634,18 @@ impl AddonRuntime {
     }
 
     pub fn supports_type(&self, kind: &db::MediaKind) -> bool {
-        // Manifest types (if available) are the authoritative upper bound.
+        // Manifest types (live metadata) are the authoritative upper bound.
         // "Series" in a type list covers Episode and Season too (Stremio model).
-        if let Some(ref mt) = self.manifest_types {
-            if !kind_in_type_list(kind, mt) {
-                return false;
-            }
+        let mt: Vec<db::MediaKind> = self
+            .caps
+            .metadata
+            .supported_types
+            .iter()
+            .cloned()
+            .map(db::MediaKind::from)
+            .collect();
+        if !mt.is_empty() && !kind_in_type_list(kind, &mt) {
+            return false;
         }
         self.row
             .types
@@ -645,6 +656,20 @@ impl AddonRuntime {
                     .row
                     .types,
             )
+    }
+
+    /// Returns the `idPrefixes` declared for a resource in the live manifest metadata,
+    /// or `None` if the resource has no prefix restriction.
+    fn resource_id_prefixes(&self, kind: &ResourceType) -> Option<&[String]> {
+        self.caps
+            .metadata
+            .supported_resources
+            .iter()
+            .find(|r| &r.name == kind)
+            .and_then(|r| {
+                r.id_prefixes
+                    .as_deref()
+            })
     }
 }
 
@@ -671,17 +696,26 @@ trait PickCap<T: ?Sized + Send + Sync> {
 #[async_trait]
 impl PickCap<dyn MetaAddon> for AddonRuntime {
     async fn pick(&self, media: &db::Media) -> bool {
-        match self
+        let Some(cap) = self
             .caps
             .meta
             .as_ref()
-        {
-            Some(cap) => {
-                cap.supports(media)
-                    .await
-            }
-            None => false,
+        else {
+            return false;
+        };
+        if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Meta) {
+            let Some(id) = media
+                .external_ids
+                .stremio_lookup_id()
+            else {
+                return false;
+            };
+            return prefixes
+                .iter()
+                .any(|p| id.starts_with(p.as_str()));
         }
+        cap.supports(media)
+            .await
     }
 }
 
@@ -694,6 +728,17 @@ impl PickCap<dyn StreamAddon> for AddonRuntime {
             .contains(&ResourceType::Stream)
         {
             return false;
+        }
+        if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Stream) {
+            let Some(id) = media
+                .external_ids
+                .stremio_lookup_id()
+            else {
+                return false;
+            };
+            return prefixes
+                .iter()
+                .any(|p| id.starts_with(p.as_str()));
         }
         match self
             .caps
@@ -715,6 +760,17 @@ impl PickCap<dyn SubtitleAddon> for AddonRuntime {
             .contains(&ResourceType::Subtitles)
         {
             return false;
+        }
+        if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Subtitles) {
+            let Some(id) = media
+                .external_ids
+                .stremio_lookup_id()
+            else {
+                return false;
+            };
+            return prefixes
+                .iter()
+                .any(|p| id.starts_with(p.as_str()));
         }
         match self
             .caps
@@ -762,7 +818,7 @@ impl AddonService {
         let addons = Addon::list(db).await?;
         let mut runtimes = Vec::new();
 
-        for addon in addons
+        for mut addon in addons
             .into_iter()
             .filter(|a| a.enabled)
         {
@@ -789,28 +845,37 @@ impl AddonService {
                     .config,
                 config,
             ) {
-                Ok(caps) => {
-                    let manifest_types = if let Some(ref kind) = caps.kind {
+                Ok(mut caps) => {
+                    // Start with the preset's static metadata, then upgrade with live manifest data.
+                    caps.metadata = preset.metadata();
+                    if let Some(ref kind) = caps.kind {
                         match kind
                             .available_info()
                             .await
                         {
-                            Ok(Some((_, raw_types))) if !raw_types.is_empty() => Some(
-                                raw_types
-                                    .into_iter()
-                                    .filter_map(|t| db::MediaKind::try_from(t).ok())
-                                    .collect(),
-                            ),
-                            _ => None,
+                            Ok(Some((resource_refs, raw_types))) => {
+                                caps.metadata
+                                    .supported_resources = resource_refs;
+                                if !raw_types.is_empty() {
+                                    caps.metadata
+                                        .supported_types = raw_types
+                                        .into_iter()
+                                        .map(Into::into)
+                                        .collect();
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                warn!(
+                                    addon_id = %addon.id,
+                                    name = %addon.name,
+                                    error = %e,
+                                    "failed to fetch addon manifest at load time"
+                                );
+                            }
                         }
-                    } else {
-                        None
-                    };
-                    runtimes.push(AddonRuntime {
-                        row: addon,
-                        manifest_types,
-                        caps,
-                    });
+                    }
+                    runtimes.push(AddonRuntime { row: addon, caps });
                 }
                 Err(e) => warn!(
                     addon_id = %addon.id,
@@ -1100,9 +1165,32 @@ impl AddonService {
                 .load()
                 .iter()
                 .filter_map(|r| {
+                    if !r
+                        .tree
+                        .as_ref()
+                        .map(|t| t.supports(&node))
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    // Apply the same meta idPrefixes guard used for MetaAddon.
+                    if let Some(prefixes) = r.resource_id_prefixes(&ResourceType::Meta)
+                    {
+                        let Some(id) = node
+                            .external_ids
+                            .stremio_lookup_id()
+                        else {
+                            return None;
+                        };
+                        if !prefixes
+                            .iter()
+                            .any(|p| id.starts_with(p.as_str()))
+                        {
+                            return None;
+                        }
+                    }
                     r.tree
                         .as_ref()
-                        .filter(|t| t.supports(&node))
                         .cloned()
                 })
                 .collect();

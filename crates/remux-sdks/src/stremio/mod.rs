@@ -41,6 +41,7 @@ pub enum MediaType {
 #[derive(
     strum_macros::Display,
     strum_macros::EnumString,
+    Default,
     Debug,
     Clone,
     PartialEq,
@@ -51,6 +52,7 @@ pub enum MediaType {
 #[strum(serialize_all = "lowercase")]
 pub enum ResourceType {
     #[serde(alias = "streams")]
+    #[default]
     Stream,
     Subtitles,
     Catalog,
@@ -140,11 +142,26 @@ impl Resource {
                 .clone(),
         }
     }
+
+    /// Converts into a `ResourceRef`, promoting a Simple resource to one with
+    /// empty types and no idPrefixes.
+    pub fn into_ref(self) -> ResourceRef {
+        match self {
+            Resource::Simple(name) => ResourceRef {
+                name,
+                types: vec![],
+                id_prefixes: None,
+            },
+            Resource::Detailed(r) => r,
+        }
+    }
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResourceRef {
+    #[serde(default)]
     pub name: ResourceType,
     pub types: Vec<String>,
     pub id_prefixes: Option<Vec<String>>,

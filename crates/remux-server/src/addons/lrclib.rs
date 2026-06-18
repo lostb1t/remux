@@ -29,7 +29,9 @@ impl AddonPreset for LrcLibPreset {
             description: "Free lyrics provider — synced and plain lyrics for tracks."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Lyrics],
+            supported_resources: vec![AddonMetadata::simple_resource(
+                ResourceType::Lyrics,
+            )],
             supported_types: vec![MediaKind::Track],
             options: vec![],
         }

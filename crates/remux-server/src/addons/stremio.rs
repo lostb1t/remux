@@ -42,11 +42,11 @@ impl AddonPreset for StremioPreset {
                 .to_string(),
             icon: None,
             supported_resources: vec![
-                ResourceType::Catalog,
-                ResourceType::Meta,
-                ResourceType::Search,
-                ResourceType::Subtitles,
-                ResourceType::Stream,
+                AddonMetadata::simple_resource(ResourceType::Catalog),
+                AddonMetadata::simple_resource(ResourceType::Meta),
+                AddonMetadata::simple_resource(ResourceType::Search),
+                AddonMetadata::simple_resource(ResourceType::Subtitles),
+                AddonMetadata::simple_resource(ResourceType::Stream),
             ],
             supported_types: vec![MediaKind::Movie, MediaKind::Series],
             options: vec![AddonOption {
@@ -97,38 +97,27 @@ inventory::submit! {
 
 pub(super) fn parse_manifest_info(
     manifest: &remux_sdks::stremio::Manifest,
-) -> (Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>) {
-    let mut resources = Vec::new();
-    for res in &manifest.resources {
-        match res.resource_type() {
-            ResourceType::Catalog => {
-                if !resources.contains(&ResourceType::Catalog) {
-                    resources.push(ResourceType::Catalog);
-                }
-            }
-            ResourceType::Meta => {
-                if !resources.contains(&ResourceType::Meta) {
-                    resources.push(ResourceType::Meta);
-                }
-            }
-            ResourceType::Subtitles => {
-                if !resources.contains(&ResourceType::Subtitles) {
-                    resources.push(ResourceType::Subtitles);
-                }
-            }
-            ResourceType::Stream => {
-                if !resources.contains(&ResourceType::Stream) {
-                    resources.push(ResourceType::Stream);
-                }
-            }
-            ResourceType::Search => {
-                if !resources.contains(&ResourceType::Search) {
-                    resources.push(ResourceType::Search);
-                }
-            }
-            _ => {}
+) -> (
+    Vec<remux_sdks::stremio::ResourceRef>,
+    Vec<remux_sdks::stremio::MediaType>,
+) {
+    let mut seen_names: Vec<ResourceType> = Vec::new();
+    let mut resources: Vec<remux_sdks::stremio::ResourceRef> = Vec::new();
+
+    for res in manifest
+        .resources
+        .iter()
+        .cloned()
+    {
+        let name = res.resource_type();
+        if seen_names.contains(&name) {
+            continue;
         }
+        seen_names.push(name.clone());
+        resources.push(res.into_ref());
     }
+
+    // Detect search support via catalog extras and synthesise a Search resource if needed.
     if manifest
         .catalogs
         .iter()
@@ -137,11 +126,15 @@ pub(super) fn parse_manifest_info(
                 .iter()
                 .any(|e| e.name == "search")
         })
+        && !seen_names.contains(&ResourceType::Search)
     {
-        if !resources.contains(&ResourceType::Search) {
-            resources.push(ResourceType::Search);
-        }
+        resources.push(remux_sdks::stremio::ResourceRef {
+            name: ResourceType::Search,
+            types: vec![],
+            id_prefixes: None,
+        });
     }
+
     let types = manifest
         .types
         .iter()
@@ -193,7 +186,12 @@ impl AddonKind for StremioAddon {
 
     async fn available_info(
         &self,
-    ) -> Result<Option<(Vec<ResourceType>, Vec<remux_sdks::stremio::MediaType>)>> {
+    ) -> Result<
+        Option<(
+            Vec<remux_sdks::stremio::ResourceRef>,
+            Vec<remux_sdks::stremio::MediaType>,
+        )>,
+    > {
         let svc = self.service()?;
         let manifest = svc
             .get_manifest()
@@ -290,8 +288,20 @@ impl CatalogAddon for StremioAddon {
             .split_once(':')
             .ok_or_else(|| anyhow!("invalid stremio catalog id: '{}'", local_id))?;
 
+        let manifest = svc
+            .get_manifest()
+            .await?;
+        let supports_skip = manifest
+            .get_catalog(id, &kind.to_string())
+            .map(|cat| {
+                cat.extra
+                    .iter()
+                    .any(|e| e.name == "skip")
+            })
+            .unwrap_or(false);
+
         let stream = svc
-            .get_catalog_stream(kind.to_string(), id.to_string())
+            .get_catalog_stream(kind.to_string(), id.to_string(), supports_skip)
             .await?;
         let tmdb_client = crate::common::tmdb_client(&ctx.db).await;
 
@@ -551,7 +561,10 @@ pub(crate) async fn resolve_imdb_id<A: sdks::Auth + Clone>(
         .imdb_id
         .is_none()
     {
-        return false;
+        // Allow items whose ID is a custom addon-owned prefix (not IMDB/TMDB/TVDB).
+        return db::ExternalIds::from_stremio_id(&meta.id)
+            .custom_stremio_id
+            .is_some();
     }
 
     if needs_release_dates(meta) {
@@ -621,6 +634,7 @@ async fn stremio_meta_fetch(
     media: &db::Media,
     ctx: &AppContext,
 ) -> Result<Option<db::Media>> {
+    // Prefer a real IMDB ID; fall back to custom_stremio_id for addon-owned content.
     let imdb_id = media
         .external_ids
         .series_imdb
@@ -629,11 +643,11 @@ async fn stremio_meta_fetch(
             .external_ids
             .imdb
             .clone());
-
-    let imdb_id = match imdb_id {
-        Some(id) => id,
-        None => return Ok(None),
-    };
+    let meta_id: String = media
+        .external_ids
+        .stremio_lookup_id()
+        .ok_or_else(|| anyhow!("no resolvable meta id for {}", media.id))?;
+    let is_custom = imdb_id.is_none();
 
     let mut meta = if let Some(cached_meta) = ctx
         .store
@@ -646,11 +660,11 @@ async fn stremio_meta_fetch(
     } else {
         let media_type = sdks::stremio::MediaType::from(&media.kind);
         match svc
-            .get_meta(media_type.clone(), imdb_id.clone())
+            .get_meta(media_type.clone(), meta_id.clone())
             .await
         {
             Ok(m) => m,
-            Err(e) if is_404(&e) => {
+            Err(e) if is_404(&e) && !is_custom => {
                 if let Some(tmdb_id) = media
                     .external_ids
                     .tmdb
@@ -668,16 +682,15 @@ async fn stremio_meta_fetch(
     if meta
         .imdb_id
         .is_none()
+        && !is_custom
     {
         meta.imdb_id = db::ExternalIds::from_stremio_id(&meta.id)
             .imdb
             .map(Into::into)
             .or_else(|| {
-                Some(
-                    imdb_id
-                        .clone()
-                        .into(),
-                )
+                imdb_id
+                    .clone()
+                    .map(Into::into)
             });
     }
 
@@ -746,32 +759,37 @@ async fn stremio_sync_children(
         return Ok(vec![]);
     }
 
-    let imdb_id = match root
+    let imdb_id = root
         .external_ids
         .imdb
-        .clone()
-    {
-        Some(id) => id,
-        None => return Ok(vec![]),
-    };
+        .clone();
+    let meta_id: String = imdb_id
+        .as_deref()
+        .map(|s| s.to_string())
+        .or_else(|| {
+            root.external_ids
+                .custom_stremio_id
+                .clone()
+        })
+        .ok_or_else(|| anyhow!("series has no resolvable meta id: {}", root.id))?;
+    let is_custom = imdb_id.is_none();
 
     let mut meta = svc
-        .get_meta(sdks::stremio::MediaType::from(&root.kind), imdb_id.clone())
+        .get_meta(sdks::stremio::MediaType::from(&root.kind), meta_id.clone())
         .await?;
 
     if meta
         .imdb_id
         .is_none()
+        && !is_custom
     {
         meta.imdb_id = db::ExternalIds::from_stremio_id(&meta.id)
             .imdb
             .map(Into::into)
             .or_else(|| {
-                Some(
-                    imdb_id
-                        .clone()
-                        .into(),
-                )
+                imdb_id
+                    .clone()
+                    .map(Into::into)
             });
     }
 
@@ -799,10 +817,9 @@ async fn stremio_sync_children(
                 Some(x)
             } else if x.kind == db::MediaKind::Episode {
                 if let Some(season_idx) = x.parent_idx {
-                    let season_media_id = format!("{}:{}", imdb_id, season_idx);
                     x.parent_id = Some(crate::common::get_stable_uuid(format!(
-                        "season:{}",
-                        season_media_id
+                        "season:{}:{}",
+                        meta_id, season_idx
                     )));
                 }
                 x.grandparent_id = Some(root.id);
@@ -1211,12 +1228,14 @@ async fn stremio_streams(
 ) -> Result<Vec<crate::stream::StreamInfo>> {
     let (media_type, id, tmdb_fallback_id) = match media.kind {
         db::MediaKind::Episode => {
-            let series_id = media
+            let series_id: String = media
                 .external_ids
                 .series_imdb
                 .as_deref()
+                .map(|s| s.to_string())
+                .or_else(|| media.external_ids.series_custom_stremio_id.clone())
                 .ok_or_else(|| {
-                    anyhow!("episode has no series_imdb for stream lookup")
+                    anyhow!("episode has no series_imdb or series_custom_stremio_id for stream lookup")
                 })?;
             let season = media
                 .parent_idx

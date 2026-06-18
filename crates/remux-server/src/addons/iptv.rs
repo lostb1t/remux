@@ -31,7 +31,10 @@ impl AddonPreset for IptvM3uPreset {
             description: "Import live TV channels from an M3U playlist URL."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream, ResourceType::Catalog],
+            supported_resources: vec![
+                AddonMetadata::simple_resource(ResourceType::Stream),
+                AddonMetadata::simple_resource(ResourceType::Catalog),
+            ],
             supported_types: vec![MediaKind::TvChannel],
             options: vec![
                 AddonOption {
@@ -115,7 +118,7 @@ impl AddonPreset for IptvXstreamPreset {
             description: "Import live TV channels from an Xtream Codes provider."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream, ResourceType::Catalog],
+            supported_resources: vec![AddonMetadata::simple_resource(ResourceType::Stream), AddonMetadata::simple_resource(ResourceType::Catalog)],
             supported_types: vec![MediaKind::TvChannel],
             options: vec![
                 AddonOption {
@@ -302,9 +305,18 @@ impl AddonKind for IptvAddon {
 
     async fn available_info(
         &self,
-    ) -> Result<Option<(Vec<ResourceType>, Vec<StremioMediaType>)>> {
+    ) -> Result<Option<(Vec<remux_sdks::stremio::ResourceRef>, Vec<StremioMediaType>)>>
+    {
+        let make_ref = |name| remux_sdks::stremio::ResourceRef {
+            name,
+            types: vec![],
+            id_prefixes: None,
+        };
         Ok(Some((
-            vec![ResourceType::Stream, ResourceType::Catalog],
+            vec![
+                make_ref(ResourceType::Stream),
+                make_ref(ResourceType::Catalog),
+            ],
             vec![StremioMediaType::Tv],
         )))
     }

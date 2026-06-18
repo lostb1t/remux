@@ -54,7 +54,11 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                     None
                 };
                 match info {
-                    Some((resources, raw_types)) => {
+                    Some((resource_refs, raw_types)) => {
+                        let resources = resource_refs
+                            .into_iter()
+                            .map(|r| r.name)
+                            .collect();
                         let types = raw_types
                             .into_iter()
                             .filter_map(|t| {
@@ -65,10 +69,22 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                             .collect();
                         (resources, types)
                     }
-                    None => (meta.supported_resources, meta.supported_types),
+                    None => (
+                        meta.supported_resources
+                            .into_iter()
+                            .map(|r| r.name)
+                            .collect(),
+                        meta.supported_types,
+                    ),
                 }
             }
-            Err(_) => (meta.supported_resources, meta.supported_types),
+            Err(_) => (
+                meta.supported_resources
+                    .into_iter()
+                    .map(|r| r.name)
+                    .collect(),
+                meta.supported_types,
+            ),
         }
     } else {
         (vec![], vec![])
@@ -233,13 +249,26 @@ pub async fn create_addon(
             None
         };
 
-    let resources = if payload
+    let resources: Vec<remux_sdks::stremio::ResourceType> = if payload
         .resources
         .is_empty()
     {
         match &avail_info {
-            Some((r, _)) => r.clone(),
-            None => metadata.supported_resources,
+            Some((refs, _)) => refs
+                .iter()
+                .map(|r| {
+                    r.name
+                        .clone()
+                })
+                .collect(),
+            None => metadata
+                .supported_resources
+                .iter()
+                .map(|r| {
+                    r.name
+                        .clone()
+                })
+                .collect(),
         }
     } else {
         payload.resources

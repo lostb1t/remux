@@ -25,7 +25,9 @@ impl AddonPreset for ProbePreset {
                 "Extracts chapter/segment markers from the media file's probe data."
                     .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Segment],
+            supported_resources: vec![AddonMetadata::simple_resource(
+                ResourceType::Segment,
+            )],
             supported_types: vec![MediaKind::Movie, MediaKind::Episode],
             options: vec![],
         }

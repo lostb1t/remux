@@ -746,6 +746,12 @@ pub struct ExternalIds {
     pub youtube_id: Option<String>,
     pub iptv_source_id: Option<String>,
     pub iptv_group: Option<String>,
+    /// Raw addon-specific ID for content that has no IMDB/TMDB/TVDB equivalent.
+    /// Derived from the Stremio `meta.id` when no known provider prefix matches.
+    pub custom_stremio_id: Option<String>,
+    /// For seasons/episodes of a custom-ID series: the parent series's `custom_stremio_id`.
+    /// Analogous to `series_imdb` for the custom-ID path.
+    pub series_custom_stremio_id: Option<String>,
 }
 
 impl ExternalIds {
@@ -773,6 +779,12 @@ impl ExternalIds {
                     ..Default::default()
                 };
             }
+        }
+        if !id.is_empty() {
+            return Self {
+                custom_stremio_id: Some(id.to_string()),
+                ..Default::default()
+            };
         }
         Self::default()
     }
@@ -840,6 +852,37 @@ impl ExternalIds {
             && self
                 .tvdb
                 .is_none()
+            && self
+                .custom_stremio_id
+                .is_none()
+            && self
+                .series_custom_stremio_id
+                .is_none()
+    }
+
+    /// Returns the best Stremio ID for use as a lookup key or idPrefix match.
+    /// Priority: series_imdb → imdb → tmdb:{n} → series_custom_stremio_id → custom_stremio_id
+    pub fn stremio_lookup_id(&self) -> Option<String> {
+        self.series_imdb
+            .as_deref()
+            .map(|s| s.to_string())
+            .or_else(|| {
+                self.imdb
+                    .as_deref()
+                    .map(|s| s.to_string())
+            })
+            .or_else(|| {
+                self.tmdb
+                    .map(|n| format!("tmdb:{}", n))
+            })
+            .or_else(|| {
+                self.series_custom_stremio_id
+                    .clone()
+            })
+            .or_else(|| {
+                self.custom_stremio_id
+                    .clone()
+            })
     }
 
     pub fn merge(&mut self, source: &Self, replace: bool) {
@@ -855,6 +898,16 @@ impl ExternalIds {
         merge_option(&mut self.youtube_id, &source.youtube_id, replace);
         merge_option(&mut self.iptv_source_id, &source.iptv_source_id, replace);
         merge_option(&mut self.iptv_group, &source.iptv_group, replace);
+        merge_option(
+            &mut self.custom_stremio_id,
+            &source.custom_stremio_id,
+            replace,
+        );
+        merge_option(
+            &mut self.series_custom_stremio_id,
+            &source.series_custom_stremio_id,
+            replace,
+        );
     }
 }
 
@@ -929,7 +982,9 @@ pub struct MediaFilter {
     pub parent_enabled: Option<bool>,
     /// Filter albums/tracks by artist (parent_id IN these IDs).
     pub artist_ids: Option<Vec<Uuid>>,
-    /// If set, only return items where COALESCE(digital_released_at, released_at) <= threshold.
+    /// If set, hides items whose known release date is in the future.
+    /// `digital_released_at` is checked first; if absent, `released_at` is used as a fallback.
+    /// Items where both dates are NULL are shown (no date info = no restriction).
     pub digital_released_before: Option<NaiveDateTime>,
     /// Sort order for results. Mapped from Jellyfin's ItemSortBy.
     pub sort_by: Vec<api::ItemSortBy>,
@@ -1406,16 +1461,24 @@ impl Media {
         }
 
         let missing = match self.kind {
-            MediaKind::Movie | MediaKind::Series => self
+            MediaKind::Movie | MediaKind::Series => (self
                 .external_ids
                 .imdb
                 .is_none()
-                .then_some("imdb"),
-            MediaKind::Season | MediaKind::Episode => self
+                && self
+                    .external_ids
+                    .custom_stremio_id
+                    .is_none())
+            .then_some("imdb"),
+            MediaKind::Season | MediaKind::Episode => (self
                 .external_ids
                 .series_imdb
                 .is_none()
-                .then_some("series_imdb"),
+                && self
+                    .external_ids
+                    .series_custom_stremio_id
+                    .is_none())
+            .then_some("series_imdb"),
             MediaKind::Artist => self
                 .external_ids
                 .deezer_artist
@@ -2233,10 +2296,11 @@ impl Media {
                         }
                         if let Some(threshold) = &filter.digital_released_before {
                             pre_qb
-                                .push(
-                                    " AND COALESCE(digital_released_at, released_at) <= ",
-                                )
-                                .push_bind(threshold);
+                                .push(" AND (digital_released_at <= ")
+                                .push_bind(threshold)
+                                .push(" OR (digital_released_at IS NULL AND (released_at IS NULL OR released_at <= ")
+                                .push_bind(threshold)
+                                .push(")))");
                         }
                         pre_qb.push(")");
                     }
@@ -2594,8 +2658,15 @@ impl Media {
 
             if let Some(threshold) = &filter.digital_released_before {
                 if resumable_ids.is_none() {
-                    qb.push(" AND COALESCE(digital_released_at, released_at) <= ")
-                        .push_bind(threshold);
+                    // digital_released_at set → use it directly.
+                    // digital_released_at NULL + released_at NULL → no date info, allow through.
+                    // digital_released_at NULL + released_at in past → allow (released but no digital date yet).
+                    // digital_released_at NULL + released_at in future → block (not out yet).
+                    qb.push(" AND (digital_released_at <= ")
+                        .push_bind(threshold)
+                        .push(" OR (digital_released_at IS NULL AND (released_at IS NULL OR released_at <= ")
+                        .push_bind(threshold)
+                        .push(")))");
                 }
             }
 
@@ -4718,15 +4789,127 @@ impl TryFrom<sdks::stremio::Meta> for Media {
 }
 
 pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
-    let imdb_id: NonEmptyString = meta
+    let imdb_id: Option<NonEmptyString> = meta
         .imdb_id
         .as_deref()
-        .and_then(|s| NonEmptyString::try_new(s.to_string()).ok())
-        .context("imdb_id is missing or empty")?;
+        .and_then(|s| NonEmptyString::try_new(s.to_string()).ok());
 
     let mut media: Media = meta
         .clone()
         .try_into()?;
+
+    if imdb_id.is_none() {
+        // Custom-ID path: no IMDB, derive UUIDs from the addon-specific id.
+        let custom_id = ExternalIds::from_stremio_id(&meta.id)
+            .custom_stremio_id
+            .context("imdb_id is missing and meta.id is empty")?;
+        media.id = Uuid::from(&super::MediaIdRaw {
+            kind: media
+                .kind
+                .clone(),
+            external_ids: ExternalIds {
+                custom_stremio_id: Some(custom_id.clone()),
+                ..Default::default()
+            },
+            season: None,
+            episode: None,
+        });
+        media
+            .external_ids
+            .custom_stremio_id = Some(custom_id.clone());
+        let mut media_instances = vec![media.clone()];
+        if let MediaKind::Series = media.kind {
+            if let Some(ref episodes) = meta.videos {
+                let seasons: std::collections::BTreeMap<
+                    i64,
+                    Vec<sdks::stremio::Episode>,
+                > = episodes
+                    .iter()
+                    .filter_map(|ep| {
+                        ep.season
+                            .map(|s| (s, ep.clone()))
+                    })
+                    .fold(std::collections::BTreeMap::new(), |mut acc, (s, ep)| {
+                        acc.entry(s)
+                            .or_default()
+                            .push(ep);
+                        acc
+                    });
+                for (season_idx, episodes) in seasons {
+                    let season_id = Uuid::from(&super::MediaIdRaw {
+                        kind: MediaKind::Season,
+                        external_ids: ExternalIds {
+                            series_custom_stremio_id: Some(custom_id.clone()),
+                            ..Default::default()
+                        },
+                        season: Some(season_idx),
+                        episode: None,
+                    });
+                    let mut season = Media {
+                        id: season_id,
+                        title: format!("Season {}", season_idx),
+                        kind: MediaKind::Season,
+                        idx: Some(season_idx),
+                        parent_id: Some(media.id),
+                        grandparent_id: Some(media.id),
+                        external_ids: ExternalIds {
+                            series_custom_stremio_id: Some(custom_id.clone()),
+                            ..Default::default()
+                        },
+                        released_at: episodes
+                            .first()
+                            .and_then(|e| e.released)
+                            .map(|x| x.naive_utc()),
+                        digital_released_at: episodes
+                            .first()
+                            .and_then(|e| e.released)
+                            .map(|x| x.naive_utc()),
+                        ..Default::default()
+                    };
+                    if let Some(url) = meta.get_season_poster(season_idx) {
+                        season.set_image(ImageKind::Primary, url);
+                    }
+                    media_instances.push(season);
+                    for ep in episodes {
+                        let ep_idx = ep
+                            .episode
+                            .unwrap_or(0);
+                        let mut episode: Media = ep
+                            .clone()
+                            .try_into()?;
+                        episode.id = Uuid::from(&super::MediaIdRaw {
+                            kind: MediaKind::Episode,
+                            external_ids: ExternalIds {
+                                series_custom_stremio_id: Some(custom_id.clone()),
+                                ..Default::default()
+                            },
+                            season: Some(season_idx),
+                            episode: Some(ep_idx),
+                        });
+                        episode.idx = ep.episode;
+                        episode.external_ids = ExternalIds {
+                            series_custom_stremio_id: Some(custom_id.clone()),
+                            ..Default::default()
+                        };
+                        episode.parent_id = Some(season_id);
+                        episode.grandparent_id = Some(media.id);
+                        episode.parent_idx = Some(season_idx);
+                        episode.released_at = ep
+                            .released
+                            .map(|x| x.naive_utc());
+                        episode.digital_released_at = ep
+                            .released
+                            .map(|x| x.naive_utc());
+                        media_instances.push(episode);
+                    }
+                }
+            }
+        }
+        return Ok(media_instances);
+    }
+
+    let imdb_id = imdb_id.unwrap();
+
     media.id = Uuid::from(&super::MediaIdRaw {
         kind: media
             .kind
@@ -5113,7 +5296,6 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                 "EXISTS (SELECT 1 FROM media_relations mr \
                  WHERE mr.right_media_id = media.id AND mr.role = 'catalog' AND mr.left_media_id = X'{cid_hex}')"
             );
-            debug!(catalog_id = %catalog_id, cid_hex = %cid_hex, sql = %sql, "catalog filter rule SQL");
             Some((sql, false))
         }
     }

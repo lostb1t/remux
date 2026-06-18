@@ -129,6 +129,7 @@ impl StremioService {
         &self,
         kind: String,
         id: String,
+        supports_skip: bool,
     ) -> Result<Pin<Box<dyn Stream<Item = sdks::stremio::Meta> + Send>>> {
         let client = self
             .client
@@ -149,8 +150,8 @@ impl StremioService {
             .metas
             .len() as u32;
         debug!(kind = %kind, id = %id, page_size, elapsed = ?t0.elapsed(), "catalog first page");
-        if page_size == 0 {
-            return Ok(Box::pin(stream::empty()));
+        if page_size == 0 || !supports_skip {
+            return Ok(Box::pin(stream::iter(first_page.metas)));
         }
 
         let first = stream::once(future::ready(Ok(first_page)));
