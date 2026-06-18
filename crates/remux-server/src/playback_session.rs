@@ -377,17 +377,36 @@ impl PlaybackSessionManager {
             .position_ticks
             .unwrap_or(ps.position_ticks);
         if let Ok(Some(media)) = db::Media::get_by_id(db, &item_id).await {
+            let cfg = user
+                .configuration
+                .as_ref()
+                .map(|c| {
+                    c.0.clone()
+                })
+                .unwrap_or_default();
+
+            let audio_idx = if cfg.remember_audio_selections {
+                data.audio_stream_index
+                    .or(ps.audio_stream_index)
+                    .map(|x| x as i64)
+            } else {
+                None
+            };
+            let subtitle_idx = if cfg.remember_subtitle_selections {
+                data.subtitle_stream_index
+                    .or(ps.subtitle_stream_index)
+                    .map(|x| x as i64)
+            } else {
+                None
+            };
+
             db::UserMediaState::update_playback(
                 db,
                 user,
                 &media,
                 position_ticks,
-                data.audio_stream_index
-                    .or(ps.audio_stream_index)
-                    .map(|x| x as i64),
-                data.subtitle_stream_index
-                    .or(ps.subtitle_stream_index)
-                    .map(|x| x as i64),
+                audio_idx,
+                subtitle_idx,
                 None, // no watched-threshold check on progress
             )
             .await?;

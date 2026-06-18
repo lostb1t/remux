@@ -801,6 +801,8 @@ async fn items_playbackinfo_inner(
         &session.user,
         &id,
         &mut media_sources,
+        q.audio_stream_index,
+        q.subtitle_stream_index,
     )
     .await;
 
@@ -2464,6 +2466,373 @@ mod tests {
             .await;
 
         resp.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    // ── User preference tests ──────────────────────────────────────────────────
+
+    /// Full UserConfiguration JSON with sensible defaults. Merge in per-test
+    /// overrides before posting to `/users/{id}/configuration`.
+    fn default_user_config() -> serde_json::Value {
+        json!({
+            "PlayDefaultAudioTrack": true,
+            "DisplayMissingEpisodes": false,
+            "SubtitleMode": "Default",
+            "EnableLocalPassword": false,
+            "HidePlayedInLatest": true,
+            "RememberAudioSelections": true,
+            "RememberSubtitleSelections": true,
+            "EnableNextEpisodeAutoPlay": true,
+            "DisplayCollectionsView": false
+        })
+    }
+
+    /// Merge `overrides` into `default_user_config()`.
+    fn user_config_with(overrides: serde_json::Value) -> serde_json::Value {
+        let mut base = default_user_config();
+        if let (Some(base_obj), Some(ov_obj)) =
+            (base.as_object_mut(), overrides.as_object())
+        {
+            for (k, v) in ov_obj {
+                base_obj.insert(k.clone(), v.clone());
+            }
+        }
+        base
+    }
+
+    /// Build a Stream source with Dutch (index 1) and English (index 2) audio tracks.
+    async fn insert_multilang_source(ctx: &crate::AppContext) -> crate::db::Media {
+        use crate::{
+            api::{MediaSourceInfo, MediaStream, MediaStreamType},
+            db,
+        };
+        let now = chrono::Utc::now().naive_utc();
+        let probe = MediaSourceInfo {
+            container: Some("mp4".to_string()),
+            bitrate: Some(8_000_000),
+            run_time_ticks: Some(100_000_000),
+            media_streams: vec![
+                MediaStream {
+                    codec: Some("h264".to_string()),
+                    type_: Some(MediaStreamType::Video),
+                    index: 0,
+                    width: Some(1920),
+                    height: Some(1080),
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 1,
+                    language: Some("nl".to_string()),
+                    ..Default::default()
+                },
+                MediaStream {
+                    codec: Some("aac".to_string()),
+                    type_: Some(MediaStreamType::Audio),
+                    index: 2,
+                    language: Some("en".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut media = db::Media {
+            title: "Multilang Test".to_string(),
+            kind: db::MediaKind::Stream,
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(
+                    "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4"
+                        .to_string(),
+                ),
+                ..Default::default()
+            }),
+            probe_data: Some(probe),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        media
+            .save(&ctx.db)
+            .await
+            .expect("insert_multilang_source failed");
+        media
+    }
+
+    /// `AudioLanguagePreference = "nl"` → Dutch track (index 1) selected as default.
+    #[tokio::test]
+    async fn test_audio_language_preference_selects_matching_track() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_multilang_source(&guard.0).await;
+
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = me["Id"]
+            .as_str()
+            .unwrap();
+
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&user_config_with(
+                json!({ "AudioLanguagePreference": "nl" }),
+            ))
+            .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["MediaSources"][0]["DefaultAudioStreamIndex"].as_i64(),
+            Some(1),
+            "Dutch track (index 1) should be selected when AudioLanguagePreference=nl"
+        );
+    }
+
+    /// `AudioLanguagePreference` set to a language not present in the source
+    /// → `DefaultAudioStreamIndex` is left null.
+    #[tokio::test]
+    async fn test_audio_language_preference_no_match_leaves_unset() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_multilang_source(&guard.0).await;
+
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = me["Id"]
+            .as_str()
+            .unwrap();
+
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&user_config_with(
+                json!({ "AudioLanguagePreference": "de" }),
+            ))
+            .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert!(
+            body["MediaSources"][0]["DefaultAudioStreamIndex"].is_null(),
+            "With no German track present, DefaultAudioStreamIndex should be null"
+        );
+    }
+
+    /// After reporting progress with `AudioStreamIndex=2`, the next PlaybackInfo
+    /// request should recall that selection as `DefaultAudioStreamIndex`.
+    #[tokio::test]
+    async fn test_remember_audio_selections_recalls_saved_track() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_multilang_source(&guard.0).await;
+        let psid = "recall-audio-test";
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id.to_string(),
+                "PlaySessionId": psid,
+                "PositionTicks": 0
+            }))
+            .await;
+
+        server
+            .post("/sessions/playing/progress")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id.to_string(),
+                "PlaySessionId": psid,
+                "PositionTicks": 100_000_000i64,
+                "AudioStreamIndex": 2
+            }))
+            .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["MediaSources"][0]["DefaultAudioStreamIndex"].as_i64(),
+            Some(2),
+            "Saved audio selection (index 2) should be recalled as DefaultAudioStreamIndex"
+        );
+    }
+
+    /// With `RememberAudioSelections=false`, a track switch during playback must
+    /// NOT be persisted and must NOT be recalled on the next PlaybackInfo request.
+    #[tokio::test]
+    async fn test_remember_audio_selections_false_does_not_persist() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_multilang_source(&guard.0).await;
+        let psid = "no-recall-audio-test";
+
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = me["Id"]
+            .as_str()
+            .unwrap();
+
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&user_config_with(
+                json!({ "RememberAudioSelections": false }),
+            ))
+            .await;
+
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id.to_string(),
+                "PlaySessionId": psid,
+                "PositionTicks": 0
+            }))
+            .await;
+
+        server
+            .post("/sessions/playing/progress")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": media.id.to_string(),
+                "PlaySessionId": psid,
+                "PositionTicks": 100_000_000i64,
+                "AudioStreamIndex": 2
+            }))
+            .await;
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert!(
+            body["MediaSources"][0]["DefaultAudioStreamIndex"].is_null(),
+            "With RememberAudioSelections=false, audio track switch must not be recalled"
+        );
+    }
+
+    /// When the client POSTs an explicit `AudioStreamIndex`, language preference
+    /// must not override `DefaultAudioStreamIndex` in the response.
+    #[tokio::test]
+    async fn test_client_audio_index_skips_language_preference() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let media = insert_multilang_source(&guard.0).await;
+
+        let me: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = me["Id"]
+            .as_str()
+            .unwrap();
+
+        // Language preference would normally select Dutch (index 1)
+        server
+            .post(&format!("/users/{}/configuration", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&user_config_with(
+                json!({ "AudioLanguagePreference": "nl" }),
+            ))
+            .await;
+
+        // Client explicitly requests English (index 2)
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "AudioStreamIndex": 2 }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_ne!(
+            body["MediaSources"][0]["DefaultAudioStreamIndex"].as_i64(),
+            Some(1),
+            "Client's explicit AudioStreamIndex must prevent language preference from selecting Dutch (index 1)"
+        );
     }
 }
 
@@ -4962,14 +5331,24 @@ pub(super) async fn inject_external_subtitles(
 /// - **`remember_subtitle_selections`**: same for subtitles.
 /// - **`play_default_audio_track`**: if `false`, clear the default audio stream index
 ///   so the client plays without auto-selecting audio (after recall is applied).
+/// - **`audio_language_preference`**: if set and no audio default is already chosen,
+///   find the first audio stream whose language matches (normalised to ISO 639-1) and
+///   mark it as default.
 /// - **`subtitle_language_preference`**: if set and no subtitle is yet marked as
 ///   default, find the first subtitle stream whose language matches (normalised to
 ///   ISO 639-1) and mark it.
+///
+/// `client_audio_idx` / `client_subtitle_idx` are the indices the client explicitly
+/// requested in the PlaybackInfo POST body. A `Some(x)` with `x >= 0` means the
+/// client has a specific preference and user-preference logic is skipped for that
+/// stream type.
 async fn apply_user_playback_prefs(
     db: &sqlx::SqlitePool,
     user: &crate::db::User,
     media_id: &uuid::Uuid,
     media_sources: &mut Vec<api::MediaSourceInfo>,
+    client_audio_idx: Option<i64>,
+    client_subtitle_idx: Option<i64>,
 ) {
     let cfg = user
         .configuration
@@ -5011,9 +5390,17 @@ async fn apply_user_playback_prefs(
         saved_subtitle = None;
     }
 
+    // -1 is Jellyfin's sentinel for "not set"; treat it the same as None.
+    let client_wants_audio = client_audio_idx
+        .map(|x| x >= 0)
+        .unwrap_or(false);
+    let client_wants_subtitle = client_subtitle_idx
+        .map(|x| x >= 0)
+        .unwrap_or(false);
+
     for source in media_sources.iter_mut() {
         // --- remember_audio_selections ---
-        if cfg.remember_audio_selections {
+        if !client_wants_audio && cfg.remember_audio_selections {
             if let Some(idx) = saved_audio {
                 let exists = source
                     .media_streams
@@ -5029,7 +5416,7 @@ async fn apply_user_playback_prefs(
         }
 
         // --- remember_subtitle_selections ---
-        if cfg.remember_subtitle_selections {
+        if !client_wants_subtitle && cfg.remember_subtitle_selections {
             if let Some(idx) = saved_subtitle {
                 let exists = source
                     .media_streams
@@ -5060,16 +5447,45 @@ async fn apply_user_playback_prefs(
             }
         }
 
+        // --- audio_language_preference ---
+        // Only act if the client didn't specify a track and no default is already chosen.
+        if !client_wants_audio
+            && source
+                .default_audio_stream_index
+                .is_none()
+        {
+            if let Some(ref pref) = cfg.audio_language_preference {
+                let pref_two = lang_to_two_letter(pref);
+                if let Some(ref target) = pref_two {
+                    if let Some(stream) = source
+                        .media_streams
+                        .iter()
+                        .find(|s| {
+                            matches!(s.type_, Some(api::MediaStreamType::Audio))
+                                && s.language
+                                    .as_deref()
+                                    .and_then(lang_to_two_letter)
+                                    .as_deref()
+                                    == Some(target.as_str())
+                        })
+                    {
+                        source.default_audio_stream_index = Some(stream.index);
+                    }
+                }
+            }
+        }
+
         // --- play_default_audio_track ---
         if !cfg.play_default_audio_track {
             source.default_audio_stream_index = None;
         }
 
         // --- subtitle_language_preference ---
-        // Only act if no subtitle default is already set
-        if source
-            .default_subtitle_stream_index
-            .is_none()
+        // Only act if the client didn't specify a track and no subtitle default is already set.
+        if !client_wants_subtitle
+            && source
+                .default_subtitle_stream_index
+                .is_none()
         {
             if let Some(ref pref) = cfg.subtitle_language_preference {
                 let pref_two = lang_to_two_letter(pref);
