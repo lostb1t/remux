@@ -51,9 +51,9 @@ impl AddonPreset for DeezerPreset {
                     .to_string(),
             icon: None,
             supported_resources: vec![
-                ResourceType::Catalog,
-                ResourceType::Meta,
-                ResourceType::Search,
+                AddonMetadata::simple_resource(ResourceType::Catalog),
+                AddonMetadata::simple_resource(ResourceType::Meta),
+                AddonMetadata::simple_resource(ResourceType::Search),
             ],
             supported_types: vec![
                 MediaKind::Track,

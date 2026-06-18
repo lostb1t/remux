@@ -69,10 +69,22 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
                             .collect();
                         (resources, types)
                     }
-                    None => (meta.supported_resources, meta.supported_types),
+                    None => (
+                        meta.supported_resources
+                            .into_iter()
+                            .map(|r| r.name)
+                            .collect(),
+                        meta.supported_types,
+                    ),
                 }
             }
-            Err(_) => (meta.supported_resources, meta.supported_types),
+            Err(_) => (
+                meta.supported_resources
+                    .into_iter()
+                    .map(|r| r.name)
+                    .collect(),
+                meta.supported_types,
+            ),
         }
     } else {
         (vec![], vec![])
@@ -89,12 +101,7 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
             .config,
         resources: addon
             .resources
-            .iter()
-            .map(|r| {
-                r.name
-                    .clone()
-            })
-            .collect(),
+            .clone(),
         types: addon
             .types
             .iter()
@@ -244,31 +251,29 @@ pub async fn create_addon(
             None
         };
 
-    // Build Vec<ResourceRef>: prefer full refs from the live manifest, fall back to names.
-    let make_ref =
-        |name: remux_sdks::stremio::ResourceType| remux_sdks::stremio::ResourceRef {
-            name,
-            types: vec![],
-            id_prefixes: None,
-        };
-    let resources: Vec<remux_sdks::stremio::ResourceRef> = if payload
+    let resources: Vec<remux_sdks::stremio::ResourceType> = if payload
         .resources
         .is_empty()
     {
         match &avail_info {
-            Some((refs, _)) => refs.clone(),
+            Some((refs, _)) => refs
+                .iter()
+                .map(|r| {
+                    r.name
+                        .clone()
+                })
+                .collect(),
             None => metadata
                 .supported_resources
-                .into_iter()
-                .map(make_ref)
+                .iter()
+                .map(|r| {
+                    r.name
+                        .clone()
+                })
                 .collect(),
         }
     } else {
-        payload
-            .resources
-            .into_iter()
-            .map(make_ref)
-            .collect()
+        payload.resources
     };
     let types: Vec<DbMediaKind> = if payload
         .types
@@ -360,14 +365,7 @@ pub async fn update_addon(
         addon.name = name;
     }
     if let Some(resources) = payload.resources {
-        addon.resources = resources
-            .into_iter()
-            .map(|name| remux_sdks::stremio::ResourceRef {
-                name,
-                types: vec![],
-                id_prefixes: None,
-            })
-            .collect();
+        addon.resources = resources;
     }
     if let Some(types) = payload.types {
         addon.types = types

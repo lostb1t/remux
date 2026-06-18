@@ -548,6 +548,7 @@ pub trait LyricAddon: Send + Sync {
 
 #[derive(Clone, Default)]
 pub struct AddonCapabilities {
+    pub metadata: AddonMetadata,
     pub kind: Option<Arc<dyn AddonKind>>,
     pub catalog: Option<Arc<dyn CatalogAddon>>,
     pub meta: Option<Arc<dyn MetaAddon>>,
@@ -633,8 +634,19 @@ impl AddonRuntime {
     }
 
     pub fn supports_type(&self, kind: &db::MediaKind) -> bool {
-        // row.types is the authoritative upper bound (set from the manifest at load time).
+        // Manifest types (live metadata) are the authoritative upper bound.
         // "Series" in a type list covers Episode and Season too (Stremio model).
+        let mt: Vec<db::MediaKind> = self
+            .caps
+            .metadata
+            .supported_types
+            .iter()
+            .cloned()
+            .map(db::MediaKind::from)
+            .collect();
+        if !mt.is_empty() && !kind_in_type_list(kind, &mt) {
+            return false;
+        }
         self.row
             .types
             .is_empty()
@@ -644,6 +656,20 @@ impl AddonRuntime {
                     .row
                     .types,
             )
+    }
+
+    /// Returns the `idPrefixes` declared for a resource in the live manifest metadata,
+    /// or `None` if the resource has no prefix restriction.
+    fn resource_id_prefixes(&self, kind: &ResourceType) -> Option<&[String]> {
+        self.caps
+            .metadata
+            .supported_resources
+            .iter()
+            .find(|r| &r.name == kind)
+            .and_then(|r| {
+                r.id_prefixes
+                    .as_deref()
+            })
     }
 }
 
@@ -677,10 +703,7 @@ impl PickCap<dyn MetaAddon> for AddonRuntime {
         else {
             return false;
         };
-        if let Some(prefixes) = self
-            .row
-            .resource_id_prefixes(&ResourceType::Meta)
-        {
+        if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Meta) {
             let Some(id) = media
                 .external_ids
                 .stremio_lookup_id()
@@ -701,14 +724,12 @@ impl PickCap<dyn StreamAddon> for AddonRuntime {
     async fn pick(&self, media: &db::Media) -> bool {
         if !self
             .row
-            .has_resource(&ResourceType::Stream)
+            .resources
+            .contains(&ResourceType::Stream)
         {
             return false;
         }
-        if let Some(prefixes) = self
-            .row
-            .resource_id_prefixes(&ResourceType::Stream)
-        {
+        if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Stream) {
             let Some(id) = media
                 .external_ids
                 .stremio_lookup_id()
@@ -735,14 +756,12 @@ impl PickCap<dyn SubtitleAddon> for AddonRuntime {
     async fn pick(&self, media: &db::Media) -> bool {
         if !self
             .row
-            .has_resource(&ResourceType::Subtitles)
+            .resources
+            .contains(&ResourceType::Subtitles)
         {
             return false;
         }
-        if let Some(prefixes) = self
-            .row
-            .resource_id_prefixes(&ResourceType::Subtitles)
-        {
+        if let Some(prefixes) = self.resource_id_prefixes(&ResourceType::Subtitles) {
             let Some(id) = media
                 .external_ids
                 .stremio_lookup_id()
@@ -826,27 +845,23 @@ impl AddonService {
                     .config,
                 config,
             ) {
-                Ok(caps) => {
+                Ok(mut caps) => {
+                    // Start with the preset's static metadata, then upgrade with live manifest data.
+                    caps.metadata = preset.metadata();
                     if let Some(ref kind) = caps.kind {
                         match kind
                             .available_info()
                             .await
                         {
                             Ok(Some((resource_refs, raw_types))) => {
-                                let new_types: Vec<db::MediaKind> = raw_types
-                                    .into_iter()
-                                    .filter_map(|t| db::MediaKind::try_from(t).ok())
-                                    .collect();
-                                addon.resources = resource_refs;
-                                if !new_types.is_empty() {
-                                    addon.types = new_types;
-                                }
-                                addon.updated_at = chrono::Utc::now().naive_utc();
-                                if let Err(e) = addon
-                                    .update(db)
-                                    .await
-                                {
-                                    warn!(addon_id = %addon.id, error = %e, "failed to persist addon manifest data");
+                                caps.metadata
+                                    .supported_resources = resource_refs;
+                                if !raw_types.is_empty() {
+                                    caps.metadata
+                                        .supported_types = raw_types
+                                        .into_iter()
+                                        .map(Into::into)
+                                        .collect();
                                 }
                             }
                             Ok(None) => {}
@@ -1159,9 +1174,7 @@ impl AddonService {
                         return None;
                     }
                     // Apply the same meta idPrefixes guard used for MetaAddon.
-                    if let Some(prefixes) = r
-                        .row
-                        .resource_id_prefixes(&ResourceType::Meta)
+                    if let Some(prefixes) = r.resource_id_prefixes(&ResourceType::Meta)
                     {
                         let Some(id) = node
                             .external_ids
@@ -1350,7 +1363,8 @@ impl AddonService {
             .filter(|r| {
                 r.supports_type(kind)
                     && r.row
-                        .has_resource(&ResourceType::Search)
+                        .resources
+                        .contains(&ResourceType::Search)
                     && r.search
                         .is_some()
             })
@@ -1661,7 +1675,8 @@ impl AddonService {
             .iter()
             .filter(|r| {
                 r.row
-                    .has_resource(&ResourceType::Segment)
+                    .resources
+                    .contains(&ResourceType::Segment)
             })
             .filter_map(|r| {
                 r.segment
@@ -1731,7 +1746,8 @@ impl AddonService {
             .iter()
             .filter(|r| {
                 r.row
-                    .has_resource(&ResourceType::Lyrics)
+                    .resources
+                    .contains(&ResourceType::Lyrics)
             })
             .filter_map(|r| {
                 r.lyric
@@ -1772,7 +1788,8 @@ impl AddonService {
             .iter()
             .filter(|r| {
                 r.row
-                    .has_resource(&ResourceType::Lyrics)
+                    .resources
+                    .contains(&ResourceType::Lyrics)
             })
             .filter_map(|r| {
                 r.lyric

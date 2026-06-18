@@ -42,11 +42,11 @@ impl AddonPreset for StremioPreset {
                 .to_string(),
             icon: None,
             supported_resources: vec![
-                ResourceType::Catalog,
-                ResourceType::Meta,
-                ResourceType::Search,
-                ResourceType::Subtitles,
-                ResourceType::Stream,
+                AddonMetadata::simple_resource(ResourceType::Catalog),
+                AddonMetadata::simple_resource(ResourceType::Meta),
+                AddonMetadata::simple_resource(ResourceType::Search),
+                AddonMetadata::simple_resource(ResourceType::Subtitles),
+                AddonMetadata::simple_resource(ResourceType::Stream),
             ],
             supported_types: vec![MediaKind::Movie, MediaKind::Series],
             options: vec![AddonOption {

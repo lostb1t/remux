@@ -108,9 +108,9 @@ impl AddonPreset for OpendalLocalPreset {
                 .to_string(),
             icon: None,
             supported_resources: vec![
-                ResourceType::Stream,
-                ResourceType::Catalog,
-                ResourceType::Subtitles,
+                AddonMetadata::simple_resource(ResourceType::Stream),
+                AddonMetadata::simple_resource(ResourceType::Catalog),
+                AddonMetadata::simple_resource(ResourceType::Subtitles),
             ],
             supported_types: vec![
                 MediaKind::Movie,
@@ -192,9 +192,9 @@ impl AddonPreset for OpendalWebdavPreset {
                 .to_string(),
             icon: None,
             supported_resources: vec![
-                ResourceType::Stream,
-                ResourceType::Catalog,
-                ResourceType::Subtitles,
+                AddonMetadata::simple_resource(ResourceType::Stream),
+                AddonMetadata::simple_resource(ResourceType::Catalog),
+                AddonMetadata::simple_resource(ResourceType::Subtitles),
             ],
             supported_types: vec![
                 MediaKind::Movie,

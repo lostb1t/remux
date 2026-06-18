@@ -279,7 +279,9 @@ impl AddonPreset for SquidPreset {
             description: "Lossless music streams via community Tidal proxy instances."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream],
+            supported_resources: vec![AddonMetadata::simple_resource(
+                ResourceType::Stream,
+            )],
             supported_types: vec![MediaKind::Track],
             options: vec![],
         }

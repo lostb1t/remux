@@ -98,7 +98,10 @@ impl AddonPreset for MonochromePreset {
             display_name: "Monochrome".to_string(),
             description: "Search and stream music".to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream, ResourceType::Search],
+            supported_resources: vec![
+                AddonMetadata::simple_resource(ResourceType::Stream),
+                AddonMetadata::simple_resource(ResourceType::Search),
+            ],
             supported_types: vec![
                 MediaKind::Track,
                 MediaKind::Album,
@@ -139,7 +142,10 @@ impl AddonPreset for SpotiFLACPreset {
             display_name: "SpotiFLAC".to_string(),
             description: "Search and stream music".to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream, ResourceType::Search],
+            supported_resources: vec![
+                AddonMetadata::simple_resource(ResourceType::Stream),
+                AddonMetadata::simple_resource(ResourceType::Search),
+            ],
             supported_types: vec![
                 MediaKind::Track,
                 MediaKind::Album,

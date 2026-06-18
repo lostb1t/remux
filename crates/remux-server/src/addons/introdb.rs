@@ -25,7 +25,9 @@ impl AddonPreset for IntroDbPreset {
                 "Fetches intro/credits timestamps from the community IntroDb database."
                     .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Segment],
+            supported_resources: vec![AddonMetadata::simple_resource(
+                ResourceType::Segment,
+            )],
             supported_types: vec![MediaKind::Episode],
             options: vec![],
         }

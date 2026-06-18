@@ -31,7 +31,7 @@ impl AddonPreset for TorznabPreset {
             display_name: "Torznab".to_string(),
             description: "Stream resolution via a Torznab-compatible indexer (e.g. Jackett, Prowlarr, Bitmagnet). Supports music tracks, movies, and TV episodes via magnet links.".to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream],
+            supported_resources: vec![AddonMetadata::simple_resource(ResourceType::Stream)],
             supported_types: vec![MediaKind::Track, MediaKind::Movie, MediaKind::Episode],
             options: vec![
                 AddonOption {

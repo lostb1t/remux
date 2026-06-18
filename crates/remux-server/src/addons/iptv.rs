@@ -31,7 +31,10 @@ impl AddonPreset for IptvM3uPreset {
             description: "Import live TV channels from an M3U playlist URL."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream, ResourceType::Catalog],
+            supported_resources: vec![
+                AddonMetadata::simple_resource(ResourceType::Stream),
+                AddonMetadata::simple_resource(ResourceType::Catalog),
+            ],
             supported_types: vec![MediaKind::TvChannel],
             options: vec![
                 AddonOption {
@@ -115,7 +118,7 @@ impl AddonPreset for IptvXstreamPreset {
             description: "Import live TV channels from an Xtream Codes provider."
                 .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Stream, ResourceType::Catalog],
+            supported_resources: vec![AddonMetadata::simple_resource(ResourceType::Stream), AddonMetadata::simple_resource(ResourceType::Catalog)],
             supported_types: vec![MediaKind::TvChannel],
             options: vec![
                 AddonOption {

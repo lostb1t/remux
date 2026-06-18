@@ -124,16 +124,30 @@ pub struct AddonPresetRef {
 /// Static metadata describing one kind of addon. Returned by `GET /addon-kinds`
 /// so the dashboard can populate the kind picker and config form.
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddonMetadata {
     pub id: String,
     pub display_name: String,
     pub description: String,
     pub icon: Option<String>,
-    pub supported_resources: Vec<ResourceType>,
+    pub supported_resources: Vec<crate::stremio::ResourceRef>,
     pub supported_types: Vec<MediaKind>,
     pub options: Vec<AddonOption>,
+}
+
+impl AddonMetadata {
+    /// Build a `ResourceRef` with no type or idPrefix restrictions — used when
+    /// constructing static preset metadata where the manifest isn't available.
+    pub fn simple_resource(
+        name: crate::stremio::ResourceType,
+    ) -> crate::stremio::ResourceRef {
+        crate::stremio::ResourceRef {
+            name,
+            types: vec![],
+            id_prefixes: None,
+        }
+    }
 }
 
 /// API representation of a stored addon instance.

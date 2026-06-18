@@ -29,7 +29,10 @@ impl AddonPreset for TmdbPreset {
                  and people search."
                     .to_string(),
             icon: None,
-            supported_resources: vec![ResourceType::Meta, ResourceType::Search],
+            supported_resources: vec![
+                AddonMetadata::simple_resource(ResourceType::Meta),
+                AddonMetadata::simple_resource(ResourceType::Search),
+            ],
             supported_types: vec![
                 MediaKind::Movie,
                 MediaKind::Series,
