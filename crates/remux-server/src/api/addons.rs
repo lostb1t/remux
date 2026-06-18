@@ -99,9 +99,7 @@ async fn addon_to_dto(addon: Addon, config: &crate::Config) -> AddonDto {
         config: addon
             .preset
             .config,
-        resources: addon
-            .resources
-            .clone(),
+        resources: addon.resources,
         types: addon
             .types
             .iter()

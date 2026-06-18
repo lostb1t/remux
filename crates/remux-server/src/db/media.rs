@@ -982,7 +982,9 @@ pub struct MediaFilter {
     pub parent_enabled: Option<bool>,
     /// Filter albums/tracks by artist (parent_id IN these IDs).
     pub artist_ids: Option<Vec<Uuid>>,
-    /// If set, only return items where COALESCE(digital_released_at, released_at) <= threshold.
+    /// If set, hides items whose known release date is in the future.
+    /// `digital_released_at` is checked first; if absent, `released_at` is used as a fallback.
+    /// Items where both dates are NULL are shown (no date info = no restriction).
     pub digital_released_before: Option<NaiveDateTime>,
     /// Sort order for results. Mapped from Jellyfin's ItemSortBy.
     pub sort_by: Vec<api::ItemSortBy>,
@@ -4800,9 +4802,7 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
         // Custom-ID path: no IMDB, derive UUIDs from the addon-specific id.
         let custom_id = ExternalIds::from_stremio_id(&meta.id)
             .custom_stremio_id
-            .context(
-                "imdb_id is missing and meta.id is not a recognisable custom id",
-            )?;
+            .context("imdb_id is missing and meta.id is empty")?;
         media.id = Uuid::from(&super::MediaIdRaw {
             kind: media
                 .kind

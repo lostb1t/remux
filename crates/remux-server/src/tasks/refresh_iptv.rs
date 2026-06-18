@@ -127,7 +127,7 @@ impl Task for RefreshIptvTask {
                     }
                 };
 
-                let counts = import_catalog_items(
+                let (counts, new_counts) = import_catalog_items(
                     &ctx,
                     cat_info,
                     full_id,
@@ -137,7 +137,7 @@ impl Task for RefreshIptvTask {
                 )
                 .await?;
 
-                info!(catalog = %full_id, ?counts, "IPTV catalog import complete");
+                info!(catalog = %full_id, total = ?counts, new = ?new_counts, "IPTV catalog import complete");
             }
         }
 
