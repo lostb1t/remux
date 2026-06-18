@@ -132,7 +132,7 @@ pub async fn livetv_channels(
     let dtos: Vec<_> = result
         .records
         .into_iter()
-        .map(api::db_media_to_item)
+        .map(|m| api::db_media_to_item(m, false))
         .collect();
     Ok(Json(api::QueryResult {
         total_record_count: result.total_count as i64,
@@ -161,7 +161,7 @@ pub async fn livetv_channel(
     )
     .await?
     .context_not_found("channel not found")?;
-    Ok(Json(api::db_media_to_item(media)))
+    Ok(Json(api::db_media_to_item(media, false)))
 }
 
 // --------------------------------------------------------------------------
@@ -205,7 +205,7 @@ pub async fn livetv_programs_recommended(
     let dtos: Vec<_> = result
         .records
         .into_iter()
-        .map(api::db_media_to_item)
+        .map(|m| api::db_media_to_item(m, false))
         .collect();
     Ok(Json(api::QueryResult {
         total_record_count: dtos.len() as i64,
@@ -337,7 +337,7 @@ pub async fn livetv_programs(
     let dtos: Vec<_> = result
         .records
         .into_iter()
-        .map(api::db_media_to_item)
+        .map(|m| api::db_media_to_item(m, false))
         .collect();
     Ok(Json(api::QueryResult {
         total_record_count: result.total_count as i64,
@@ -415,7 +415,7 @@ pub async fn livetv_programs_post(
     let dtos: Vec<_> = result
         .records
         .into_iter()
-        .map(api::db_media_to_item)
+        .map(|m| api::db_media_to_item(m, false))
         .collect();
     Ok(Json(api::QueryResult {
         total_record_count: result.total_count as i64,
@@ -620,7 +620,7 @@ pub async fn livetv_program(
         &mut records,
     )
     .await;
-    Ok(Json(api::db_media_to_item(records.remove(0))))
+    Ok(Json(api::db_media_to_item(records.remove(0), false)))
 }
 
 // --------------------------------------------------------------------------

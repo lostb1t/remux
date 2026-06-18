@@ -272,7 +272,7 @@ pub fn db_state_to_dto(
     }
 }
 
-pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
+pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
     use crate::common::{IntoVec, ToRunTimeTicks};
 
     let type_ = media
@@ -893,9 +893,10 @@ pub fn db_media_to_item(media: db::Media) -> BaseItemDto {
     item.external_urls = external_urls;
 
     // several dlients require at least one stream
-    if media.kind == db::MediaKind::Movie
-        || media.kind == db::MediaKind::Episode
-        || media.kind == db::MediaKind::Track
+    if !hide_sources
+        && (media.kind == db::MediaKind::Movie
+            || media.kind == db::MediaKind::Episode
+            || media.kind == db::MediaKind::Track)
     {
         item.can_download = Some(true);
         item.media_sources = match media

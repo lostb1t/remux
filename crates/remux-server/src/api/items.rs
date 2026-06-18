@@ -67,6 +67,10 @@ pub async fn get_items(
     _count: bool,
 ) -> Result<ItemsQueryResult> {
     //trace!(?q, "get_items");
+    let hide_sources = session
+        .device
+        .app_name
+        == "Plezy";
 
     let parent = if let Some(parent_id) = q
         .parent_id
@@ -233,7 +237,7 @@ pub async fn get_items(
                     Ok(results) => {
                         let items: Vec<_> = results
                             .into_iter()
-                            .map(api::db_media_to_item)
+                            .map(|m| api::db_media_to_item(m, hide_sources))
                             .filter(|item| {
                                 q.media_types
                                     .as_ref()
@@ -287,7 +291,7 @@ pub async fn get_items(
                         all_items.extend(
                             r.records
                                 .into_iter()
-                                .map(api::db_media_to_item),
+                                .map(|m| api::db_media_to_item(m, hide_sources)),
                         );
                     }
                     Err(e) => warn!(error = %e, "get_items: local search failed"),
@@ -358,7 +362,7 @@ pub async fn get_items(
                 )
                 .await?
                 {
-                    let mut dto = api::db_media_to_item(media);
+                    let mut dto = api::db_media_to_item(media, hide_sources);
                     dto.playlist_item_id = Some(
                         rel.relation_id
                             .to_string(),
@@ -418,7 +422,7 @@ pub async fn get_items(
                     items: result
                         .records
                         .into_iter()
-                        .map(api::db_media_to_item)
+                        .map(|m| api::db_media_to_item(m, hide_sources))
                         .collect(),
                 });
             }
@@ -447,7 +451,7 @@ pub async fn get_items(
                     items: result
                         .records
                         .into_iter()
-                        .map(api::db_media_to_item)
+                        .map(|m| api::db_media_to_item(m, hide_sources))
                         .collect(),
                 });
             }
@@ -547,7 +551,7 @@ pub async fn get_items(
                 items: result
                     .records
                     .into_iter()
-                    .map(api::db_media_to_item)
+                    .map(|m| api::db_media_to_item(m, hide_sources))
                     .collect(),
             });
         }
@@ -659,7 +663,7 @@ pub async fn get_items(
         items: result
             .records
             .into_iter()
-            .map(api::db_media_to_item)
+            .map(|m| api::db_media_to_item(m, hide_sources))
             .collect(),
         total_count: result.total_count as i64,
     })
@@ -791,7 +795,7 @@ pub async fn items_ancestors(
     Ok(Json(
         ancestors
             .into_iter()
-            .map(api::db_media_to_item)
+            .map(|m| api::db_media_to_item(m, false))
             .collect::<Vec<_>>(),
     ))
 }
@@ -1457,7 +1461,7 @@ pub async fn item(
                 .db,
         )
         .await?;
-    let mut base_item = api::db_media_to_item(media.clone());
+    let mut base_item = api::db_media_to_item(media.clone(), false);
 
     // For tracks, wrap the Source row(s) as HLS-transcoded MediaSources.
     // CDN URLs are IP-locked to the server; the client must go through the HLS pipeline.
@@ -1749,7 +1753,7 @@ pub async fn library_mediafolders(
     .await?
     .records
     .into_iter()
-    .map(|x| api::db_media_to_item(x))
+    .map(|x| api::db_media_to_item(x, false))
     .collect::<Vec<_>>();
 
     let total = items.len() as i64;
@@ -2068,7 +2072,7 @@ pub async fn genres(
         items: result
             .records
             .into_iter()
-            .map(api::db_media_to_item)
+            .map(|m| api::db_media_to_item(m, false))
             .collect(),
         total_record_count: result.total_count as i64,
         start_index: q
@@ -2123,7 +2127,7 @@ pub async fn music_genres(
         items: result
             .records
             .into_iter()
-            .map(api::db_media_to_item)
+            .map(|m| api::db_media_to_item(m, false))
             .collect(),
         total_record_count: result.total_count as i64,
         start_index: q
@@ -2214,7 +2218,7 @@ pub async fn items_similar(
     let mut items: Vec<api::BaseItemDto> = result
         .records
         .into_iter()
-        .map(api::db_media_to_item)
+        .map(|m| api::db_media_to_item(m, false))
         .collect();
     items.sort_by_key(|item| {
         let id = item.id;

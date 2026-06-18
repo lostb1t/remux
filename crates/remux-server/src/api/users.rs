@@ -968,7 +968,7 @@ pub async fn userviews(
 
     let mut items = libraries
         .into_iter()
-        .map(api::db_media_to_item)
+        .map(|m| api::db_media_to_item(m, false))
         .collect::<Vec<api::BaseItemDto>>();
 
     // Inject a synthetic Live TV view if any enabled channels exist
@@ -1065,7 +1065,7 @@ async fn resume_items(
         items: result
             .records
             .into_iter()
-            .map(api::db_media_to_item)
+            .map(|m| api::db_media_to_item(m, false))
             .collect(),
         total_record_count: result.total_count as i64,
         start_index: q

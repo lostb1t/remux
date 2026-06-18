@@ -3091,7 +3091,7 @@ pub async fn get_sessions(
         let now_playing = if let Some(ps) = ps {
             let mut item = media
                 .as_ref()
-                .map(|m| api::db_media_to_item(m.clone()))
+                .map(|m| api::db_media_to_item(m.clone(), false))
                 .unwrap_or_else(|| api::BaseItemDto {
                     id: ps.item_id,
                     ..Default::default()
@@ -3304,7 +3304,7 @@ pub async fn get_sessions(
             )
             .await
             {
-                now_playing_queue_full_items.push(api::db_media_to_item(m));
+                now_playing_queue_full_items.push(api::db_media_to_item(m, false));
             }
         }
 

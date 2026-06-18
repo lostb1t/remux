@@ -81,7 +81,7 @@ fn mix_response(items: Vec<db::Media>) -> impl IntoResponse {
     let total = items.len() as i64;
     let dtos: Vec<api::BaseItemDto> = items
         .into_iter()
-        .map(api::db_media_to_item)
+        .map(|m| api::db_media_to_item(m, false))
         .collect();
     Json(api::BaseItemDtoQueryResult {
         items: dtos,

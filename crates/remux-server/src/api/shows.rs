@@ -247,7 +247,7 @@ pub async fn shows_nextup(
     .await
     .unwrap_or_default();
 
-    let mut item = api::db_media_to_item(ep.clone());
+    let mut item = api::db_media_to_item(ep.clone(), false);
     if let Some(s) = state_for(&ep) {
         item.user_data = Some(api::db_state_to_dto(s.clone(), &ep));
     }
@@ -448,7 +448,7 @@ async fn shows_nextup_all(
     let items: Vec<api::BaseItemDto> = next_eps
         .into_iter()
         .map(|ep| {
-            let mut item = api::db_media_to_item(ep.clone());
+            let mut item = api::db_media_to_item(ep.clone(), false);
             if let Some(s) = states_map.get(&ep.id) {
                 item.user_data = Some(api::db_state_to_dto(s.clone(), &ep));
             }

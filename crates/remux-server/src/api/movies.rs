@@ -219,7 +219,7 @@ async fn build_similar_categories(
         .into_iter()
         .filter(|m| m.id != baseline.id)
         .take(item_limit as usize)
-        .map(api::db_media_to_item)
+        .map(|m| api::db_media_to_item(m, false))
         .collect();
         if items.is_empty() {
             continue;
@@ -300,7 +300,7 @@ async fn build_actor_categories(
             .records
             .into_iter()
             .take(item_limit as usize)
-            .map(api::db_media_to_item)
+            .map(|m| api::db_media_to_item(m, false))
             .collect();
 
             if !items.is_empty() {

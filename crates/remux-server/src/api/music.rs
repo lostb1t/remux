@@ -50,7 +50,7 @@ pub async fn music_search(
 
     let items: Vec<api::BaseItemDto> = results
         .into_iter()
-        .map(api::models::db_media_to_item)
+        .map(|m| api::models::db_media_to_item(m, false))
         .collect();
 
     let total = items.len() as i64;
@@ -151,5 +151,5 @@ pub async fn insert_track(
     )
     .await?;
 
-    Ok(Json(api::models::db_media_to_item(media)))
+    Ok(Json(api::models::db_media_to_item(media, false)))
 }

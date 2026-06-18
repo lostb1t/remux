@@ -32,7 +32,7 @@ pub async fn studios(
     Ok(Json(api::BaseItemDtoQueryResult {
         items: records
             .into_iter()
-            .map(api::db_media_to_item)
+            .map(|m| api::db_media_to_item(m, false))
             .collect(),
         total_record_count: total,
         start_index: q
@@ -63,7 +63,7 @@ pub async fn studio_by_name(
     .into_iter()
     .next()
     .context_not_found("Studio not found")?;
-    Ok(Json(api::db_media_to_item(record)))
+    Ok(Json(api::db_media_to_item(record, false)))
 }
 
 #[get("/years")]
@@ -157,7 +157,7 @@ pub async fn person_by_name(
     .into_iter()
     .next()
     .context_not_found("Person not found")?;
-    Ok(Json(api::db_media_to_item(record)))
+    Ok(Json(api::db_media_to_item(record, false)))
 }
 
 #[get("/genres/{name}")]
@@ -182,5 +182,5 @@ pub async fn genre_by_name(
     .into_iter()
     .next()
     .context_not_found("Genre not found")?;
-    Ok(Json(api::db_media_to_item(record)))
+    Ok(Json(api::db_media_to_item(record, false)))
 }
