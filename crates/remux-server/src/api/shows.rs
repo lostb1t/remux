@@ -6,12 +6,10 @@ use axum::{
     response::IntoResponse,
 };
 use axum_extra::extract::Query;
-use chrono::{DateTime, NaiveDate, NaiveDateTime};
-use http::StatusCode;
 use remux_macros::{api_query, get};
 use uuid::Uuid;
 
-use crate::{AppState, OptionExt, ResultExt, api, db, db::auth};
+use crate::{AppState, OptionExt, api, db, db::auth};
 use axum_anyhow::ApiResult as Result;
 
 use super::items::get_items;
@@ -29,37 +27,6 @@ pub fn livetv_view_item() -> api::BaseItemDto {
         is_folder: true,
         ..Default::default()
     }
-}
-
-fn normalize_next_up_cutoff(cutoff: Option<&str>) -> Result<String> {
-    let Some(cutoff) = cutoff else {
-        return Ok("1970-01-01 00:00:00".to_string());
-    };
-
-    if let Ok(dt) = DateTime::parse_from_rfc3339(cutoff) {
-        return Ok(dt
-            .naive_utc()
-            .format("%F %T")
-            .to_string());
-    }
-
-    if let Ok(dt) = NaiveDateTime::parse_from_str(cutoff, "%Y-%m-%d %H:%M:%S") {
-        return Ok(dt
-            .format("%F %T")
-            .to_string());
-    }
-
-    if let Ok(date) = NaiveDate::parse_from_str(cutoff, "%Y-%m-%d") {
-        return Ok(date
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight is always valid")
-            .format("%F %T")
-            .to_string());
-    }
-
-    Err(anyhow::anyhow!("invalid next_up_date_cutoff")).context_bad_request(
-        "nextUpDateCutoff must be RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS",
-    )
 }
 
 #[get("/shows/{id}/seasons")]
@@ -318,10 +285,10 @@ async fn shows_nextup_all(
     // makes each media lookup a single covering-index hop instead of two hops
     // (pk-index → rowid → main table). UNION keeps two index-friendly legs on
     // idx_ums_user_play_state.
-    let date_cutoff = normalize_next_up_cutoff(
-        q.next_up_date_cutoff
-            .as_deref(),
-    )?;
+    let date_cutoff = q
+        .next_up_date_cutoff
+        .clone()
+        .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
     let active_series: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT m.grandparent_id \
          FROM ( \
@@ -334,8 +301,8 @@ async fn shows_nextup_all(
          WHERE m.kind = 'episode' \
          AND m.grandparent_id IS NOT NULL \
          GROUP BY m.grandparent_id \
-         HAVING MAX(ums.last_played_at) >= ? \
-         ORDER BY MAX(ums.last_played_at) DESC \
+         HAVING MAX(COALESCE(ums.last_played_at, ums.played_at)) >= ? \
+         ORDER BY MAX(COALESCE(ums.last_played_at, ums.played_at)) DESC \
          LIMIT ?",
     )
     .bind(user_id)
@@ -555,7 +522,7 @@ pub async fn shows_recommendations(
 #[cfg(test)]
 mod test {
     use super::*;
-    use chrono::NaiveDate;
+    use chrono::{NaiveDate, NaiveDateTime};
     use sqlx::SqlitePool;
 
     async fn test_db() -> SqlitePool {
@@ -686,7 +653,8 @@ mod test {
         media_id: Uuid,
         play_count: i64,
         playback_position: i64,
-        last_played_at: chrono::NaiveDateTime,
+        played_at: Option<NaiveDateTime>,
+        last_played_at: Option<NaiveDateTime>,
     ) {
         sqlx::query(
             r#"
@@ -715,7 +683,7 @@ mod test {
         .bind(user_id)
         .bind(media_id)
         .bind(play_count)
-        .bind((play_count > 0).then_some(last_played_at))
+        .bind(played_at)
         .bind(playback_position)
         .bind(last_played_at)
         .execute(db)
@@ -728,7 +696,11 @@ mod test {
         user_id: Uuid,
         cutoff: Option<&str>,
     ) -> Vec<Uuid> {
-        let date_cutoff = normalize_next_up_cutoff(cutoff).unwrap();
+        let date_cutoff = cutoff
+            .map(api::normalize_next_up_date_cutoff)
+            .transpose()
+            .unwrap()
+            .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
         let active_series: Vec<(Uuid,)> = sqlx::query_as(
             "SELECT m.grandparent_id \
              FROM ( \
@@ -741,8 +713,8 @@ mod test {
              WHERE m.kind = 'episode' \
              AND m.grandparent_id IS NOT NULL \
              GROUP BY m.grandparent_id \
-             HAVING MAX(ums.last_played_at) >= ? \
-             ORDER BY MAX(ums.last_played_at) DESC \
+             HAVING MAX(COALESCE(ums.last_played_at, ums.played_at)) >= ? \
+             ORDER BY MAX(COALESCE(ums.last_played_at, ums.played_at)) DESC \
              LIMIT ?",
         )
         .bind(user_id)
@@ -784,10 +756,18 @@ mod test {
             episodes_a[0].id,
             1,
             0,
-            NaiveDate::from_ymd_opt(2026, 6, 16)
-                .unwrap()
-                .and_hms_opt(8, 0, 0)
-                .unwrap(),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 16)
+                    .unwrap()
+                    .and_hms_opt(8, 0, 0)
+                    .unwrap(),
+            ),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 16)
+                    .unwrap()
+                    .and_hms_opt(8, 0, 0)
+                    .unwrap(),
+            ),
         )
         .await;
         insert_state(
@@ -796,10 +776,18 @@ mod test {
             episodes_b[0].id,
             1,
             0,
-            NaiveDate::from_ymd_opt(2026, 6, 17)
-                .unwrap()
-                .and_hms_opt(12, 0, 0)
-                .unwrap(),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 17)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
+            ),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 17)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
+            ),
         )
         .await;
 
@@ -833,10 +821,18 @@ mod test {
             old_episodes[0].id,
             1,
             0,
-            NaiveDate::from_ymd_opt(2026, 6, 17)
-                .unwrap()
-                .and_hms_opt(12, 0, 0)
-                .unwrap(),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 17)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
+            ),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 17)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
+            ),
         )
         .await;
         insert_state(
@@ -845,10 +841,18 @@ mod test {
             new_episodes[0].id,
             1,
             0,
-            NaiveDate::from_ymd_opt(2026, 6, 18)
-                .unwrap()
-                .and_hms_opt(12, 0, 0)
-                .unwrap(),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 18)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
+            ),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 18)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
+            ),
         )
         .await;
 
@@ -858,9 +862,63 @@ mod test {
         );
     }
 
-    #[test]
-    fn shows_nextup_rejects_invalid_cutoff() {
-        let err = normalize_next_up_cutoff(Some("not-a-date")).unwrap_err();
-        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    #[tokio::test]
+    async fn shows_nextup_falls_back_to_played_at_when_last_played_at_is_null() {
+        let db = test_db().await;
+        let user = insert_user(&db, "test").await;
+
+        let (legacy_series, legacy_episodes) = insert_series_with_episodes(
+            &db,
+            "Legacy Series",
+            &["Legacy Episode 1", "Legacy Episode 2"],
+        )
+        .await;
+        let (_newer_series, newer_episodes) = insert_series_with_episodes(
+            &db,
+            "Newer Series",
+            &["Newer Episode 1", "Newer Episode 2"],
+        )
+        .await;
+
+        insert_state(
+            &db,
+            user.id,
+            legacy_episodes[0].id,
+            1,
+            0,
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 18)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
+            ),
+            None,
+        )
+        .await;
+        insert_state(
+            &db,
+            user.id,
+            newer_episodes[0].id,
+            1,
+            0,
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 17)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
+            ),
+            Some(
+                NaiveDate::from_ymd_opt(2026, 6, 17)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            active_series_ids(&db, user.id, Some("2026-06-18")).await,
+            vec![legacy_series.id],
+        );
     }
 }

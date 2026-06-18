@@ -1,4 +1,4 @@
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};
 use nutype::nutype;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -1059,6 +1059,7 @@ pub struct GetItemsQuery {
     pub enable_rewatching: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub disable_first_episode: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_next_up_date_cutoff")]
     pub next_up_date_cutoff: Option<String>,
     pub years: Option<Vec<i64>>,
     pub genres: Option<Vec<String>>,
@@ -1145,6 +1146,47 @@ where
     }
 }
 
+pub fn normalize_next_up_date_cutoff(
+    cutoff: &str,
+) -> std::result::Result<String, &'static str> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(cutoff) {
+        return Ok(dt
+            .naive_utc()
+            .format("%F %T")
+            .to_string());
+    }
+
+    if let Ok(dt) = NaiveDateTime::parse_from_str(cutoff, "%Y-%m-%d %H:%M:%S") {
+        return Ok(dt
+            .format("%F %T")
+            .to_string());
+    }
+
+    if let Ok(date) = NaiveDate::parse_from_str(cutoff, "%Y-%m-%d") {
+        return Ok(date
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is always valid")
+            .format("%F %T")
+            .to_string());
+    }
+
+    Err("nextUpDateCutoff must be RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS")
+}
+
+fn deserialize_next_up_date_cutoff<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let cutoff = Option::<String>::deserialize(deserializer)?;
+    cutoff
+        .map(|cutoff| {
+            normalize_next_up_date_cutoff(&cutoff).map_err(serde::de::Error::custom)
+        })
+        .transpose()
+}
+
 /// Generic helper: deserializes an optional comma-separated (or repeated) query-param
 /// value into `Option<Vec<T>>` for any `T: FromStr`.
 fn deserialize_comma_str<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
@@ -1228,6 +1270,27 @@ where
     D: Deserializer<'de>,
 {
     deserialize_comma_str(d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_up_cutoff_accepts_rfc3339() {
+        assert_eq!(
+            normalize_next_up_date_cutoff("2026-06-17T23:00:00Z").unwrap(),
+            "2026-06-17 23:00:00"
+        );
+    }
+
+    #[test]
+    fn next_up_cutoff_rejects_invalid_input() {
+        assert_eq!(
+            normalize_next_up_date_cutoff("not-a-date").unwrap_err(),
+            "nextUpDateCutoff must be RFC3339, YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS"
+        );
+    }
 }
 
 #[derive(Default, Debug, Deserialize)]
