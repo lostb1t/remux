@@ -31,7 +31,10 @@ pub async fn search_hints(
         ..Default::default()
     };
 
-    let result = super::items::get_items(state, session, items_query, false).await?;
+    let result = super::items::get_items(state, session, items_query, false)
+        .await?
+        .with_client_patches()
+        .build();
 
     let hints: Vec<api::SearchHint> = result
         .items

@@ -46,7 +46,9 @@ pub async fn shows_seasons(
     }
     let items = get_items(state, session.clone(), q.clone(), true)
         .await?
-        .with_permissions(&session);
+        .with_permissions()
+        .with_client_patches()
+        .build();
 
     Ok(Json(api::BaseItemDtoQueryResult {
         items: items.items,
@@ -93,7 +95,10 @@ pub async fn shows_episodes(
             let mut all_q = q.clone();
             all_q.limit = None;
             all_q.start_index = None;
-            let all = get_items(state.clone(), session.clone(), all_q, false).await?;
+            let all = get_items(state.clone(), session.clone(), all_q, false)
+                .await?
+                .with_client_patches()
+                .build();
             if let Some(pos) = all
                 .items
                 .iter()
@@ -105,7 +110,9 @@ pub async fn shows_episodes(
     }
     let items = get_items(state, session.clone(), q.clone(), true)
         .await?
-        .with_permissions(&session);
+        .with_permissions()
+        .with_client_patches()
+        .build();
 
     Ok(Json(api::BaseItemDtoQueryResult {
         items: items.items,

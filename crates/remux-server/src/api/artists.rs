@@ -16,7 +16,10 @@ async fn artists_response(
 ) -> Result<impl IntoResponse> {
     q.include_item_types = Some(vec![api::MediaType::MusicArtist]);
     q.recursive = true;
-    let result = get_items(state, session, q, true).await?;
+    let result = get_items(state, session, q, true)
+        .await?
+        .with_client_patches()
+        .build();
     Ok(Json(api::BaseItemDtoQueryResult {
         items: result.items,
         total_record_count: result.total_count,

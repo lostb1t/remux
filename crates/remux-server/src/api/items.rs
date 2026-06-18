@@ -42,12 +42,101 @@ fn apply_permissions(item: &mut api::BaseItemDto, user: &db::User) {
     );
 }
 
-impl ItemsQueryResult {
-    pub fn with_permissions(mut self, session: &auth::AuthSession) -> Self {
-        for item in &mut self.items {
-            apply_permissions(item, &session.user);
+enum ItemsSource {
+    Raw(Vec<db::Media>),
+    Dtos(Vec<api::BaseItemDto>),
+}
+
+pub struct ItemsQueryResultBuilder {
+    items: ItemsSource,
+    total_count: i64,
+    session: auth::AuthSession,
+    apply_permissions: bool,
+    hide_sources: bool,
+}
+
+impl ItemsQueryResultBuilder {
+    pub fn with_items(
+        session: auth::AuthSession,
+        media: Vec<db::Media>,
+        total_count: i64,
+    ) -> Self {
+        Self {
+            items: ItemsSource::Raw(media),
+            total_count,
+            session,
+            apply_permissions: false,
+            hide_sources: false,
         }
+    }
+
+    pub fn with_dtos(
+        session: auth::AuthSession,
+        dtos: Vec<api::BaseItemDto>,
+        total_count: i64,
+    ) -> Self {
+        Self {
+            items: ItemsSource::Dtos(dtos),
+            total_count,
+            session,
+            apply_permissions: false,
+            hide_sources: false,
+        }
+    }
+
+    pub fn with_permissions(mut self) -> Self {
+        self.apply_permissions = true;
         self
+    }
+
+    pub fn with_client_patches(mut self) -> Self {
+        self.hide_sources = self
+            .session
+            .device
+            .app_name
+            == "Plezy";
+        self
+    }
+
+    pub fn build(self) -> ItemsQueryResult {
+        let items = match self.items {
+            ItemsSource::Raw(media) => media
+                .into_iter()
+                .map(|m| {
+                    let mut dto = api::db_media_to_item(m, self.hide_sources);
+                    if self.apply_permissions {
+                        apply_permissions(
+                            &mut dto,
+                            &self
+                                .session
+                                .user,
+                        );
+                    }
+                    dto
+                })
+                .collect(),
+            ItemsSource::Dtos(dtos) => {
+                if self.apply_permissions {
+                    dtos.into_iter()
+                        .map(|mut dto| {
+                            apply_permissions(
+                                &mut dto,
+                                &self
+                                    .session
+                                    .user,
+                            );
+                            dto
+                        })
+                        .collect()
+                } else {
+                    dtos
+                }
+            }
+        };
+        ItemsQueryResult {
+            items,
+            total_count: self.total_count,
+        }
     }
 }
 
@@ -65,8 +154,10 @@ pub async fn get_items(
     session: auth::AuthSession,
     mut q: api::GetItemsQuery,
     _count: bool,
-) -> Result<ItemsQueryResult> {
+) -> Result<ItemsQueryResultBuilder> {
     //trace!(?q, "get_items");
+    // Used only by pre-converting paths (search, playlist) that use with_dtos().
+    // Raw-media paths delegate hide_sources to with_client_patches() on the builder.
     let hide_sources = session
         .device
         .app_name
@@ -312,10 +403,11 @@ pub async fn get_items(
                 .take(limit)
                 .collect();
 
-            return Ok(ItemsQueryResult {
+            return Ok(ItemsQueryResultBuilder::with_dtos(
+                session,
+                paged_items,
                 total_count,
-                items: paged_items,
-            });
+            ));
         }
     }
 
@@ -370,10 +462,7 @@ pub async fn get_items(
                     items.push(dto);
                 }
             }
-            return Ok(ItemsQueryResult {
-                total_count: total,
-                items,
-            });
+            return Ok(ItemsQueryResultBuilder::with_dtos(session, items, total));
         }
 
         // collection browse
@@ -417,14 +506,11 @@ pub async fn get_items(
                     },
                 )
                 .await?;
-                return Ok(ItemsQueryResult {
-                    total_count: result.total_count as i64,
-                    items: result
-                        .records
-                        .into_iter()
-                        .map(|m| api::db_media_to_item(m, hide_sources))
-                        .collect(),
-                });
+                return Ok(ItemsQueryResultBuilder::with_items(
+                    session,
+                    result.records,
+                    result.total_count as i64,
+                ));
             }
 
             // Manual collections: use media_relations JOIN via the pre-fetched parent.
@@ -446,14 +532,11 @@ pub async fn get_items(
                     Some(&parent),
                 )
                 .await?;
-                return Ok(ItemsQueryResult {
-                    total_count: result.total_count as i64,
-                    items: result
-                        .records
-                        .into_iter()
-                        .map(|m| api::db_media_to_item(m, hide_sources))
-                        .collect(),
-                });
+                return Ok(ItemsQueryResultBuilder::with_items(
+                    session,
+                    result.records,
+                    result.total_count as i64,
+                ));
             }
 
             // Smart collections: items float freely (no parent_id constraint).
@@ -546,14 +629,11 @@ pub async fn get_items(
             )
             .await?;
 
-            return Ok(ItemsQueryResult {
-                total_count: result.total_count as i64,
-                items: result
-                    .records
-                    .into_iter()
-                    .map(|m| api::db_media_to_item(m, hide_sources))
-                    .collect(),
-            });
+            return Ok(ItemsQueryResultBuilder::with_items(
+                session,
+                result.records,
+                result.total_count as i64,
+            ));
         }
 
         //  }
@@ -644,29 +724,23 @@ pub async fn get_items(
         if ids.len() == 1 {
             let media = item(
                 state,
-                session,
+                session.clone(),
                 ids[0],
                 q.fields
                     .as_deref(),
             )
             .await?;
             if let Some(media) = media {
-                return Ok(ItemsQueryResult {
-                    items: vec![media],
-                    total_count: 1,
-                });
+                return Ok(ItemsQueryResultBuilder::with_dtos(session, vec![media], 1));
             }
         }
     }
 
-    Ok(ItemsQueryResult {
-        items: result
-            .records
-            .into_iter()
-            .map(|m| api::db_media_to_item(m, hide_sources))
-            .collect(),
-        total_count: result.total_count as i64,
-    })
+    Ok(ItemsQueryResultBuilder::with_items(
+        session,
+        result.records,
+        result.total_count as i64,
+    ))
 }
 
 #[get("/items/latest")]
@@ -738,7 +812,9 @@ pub async fn items_flat(
     }
     let items = get_items(state.clone(), session.clone(), q, false)
         .await?
-        .with_permissions(&session);
+        .with_permissions()
+        .with_client_patches()
+        .build();
     Ok(Json::<Vec<api::BaseItemDto>>(items.items))
 }
 
@@ -751,7 +827,9 @@ pub async fn items(
     //trace!(?q);
     let items = get_items(state.clone(), session.clone(), q.clone(), true)
         .await?
-        .with_permissions(&session);
+        .with_permissions()
+        .with_client_patches()
+        .build();
 
     Ok(Json(api::BaseItemDtoQueryResult {
         items: items.items,
@@ -1684,7 +1762,9 @@ pub async fn persons(
     q.include_item_types = Some(vec![api::MediaType::Person]);
     let items = get_items(state.clone(), session.clone(), q.clone(), true)
         .await?
-        .with_permissions(&session);
+        .with_permissions()
+        .with_client_patches()
+        .build();
     Ok(Json(api::BaseItemDtoQueryResult {
         items: items.items,
         total_record_count: items.total_count as i64,
