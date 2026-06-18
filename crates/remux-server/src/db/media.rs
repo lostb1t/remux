@@ -3694,7 +3694,7 @@ impl Media {
                 recursive: filter.recursive,
                 include_user_state: filter
                     .enable_user_data
-                    .is_none(),
+                    .unwrap_or(true),
                 user_id: filter.user_id,
                 include_child_count: has_playlist
                     || filter
