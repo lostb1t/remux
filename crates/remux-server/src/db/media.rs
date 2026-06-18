@@ -2249,7 +2249,37 @@ impl Media {
             count_qb = sqlx::QueryBuilder::new(
                 "SELECT COUNT(*) as count FROM media WHERE 1=1",
             );
-            records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
+            // When sorting by DatePlayed, drive records_qb FROM user_media_state so
+            // the result is already in last_played_at order — no correlated subquery
+            // per row, no separate sort pass. Column names in subsequent WHERE clauses
+            // (kind, parent_id, etc.) resolve unambiguously to media since the dp
+            // derived table only exposes (media_id, last_played_at).
+            let date_played_uid = filter
+                .sort_by
+                .iter()
+                .any(|s| matches!(s, api::ItemSortBy::DatePlayed))
+                .then(|| {
+                    filter
+                        .user_id
+                        .as_ref()
+                })
+                .flatten();
+            if let Some(uid) = date_played_uid {
+                // CROSS JOIN prevents SQLite from reordering the tables, forcing
+                // user_media_state as the outer loop. Combined with
+                // idx_ums_user_last_played(user_id, last_played_at DESC), SQLite
+                // scans the user's plays in order and can stop at LIMIT without
+                // sorting the full result set. The join condition is in WHERE so
+                // the planner still applies it as a filter (not a cartesian product).
+                records_qb = sqlx::QueryBuilder::new(
+                    "SELECT media.* FROM user_media_state dp \
+                     CROSS JOIN media WHERE dp.user_id = ",
+                );
+                records_qb.push_bind(uid);
+                records_qb.push(" AND media.id = dp.media_id AND 1=1");
+            } else {
+                records_qb = sqlx::QueryBuilder::new("SELECT * FROM media WHERE 1=1");
+            }
         }
 
         // Pre-fetch in-progress media IDs — JOIN media so kind and date filters are applied
@@ -2296,11 +2326,8 @@ impl Media {
                         }
                         if let Some(threshold) = &filter.digital_released_before {
                             pre_qb
-                                .push(" AND (digital_released_at <= ")
-                                .push_bind(threshold)
-                                .push(" OR (digital_released_at IS NULL AND (released_at IS NULL OR released_at <= ")
-                                .push_bind(threshold)
-                                .push(")))");
+                                .push(" AND COALESCE(digital_released_at, released_at, '1900-01-01 00:00:00') <= ")
+                                .push_bind(threshold);
                         }
                         pre_qb.push(")");
                     }
@@ -2658,15 +2685,11 @@ impl Media {
 
             if let Some(threshold) = &filter.digital_released_before {
                 if resumable_ids.is_none() {
-                    // digital_released_at set → use it directly.
-                    // digital_released_at NULL + released_at NULL → no date info, allow through.
-                    // digital_released_at NULL + released_at in past → allow (released but no digital date yet).
-                    // digital_released_at NULL + released_at in future → block (not out yet).
-                    qb.push(" AND (digital_released_at <= ")
-                        .push_bind(threshold)
-                        .push(" OR (digital_released_at IS NULL AND (released_at IS NULL OR released_at <= ")
-                        .push_bind(threshold)
-                        .push(")))");
+                    // 3-arg COALESCE maps NULL-date items to the sentinel '1900-01-01 00:00:00'
+                    // so they always pass the <= check without an OR branch, enabling a range
+                    // scan on idx_media_kind_avail_sentinel.
+                    qb.push(" AND COALESCE(digital_released_at, released_at, '1900-01-01 00:00:00') <= ")
+                        .push_bind(threshold);
                 }
             }
 
@@ -2736,12 +2759,9 @@ impl Media {
                             format!("COALESCE(runtime, 0) {}", dir)
                         }
                         api::ItemSortBy::DatePlayed => {
-                            if let Some(uid) = &filter.user_id {
-                                format!(
-                                    "(SELECT ums.last_played_at FROM user_media_state ums \
-                                     WHERE ums.media_id = media.id AND ums.user_id = '{}') {}",
-                                    uid, dir
-                                )
+                            if filter.user_id.is_some() {
+                                // dp alias from the UMS-driven records_qb above.
+                                format!("dp.last_played_at {}", dir)
                             } else {
                                 format!("title COLLATE NOCASE {}", dir)
                             }

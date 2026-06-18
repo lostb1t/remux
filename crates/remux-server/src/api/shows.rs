@@ -285,13 +285,9 @@ async fn shows_nextup_all(
         .enable_resumable
         .unwrap_or(true);
 
-    // CROSS JOIN forces SQLite to drive from the (small, user-filtered) UNION
-    // result rather than scanning all episodes via idx_media_kind_grandparent.
-    // Without CROSS JOIN the planner often picks the episode scan because it
-    // can't estimate the cardinality of the derived table. idx_media_id_kind_gp
-    // makes each media lookup a single covering-index hop instead of two hops
-    // (pk-index → rowid → main table). UNION keeps two index-friendly legs on
-    // idx_ums_user_play_state.
+    // Inner UNION selects last_played_at/played_at directly from idx_ums_user_play_state
+    // (covering) so no second join to user_media_state is needed. UNION ALL is safe
+    // because the two legs are mutually exclusive (play_count > 0 vs play_count = 0).
     let date_cutoff = q
         .next_up_date_cutoff
         .clone()
@@ -299,20 +295,20 @@ async fn shows_nextup_all(
     let active_series: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT m.grandparent_id \
          FROM ( \
-           SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count > 0 \
-           UNION \
-           SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count = 0 AND playback_position > 0 \
+           SELECT media_id, last_played_at, played_at \
+           FROM user_media_state WHERE user_id = ? AND play_count > 0 \
+           UNION ALL \
+           SELECT media_id, last_played_at, played_at \
+           FROM user_media_state WHERE user_id = ? AND play_count = 0 AND playback_position > 0 \
          ) AS active \
-         JOIN user_media_state ums ON ums.media_id = active.media_id AND ums.user_id = ? \
          JOIN media m ON m.id = active.media_id \
          WHERE m.kind = 'episode' \
          AND m.grandparent_id IS NOT NULL \
          GROUP BY m.grandparent_id \
-         HAVING MAX(COALESCE(ums.last_played_at, ums.played_at)) >= ? \
-         ORDER BY MAX(COALESCE(ums.last_played_at, ums.played_at)) DESC \
+         HAVING MAX(COALESCE(active.last_played_at, active.played_at)) >= ? \
+         ORDER BY MAX(COALESCE(active.last_played_at, active.played_at)) DESC \
          LIMIT ?",
     )
-    .bind(user_id)
     .bind(user_id)
     .bind(user_id)
     .bind(&date_cutoff)
@@ -711,20 +707,20 @@ mod test {
         let active_series: Vec<(Uuid,)> = sqlx::query_as(
             "SELECT m.grandparent_id \
              FROM ( \
-               SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count > 0 \
-               UNION \
-               SELECT media_id FROM user_media_state WHERE user_id = ? AND play_count = 0 AND playback_position > 0 \
+               SELECT media_id, last_played_at, played_at \
+               FROM user_media_state WHERE user_id = ? AND play_count > 0 \
+               UNION ALL \
+               SELECT media_id, last_played_at, played_at \
+               FROM user_media_state WHERE user_id = ? AND play_count = 0 AND playback_position > 0 \
              ) AS active \
-             JOIN user_media_state ums ON ums.media_id = active.media_id AND ums.user_id = ? \
              JOIN media m ON m.id = active.media_id \
              WHERE m.kind = 'episode' \
              AND m.grandparent_id IS NOT NULL \
              GROUP BY m.grandparent_id \
-             HAVING MAX(COALESCE(ums.last_played_at, ums.played_at)) >= ? \
-             ORDER BY MAX(COALESCE(ums.last_played_at, ums.played_at)) DESC \
+             HAVING MAX(COALESCE(active.last_played_at, active.played_at)) >= ? \
+             ORDER BY MAX(COALESCE(active.last_played_at, active.played_at)) DESC \
              LIMIT ?",
         )
-        .bind(user_id)
         .bind(user_id)
         .bind(user_id)
         .bind(&date_cutoff)
