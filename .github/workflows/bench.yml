@@ -36,5 +36,5 @@ jobs:
       - name: Run benchmarks
         uses: CodSpeedHQ/action@v3
         with:
-          run: cargo codspeed build -p remux-server --bench shows && cargo codspeed run -p remux-server --bench shows
+          run: cargo codspeed build -p remux-server --bench shows --bench items && cargo codspeed run -p remux-server --bench shows --bench items
           token: ${{ secrets.CODSPEED_TOKEN }}

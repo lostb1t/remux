@@ -17,6 +17,10 @@ path = "src/main.rs"
 name = "shows"
 harness = false
 
+[[bench]]
+name = "items"
+harness = false
+
 [dependencies]
 # 12 needed for milldeware compatibility
 reqwest = { version = "0.13", default-features = false, features = [
