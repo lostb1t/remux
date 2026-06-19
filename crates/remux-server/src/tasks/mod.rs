@@ -176,6 +176,13 @@ impl TaskHandler {
                 .await
                 .ok();
 
+            // Update query-planner statistics so bulk-write tasks don't leave
+            // stale sqlite_stat1 rows that cause full-table scans on reads.
+            sqlx::query("PRAGMA optimize")
+                .execute(&ctx.db)
+                .await
+                .ok();
+
             let (new_status, db_status) = match &result {
                 Ok(_) => {
                     info!(task = %task.name(), elapsed = ?elapsed, "completed");
