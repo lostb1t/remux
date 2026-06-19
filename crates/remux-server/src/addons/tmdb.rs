@@ -1761,23 +1761,102 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
             .await
             .ok()?;
 
-        return if is_tv {
-            find_resp
+        // FindById returns a partial object without external_ids; use the TMDB id
+        // to fetch the full record which includes external_ids (via append_to_response).
+        if is_tv {
+            let tmdb_id = find_resp
                 .tv_results
                 .into_iter()
-                .next()
-                .and_then(|s| s.external_ids)
+                .next()?
+                .id;
+            let series = client
+                .execute(
+                    sdks::tmdb::SeriesEndpoint::new(tmdb_id)
+                        .with_cache(Duration::from_secs(86400)),
+                )
+                .await
+                .ok()?;
+            return series
+                .external_ids
                 .and_then(|e| e.imdb_id)
-                .and_then(|s| db::NonEmptyString::try_new(s).ok())
+                .and_then(|s| db::NonEmptyString::try_new(s).ok());
         } else {
-            find_resp
+            let tmdb_id = find_resp
                 .movie_results
                 .into_iter()
-                .next()
-                .and_then(|m| m.imdb_id)
-                .and_then(|s| db::NonEmptyString::try_new(s).ok())
-        };
+                .next()?
+                .id;
+            let movie = client
+                .execute(
+                    sdks::tmdb::MovieEndpoint::new(tmdb_id)
+                        .with_cache(Duration::from_secs(86400)),
+                )
+                .await
+                .ok()?;
+            return movie
+                .imdb_id
+                .and_then(|s| db::NonEmptyString::try_new(s).ok());
+        }
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_tmdb_client() -> sdks::RestClient<sdks::BearerAuth> {
+        common::tmdb_client_from_config(&api::ServerConfiguration::default()).unwrap()
+    }
+
+    // resolve_imdb_from_ids: tvdbid → imdbid via TMDB FindById (live network call)
+
+    #[tokio::test]
+    async fn resolve_imdb_from_ids_tvdb_black_summoner() {
+        let ids = db::ExternalIds {
+            tvdb: Some(416588),
+            ..Default::default()
+        };
+        let result = resolve_imdb_from_ids(&ids, true, &default_tmdb_client()).await;
+        assert_eq!(
+            result
+                .as_deref()
+                .map(|s| s.as_str()),
+            Some("tt21249100"),
+            "Black Summoner tvdbid-416588"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_imdb_from_ids_tvdb_bleach() {
+        let ids = db::ExternalIds {
+            tvdb: Some(74796),
+            ..Default::default()
+        };
+        let result = resolve_imdb_from_ids(&ids, true, &default_tmdb_client()).await;
+        assert_eq!(
+            result
+                .as_deref()
+                .map(|s| s.as_str()),
+            Some("tt0434665"),
+            "Bleach tvdbid-74796"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_imdb_from_ids_tvdb_blood_c() {
+        let ids = db::ExternalIds {
+            tvdb: Some(249864),
+            ..Default::default()
+        };
+        let result = resolve_imdb_from_ids(&ids, true, &default_tmdb_client()).await;
+        assert_eq!(
+            result
+                .as_deref()
+                .map(|s| s.as_str()),
+            Some("tt1890725"),
+            "Blood-C tvdbid-249864"
+        );
+    }
 }
