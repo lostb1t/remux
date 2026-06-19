@@ -1734,6 +1734,18 @@ mod tests {
         (addon_kind, db_addon)
     }
 
+    fn write_files(dir: &std::path::Path, files: &[(&str, &[u8])]) {
+        for (rel, content) in files {
+            let full = dir.join(rel);
+            std::fs::create_dir_all(
+                full.parent()
+                    .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(&full, content).unwrap();
+        }
+    }
+
     // -----------------------------------------------------------------------
     // E2E: movies — index multiple files with varied naming and verify
     // each is scanned and streams correctly.
@@ -3212,5 +3224,284 @@ mod tests {
                 f.rel_path, f.expected_imdb, f.expected_season, f.expected_episode
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: movie resolve — tmdbid tag and no-label (title+year search).
+    // Also verifies catalog_stream surfaces the indexed movies.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_local_movie_resolve() {
+        // (rel_path, expected_imdb)
+        let fixtures: &[(&str, &str)] = &[
+            // [tmdbid-603] → The Matrix → tt0133093
+            (
+                "[tmdbid-603] The Matrix (1999)/The.Matrix.1999.mkv",
+                "tt0133093",
+            ),
+            // No label: title+year parsed from filename → TMDB search
+            ("Interstellar.2014.mkv", "tt0816692"),
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        write_files(
+            dir.path(),
+            &fixtures
+                .iter()
+                .map(|(p, _)| (*p, b"fake" as &[u8]))
+                .collect::<Vec<_>>(),
+        );
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        // Every fixture must have a DB row.
+        for (path, imdb) in fixtures {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM opendal_files \
+                 WHERE addon_id = ? AND media_kind = 'movie' AND imdb_id = ?",
+            )
+            .bind(db_addon.id)
+            .bind(imdb)
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
+            assert_eq!(count, 1, "{path}: expected imdb={imdb}");
+        }
+
+        // catalog_stream must return one Movie item per distinct IMDB.
+        let catalog: Vec<db::Media> = addon
+            .catalog_stream(ctx, "files")
+            .await
+            .unwrap()
+            .unwrap()
+            .collect()
+            .await;
+        assert_eq!(
+            catalog.len(),
+            fixtures.len(),
+            "catalog should have one entry per movie"
+        );
+        assert!(
+            catalog
+                .iter()
+                .all(|m| m.kind == db::MediaKind::Movie)
+        );
+        for (_, imdb) in fixtures {
+            assert!(
+                catalog
+                    .iter()
+                    .any(|m| m
+                        .external_ids
+                        .imdb
+                        .as_deref()
+                        .map(|s| s.as_str())
+                        == Some(imdb)),
+                "catalog missing movie with imdb={imdb}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: track indexing — track_number extraction, catalog, and get_streams.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_local_track_index_and_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        write_files(
+            dir.path(),
+            &[
+                ("01 - First Song.mp3", b"audio"),
+                ("02. Second Song.flac", b"audio"),
+                ("Track Without Number.ogg", b"audio"),
+            ],
+        );
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "track").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        // Verify track_number and title are stored correctly.
+        let rows: Vec<(Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT title, track_number FROM opendal_files \
+             WHERE addon_id = ? AND media_kind = 'track' ORDER BY COALESCE(track_number, 999)",
+        )
+        .bind(db_addon.id)
+        .fetch_all(&ctx.db)
+        .await
+        .unwrap();
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], (Some("First Song".to_string()), Some(1)));
+        assert_eq!(rows[1], (Some("Second Song".to_string()), Some(2)));
+        assert_eq!(
+            rows[2].1, None,
+            "unnumbered track must have track_number=NULL"
+        );
+
+        // catalog_stream must return one Track per file.
+        let catalog: Vec<db::Media> = addon
+            .catalog_stream(ctx, "files")
+            .await
+            .unwrap()
+            .unwrap()
+            .collect()
+            .await;
+        assert_eq!(catalog.len(), 3);
+        assert!(
+            catalog
+                .iter()
+                .all(|m| m.kind == db::MediaKind::Track)
+        );
+
+        // get_streams must return a Local stream for each track (matched by title).
+        for item in &catalog {
+            let streams = addon
+                .get_streams(item, ctx)
+                .await
+                .unwrap();
+            assert!(
+                !streams.is_empty(),
+                "get_streams empty for track {:?}",
+                item.title
+            );
+            assert!(
+                streams
+                    .iter()
+                    .all(|s| matches!(s.descriptor, StreamDescriptor::Local(_))),
+                "expected Local descriptor for track {:?}",
+                item.title
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: .strm files — the URL inside the file is stored as path, not the
+    // filesystem path of the .strm file itself.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_strm_stores_url_as_path() {
+        let url = "https://example.com/videos/matrix.mkv";
+        let dir = tempfile::tempdir().unwrap();
+        write_files(
+            dir.path(),
+            &[("[imdbid-tt0133093] The Matrix (1999).strm", url.as_bytes())],
+        );
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let stored_path: String = sqlx::query_scalar(
+            "SELECT path FROM opendal_files WHERE addon_id = ? AND imdb_id = 'tt0133093'",
+        )
+        .bind(db_addon.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            stored_path, url,
+            ".strm path must be the URL from file contents"
+        );
+
+        // get_streams must also return the URL as the stream path.
+        let stub = db::Media {
+            id: common::get_stable_uuid("movie:tt0133093".to_string()),
+            kind: db::MediaKind::Movie,
+            external_ids: db::ExternalIds {
+                imdb: db::NonEmptyString::try_new("tt0133093".to_string()).ok(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let streams = addon
+            .get_streams(&stub, ctx)
+            .await
+            .unwrap();
+        assert_eq!(streams.len(), 1);
+        let path = match &streams[0].descriptor {
+            StreamDescriptor::Local(p) => p
+                .to_string_lossy()
+                .to_string(),
+            other => panic!("expected Local descriptor, got {other:?}"),
+        };
+        assert_eq!(path, url, "stream path must be the URL from the .strm file");
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: stale video rows are pruned when files are deleted and re-indexed.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_stale_video_prune() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("[imdbid-tt0133093] The Matrix (1999).mkv");
+        std::fs::write(&file, b"fake").unwrap();
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "movie").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM opendal_files WHERE addon_id = ? AND media_kind = 'movie'",
+        )
+        .bind(db_addon.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "file should be indexed on first scan");
+
+        std::fs::remove_file(&file).unwrap();
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM opendal_files WHERE addon_id = ? AND media_kind = 'movie'",
+        )
+        .bind(db_addon.id)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            count, 0,
+            "stale video row must be pruned after file is deleted"
+        );
     }
 }
