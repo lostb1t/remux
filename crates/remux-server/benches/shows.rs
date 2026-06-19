@@ -3,55 +3,31 @@ extern crate codspeed_divan_compat as divan;
 #[path = "common.rs"]
 mod common;
 
-use common::{auth_header, fixture};
-use http::header;
+use common::{BenchQuery, run_bench};
 
 fn main() {
     divan::main();
 }
 
-#[divan::bench(args = [50, 200, 500])]
-fn nextup_all_scale(bencher: divan::Bencher, limit: usize) {
-    let f = fixture();
-    let url = format!("{}/shows/nextup?limit={limit}", f.base_url);
-    let auth = auth_header(&f.token);
-
-    bencher.bench(|| {
-        f.rt.block_on(async {
-            f.client
-                .get(&url)
-                .header(header::AUTHORIZATION, &auth)
-                .send()
-                .await
-                .unwrap();
-        })
-    });
+#[divan::bench(args = [
+    BenchQuery { name: "limit=50",  url: "/shows/nextup?limit=50" },
+    BenchQuery { name: "limit=200", url: "/shows/nextup?limit=200" },
+    BenchQuery { name: "limit=500", url: "/shows/nextup?limit=500" },
+])]
+fn nextup_scale(bencher: divan::Bencher, q: &BenchQuery) {
+    run_bench(bencher, q.url);
 }
 
-#[divan::bench(args = [true, false])]
-fn nextup_all_resumable(bencher: divan::Bencher, enable: bool) {
-    let f = fixture();
-    let url = format!(
-        "{}/shows/nextup?limit=500&enable_resumable={enable}",
-        f.base_url
-    );
-    let auth = auth_header(&f.token);
-
-    bencher.bench(|| {
-        f.rt.block_on(async {
-            f.client
-                .get(&url)
-                .header(header::AUTHORIZATION, &auth)
-                .send()
-                .await
-                .unwrap();
-        })
-    });
+#[divan::bench(args = [
+    BenchQuery { name: "resumable=true",  url: "/shows/nextup?limit=500&enable_resumable=true" },
+    BenchQuery { name: "resumable=false", url: "/shows/nextup?limit=500&enable_resumable=false" },
+])]
+fn nextup_resumable(bencher: divan::Bencher, q: &BenchQuery) {
+    run_bench(bencher, q.url);
 }
 
 #[divan::bench(args = ["epoch", "30days"])]
-fn nextup_all_date_cutoff(bencher: divan::Bencher, cutoff: &str) {
-    let f = fixture();
+fn nextup_date_cutoff(bencher: divan::Bencher, cutoff: &str) {
     let cutoff_param = match cutoff {
         "30days" => {
             let ts = chrono::Utc::now() - chrono::Duration::days(30);
@@ -63,20 +39,8 @@ fn nextup_all_date_cutoff(bencher: divan::Bencher, cutoff: &str) {
         }
         _ => "1970-01-01%2000%3A00%3A00".to_string(),
     };
-    let url = format!(
-        "{}/shows/nextup?limit=500&next_up_date_cutoff={cutoff_param}",
-        f.base_url
+    run_bench(
+        bencher,
+        &format!("/shows/nextup?limit=500&next_up_date_cutoff={cutoff_param}"),
     );
-    let auth = auth_header(&f.token);
-
-    bencher.bench(|| {
-        f.rt.block_on(async {
-            f.client
-                .get(&url)
-                .header(header::AUTHORIZATION, &auth)
-                .send()
-                .await
-                .unwrap();
-        })
-    });
 }
