@@ -3,27 +3,28 @@ extern crate codspeed_divan_compat as divan;
 #[path = "common.rs"]
 mod common;
 
-use common::{BenchQuery, run_bench};
+use common::{BenchQuery, IntoBench, run_bench};
+use remux_server::sdks::remux::GetItemsQuery;
 
 fn main() {
     divan::main();
 }
 
 #[divan::bench(args = [
-    BenchQuery { name: "limit=50",  url: "/shows/nextup?limit=50" },
-    BenchQuery { name: "limit=200", url: "/shows/nextup?limit=200" },
-    BenchQuery { name: "limit=500", url: "/shows/nextup?limit=500" },
+    GetItemsQuery { limit: Some(50),  ..Default::default() }.into_bench("/shows/nextup"),
+    GetItemsQuery { limit: Some(200), ..Default::default() }.into_bench("/shows/nextup"),
+    GetItemsQuery { limit: Some(500), ..Default::default() }.into_bench("/shows/nextup"),
 ])]
 fn nextup_scale(bencher: divan::Bencher, q: &BenchQuery) {
-    run_bench(bencher, q.url);
+    run_bench(bencher, &q.url);
 }
 
 #[divan::bench(args = [
-    BenchQuery { name: "resumable=true",  url: "/shows/nextup?limit=500&enable_resumable=true" },
-    BenchQuery { name: "resumable=false", url: "/shows/nextup?limit=500&enable_resumable=false" },
+    GetItemsQuery { limit: Some(500), enable_resumable: Some(true),  ..Default::default() }.into_bench("/shows/nextup"),
+    GetItemsQuery { limit: Some(500), enable_resumable: Some(false), ..Default::default() }.into_bench("/shows/nextup"),
 ])]
 fn nextup_resumable(bencher: divan::Bencher, q: &BenchQuery) {
-    run_bench(bencher, q.url);
+    run_bench(bencher, &q.url);
 }
 
 #[divan::bench(args = ["epoch", "30days"])]

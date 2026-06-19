@@ -212,8 +212,9 @@ impl Endpoint for ArtistEndpoint {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct ArtistAlbumsEndpoint {
+    #[serde(skip)]
     pub id: u64,
     pub limit: u32,
 }
@@ -223,12 +224,8 @@ impl Endpoint for ArtistAlbumsEndpoint {
     fn path(&self) -> String {
         format!("artist/{}/albums", self.id)
     }
-    fn query(&self) -> Vec<(String, String)> {
-        vec![(
-            "limit".to_string(),
-            self.limit
-                .to_string(),
-        )]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -244,7 +241,7 @@ impl Endpoint for TrackEndpoint {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct SearchTracksEndpoint {
     pub q: String,
     pub limit: u32,
@@ -255,23 +252,12 @@ impl Endpoint for SearchTracksEndpoint {
     fn path(&self) -> String {
         "search".to_string()
     }
-    fn query(&self) -> Vec<(String, String)> {
-        vec![
-            (
-                "q".to_string(),
-                self.q
-                    .clone(),
-            ),
-            (
-                "limit".to_string(),
-                self.limit
-                    .to_string(),
-            ),
-        ]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct SearchAlbumsEndpoint {
     pub q: String,
     pub limit: u32,
@@ -282,23 +268,12 @@ impl Endpoint for SearchAlbumsEndpoint {
     fn path(&self) -> String {
         "search/album".to_string()
     }
-    fn query(&self) -> Vec<(String, String)> {
-        vec![
-            (
-                "q".to_string(),
-                self.q
-                    .clone(),
-            ),
-            (
-                "limit".to_string(),
-                self.limit
-                    .to_string(),
-            ),
-        ]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct SearchArtistsEndpoint {
     pub q: String,
     pub limit: u32,
@@ -309,19 +284,8 @@ impl Endpoint for SearchArtistsEndpoint {
     fn path(&self) -> String {
         "search/artist".to_string()
     }
-    fn query(&self) -> Vec<(String, String)> {
-        vec![
-            (
-                "q".to_string(),
-                self.q
-                    .clone(),
-            ),
-            (
-                "limit".to_string(),
-                self.limit
-                    .to_string(),
-            ),
-        ]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 

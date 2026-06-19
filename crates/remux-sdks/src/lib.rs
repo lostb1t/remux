@@ -159,12 +159,27 @@ impl Default for Body {
 
 pub trait Endpoint {
     type Output: DeserializeOwned + Clone + Serialize + Send + Sync + 'static;
+
+    fn path(&self) -> String;
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        ()
+    }
+
+    fn query(&self) -> Vec<(String, String)> {
+        serde_urlencoded::to_string(&self.query_params())
+            .unwrap_or_default()
+            .split('&')
+            .filter(|s| !s.is_empty())
+            .filter_map(|pair| {
+                let (k, v) = pair.split_once('=')?;
+                Some((k.to_string(), v.to_string()))
+            })
+            .collect()
+    }
+
     fn method(&self) -> Method {
         Method::GET
-    }
-    fn path(&self) -> String;
-    fn query(&self) -> Vec<(String, String)> {
-        Vec::new()
     }
     fn headers(&self) -> HeaderMap {
         HeaderMap::new()

@@ -19,6 +19,7 @@ pub trait IdSetter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FindByIdEndpoint {
+    #[serde(skip)]
     pub external_id: String,
     pub external_source: String,
 }
@@ -30,12 +31,8 @@ impl Endpoint for FindByIdEndpoint {
         format!("find/{}", self.external_id)
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        vec![(
-            "external_source".to_string(),
-            self.external_source
-                .clone(),
-        )]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -360,12 +357,8 @@ impl Endpoint for PersonSearchEndpoint {
         "search/person".to_string()
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        vec![(
-            "query".to_string(),
-            self.query
-                .clone(),
-        )]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -392,10 +385,6 @@ impl Endpoint for PersonDetailsEndpoint {
 
     fn path(&self) -> String {
         format!("person/{}", self.person_id)
-    }
-
-    fn query(&self) -> Vec<(String, String)> {
-        vec![]
     }
 }
 

@@ -100,7 +100,7 @@ serde_alias = "0.0.2"
 axum-anyhow = "0.10.3"
 moka = { version = "0.12.12", features = ["sync"] }
 #reqwest-tracing = "0.5.8"
-#serde_urlencoded = "0.7.1"
+serde_urlencoded = "0.7.1"
 config = "0.15.19"
 serde-aux = "4.7.0"
 sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "uuid", "chrono", "json" ] }

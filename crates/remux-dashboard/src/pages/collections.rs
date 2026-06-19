@@ -2,8 +2,8 @@ use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
     BaseItemDto, CollectionFilter, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteVirtualFolder, FilterMatchMode, FilterRule, GetItems, ItemSortBy, PatchItem,
-    PatchItemPayload, SortOrder,
+    DeleteVirtualFolder, FilterMatchMode, FilterRule, GetItems, GetItemsQuery,
+    ItemSortBy, MediaType, PatchItem, PatchItemPayload, SortOrder,
 };
 
 /// Which collection is currently being edited (None = creating new).
@@ -40,12 +40,12 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
             .clone();
         spawn(async move {
             match client
-                .execute(GetItems {
-                    include_item_types: vec!["BoxSet".to_string()],
-                    recursive: false,
+                .execute(GetItems(GetItemsQuery {
+                    include_item_types: Some(vec![MediaType::BoxSet]),
                     sort_by: Some(vec![ItemSortBy::IndexNumber]),
                     sort_order: Some(vec![SortOrder::Ascending]),
-                })
+                    ..Default::default()
+                }))
                 .await
             {
                 Ok(result) => {
