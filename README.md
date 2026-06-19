@@ -110,7 +110,7 @@ cargo make dev
 
 We welcome contributions created with the help of AI tools such as GitHub Copilot, Claude, ChatGPT, Cursor, and similar assistants. AI is a tool; contributors remain responsible for everything they submit.  
 
-1. AI-assisted code is allowed
+#### AI-assisted code is allowed
 
 You may use AI to:
 
@@ -122,7 +122,7 @@ You may use AI to:
 
 All contributions must still meet the project’s quality standards and pass review.  
 
-2. You are responsible for your contributions
+#### You are responsible for your contributions
 
 Before submitting a pull request, you must:
 
@@ -143,7 +143,7 @@ When interacting with maintainers and reviewers:
 
 AI may help you draft a response, but maintainers expect to communicate with the contributor, not an AI assistant.  
 
-## Disclose when AI was used
+#### Disclose when AI was used
 
 If AI was used to generate a significant portion of an issue, PR, or the code it contains, please say so in the submission. A short note in the PR description is enough — for example, "The initial implementation was drafted with Claude and then reviewed and edited by me."
 
