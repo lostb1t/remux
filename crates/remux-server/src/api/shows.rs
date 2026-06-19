@@ -288,6 +288,8 @@ async fn shows_nextup_all(
     // Inner UNION selects last_played_at/played_at directly from idx_ums_user_play_state
     // (covering) so no second join to user_media_state is needed. UNION ALL is safe
     // because the two legs are mutually exclusive (play_count > 0 vs play_count = 0).
+    // CROSS JOIN pins SQLite to start from the small active set and then PK-lookup
+    // media rows, avoiding a slow scan over the full episode index.
     let date_cutoff = q
         .next_up_date_cutoff
         .clone()
@@ -301,7 +303,7 @@ async fn shows_nextup_all(
            SELECT media_id, last_played_at, played_at \
            FROM user_media_state WHERE user_id = ? AND play_count = 0 AND playback_position > 0 \
          ) AS active \
-         JOIN media m ON m.id = active.media_id \
+         CROSS JOIN media m ON m.id = active.media_id \
          WHERE m.kind = 'episode' \
          AND m.grandparent_id IS NOT NULL \
          GROUP BY m.grandparent_id \
