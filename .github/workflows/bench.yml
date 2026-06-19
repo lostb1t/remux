@@ -1,0 +1,29 @@
+name: Bench
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  bench:
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bench
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@v3
+        with:
+          run: cargo codspeed build -p remux-server --bench shows && cargo codspeed run -p remux-server --bench shows
+          token: ${{ secrets.CODSPEED_TOKEN }}
