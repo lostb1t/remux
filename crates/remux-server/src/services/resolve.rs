@@ -243,9 +243,9 @@ impl MediaResolveService {
             .process_meta_item(root, ctx, false, config)
             .await;
         if !processed.is_empty() {
-            db::Media::upsert(&ctx.db, &processed)
-                .await
-                .ok();
+            if let Err(e) = db::Media::upsert(&ctx.db, &processed).await {
+                warn!(error = %e, "failed to persist resolved media item");
+            }
             crate::addons::save_pending_relations(ctx, &processed).await;
         }
         Ok(db::Media::get_by_id(&ctx.db, &resolved_id).await?)
@@ -269,9 +269,9 @@ impl MediaResolveService {
                     .await?
                     .is_none()
                 {
-                    Self::persist_from_store(id, ctx)
-                        .await
-                        .ok();
+                    if let Err(e) = Self::persist_from_store(id, ctx).await {
+                        warn!(error = %e, %id, "failed to persist media from store");
+                    }
                 }
                 return Ok(true);
             } else if let Some(_guard) = PERSIST_LOCKS

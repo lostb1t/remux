@@ -113,34 +113,38 @@ impl StreamDescriptor {
 
     /// Instantiate the runtime service for self-contained variants.
     /// Do **not** call this for `Opendal` — those must go through the addon.
-    pub fn into_source(self) -> Box<dyn StreamSource> {
+    ///
+    /// Returns an error for variants that cannot be served directly (`Rtsp`,
+    /// `Opendal`) instead of panicking, so the request fails gracefully with
+    /// a 500 instead of crashing the worker thread.
+    pub fn into_source(self) -> anyhow::Result<Box<dyn StreamSource>> {
         match self {
             Self::Http {
                 url,
                 request_headers,
                 response_headers,
-            } => Box::new(HttpSource {
+            } => Ok(Box::new(HttpSource {
                 url,
                 request_headers,
                 response_headers,
-            }),
-            Self::Local(path) => Box::new(LocalSource { path }),
+            })),
+            Self::Local(path) => Ok(Box::new(LocalSource { path })),
             Self::Torrent {
                 info_hash,
                 file_hint,
                 file_idx,
                 trackers,
-            } => Box::new(TorrentSource {
+            } => Ok(Box::new(TorrentSource {
                 info_hash,
                 file_hint,
                 file_idx,
                 trackers,
-            }),
-            Self::Rtsp { .. } => {
-                panic!("Rtsp descriptors must be served through the transcode path")
-            }
+            })),
+            Self::Rtsp { .. } => anyhow::bail!(
+                "Rtsp descriptors must be served through the transcode path"
+            ),
             Self::Opendal { .. } => {
-                panic!("Opendal descriptors must be served through their addon")
+                anyhow::bail!("Opendal descriptors must be served through their addon")
             }
         }
     }

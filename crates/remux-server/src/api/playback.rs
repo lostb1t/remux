@@ -1227,7 +1227,7 @@ async fn videos_stream_inner(
         } else {
             descriptor
                 .clone()
-                .into_source()
+                .into_source()?
                 .serve(&state, &headers)
                 .await?
         };
@@ -3481,9 +3481,14 @@ pub async fn master_hls_video(
     let audio_codec = q
         .audio_codec
         .unwrap_or_else(|| "aac".to_string());
+    // Clamp to a sane range: 0 would cause divide-by-zero panics in the
+    // transcode buffer monitor (`/ segment_length`) and segment-gap
+    // calculations; absurdly large values waste buffer. Jellyfin clients
+    // send 6–10; allow 1–30.
     let segment_length = q
         .segment_length
-        .unwrap_or(6) as u32;
+        .unwrap_or(6)
+        .clamp(1, 30) as u32;
 
     // Look up existing session or create a new one.
     // When the client seeks it sends the same PlaySessionId but with a new
@@ -4891,7 +4896,7 @@ pub async fn subtitles_stream(
                     .map_err(|e| anyhow!("{e:?}"))?
             }
             _ => descriptor
-                .into_source()
+                .into_source()?
                 .serve(&state, &axum::http::HeaderMap::new())
                 .await
                 .map_err(|e| anyhow!("{e:?}"))?,

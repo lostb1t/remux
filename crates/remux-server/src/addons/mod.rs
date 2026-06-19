@@ -189,9 +189,9 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
         // Don't link relations that point to name-keyed person stubs.
         .filter(|r| !name_keyed_person_ids.contains(&r.right_media_id))
         .collect();
-    db::MediaRelation::delete_by_left_ids(&ctx.db, &all_ids)
-        .await
-        .ok();
+    if let Err(e) = db::MediaRelation::delete_by_left_ids(&ctx.db, &all_ids).await {
+        warn!(error = %e, "failed to delete stale relations before upsert");
+    }
     if !all_rels.is_empty() {
         if let Err(e) = db::MediaRelation::upsert(&ctx.db, &all_rels).await {
             warn!(error = %e, "failed to upsert relations batch");
