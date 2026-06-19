@@ -106,7 +106,7 @@ cargo make dev
 ### AI policy
 
 > [!IMPORTANT]
-> **AI Policy:** Use AI as much as you want, but understand every line, verify it works, communicate as a human, and disclose significant AI-generated contributions.
+> Use AI as much as you want, but understand every line, verify it works, communicate as a human, and disclose significant AI-generated contributions.
 
 We welcome contributions created with the help of AI tools such as GitHub Copilot, Claude, ChatGPT, Cursor, and similar assistants. AI is a tool; contributors remain responsible for everything they submit.  
 
@@ -153,10 +153,3 @@ Initial implementation drafted with Claude and reviewed, tested, and modified by
 
 This disclosure helps reviewers understand how the contribution was created.  
 
-⸻
-
-
-
-Use AI as much as you want, but understand every line, verify it works, communicate as a human, and disclose significant AI-generated contributions.
-
-That single sentence captures about 90% of the original policy.
