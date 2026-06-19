@@ -196,25 +196,45 @@ pub async fn init_app(
     crate::db::Settings::init_server_id(&conn).await?;
 
     // Probe hardware and persist results at startup.
-    // vaapi_driver is always re-detected (regardless of auto_detect) because
-    // it is a runtime property of the host, not a user preference.
+    //
+    // Both `hardware_acceleration_type` and `vaapi_driver` describe properties
+    // of the host hardware, which does not change between boots. Re-probing on
+    // every restart adds 0.2-10s of startup latency (the VAAPI probe can hang
+    // for seconds on misconfigured drivers) for no benefit.
+    //
+    // We therefore only probe when the value is not already cached from a
+    // previous boot. To force re-detection after a hardware change, clear the
+    // cached value in the encoding settings (set the field to null).
     {
         let mut enc_opts = db::Settings::get_encoding_config(&conn).await?;
+        let mut changed = false;
         if enc_opts
             .auto_detect_hardware_acceleration
             .unwrap_or(true)
+            && enc_opts
+                .hardware_acceleration_type
+                .is_none()
         {
             let detected =
                 crate::transcode::engine::detect_hardware_acceleration().await;
             enc_opts.hardware_acceleration_type = Some(detected);
+            changed = true;
         }
-        let device = enc_opts
-            .vaapi_device
-            .as_deref()
-            .unwrap_or("/dev/dri/renderD128");
-        let driver = crate::transcode::engine::detect_vaapi_driver(device).await;
-        enc_opts.vaapi_driver = Some(driver);
-        db::Settings::set_encoding_config(&conn, &enc_opts).await?;
+        if enc_opts
+            .vaapi_driver
+            .is_none()
+        {
+            let device = enc_opts
+                .vaapi_device
+                .as_deref()
+                .unwrap_or("/dev/dri/renderD128");
+            let driver = crate::transcode::engine::detect_vaapi_driver(device).await;
+            enc_opts.vaapi_driver = Some(driver);
+            changed = true;
+        }
+        if changed {
+            db::Settings::set_encoding_config(&conn, &enc_opts).await?;
+        }
     }
 
     let saved_config = db::Settings::get_config(&conn).await?;
@@ -278,9 +298,21 @@ pub async fn init_app(
     task_service
         .start()
         .await?;
-    task_service
-        .run_startup_tasks()
-        .await?;
+
+    // Run startup tasks in the background so they don't delay the server from
+    // accepting connections. Startup tasks (library refresh, metadata refresh,
+    // cache cleanup, ...) can take a long time on large libraries, and there's
+    // no need to block first-request readiness for them — the data they
+    // populate is also refreshed periodically by the scheduler.
+    let startup_service = task_service.clone();
+    tokio::spawn(async move {
+        if let Err(e) = startup_service
+            .run_startup_tasks()
+            .await
+        {
+            error!(error = %e, "startup task failed");
+        }
+    });
 
     let state = AppState {
         ctx: ctx.clone(),
