@@ -22,6 +22,10 @@ jobs:
         with:
           key: bench
 
+      - name: Install cargo-codspeed
+        uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall cargo-codspeed --no-confirm
+
       - name: Run benchmarks
         uses: CodSpeedHQ/action@v3
         with:
