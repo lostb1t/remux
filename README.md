@@ -103,7 +103,10 @@ cargo make dev
 - ☕ **Donate**:
   - **[Ko-fi](https://ko-fi.com/lostb1t)**
 
-AI Usage Policy
+### AI policy
+
+> [!IMPORTANT]
+> **AI Policy:** Use AI as much as you want, but understand every line, verify it works, communicate as a human, and disclose significant AI-generated contributions.
 
 We welcome contributions created with the help of AI tools such as GitHub Copilot, Claude, ChatGPT, Cursor, and similar assistants. AI is a tool; contributors remain responsible for everything they submit.  
 
@@ -152,7 +155,7 @@ This disclosure helps reviewers understand how the contribution was created.
 
 ⸻
 
-### AI policy
+
 
 Use AI as much as you want, but understand every line, verify it works, communicate as a human, and disclose significant AI-generated contributions.
 
