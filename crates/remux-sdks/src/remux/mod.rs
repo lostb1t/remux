@@ -18,6 +18,23 @@ where
     s.serialize_str(&v.join(","))
 }
 
+fn serialize_comma_opt<S, T>(v: &Option<Vec<T>>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+    T: std::fmt::Display,
+{
+    match v {
+        Some(list) => s.serialize_str(
+            &list
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        None => s.serialize_none(),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct JellyfinAuth {
     pub client: String,
@@ -1047,15 +1064,34 @@ pub struct GetItemsQuery {
     pub promoted: Option<bool>,
     // #[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, ItemFields>>")]
     //#[serde_as(as = "Option<StringWithSeparator<CommaSeparator, ItemFields>>")]
-    #[serde(deserialize_with = "deserialize_fields", default)]
+    #[serde(
+        deserialize_with = "deserialize_fields",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub fields: Option<Vec<ItemFields>>,
-    #[serde(deserialize_with = "deserialize_media_types", default)]
+    #[serde(
+        deserialize_with = "deserialize_media_types",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub exclude_item_types: Option<Vec<MediaType>>,
-    #[serde(deserialize_with = "deserialize_media_types", default)]
+    #[serde(
+        deserialize_with = "deserialize_media_types",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub include_item_types: Option<Vec<MediaType>>,
     #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub is_favorite: Option<bool>,
     pub image_type_limit: Option<i64>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub enable_image_types: Option<Vec<String>>,
     pub name_starts_with_or_greater: Option<String>,
     pub name_starts_with: Option<String>,
@@ -1064,9 +1100,19 @@ pub struct GetItemsQuery {
     //pub sort_by: Option<Vec<ItemSortBy>>,
     //#[serde_as(as = "Option<StringWithSeparator::<CommaSeparator, SortOrder>>")]
     //pub sort_order: Option<SortOrder>,
-    #[serde(deserialize_with = "deserialize_sort_by", default)]
+    #[serde(
+        deserialize_with = "deserialize_sort_by",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub sort_by: Option<Vec<ItemSortBy>>,
-    #[serde(deserialize_with = "deserialize_sort_order", default)]
+    #[serde(
+        deserialize_with = "deserialize_sort_order",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub sort_order: Option<Vec<SortOrder>>,
     #[serde(default, deserialize_with = "deserialize_option_bool_from_anything")]
     pub enable_images: Option<bool>,
@@ -1082,28 +1128,102 @@ pub struct GetItemsQuery {
     pub disable_first_episode: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_next_up_date_cutoff")]
     pub next_up_date_cutoff: Option<String>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub years: Option<Vec<i64>>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub genres: Option<Vec<String>>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub genre_ids: Option<Vec<String>>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub official_ratings: Option<Vec<String>>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub tags: Option<Vec<String>>,
-    #[serde(deserialize_with = "deserialize_media_types", default)]
+    #[serde(
+        deserialize_with = "deserialize_media_types",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub media_types: Option<Vec<MediaType>>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub filters: Option<Vec<ItemFilter>>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub person_ids: Option<Vec<String>>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub person_types: Option<Vec<String>>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub studios: Option<Vec<String>>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub studio_ids: Option<Vec<String>>,
+    #[serde(
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub exclude_artist_ids: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "deserialize_uuids")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_uuids",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub artist_ids: Option<Vec<Uuid>>,
-    #[serde(default, deserialize_with = "deserialize_uuids")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_uuids",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub contributing_artist_ids: Option<Vec<Uuid>>,
-    #[serde(default, deserialize_with = "deserialize_uuids")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_uuids",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub album_artist_ids: Option<Vec<Uuid>>,
-    #[serde(default, deserialize_with = "deserialize_uuids")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_uuids",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub album_ids: Option<Vec<Uuid>>,
-    #[serde(default, deserialize_with = "deserialize_uuids")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_uuids",
+        serialize_with = "serialize_comma_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub ids: Option<Vec<Uuid>>,
     #[serde(default, deserialize_with = "deserialize_bool_from_anything")]
     pub recursive: bool,
