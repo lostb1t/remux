@@ -1,9 +1,27 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
+use serde_with::skip_serializing_none;
 
 use super::{Status, default_append_to_response};
 use crate::Endpoint;
 
 use chrono::NaiveDate;
+
+fn serialize_comma<S>(v: &[String], s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    s.serialize_str(&v.join(","))
+}
+
+fn serialize_comma_opt<S>(v: &Option<Vec<String>>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match v {
+        Some(list) => s.serialize_str(&list.join(",")),
+        None => s.serialize_none(),
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", default)]
@@ -59,14 +77,16 @@ pub struct SeriesContentRating {
     pub rating: Option<String>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeriesEndpoint {
+    #[serde(skip)]
     pub id: i64,
-
-    // #[builder(default = "en")]
     pub language: Option<String>,
-
-    // #[builder(default = default_append_to_response())]
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        serialize_with = "serialize_comma"
+    )]
     pub append_to_response: Vec<String>,
 }
 
@@ -87,22 +107,8 @@ impl Endpoint for SeriesEndpoint {
         format!("tv/{}", self.id)
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        let mut params = vec![];
-        if let Some(lang) = &self.language {
-            params.push(("language".to_string(), lang.clone()));
-        }
-        if !self
-            .append_to_response
-            .is_empty()
-        {
-            params.push((
-                "append_to_response".to_string(),
-                self.append_to_response
-                    .join(","),
-            ));
-        }
-        params
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -166,16 +172,21 @@ pub struct Episode {
     pub images: Option<super::Images>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpisodeEndpoint {
+    #[serde(skip)]
     pub series_id: i64,
+    #[serde(skip)]
     pub season_number: i64,
+    #[serde(skip)]
     pub episode_number: i64,
 
     // #[builder(default = "en")]
     pub language: Option<String>,
 
     //#[builder(default = "Some(vec![\"images\".to_string(), \"external_ids\".to_string()])")]
+    #[serde(serialize_with = "serialize_comma_opt")]
     pub append_to_response: Option<Vec<String>>,
 }
 
@@ -201,17 +212,8 @@ impl Endpoint for EpisodeEndpoint {
         )
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        let mut params = vec![];
-        if let Some(lang) = &self.language {
-            params.push(("language".to_string(), lang.clone()));
-        }
-        if let Some(append) = &self.append_to_response {
-            if !append.is_empty() {
-                params.push(("append_to_response".to_string(), append.join(",")));
-            }
-        }
-        params
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -241,11 +243,7 @@ impl Endpoint for SearchTvEndpoint {
         "search/tv".to_string()
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        vec![(
-            "query".to_string(),
-            self.query
-                .clone(),
-        )]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }

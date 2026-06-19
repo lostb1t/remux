@@ -379,16 +379,31 @@ pub fn auth_header(token: &str) -> String {
     format!("MediaBrowser Token=\"{token}\"")
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct BenchQuery {
-    pub name: &'static str,
-    /// Path + query string, e.g. "/items/latest?limit=20&include_item_types=Movie"
-    pub url: &'static str,
+    pub name: String,
+    pub url: String,
 }
 
 impl std::fmt::Display for BenchQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name)
+    }
+}
+
+pub trait IntoBench {
+    fn into_bench(self, path: &str) -> BenchQuery;
+}
+
+impl IntoBench for remux_server::sdks::remux::GetItemsQuery {
+    fn into_bench(self, path: &str) -> BenchQuery {
+        let params = serde_urlencoded::to_string(&self).unwrap_or_default();
+        let url = if params.is_empty() {
+            path.to_string()
+        } else {
+            format!("{path}?{params}")
+        };
+        BenchQuery { name: params, url }
     }
 }
 

@@ -11,6 +11,13 @@ use uuid::Uuid;
 pub use crate::stremio::ResourceType;
 use crate::{Auth, Body, Endpoint, RestClient, stremio};
 
+fn serialize_comma<S>(v: &[String], s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_str(&v.join(","))
+}
+
 #[derive(Clone, Debug)]
 pub struct JellyfinAuth {
     pub client: String,
@@ -1013,7 +1020,7 @@ pub struct SpecialViewOptionDto {
     ScreamingKebabCase
 )]
 #[serde_as]
-#[derive(default2::Default, Debug, Deserialize, Clone)]
+#[derive(default2::Default, Debug, Serialize, Deserialize, Clone)]
 #[skip_serializing_none]
 pub struct GetItemsQuery {
     pub user_id: Option<Uuid>,
@@ -3843,8 +3850,10 @@ impl Endpoint for PublicSystemInfo {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct GetSessions {
+    #[serde(rename = "activeWithinSeconds")]
     pub active_within_seconds: Option<i64>,
 }
 
@@ -3855,16 +3864,15 @@ impl Endpoint for GetSessions {
         "/sessions".into()
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        match self.active_within_seconds {
-            Some(s) => vec![("activeWithinSeconds".into(), s.to_string())],
-            None => vec![],
-        }
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct GetScheduledTasks {
+    #[serde(rename = "isHidden")]
     pub is_hidden: Option<bool>,
 }
 
@@ -3875,11 +3883,8 @@ impl Endpoint for GetScheduledTasks {
         "/scheduledtasks".into()
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        match self.is_hidden {
-            Some(v) => vec![("isHidden".into(), v.to_string())],
-            None => vec![],
-        }
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -3908,15 +3913,18 @@ impl Endpoint for GetJellyfinItemsByIds {
         "/Items".into()
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        vec![
-            (
-                "Ids".into(),
-                self.ids
-                    .join(","),
-            ),
-            ("Fields".into(), "ProviderIds".into()),
-        ]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        #[derive(Serialize)]
+        struct Q<'a> {
+            #[serde(rename = "Ids", serialize_with = "serialize_comma")]
+            ids: &'a [String],
+            #[serde(rename = "Fields")]
+            fields: &'static str,
+        }
+        Q {
+            ids: &self.ids,
+            fields: "ProviderIds",
+        }
     }
 }
 
@@ -3944,16 +3952,24 @@ impl Endpoint for GetJellyfinUserItems {
         format!("/Users/{}/Items", self.user_id)
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        vec![
-            ("Recursive".into(), "true".into()),
-            (
-                "Fields".into(),
-                "ProviderIds,SeriesProviderIds,UserData,SeriesId,Overview,ProductionYear,RunTimeTicks".into(),
-            ),
-            ("IncludeItemTypes".into(), "Movie,Series,Episode".into()),
-            ("Filters".into(), self.filter.into()),
-        ]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        #[derive(Serialize)]
+        struct Q<'a> {
+            #[serde(rename = "Recursive")]
+            recursive: bool,
+            #[serde(rename = "Fields")]
+            fields: &'static str,
+            #[serde(rename = "IncludeItemTypes")]
+            include_item_types: &'static str,
+            #[serde(rename = "Filters")]
+            filters: &'a str,
+        }
+        Q {
+            recursive: true,
+            fields: "ProviderIds,SeriesProviderIds,UserData,SeriesId,Overview,ProductionYear,RunTimeTicks",
+            include_item_types: "Movie,Series,Episode",
+            filters: self.filter,
+        }
     }
 }
 
@@ -4105,12 +4121,7 @@ impl Endpoint for UpdateCatalogPlaylistSettings {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct GetItems {
-    pub include_item_types: Vec<String>,
-    pub recursive: bool,
-    pub sort_by: Option<Vec<ItemSortBy>>,
-    pub sort_order: Option<Vec<SortOrder>>,
-}
+pub struct GetItems(pub GetItemsQuery);
 
 impl Endpoint for GetItems {
     type Output = QueryResult<BaseItemDto>;
@@ -4119,40 +4130,8 @@ impl Endpoint for GetItems {
         "/items".into()
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        let mut q = vec![];
-        if !self
-            .include_item_types
-            .is_empty()
-        {
-            q.push((
-                "IncludeItemTypes".into(),
-                self.include_item_types
-                    .join(","),
-            ));
-        }
-        if self.recursive {
-            q.push(("Recursive".into(), "true".into()));
-        }
-        if let Some(sb) = &self.sort_by {
-            q.push((
-                "SortBy".into(),
-                sb.iter()
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            ));
-        }
-        if let Some(so) = &self.sort_order {
-            q.push((
-                "SortOrder".into(),
-                so.iter()
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            ));
-        }
-        q
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        &self.0
     }
 }
 
@@ -4171,22 +4150,28 @@ impl Endpoint for GetLocalSuggestions {
         "/items".into()
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        vec![
-            (
-                "IncludeItemTypes".into(),
-                self.kind
-                    .clone(),
-            ),
-            ("SearchTerm".into(), format!("local:{}", self.search_term)),
-            ("Limit".into(), "25".into()),
-        ]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        #[derive(Serialize)]
+        struct Q<'a> {
+            #[serde(rename = "IncludeItemTypes")]
+            kind: &'a str,
+            #[serde(rename = "SearchTerm")]
+            search_term: String,
+            #[serde(rename = "Limit")]
+            limit: u32,
+        }
+        Q {
+            kind: &self.kind,
+            search_term: format!("local:{}", self.search_term),
+            limit: 25,
+        }
     }
 }
 
 /// Fetch distinct tag suggestions from the local DB, optionally filtered.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct GetTagSuggestions {
+    #[serde(rename = "SearchTerm", skip_serializing_if = "String::is_empty")]
     pub search_term: String,
 }
 
@@ -4197,25 +4182,15 @@ impl Endpoint for GetTagSuggestions {
         "/items/tags".into()
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        if self
-            .search_term
-            .is_empty()
-        {
-            vec![]
-        } else {
-            vec![(
-                "SearchTerm".into(),
-                self.search_term
-                    .clone(),
-            )]
-        }
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
 /// Fetch distinct certification values, optionally filtered.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct GetCertificationSuggestions {
+    #[serde(rename = "SearchTerm", skip_serializing_if = "String::is_empty")]
     pub search_term: String,
 }
 
@@ -4226,19 +4201,8 @@ impl Endpoint for GetCertificationSuggestions {
         "/items/certifications".into()
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        if self
-            .search_term
-            .is_empty()
-        {
-            vec![]
-        } else {
-            vec![(
-                "SearchTerm".into(),
-                self.search_term
-                    .clone(),
-            )]
-        }
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -4312,7 +4276,7 @@ impl Endpoint for UpdateVirtualFolder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DeleteVirtualFolder {
     pub name: String,
 }
@@ -4325,12 +4289,8 @@ impl Endpoint for DeleteVirtualFolder {
     fn method(&self) -> Method {
         Method::DELETE
     }
-    fn query(&self) -> Vec<(String, String)> {
-        vec![(
-            "name".into(),
-            self.name
-                .clone(),
-        )]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -4746,7 +4706,7 @@ impl Endpoint for AddTunerHost {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DeleteTunerHost {
     pub id: String,
 }
@@ -4759,12 +4719,8 @@ impl Endpoint for DeleteTunerHost {
     fn method(&self) -> Method {
         Method::DELETE
     }
-    fn query(&self) -> Vec<(String, String)> {
-        vec![(
-            "id".into(),
-            self.id
-                .clone(),
-        )]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -4796,7 +4752,7 @@ impl Endpoint for SaveEpgSource {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DeleteEpgSource {
     pub id: String,
 }
@@ -4809,23 +4765,24 @@ impl Endpoint for DeleteEpgSource {
     fn method(&self) -> Method {
         Method::DELETE
     }
-    fn query(&self) -> Vec<(String, String)> {
-        vec![(
-            "id".into(),
-            self.id
-                .clone(),
-        )]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct GetIptvChannels {
     pub limit: u32,
     pub offset: u32,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub search: String,
     pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub country: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub group: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub sort: String,
 }
 
@@ -4834,63 +4791,8 @@ impl Endpoint for GetIptvChannels {
     fn path(&self) -> String {
         "/remux/iptv/channels".into()
     }
-    fn query(&self) -> Vec<(String, String)> {
-        let mut q = vec![
-            (
-                "limit".into(),
-                self.limit
-                    .to_string(),
-            ),
-            (
-                "offset".into(),
-                self.offset
-                    .to_string(),
-            ),
-        ];
-        if !self
-            .search
-            .is_empty()
-        {
-            q.push((
-                "search".into(),
-                self.search
-                    .clone(),
-            ));
-        }
-        if let Some(e) = self.enabled {
-            q.push(("enabled".into(), e.to_string()));
-        }
-        if !self
-            .country
-            .is_empty()
-        {
-            q.push((
-                "country".into(),
-                self.country
-                    .clone(),
-            ));
-        }
-        if !self
-            .group
-            .is_empty()
-        {
-            q.push((
-                "group".into(),
-                self.group
-                    .clone(),
-            ));
-        }
-        if !self
-            .sort
-            .is_empty()
-        {
-            q.push((
-                "sort".into(),
-                self.sort
-                    .clone(),
-            ));
-        }
-        q
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -4951,8 +4853,9 @@ impl Endpoint for BulkChannels {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AuthorizeQuickConnect {
+    #[serde(rename = "Code")]
     pub code: String,
 }
 
@@ -4967,12 +4870,8 @@ impl Endpoint for AuthorizeQuickConnect {
         Method::POST
     }
 
-    fn query(&self) -> Vec<(String, String)> {
-        vec![(
-            "Code".into(),
-            self.code
-                .clone(),
-        )]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -4986,7 +4885,7 @@ impl Endpoint for GetApiKeys {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CreateApiKey {
     pub app: String,
 }
@@ -4999,12 +4898,8 @@ impl Endpoint for CreateApiKey {
     fn method(&self) -> Method {
         Method::POST
     }
-    fn query(&self) -> Vec<(String, String)> {
-        vec![(
-            "app".into(),
-            self.app
-                .clone(),
-        )]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 
@@ -5412,7 +5307,7 @@ pub struct StreamGroupPreviewDto {
     pub ungrouped: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct GetStreamGroupPreview {
     pub imdb_id: String,
 }
@@ -5422,12 +5317,8 @@ impl Endpoint for GetStreamGroupPreview {
     fn path(&self) -> String {
         "/remux/stream-groups/preview".into()
     }
-    fn query(&self) -> Vec<(String, String)> {
-        vec![(
-            "imdb_id".into(),
-            self.imdb_id
-                .clone(),
-        )]
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
     }
 }
 

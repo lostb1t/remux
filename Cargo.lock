@@ -5969,6 +5969,7 @@ dependencies = [
  "serde_alias",
  "serde_derive",
  "serde_json",
+ "serde_urlencoded",
  "serde_with",
  "sqlx",
  "strum",
