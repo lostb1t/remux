@@ -102,3 +102,58 @@ cargo make dev
 - 🤝 **Contribute**: Report issues, suggest features, or submit pull requests.
 - ☕ **Donate**:
   - **[Ko-fi](https://ko-fi.com/lostb1t)**
+
+AI Usage Policy
+
+We welcome contributions created with the help of AI tools such as GitHub Copilot, Claude, ChatGPT, Cursor, and similar assistants. AI is a tool; contributors remain responsible for everything they submit.  
+
+1. AI-assisted code is allowed
+
+You may use AI to:
+
+* Generate code
+* Draft tests
+* Research the codebase
+* Suggest fixes and improvements
+* Help write documentation
+
+All contributions must still meet the project’s quality standards and pass review.  
+
+2. You are responsible for your contributions
+
+Before submitting a pull request, you must:
+
+* Understand the code you are submitting
+* Be able to explain why it works
+* Test your changes
+* Review and edit any AI-generated content
+
+Do not submit code you do not understand.  
+
+3. Communication must be human
+
+When interacting with maintainers and reviewers:
+
+* Write your own PR descriptions
+* Write your own review responses
+* Be prepared to discuss your changes
+
+AI may help you draft a response, but maintainers expect to communicate with the contributor, not an AI assistant.  
+
+4. Disclose significant AI usage
+
+If AI generated a substantial portion of your code, documentation, issue, or pull request, mention it in the PR description.
+
+Example:
+
+Initial implementation drafted with Claude and reviewed, tested, and modified by me.
+
+This disclosure helps reviewers understand how the contribution was created.  
+
+⸻
+
+### AI policy
+
+Use AI as much as you want, but understand every line, verify it works, communicate as a human, and disclose significant AI-generated contributions.
+
+That single sentence captures about 90% of the original policy.
