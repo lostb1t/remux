@@ -83,6 +83,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
         .await?;
 
     vacuum_if_needed(pool).await?;
+    // Ensure query-planner statistics are fresh on every startup. PRAGMA optimize
+    // only re-analyzes tables/indexes where stats are significantly out of date,
+    // so it is fast on subsequent startups and repairs any stale stats from
+    // installs that pre-date the per-task PRAGMA optimize.
+    sqlx::query("PRAGMA optimize")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
