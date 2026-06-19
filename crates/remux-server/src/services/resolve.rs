@@ -276,6 +276,14 @@ impl MediaResolveService {
                 .await
                 .ok();
             crate::addons::save_pending_relations(ctx, &processed).await;
+            let series_ids: Vec<_> = processed
+                .iter()
+                .filter(|item| item.kind == db::MediaKind::Series)
+                .map(|item| item.id)
+                .collect();
+            db::Media::reconcile_series_identities(&ctx.db, &series_ids)
+                .await
+                .ok();
         }
         Ok(db::Media::get_by_id(&ctx.db, &resolved_id).await?)
     }

@@ -352,14 +352,31 @@ async fn shows_nextup_all(
         .map(|(id,)| id)
         .collect();
 
-    let mut ep_qb =
-        sqlx::QueryBuilder::new("SELECT * FROM media WHERE grandparent_id IN (");
-    {
-        let mut sep = ep_qb.separated(", ");
-        for id in &series_ids {
-            sep.push_bind(id);
+    let mut all_episodes: Vec<db::Media> = Vec::new();
+    for chunk in series_ids.chunks(db::SQLITE_BIND_LIMIT) {
+        let mut ep_qb =
+            sqlx::QueryBuilder::new("SELECT * FROM media WHERE grandparent_id IN (");
+        {
+            let mut sep = ep_qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id);
+            }
         }
+        ep_qb.push(
+            ") AND kind = 'episode' \
+             ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
+        );
+        let chunk_episodes: Vec<db::Media> = ep_qb
+            .build_query_as()
+            .fetch_all(
+                &state
+                    .ctx
+                    .db,
+            )
+            .await?;
+        all_episodes.extend(chunk_episodes);
     }
+<<<<<<< HEAD
     ep_qb.push(") AND kind = 'episode'");
     if let Some(t) = release_threshold {
         push_release_date_filter(&mut ep_qb, "media", t, true);
@@ -375,13 +392,15 @@ async fn shows_nextup_all(
                 .db,
         )
         .await?;
+=======
+>>>>>>> 89b1595 (wip: preserve local main state)
 
     let all_ep_ids: Vec<Uuid> = all_episodes
         .iter()
         .map(|e| e.id)
         .collect();
     let mut states_map: HashMap<Uuid, db::UserMediaState> = HashMap::new();
-    for chunk in all_ep_ids.chunks(900) {
+    for chunk in all_ep_ids.chunks(db::SQLITE_BIND_LIMIT) {
         let mut s_qb =
             sqlx::QueryBuilder::new("SELECT * FROM user_media_state WHERE user_id = ");
         s_qb.push_bind(user_id);

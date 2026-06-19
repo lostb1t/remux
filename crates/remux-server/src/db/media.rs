@@ -1,7 +1,15 @@
-use super::{FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt};
+use super::{
+    FilterResult, ImageKind, MediaImage, MediaImages, QueryBuilderExt,
+    SQLITE_BIND_LIMIT,
+};
 
+<<<<<<< HEAD
 pub const CHUNK_SIZE: usize = 250;
 const SQLITE_VAR_LIMIT: usize = 999;
+=======
+pub const CHUNK_SIZE: usize = 500;
+const SQLITE_VAR_LIMIT: usize = SQLITE_BIND_LIMIT;
+>>>>>>> 89b1595 (wip: preserve local main state)
 
 static DB_WRITE_SEMAPHORE: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
@@ -39,7 +47,7 @@ use serde_with::skip_serializing_none;
 use sqlx::{Row, SqlitePool};
 use std::{
     self,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     path::Path,
     str::FromStr,
@@ -2755,12 +2763,7 @@ impl Media {
                         if ids.is_empty() {
                             qb.push(" AND 1=0");
                         } else {
-                            qb.push(" AND media.id IN (");
-                            let mut sep = qb.separated(", ");
-                            for id in ids {
-                                sep.push_bind(*id);
-                            }
-                            qb.push(")");
+                            qb.push_in("media.id", ids);
                         }
                     }
                 }
@@ -4255,6 +4258,376 @@ impl Media {
             .bind(id)
             .execute(db)
             .await?;
+        Ok(())
+    }
+
+    pub async fn reconcile_series_identities(
+        db: &SqlitePool,
+        series_ids: &[Uuid],
+    ) -> Result<()> {
+        let mut seen_imdb = HashSet::new();
+
+        for series_id in series_ids {
+            let Some(series) = Self::get_by_id(db, series_id).await? else {
+                continue;
+            };
+            if series.kind != MediaKind::Series {
+                continue;
+            }
+            let Some(imdb) = series
+                .external_ids
+                .imdb
+                .as_deref()
+            else {
+                continue;
+            };
+            if !seen_imdb.insert(imdb.to_string()) {
+                continue;
+            }
+            Self::reconcile_series_identity_by_imdb(db, imdb).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn reconcile_series_identity_by_imdb(
+        db: &SqlitePool,
+        imdb: &str,
+    ) -> Result<()> {
+        let imdb_id = match NonEmptyString::try_new(imdb.to_string()) {
+            Ok(id) => id,
+            Err(_) => return Ok(()),
+        };
+        let canonical_id = Uuid::from(&super::MediaIdRaw {
+            kind: MediaKind::Series,
+            external_ids: ExternalIds {
+                imdb: Some(imdb_id.clone()),
+                ..Default::default()
+            },
+            season: None,
+            episode: None,
+        });
+
+        let roots: Vec<Self> = sqlx::query_as(
+            "SELECT * FROM media \
+             WHERE kind = 'series' AND json_extract(external_ids, '$.imdb') = ? \
+             ORDER BY created_at ASC",
+        )
+        .bind(imdb)
+        .fetch_all(db)
+        .await?;
+
+        if roots.is_empty() {
+            return Ok(());
+        }
+        if roots.len() == 1 && roots[0].id == canonical_id {
+            return Ok(());
+        }
+
+        let mut canonical_root = roots
+            .iter()
+            .find(|root| root.id == canonical_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                let mut root = roots[0].clone();
+                root.id = canonical_id;
+                root
+            });
+
+        for root in &roots {
+            if canonical_root
+                .external_ids
+                .tmdb
+                .is_none()
+            {
+                canonical_root
+                    .external_ids
+                    .tmdb = root
+                    .external_ids
+                    .tmdb;
+            }
+            if canonical_root
+                .external_ids
+                .tvdb
+                .is_none()
+            {
+                canonical_root
+                    .external_ids
+                    .tvdb = root
+                    .external_ids
+                    .tvdb;
+            }
+            if canonical_root
+                .description
+                .is_none()
+            {
+                canonical_root.description = root
+                    .description
+                    .clone();
+            }
+            if canonical_root
+                .status
+                .is_none()
+            {
+                canonical_root.status = root
+                    .status
+                    .clone();
+            }
+            if canonical_root
+                .country
+                .is_none()
+            {
+                canonical_root.country = root
+                    .country
+                    .clone();
+            }
+        }
+
+        canonical_root.parent_id = None;
+        canonical_root.grandparent_id = None;
+        canonical_root
+            .external_ids
+            .imdb = Some(imdb_id.clone());
+
+        let duplicate_roots: Vec<Self> = roots
+            .into_iter()
+            .filter(|root| root.id != canonical_id)
+            .collect();
+
+        if duplicate_roots.is_empty() {
+            if canonical_root.id != canonical_id {
+                Self::upsert(db, &[canonical_root]).await?;
+            }
+            return Ok(());
+        }
+
+        let mut migrated_items = HashMap::new();
+        migrated_items.insert(canonical_root.id, canonical_root);
+        let mut id_map = HashMap::new();
+
+        for root in &duplicate_roots {
+            id_map.insert(root.id, canonical_id);
+
+            let seasons: Vec<Self> = sqlx::query_as(
+                "SELECT * FROM media WHERE kind = 'season' AND parent_id = ? ORDER BY idx ASC",
+            )
+            .bind(root.id)
+            .fetch_all(db)
+            .await?;
+            for mut season in seasons {
+                let new_id = Uuid::from(&season.media_id_raw());
+                id_map.insert(season.id, new_id);
+                season.id = new_id;
+                season.parent_id = Some(canonical_id);
+                season.grandparent_id = Some(canonical_id);
+                migrated_items.insert(season.id, season);
+            }
+
+            let episodes: Vec<Self> = sqlx::query_as(
+                "SELECT * FROM media WHERE kind = 'episode' AND grandparent_id = ? \
+                 ORDER BY parent_idx ASC, idx ASC",
+            )
+            .bind(root.id)
+            .fetch_all(db)
+            .await?;
+            for mut episode in episodes {
+                let new_id = Uuid::from(&episode.media_id_raw());
+                let new_parent_id = episode
+                    .parent_idx
+                    .and_then(|season_idx| {
+                        episode
+                            .external_ids
+                            .series_imdb
+                            .clone()
+                            .map(|series_imdb| {
+                                Uuid::from(&super::MediaIdRaw {
+                                    kind: MediaKind::Season,
+                                    external_ids: ExternalIds {
+                                        series_imdb: Some(series_imdb),
+                                        ..Default::default()
+                                    },
+                                    season: Some(season_idx),
+                                    episode: None,
+                                })
+                            })
+                    });
+                id_map.insert(episode.id, new_id);
+                episode.id = new_id;
+                episode.parent_id = new_parent_id;
+                episode.grandparent_id = Some(canonical_id);
+                migrated_items.insert(episode.id, episode);
+            }
+        }
+
+        let migrated_items: Vec<Self> = migrated_items
+            .into_values()
+            .collect();
+        Self::upsert(db, &migrated_items).await?;
+
+        for (old_id, new_id) in id_map {
+            if old_id == new_id {
+                continue;
+            }
+            Self::migrate_user_media_state(db, old_id, new_id).await?;
+            Self::migrate_media_tags(db, old_id, new_id).await?;
+            Self::migrate_media_images(db, old_id, new_id).await?;
+            Self::migrate_media_relations(db, old_id, new_id).await?;
+        }
+
+        for root in duplicate_roots {
+            Self::delete(db, &root.id).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn migrate_user_media_state(
+        db: &SqlitePool,
+        old_id: Uuid,
+        new_id: Uuid,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO user_media_state (
+                user_id, media_id, media_raw, favorite, play_count, played_at,
+                playback_position, stream_id, subtitle_idx, audio_idx, last_played_at
+             )
+             SELECT
+                user_id, ?, media_raw, favorite, play_count, played_at,
+                playback_position, stream_id, subtitle_idx, audio_idx, last_played_at
+             FROM user_media_state WHERE media_id = ?
+             ON CONFLICT(user_id, media_id) DO UPDATE SET
+                media_raw = COALESCE(excluded.media_raw, user_media_state.media_raw),
+                favorite = MAX(user_media_state.favorite, excluded.favorite),
+                play_count = CASE
+                    WHEN COALESCE(excluded.last_played_at, excluded.played_at)
+                         >= COALESCE(user_media_state.last_played_at, user_media_state.played_at)
+                    THEN MAX(user_media_state.play_count, excluded.play_count)
+                    ELSE user_media_state.play_count
+                END,
+                played_at = CASE
+                    WHEN COALESCE(excluded.last_played_at, excluded.played_at)
+                         >= COALESCE(user_media_state.last_played_at, user_media_state.played_at)
+                    THEN COALESCE(excluded.played_at, user_media_state.played_at)
+                    ELSE user_media_state.played_at
+                END,
+                playback_position = CASE
+                    WHEN COALESCE(excluded.last_played_at, excluded.played_at)
+                         >= COALESCE(user_media_state.last_played_at, user_media_state.played_at)
+                    THEN excluded.playback_position
+                    ELSE user_media_state.playback_position
+                END,
+                stream_id = COALESCE(excluded.stream_id, user_media_state.stream_id),
+                subtitle_idx = COALESCE(excluded.subtitle_idx, user_media_state.subtitle_idx),
+                audio_idx = COALESCE(excluded.audio_idx, user_media_state.audio_idx),
+                last_played_at = CASE
+                    WHEN COALESCE(excluded.last_played_at, excluded.played_at)
+                         >= COALESCE(user_media_state.last_played_at, user_media_state.played_at)
+                    THEN COALESCE(excluded.last_played_at, user_media_state.last_played_at)
+                    ELSE user_media_state.last_played_at
+                END",
+        )
+        .bind(new_id)
+        .bind(old_id)
+        .execute(db)
+        .await?;
+        sqlx::query("DELETE FROM user_media_state WHERE media_id = ?")
+            .bind(old_id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
+
+    async fn migrate_media_tags(
+        db: &SqlitePool,
+        old_id: Uuid,
+        new_id: Uuid,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO media_tags (media_id, tag)
+             SELECT ?, tag FROM media_tags WHERE media_id = ?",
+        )
+        .bind(new_id)
+        .bind(old_id)
+        .execute(db)
+        .await?;
+        Ok(())
+    }
+
+    async fn migrate_media_images(
+        db: &SqlitePool,
+        old_id: Uuid,
+        new_id: Uuid,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM media_images
+             WHERE media_id = ?
+               AND EXISTS (
+                   SELECT 1 FROM media_images src
+                   WHERE src.media_id = ?
+                     AND src.image_type = media_images.image_type
+                     AND src.image_index = media_images.image_index
+               )",
+        )
+        .bind(new_id)
+        .bind(old_id)
+        .execute(db)
+        .await?;
+        sqlx::query("UPDATE media_images SET media_id = ? WHERE media_id = ?")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
+
+    async fn migrate_media_relations(
+        db: &SqlitePool,
+        old_id: Uuid,
+        new_id: Uuid,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM media_relations
+             WHERE left_media_id = ?
+               AND EXISTS (
+                   SELECT 1 FROM media_relations dst
+                   WHERE dst.left_media_id = ?
+                     AND dst.right_media_id = media_relations.right_media_id
+                     AND COALESCE(dst.role, '') = COALESCE(media_relations.role, '')
+               )",
+        )
+        .bind(old_id)
+        .bind(new_id)
+        .execute(db)
+        .await?;
+        sqlx::query(
+            "UPDATE media_relations SET left_media_id = ? WHERE left_media_id = ?",
+        )
+        .bind(new_id)
+        .bind(old_id)
+        .execute(db)
+        .await?;
+
+        sqlx::query(
+            "DELETE FROM media_relations
+             WHERE right_media_id = ?
+               AND EXISTS (
+                   SELECT 1 FROM media_relations dst
+                   WHERE dst.right_media_id = ?
+                     AND dst.left_media_id = media_relations.left_media_id
+                     AND COALESCE(dst.role, '') = COALESCE(media_relations.role, '')
+               )",
+        )
+        .bind(old_id)
+        .bind(new_id)
+        .execute(db)
+        .await?;
+        sqlx::query(
+            "UPDATE media_relations SET right_media_id = ? WHERE right_media_id = ?",
+        )
+        .bind(new_id)
+        .bind(old_id)
+        .execute(db)
+        .await?;
         Ok(())
     }
 

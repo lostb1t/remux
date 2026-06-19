@@ -205,8 +205,10 @@ pub struct FilterResult<T> {
     pub total_count: usize,
 }
 
+pub(crate) const SQLITE_BIND_LIMIT: usize = 900;
+
 trait QueryBuilderExt<'q> {
-    fn push_in<T>(&mut self, column: &str, values: &'q Vec<T>)
+    fn push_in<T>(&mut self, column: &str, values: &'q [T])
     where
         T: Send
             + Sync
@@ -216,7 +218,7 @@ trait QueryBuilderExt<'q> {
 }
 
 impl<'q> QueryBuilderExt<'q> for sqlx::QueryBuilder<'q, sqlx::Sqlite> {
-    fn push_in<T>(&mut self, column: &str, values: &'q Vec<T>)
+    fn push_in<T>(&mut self, column: &str, values: &'q [T])
     where
         T: Send
             + Sync
@@ -228,15 +230,24 @@ impl<'q> QueryBuilderExt<'q> for sqlx::QueryBuilder<'q, sqlx::Sqlite> {
             return;
         };
 
-        self.push(" AND ");
-        self.push(column);
-        self.push(" IN (");
+        self.push(" AND (");
+        for (idx, chunk) in values
+            .chunks(SQLITE_BIND_LIMIT)
+            .enumerate()
+        {
+            if idx > 0 {
+                self.push(" OR ");
+            }
+            self.push(column);
+            self.push(" IN (");
 
-        let mut separated = self.separated(", ");
-        for v in values {
-            separated.push_bind(v);
+            let mut separated = self.separated(", ");
+            for v in chunk {
+                separated.push_bind(v);
+            }
+
+            self.push(")");
         }
-
         self.push(")");
     }
 }
