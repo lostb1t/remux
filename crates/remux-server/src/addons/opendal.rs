@@ -2924,7 +2924,7 @@ mod tests {
     // TMDB and stores the resolved imdb_id in opendal_files.
     // -----------------------------------------------------------------------
 
-    struct TvdbFixture {
+    struct ResolveFixture {
         rel_path: &'static str,
         expected_imdb: &'static str,
         expected_season: i64,
@@ -2933,47 +2933,47 @@ mod tests {
 
     #[tokio::test]
     async fn opendal_local_episode_tvdb_resolve() {
-        let fixtures: &[TvdbFixture] = &[
+        let fixtures: &[ResolveFixture] = &[
             // --- Black Summoner (2022) [tvdbid-416588] → tt21249100 ---
-            TvdbFixture {
+            ResolveFixture {
                 rel_path: "Black Summoner (2022) [tvdbid-416588]/Season 01/Black.Summoner.S01E01.mkv",
                 expected_imdb: "tt21249100",
                 expected_season: 1,
                 expected_episode: 1,
             },
-            TvdbFixture {
+            ResolveFixture {
                 rel_path: "Black Summoner (2022) [tvdbid-416588]/Season 01/Black.Summoner.S01E02.mkv",
                 expected_imdb: "tt21249100",
                 expected_season: 1,
                 expected_episode: 2,
             },
             // --- Bleach (2004) [tvdbid-74796] → tt0434665 ---
-            TvdbFixture {
+            ResolveFixture {
                 rel_path: "Bleach (2004) [tvdbid-74796]/Season 01/Bleach.S01E01.mkv",
                 expected_imdb: "tt0434665",
                 expected_season: 1,
                 expected_episode: 1,
             },
-            TvdbFixture {
+            ResolveFixture {
                 rel_path: "Bleach (2004) [tvdbid-74796]/Season 01/Bleach.S01E02.mkv",
                 expected_imdb: "tt0434665",
                 expected_season: 1,
                 expected_episode: 2,
             },
-            TvdbFixture {
+            ResolveFixture {
                 rel_path: "Bleach (2004) [tvdbid-74796]/Season 02/Bleach.S02E01.mkv",
                 expected_imdb: "tt0434665",
                 expected_season: 2,
                 expected_episode: 1,
             },
             // --- Blood-C (2011) [tvdbid-249864] → tt1890725 ---
-            TvdbFixture {
+            ResolveFixture {
                 rel_path: "Blood-C (2011) [tvdbid-249864]/Season 01/Blood-C.S01E01.mkv",
                 expected_imdb: "tt1890725",
                 expected_season: 1,
                 expected_episode: 1,
             },
-            TvdbFixture {
+            ResolveFixture {
                 rel_path: "Blood-C (2011) [tvdbid-249864]/Season 01/Blood-C.S01E02.mkv",
                 expected_imdb: "tt1890725",
                 expected_season: 1,
@@ -3021,6 +3021,194 @@ mod tests {
             assert_eq!(
                 count, 1,
                 "{}: expected imdb={} s={} e={} after tvdbid→imdb resolution",
+                f.rel_path, f.expected_imdb, f.expected_season, f.expected_episode
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: tmdbid-tagged episodes — scanner resolves tmdbid → imdbid via
+    // SeriesEndpoint and stores the result.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_local_episode_tmdbid_resolve() {
+        let fixtures: &[ResolveFixture] = &[
+            // --- Black Summoner (2022) [tmdbid-157842] → tt21249100 ---
+            ResolveFixture {
+                rel_path: "Black Summoner (2022) [tmdbid-157842]/Season 01/Black.Summoner.S01E01.mkv",
+                expected_imdb: "tt21249100",
+                expected_season: 1,
+                expected_episode: 1,
+            },
+            ResolveFixture {
+                rel_path: "Black Summoner (2022) [tmdbid-157842]/Season 01/Black.Summoner.S01E02.mkv",
+                expected_imdb: "tt21249100",
+                expected_season: 1,
+                expected_episode: 2,
+            },
+            // --- Bleach (2004) [tmdbid-30984] → tt0434665 ---
+            ResolveFixture {
+                rel_path: "Bleach (2004) [tmdbid-30984]/Season 01/Bleach.S01E01.mkv",
+                expected_imdb: "tt0434665",
+                expected_season: 1,
+                expected_episode: 1,
+            },
+            ResolveFixture {
+                rel_path: "Bleach (2004) [tmdbid-30984]/Season 02/Bleach.S02E01.mkv",
+                expected_imdb: "tt0434665",
+                expected_season: 2,
+                expected_episode: 1,
+            },
+            // --- Blood-C (2011) [tmdbid-43270] → tt1890725 ---
+            ResolveFixture {
+                rel_path: "Blood-C (2011) [tmdbid-43270]/Season 01/Blood-C.S01E01.mkv",
+                expected_imdb: "tt1890725",
+                expected_season: 1,
+                expected_episode: 1,
+            },
+            ResolveFixture {
+                rel_path: "Blood-C (2011) [tmdbid-43270]/Season 01/Blood-C.S01E02.mkv",
+                expected_imdb: "tt1890725",
+                expected_season: 1,
+                expected_episode: 2,
+            },
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        for f in fixtures {
+            let full = dir
+                .path()
+                .join(f.rel_path);
+            std::fs::create_dir_all(
+                full.parent()
+                    .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(&full, b"fake ep").unwrap();
+        }
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        for f in fixtures {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM opendal_files \
+                 WHERE addon_id = ? AND media_kind = 'episode' \
+                   AND imdb_id = ? AND season = ? AND episode = ?",
+            )
+            .bind(db_addon.id)
+            .bind(f.expected_imdb)
+            .bind(f.expected_season)
+            .bind(f.expected_episode)
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
+            assert_eq!(
+                count, 1,
+                "{}: expected imdb={} s={} e={} after tmdbid→imdb resolution",
+                f.rel_path, f.expected_imdb, f.expected_season, f.expected_episode
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // E2E: no-label episodes — no external ID tag anywhere in the path; scanner
+    // falls back to title+year search (resolve_imdb) to find the imdbid.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_local_episode_no_label_resolve() {
+        let fixtures: &[ResolveFixture] = &[
+            // --- Black Summoner — parsed title: "Black Summoner" → tt21249100 ---
+            ResolveFixture {
+                rel_path: "Black Summoner/Season 01/Black.Summoner.S01E01.mkv",
+                expected_imdb: "tt21249100",
+                expected_season: 1,
+                expected_episode: 1,
+            },
+            ResolveFixture {
+                rel_path: "Black Summoner/Season 01/Black.Summoner.S01E02.mkv",
+                expected_imdb: "tt21249100",
+                expected_season: 1,
+                expected_episode: 2,
+            },
+            // --- Bleach — parsed title: "Bleach" → tt0434665 ---
+            ResolveFixture {
+                rel_path: "Bleach/Season 01/Bleach.S01E01.mkv",
+                expected_imdb: "tt0434665",
+                expected_season: 1,
+                expected_episode: 1,
+            },
+            ResolveFixture {
+                rel_path: "Bleach/Season 02/Bleach.S02E01.mkv",
+                expected_imdb: "tt0434665",
+                expected_season: 2,
+                expected_episode: 1,
+            },
+            // --- Blood-C — parsed title: "Blood-C" → tt1890725 ---
+            ResolveFixture {
+                rel_path: "Blood-C/Season 01/Blood-C.S01E01.mkv",
+                expected_imdb: "tt1890725",
+                expected_season: 1,
+                expected_episode: 1,
+            },
+            ResolveFixture {
+                rel_path: "Blood-C/Season 01/Blood-C.S01E02.mkv",
+                expected_imdb: "tt1890725",
+                expected_season: 1,
+                expected_episode: 2,
+            },
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        for f in fixtures {
+            let full = dir
+                .path()
+                .join(f.rel_path);
+            std::fs::create_dir_all(
+                full.parent()
+                    .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(&full, b"fake ep").unwrap();
+        }
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        for f in fixtures {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM opendal_files \
+                 WHERE addon_id = ? AND media_kind = 'episode' \
+                   AND imdb_id = ? AND season = ? AND episode = ?",
+            )
+            .bind(db_addon.id)
+            .bind(f.expected_imdb)
+            .bind(f.expected_season)
+            .bind(f.expected_episode)
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
+            assert_eq!(
+                count, 1,
+                "{}: expected imdb={} s={} e={} after title-search resolution",
                 f.rel_path, f.expected_imdb, f.expected_season, f.expected_episode
             );
         }
