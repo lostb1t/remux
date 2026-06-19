@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "remux-server"
 path = "src/main.rs"
 
+[[bench]]
+name = "shows"
+harness = false
+
 [dependencies]
 # 12 needed for milldeware compatibility
 reqwest = { version = "0.13", default-features = false, features = [
@@ -127,3 +131,5 @@ desktop = ["include_dir"]
 
 [dev-dependencies]
 axum-test = "18.7.0"
+codspeed-divan-compat = "4"
+chrono = { version = "0.4", features = ["serde"] }
