@@ -60,3 +60,60 @@ Filter rules must **not** apply to collection/folder container queries — only 
       "custom_field": "value"
     }
   }
+
+### Testing Guidelines
+
+Unit Tests
+
+Prefer placing unit tests in the same source file as the code being tested.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn example() {
+        // ...
+    }
+}
+
+Reasons:
+
+* Keeps tests close to the implementation.
+* Makes it easier to maintain tests when code changes.
+* Allows testing of private functions, structs, and modules.
+* Follows common Rust ecosystem conventions.
+
+Unit tests should be used for:
+
+* Helper functions
+* Parsing logic
+* Business rules
+* Data transformations
+* Utility modules
+* Small isolated components
+
+Integration Tests
+
+Place integration tests in the tests/ directory.
+
+tests/
+├── api.rs
+├── database.rs
+└── workflows.rs
+
+Integration tests should only interact with the crate through its public API.
+
+Use integration tests for:
+
+* End-to-end workflows
+* Public API validation
+* Database interactions
+* HTTP endpoints
+* Cross-module behavior
+* Regression tests spanning multiple components
+
+Preferred Approach
+
+Default to colocated unit tests (#[cfg(test)]) unless the test exercises behavior across multiple modules or validates the public API. Small focused tests should remain alongside the implementation.
+
+When adding new functionality, prefer adding tests to the same file rather than creating a new integration test unless there is a clear end-to-end testing requirement.

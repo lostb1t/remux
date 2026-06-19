@@ -136,7 +136,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                         }
                                         div { class: "addon-kind-card-badges",
                                             for res in addon.resources.iter() {
-                                                span { class: "addon-kind-badge", "{res:?}" }
+                                                span { class: "addon-kind-badge", "{res}" }
                                             }
                                             {
                                                 let display_types = if addon.types.is_empty() { &addon.supported_types } else { &addon.types };
@@ -313,7 +313,7 @@ pub fn AddonsPage(app_state: AppState) -> Element {
                                                 div { class: "addon-kind-card-desc", "{k.description}" }
                                                 div { class: "addon-kind-card-badges",
                                                     for res in k.supported_resources.iter() {
-                                                        span { class: "addon-kind-badge", "{res:?}" }
+                                                        span { class: "addon-kind-badge", "{res.name}" }
                                                     }
                                                     for t in k.supported_types.iter() {
                                                         span { class: "addon-kind-type", "{t}" }

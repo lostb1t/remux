@@ -5462,4 +5462,52 @@ mod tests {
         let ids = ExternalIds::from_path("[tmdbid-603]/[tmdbid-999].mkv");
         assert_eq!(ids.tmdb, Some(603));
     }
+
+    #[test]
+    fn from_path_tvdb_black_summoner() {
+        let ids = ExternalIds::from_path(
+            "Black Summoner (2022) [tvdbid-416588]/Season 01/Black.Summoner.S01E01.mkv",
+        );
+        assert_eq!(ids.tvdb, Some(416588));
+        assert!(
+            ids.imdb
+                .is_none()
+        );
+        assert!(
+            ids.tmdb
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn from_path_tvdb_bleach() {
+        let ids = ExternalIds::from_path(
+            "Bleach (2004) [tvdbid-74796]/Season 01/Bleach.S01E01.mkv",
+        );
+        assert_eq!(ids.tvdb, Some(74796));
+        assert!(
+            ids.imdb
+                .is_none()
+        );
+        assert!(
+            ids.tmdb
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn from_path_tvdb_blood_c() {
+        let ids = ExternalIds::from_path(
+            "Blood-C (2011) [tvdbid-249864]/Season 01/Blood-C.S01E01.mkv",
+        );
+        assert_eq!(ids.tvdb, Some(249864));
+        assert!(
+            ids.imdb
+                .is_none()
+        );
+        assert!(
+            ids.tmdb
+                .is_none()
+        );
+    }
 }

@@ -1,0 +1,11 @@
+name: PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  test:
+    if: github.event.pull_request.draft == false
+    name: Test
+    uses: ./.github/workflows/test.yml

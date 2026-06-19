@@ -175,10 +175,6 @@ pub async fn stream_import_epg(
             .await?;
     }
 
-    sqlx::query("PRAGMA incremental_vacuum(500)")
-        .execute(&ctx.db)
-        .await?;
-
     Ok(total)
 }
 
