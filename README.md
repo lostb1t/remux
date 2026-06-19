@@ -133,7 +133,7 @@ Before submitting a pull request, you must:
 
 Do not submit code you do not understand.  
 
-3. Communication must be human
+#### Communication must be human
 
 When interacting with maintainers and reviewers:
 
@@ -143,13 +143,12 @@ When interacting with maintainers and reviewers:
 
 AI may help you draft a response, but maintainers expect to communicate with the contributor, not an AI assistant.  
 
-4. Disclose significant AI usage
+## Disclose when AI was used
 
-If AI generated a substantial portion of your code, documentation, issue, or pull request, mention it in the PR description.
+If AI was used to generate a significant portion of an issue, PR, or the code it contains, please say so in the submission. A short note in the PR description is enough — for example, "The initial implementation was drafted with Claude and then reviewed and edited by me."
 
-Example:
+Issues and pull requests that appear to be AI-generated but do not disclose it may be closed without review. Contributors who repeatedly submit undisclosed AI content, or who ignore this policy, may be blocked from contributing.
+Keep It Human
 
-Initial implementation drafted with Claude and reviewed, tested, and modified by me.
-
-This disclosure helps reviewers understand how the contribution was created.  
-
+Please, if you're using AI to help contribute, stay in the loop. Review, edit, and understand what you're submitting. Actual is built by humans, for humans. Keep it that way.
+We're grateful for all genuine contributions, whether AI-assisted or not. The key is human oversight and understanding. Thank you for helping keep Actual focused on what matter
