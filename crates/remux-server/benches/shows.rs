@@ -1,7 +1,5 @@
 extern crate codspeed_divan_compat as divan;
 
-use axum_test::TestServer;
-use chrono::NaiveDateTime;
 use http::header;
 use remux_server::{AppContext, Config, db, init_app_with_ctx};
 use serde_json::json;
@@ -12,94 +10,123 @@ fn main() {
     divan::main();
 }
 
-// ── shared fixture (seeded once for all bench variants) ───────────────────────
+// ── shared fixture ────────────────────────────────────────────────────────────
+//
+// 7 000 series, 1 season × 12 episodes each → 98 000 media rows.
+// 5 000 user_media_state rows distributed as:
+//   Series   0– 2 499 : S1E1 played,      timestamp = 60 days ago  (old)
+//   Series 2 500– 3 749: S1E1 played,      timestamp = 7–90 days    (recent)
+//   Series 3 750– 4 999: S1E2 in-progress, timestamp = 7–90 days    (recent)
+//   Series 5 000–19 999: no state (unwatched library)
 
-const SEASONS: i64 = 24;
-const EPISODES_PER_SEASON: i64 = 24;
-const TOTAL_SERIES: usize = 500; // largest needed by any bench
+const TOTAL_SERIES: usize = 20_000; // 5k active + 2k inactive library noise
+const ACTIVE_SERIES: usize = 5_000;
+const OLD_ACTIVE: usize = 2_500;
+const IN_PROGRESS_START: usize = 3_750;
+const EPISODES: i64 = 12;
 
 const BENCH_AUTH_HEADER: &str = r#"MediaBrowser Client="Bench", Device="Bench", DeviceId="bench-device", Version="1.0.0""#;
 
 struct Fixture {
-    server: TestServer,
+    client: reqwest::Client,
+    base_url: String,
     token: String,
     rt: tokio::runtime::Runtime,
     _ctx: AppContext,
 }
 
-// SAFETY: TestServer uses Arc internally and bench variants run sequentially.
+// SAFETY: all fields are Send+Sync (Client/String use Arc, AppContext uses Arc).
 unsafe impl Sync for Fixture {}
 
 static FIXTURE: OnceLock<Fixture> = OnceLock::new();
 
 fn fixture() -> &'static Fixture {
     FIXTURE.get_or_init(|| {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
 
-        let (server, ctx, token) = rt.block_on(async {
+        let (client, ctx, token, base_url) = rt.block_on(async {
             let config = Config {
                 database_url: Some("sqlite::memory:".into()),
                 disable_dht: true,
                 torrent_http_port: None,
                 ..Default::default()
             };
-            let (app, ctx) = init_app_with_ctx(config)
+            let (router, ctx) = init_app_with_ctx(config)
                 .await
                 .unwrap();
 
-            let server = TestServer::builder()
-                .save_cookies()
-                .mock_transport()
-                .build(app)
+            // Spin up a real local HTTP server on a random port.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .unwrap();
+            let port = listener
+                .local_addr()
+                .unwrap()
+                .port();
+            let base_url = format!("http://127.0.0.1:{port}");
+
+            tokio::spawn(async move {
+                axum::serve(listener, router.into_make_service())
+                    .await
+                    .unwrap();
+            });
+
+            let client = reqwest::Client::builder()
+                .default_headers({
+                    let mut h = reqwest::header::HeaderMap::new();
+                    h.insert(
+                        reqwest::header::AUTHORIZATION,
+                        reqwest::header::HeaderValue::from_static(BENCH_AUTH_HEADER),
+                    );
+                    h
+                })
+                .build()
                 .unwrap();
 
-            server
-                .post("/startup/user")
+            // Bootstrap the server.
+            client
+                .post(format!("{base_url}/startup/user"))
                 .json(&json!({ "Name": "bench", "Password": "bench" }))
-                .await;
-            server
-                .post("/startup/complete")
-                .await;
+                .send()
+                .await
+                .unwrap();
+            client
+                .post(format!("{base_url}/startup/complete"))
+                .send()
+                .await
+                .unwrap();
 
-            let resp = server
-                .post("/users/authenticatebyname")
-                .add_header(header::AUTHORIZATION, BENCH_AUTH_HEADER)
+            let resp: serde_json::Value = client
+                .post(format!("{base_url}/users/authenticatebyname"))
                 .json(&json!({ "Username": "bench", "Pw": "bench" }))
-                .await;
-            let body: serde_json::Value = resp.json();
-            let token = body["AccessToken"]
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let token = resp["AccessToken"]
                 .as_str()
                 .unwrap()
                 .to_string();
             let user_id = Uuid::parse_str(
-                body["User"]["Id"]
+                resp["User"]["Id"]
                     .as_str()
                     .unwrap(),
             )
             .unwrap();
 
-            let now = chrono::Utc::now().naive_utc();
-            let old_ts = now - chrono::Duration::days(60);
+            seed_all(&ctx.db, user_id).await;
 
-            for i in 0..TOTAL_SERIES {
-                // First 250 get old timestamps (for date-cutoff bench),
-                // the rest spread across the last 90 days.
-                let ts = if i < 250 {
-                    old_ts
-                } else {
-                    now - chrono::Duration::days(i as i64 % 90)
-                };
-                seed_series(&ctx.db, user_id, i, ts).await;
-            }
-
-            (server, ctx, token)
+            (client, ctx, token, base_url)
         });
 
         Fixture {
-            server,
+            client,
+            base_url,
             token,
             rt,
             _ctx: ctx,
@@ -107,110 +134,99 @@ fn fixture() -> &'static Fixture {
     })
 }
 
-fn auth_header(token: &str) -> String {
-    format!("MediaBrowser Token=\"{token}\"")
-}
-
-// ── seeding ───────────────────────────────────────────────────────────────────
-
-/// Upserts one series (1 + 24 seasons + 576 episodes) and its user watch state.
-///
-/// Watch profile (`idx % 4`):
-/// - 0: S1E1 only
-/// - 1: S1+S2 fully, S3E1–8
-/// - 2: S1–S12 fully, S13E1–12
-/// - 3: S1–S23 fully, S24E6 in-progress
-async fn seed_series(
-    db: &sqlx::SqlitePool,
-    user_id: Uuid,
-    idx: usize,
-    played_at: NaiveDateTime,
-) {
-    let series_imdb = db::NonEmptyString::try_new(format!("tt{idx:07}")).unwrap();
-    let profile = idx % 4;
+async fn seed_all(db: &sqlx::SqlitePool, user_id: Uuid) {
+    let now = chrono::Utc::now().naive_utc();
+    let old_ts = now - chrono::Duration::days(60);
 
     let mut items: Vec<db::Media> =
-        Vec::with_capacity(1 + (SEASONS * (1 + EPISODES_PER_SEASON)) as usize);
-    let mut state_rows: Vec<(Uuid, bool)> = Vec::new();
+        Vec::with_capacity(TOTAL_SERIES * (2 + EPISODES as usize));
+    let mut state: Vec<(Uuid, bool, chrono::NaiveDateTime)> =
+        Vec::with_capacity(ACTIVE_SERIES);
 
-    let series_id = Uuid::from(&db::MediaIdRaw {
-        kind: db::MediaKind::Series,
-        external_ids: db::ExternalIds {
-            imdb: Some(series_imdb.clone()),
-            ..Default::default()
-        },
-        season: None,
-        episode: None,
-    });
-    items.push(db::Media {
-        id: series_id,
-        title: format!("Bench Series {idx}"),
-        kind: db::MediaKind::Series,
-        external_ids: db::ExternalIds {
-            imdb: Some(series_imdb.clone()),
-            ..Default::default()
-        },
-        ..Default::default()
-    });
+    for i in 0..TOTAL_SERIES {
+        let imdb = db::NonEmptyString::try_new(format!("tt{i:07}")).unwrap();
 
-    for s in 1..=SEASONS {
+        let series_id = Uuid::from(&db::MediaIdRaw {
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(imdb.clone()),
+                ..Default::default()
+            },
+            season: None,
+            episode: None,
+        });
+        items.push(db::Media {
+            id: series_id,
+            title: format!("Bench Series {i}"),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(imdb.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
         let season_id = Uuid::from(&db::MediaIdRaw {
             kind: db::MediaKind::Season,
             external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
+                series_imdb: Some(imdb.clone()),
                 ..Default::default()
             },
-            season: Some(s),
+            season: Some(1),
             episode: None,
         });
         items.push(db::Media {
             id: season_id,
-            title: format!("Bench Series {idx} Season {s}"),
+            title: format!("Bench Series {i} Season 1"),
             kind: db::MediaKind::Season,
             external_ids: db::ExternalIds {
-                series_imdb: Some(series_imdb.clone()),
+                series_imdb: Some(imdb.clone()),
                 ..Default::default()
             },
             grandparent_id: Some(series_id),
             parent_id: Some(series_id),
-            idx: Some(s),
-            parent_idx: Some(s),
+            idx: Some(1),
+            parent_idx: Some(1),
             ..Default::default()
         });
 
-        for ep in 1..=EPISODES_PER_SEASON {
+        for ep in 1..=EPISODES {
             let ep_id = Uuid::from(&db::MediaIdRaw {
                 kind: db::MediaKind::Episode,
                 external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
+                    series_imdb: Some(imdb.clone()),
                     ..Default::default()
                 },
-                season: Some(s),
+                season: Some(1),
                 episode: Some(ep),
             });
             items.push(db::Media {
                 id: ep_id,
-                title: format!("Bench Series {idx} S{s:02}E{ep:02}"),
+                title: format!("Bench Series {i} S01E{ep:02}"),
                 kind: db::MediaKind::Episode,
                 external_ids: db::ExternalIds {
-                    series_imdb: Some(series_imdb.clone()),
+                    series_imdb: Some(imdb.clone()),
                     ..Default::default()
                 },
                 grandparent_id: Some(series_id),
                 parent_id: Some(season_id),
-                parent_idx: Some(s),
+                parent_idx: Some(1),
                 idx: Some(ep),
                 ..Default::default()
             });
 
-            let should_play = match profile {
-                0 => s == 1 && ep == 1,
-                1 => s <= 2 || (s == 3 && ep <= 8),
-                2 => s <= 12 || (s == 13 && ep <= 12),
-                _ => s <= 23,
-            };
-            if should_play || (profile == 3 && s == 24 && ep == 6) {
-                state_rows.push((ep_id, should_play));
+            if i < ACTIVE_SERIES {
+                let ts = if i < OLD_ACTIVE {
+                    old_ts
+                } else {
+                    now - chrono::Duration::days(i as i64 % 90)
+                };
+                let in_progress = i >= IN_PROGRESS_START;
+                if !in_progress && ep == 1 {
+                    state.push((ep_id, true, ts));
+                } else if in_progress && ep == 2 {
+                    state.push((ep_id, false, ts));
+                }
             }
         }
     }
@@ -223,7 +239,7 @@ async fn seed_series(
         .begin()
         .await
         .unwrap();
-    for (ep_id, is_played) in state_rows {
+    for (ep_id, is_played, ts) in state {
         if is_played {
             sqlx::query(
                 "INSERT OR IGNORE INTO user_media_state \
@@ -233,8 +249,8 @@ async fn seed_series(
             )
             .bind(user_id)
             .bind(ep_id)
-            .bind(played_at)
-            .bind(played_at)
+            .bind(ts)
+            .bind(ts)
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -247,7 +263,7 @@ async fn seed_series(
             )
             .bind(user_id)
             .bind(ep_id)
-            .bind(played_at)
+            .bind(ts)
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -256,48 +272,60 @@ async fn seed_series(
     tx.commit()
         .await
         .unwrap();
+
+    // Update query-planner statistics after the bulk insert so SQLite chooses
+    // efficient join plans instead of full-table scans.
+    sqlx::query("ANALYZE")
+        .execute(db)
+        .await
+        .unwrap();
 }
 
-// ── benchmarks ───────────────────────────────────────────────────────────────
+fn auth_header(token: &str) -> String {
+    format!("MediaBrowser Token=\"{token}\"")
+}
 
-/// Scale: how the endpoint performs as the active-series result set grows.
-/// All variants share the same 500-series DB; only the Limit param changes.
+// ── benchmarks ────────────────────────────────────────────────────────────────
+
 #[divan::bench(args = [50, 200, 500])]
 fn nextup_all_scale(bencher: divan::Bencher, limit: usize) {
     let f = fixture();
-    let url = format!("/shows/nextup?limit={limit}");
+    let url = format!("{}/shows/nextup?limit={limit}", f.base_url);
     let auth = auth_header(&f.token);
 
     bencher.bench(|| {
         f.rt.block_on(async {
-            f.server
+            f.client
                 .get(&url)
-                .add_header(header::AUTHORIZATION, auth.as_str())
-                .await;
+                .header(header::AUTHORIZATION, &auth)
+                .send()
+                .await
+                .unwrap();
         })
     });
 }
 
-/// EnableResumable on vs off: 25% of the 500 series (profile 3) have an
-/// in-progress episode, so toggling this flag exercises a real branch.
 #[divan::bench(args = [true, false])]
 fn nextup_all_resumable(bencher: divan::Bencher, enable: bool) {
     let f = fixture();
-    let url = format!("/shows/nextup?limit=200&enable_resumable={enable}");
+    let url = format!(
+        "{}/shows/nextup?limit=500&enable_resumable={enable}",
+        f.base_url
+    );
     let auth = auth_header(&f.token);
 
     bencher.bench(|| {
         f.rt.block_on(async {
-            f.server
+            f.client
                 .get(&url)
-                .add_header(header::AUTHORIZATION, auth.as_str())
-                .await;
+                .header(header::AUTHORIZATION, &auth)
+                .send()
+                .await
+                .unwrap();
         })
     });
 }
 
-/// NextUpDateCutoff: epoch (all 500 series) vs 30-day cutoff (only the 250
-/// recent series pass the HAVING filter).
 #[divan::bench(args = ["epoch", "30days"])]
 fn nextup_all_date_cutoff(bencher: divan::Bencher, cutoff: &str) {
     let f = fixture();
@@ -312,15 +340,20 @@ fn nextup_all_date_cutoff(bencher: divan::Bencher, cutoff: &str) {
         }
         _ => "1970-01-01%2000%3A00%3A00".to_string(),
     };
-    let url = format!("/shows/nextup?limit=500&next_up_date_cutoff={cutoff_param}");
+    let url = format!(
+        "{}/shows/nextup?limit=500&next_up_date_cutoff={cutoff_param}",
+        f.base_url
+    );
     let auth = auth_header(&f.token);
 
     bencher.bench(|| {
         f.rt.block_on(async {
-            f.server
+            f.client
                 .get(&url)
-                .add_header(header::AUTHORIZATION, auth.as_str())
-                .await;
+                .header(header::AUTHORIZATION, &auth)
+                .send()
+                .await
+                .unwrap();
         })
     });
 }
