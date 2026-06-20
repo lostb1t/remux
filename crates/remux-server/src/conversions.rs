@@ -293,16 +293,24 @@ pub fn subtitle_to_media_stream(sub: &SubtitleInfo) -> api::MediaStream {
                 .lang
                 .clone()
                 .unwrap_or_else(|| "und".into());
-            format!("{} - {}", lang, codec.to_uppercase())
+            format!("{} - {} - External", lang, codec.to_uppercase())
         }),
         is_default: Some(false),
         is_forced: sub.is_forced,
         is_hearing_impaired: sub.is_hi,
-        is_external: false,
+        is_external: true,
         is_text_subtitle_stream: true,
         supports_external_stream: true,
         delivery_method: Some(api::SubtitleDeliveryMethod::External),
         is_external_url: Some(false),
+        audio_spatial_format: Some("None".to_string()),
+        video_range: Some(api::VideoRange::Unknown),
+        video_range_type: Some(api::VideoRangeType::Unknown),
+        localized_undefined: Some("Undefined".to_string()),
+        localized_default: Some("Default".to_string()),
+        localized_forced: Some("Forced".to_string()),
+        localized_external: Some("External".to_string()),
+        localized_hearing_impaired: Some("Hearing Impaired".to_string()),
         ..Default::default()
     }
 }
@@ -349,24 +357,21 @@ pub fn srt_to_vtt(input: &str) -> String {
         .trim_start()
         .starts_with("WEBVTT")
     {
-        // Normalize: drop duplicate WEBVTT headers and BOMs that some sources
-        // (e.g. OpenSubtitles) embed mid-file, which strict VTT parsers reject.
-        let mut out = String::from("WEBVTT\n\n");
-        for block in input.split("\n\n") {
-            let block = block
+        // If there's a second WEBVTT header mid-file (e.g. OpenSubtitles metadata
+        // block), drop everything before it — the real cues start there.
+        let second = input
+            .find("WEBVTT")
+            .and_then(|first| {
+                input[first + 6..]
+                    .find("WEBVTT")
+                    .map(|off| first + 6 + off)
+            });
+        if let Some(pos) = second {
+            return input[pos..]
                 .trim_start_matches('\u{FEFF}')
-                .trim();
-            if block.is_empty()
-                || block == "WEBVTT"
-                || block.starts_with("WEBVTT ")
-                || block.starts_with("WEBVTT\t")
-            {
-                continue;
-            }
-            out.push_str(block);
-            out.push_str("\n\n");
+                .to_string();
         }
-        return out;
+        return input.to_string();
     }
     let mut out = String::from("WEBVTT\n\n");
     for block in input

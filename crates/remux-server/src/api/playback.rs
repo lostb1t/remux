@@ -736,6 +736,21 @@ async fn items_playbackinfo_inner(
                     })
                     .unwrap_or(false)
             };
+            let profile_embeds = |fmt: &str| -> bool {
+                device_profile
+                    .as_ref()
+                    .map(|dp| {
+                        dp.subtitle_profiles
+                            .iter()
+                            .any(|p| {
+                                p.method == Some(api::SubtitleDeliveryMethod::Embed)
+                                    && p.format
+                                        .as_deref()
+                                        .map_or(false, |f| f.eq_ignore_ascii_case(fmt))
+                            })
+                    })
+                    .unwrap_or(false)
+            };
             let format = if stream.is_text_subtitle_stream {
                 if (codec.eq_ignore_ascii_case("ass")
                     || codec.eq_ignore_ascii_case("ssa"))
@@ -750,13 +765,17 @@ async fn items_playbackinfo_inner(
             } else {
                 "vtt"
             };
-            stream.delivery_url = Some(format!(
-                "/Videos/{id}/{source_id}/Subtitles/{idx}/0/Stream.{format}?ApiKey={api_key}",
-                idx = stream.index,
-            ));
-            stream.delivery_method = Some(api::SubtitleDeliveryMethod::External);
-            stream.is_external_url = Some(false);
-            stream.is_external = false;
+            if !stream.is_external && profile_embeds(format) {
+                stream.delivery_method = Some(api::SubtitleDeliveryMethod::Embed);
+            } else {
+                stream.delivery_url = Some(format!(
+                    "/Videos/{id}/{source_id}/Subtitles/{idx}/0/Stream.{format}?ApiKey={api_key}",
+                    idx = stream.index,
+                ));
+                stream.delivery_method = Some(api::SubtitleDeliveryMethod::External);
+                stream.is_external_url = Some(false);
+                stream.is_external = false;
+            }
         }
 
         source.transcoding_reasons = transcode_reasons;
@@ -5025,18 +5044,23 @@ pub async fn subtitles_stream(
             }
         };
         if let Some(ref source) = source_media {
-            let next_idx = source
+            let embedded_indices: std::collections::HashSet<i64> = source
                 .probe_data
                 .as_ref()
-                .and_then(|p| {
+                .map(|p| {
                     p.media_streams
                         .iter()
                         .map(|s| s.index)
-                        .max()
+                        .collect()
                 })
+                .unwrap_or_default();
+            let next_idx = embedded_indices
+                .iter()
+                .max()
                 .map_or(0, |m| m + 1);
             let i = stream_index - next_idx;
-            if i >= 0 {
+            // Only attempt external resolution if the index is not an embedded stream.
+            if i >= 0 && !embedded_indices.contains(&stream_index) {
                 let sub_langs = db::Settings::get_config(
                     &state
                         .ctx
