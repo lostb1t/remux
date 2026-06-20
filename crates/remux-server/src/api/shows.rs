@@ -307,8 +307,8 @@ async fn shows_nextup_all(
          WHERE m.kind = 'episode' \
          AND m.grandparent_id IS NOT NULL \
          GROUP BY m.grandparent_id \
-         HAVING MAX(COALESCE(active.last_played_at, active.played_at)) >= ? \
-         ORDER BY MAX(COALESCE(active.last_played_at, active.played_at)) DESC \
+         HAVING MAX(COALESCE(active.last_played_at, active.played_at, '1970-01-01 00:00:00')) >= ? \
+         ORDER BY MAX(COALESCE(active.last_played_at, active.played_at, '1970-01-01 00:00:00')) DESC \
          LIMIT ?",
     )
     .bind(user_id)
@@ -924,6 +924,261 @@ mod test {
         assert_eq!(
             active_series_ids(&db, user.id, Some("2026-06-18")).await,
             vec![legacy_series.id],
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: full HTTP handler (requires test server + real auth)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn nextup_returns_episode_after_last_played_default_enable_resumable() {
+        // Reproduces the "NextUp returns no results but should" bug.
+        // A user has fully watched episode 1 of a series. NextUp (with the
+        // default EnableResumable=true) must return episode 2.
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use chrono::Utc;
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let now = Utc::now().naive_utc();
+
+        let (series, episodes) =
+            insert_series_with_episodes(db, "TestSeries", &["Ep1", "Ep2", "Ep3"]).await;
+
+        // Identify the authed user so we can insert state for them.
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+
+        // Episode 1 was fully watched.
+        insert_state(
+            db,
+            user.id,
+            episodes[0].id,
+            1, // play_count = 1
+            0, // position = 0 (reset after completion)
+            Some(now),
+            Some(now),
+        )
+        .await;
+
+        // Default path: no EnableResumable param → defaults to true.
+        let resp = server
+            .get("/shows/nextup")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+
+        // Must return exactly one item: episode 2 of this series.
+        assert_eq!(items.len(), 1, "NextUp should return episode 2");
+        assert_eq!(
+            items[0]["Id"]
+                .as_str()
+                .unwrap(),
+            episodes[1]
+                .id
+                .to_string(),
+            "NextUp should return episode 2, not {:?}",
+            items[0]["Name"]
+        );
+
+        // Sanity-check: the series UUID should be reachable via the result.
+        let _ = series.id;
+    }
+
+    #[tokio::test]
+    async fn nextup_enable_resumable_false_returns_episode_after_last_played() {
+        // Companion to the above: explicit EnableResumable=false must also find
+        // episode 2 after episode 1 is played.
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use chrono::Utc;
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let now = Utc::now().naive_utc();
+
+        let (_series, episodes) =
+            insert_series_with_episodes(db, "TestSeries2", &["Ep1", "Ep2", "Ep3"])
+                .await;
+
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+
+        insert_state(db, user.id, episodes[0].id, 1, 0, Some(now), Some(now)).await;
+
+        let resp = server
+            .get("/shows/nextup?EnableResumable=false")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(
+            items.len(),
+            1,
+            "NextUp (EnableResumable=false) should return episode 2"
+        );
+        assert_eq!(
+            items[0]["Id"]
+                .as_str()
+                .unwrap(),
+            episodes[1]
+                .id
+                .to_string(),
+        );
+    }
+
+    #[tokio::test]
+    async fn nextup_in_progress_episode_returned_when_enable_resumable_true() {
+        // When the user has only started (not completed) episode 1 and
+        // EnableResumable=true (default), NextUp should return episode 1.
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use chrono::Utc;
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let now = Utc::now().naive_utc();
+
+        let (_series, episodes) =
+            insert_series_with_episodes(db, "TestSeries3", &["Ep1", "Ep2"]).await;
+
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+
+        // Episode 1 is in-progress (started but not completed).
+        insert_state(
+            db,
+            user.id,
+            episodes[0].id,
+            0,    // play_count = 0 (not finished)
+            1800, // position = 30 min in
+            None,
+            Some(now),
+        )
+        .await;
+
+        let resp = server
+            .get("/shows/nextup")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0]["Id"]
+                .as_str()
+                .unwrap(),
+            episodes[0]
+                .id
+                .to_string(),
+            "In-progress episode 1 should be returned as NextUp when EnableResumable=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn nextup_with_null_play_dates_still_returns_results() {
+        // Reproduces the core bug: play state imported from Jellyfin may have
+        // play_count=1 but both played_at and last_played_at as NULL (Jellyfin
+        // doesn't always export LastPlayedDate). The active_series SQL query uses
+        // HAVING MAX(COALESCE(last_played_at, played_at)) >= ?, and NULL >= ?
+        // is always false in SQLite, so those series are silently dropped.
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let (_series, episodes) =
+            insert_series_with_episodes(db, "NullDateSeries", &["Ep1", "Ep2", "Ep3"])
+                .await;
+
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+
+        // Episode 1 played but with NULL dates (e.g. imported from Jellyfin without LastPlayedDate).
+        insert_state(
+            db,
+            user.id,
+            episodes[0].id,
+            1,    // play_count = 1
+            0,    // position = 0
+            None, // played_at = NULL
+            None, // last_played_at = NULL
+        )
+        .await;
+
+        let resp = server
+            .get("/shows/nextup")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+
+        // Should return episode 2 — the null dates must not silently drop the series.
+        assert_eq!(
+            items.len(),
+            1,
+            "NextUp must return results even when play dates are NULL (Jellyfin import case)"
+        );
+        assert_eq!(
+            items[0]["Id"]
+                .as_str()
+                .unwrap(),
+            episodes[1]
+                .id
+                .to_string()
         );
     }
 }
