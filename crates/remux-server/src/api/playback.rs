@@ -1076,7 +1076,35 @@ pub async fn items_file(
     Query(mut q): Query<api::VideoStreamQuery>,
 ) -> Result<impl IntoResponse> {
     q.static_ = Some(true);
-    videos_stream_inner(headers, state, id, q).await
+    let filename = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &id,
+    )
+    .await
+    .ok()
+    .flatten()
+    .map(|m| {
+        m.stream_info
+            .and_then(|si| si.filename)
+            .unwrap_or_else(|| format!("{}.mkv", m.title))
+    })
+    .unwrap_or_else(|| "download.mkv".to_string());
+    let safe = filename
+        .replace('"', "")
+        .replace('\\', "");
+    let mut response = videos_stream_inner(headers, state, id, q)
+        .await?
+        .into_response();
+    if let Ok(val) =
+        http::HeaderValue::from_str(&format!("attachment; filename=\"{}\"", safe))
+    {
+        response
+            .headers_mut()
+            .insert(http::header::CONTENT_DISPOSITION, val);
+    }
+    Ok(response)
 }
 
 /// # Static
@@ -1223,7 +1251,6 @@ async fn videos_stream_inner(
     let si = media
         .stream_info
         .context_not_found("media source has no URL")?;
-    let filename_hint = si.filename;
     let descriptor = si.descriptor;
 
     // Direct play: serve bytes directly through the StreamSource trait.
@@ -1251,21 +1278,7 @@ async fn videos_stream_inner(
                 .serve(&state, &headers)
                 .await?
         };
-        let filename = filename_hint.unwrap_or_else(|| {
-            format!("{}.{}", media.title, ext_from_descriptor(&descriptor))
-        });
-        let safe = filename
-            .replace('"', "")
-            .replace('\\', "");
-        let mut response = resp.into_response();
-        if let Ok(val) =
-            http::HeaderValue::from_str(&format!("attachment; filename=\"{}\"", safe))
-        {
-            response
-                .headers_mut()
-                .insert(http::header::CONTENT_DISPOSITION, val);
-        }
-        return Ok(response);
+        return Ok(resp.into_response());
     }
 
     let url = descriptor.server_input(
