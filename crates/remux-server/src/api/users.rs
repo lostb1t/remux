@@ -1042,6 +1042,16 @@ async fn resume_items(
     {
         q.limit = Some(50);
     }
+    if q.sort_by
+        .is_none()
+    {
+        q.sort_by = Some(vec![api::ItemSortBy::DatePlayed]);
+    }
+    if q.sort_order
+        .is_none()
+    {
+        q.sort_order = Some(vec![api::SortOrder::Descending]);
+    }
     let server_config = crate::db::Settings::get_config(
         &state
             .ctx
@@ -1391,7 +1401,8 @@ pub async fn get_password_reset_providers(
 mod e2e_tests {
     use super::*;
     use crate::integration_test::{
-        AUTH_HEADER, auth_header_with_token, authenticated_server, new_test_server,
+        AUTH_HEADER, auth_header_with_token, authenticated_server, insert_test_source,
+        new_test_server,
     };
     use http::header::HeaderValue;
     use serde_json::json;
@@ -1629,5 +1640,73 @@ mod e2e_tests {
         let user: serde_json::Value = resp.json();
         assert_eq!(user["Configuration"]["SubtitleLanguagePreference"], "fre");
         assert_eq!(user["Configuration"]["DisplayCollectionsView"], true);
+    }
+
+    /// Continue Watching must return items ordered most-recently-played first (issue #19).
+    #[tokio::test]
+    async fn test_resume_items_ordered_by_last_played_at() {
+        let (server, ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // Create two distinct media items.
+        let older = insert_test_source(&ctx.0).await;
+        let newer = insert_test_source(&ctx.0).await;
+
+        // Resolve the test user.
+        let user = db::User::get_by_username(
+            &ctx.0
+                .db,
+            "test",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Insert user_media_state rows with explicit last_played_at so the
+        // ordering is deterministic regardless of wall-clock speed.
+        sqlx::query(
+            "INSERT INTO user_media_state (user_id, media_id, playback_position, last_played_at) \
+             VALUES (?1, ?2, 60, '2026-01-01T10:00:00Z'), (?1, ?3, 60, '2026-01-01T11:00:00Z')",
+        )
+        .bind(user.id)
+        .bind(older.id)
+        .bind(newer.id)
+        .execute(&ctx.0.db)
+        .await
+        .unwrap();
+
+        let resp = server
+            .get("/users/me/items/resume")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+        assert_eq!(items.len(), 2, "both in-progress items must appear");
+        // newer (11:00) must be first, older (10:00) second
+        assert_eq!(
+            items[0]["Id"]
+                .as_str()
+                .unwrap(),
+            newer
+                .id
+                .to_string(),
+            "most-recently-played item must be first"
+        );
+        assert_eq!(
+            items[1]["Id"]
+                .as_str()
+                .unwrap(),
+            older
+                .id
+                .to_string(),
+            "least-recently-played item must be second"
+        );
     }
 }
