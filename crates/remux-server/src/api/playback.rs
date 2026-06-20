@@ -1788,6 +1788,97 @@ mod tests {
         resp.assert_status(StatusCode::NO_CONTENT);
     }
 
+    /// DirectPlay clients (e.g. Plezy) omit PlaySessionId from progress/stopped
+    /// reports. The server must fall back to the active session for the device.
+    #[tokio::test]
+    async fn test_progress_and_stopped_without_play_session_id() {
+        let (server, _ctx, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+
+        // Start — no PlaySessionId (server generates one internally)
+        server
+            .post("/sessions/playing")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PositionTicks": 0,
+                "CanSeek": true,
+                "PlayMethod": "DirectPlay"
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Progress — no PlaySessionId; device-based fallback must find the session
+        server
+            .post("/sessions/playing/progress")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PositionTicks": 300_000_000i64,
+                "IsPaused": false,
+                "IsMuted": false
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Sessions endpoint must reflect the updated position
+        let resp = server
+            .get("/sessions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let sessions: Vec<crate::api::SessionInfoDto> = resp.json();
+        let position = sessions[0]
+            .play_state
+            .as_ref()
+            .and_then(|ps| ps.position_ticks);
+        assert_eq!(
+            position,
+            Some(300_000_000),
+            "position_ticks must be updated via device fallback"
+        );
+
+        // Stopped — also no PlaySessionId
+        server
+            .post("/sessions/playing/stopped")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({
+                "ItemId": "80ce1832bb797ffafaf65059b8b3dc9e",
+                "PositionTicks": 600_000_000i64
+            }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+
+        // Session must be gone after stop
+        let resp = server
+            .get("/sessions")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+        resp.assert_status_ok();
+        let sessions: Vec<crate::api::SessionInfoDto> = resp.json();
+        assert!(
+            sessions[0]
+                .now_playing_item
+                .is_none(),
+            "session must have no now_playing_item after stop"
+        );
+    }
+
     #[tokio::test]
     async fn test_get_sessions_empty() {
         let (server, _ctx, token) = authenticated_server().await;
@@ -2842,7 +2933,21 @@ pub async fn report_playback_progress(
     session: auth::AuthSession,
     Json(data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
-    if let Some(ref psid) = data.play_session_id {
+    let effective_psid = data
+        .play_session_id
+        .clone()
+        .or_else(|| {
+            state
+                .ctx
+                .sessions
+                .get_by_device(
+                    &session
+                        .device
+                        .id,
+                )
+                .map(|s| s.play_session_id)
+        });
+    if let Some(ref psid) = effective_psid {
         state
             .ctx
             .sessions
@@ -2870,7 +2975,21 @@ pub async fn report_playback_stopped(
     session: auth::AuthSession,
     Json(data): Json<api::PlaybackInfo>,
 ) -> Result<impl IntoResponse> {
-    if let Some(ref psid) = data.play_session_id {
+    let effective_psid = data
+        .play_session_id
+        .clone()
+        .or_else(|| {
+            state
+                .ctx
+                .sessions
+                .get_by_device(
+                    &session
+                        .device
+                        .id,
+                )
+                .map(|s| s.play_session_id)
+        });
+    if let Some(ref psid) = effective_psid {
         state
             .ctx
             .sessions

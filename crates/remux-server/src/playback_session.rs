@@ -548,6 +548,26 @@ impl PlaybackSessionManager {
             .collect()
     }
 
+    /// Return the most recently active session for a device.
+    /// Used as a fallback when the client omits PlaySessionId (e.g. DirectPlay).
+    pub fn get_by_device(&self, device_id: &str) -> Option<PlaybackSession> {
+        self.sessions
+            .iter()
+            .filter(|e| {
+                e.value()
+                    .device_id
+                    == device_id
+            })
+            .max_by_key(|e| {
+                e.value()
+                    .last_activity
+            })
+            .map(|e| {
+                e.value()
+                    .clone()
+            })
+    }
+
     /// Count active sessions for a user, optionally excluding sessions from a
     /// specific device. Excluding the caller's device is correct when checking
     /// before `insert()`, since insert() replaces any existing session for that
