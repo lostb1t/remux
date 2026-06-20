@@ -223,13 +223,14 @@ impl TreeAddon for TmdbAddon {
     }
 }
 
-fn tmdb_client(api_key: &str) -> Result<sdks::RestClient<sdks::BearerAuth>> {
+fn tmdb_client(
+    api_key: &str,
+    base_url: &str,
+) -> Result<sdks::RestClient<sdks::BearerAuth>> {
     Ok(
-        sdks::RestClient::new("https://api.themoviedb.org/3/")?.with_auth(
-            sdks::BearerAuth {
-                token: api_key.to_string(),
-            },
-        ),
+        sdks::RestClient::new(base_url)?.with_auth(sdks::BearerAuth {
+            token: api_key.to_string(),
+        }),
     )
 }
 
@@ -237,7 +238,11 @@ async fn tmdb_client_from_ctx(
     ctx: &AppContext,
 ) -> Result<sdks::RestClient<sdks::BearerAuth>> {
     let config = crate::db::Settings::get_config(&ctx.db).await?;
-    tmdb_client(config.get_tmdb_key())
+    tmdb_client(
+        config.get_tmdb_key(),
+        &ctx.config
+            .tmdb_base_url,
+    )
 }
 
 async fn tmdb_series_seasons(
@@ -573,7 +578,11 @@ async fn fetch_tmdb_meta(
 
     let ids = &media.external_ids;
 
-    let client = tmdb_client(config.get_tmdb_key())?;
+    let client = tmdb_client(
+        config.get_tmdb_key(),
+        &ctx.config
+            .tmdb_base_url,
+    )?;
 
     match media.kind {
         db::MediaKind::Movie => {
@@ -1335,7 +1344,11 @@ async fn search_tmdb_person(
     ctx: &AppContext,
 ) -> Result<Vec<db::Media>> {
     let config = crate::db::Settings::get_config(&ctx.db).await?;
-    let client = tmdb_client(config.get_tmdb_key())?;
+    let client = tmdb_client(
+        config.get_tmdb_key(),
+        &ctx.config
+            .tmdb_base_url,
+    )?;
 
     let resp = match client
         .execute(sdks::tmdb::PersonSearchEndpoint {
@@ -1402,7 +1415,11 @@ async fn tmdb_remote_images(
     if api_key.is_empty() {
         return Ok(vec![]);
     }
-    let client = tmdb_client(api_key)?;
+    let client = tmdb_client(
+        api_key,
+        &ctx.config
+            .tmdb_base_url,
+    )?;
 
     let lookup_for_find = || -> Option<(String, &'static str)> {
         let ids = &media.external_ids;
@@ -1806,19 +1823,47 @@ pub(crate) async fn resolve_imdb_from_ids<A: sdks::Auth + Clone>(
 mod tests {
     use super::*;
 
-    fn default_tmdb_client() -> sdks::RestClient<sdks::BearerAuth> {
-        common::tmdb_client_from_config(&api::ServerConfiguration::default()).unwrap()
+    fn tmdb_test_client(base_url: &str) -> sdks::RestClient<sdks::BearerAuth> {
+        sdks::RestClient::new(base_url)
+            .unwrap()
+            .with_auth(sdks::BearerAuth {
+                token: String::new(),
+            })
     }
 
-    // resolve_imdb_from_ids: tvdbid → imdbid via TMDB FindById (live network call)
+    fn mock_tv_series(server: &httpmock::MockServer, tmdb_id: i64, imdb_id: &str) {
+        let imdb = imdb_id.to_string();
+        server.mock(|when, then| {
+            when.path(format!("/tv/{tmdb_id}"));
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": tmdb_id,
+                    "external_ids": { "imdb_id": imdb }
+                }));
+        });
+    }
 
     #[tokio::test]
     async fn resolve_imdb_from_ids_tvdb_black_summoner() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.path("/find/416588")
+                .query_param("external_source", "tvdb_id");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{"id": 157842, "name": "Black Summoner"}],
+                    "movie_results": []
+                }));
+        });
+        mock_tv_series(&server, 157842, "tt21249100");
+
         let ids = db::ExternalIds {
             tvdb: Some(416588),
             ..Default::default()
         };
-        let result = resolve_imdb_from_ids(&ids, true, &default_tmdb_client()).await;
+        let result =
+            resolve_imdb_from_ids(&ids, true, &tmdb_test_client(&server.base_url()))
+                .await;
         assert_eq!(
             result
                 .as_deref()
@@ -1830,11 +1875,25 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_imdb_from_ids_tvdb_bleach() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.path("/find/74796")
+                .query_param("external_source", "tvdb_id");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{"id": 30984, "name": "Bleach"}],
+                    "movie_results": []
+                }));
+        });
+        mock_tv_series(&server, 30984, "tt0434665");
+
         let ids = db::ExternalIds {
             tvdb: Some(74796),
             ..Default::default()
         };
-        let result = resolve_imdb_from_ids(&ids, true, &default_tmdb_client()).await;
+        let result =
+            resolve_imdb_from_ids(&ids, true, &tmdb_test_client(&server.base_url()))
+                .await;
         assert_eq!(
             result
                 .as_deref()
@@ -1846,11 +1905,25 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_imdb_from_ids_tvdb_blood_c() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.path("/find/249864")
+                .query_param("external_source", "tvdb_id");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{"id": 43270, "name": "Blood-C"}],
+                    "movie_results": []
+                }));
+        });
+        mock_tv_series(&server, 43270, "tt1890725");
+
         let ids = db::ExternalIds {
             tvdb: Some(249864),
             ..Default::default()
         };
-        let result = resolve_imdb_from_ids(&ids, true, &default_tmdb_client()).await;
+        let result =
+            resolve_imdb_from_ids(&ids, true, &tmdb_test_client(&server.base_url()))
+                .await;
         assert_eq!(
             result
                 .as_deref()

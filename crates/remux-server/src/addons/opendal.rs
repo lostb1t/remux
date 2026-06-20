@@ -457,7 +457,12 @@ impl IndexAddon for OpendalAddon {
         addon: &Addon,
         progress: ProgressReporter,
     ) -> Result<()> {
-        let tmdb = common::tmdb_client(&ctx.db).await;
+        let tmdb = common::tmdb_client(
+            &ctx.db,
+            &ctx.config
+                .tmdb_base_url,
+        )
+        .await;
         scan_addon(ctx, &tmdb, addon).await?;
         progress.set(100.0);
         Ok(())
@@ -1668,17 +1673,60 @@ mod tests {
 
     use super::*;
     use crate::{
+        Config,
         addons::{Addon, AddonPresetRef},
         api,
         common::{self, ProgressReporter},
         db,
-        integration_test::new_test_server,
+        integration_test::{new_test_server, new_test_server_with_config},
         sdks,
         stream::StreamDescriptor,
     };
 
-    fn default_tmdb_client() -> Option<sdks::RestClient<sdks::BearerAuth>> {
-        common::tmdb_client_from_config(&api::ServerConfiguration::default())
+    fn tmdb_test_client(base_url: &str) -> Option<sdks::RestClient<sdks::BearerAuth>> {
+        Some(
+            sdks::RestClient::new(base_url)
+                .unwrap()
+                .with_auth(sdks::BearerAuth {
+                    token: String::new(),
+                }),
+        )
+    }
+
+    fn mock_tv_series(server: &httpmock::MockServer, tmdb_id: i64, imdb_id: &str) {
+        let imdb = imdb_id.to_string();
+        server.mock(|when, then| {
+            when.path(format!("/tv/{tmdb_id}"));
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "id": tmdb_id,
+                    "external_ids": { "imdb_id": imdb }
+                }));
+        });
+    }
+
+    fn register_all_shows(server: &httpmock::MockServer) {
+        mock_tv_series(server, 157842, "tt21249100");
+        mock_tv_series(server, 30984, "tt0434665");
+        mock_tv_series(server, 43270, "tt1890725");
+    }
+
+    async fn test_server_with_tmdb(
+        tmdb: &httpmock::MockServer,
+    ) -> (crate::AppContext, crate::integration_test::TestGuard) {
+        let (_, guard) = new_test_server_with_config(Config {
+            database_url: Some("sqlite::memory:".into()),
+            torrent_http_port: None,
+            disable_dht: true,
+            tmdb_base_url: tmdb.base_url(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let ctx = guard
+            .0
+            .clone();
+        (ctx, guard)
     }
 
     fn noop_progress() -> ProgressReporter {
@@ -2908,8 +2956,24 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_imdb_by_title_black_summoner() {
-        let tmdb = default_tmdb_client();
-        let result = resolve_imdb(&tmdb, "Black Summoner", Some(2022), true).await;
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.path("/search/tv")
+                .query_param("query", "Black+Summoner");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "results": [{"id": 157842, "name": "Black Summoner"}]
+                }));
+        });
+        mock_tv_series(&server, 157842, "tt21249100");
+
+        let result = resolve_imdb(
+            &tmdb_test_client(&server.base_url()),
+            "Black Summoner",
+            Some(2022),
+            true,
+        )
+        .await;
         assert_eq!(
             result.as_deref(),
             Some("tt21249100"),
@@ -2919,15 +2983,47 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_imdb_by_title_bleach() {
-        let tmdb = default_tmdb_client();
-        let result = resolve_imdb(&tmdb, "Bleach", Some(2004), true).await;
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.path("/search/tv")
+                .query_param("query", "Bleach");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "results": [{"id": 30984, "name": "Bleach"}]
+                }));
+        });
+        mock_tv_series(&server, 30984, "tt0434665");
+
+        let result = resolve_imdb(
+            &tmdb_test_client(&server.base_url()),
+            "Bleach",
+            Some(2004),
+            true,
+        )
+        .await;
         assert_eq!(result.as_deref(), Some("tt0434665"), "Bleach title search");
     }
 
     #[tokio::test]
     async fn resolve_imdb_by_title_blood_c() {
-        let tmdb = default_tmdb_client();
-        let result = resolve_imdb(&tmdb, "Blood-C", Some(2011), true).await;
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.path("/search/tv")
+                .query_param("query", "Blood-C");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "results": [{"id": 43270, "name": "Blood-C"}]
+                }));
+        });
+        mock_tv_series(&server, 43270, "tt1890725");
+
+        let result = resolve_imdb(
+            &tmdb_test_client(&server.base_url()),
+            "Blood-C",
+            Some(2011),
+            true,
+        )
+        .await;
         assert_eq!(result.as_deref(), Some("tt1890725"), "Blood-C title search");
     }
 
@@ -3006,14 +3102,41 @@ mod tests {
             std::fs::write(&full, b"fake ep").unwrap();
         }
 
-        let (_, guard) = new_test_server()
-            .await
-            .unwrap();
-        let ctx = &guard.0;
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/find/416588")
+                .query_param("external_source", "tvdb_id");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{"id": 157842, "name": "Black Summoner"}],
+                    "movie_results": []
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/find/74796")
+                .query_param("external_source", "tvdb_id");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{"id": 30984, "name": "Bleach"}],
+                    "movie_results": []
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/find/249864")
+                .query_param("external_source", "tvdb_id");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "tv_results": [{"id": 43270, "name": "Blood-C"}],
+                    "movie_results": []
+                }));
+        });
+        register_all_shows(&tmdb);
 
-        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        let (ctx, _guard) = test_server_with_tmdb(&tmdb).await;
+
+        let (addon, db_addon) = make_local_addon(&ctx, dir.path(), "episode").await;
         addon
-            .refresh_index(ctx, &db_addon, noop_progress())
+            .refresh_index(&ctx, &db_addon, noop_progress())
             .await
             .unwrap();
 
@@ -3100,14 +3223,14 @@ mod tests {
             std::fs::write(&full, b"fake ep").unwrap();
         }
 
-        let (_, guard) = new_test_server()
-            .await
-            .unwrap();
-        let ctx = &guard.0;
+        let tmdb = httpmock::MockServer::start();
+        register_all_shows(&tmdb);
 
-        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        let (ctx, _guard) = test_server_with_tmdb(&tmdb).await;
+
+        let (addon, db_addon) = make_local_addon(&ctx, dir.path(), "episode").await;
         addon
-            .refresh_index(ctx, &db_addon, noop_progress())
+            .refresh_index(&ctx, &db_addon, noop_progress())
             .await
             .unwrap();
 
@@ -3194,14 +3317,38 @@ mod tests {
             std::fs::write(&full, b"fake ep").unwrap();
         }
 
-        let (_, guard) = new_test_server()
-            .await
-            .unwrap();
-        let ctx = &guard.0;
+        let tmdb = httpmock::MockServer::start();
+        tmdb.mock(|when, then| {
+            when.path("/search/tv")
+                .query_param("query", "Black+Summoner");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "results": [{"id": 157842, "name": "Black Summoner"}]
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/search/tv")
+                .query_param("query", "Bleach");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "results": [{"id": 30984, "name": "Bleach"}]
+                }));
+        });
+        tmdb.mock(|when, then| {
+            when.path("/search/tv")
+                .query_param("query", "Blood-C");
+            then.status(200)
+                .json_body(serde_json::json!({
+                    "results": [{"id": 43270, "name": "Blood-C"}]
+                }));
+        });
+        register_all_shows(&tmdb);
 
-        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        let (ctx, _guard) = test_server_with_tmdb(&tmdb).await;
+
+        let (addon, db_addon) = make_local_addon(&ctx, dir.path(), "episode").await;
         addon
-            .refresh_index(ctx, &db_addon, noop_progress())
+            .refresh_index(&ctx, &db_addon, noop_progress())
             .await
             .unwrap();
 

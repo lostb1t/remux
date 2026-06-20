@@ -137,3 +137,4 @@ desktop = ["include_dir"]
 axum-test = "18.7.0"
 codspeed-divan-compat = "4"
 chrono = { version = "0.4", features = ["serde"] }
+httpmock = "0.7"

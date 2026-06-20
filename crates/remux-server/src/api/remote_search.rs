@@ -51,6 +51,10 @@ pub async fn remote_search_movie(
         &state
             .ctx
             .db,
+        &state
+            .ctx
+            .config
+            .tmdb_base_url,
     )
     .await
     else {
@@ -112,6 +116,10 @@ pub async fn remote_search_series(
         &state
             .ctx
             .db,
+        &state
+            .ctx
+            .config
+            .tmdb_base_url,
     )
     .await
     else {
