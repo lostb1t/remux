@@ -2173,6 +2173,23 @@ impl Media {
                 })
                 .unwrap_or(false);
 
+        // When sorting by DatePlayed, drive records_qb FROM user_media_state (dp) so
+        // the result is already in last_played_at order — no correlated subquery per row,
+        // no separate sort pass. Column names in subsequent WHERE clauses (kind, parent_id,
+        // etc.) resolve unambiguously to media since dp only exposes (user_id, media_id,
+        // last_played_at). Applied to all query shapes so dp.last_played_at in ORDER BY
+        // is always valid when user_id is set.
+        let date_played_uid = filter
+            .sort_by
+            .iter()
+            .any(|s| matches!(s, api::ItemSortBy::DatePlayed))
+            .then(|| {
+                filter
+                    .user_id
+                    .as_ref()
+            })
+            .flatten();
+
         let mut count_qb;
         let mut records_qb;
 
@@ -2195,10 +2212,26 @@ impl Media {
                 "WITH RECURSIVE subtree AS (SELECT id FROM media WHERE parent_id = ",
             );
             records_qb.push_bind(parent_id);
-            records_qb.push(
-                " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
-                ) SELECT * FROM media WHERE id IN (SELECT id FROM subtree) AND 1=1",
-            );
+            if let Some(uid) = date_played_uid {
+                // CROSS JOIN prevents SQLite from reordering the tables, forcing
+                // user_media_state as the outer loop. Combined with
+                // idx_ums_user_last_played(user_id, last_played_at DESC), SQLite
+                // scans the user's plays in order and can stop at LIMIT without
+                // sorting the full result set. The join condition is in WHERE so
+                // the planner still applies it as a filter (not a cartesian product).
+                records_qb.push(
+                    " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
+                    ) SELECT media.* FROM user_media_state dp CROSS JOIN media \
+                    WHERE dp.user_id = ",
+                );
+                records_qb.push_bind(uid);
+                records_qb.push(" AND dp.media_id = media.id AND media.id IN (SELECT id FROM subtree) AND 1=1");
+            } else {
+                records_qb.push(
+                    " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
+                    ) SELECT * FROM media WHERE id IN (SELECT id FROM subtree) AND 1=1",
+                );
+            }
         } else if use_recursive && is_genre_scope_query {
             // CTE at top level so we can reference it in the relation subquery below,
             // but the base query is plain — no id IN subtree baked in.
@@ -2220,10 +2253,20 @@ impl Media {
                 "WITH RECURSIVE subtree AS (SELECT id FROM media WHERE parent_id = ",
             );
             records_qb.push_bind(parent_id);
-            records_qb.push(
-                " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
-                ) SELECT * FROM media WHERE 1=1",
-            );
+            if let Some(uid) = date_played_uid {
+                records_qb.push(
+                    " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
+                    ) SELECT media.* FROM user_media_state dp CROSS JOIN media \
+                    WHERE dp.user_id = ",
+                );
+                records_qb.push_bind(uid);
+                records_qb.push(" AND dp.media_id = media.id AND 1=1");
+            } else {
+                records_qb.push(
+                    " UNION ALL SELECT m.id FROM media m INNER JOIN subtree s ON m.parent_id = s.id\
+                    ) SELECT * FROM media WHERE 1=1",
+                );
+            }
         } else if is_manual_collection {
             let collection_id = filter
                 .parent_id
@@ -2238,39 +2281,30 @@ impl Media {
             count_qb.push_bind(collection_id);
             count_qb.push(" WHERE 1=1");
 
-            records_qb = sqlx::QueryBuilder::new(
-                "SELECT media.* FROM media \
-                 JOIN media_relations mr ON mr.right_media_id = media.id \
-                 AND mr.role = 'collection' AND mr.left_media_id = ",
-            );
-            records_qb.push_bind(collection_id);
-            records_qb.push(" WHERE 1=1");
+            if let Some(uid) = date_played_uid {
+                records_qb = sqlx::QueryBuilder::new(
+                    "SELECT media.* FROM user_media_state dp CROSS JOIN media \
+                     JOIN media_relations mr ON mr.right_media_id = media.id \
+                     AND mr.role = 'collection' AND mr.left_media_id = ",
+                );
+                records_qb.push_bind(collection_id);
+                records_qb.push(" WHERE dp.user_id = ");
+                records_qb.push_bind(uid);
+                records_qb.push(" AND dp.media_id = media.id AND 1=1");
+            } else {
+                records_qb = sqlx::QueryBuilder::new(
+                    "SELECT media.* FROM media \
+                     JOIN media_relations mr ON mr.right_media_id = media.id \
+                     AND mr.role = 'collection' AND mr.left_media_id = ",
+                );
+                records_qb.push_bind(collection_id);
+                records_qb.push(" WHERE 1=1");
+            }
         } else {
             count_qb = sqlx::QueryBuilder::new(
                 "SELECT COUNT(*) as count FROM media WHERE 1=1",
             );
-            // When sorting by DatePlayed, drive records_qb FROM user_media_state so
-            // the result is already in last_played_at order — no correlated subquery
-            // per row, no separate sort pass. Column names in subsequent WHERE clauses
-            // (kind, parent_id, etc.) resolve unambiguously to media since the dp
-            // derived table only exposes (media_id, last_played_at).
-            let date_played_uid = filter
-                .sort_by
-                .iter()
-                .any(|s| matches!(s, api::ItemSortBy::DatePlayed))
-                .then(|| {
-                    filter
-                        .user_id
-                        .as_ref()
-                })
-                .flatten();
             if let Some(uid) = date_played_uid {
-                // CROSS JOIN prevents SQLite from reordering the tables, forcing
-                // user_media_state as the outer loop. Combined with
-                // idx_ums_user_last_played(user_id, last_played_at DESC), SQLite
-                // scans the user's plays in order and can stop at LIMIT without
-                // sorting the full result set. The join condition is in WHERE so
-                // the planner still applies it as a filter (not a cartesian product).
                 records_qb = sqlx::QueryBuilder::new(
                     "SELECT media.* FROM user_media_state dp \
                      CROSS JOIN media WHERE dp.user_id = ",

@@ -311,7 +311,12 @@ pub async fn init_app(
                     tracing::info_span!("request", user = tracing::field::Empty)
                 })
                 .on_request(|request: &axum::http::Request<axum::body::Body>, _span: &tracing::Span| {
-                    debug!(method = %request.method(), uri = %request.uri().path(), "incoming request");
+                    let uri = request.uri();
+                    let path = uri.path();
+                    match uri.query() {
+                        Some(q) => debug!(target: "remux_server::request", method = %request.method(), uri = %format!("{path}?{q}"), "incoming request"),
+                        None => debug!(target: "remux_server::request", method = %request.method(), uri = %path, "incoming request"),
+                    };
                 }),
         )
         .layer(cors);
