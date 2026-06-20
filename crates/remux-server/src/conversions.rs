@@ -302,7 +302,15 @@ pub fn subtitle_to_media_stream(sub: &SubtitleInfo) -> api::MediaStream {
         is_text_subtitle_stream: true,
         supports_external_stream: true,
         delivery_method: Some(api::SubtitleDeliveryMethod::External),
-        is_external_url: Some(true),
+        is_external_url: Some(false),
+        audio_spatial_format: Some("None".to_string()),
+        video_range: Some(api::VideoRange::Unknown),
+        video_range_type: Some(api::VideoRangeType::Unknown),
+        localized_undefined: Some("Undefined".to_string()),
+        localized_default: Some("Default".to_string()),
+        localized_forced: Some("Forced".to_string()),
+        localized_external: Some("External".to_string()),
+        localized_hearing_impaired: Some("Hearing Impaired".to_string()),
         ..Default::default()
     }
 }
@@ -344,10 +352,25 @@ fn to_option_bool(flag: i64) -> Option<bool> {
 
 /// Convert SRT to WebVTT. Already-valid VTT is passed through unchanged.
 pub fn srt_to_vtt(input: &str) -> String {
+    let input = input.trim_start_matches('\u{FEFF}');
     if input
         .trim_start()
         .starts_with("WEBVTT")
     {
+        // If there's a second WEBVTT header mid-file (e.g. OpenSubtitles metadata
+        // block), drop everything before it — the real cues start there.
+        let second = input
+            .find("WEBVTT")
+            .and_then(|first| {
+                input[first + 6..]
+                    .find("WEBVTT")
+                    .map(|off| first + 6 + off)
+            });
+        if let Some(pos) = second {
+            return input[pos..]
+                .trim_start_matches('\u{FEFF}')
+                .to_string();
+        }
         return input.to_string();
     }
     let mut out = String::from("WEBVTT\n\n");

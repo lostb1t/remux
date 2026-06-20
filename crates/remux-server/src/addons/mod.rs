@@ -480,6 +480,7 @@ pub trait SearchAddon: Send + Sync {
     ) -> Result<Option<Vec<db::Media>>>;
 }
 
+#[derive(Clone)]
 pub struct SubtitleInfo {
     pub id: String,
     pub url: Option<crate::stream::StreamDescriptor>,

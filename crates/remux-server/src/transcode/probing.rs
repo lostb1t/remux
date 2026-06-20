@@ -17,6 +17,32 @@ fn nonzero<T: Default + PartialOrd>(v: T) -> Option<T> {
     if v > T::default() { Some(v) } else { None }
 }
 
+fn normalize_lang(code: &str) -> &str {
+    match code {
+        "alb" => "sqi",
+        "arm" => "hye",
+        "baq" => "eus",
+        "bur" => "mya",
+        "chi" => "zho",
+        "cze" => "ces",
+        "dut" => "nld",
+        "fre" => "fra",
+        "geo" => "kat",
+        "ger" => "deu",
+        "gre" => "ell",
+        "ice" => "isl",
+        "mac" => "mkd",
+        "mao" => "mri",
+        "may" => "msa",
+        "per" => "fas",
+        "rum" => "ron",
+        "slo" => "slk",
+        "tib" => "bod",
+        "wel" => "cym",
+        other => other,
+    }
+}
+
 fn first_to_upper(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
@@ -201,9 +227,6 @@ fn display_title_subtitle(m: &StreamMeta) -> Option<String> {
 
     if m.is_hearing_impaired {
         attrs.push("Hearing Impaired".into());
-    }
-    if m.is_default {
-        attrs.push("Default".into());
     }
     if m.is_forced {
         attrs.push("Forced".into());
@@ -466,7 +489,7 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         let language = s
             .tags
             .get("language")
-            .map(|s| s.as_str());
+            .map(|s| normalize_lang(s.as_str()));
         let title = s
             .tags
             .get("title")
