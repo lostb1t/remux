@@ -22,7 +22,13 @@ impl MediaResolveService {
             return true;
         }
         let is_tv = matches!(media.kind, db::MediaKind::Series);
-        let Some(client) = crate::common::tmdb_client(&ctx.db).await else {
+        let Some(client) = crate::common::tmdb_client(
+            &ctx.db,
+            &ctx.config
+                .tmdb_base_url,
+        )
+        .await
+        else {
             return false;
         };
         let Some(imdb) = crate::addons::tmdb::resolve_imdb_from_ids(

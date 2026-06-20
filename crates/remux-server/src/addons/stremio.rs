@@ -303,7 +303,12 @@ impl CatalogAddon for StremioAddon {
         let stream = svc
             .get_catalog_stream(kind.to_string(), id.to_string(), supports_skip)
             .await?;
-        let tmdb_client = crate::common::tmdb_client(&ctx.db).await;
+        let tmdb_client = crate::common::tmdb_client(
+            &ctx.db,
+            &ctx.config
+                .tmdb_base_url,
+        )
+        .await;
 
         let stream = stream
             .map(move |mut meta| {

@@ -286,20 +286,22 @@ pub fn stable_media_uuid(kind: &crate::db::MediaKind, canonical: &str) -> Uuid {
 
 pub async fn tmdb_client(
     db: &sqlx::SqlitePool,
+    base_url: &str,
 ) -> Option<sdks::RestClient<sdks::BearerAuth>> {
     let cfg = crate::db::Settings::get_config(db)
         .await
         .unwrap_or_default();
-    tmdb_client_from_config(&cfg)
+    tmdb_client_from_config(&cfg, base_url)
 }
 
 pub fn tmdb_client_from_config(
     cfg: &crate::api::ServerConfiguration,
+    base_url: &str,
 ) -> Option<sdks::RestClient<sdks::BearerAuth>> {
     let key = cfg
         .get_tmdb_key()
         .to_string();
-    sdks::RestClient::new("https://api.themoviedb.org/3/")
+    sdks::RestClient::new(base_url)
         .ok()
         .map(|c| c.with_auth(sdks::BearerAuth { token: key }))
 }

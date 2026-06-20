@@ -35,17 +35,11 @@ impl Drop for TestGuard {
     }
 }
 
-/// Creates a test server with an in-memory SQLite DB, seeds an admin user
-/// "test"/"test", and returns the server alongside a [`TestGuard`] (which
-/// carries the `AppContext` and shuts down background services on drop).
-pub async fn new_test_server() -> Result<(TestServer, TestGuard)> {
-    let config = Config {
-        database_url: Some("sqlite::memory:".into()),
-        torrent_http_port: None, // OS picks a free ephemeral port
-        disable_dht: true,       // no DHT needed in tests; avoids socket conflicts
-        ..Default::default()
-    };
-
+/// Creates a test server from the given config, seeds an admin user "test"/"test",
+/// and returns the server alongside a [`TestGuard`].
+pub async fn new_test_server_with_config(
+    config: Config,
+) -> Result<(TestServer, TestGuard)> {
     let (app, ctx) = init_app_with_ctx(config).await?;
 
     let server = TestServer::builder()
@@ -65,6 +59,19 @@ pub async fn new_test_server() -> Result<(TestServer, TestGuard)> {
         .await;
 
     Ok((server, TestGuard(ctx)))
+}
+
+/// Creates a test server with an in-memory SQLite DB, seeds an admin user
+/// "test"/"test", and returns the server alongside a [`TestGuard`] (which
+/// carries the `AppContext` and shuts down background services on drop).
+pub async fn new_test_server() -> Result<(TestServer, TestGuard)> {
+    new_test_server_with_config(Config {
+        database_url: Some("sqlite::memory:".into()),
+        torrent_http_port: None, // OS picks a free ephemeral port
+        disable_dht: true,       // no DHT needed in tests; avoids socket conflicts
+        ..Default::default()
+    })
+    .await
 }
 
 /// Spins up a test server and authenticates as the seeded "test" user.

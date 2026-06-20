@@ -414,6 +414,13 @@ pub struct Config {
     /// Path to the bgutil-pot binary used by yt-dlp for YouTube POT token generation.
     #[serde(default = "default_bgutil_script_path")]
     pub bgutil_script_path: std::path::PathBuf,
+    /// Base URL for the TMDB API. Overridable for testing.
+    #[serde(default = "default_tmdb_base_url")]
+    pub tmdb_base_url: String,
+}
+
+fn default_tmdb_base_url() -> String {
+    "https://api.themoviedb.org/3/".to_string()
 }
 
 fn default_bgutil_script_path() -> std::path::PathBuf {
@@ -473,6 +480,7 @@ impl Default for Config {
             disable_dht: false,
             torrent_peer_port: default_torrent_peer_port(),
             bgutil_script_path: default_bgutil_script_path(),
+            tmdb_base_url: default_tmdb_base_url(),
         }
         .resolve()
     }
