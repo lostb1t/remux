@@ -755,7 +755,8 @@ async fn items_playbackinfo_inner(
                 idx = stream.index,
             ));
             stream.delivery_method = Some(api::SubtitleDeliveryMethod::External);
-            stream.is_external_url = Some(true);
+            stream.is_external_url = Some(false);
+            stream.is_external = false;
         }
 
         source.transcoding_reasons = transcode_reasons;
@@ -4975,71 +4976,156 @@ pub async fn subtitles_stream(
         String,
         String,
     )>,
-    axum::extract::Query(params): axum::extract::Query<
-        std::collections::HashMap<String, String>,
-    >,
 ) -> Result<impl IntoResponse> {
-    let _ = item_id;
-
-    // External subtitle proxy: fetch from source URL and convert to requested format.
-    if let Some(source_url) = params.get("SubtitleUrl") {
-        let source_url = urlencoding::decode(source_url)
-            .map(|s| s.into_owned())
-            .unwrap_or_else(|_| source_url.clone());
-        let output_format = format.to_ascii_lowercase();
-
-        let descriptor: crate::stream::StreamDescriptor =
-            serde_json::from_str(&source_url).unwrap_or_else(|_| {
-                crate::stream::StreamDescriptor::http(source_url.clone())
-            });
-
-        let resp = match &descriptor {
-            crate::stream::StreamDescriptor::Opendal { addon_id, .. } => {
-                let addon = state
+    // Try to resolve as an external subtitle injected during PlaybackInfo.
+    // fetch_subtitles is cached (24h Stremio / SQLite Opendal) so this is cheap.
+    if let Some(item_media) = db::Media::get_by_id(
+        &state
+            .ctx
+            .db,
+        &item_id,
+    )
+    .await
+    .ok()
+    .flatten()
+    {
+        let source_media = {
+            let sm = db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &media_source_id,
+            )
+            .await
+            .ok()
+            .flatten();
+            if let Some(mut m) = sm {
+                if matches!(
+                    m.kind,
+                    db::MediaKind::Movie
+                        | db::MediaKind::Episode
+                        | db::MediaKind::Track
+                ) {
+                    m.streams(
+                        &state
+                            .ctx
+                            .db,
+                    )
+                    .await
+                    .ok()
+                    .and_then(|v| {
+                        v.into_iter()
+                            .next()
+                    })
+                } else {
+                    Some(m)
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(ref source) = source_media {
+            let next_idx = source
+                .probe_data
+                .as_ref()
+                .and_then(|p| {
+                    p.media_streams
+                        .iter()
+                        .map(|s| s.index)
+                        .max()
+                })
+                .map_or(0, |m| m + 1);
+            let i = stream_index - next_idx;
+            if i >= 0 {
+                let sub_langs = db::Settings::get_config(
+                    &state
+                        .ctx
+                        .db,
+                )
+                .await
+                .unwrap_or_default()
+                .subtitle_languages
+                .unwrap_or_default();
+                let subs = state
                     .ctx
                     .addons
-                    .get(*addon_id)
-                    .ok_or_else(|| anyhow!("addon not found for subtitle"))?;
-                let stream_cap = addon
-                    .stream
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("addon has no stream capability"))?;
-                stream_cap
-                    .serve_stream(&descriptor, &axum::http::HeaderMap::new())
-                    .await
-                    .map_err(|e| anyhow!("{e:?}"))?
+                    .fetch_subtitles(
+                        &item_media,
+                        &state
+                            .ctx
+                            .db,
+                        false,
+                    )
+                    .await;
+                let source_info = api::MediaSourceInfo::from(source.clone());
+                let scored = scored_external_subtitles(
+                    &subs,
+                    &sub_langs,
+                    &source_info.name,
+                    &source_info.path,
+                );
+                if let Some(sub) = scored.get(i as usize) {
+                    if let Some(ref descriptor) = sub.url {
+                        let output_format = format.to_ascii_lowercase();
+                        let resp = match descriptor {
+                            crate::stream::StreamDescriptor::Opendal {
+                                addon_id,
+                                ..
+                            } => {
+                                let addon = state
+                                    .ctx
+                                    .addons
+                                    .get(*addon_id)
+                                    .ok_or_else(|| {
+                                        anyhow!("addon not found for subtitle")
+                                    })?;
+                                let stream_cap = addon
+                                    .stream
+                                    .as_ref()
+                                    .ok_or_else(|| {
+                                        anyhow!("addon has no stream capability")
+                                    })?;
+                                stream_cap
+                                    .serve_stream(
+                                        descriptor,
+                                        &axum::http::HeaderMap::new(),
+                                    )
+                                    .await
+                                    .map_err(|e| anyhow!("{e:?}"))?
+                            }
+                            _ => descriptor
+                                .clone()
+                                .into_source()
+                                .serve(&state, &axum::http::HeaderMap::new())
+                                .await
+                                .map_err(|e| anyhow!("{e:?}"))?,
+                        };
+                        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                            .await
+                            .map_err(|e| anyhow!("read subtitle bytes: {e}"))?;
+                        let body = String::from_utf8_lossy(&bytes).into_owned();
+                        let (converted, content_type) = match output_format.as_str() {
+                            "vtt" | "webvtt" => (
+                                crate::conversions::srt_to_vtt(&body),
+                                "text/vtt; charset=utf-8",
+                            ),
+                            "js" => (
+                                crate::conversions::srt_to_jellyfin_json(&body),
+                                "application/json",
+                            ),
+                            _ => (body, "text/plain; charset=utf-8"),
+                        };
+                        return Ok(Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Content-Type", content_type)
+                            .header("Cache-Control", "public, max-age=3600")
+                            .header("Access-Control-Allow-Origin", "*")
+                            .body(Body::from(converted))
+                            .unwrap());
+                    }
+                }
             }
-            _ => descriptor
-                .into_source()
-                .serve(&state, &axum::http::HeaderMap::new())
-                .await
-                .map_err(|e| anyhow!("{e:?}"))?,
-        };
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .map_err(|e| anyhow!("read subtitle bytes: {e}"))?;
-        let body = String::from_utf8_lossy(&bytes).into_owned();
-
-        let (converted, content_type) = match output_format.as_str() {
-            "vtt" | "webvtt" => (
-                crate::conversions::srt_to_vtt(&body),
-                "text/vtt; charset=utf-8",
-            ),
-            // Jellyfin Web fetches subtitle cue data as Stream.js and expects
-            // {"TrackEvents":[{StartPositionTicks,EndPositionTicks,Text}]}.
-            "js" => (
-                crate::conversions::srt_to_jellyfin_json(&body),
-                "application/json",
-            ),
-            _ => (body, "text/plain; charset=utf-8"),
-        };
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", content_type)
-            .header("Cache-Control", "public, max-age=3600")
-            .header("Access-Control-Allow-Origin", "*")
-            .body(Body::from(converted))
-            .unwrap());
+        }
     }
 
     let mut media = db::Media::get_by_id(
@@ -5324,6 +5410,77 @@ fn score_sub_url(
         .count() as i32
 }
 
+/// Filter, score, sort, and deduplicate external subtitles for a single source.
+/// Returns the ordered list of subtitles that will be assigned stream indices.
+pub(super) fn scored_external_subtitles<'a>(
+    subs: &'a [crate::addons::SubtitleInfo],
+    sub_langs: &[String],
+    source_name: &Option<String>,
+    source_path: &Option<String>,
+) -> Vec<&'a crate::addons::SubtitleInfo> {
+    let filtered: Vec<&crate::addons::SubtitleInfo> = if sub_langs.is_empty() {
+        subs.iter()
+            .collect()
+    } else {
+        subs.iter()
+            .filter(|s| {
+                let two = s
+                    .lang
+                    .as_deref()
+                    .and_then(lang_to_two_letter);
+                two.map_or(false, |two| {
+                    sub_langs
+                        .iter()
+                        .any(|p| two.eq_ignore_ascii_case(p.trim()))
+                })
+            })
+            .collect()
+    };
+
+    let mut scored: Vec<_> = filtered
+        .into_iter()
+        .map(|s| (score_sub_url(s, source_name, source_path), s))
+        .collect();
+    scored.sort_by(|(sa, a), (sb, b)| {
+        let rank = |s: &&crate::addons::SubtitleInfo| {
+            let two = s
+                .lang
+                .as_deref()
+                .and_then(lang_to_two_letter);
+            sub_langs
+                .iter()
+                .position(|p| {
+                    two.as_deref()
+                        .map_or(false, |t| t.eq_ignore_ascii_case(p.trim()))
+                })
+                .unwrap_or(usize::MAX)
+        };
+        rank(a)
+            .cmp(&rank(b))
+            .then(sb.cmp(sa))
+    });
+
+    let mut lang_counts: std::collections::HashMap<String, usize> = Default::default();
+    scored
+        .into_iter()
+        .filter_map(|(_, s)| {
+            let key = s
+                .lang
+                .clone()
+                .unwrap_or_else(|| "und".to_string());
+            let count = lang_counts
+                .entry(key)
+                .or_insert(0);
+            if *count < 2 {
+                *count += 1;
+                Some(s)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Inject external subtitles into a list of `MediaSourceInfo` entries.
 pub(super) async fn inject_external_subtitles(
     ctx: &crate::AppContext,
@@ -5341,28 +5498,6 @@ pub(super) async fn inject_external_subtitles(
         return;
     }
 
-    let filtered: Vec<_> = if sub_langs.is_empty() {
-        subs
-    } else {
-        subs.into_iter()
-            .filter(|s| {
-                let two = s
-                    .lang
-                    .as_deref()
-                    .and_then(lang_to_two_letter);
-                two.map_or(false, |two| {
-                    sub_langs
-                        .iter()
-                        .any(|p| two.eq_ignore_ascii_case(p.trim()))
-                })
-            })
-            .collect()
-    };
-
-    if filtered.is_empty() {
-        return;
-    }
-
     for source in media_sources.iter_mut() {
         let next_idx = source
             .media_streams
@@ -5371,65 +5506,22 @@ pub(super) async fn inject_external_subtitles(
             .max()
             .map_or(0, |m| m + 1);
 
-        let mut scored: Vec<_> = filtered
-            .iter()
-            .map(|s| (score_sub_url(s, &source.name, &source.path), s))
-            .collect();
-        scored.sort_by(|(sa, a), (sb, b)| {
-            let rank = |s: &&crate::addons::SubtitleInfo| {
-                let two = s
-                    .lang
-                    .as_deref()
-                    .and_then(lang_to_two_letter);
-                sub_langs
-                    .iter()
-                    .position(|p| {
-                        two.as_deref()
-                            .map_or(false, |t| t.eq_ignore_ascii_case(p.trim()))
-                    })
-                    .unwrap_or(usize::MAX)
-            };
-            rank(a)
-                .cmp(&rank(b))
-                .then(sb.cmp(sa))
-        });
-
-        let mut lang_counts: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-        let scored: Vec<_> = scored
-            .into_iter()
-            .filter(|(_, s)| {
-                let key = s
-                    .lang
-                    .clone()
-                    .unwrap_or_else(|| "und".to_string());
-                let count = lang_counts
-                    .entry(key)
-                    .or_insert(0);
-                if *count < 2 {
-                    *count += 1;
-                    true
-                } else {
-                    false
-                }
-            })
-            .collect();
+        let scored =
+            scored_external_subtitles(&subs, &sub_langs, &source.name, &source.path);
 
         let wants_default = !sub_langs.is_empty()
             && source
                 .default_subtitle_stream_index
                 .is_none();
-        for (i, (_, sub)) in scored
-            .iter()
+        for (i, sub) in scored
+            .into_iter()
             .enumerate()
         {
             let mut stream = crate::conversions::subtitle_to_media_stream(sub);
             let idx = next_idx + i as i64;
             stream.index = idx;
-            let raw_url = descriptor_to_subtitle_url(sub);
-            let encoded_url = urlencoding::encode(&raw_url);
             stream.delivery_url = Some(format!(
-                "/Videos/{item_id}/{source_id}/Subtitles/{idx}/0/Stream.vtt?ApiKey={api_key}&SubtitleUrl={encoded_url}",
+                "/Videos/{item_id}/{source_id}/Subtitles/{idx}/0/Stream.vtt?ApiKey={api_key}",
                 source_id = source.id,
             ));
             if wants_default && i == 0 {

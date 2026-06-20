@@ -293,16 +293,16 @@ pub fn subtitle_to_media_stream(sub: &SubtitleInfo) -> api::MediaStream {
                 .lang
                 .clone()
                 .unwrap_or_else(|| "und".into());
-            format!("{} - {} - External", lang, codec.to_uppercase())
+            format!("{} - {}", lang, codec.to_uppercase())
         }),
         is_default: Some(false),
         is_forced: sub.is_forced,
         is_hearing_impaired: sub.is_hi,
-        is_external: true,
+        is_external: false,
         is_text_subtitle_stream: true,
         supports_external_stream: true,
         delivery_method: Some(api::SubtitleDeliveryMethod::External),
-        is_external_url: Some(true),
+        is_external_url: Some(false),
         ..Default::default()
     }
 }
@@ -344,11 +344,29 @@ fn to_option_bool(flag: i64) -> Option<bool> {
 
 /// Convert SRT to WebVTT. Already-valid VTT is passed through unchanged.
 pub fn srt_to_vtt(input: &str) -> String {
+    let input = input.trim_start_matches('\u{FEFF}');
     if input
         .trim_start()
         .starts_with("WEBVTT")
     {
-        return input.to_string();
+        // Normalize: drop duplicate WEBVTT headers and BOMs that some sources
+        // (e.g. OpenSubtitles) embed mid-file, which strict VTT parsers reject.
+        let mut out = String::from("WEBVTT\n\n");
+        for block in input.split("\n\n") {
+            let block = block
+                .trim_start_matches('\u{FEFF}')
+                .trim();
+            if block.is_empty()
+                || block == "WEBVTT"
+                || block.starts_with("WEBVTT ")
+                || block.starts_with("WEBVTT\t")
+            {
+                continue;
+            }
+            out.push_str(block);
+            out.push_str("\n\n");
+        }
+        return out;
     }
     let mut out = String::from("WEBVTT\n\n");
     for block in input
