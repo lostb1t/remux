@@ -106,6 +106,7 @@ jobs:
           VERSION="${{ needs.semantic-release.outputs.new_release_version }}"
           TAG="${{ needs.semantic-release.outputs.new_release_git_tag }}"
           gh release create "${TAG}" \
+            --repo "${{ github.repository }}" \
             --title "${TAG}" \
             --notes-file release-notes.md \
             "remux-${VERSION}-linux-amd64" \
