@@ -1,0 +1,65 @@
+name: PR Docker
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+jobs:
+  build:
+    if: github.event.action != 'closed' && github.event.pull_request.draft == false
+    uses: ./.github/workflows/build.yml
+    with:
+      version: pr-${{ github.event.pull_request.number }}
+      docker_tags: "-t ghcr.io/lostb1t/remux:pr-${{ github.event.pull_request.number }}"
+      ref: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit
+
+  comment:
+    needs: build
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Find existing comment
+        id: find-comment
+        uses: peter-evans/find-comment@v3
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: github-actions[bot]
+          body-includes: "<!-- pr-docker -->"
+
+      - name: Post or update comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: |
+            <!-- pr-docker -->
+            **Docker image** built for this PR and pushed to GitHub Container Registry.
+
+            ```sh
+            docker pull ghcr.io/lostb1t/remux:pr-${{ github.event.pull_request.number }}
+            ```
+
+            Image will be removed when this PR is closed or merged.
+
+  cleanup:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete PR Docker image
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          VERSION_ID=$(gh api /user/packages/container/remux/versions \
+            --jq ".[] | select(.metadata.container.tags[] == \"pr-${PR_NUMBER}\") | .id" \
+            2>/dev/null | head -1)
+          if [ -n "$VERSION_ID" ]; then
+            gh api --method DELETE /user/packages/container/remux/versions/$VERSION_ID
+            echo "Removed ghcr.io/lostb1t/remux:pr-${PR_NUMBER}"
+          else
+            echo "No image found for pr-${PR_NUMBER}, skipping"
+          fi
