@@ -11,8 +11,13 @@ env:
   REGISTRY_IMAGE: ghcr.io/lostb1t/remux
 
 jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/test.yml
+
   semantic-release:
     name: Semantic Release
+    needs: test
     runs-on: ubuntu-latest
     outputs:
       new_release_published: ${{ steps.release.outputs.new_release_published }}
@@ -37,12 +42,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: "not-publishing-to-crates-io"
-
-  test:
-    name: Test
-    needs: semantic-release
-    if: needs.semantic-release.outputs.new_release_published == 'true'
-    uses: ./.github/workflows/test.yml
 
   build:
     name: Build
