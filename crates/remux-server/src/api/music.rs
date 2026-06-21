@@ -127,13 +127,12 @@ pub async fn insert_track(
     };
 
     // Enrich with yt-dlp metadata (title, thumbnail, duration, description).
-    let meta_config = crate::db::Settings::get_config(
+    let meta_config = crate::db::Settings::get_config_or_default(
         &state
             .ctx
             .db,
     )
-    .await
-    .unwrap_or_default();
+    .await;
     if let Err(e) = state
         .ctx
         .addons

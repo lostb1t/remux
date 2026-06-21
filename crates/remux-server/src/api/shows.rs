@@ -155,18 +155,14 @@ pub async fn shows_nextup(
         .user
         .id;
 
-    let server_config = db::Settings::get_config(
+    let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
             .db,
     )
-    .await
-    .ok();
+    .await;
     // Next Up always filters by release date regardless of the global toggle.
-    let buffer = server_config
-        .as_ref()
-        .map(|c| c.digital_release_buffer_days)
-        .unwrap_or(0);
+    let buffer = server_config.digital_release_buffer_days;
     let release_threshold =
         chrono::Utc::now().naive_utc() + chrono::Duration::days(buffer);
 
@@ -306,18 +302,15 @@ async fn shows_nextup_all(
         .enable_resumable
         .unwrap_or(true);
 
-    let server_config = db::Settings::get_config(
+    let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
             .db,
     )
-    .await
-    .ok();
+    .await;
     // Next Up always filters by release date regardless of the global toggle.
-    let buffer = server_config
-        .as_ref()
-        .map(|c| c.digital_release_buffer_days)
-        .unwrap_or(0);
+    let buffer = server_config.digital_release_buffer_days;
+
     let release_threshold =
         chrono::Utc::now().naive_utc() + chrono::Duration::days(buffer);
 

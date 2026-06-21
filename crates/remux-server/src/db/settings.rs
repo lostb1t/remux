@@ -13,10 +13,20 @@ pub struct Settings;
 
 impl Settings {
     pub async fn get_config(db: &SqlitePool) -> Result<ServerConfiguration> {
-        Ok(match Self::get(db, SERVER_CONFIG_KEY).await? {
-            Some(json) => serde_json::from_str(&json).unwrap_or_default(),
-            None => ServerConfiguration::default(),
-        })
+        match Self::get(db, SERVER_CONFIG_KEY).await? {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(ServerConfiguration::default()),
+        }
+    }
+
+    pub async fn get_config_or_default(db: &SqlitePool) -> ServerConfiguration {
+        match Self::get_config(db).await {
+            Ok(config) => config,
+            Err(err) => {
+                tracing::error!("Failed to load server configuration: {err}");
+                ServerConfiguration::default()
+            }
+        }
     }
 
     pub async fn set_config(

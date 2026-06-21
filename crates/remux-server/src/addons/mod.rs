@@ -1234,9 +1234,7 @@ impl AddonService {
     ) -> Result<()> {
         use futures::stream::{self, StreamExt};
 
-        let config = db::Settings::get_config(&ctx.db)
-            .await
-            .unwrap_or_default();
+        let config = db::Settings::get_config_or_default(&ctx.db).await;
 
         let concurrency = config.meta_concurrency as usize;
         let config = Arc::new(config);

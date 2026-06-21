@@ -45,10 +45,9 @@ impl Task for RefreshIptvTask {
             .catalogs_for_kinds(&ctx, &[db::MediaKind::TvChannel])
             .await;
 
-        let global_max = db::Settings::get_config(&ctx.db)
+        let global_max = db::Settings::get_config_or_default(&ctx.db)
             .await
-            .ok()
-            .and_then(|c| c.catalog_max_items)
+            .catalog_max_items
             .unwrap_or(250) as usize;
 
         let total_work = iptv_runtimes

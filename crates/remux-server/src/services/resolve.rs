@@ -257,9 +257,7 @@ impl MediaResolveService {
         }
 
         let config = std::sync::Arc::new(
-            crate::db::Settings::get_config(&ctx.db)
-                .await
-                .unwrap_or_default(),
+            crate::db::Settings::get_config_or_default(&ctx.db).await,
         );
         let processed = ctx
             .addons

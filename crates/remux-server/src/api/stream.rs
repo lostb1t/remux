@@ -51,13 +51,12 @@ pub async fn stream_proxy(
     }
 
     if matches!(descriptor, StreamDescriptor::Torrent { .. }) {
-        let cfg = db::Settings::get_config(
+        let cfg = db::Settings::get_config_or_default(
             &state
                 .ctx
                 .db,
         )
-        .await
-        .unwrap_or_default();
+        .await;
         if !cfg
             .p2p_enabled
             .unwrap_or(true)

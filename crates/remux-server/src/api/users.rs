@@ -1052,13 +1052,12 @@ async fn resume_items(
     {
         q.sort_order = Some(vec![api::SortOrder::Descending]);
     }
-    let server_config = crate::db::Settings::get_config(
+    let server_config = crate::db::Settings::get_config_or_default(
         &state
             .ctx
             .db,
     )
-    .await
-    .ok();
+    .await;
     let result = db::Media::get_by_jellyfin_filter(
         &state
             .ctx
@@ -1066,7 +1065,7 @@ async fn resume_items(
         &q,
         true,
         Some(&session.user),
-        server_config.as_ref(),
+        Some(&server_config),
         None,
         None,
     )

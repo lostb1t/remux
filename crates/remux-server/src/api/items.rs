@@ -206,16 +206,14 @@ pub async fn get_items(
         }
     }
 
-    let server_config = db::Settings::get_config(
+    let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
             .db,
     )
-    .await
-    .ok();
+    .await;
     let show_ungrouped = server_config
-        .as_ref()
-        .and_then(|c| c.stream_groups_show_ungrouped)
+        .stream_groups_show_ungrouped
         .unwrap_or(true);
 
     let search = q
@@ -242,9 +240,7 @@ pub async fn get_items(
             .include_item_types
             .as_deref()
             .unwrap_or(&[]);
-        let cfg = server_config
-            .clone()
-            .unwrap_or_default();
+        let cfg = server_config.clone();
 
         if let Some(ref s) = search {
             let limit = q
@@ -367,7 +363,7 @@ pub async fn get_items(
                     &local_q,
                     false,
                     Some(&session.user),
-                    server_config.as_ref(),
+                    Some(&server_config),
                     None,
                     None,
                 )
@@ -527,7 +523,7 @@ pub async fn get_items(
                     &q,
                     true,
                     Some(&session.user),
-                    server_config.as_ref(),
+                    Some(&server_config),
                     None,
                     Some(&parent),
                 )
@@ -623,7 +619,7 @@ pub async fn get_items(
                 &q,
                 true,
                 Some(&session.user),
-                server_config.as_ref(),
+                Some(&server_config),
                 smart_filter,
                 Some(&parent),
             )
@@ -670,7 +666,7 @@ pub async fn get_items(
         &q,
         want_total,
         Some(&session.user),
-        server_config.as_ref(),
+        Some(&server_config),
         None,
         parent.as_ref(),
     )
@@ -711,7 +707,7 @@ pub async fn get_items(
                 &q,
                 want_total,
                 Some(&session.user),
-                server_config.as_ref(),
+                Some(&server_config),
                 None,
                 parent.as_ref(),
             )
@@ -1399,16 +1395,14 @@ pub async fn item(
     let want_streams = fields
         .map(|f| f.contains(&api::ItemFields::MediaSources))
         .unwrap_or(true);
-    let server_config = db::Settings::get_config(
+    let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
             .db,
     )
-    .await
-    .ok();
+    .await;
     let show_ungrouped = server_config
-        .as_ref()
-        .and_then(|c| c.stream_groups_show_ungrouped)
+        .stream_groups_show_ungrouped
         .unwrap_or(true);
     let mut media = match db::Media::get_by_filter(
         &state
@@ -1680,11 +1674,8 @@ pub async fn item(
         if let Some(ref mut sources) = base_item.media_sources {
             if !sources.is_empty() {
                 let sub_langs = server_config
-                    .as_ref()
-                    .and_then(|c| {
-                        c.subtitle_languages
-                            .clone()
-                    })
+                    .subtitle_languages
+                    .clone()
                     .unwrap_or_default();
                 super::playback::inject_external_subtitles(
                     &state.ctx,

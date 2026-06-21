@@ -112,9 +112,7 @@ async fn vacuum_if_needed(pool: &SqlitePool) -> Result<()> {
 }
 
 async fn backfill_certification_age(pool: &SqlitePool) -> Result<()> {
-    let config = Settings::get_config(pool)
-        .await
-        .unwrap_or_default();
+    let config = Settings::get_config_or_default(pool).await;
     let rows = sqlx::query_as::<_, (uuid::Uuid, String)>(
         "SELECT id, certification FROM media WHERE certification IS NOT NULL AND certification_age IS NULL",
     )

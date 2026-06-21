@@ -86,13 +86,12 @@ async fn items_playbackinfo_inner(
 
     let device_profile = q.device_profile;
 
-    let probe_cfg = db::Settings::get_config(
+    let probe_cfg = db::Settings::get_config_or_default(
         &state
             .ctx
             .db,
     )
-    .await
-    .unwrap_or_default();
+    .await;
     let show_ungrouped = probe_cfg
         .stream_groups_show_ungrouped
         .unwrap_or(true);
@@ -5074,13 +5073,12 @@ pub async fn subtitles_stream(
             let i = stream_index - next_idx;
             // Only attempt external resolution if the index is not an embedded stream.
             if i >= 0 && !embedded_indices.contains(&stream_index) {
-                let sub_langs = db::Settings::get_config(
+                let sub_langs = db::Settings::get_config_or_default(
                     &state
                         .ctx
                         .db,
                 )
                 .await
-                .unwrap_or_default()
                 .subtitle_languages
                 .unwrap_or_default();
                 let subs = state

@@ -288,9 +288,7 @@ pub async fn tmdb_client(
     db: &sqlx::SqlitePool,
     base_url: &str,
 ) -> Option<sdks::RestClient<sdks::BearerAuth>> {
-    let cfg = crate::db::Settings::get_config(db)
-        .await
-        .unwrap_or_default();
+    let cfg = crate::db::Settings::get_config_or_default(db).await;
     tmdb_client_from_config(&cfg, base_url)
 }
 

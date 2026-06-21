@@ -460,13 +460,12 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
         return Ok(StreamsResponse { streams });
     }
 
-    let config = db::Settings::get_config(
+    let config = db::Settings::get_config_or_default(
         &state
             .ctx
             .db,
     )
-    .await
-    .unwrap_or_default();
+    .await;
     let show_ungrouped = config
         .stream_groups_show_ungrouped
         .unwrap_or(true);
