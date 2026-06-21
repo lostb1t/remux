@@ -2959,7 +2959,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         server.mock(|when, then| {
             when.path("/search/tv")
-                .query_param("query", "Black+Summoner");
+                .query_param("query", "Black Summoner");
             then.status(200)
                 .json_body(serde_json::json!({
                     "results": [{"id": 157842, "name": "Black Summoner"}]
@@ -3320,7 +3320,7 @@ mod tests {
         let tmdb = httpmock::MockServer::start();
         tmdb.mock(|when, then| {
             when.path("/search/tv")
-                .query_param("query", "Black+Summoner");
+                .query_param("query", "Black Summoner");
             then.status(200)
                 .json_body(serde_json::json!({
                     "results": [{"id": 157842, "name": "Black Summoner"}]
