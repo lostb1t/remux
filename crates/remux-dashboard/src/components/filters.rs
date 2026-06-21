@@ -126,6 +126,7 @@ fn field_label(key: &str) -> &'static str {
         "country" => "Country",
         "person" => "Person",
         "catalog" => "Catalog",
+        "digital_release_date" => "Digital Release Date",
         _ => "",
     }
 }
@@ -135,7 +136,9 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "parental_rating" | "has_trailer" | "catalog" => vec![],
+        "parental_rating" | "has_trailer" | "catalog" | "digital_release_date" => {
+            vec![]
+        }
         _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
@@ -217,6 +220,9 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
         }
         FilterRule::HasTrailer { value } => {
             ("has_trailer".into(), String::new(), value.to_string())
+        }
+        FilterRule::DigitalReleaseDate => {
+            ("digital_release_date".into(), String::new(), String::new())
         }
     }
 }
@@ -302,6 +308,7 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
         "catalog" => FilterRule::Catalog {
             catalog_id: Uuid::parse_str(value_str).unwrap_or(Uuid::nil()),
         },
+        "digital_release_date" => FilterRule::DigitalReleaseDate,
         _ => FilterRule::Genre {
             op: set_op,
             values: set_values(),
@@ -618,7 +625,9 @@ pub fn FilterRuleRow(
     let is_trailer = field_val == "has_trailer";
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
-    let hide_operator = is_trailer || is_parental_rating || is_catalog;
+    let is_digital_release_date = field_val == "digital_release_date";
+    let hide_operator =
+        is_trailer || is_parental_rating || is_catalog || is_digital_release_date;
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -690,7 +699,8 @@ pub fn FilterRuleRow(
                 option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
                 option { value: "country",         selected: field_val == "country",         { field_label("country") } }
                 option { value: "person",          selected: field_val == "person",          { field_label("person") } }
-                option { value: "catalog",         selected: field_val == "catalog",         { field_label("catalog") } }
+                option { value: "catalog",              selected: field_val == "catalog",              { field_label("catalog") } }
+                option { value: "digital_release_date", selected: field_val == "digital_release_date", { field_label("digital_release_date") } }
             }
             if !hide_operator {
                 select {
@@ -731,6 +741,8 @@ pub fn FilterRuleRow(
                         }
                     }
                 }
+            } else if is_digital_release_date {
+                // no value input — the rule is a toggle
             } else if is_trailer {
                 select {
                     class: "select-input",

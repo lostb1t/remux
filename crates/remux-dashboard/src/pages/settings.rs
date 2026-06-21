@@ -17,7 +17,6 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
     let mut countries: Signal<Vec<CountryInfo>> = use_signal(Vec::new);
     let mut catalog_max_items = use_signal(|| 100_i64);
     let mut meta_concurrency = use_signal(|| 4_i64);
-    let mut filter_digital_release = use_signal(|| true);
     let mut digital_release_buffer = use_signal(|| 0_i64);
     let mut subtitle_languages = use_signal(String::new);
     let mut quick_connect_enabled = use_signal(|| true);
@@ -52,7 +51,6 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                             .unwrap_or(100),
                     );
                     meta_concurrency.set(cfg.meta_concurrency);
-                    filter_digital_release.set(cfg.filter_by_digital_release_date);
                     digital_release_buffer.set(cfg.digital_release_buffer_days);
                     subtitle_languages.set(
                         cfg.subtitle_languages
@@ -91,7 +89,6 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
             .clone();
         let max = *catalog_max_items.peek();
         let concurrency = *meta_concurrency.peek();
-        let filter_dr = *filter_digital_release.peek();
         let dr_buffer = *digital_release_buffer.peek();
         let sub_langs_str = subtitle_languages
             .peek()
@@ -107,7 +104,6 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
         cfg.quick_connect_available = Some(qc_enabled);
         cfg.catalog_max_items = Some(max);
         cfg.meta_concurrency = concurrency;
-        cfg.filter_by_digital_release_date = filter_dr;
         cfg.digital_release_buffer_days = dr_buffer;
         cfg.subtitle_languages = Some(
             sub_langs_str
@@ -212,38 +208,24 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                         }
 
                         div { class: "field",
-                            label { class: "field-label",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *filter_digital_release.read(),
-                                    oninput: move |e| filter_digital_release.set(e.checked()),
-                                }
-                                " Filter by digital release date"
+                            label { class: "field-label", r#for: "s-dr-buf", "Release buffer (days)" }
+                            input {
+                                id: "s-dr-buf",
+                                r#type: "number",
+                                class: "field-input",
+                                min: "0",
+                                max: "365",
+                                value: "{digital_release_buffer}",
+                                oninput: move |e| {
+                                    if let Ok(n) = e.value().parse::<i64>() {
+                                        digital_release_buffer.set(n);
+                                    }
+                                },
                             }
                             p { class: "field-hint",
-                                "Hide items that haven't been digitally released yet. Falls back to theatrical release date when no digital date is set."
-                            }
-                        }
-
-                        if *filter_digital_release.read() {
-                            div { class: "field",
-                                label { class: "field-label", r#for: "s-dr-buf", "Release buffer (days)" }
-                                input {
-                                    id: "s-dr-buf",
-                                    r#type: "number",
-                                    class: "field-input",
-                                    min: "0",
-                                    max: "365",
-                                    value: "{digital_release_buffer}",
-                                    oninput: move |e| {
-                                        if let Ok(n) = e.value().parse::<i64>() {
-                                            digital_release_buffer.set(n);
-                                        }
-                                    },
-                                }
-                                p { class: "field-hint",
-                                    "Show items releasing up to this many days in the future. 0 = today or earlier only."
-                                }
+                                "When a collection has the "
+                                em { "Digital Release Date" }
+                                " filter rule, items releasing up to this many days in the future are shown. Also controls Next Up. 0 = today or earlier only."
                             }
                         }
 
