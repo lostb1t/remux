@@ -11,11 +11,7 @@ use crate::{
 use axum_anyhow::ApiResult as Result;
 
 fn empty_result() -> Json<api::BaseItemDtoQueryResult> {
-    Json(api::BaseItemDtoQueryResult {
-        items: vec![],
-        total_record_count: 0,
-        start_index: 0,
-    })
+    Json(api::BaseItemDtoQueryResult::empty())
 }
 
 /// Core intro selection logic, called from the route stubs in items.rs and users.rs.
@@ -107,9 +103,5 @@ pub async fn get_intros_inner(
     info!(intro_id = %chosen.id, item_id = %id, kind = ?media.kind, "intro selected");
 
     let dto = db_media_to_item(chosen, false);
-    Ok(Json(api::BaseItemDtoQueryResult {
-        items: vec![dto],
-        total_record_count: 1,
-        start_index: 0,
-    }))
+    Ok(Json(api::BaseItemDtoQueryResult::single(dto)))
 }

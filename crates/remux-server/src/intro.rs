@@ -15,39 +15,6 @@ use remux_sdks::remux::IntroOrder;
 
 static VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "mov", "avi", "m4v"];
 
-fn ffprobe_duration_secs(path: &Path) -> Option<i64> {
-    let output = std::process::Command::new(
-        std::env::var("FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".into()),
-    )
-    .args([
-        "-v",
-        "quiet",
-        "-print_format",
-        "json",
-        "-show_format",
-        path.to_str()?,
-    ])
-    .output()
-    .ok()?;
-
-    #[derive(serde::Deserialize)]
-    struct FfprobeOutput {
-        format: FfprobeFormat,
-    }
-    #[derive(serde::Deserialize)]
-    struct FfprobeFormat {
-        duration: Option<String>,
-    }
-
-    let parsed: FfprobeOutput = serde_json::from_slice(&output.stdout).ok()?;
-    let dur: f64 = parsed
-        .format
-        .duration?
-        .parse()
-        .ok()?;
-    Some(dur as i64)
-}
-
 /// Scan `intro_dir`, upsert each video file as a `MediaKind::Intro` item,
 /// and remove stale Intro items whose files no longer exist.
 /// Resets `intro_idx` to 0 on every call.
@@ -118,14 +85,25 @@ pub async fn sync_intros(ctx: &AppContext, intro_idx: &AtomicUsize) -> Result<()
             })
             .unwrap_or_else(|| "Intro".to_string());
 
-        let duration_secs = match ffprobe_duration_secs(&canonical) {
-            Some(d) => {
-                debug!(path = %path_str, duration_secs = d, "probed intro");
-                Some(d)
+        let url = path_str.clone();
+        let probe_result = tokio::task::spawn_blocking(move || {
+            crate::transcode::probing::probe_media(&url)
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+
+        let (runtime, probe_data) = match probe_result {
+            Some((source_info, _segments)) => {
+                let secs = source_info
+                    .run_time_ticks
+                    .map(|t| t / 10_000_000);
+                debug!(path = %path_str, runtime_secs = ?secs, "probed intro");
+                (secs, Some(source_info))
             }
             None => {
-                warn!(path = %path_str, "ffprobe failed for intro, using None duration");
-                None
+                warn!(path = %path_str, "ffprobe failed for intro, inserting without probe data");
+                (None, None)
             }
         };
 
@@ -133,7 +111,8 @@ pub async fn sync_intros(ctx: &AppContext, intro_idx: &AtomicUsize) -> Result<()
             id,
             title: title.clone(),
             kind: MediaKind::Intro,
-            runtime: duration_secs,
+            runtime,
+            probe_data,
             stream_info: Some(StreamInfo {
                 descriptor: StreamDescriptor::Local(canonical.clone()),
                 filename: Some(

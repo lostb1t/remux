@@ -1687,6 +1687,20 @@ pub struct BaseItemDtoQueryResult {
     pub total_record_count: i64,
 }
 
+impl BaseItemDtoQueryResult {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn single(item: BaseItemDto) -> Self {
+        Self {
+            items: vec![item],
+            total_record_count: 1,
+            start_index: 0,
+        }
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Default, Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "PascalCase")]
