@@ -55,6 +55,7 @@ mod common;
 pub mod db;
 #[cfg(feature = "desktop")]
 pub mod embedded_static;
+pub mod intro;
 mod iptv;
 pub mod localization;
 pub mod playback_session;
@@ -246,6 +247,7 @@ pub async fn init_app(
     }
 
     let addons = addons::AddonService::from_db(&conn, &config).await?;
+    let intro_idx = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let ctx = AppContext {
         config,
         db: conn.clone(),
@@ -260,7 +262,13 @@ pub async fn init_app(
         )),
         web_paths,
         addons,
+        intro_idx: intro_idx.clone(),
     };
+
+    // Sync intro items at startup (best-effort; errors are logged not fatal).
+    if let Err(e) = intro::sync_intros(&ctx, &intro_idx).await {
+        warn!(err = ?e, "intro sync failed at startup");
+    }
 
     // Kill idle sessions after 30 minutes of no activity.
     // 30 min matches a "stepped away" scenario; pings keep active sessions alive indefinitely.
@@ -339,6 +347,8 @@ pub struct AppContext {
     /// Present in filesystem builds; `None` in desktop (assets are embedded).
     pub web_paths: Option<FilesystemPaths>,
     pub addons: addons::AddonService,
+    /// Sequential counter for round-robin intro selection.
+    pub intro_idx: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl AppContext {

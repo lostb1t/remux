@@ -16,9 +16,11 @@ use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api,
     common::{self, get_uuid, server_id},
     db::{self, auth},
+    intro,
 };
 use anyhow;
 use axum_anyhow::ApiResult as Result;
+use remux_sdks::remux::IntroOptions;
 
 use super::mock_items;
 
@@ -238,6 +240,50 @@ pub async fn update_encoding_configuration(
         &opts,
     )
     .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Get intro configuration
+#[get("/system/configuration/intro")]
+pub async fn get_intro_configuration(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+) -> axum_anyhow::ApiResult<impl IntoResponse> {
+    let opts = db::Settings::get_intro_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
+    Ok(Json(opts))
+}
+
+/// Update intro configuration
+#[post("/system/configuration/intro")]
+pub async fn update_intro_configuration(
+    State(state): State<AppState>,
+    _session: auth::AdminSession,
+    Json(opts): Json<IntroOptions>,
+) -> axum_anyhow::ApiResult<impl IntoResponse> {
+    db::Settings::set_intro_config(
+        &state
+            .ctx
+            .db,
+        &opts,
+    )
+    .await?;
+    let idx = state
+        .ctx
+        .intro_idx
+        .clone();
+    let ctx = state
+        .ctx
+        .clone();
+    tokio::spawn(async move {
+        if let Err(e) = intro::sync_intros(&ctx, &idx).await {
+            tracing::warn!(err = ?e, "intro sync failed after config update");
+        }
+    });
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -1181,10 +1181,11 @@ pub async fn items_theme_songs(
 
 #[get("/items/{id}/intros")]
 pub async fn items_intros(
-    _state: State<AppState>,
-    _session: auth::AuthSession,
+    State(state): State<AppState>,
+    session: auth::AuthSession,
+    Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    Ok(Json(api::BaseItemDtoQueryResult::default()))
+    crate::api::intro::get_intros_inner(state, session, id).await
 }
 
 #[api_query]

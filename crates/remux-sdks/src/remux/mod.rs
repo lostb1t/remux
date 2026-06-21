@@ -571,6 +571,64 @@ pub struct EncodingOptions {
     pub enable_video_transcoding: Option<bool>,
 }
 
+// --- Preroll configuration ---
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    strum_macros::Display,
+    strum_macros::EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum IntroOrder {
+    #[default]
+    Random,
+    Sequential,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct IntroTriggers {
+    pub movies: bool,
+    pub season_premieres: bool,
+    pub all_episodes: bool,
+}
+
+impl Default for IntroTriggers {
+    fn default() -> Self {
+        Self {
+            movies: true,
+            season_premieres: true,
+            all_episodes: false,
+        }
+    }
+}
+
+fn default_intro_skip_resume() -> bool {
+    true
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct IntroOptions {
+    /// Absolute path to folder of intro video files. None = disabled.
+    pub intro_dir: Option<String>,
+    #[serde(default)]
+    pub order: IntroOrder,
+    #[serde(default)]
+    pub triggers: IntroTriggers,
+    #[serde(default = "default_intro_skip_resume")]
+    pub skip_resume: bool,
+}
+
 // --- Jellyfin import models (used to consume a remote Jellyfin server) ---
 
 #[skip_serializing_none]
@@ -4558,6 +4616,34 @@ impl Endpoint for UpdateBrandingConfiguration {
     type Output = ();
     fn path(&self) -> String {
         "/system/configuration/branding".into()
+    }
+    fn method(&self) -> Method {
+        Method::POST
+    }
+    fn body(&self) -> Body {
+        Body::Json(serde_json::to_value(&self.config).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetIntroConfiguration;
+
+impl Endpoint for GetIntroConfiguration {
+    type Output = IntroOptions;
+    fn path(&self) -> String {
+        "/system/configuration/intro".into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateIntroConfiguration {
+    pub config: IntroOptions,
+}
+
+impl Endpoint for UpdateIntroConfiguration {
+    type Output = ();
+    fn path(&self) -> String {
+        "/system/configuration/intro".into()
     }
     fn method(&self) -> Method {
         Method::POST

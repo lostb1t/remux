@@ -91,6 +91,7 @@ pub fn DashboardLayout() -> Element {
         Route::SettingsSearchRoute => "Search",
         Route::SettingsJellyfinSyncRoute => "Jellyfin Sync",
         Route::SettingsBrandingRoute => "Branding",
+        Route::SettingsIntroRoute => "Intro",
         Route::AccessUsersRoute => "Users",
         Route::AccessApiKeysRoute => "API Keys",
         Route::TasksRoute => "Tasks",
@@ -176,6 +177,7 @@ pub fn DashboardLayout() -> Element {
                             | Route::SettingsSearchRoute
                             | Route::SettingsJellyfinSyncRoute
                             | Route::SettingsBrandingRoute
+                            | Route::SettingsIntroRoute
                         ),
                         NavSubItem {
                             label: "General",
@@ -196,6 +198,11 @@ pub fn DashboardLayout() -> Element {
                             label: "Jellyfin Sync",
                             active: route == Route::SettingsJellyfinSyncRoute,
                             on_click: move |_| { navigator().push(Route::SettingsJellyfinSyncRoute); sidebar_open.set(false); },
+                        }
+                        NavSubItem {
+                            label: "Intro",
+                            active: route == Route::SettingsIntroRoute,
+                            on_click: move |_| { navigator().push(Route::SettingsIntroRoute); sidebar_open.set(false); },
                         }
                         NavSubItem {
                             label: "Branding",

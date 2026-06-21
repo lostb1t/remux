@@ -157,6 +157,7 @@ impl Into<MediaType> for db::MediaKind {
             db::MediaKind::Playlist => MediaType::Playlist,
             db::MediaKind::Stream | db::MediaKind::StreamGroup => MediaType::Video,
             db::MediaKind::Subtitle => MediaType::Video,
+            db::MediaKind::Intro => MediaType::Video,
         }
     }
 }
@@ -301,6 +302,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 | db::MediaKind::Track
                 | db::MediaKind::TvChannel
                 | db::MediaKind::TvProgram
+                | db::MediaKind::Intro
         )
         .then(|| "Full".to_string()),
         has_lyrics: (media.kind == db::MediaKind::Track).then_some(true),
@@ -350,7 +352,8 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             db::MediaKind::Movie
             | db::MediaKind::Episode
             | db::MediaKind::TvChannel
-            | db::MediaKind::TvProgram => MediaType::Video,
+            | db::MediaKind::TvProgram
+            | db::MediaKind::Intro => MediaType::Video,
             db::MediaKind::Track => MediaType::Audio,
             db::MediaKind::Playlist => match media.collection_media_kind {
                 Some(db::CollectionMediaKind::Music) => MediaType::Audio,
