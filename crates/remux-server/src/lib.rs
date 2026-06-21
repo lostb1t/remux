@@ -314,12 +314,12 @@ pub async fn init_app(
                     let uri = request.uri();
                     let path = uri.path();
                     match uri.query() {
-                        Some(q) => info!(target: "remux_server::request", method = %request.method(), uri = %format!("{path}?{q}"), "→"),
-                        None => info!(target: "remux_server::request", method = %request.method(), uri = %path, "→"),
+                        Some(q) => debug!(target: "remux_server::request", method = %request.method(), uri = %format!("{path}?{q}"), "→"),
+                        None => debug!(target: "remux_server::request", method = %request.method(), uri = %path, "→"),
                     };
                 })
                 .on_response(|response: &axum::http::Response<axum::body::Body>, latency: std::time::Duration, _span: &tracing::Span| {
-                    info!(target: "remux_server::request", status = %response.status().as_u16(), latency_ms = %latency.as_millis(), "←");
+                    debug!(target: "remux_server::request", status = %response.status().as_u16(), latency_ms = %latency.as_millis(), "←");
                 }),
         )
         .layer(cors);

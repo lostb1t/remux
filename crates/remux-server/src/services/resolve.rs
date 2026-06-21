@@ -172,6 +172,23 @@ impl MediaResolveService {
 
         if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Series) {
             if !Self::resolve_media_imdb(&mut media, ctx).await {
+                // If the item arrived with a resolvable external ID (TMDB or TVDB), we
+                // expected to derive an IMDB ID from it. Persisting without one produces
+                // a UUID mismatch in validate() and the item gets dropped anyway — bail
+                // early so the caller sees a clean failure instead of a silent crash.
+                if media
+                    .external_ids
+                    .tmdb
+                    .is_some()
+                    || media
+                        .external_ids
+                        .tvdb
+                        .is_some()
+                {
+                    warn!(%id, kind = ?media.kind, title = %media.title,
+                        "persist_from_store: IMDB resolution failed for TMDB/TVDB item, skipping");
+                    return Ok(None);
+                }
                 warn!(%id, kind = ?media.kind, "persist_from_store: IMDB resolution failed, saving without IMDB ID");
             }
             // Recompute the stable UUID now that we have the IMDB ID. Use the authoritative

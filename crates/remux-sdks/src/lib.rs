@@ -235,14 +235,18 @@ impl<A: Auth + Clone> RestClient<A> {
             .base
             .join(path.trim_matches('/'))
             .unwrap();
+        // query() returns already-percent-encoded key=value pairs from serde_urlencoded.
+        // Reassemble them into a raw query string and set it directly — feeding them
+        // into query_pairs_mut().extend_pairs() would double-encode the values
+        // (e.g. comma → %2C → %252C), breaking TMDB's append_to_response parameter.
         let query = endpoint.query();
         if !query.is_empty() {
-            url.query_pairs_mut()
-                .extend_pairs(
-                    query
-                        .iter()
-                        .map(|(k, v)| (k.as_str(), v.as_str())),
-                );
+            let qs: String = query
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            url.set_query(Some(&qs));
         }
         let cache_key = hash_key(&url.to_string());
 
