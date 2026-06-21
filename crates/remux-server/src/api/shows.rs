@@ -11,10 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState, OptionExt, api, db,
-    db::{
-        auth,
-        media::{push_release_date_filter, release_date_threshold},
-    },
+    db::{auth, media::push_release_date_filter},
 };
 use axum_anyhow::ApiResult as Result;
 
@@ -165,7 +162,13 @@ pub async fn shows_nextup(
     )
     .await
     .ok();
-    let release_threshold = release_date_threshold(server_config.as_ref());
+    // Next Up always filters by release date regardless of the global toggle.
+    let buffer = server_config
+        .as_ref()
+        .map(|c| c.digital_release_buffer_days)
+        .unwrap_or(0);
+    let release_threshold =
+        chrono::Utc::now().naive_utc() + chrono::Duration::days(buffer);
 
     // All released episodes for the series in watch order (season asc, episode asc)
     let mut ep_qb =
@@ -173,9 +176,7 @@ pub async fn shows_nextup(
     ep_qb
         .push_bind(grandparent_id)
         .push(" AND kind = 'episode'");
-    if let Some(threshold) = release_threshold {
-        push_release_date_filter(&mut ep_qb, threshold);
-    }
+    push_release_date_filter(&mut ep_qb, release_threshold);
     ep_qb.push(" ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC");
     let episodes: Vec<db::Media> = ep_qb
         .build_query_as()
@@ -312,7 +313,13 @@ async fn shows_nextup_all(
     )
     .await
     .ok();
-    let release_threshold = release_date_threshold(server_config.as_ref());
+    // Next Up always filters by release date regardless of the global toggle.
+    let buffer = server_config
+        .as_ref()
+        .map(|c| c.digital_release_buffer_days)
+        .unwrap_or(0);
+    let release_threshold =
+        chrono::Utc::now().naive_utc() + chrono::Duration::days(buffer);
 
     // Inner UNION selects last_played_at/played_at directly from idx_ums_user_play_state
     // (covering) so no second join to user_media_state is needed. UNION ALL is safe
@@ -365,9 +372,7 @@ async fn shows_nextup_all(
         }
     }
     ep_qb.push(") AND kind = 'episode'");
-    if let Some(threshold) = release_threshold {
-        push_release_date_filter(&mut ep_qb, threshold);
-    }
+    push_release_date_filter(&mut ep_qb, release_threshold);
     ep_qb.push(
         " ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
     );

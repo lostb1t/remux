@@ -3688,20 +3688,19 @@ impl Media {
                 .iter()
                 .all(|k| matches!(k, MediaKind::Collection | MediaKind::Folder));
 
-        let has_release_date_rule = !targeting_containers
-            && smart_filter
-                .map(|sf| {
-                    sf.rules
-                        .iter()
-                        .any(|r| {
-                            matches!(
-                                r,
-                                remux_sdks::remux::FilterRule::DigitalReleaseDate
-                            )
-                        })
-                })
-                .unwrap_or(false);
-        let digital_released_before = has_release_date_rule
+        let release_date_applies = !kinds.is_empty()
+            && kinds
+                .iter()
+                .any(|k| {
+                    matches!(
+                        k,
+                        MediaKind::Movie
+                            | MediaKind::Series
+                            | MediaKind::Season
+                            | MediaKind::Episode
+                    )
+                });
+        let digital_released_before = release_date_applies
             .then(|| release_date_threshold(server_config))
             .flatten();
 
@@ -5079,22 +5078,37 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
 pub fn release_date_threshold(
     config: Option<&api::ServerConfiguration>,
 ) -> Option<NaiveDateTime> {
+    if config.map(|c| c.filter_by_digital_release_date) == Some(false) {
+        return None;
+    }
     let buffer = config
         .map(|c| c.digital_release_buffer_days)
         .unwrap_or(0);
     Some(Utc::now().naive_utc() + Duration::days(buffer))
 }
 
-/// Push ` AND COALESCE(digital_released_at, released_at) <= ?` onto a query builder.
+/// Push the release-date WHERE condition onto a query builder, binding `threshold`.
 ///
-/// Items with no date evaluate to NULL, and `NULL <= ?` is false in SQL, so they
-/// are hidden when the release-date filter is active.
+/// Falls back to the parent then grandparent release date when the item itself has
+/// no date, so episodes without individual air dates inherit the series premiere.
+/// Items with no date at any level (sports, live content) fall to the '1900-01-01'
+/// sentinel and always pass.
 pub fn push_release_date_filter(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
     threshold: NaiveDateTime,
 ) {
-    qb.push(" AND COALESCE(digital_released_at, released_at) <= ")
-        .push_bind(threshold);
+    // media.parent_id / media.grandparent_id are qualified with the outer table name so
+    // SQLite resolves them against the outer row, not against the inner alias `p`.
+    qb.push(
+        " AND COALESCE(\
+          digital_released_at, \
+          released_at, \
+          (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.parent_id), \
+          (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.grandparent_id), \
+          '1900-01-01 00:00:00'\
+        ) <= ",
+    )
+    .push_bind(threshold);
 }
 
 /// Append WHERE clauses for a set of `FilterRule`s onto a query builder.
@@ -5369,8 +5383,6 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             );
             Some((sql, false))
         }
-        // Handled via the `digital_released_before` pathway in get_by_jellyfin_filter.
-        R::DigitalReleaseDate => None,
     }
 }
 

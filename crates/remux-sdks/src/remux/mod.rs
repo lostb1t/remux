@@ -2663,9 +2663,6 @@ pub enum FilterRule {
     Catalog {
         catalog_id: Uuid,
     },
-    /// Hide items with no release date or a future digital release date.
-    /// Buffer days come from the global `digital_release_buffer_days` setting.
-    DigitalReleaseDate,
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).
