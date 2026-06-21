@@ -1,3 +1,11 @@
+## [0.9.1](https://github.com/lostb1t/remux/compare/v0.9.0...v0.9.1) (2026-06-21)
+
+
+### Bug Fixes
+
+* pass --repo to gh release create to avoid missing git context ([99ad721](https://github.com/lostb1t/remux/commit/99ad721477228dbec84a45c8f75c83f9109632e5))
+* query paramaters wrongly encoded resulting in wrong tmdb calls ([ef0ef77](https://github.com/lostb1t/remux/commit/ef0ef77a2b731cc2b07724875c59870295821cef))
+
 # [0.9.0](https://github.com/lostb1t/remux/compare/v0.8.0...v0.9.0) (2026-06-21)
 
 
