@@ -94,7 +94,7 @@ pub async fn get_intros_inner(
         opts.order,
         &state
             .ctx
-            .intro_idx,
+            .store,
     ) {
         Some(m) => m.clone(),
         None => return Ok(empty_result()),

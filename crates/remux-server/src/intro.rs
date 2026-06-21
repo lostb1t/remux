@@ -1,9 +1,7 @@
-use std::{
-    path::Path,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::path::Path;
 
 use anyhow::Result;
+use remux_utils::Store;
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -13,12 +11,14 @@ use crate::{
 };
 use remux_sdks::remux::IntroOrder;
 
+const INTRO_IDX_KEY: &str = "intro:sequential_idx";
+
 static VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "mov", "avi", "m4v"];
 
 /// Scan `intro_dir`, upsert each video file as a `MediaKind::Intro` item,
 /// and remove stale Intro items whose files no longer exist.
 /// Resets `intro_idx` to 0 on every call.
-pub async fn sync_intros(ctx: &AppContext, intro_idx: &AtomicUsize) -> Result<()> {
+pub async fn sync_intros(ctx: &AppContext) -> Result<()> {
     let opts = db::Settings::get_intro_config(&ctx.db).await?;
 
     let existing = all_intros(&ctx.db).await?;
@@ -151,7 +151,8 @@ pub async fn sync_intros(ctx: &AppContext, intro_idx: &AtomicUsize) -> Result<()
         }
     }
 
-    intro_idx.store(0, Ordering::Relaxed);
+    ctx.store
+        .save(INTRO_IDX_KEY, 0usize, std::time::Duration::MAX);
     Ok(())
 }
 
@@ -169,7 +170,7 @@ pub async fn all_intros(db: &sqlx::SqlitePool) -> Result<Vec<Media>> {
 pub fn pick_intro<'a>(
     intros: &'a [Media],
     order: IntroOrder,
-    idx: &AtomicUsize,
+    store: &Store,
 ) -> Option<&'a Media> {
     if intros.is_empty() {
         return None;
@@ -184,7 +185,11 @@ pub fn pick_intro<'a>(
             Some(&intros[seed % intros.len()])
         }
         IntroOrder::Sequential => {
-            let i = idx.fetch_add(1, Ordering::Relaxed) % intros.len();
+            let i = store
+                .get::<usize>(INTRO_IDX_KEY)
+                .unwrap_or(0)
+                % intros.len();
+            store.save(INTRO_IDX_KEY, i + 1, std::time::Duration::MAX);
             Some(&intros[i])
         }
     }

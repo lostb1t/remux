@@ -272,15 +272,11 @@ pub async fn update_intro_configuration(
         &opts,
     )
     .await?;
-    let idx = state
-        .ctx
-        .intro_idx
-        .clone();
     let ctx = state
         .ctx
         .clone();
     tokio::spawn(async move {
-        if let Err(e) = intro::sync_intros(&ctx, &idx).await {
+        if let Err(e) = intro::sync_intros(&ctx).await {
             tracing::warn!(err = ?e, "intro sync failed after config update");
         }
     });
