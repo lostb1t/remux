@@ -63,15 +63,16 @@ async fn prepare_squash(pool: &SqlitePool) -> Result<()> {
 
     match last {
         None => {}
-        Some(v) if v >= LAST_PRE_SQUASH => {
+        Some(v) if v < LAST_PRE_SQUASH => anyhow::bail!(
+            "Database schema is outdated. Please update to remux v0.8.0 first, \
+             then upgrade to this version."
+        ),
+        Some(v) if v < SQUASH_VERSION => {
             sqlx::query("DELETE FROM _sqlx_migrations")
                 .execute(pool)
                 .await?;
         }
-        Some(_) => anyhow::bail!(
-            "Database schema is outdated. Please update to remux v0.8.0 first, \
-             then upgrade to this version."
-        ),
+        Some(_) => {}
     }
     Ok(())
 }
