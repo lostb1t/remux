@@ -2320,65 +2320,65 @@ impl Media {
         // here rather than in the main query. The main query then contains only
         // `WHERE media.id IN (ids)` which forces SQLite to use individual PK lookups
         // (O(n_ids)) instead of scanning the entire kind-filtered media table (O(total_media)).
-        let resumable_ids: Option<Vec<uuid::Uuid>> = if let Some(usf) =
-            &filter.user_state
-        {
-            if usf.resumable == Some(true) {
-                let ids: Vec<uuid::Uuid> = if let Some(user_id) = &usf.user_id {
-                    // Drive from user_media_state (small, indexed by user_id) and
-                    // check media conditions via a correlated EXISTS so SQLite does
-                    // one PK lookup per in-progress item instead of materialising
-                    // the entire kind/date-filtered media set.
-                    let mut pre_qb = sqlx::QueryBuilder::new(
-                        "SELECT media_id FROM user_media_state \
+        let resumable_ids: Option<Vec<uuid::Uuid>> =
+            if let Some(usf) = &filter.user_state {
+                if usf.resumable == Some(true) {
+                    let ids: Vec<uuid::Uuid> = if let Some(user_id) = &usf.user_id {
+                        // Drive from user_media_state (small, indexed by user_id) and
+                        // check media conditions via a correlated EXISTS so SQLite does
+                        // one PK lookup per in-progress item instead of materialising
+                        // the entire kind/date-filtered media set.
+                        let mut pre_qb = sqlx::QueryBuilder::new(
+                            "SELECT media_id FROM user_media_state \
                          WHERE user_id = ",
-                    );
-                    pre_qb.push_bind(user_id);
-                    pre_qb.push(" AND playback_position > 0 AND play_count = 0");
-                    let needs_media_filter = filter
-                        .kind
-                        .as_ref()
-                        .map(|k| !k.is_empty())
-                        .unwrap_or(false)
-                        || filter
-                            .digital_released_before
-                            .is_some();
-                    if needs_media_filter {
-                        pre_qb.push(
-                            " AND EXISTS (SELECT 1 FROM media \
-                             WHERE id = media_id AND 1=1",
                         );
-                        if let Some(kinds) = &filter.kind {
-                            if !kinds.is_empty() {
-                                pre_qb.push(" AND kind IN (");
-                                let mut sep = pre_qb.separated(", ");
-                                for k in kinds {
-                                    sep.push_bind(k);
+                        pre_qb.push_bind(user_id);
+                        pre_qb.push(" AND playback_position > 0 AND play_count = 0");
+                        let needs_media_filter = filter
+                            .kind
+                            .as_ref()
+                            .map(|k| !k.is_empty())
+                            .unwrap_or(false)
+                            || filter
+                                .digital_released_before
+                                .is_some();
+                        if needs_media_filter {
+                            pre_qb.push(
+                                " AND EXISTS (SELECT 1 FROM media \
+                             WHERE id = media_id AND 1=1",
+                            );
+                            if let Some(kinds) = &filter.kind {
+                                if !kinds.is_empty() {
+                                    pre_qb.push(" AND kind IN (");
+                                    let mut sep = pre_qb.separated(", ");
+                                    for k in kinds {
+                                        sep.push_bind(k);
+                                    }
+                                    pre_qb.push(")");
                                 }
-                                pre_qb.push(")");
                             }
+                            if let Some(&threshold) = filter
+                                .digital_released_before
+                                .as_ref()
+                            {
+                                push_release_date_filter(&mut pre_qb, threshold);
+                            }
+                            pre_qb.push(")");
                         }
-                        if let Some(threshold) = &filter.digital_released_before {
-                            pre_qb
-                                .push(" AND COALESCE(digital_released_at, released_at, '1900-01-01 00:00:00') <= ")
-                                .push_bind(threshold);
-                        }
-                        pre_qb.push(")");
-                    }
-                    pre_qb
-                        .build_query_scalar::<uuid::Uuid>()
-                        .fetch_all(db)
-                        .await?
+                        pre_qb
+                            .build_query_scalar::<uuid::Uuid>()
+                            .fetch_all(db)
+                            .await?
+                    } else {
+                        vec![]
+                    };
+                    Some(ids)
                 } else {
-                    vec![]
-                };
-                Some(ids)
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
         for qb in [&mut count_qb, &mut records_qb] {
             if is_genre_scope_query {
@@ -2717,13 +2717,12 @@ impl Media {
                 }
             }
 
-            if let Some(threshold) = &filter.digital_released_before {
+            if let Some(&threshold) = filter
+                .digital_released_before
+                .as_ref()
+            {
                 if resumable_ids.is_none() {
-                    // 3-arg COALESCE maps NULL-date items to the sentinel '1900-01-01 00:00:00'
-                    // so they always pass the <= check without an OR branch, enabling a range
-                    // scan on idx_media_kind_avail_sentinel.
-                    qb.push(" AND COALESCE(digital_released_at, released_at, '1900-01-01 00:00:00') <= ")
-                        .push_bind(threshold);
+                    push_release_date_filter(qb, threshold);
                 }
             }
 
@@ -3680,6 +3679,15 @@ impl Media {
                 None
             };
 
+        let has_tv_channel = kinds.contains(&MediaKind::TvChannel);
+        let has_playlist = kinds.contains(&MediaKind::Playlist);
+        // True only when the query exclusively targets container kinds (no content mixed in).
+        // Used to skip content filter rules on container queries and to hide empty containers.
+        let targeting_containers = !kinds.is_empty()
+            && kinds
+                .iter()
+                .all(|k| matches!(k, MediaKind::Collection | MediaKind::Folder));
+
         let release_date_applies = !kinds.is_empty()
             && kinds
                 .iter()
@@ -3692,25 +3700,9 @@ impl Media {
                             | MediaKind::Episode
                     )
                 });
-        let digital_released_before = if release_date_applies
-            && server_config.map(|c| c.filter_by_digital_release_date) != Some(false)
-        {
-            let buffer = server_config
-                .map(|c| c.digital_release_buffer_days)
-                .unwrap_or(0);
-            Some(Utc::now().naive_utc() + Duration::days(buffer))
-        } else {
-            None
-        };
-
-        let has_tv_channel = kinds.contains(&MediaKind::TvChannel);
-        let has_playlist = kinds.contains(&MediaKind::Playlist);
-        // True only when the query exclusively targets container kinds (no content mixed in).
-        // Used to skip content filter rules on container queries and to hide empty containers.
-        let targeting_containers = !kinds.is_empty()
-            && kinds
-                .iter()
-                .all(|k| matches!(k, MediaKind::Collection | MediaKind::Folder));
+        let digital_released_before = release_date_applies
+            .then(|| release_date_threshold(server_config))
+            .flatten();
 
         let user_policy_filter = user_policy.and_then(|p| {
             p.filter_rules
@@ -5078,6 +5070,45 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
     }
 
     Ok(media_instances)
+}
+
+/// Compute the `digital_released_before` threshold from server config.
+///
+/// Returns `None` when the feature is disabled or config is unavailable.
+pub fn release_date_threshold(
+    config: Option<&api::ServerConfiguration>,
+) -> Option<NaiveDateTime> {
+    if config.map(|c| c.filter_by_digital_release_date) == Some(false) {
+        return None;
+    }
+    let buffer = config
+        .map(|c| c.digital_release_buffer_days)
+        .unwrap_or(0);
+    Some(Utc::now().naive_utc() + Duration::days(buffer))
+}
+
+/// Push the release-date WHERE condition onto a query builder, binding `threshold`.
+///
+/// Falls back to the parent then grandparent release date when the item itself has
+/// no date, so episodes without individual air dates inherit the series premiere.
+/// Items with no date at any level (sports, live content) fall to the '1900-01-01'
+/// sentinel and always pass.
+pub fn push_release_date_filter(
+    qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+    threshold: NaiveDateTime,
+) {
+    // media.parent_id / media.grandparent_id are qualified with the outer table name so
+    // SQLite resolves them against the outer row, not against the inner alias `p`.
+    qb.push(
+        " AND COALESCE(\
+          digital_released_at, \
+          released_at, \
+          (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.parent_id), \
+          (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.grandparent_id), \
+          '1900-01-01 00:00:00'\
+        ) <= ",
+    )
+    .push_bind(threshold);
 }
 
 /// Append WHERE clauses for a set of `FilterRule`s onto a query builder.

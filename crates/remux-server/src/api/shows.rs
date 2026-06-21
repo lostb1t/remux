@@ -9,7 +9,10 @@ use axum_extra::extract::Query;
 use remux_macros::{api_query, get};
 use uuid::Uuid;
 
-use crate::{AppState, OptionExt, api, db, db::auth};
+use crate::{
+    AppState, OptionExt, api, db,
+    db::{auth, media::push_release_date_filter},
+};
 use axum_anyhow::ApiResult as Result;
 
 use super::items::get_items;
@@ -152,19 +155,37 @@ pub async fn shows_nextup(
         .user
         .id;
 
-    // All episodes for the series in watch order (season asc, episode asc)
-    let episodes: Vec<db::Media> = sqlx::query_as(
-        "SELECT * FROM media \
-         WHERE grandparent_id = ? AND kind = 'episode' \
-         ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
-    )
-    .bind(grandparent_id)
-    .fetch_all(
+    let server_config = db::Settings::get_config(
         &state
             .ctx
             .db,
     )
-    .await?;
+    .await
+    .ok();
+    // Next Up always filters by release date regardless of the global toggle.
+    let buffer = server_config
+        .as_ref()
+        .map(|c| c.digital_release_buffer_days)
+        .unwrap_or(0);
+    let release_threshold =
+        chrono::Utc::now().naive_utc() + chrono::Duration::days(buffer);
+
+    // All released episodes for the series in watch order (season asc, episode asc)
+    let mut ep_qb =
+        sqlx::QueryBuilder::new("SELECT * FROM media WHERE grandparent_id = ");
+    ep_qb
+        .push_bind(grandparent_id)
+        .push(" AND kind = 'episode'");
+    push_release_date_filter(&mut ep_qb, release_threshold);
+    ep_qb.push(" ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC");
+    let episodes: Vec<db::Media> = ep_qb
+        .build_query_as()
+        .fetch_all(
+            &state
+                .ctx
+                .db,
+        )
+        .await?;
 
     if episodes.is_empty() {
         return Ok(Json(api::BaseItemDtoQueryResult::default()).into_response());
@@ -285,6 +306,21 @@ async fn shows_nextup_all(
         .enable_resumable
         .unwrap_or(true);
 
+    let server_config = db::Settings::get_config(
+        &state
+            .ctx
+            .db,
+    )
+    .await
+    .ok();
+    // Next Up always filters by release date regardless of the global toggle.
+    let buffer = server_config
+        .as_ref()
+        .map(|c| c.digital_release_buffer_days)
+        .unwrap_or(0);
+    let release_threshold =
+        chrono::Utc::now().naive_utc() + chrono::Duration::days(buffer);
+
     // Inner UNION selects last_played_at/played_at directly from idx_ums_user_play_state
     // (covering) so no second join to user_media_state is needed. UNION ALL is safe
     // because the two legs are mutually exclusive (play_count > 0 vs play_count = 0).
@@ -335,9 +371,10 @@ async fn shows_nextup_all(
             sep.push_bind(id);
         }
     }
+    ep_qb.push(") AND kind = 'episode'");
+    push_release_date_filter(&mut ep_qb, release_threshold);
     ep_qb.push(
-        ") AND kind = 'episode' \
-         ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
+        " ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
     );
     let all_episodes: Vec<db::Media> = ep_qb
         .build_query_as()
@@ -628,6 +665,12 @@ mod test {
                 parent_id: Some(season.id),
                 parent_idx: Some(1),
                 idx: Some(idx as i64 + 1),
+                digital_released_at: Some(
+                    NaiveDate::from_ymd_opt(2020, 1, 1)
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap(),
+                ),
                 ..Default::default()
             };
             episode
@@ -1179,6 +1222,167 @@ mod test {
             episodes[1]
                 .id
                 .to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn nextup_skips_unreleased_episodes_when_release_date_filter_enabled() {
+        // Regression for #35: episodes with a future digital_released_at must not
+        // appear in Next Up even when the user has finished everything released so far.
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use chrono::Utc;
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        // Enable the release-date filter with a 0-day buffer (strict: only past/today).
+        let cfg = api::ServerConfiguration {
+            filter_by_digital_release_date: true,
+            digital_release_buffer_days: 0,
+            ..Default::default()
+        };
+        db::Settings::set_config(db, &cfg)
+            .await
+            .unwrap();
+
+        let now = Utc::now().naive_utc();
+        let future = now + chrono::Duration::days(30);
+
+        let series_imdb = db::NonEmptyString::try_new("tt9999991".to_string()).unwrap();
+        let mut series = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Series,
+                external_ids: db::ExternalIds {
+                    imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: None,
+                episode: None,
+            }),
+            title: "FutureSeries".to_string(),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut season = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Season,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: None,
+            }),
+            title: "FutureSeries Season 1".to_string(),
+            kind: db::MediaKind::Season,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(series.id),
+            idx: Some(1),
+            ..Default::default()
+        };
+        season
+            .save(db)
+            .await
+            .unwrap();
+
+        // Ep1: already released and played.
+        let mut ep1 = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Episode,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: Some(1),
+            }),
+            title: "Ep1".to_string(),
+            kind: db::MediaKind::Episode,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(season.id),
+            parent_idx: Some(1),
+            idx: Some(1),
+            digital_released_at: Some(now - chrono::Duration::days(7)),
+            ..Default::default()
+        };
+        ep1.save(db)
+            .await
+            .unwrap();
+
+        // Ep2: not yet released — must be hidden from Next Up.
+        let mut ep2 = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Episode,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: Some(2),
+            }),
+            title: "Ep2 (unreleased)".to_string(),
+            kind: db::MediaKind::Episode,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(season.id),
+            parent_idx: Some(1),
+            idx: Some(2),
+            digital_released_at: Some(future),
+            ..Default::default()
+        };
+        ep2.save(db)
+            .await
+            .unwrap();
+
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+
+        insert_state(db, user.id, ep1.id, 1, 0, Some(now), Some(now)).await;
+
+        let resp = server
+            .get("/shows/nextup")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(
+            items.len(),
+            0,
+            "NextUp must not return unreleased episode Ep2; got: {:?}",
+            items
         );
     }
 }
