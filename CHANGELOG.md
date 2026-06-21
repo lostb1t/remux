@@ -1,3 +1,27 @@
+# [0.9.0](https://github.com/lostb1t/remux/compare/v0.8.0...v0.9.0) (2026-06-21)
+
+
+### Bug Fixes
+
+* external subtitles for web ([aa335f1](https://github.com/lostb1t/remux/commit/aa335f10fa4817e827620fb847d76f2f18e0b904))
+* force nextup active-series join order ([#26](https://github.com/lostb1t/remux/issues/26)) ([fefccdf](https://github.com/lostb1t/remux/commit/fefccdf7f6608513a47f44032eb42322a8e00c9c))
+* handle progress reports without play session id ([#29](https://github.com/lostb1t/remux/issues/29)) ([5833a3f](https://github.com/lostb1t/remux/commit/5833a3f6679b7d0863cae8f57beea819fcb14539))
+* inherit runtime from ([a7a53cb](https://github.com/lostb1t/remux/commit/a7a53cbf6b1ba401bf24b1f5b32d754f4eb3fa07))
+* nextup was missing imported nedia [#14](https://github.com/lostb1t/remux/issues/14) ([5ec7471](https://github.com/lostb1t/remux/commit/5ec7471655db82523d1c37e1203423a6f23cd971))
+* optimize iptv purge ([4c64a89](https://github.com/lostb1t/remux/commit/4c64a89d4ed50020252855585d79d2ab3999057e))
+* order continue watching by play date ([#19](https://github.com/lostb1t/remux/issues/19)) ([17ac545](https://github.com/lostb1t/remux/commit/17ac5454fcb714df12a61b81819a8aef9e5d61a9))
+* persist probe data between stream refresh ([f4212dd](https://github.com/lostb1t/remux/commit/f4212dd5b18696fcd72ac271566fd252642356ac))
+* respect enable_user_data and normalize NextUp cutoff handling ([#21](https://github.com/lostb1t/remux/issues/21)) ([9270125](https://github.com/lostb1t/remux/commit/9270125e869a68b0c6f3f53de6a133a9e1b8350b))
+* set DeliveryUrl on subtitle streams, respect device profile ([ac6c83b](https://github.com/lostb1t/remux/commit/ac6c83bb45698f63f65648b1adfce8c79c232ae4))
+* use source bitrate as encoding target, cap at max_streaming_bitrate ([d17203e](https://github.com/lostb1t/remux/commit/d17203e5617f9381386f3045a2b098ee9e541f51))
+* wrongly returning zero on items list with results ([d1125f1](https://github.com/lostb1t/remux/commit/d1125f16de8d32d8042ff9e8ddb707d6b96e0385))
+
+
+### Features
+
+* force plezy to reload versions ([4855d56](https://github.com/lostb1t/remux/commit/4855d560d0aed6ce9e9d2b734e15e3d7c9d1b2ab))
+* Implement AudioLanguagePreference and RememberAudioSelections user settings ([46d1284](https://github.com/lostb1t/remux/commit/46d1284f6def125332707c58bd9bd035cbe7130d))
+
 # [0.8.0](https://github.com/lostb1t/remux-server/compare/v0.7.0...v0.8.0) (2026-06-15)
 
 
