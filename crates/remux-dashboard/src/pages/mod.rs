@@ -15,8 +15,8 @@ pub use collections::CollectionsPage;
 pub use dashboard::DashboardPage;
 pub use iptv::IptvPage;
 pub use settings::{
-    JellyfinImportCard, P2pSettingsCard, PlaybackSettingsCard, ProbeSettingsCard,
-    SearchSettingsCard, ServerSettingsCard,
+    IntroSettingsCard, JellyfinImportCard, P2pSettingsCard, PlaybackSettingsCard,
+    ProbeSettingsCard, SearchSettingsCard, ServerSettingsCard,
 };
 pub use streams::StreamGroupsCard;
 pub use users::UsersPage;

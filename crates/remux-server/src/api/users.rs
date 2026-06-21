@@ -1105,17 +1105,18 @@ pub async fn users_items_similar(
 #[get("/users/{user_id}/intros")]
 pub async fn users_intros(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
 ) -> Result<impl IntoResponse> {
-    mock_items(State(state)).await
+    Ok(Json(api::BaseItemDtoQueryResult::default()))
 }
 
 #[get("/users/{user_id}/items/{id}/intros")]
 pub async fn users_items_intros(
     State(state): State<AppState>,
-    _session: auth::AuthSession,
+    session: auth::AuthSession,
+    Path((_user_id, id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    mock_items(State(state)).await
+    crate::api::intro::get_intros_inner(state, session, id).await
 }
 
 #[get("/useritems/resume")]

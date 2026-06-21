@@ -138,6 +138,7 @@ pub enum MediaKind {
     Playlist,
     StreamGroup,
     Subtitle,
+    Intro,
 }
 
 impl MediaKind {
@@ -224,6 +225,7 @@ impl Into<sdks::remux::MediaKind> for MediaKind {
             MediaKind::Playlist => sdks::remux::MediaKind::Playlist,
             MediaKind::StreamGroup => sdks::remux::MediaKind::Stream,
             MediaKind::Subtitle => sdks::remux::MediaKind::Stream,
+            MediaKind::Intro => sdks::remux::MediaKind::Stream,
         }
     }
 }

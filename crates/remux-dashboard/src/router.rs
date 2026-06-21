@@ -31,6 +31,8 @@ pub enum Route {
     SettingsSearchRoute,
     #[route("/settings/jellyfin-sync")]
     SettingsJellyfinSyncRoute,
+    #[route("/settings/intro")]
+    SettingsIntroRoute,
     #[route("/settings/branding")]
     SettingsBrandingRoute,
     #[route("/access/users")]
@@ -110,6 +112,12 @@ pub(crate) fn SettingsSearchRoute() -> Element {
 pub(crate) fn SettingsJellyfinSyncRoute() -> Element {
     let app_state = use_context::<AppState>();
     rsx! { JellyfinImportCard { app_state } }
+}
+
+#[component]
+pub(crate) fn SettingsIntroRoute() -> Element {
+    let app_state = use_context::<AppState>();
+    rsx! { IntroSettingsCard { app_state } }
 }
 
 #[component]

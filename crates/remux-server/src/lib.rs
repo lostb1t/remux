@@ -55,6 +55,7 @@ mod common;
 pub mod db;
 #[cfg(feature = "desktop")]
 pub mod embedded_static;
+pub mod intro;
 mod iptv;
 pub mod localization;
 pub mod playback_session;
@@ -261,6 +262,11 @@ pub async fn init_app(
         web_paths,
         addons,
     };
+
+    // Sync intro items at startup (best-effort; errors are logged not fatal).
+    if let Err(e) = intro::sync_intros(&ctx).await {
+        warn!(err = ?e, "intro sync failed at startup");
+    }
 
     // Kill idle sessions after 30 minutes of no activity.
     // 30 min matches a "stepped away" scenario; pings keep active sessions alive indefinitely.
