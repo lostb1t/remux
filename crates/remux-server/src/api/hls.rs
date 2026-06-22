@@ -512,6 +512,14 @@ pub async fn variant_hls_video(
     variant_hls_video_inner(state, q).await
 }
 
+fn should_serve_ffmpeg_variant_playlist(
+    is_live: bool,
+    use_fmp4: bool,
+    start_time_secs: u32,
+) -> bool {
+    is_live || use_fmp4 || start_time_secs > 0
+}
+
 async fn variant_hls_video_inner(
     state: AppState,
     q: api::HlsVideoQuery,
@@ -542,15 +550,25 @@ async fn variant_hls_video_inner(
         .id
         .clone();
 
-    // For live streams and fMP4 sessions we must serve the ffmpeg-written playlist
-    // because fMP4 segments snap to keyframe boundaries — actual durations differ
-    // from the target, so a synthetic uniform playlist would violate the HLS spec
-    // (#EXT-X-TARGETDURATION and #EXTINF must reflect real segment durations).
-    if is_live || use_fmp4 {
+    // For live streams, fMP4 sessions, and resumed TS-HLS sessions we must
+    // serve the ffmpeg-written playlist:
+    // - live streams need the rolling EVENT playlist
+    // - fMP4 segments snap to keyframe boundaries, so actual durations differ
+    //   from the target and the playlist must reflect the real segment timing
+    // - resumed TS-HLS sessions start ffmpeg at a non-zero segment number; a
+    //   synthetic zero-based playlist would point clients at segment_00000 even
+    //   though ffmpeg is writing segment_{start_number}.ts
+    if should_serve_ffmpeg_variant_playlist(
+        is_live,
+        use_fmp4,
+        session_read.start_time_secs,
+    ) {
         drop(session_read);
         // For live streams, serve the ffmpeg-written EVENT playlist directly.
         // For fMP4 VOD, also use ffmpeg's playlist because fMP4 segments snap to
-        // keyframe boundaries so actual durations differ from our 6s target.
+        // keyframe boundaries so actual durations differ from our target.
+        // For resumed TS-HLS sessions, ffmpeg's playlist carries the correct
+        // non-zero MEDIA-SEQUENCE and segment filenames after -start_number.
         // Poll until ffmpeg has written at least the first segment entry.
         let content = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
@@ -565,9 +583,10 @@ async fn variant_hls_video_inner(
         .await
         .unwrap_or_default();
 
-        // For non-live fMP4 VOD: once ffmpeg finishes it appends #EXT-X-ENDLIST and the
-        // playlist type stays as EVENT. Upgrade EVENT→VOD so hls.js treats the stream as
-        // a completed VOD rather than a live feed; leave live streams untouched.
+        // For non-live VOD sessions: once ffmpeg finishes it appends
+        // #EXT-X-ENDLIST and the playlist type stays as EVENT. Upgrade
+        // EVENT→VOD so hls.js treats the stream as a completed VOD rather than
+        // a live feed; leave live streams untouched.
         let is_complete = !is_live && content.contains("#EXT-X-ENDLIST");
 
         // Inject ?PlaySessionId=... into segment/map lines so hls_segment_inner can find the session.
@@ -621,6 +640,19 @@ async fn variant_hls_video_inner(
         .header("Cache-Control", "no-cache, no-store")
         .body(Body::from(content))
         .unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn resumed_ts_hls_uses_ffmpeg_variant_playlist() {
+        assert!(!super::should_serve_ffmpeg_variant_playlist(
+            false, false, 0
+        ));
+        assert!(super::should_serve_ffmpeg_variant_playlist(false, false, 1));
+        assert!(super::should_serve_ffmpeg_variant_playlist(false, true, 0));
+        assert!(super::should_serve_ffmpeg_variant_playlist(true, false, 0));
+    }
 }
 
 /// Serves individual HLS segment files.
