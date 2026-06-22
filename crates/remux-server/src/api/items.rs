@@ -189,11 +189,14 @@ pub async fn get_items(
                     .as_deref()
                     .map(|s| {
                         s.is_empty()
-                            || matches!(
-                                s.first(),
-                                Some(api::ItemSortBy::SortName)
-                                    | Some(api::ItemSortBy::Name)
-                            )
+                            || s.iter()
+                                .any(|v| {
+                                    matches!(
+                                        v,
+                                        api::ItemSortBy::SortName
+                                            | api::ItemSortBy::Name
+                                    )
+                                })
                     })
                     .unwrap_or(true);
                 if is_client_default {
@@ -783,11 +786,14 @@ pub async fn items_flat(
                         .as_deref()
                         .map(|s| {
                             s.is_empty()
-                                || matches!(
-                                    s.first(),
-                                    Some(api::ItemSortBy::SortName)
-                                        | Some(api::ItemSortBy::Name)
-                                )
+                                || s.iter()
+                                    .any(|v| {
+                                        matches!(
+                                            v,
+                                            api::ItemSortBy::SortName
+                                                | api::ItemSortBy::Name
+                                        )
+                                    })
                         })
                         .unwrap_or(true);
                     if is_client_default {
