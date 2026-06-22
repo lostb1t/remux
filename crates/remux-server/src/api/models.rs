@@ -420,7 +420,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             }),
             logo: media_image_tag(&media, db::ImageKind::Logo),
             backdrop: media_image_tag(&media, db::ImageKind::Backdrop),
-            ..Default::default()
+            thumb: media_image_tag(&media, db::ImageKind::Thumb),
         }),
         index_number: media.idx,
         is_folder: media

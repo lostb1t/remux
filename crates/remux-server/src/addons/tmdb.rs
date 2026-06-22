@@ -66,11 +66,14 @@ inventory::submit! {
 
 pub struct TmdbAddon {}
 
-const TMDB_IMAGE_BASE: &str = "https://image.tmdb.org/t/p/original";
-
-fn tmdb_image(path: Option<&str>) -> Option<String> {
+fn tmdb_image(path: Option<&str>, kind: db::ImageKind) -> Option<String> {
+    let size = match kind {
+        db::ImageKind::Backdrop => "w1280",
+        db::ImageKind::Logo => "w500",
+        db::ImageKind::Primary | db::ImageKind::Thumb => "w780",
+    };
     path.filter(|p| !p.is_empty())
-        .map(|p| format!("{}{}", TMDB_IMAGE_BASE, p))
+        .map(|p| format!("https://image.tmdb.org/t/p/{}{}", size, p))
 }
 
 #[async_trait]
@@ -162,6 +165,7 @@ impl From<&sdks::tmdb::Season> for db::Media {
         if let Some(url) = tmdb_image(
             s.poster_path
                 .as_deref(),
+            db::ImageKind::Primary,
         ) {
             media.set_image(db::ImageKind::Primary, url);
         }
@@ -193,6 +197,7 @@ impl From<&sdks::tmdb::Episode> for db::Media {
         if let Some(url) = tmdb_image(
             ep.still_path
                 .as_deref(),
+            db::ImageKind::Primary,
         ) {
             media.set_image(db::ImageKind::Primary, url);
         }
@@ -458,6 +463,7 @@ fn build_person_relations(
             member
                 .profile_path
                 .as_deref(),
+            db::ImageKind::Primary,
         ) {
             person.set_image(db::ImageKind::Primary, url);
         }
@@ -513,6 +519,7 @@ fn build_person_relations(
                 member
                     .profile_path
                     .as_deref(),
+                db::ImageKind::Primary,
             ) {
                 person.set_image(db::ImageKind::Primary, url);
             }
@@ -643,12 +650,12 @@ async fn fetch_tmdb_meta(
                     .images
                     .as_ref()
                     .and_then(|i| i.best_logo())
-                    .and_then(|p| tmdb_image(Some(p)));
+                    .and_then(|p| tmdb_image(Some(p), db::ImageKind::Logo));
                 let thumb = movie_details
                     .images
                     .as_ref()
                     .and_then(|i| i.best_thumb())
-                    .and_then(|p| tmdb_image(Some(p)));
+                    .and_then(|p| tmdb_image(Some(p), db::ImageKind::Thumb));
                 let rating = movie_details
                     .release_dates
                     .as_ref()
@@ -733,6 +740,7 @@ async fn fetch_tmdb_meta(
                     movie_details
                         .poster_path
                         .as_deref(),
+                    db::ImageKind::Primary,
                 ) {
                     patch.set_image(db::ImageKind::Primary, url);
                 }
@@ -740,6 +748,7 @@ async fn fetch_tmdb_meta(
                     movie_details
                         .backdrop_path
                         .as_deref(),
+                    db::ImageKind::Backdrop,
                 ) {
                     patch.set_image(db::ImageKind::Backdrop, url);
                 }
@@ -825,12 +834,12 @@ async fn fetch_tmdb_meta(
                     .images
                     .as_ref()
                     .and_then(|i| i.best_logo())
-                    .and_then(|p| tmdb_image(Some(p)));
+                    .and_then(|p| tmdb_image(Some(p), db::ImageKind::Logo));
                 let thumb = tv_details
                     .images
                     .as_ref()
                     .and_then(|i| i.best_thumb())
-                    .and_then(|p| tmdb_image(Some(p)));
+                    .and_then(|p| tmdb_image(Some(p), db::ImageKind::Thumb));
                 let rating = tv_details
                     .content_ratings
                     .as_ref()
@@ -883,6 +892,7 @@ async fn fetch_tmdb_meta(
                     tv_details
                         .poster_path
                         .as_deref(),
+                    db::ImageKind::Primary,
                 ) {
                     patch.set_image(db::ImageKind::Primary, url);
                 }
@@ -890,6 +900,7 @@ async fn fetch_tmdb_meta(
                     tv_details
                         .backdrop_path
                         .as_deref(),
+                    db::ImageKind::Backdrop,
                 ) {
                     patch.set_image(db::ImageKind::Backdrop, url);
                 }
@@ -931,6 +942,7 @@ async fn fetch_tmdb_meta(
                             creator
                                 .profile_path
                                 .as_deref(),
+                            db::ImageKind::Primary,
                         ) {
                             creator_media.set_image(db::ImageKind::Primary, url);
                         }
@@ -1043,7 +1055,8 @@ async fn fetch_tmdb_meta(
                             .still_path
                             .clone()
                     });
-                let still_url = tmdb_image(best_still.as_deref());
+                let still_url =
+                    tmdb_image(best_still.as_deref(), db::ImageKind::Primary);
                 let external_ratings = db::ExternalRatings {
                     tmdb: ep_details
                         .vote_average
@@ -1099,6 +1112,7 @@ async fn fetch_tmdb_meta(
                             member
                                 .profile_path
                                 .as_deref(),
+                            db::ImageKind::Primary,
                         ) {
                             person.set_image(db::ImageKind::Primary, url);
                         }
@@ -1236,6 +1250,7 @@ async fn fetch_tmdb_meta(
                 details
                     .profile_path
                     .as_deref(),
+                db::ImageKind::Primary,
             ) {
                 patch.set_image(db::ImageKind::Primary, url);
             }
@@ -1328,6 +1343,7 @@ async fn fetch_tmdb_season_meta(
         season
             .poster_path
             .as_deref(),
+        db::ImageKind::Primary,
     ) {
         patch.set_image(db::ImageKind::Primary, url);
     }
@@ -1381,7 +1397,7 @@ async fn search_tmdb_person(
                 .profile_path
                 .as_deref()
                 .filter(|s| !s.is_empty())
-                .map(|s| format!("{}{}", TMDB_IMAGE_BASE, s));
+                .map(|s| format!("{}{}", "https://image.tmdb.org/t/p/original", s));
             let mut media = db::Media {
                 id,
                 title: p.name,
@@ -1451,7 +1467,7 @@ async fn tmdb_remote_images(
         type_label: &str,
         entry: &sdks::tmdb::ImageEntry,
     ) -> api::RemoteImageInfo {
-        let url = format!("{TMDB_IMAGE_BASE}{}", entry.file_path);
+        let url = format!("https://image.tmdb.org/t/p/original{}", entry.file_path);
         let thumb = format!("https://image.tmdb.org/t/p/w300{}", entry.file_path);
         api::RemoteImageInfo {
             provider_name: Some("TheMovieDb".to_string()),
@@ -1551,7 +1567,9 @@ async fn tmdb_remote_images(
                     if let Some(p) = &movie.poster_path {
                         out.push(api::RemoteImageInfo {
                             provider_name: Some("TheMovieDb".to_string()),
-                            url: Some(format!("{TMDB_IMAGE_BASE}{p}")),
+                            url: Some(format!(
+                                "https://image.tmdb.org/t/p/original{p}"
+                            )),
                             thumbnail_url: Some(format!(
                                 "https://image.tmdb.org/t/p/w300{p}"
                             )),
@@ -1572,7 +1590,9 @@ async fn tmdb_remote_images(
                     if let Some(b) = &movie.backdrop_path {
                         out.push(api::RemoteImageInfo {
                             provider_name: Some("TheMovieDb".to_string()),
-                            url: Some(format!("{TMDB_IMAGE_BASE}{b}")),
+                            url: Some(format!(
+                                "https://image.tmdb.org/t/p/original{b}"
+                            )),
                             thumbnail_url: Some(format!(
                                 "https://image.tmdb.org/t/p/w300{b}"
                             )),
@@ -1675,7 +1695,7 @@ async fn tmdb_remote_images(
                     })
                 {
                     if let Some(p) = &ep.still_path {
-                        let url = format!("{TMDB_IMAGE_BASE}{p}");
+                        let url = format!("https://image.tmdb.org/t/p/original{p}");
                         let thumb = format!("https://image.tmdb.org/t/p/w300{p}");
                         out.push(api::RemoteImageInfo {
                             provider_name: Some("TheMovieDb".to_string()),
