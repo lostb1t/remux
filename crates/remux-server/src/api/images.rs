@@ -75,145 +75,155 @@ async fn items_images_inner(
             .clone(),
     };
 
-    // Resolve to (raw_bytes, content_type, source_key_for_cache).
-    let (bytes, _raw_ct, source_key): (Vec<u8>, String, String) = if let Some(url) = q
-        .tag
-        .as_ref()
-        .filter(|t| t.contains("://"))
-    {
-        let (b, ct) = fetch_upstream(url)
-            .await
-            .context_not_found("image fetch failed")?;
-        (b, ct, url.clone())
-    } else {
-        let key = id.to_string();
-        if let Some(media) = db::Media::get_by_id(
-            &state
-                .ctx
-                .db,
-            &id,
-        )
-        .await?
+    // Resolve to (raw_bytes, content_type, source_key_for_cache, is_remote).
+    // is_remote=true means the bytes came from an external URL and must not be
+    // re-encoded — proxy them as-is.
+    let (bytes, raw_ct, source_key, is_remote): (Vec<u8>, String, String, bool) =
+        if let Some(url) = q
+            .tag
+            .as_ref()
+            .filter(|t| t.contains("://"))
         {
-            let kind: ImageKind = image_type
-                .to_string()
-                .parse()
-                .unwrap_or(ImageKind::Primary);
-            // If Thumb is requested but not stored, fall back to Primary.
-            let img_row = media
-                .images
-                .get(kind)
-                .or_else(|| {
-                    if kind == ImageKind::Thumb {
-                        media
-                            .images
-                            .get(ImageKind::Primary)
-                    } else {
-                        None
-                    }
-                });
-
-            if let Some(img) = img_row {
-                let source_key = img
-                    .id
-                    .to_string();
-                if img
-                    .path
-                    .starts_with('/')
-                {
-                    let path = std::path::PathBuf::from(&img.path);
-                    let (b, ct) = ImageService::serve_local(&path)
-                        .await
-                        .context_not_found("image file not found")?;
-                    (b, ct.to_string(), source_key)
-                } else {
-                    // Always proxy external URLs rather than redirecting — some clients
-                    // (e.g. Infuse) do not follow redirects for image requests.
-                    let (b, ct) = fetch_upstream(&img.path)
-                        .await
-                        .context_not_found("image fetch failed")?;
-                    (b, ct, source_key)
-                }
-            } else if matches!(
-                image_type,
-                api::ImageType::Primary | api::ImageType::Thumb
-            ) && matches!(
-                media.kind,
-                db::MediaKind::Collection | db::MediaKind::Folder
-            ) {
-                let b = ImageService::library_image(
-                    &state
-                        .ctx
-                        .config
-                        .data_dir,
-                    id,
-                    &media.title,
-                    &state
-                        .ctx
-                        .db,
-                )
-                .await
-                .context_not_found("no backdrop available for library")?;
-                // Reload the newly-inserted image row to get its stable UUID
-                let img_row = db::MediaImage::get_for_media(
-                    &state
-                        .ctx
-                        .db,
-                    &id,
-                )
-                .await
-                .unwrap_or_default()
-                .primary
-                .into_iter()
-                .find(|i| i.image_index == 0);
-                let source_key = img_row
-                    .map(|i| {
-                        i.id.to_string()
-                    })
-                    .unwrap_or_else(|| format!("placeholder:{id}"));
-                (b, "image/jpeg".to_string(), source_key)
-            } else {
-                return Err(anyhow::anyhow!("image not found"))
-                    .context_not_found("image not found");
-            }
-        } else {
-            // Not in DB — cached search result.
-            let url = state
-                .ctx
-                .store
-                .get::<db::Media>(key.clone())
-                .and_then(|m| match image_type {
-                    api::ImageType::Primary | api::ImageType::Thumb => m
-                        .get_image(ImageKind::Primary)
-                        .map(str::to_owned),
-                    api::ImageType::Backdrop => m
-                        .get_image(ImageKind::Backdrop)
-                        .map(str::to_owned),
-                    api::ImageType::Logo | api::ImageType::LogoImageAspectRatio => m
-                        .get_image(ImageKind::Logo)
-                        .map(str::to_owned),
-                });
-            let url = url.context_not_found("media image not found")?;
-            let (b, ct) = fetch_upstream(&url)
+            let (b, ct) = fetch_upstream(url)
                 .await
                 .context_not_found("image fetch failed")?;
-            (b, ct, url)
-        }
-    };
+            (b, ct, url.clone(), true)
+        } else {
+            let key = id.to_string();
+            if let Some(media) = db::Media::get_by_id(
+                &state
+                    .ctx
+                    .db,
+                &id,
+            )
+            .await?
+            {
+                let kind: ImageKind = image_type
+                    .to_string()
+                    .parse()
+                    .unwrap_or(ImageKind::Primary);
+                // If Thumb is requested but not stored, fall back to Primary.
+                let img_row = media
+                    .images
+                    .get(kind)
+                    .or_else(|| {
+                        if kind == ImageKind::Thumb {
+                            media
+                                .images
+                                .get(ImageKind::Primary)
+                        } else {
+                            None
+                        }
+                    });
 
-    // Apply resize/quality/blur/format transforms (cached).
-    let (final_bytes, content_type) = ImageService::process_image(
-        &state
-            .ctx
-            .config
-            .data_dir,
-        bytes,
-        &opts,
-        &source_key,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("{e}"))
-    .context_internal("image processing failed")?;
+                if let Some(img) = img_row {
+                    let source_key = img
+                        .id
+                        .to_string();
+                    if img
+                        .path
+                        .starts_with('/')
+                    {
+                        let path = std::path::PathBuf::from(&img.path);
+                        let (b, ct) = ImageService::serve_local(&path)
+                            .await
+                            .context_not_found("image file not found")?;
+                        (b, ct.to_string(), source_key, false)
+                    } else {
+                        // Always proxy external URLs rather than redirecting — some clients
+                        // (e.g. Infuse) do not follow redirects for image requests.
+                        let (b, ct) = fetch_upstream(&img.path)
+                            .await
+                            .context_not_found("image fetch failed")?;
+                        (b, ct, source_key, true)
+                    }
+                } else if matches!(
+                    image_type,
+                    api::ImageType::Primary | api::ImageType::Thumb
+                ) && matches!(
+                    media.kind,
+                    db::MediaKind::Collection | db::MediaKind::Folder
+                ) {
+                    let b = ImageService::library_image(
+                        &state
+                            .ctx
+                            .config
+                            .data_dir,
+                        id,
+                        &media.title,
+                        &state
+                            .ctx
+                            .db,
+                    )
+                    .await
+                    .context_not_found("no backdrop available for library")?;
+                    // Reload the newly-inserted image row to get its stable UUID
+                    let img_row = db::MediaImage::get_for_media(
+                        &state
+                            .ctx
+                            .db,
+                        &id,
+                    )
+                    .await
+                    .unwrap_or_default()
+                    .primary
+                    .into_iter()
+                    .find(|i| i.image_index == 0);
+                    let source_key = img_row
+                        .map(|i| {
+                            i.id.to_string()
+                        })
+                        .unwrap_or_else(|| format!("placeholder:{id}"));
+                    (b, "image/jpeg".to_string(), source_key, false)
+                } else {
+                    return Err(anyhow::anyhow!("image not found"))
+                        .context_not_found("image not found");
+                }
+            } else {
+                // Not in DB — cached search result.
+                let url = state
+                    .ctx
+                    .store
+                    .get::<db::Media>(key.clone())
+                    .and_then(|m| match image_type {
+                        api::ImageType::Primary | api::ImageType::Thumb => m
+                            .get_image(ImageKind::Primary)
+                            .map(str::to_owned),
+                        api::ImageType::Backdrop => m
+                            .get_image(ImageKind::Backdrop)
+                            .map(str::to_owned),
+                        api::ImageType::Logo | api::ImageType::LogoImageAspectRatio => {
+                            m.get_image(ImageKind::Logo)
+                                .map(str::to_owned)
+                        }
+                    });
+                let url = url.context_not_found("media image not found")?;
+                let (b, ct) = fetch_upstream(&url)
+                    .await
+                    .context_not_found("image fetch failed")?;
+                (b, ct, url, true)
+            }
+        };
+
+    // Apply resize/quality/blur/format transforms (cached) for local images only.
+    // Remote images are proxied as-is — re-encoding adds latency with no benefit.
+    let (final_bytes, content_type): (Vec<u8>, String) = if is_remote {
+        (bytes, raw_ct)
+    } else {
+        let (b, ct) = ImageService::process_image(
+            &state
+                .ctx
+                .config
+                .data_dir,
+            bytes,
+            &opts,
+            &source_key,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context_internal("image processing failed")?;
+        (b, ct.to_string())
+    };
 
     Ok((
         [
