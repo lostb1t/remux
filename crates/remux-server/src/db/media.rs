@@ -984,9 +984,10 @@ pub struct MediaFilter {
     pub parent_enabled: Option<bool>,
     /// Filter albums/tracks by artist (parent_id IN these IDs).
     pub artist_ids: Option<Vec<Uuid>>,
-    /// If set, hides items whose known release date is in the future.
-    /// `digital_released_at` is checked first; if absent, `released_at` is used as a fallback.
-    /// Items where both dates are NULL are shown (no date info = no restriction).
+    /// If set, hides items whose digital release date exceeds this threshold.
+    /// `digital_released_at` is used first. Items with no digital date but a `released_at`
+    /// within the past year are always hidden (theatrical-only, digital date unknown).
+    /// Older items without a digital date fall back to `released_at`.
     pub digital_released_before: Option<NaiveDateTime>,
     /// Sort order for results. Mapped from Jellyfin's ItemSortBy.
     pub sort_by: Vec<api::ItemSortBy>,
@@ -5091,10 +5092,13 @@ pub fn release_date_threshold(
 
 /// Push the release-date WHERE condition onto a query builder, binding `threshold`.
 ///
-/// Falls back to the parent then grandparent release date when the item itself has
-/// no date, so episodes without individual air dates inherit the series premiere.
-/// Items with no date at any level (sports, live content) fall to the '1900-01-01'
-/// sentinel and always pass.
+/// Priority order:
+/// 1. `digital_released_at` — explicit digital/streaming release date.
+/// 2. If no digital date but `released_at` is within the past year → `NULL` (hidden).
+///    Recent theatrical-only releases have no confirmed digital date yet.
+/// 3. `released_at` older than a year — falls back to theatrical as a proxy.
+/// 4. Parent then grandparent dates — episodes inherit series premiere when no item date.
+/// 5. `'1900-01-01'` sentinel — items with no date at any level (live/sports) always pass.
 pub fn push_release_date_filter(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
     threshold: NaiveDateTime,
@@ -5102,13 +5106,16 @@ pub fn push_release_date_filter(
     // media.parent_id / media.grandparent_id are qualified with the outer table name so
     // SQLite resolves them against the outer row, not against the inner alias `p`.
     qb.push(
-        " AND COALESCE(\
-          digital_released_at, \
-          released_at, \
-          (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.parent_id), \
-          (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.grandparent_id), \
-          '1900-01-01 00:00:00'\
-        ) <= ",
+        " AND CASE \
+            WHEN digital_released_at IS NOT NULL THEN digital_released_at \
+            WHEN released_at IS NOT NULL AND datetime(released_at) > datetime('now', '-1 year') THEN NULL \
+            ELSE COALESCE(\
+              released_at, \
+              (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.parent_id), \
+              (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.grandparent_id), \
+              '1900-01-01 00:00:00'\
+            ) \
+          END <= ",
     )
     .push_bind(threshold);
 }
@@ -5452,6 +5459,7 @@ fn build_episode_relations_from_ep(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::MediaIdRaw;
 
     #[test]
     fn from_path_tmdb_in_directory() {
@@ -5575,6 +5583,119 @@ mod tests {
         assert!(
             ids.tmdb
                 .is_none()
+        );
+    }
+
+    /// Verifies push_release_date_filter hides movies with a recent theatrical date
+    /// but no digital release date, while still showing movies with an old theatrical
+    /// date (>1 year) or an explicit digital release date.
+    #[tokio::test]
+    async fn release_date_filter_hides_recent_theatrical_only_movies() {
+        let (_server, guard) = crate::integration_test::new_test_server()
+            .await
+            .unwrap();
+        let db = &guard
+            .0
+            .db;
+        let now = chrono::Utc::now().naive_utc();
+
+        let make_movie_ids = |imdb: &str| {
+            let ext = ExternalIds {
+                imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+                ..Default::default()
+            };
+            let id = uuid::Uuid::from(&MediaIdRaw {
+                kind: MediaKind::Movie,
+                external_ids: ext.clone(),
+                season: None,
+                episode: None,
+            });
+            (id, ext)
+        };
+
+        let (id_recent, ext_recent) = make_movie_ids("tt9990001");
+        let (id_old, ext_old) = make_movie_ids("tt9990002");
+        let (id_digital, ext_digital) = make_movie_ids("tt9990003");
+
+        // Theatrical only, released 2 months ago — no digital date → must be hidden.
+        let mut recent_theatrical = Media {
+            id: id_recent,
+            title: "Recent Theatrical Only".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_recent,
+            released_at: Some(now - chrono::Duration::days(60)),
+            digital_released_at: None,
+            ..Default::default()
+        };
+        recent_theatrical
+            .save(db)
+            .await
+            .unwrap();
+
+        // Theatrical only, released 2 years ago — no digital date → old enough, must be shown.
+        let mut old_theatrical = Media {
+            id: id_old,
+            title: "Old Theatrical Only".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_old,
+            released_at: Some(now - chrono::Duration::days(730)),
+            digital_released_at: None,
+            ..Default::default()
+        };
+        old_theatrical
+            .save(db)
+            .await
+            .unwrap();
+
+        // Has explicit digital release date yesterday → must be shown.
+        let mut has_digital = Media {
+            id: id_digital,
+            title: "Has Digital Release".to_string(),
+            kind: MediaKind::Movie,
+            external_ids: ext_digital,
+            released_at: None,
+            digital_released_at: Some(now - chrono::Duration::days(1)),
+            ..Default::default()
+        };
+        has_digital
+            .save(db)
+            .await
+            .unwrap();
+
+        let result = Media::get_by_filter(
+            db,
+            &MediaFilter {
+                kind: Some(vec![MediaKind::Movie]),
+                digital_released_before: Some(now),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let titles: Vec<&str> = result
+            .records
+            .iter()
+            .map(|m| {
+                m.title
+                    .as_str()
+            })
+            .collect();
+
+        assert!(
+            !titles.contains(&"Recent Theatrical Only"),
+            "recent theatrical-only movie must be hidden; got: {:?}",
+            titles
+        );
+        assert!(
+            titles.contains(&"Old Theatrical Only"),
+            "old theatrical-only movie must be shown; got: {:?}",
+            titles
+        );
+        assert!(
+            titles.contains(&"Has Digital Release"),
+            "movie with digital release date must be shown; got: {:?}",
+            titles
         );
     }
 }

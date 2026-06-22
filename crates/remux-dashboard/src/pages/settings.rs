@@ -222,7 +222,7 @@ pub fn ServerSettingsCard(app_state: AppState) -> Element {
                                 " Filter by digital release date"
                             }
                             p { class: "field-hint",
-                                "Hide items that haven't been digitally released yet. Falls back to theatrical release date when no digital date is set."
+                                "Hide items that haven't been digitally released yet. Items released theatrically within the past year are always hidden when no digital date is available."
                             }
                         }
 
