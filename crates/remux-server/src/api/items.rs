@@ -1677,7 +1677,7 @@ pub async fn item(
                     .subtitle_languages
                     .clone()
                     .unwrap_or_default();
-                super::playback::inject_external_subtitles(
+                super::subtitles::inject_external_subtitles(
                     &state.ctx,
                     &media,
                     sources,

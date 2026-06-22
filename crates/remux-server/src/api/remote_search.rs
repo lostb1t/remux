@@ -279,7 +279,7 @@ pub async fn search_remote_subtitles(
         )
         .await;
 
-    let lang_two = crate::api::playback::lang_to_two_letter(&language)
+    let lang_two = crate::api::subtitles::lang_to_two_letter(&language)
         .unwrap_or_else(|| language.to_lowercase());
 
     let results: Vec<api::RemoteSubtitleInfo> = subs
@@ -287,12 +287,12 @@ pub async fn search_remote_subtitles(
         .filter(|s| {
             s.lang
                 .as_deref()
-                .and_then(crate::api::playback::lang_to_two_letter)
+                .and_then(crate::api::subtitles::lang_to_two_letter)
                 .map_or(false, |two| two.eq_ignore_ascii_case(&lang_two))
         })
         .map(|s| {
             let id = Uuid::new_v4().to_string();
-            let url_str = crate::api::playback::descriptor_to_subtitle_url(&s);
+            let url_str = crate::api::subtitles::descriptor_to_subtitle_url(&s);
             state
                 .ctx
                 .store
@@ -306,7 +306,7 @@ pub async fn search_remote_subtitles(
                     .as_deref()
                     .unwrap_or(""),
             );
-            let hint = crate::api::playback::subtitle_path_hint(&s);
+            let hint = crate::api::subtitles::subtitle_path_hint(&s);
             let format = subtitle_format_from_url(hint);
             api::RemoteSubtitleInfo {
                 id,

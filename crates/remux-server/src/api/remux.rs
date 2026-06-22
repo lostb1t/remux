@@ -12,7 +12,7 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    AppState,
+    AppState, OptionExt,
     db::{self, auth},
     sdks,
 };
@@ -242,7 +242,7 @@ pub async fn remux_cache_get(
 ) -> Result<Response> {
     let ns = query.ns;
 
-    let Some(record) = load_cache_record(
+    let record = load_cache_record(
         &state
             .ctx
             .db,
@@ -250,9 +250,7 @@ pub async fn remux_cache_get(
         &key,
     )
     .await?
-    else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
-    };
+    .context_not_found("not found")?;
 
     Ok((
         StatusCode::OK,

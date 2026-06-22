@@ -8,7 +8,7 @@ use axum_anyhow::ApiResult as Result;
 use remux_macros::get;
 use uuid::Uuid;
 
-use crate::{AppState, addons::LyricSearchRequest, db, db::auth};
+use crate::{AppState, OptionExt, addons::LyricSearchRequest, db, db::auth};
 
 /// `GET /Audio/{item_id}/Lyrics` — fetch the best lyric match for a track.
 #[get("/audio/{item_id}/lyrics")]
@@ -17,16 +17,14 @@ pub async fn get_lyrics(
     _session: auth::AuthSession,
     Path(item_id): Path<Uuid>,
 ) -> Result<Response> {
-    let Some(media) = db::Media::get_by_id(
+    let media = db::Media::get_by_id(
         &state
             .ctx
             .db,
         &item_id,
     )
     .await?
-    else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
-    };
+    .context_not_found("track not found")?;
     if media.kind != db::MediaKind::Track {
         return Ok(StatusCode::NOT_FOUND.into_response());
     }
@@ -39,14 +37,12 @@ pub async fn get_lyrics(
     )
     .await;
 
-    let Some(lyrics) = state
+    let lyrics = state
         .ctx
         .addons
         .lyric_fetch(&req)
         .await?
-    else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
-    };
+        .context_not_found("lyrics not found")?;
 
     Ok(Json(lyrics).into_response())
 }
@@ -58,16 +54,14 @@ pub async fn search_remote_lyrics(
     _session: auth::AuthSession,
     Path(item_id): Path<Uuid>,
 ) -> Result<Response> {
-    let Some(media) = db::Media::get_by_id(
+    let media = db::Media::get_by_id(
         &state
             .ctx
             .db,
         &item_id,
     )
     .await?
-    else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
-    };
+    .context_not_found("track not found")?;
     if media.kind != db::MediaKind::Track {
         return Ok(StatusCode::NOT_FOUND.into_response());
     }
@@ -95,14 +89,12 @@ pub async fn get_provider_lyrics(
     _session: auth::AuthSession,
     Path(lyric_id): Path<String>,
 ) -> Result<Response> {
-    let Some(lyrics) = state
+    let lyrics = state
         .ctx
         .addons
         .lyric_get_by_composite_id(&lyric_id)
         .await?
-    else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
-    };
+        .context_not_found("lyrics not found")?;
     Ok(Json(lyrics).into_response())
 }
 

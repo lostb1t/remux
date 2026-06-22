@@ -10,10 +10,6 @@ use crate::{
 };
 use axum_anyhow::ApiResult as Result;
 
-fn empty_result() -> Json<api::BaseItemDtoQueryResult> {
-    Json(api::BaseItemDtoQueryResult::empty())
-}
-
 /// Core intro selection logic, called from the route stubs in items.rs and users.rs.
 pub async fn get_intros_inner(
     state: AppState,
@@ -30,7 +26,7 @@ pub async fn get_intros_inner(
         .intro_dir
         .is_none()
     {
-        return Ok(empty_result());
+        return Ok(Json(api::BaseItemDtoQueryResult::empty()));
     }
 
     let media = match db::Media::get_by_id(
@@ -42,7 +38,7 @@ pub async fn get_intros_inner(
     .await?
     {
         Some(m) => m,
-        None => return Ok(empty_result()),
+        None => return Ok(Json(api::BaseItemDtoQueryResult::empty())),
     };
 
     let triggered = match media.kind {
@@ -63,7 +59,7 @@ pub async fn get_intros_inner(
     };
     if !triggered {
         debug!(item_id = %id, kind = ?media.kind, "intro: no trigger match");
-        return Ok(empty_result());
+        return Ok(Json(api::BaseItemDtoQueryResult::empty()));
     }
 
     if opts.skip_resume {
@@ -78,7 +74,7 @@ pub async fn get_intros_inner(
         {
             if state_row.playback_position > 0 {
                 debug!(item_id = %id, pos = state_row.playback_position, "intro: skipping — user resuming");
-                return Ok(empty_result());
+                return Ok(Json(api::BaseItemDtoQueryResult::empty()));
             }
         }
     }
@@ -97,7 +93,7 @@ pub async fn get_intros_inner(
             .store,
     ) {
         Some(m) => m.clone(),
-        None => return Ok(empty_result()),
+        None => return Ok(Json(api::BaseItemDtoQueryResult::empty())),
     };
 
     info!(intro_id = %chosen.id, item_id = %id, kind = ?media.kind, "intro selected");
