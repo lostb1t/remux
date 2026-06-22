@@ -127,10 +127,12 @@ async fn items_images_inner(
                         .context_not_found("image file not found")?;
                     (b, ct.to_string(), source_key)
                 } else {
-                    // External URL: redirect the client so it fetches directly.
-                    return Ok(
-                        axum::response::Redirect::temporary(&img.path).into_response()
-                    );
+                    // Always proxy external URLs rather than redirecting — some clients
+                    // (e.g. Infuse) do not follow redirects for image requests.
+                    let (b, ct) = fetch_upstream(&img.path)
+                        .await
+                        .context_not_found("image fetch failed")?;
+                    (b, ct, source_key)
                 }
             } else if matches!(
                 image_type,
