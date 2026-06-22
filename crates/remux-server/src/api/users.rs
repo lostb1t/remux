@@ -20,7 +20,7 @@ use crate::{
     api::system::QuickConnectEntry,
     common::{get_uuid, server_id},
     db,
-    db::{auth, media::release_date_threshold, user::User},
+    db::{auth, user::User},
     ws::WsEvent,
 };
 use axum_anyhow::ApiResult as Result;
@@ -551,7 +551,6 @@ pub async fn mark_played(
             .db,
     )
     .await;
-    let threshold = release_date_threshold(Some(&server_config));
     let ms = media
         .mark_played(
             &state
@@ -559,7 +558,7 @@ pub async fn mark_played(
                 .db,
             &session.user,
             true,
-            threshold,
+            server_config.release_date_threshold(),
         )
         .await?;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())

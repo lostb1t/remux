@@ -686,6 +686,16 @@ impl ServerConfiguration {
             .filter(|k| !k.is_empty())
             .unwrap_or(Self::DEFAULT_TMDB_KEY)
     }
+
+    pub fn release_date_threshold(&self) -> Option<NaiveDateTime> {
+        if !self.filter_by_digital_release_date {
+            return None;
+        }
+        Some(
+            Utc::now().naive_utc()
+                + chrono::Duration::days(self.digital_release_buffer_days),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

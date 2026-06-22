@@ -19,7 +19,7 @@ use crate::{
     AppState, IntoApiError, OptionExt, ResultExt, api, common,
     common::{TickUnit, ToRunTimeTicks},
     db,
-    db::{auth, media::release_date_threshold},
+    db::auth,
     transcode::session::TranscodeSession,
 };
 
@@ -707,7 +707,6 @@ pub async fn user_mark_played(
             .db,
     )
     .await;
-    let threshold = release_date_threshold(Some(&server_config));
     let ms = media
         .mark_played(
             &state
@@ -715,7 +714,7 @@ pub async fn user_mark_played(
                 .db,
             &session.user,
             true,
-            threshold,
+            server_config.release_date_threshold(),
         )
         .await?;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
