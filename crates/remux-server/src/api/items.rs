@@ -580,7 +580,7 @@ pub async fn get_items(
                         .cloned()
                         .collect();
                     if intersection.is_empty() {
-                        collection_types
+                        vec![]
                     } else {
                         intersection
                     }
@@ -2569,4 +2569,239 @@ pub async fn media_segments(
         "TotalRecordCount": count,
         "StartIndex": 0,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use http::header::HeaderValue;
+    use uuid::Uuid;
+
+    use crate::{
+        db,
+        db::{ExternalIds, MediaIdRaw, NonEmptyString},
+        integration_test::{auth_header_with_token, authenticated_server},
+    };
+
+    fn make_content_ids(kind: db::MediaKind, imdb: &str) -> (Uuid, ExternalIds) {
+        let ext = ExternalIds {
+            imdb: Some(NonEmptyString::try_new(imdb.to_string()).unwrap()),
+            ..Default::default()
+        };
+        let id = Uuid::from(&MediaIdRaw {
+            kind: kind.clone(),
+            external_ids: ext.clone(),
+            season: None,
+            episode: None,
+        });
+        (id, ext)
+    }
+
+    async fn insert_media(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        kind: db::MediaKind,
+        imdb: &str,
+    ) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let (id, ext) = make_content_ids(kind.clone(), imdb);
+        let mut m = db::Media {
+            id,
+            title: title.to_string(),
+            kind,
+            external_ids: ext,
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        m.save(db)
+            .await
+            .expect("insert_media failed");
+        m
+    }
+
+    async fn insert_smart_collection(
+        db: &sqlx::SqlitePool,
+        title: &str,
+        media_kind: db::CollectionMediaKind,
+    ) -> db::Media {
+        let now = Utc::now().naive_utc();
+        let mut c = db::Media {
+            title: title.to_string(),
+            kind: db::MediaKind::Collection,
+            collection_kind: Some(db::CollectionKind::Smart),
+            collection_media_kind: Some(media_kind),
+            created_at: now,
+            updated_at: now,
+            ..Default::default()
+        };
+        c.save(db)
+            .await
+            .expect("insert_smart_collection failed");
+        c
+    }
+
+    // Requests movies from a series-only smart collection; must return nothing.
+    #[tokio::test]
+    async fn test_include_item_types_mismatched_returns_empty() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let collection =
+            insert_smart_collection(db, "Shows", db::CollectionMediaKind::Series).await;
+        insert_media(db, "Breaking Bad", db::MediaKind::Series, "tt0903747").await;
+        insert_media(db, "Inception", db::MediaKind::Movie, "tt1375666").await;
+
+        let user: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = user["Id"]
+            .as_str()
+            .unwrap();
+
+        let resp = server
+            .get(&format!("/users/{}/items", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                (
+                    "parentId",
+                    collection
+                        .id
+                        .to_string()
+                        .as_str(),
+                ),
+                ("includeItemTypes", "Movie"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert_eq!(
+            body["TotalRecordCount"], 0,
+            "movie query on series collection must be empty"
+        );
+        assert_eq!(
+            body["Items"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0),
+            0
+        );
+    }
+
+    // Requests series from a series-only smart collection; must return the series.
+    #[tokio::test]
+    async fn test_include_item_types_matching_returns_items() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let collection =
+            insert_smart_collection(db, "Shows", db::CollectionMediaKind::Series).await;
+        insert_media(db, "Breaking Bad", db::MediaKind::Series, "tt0903747").await;
+
+        let user: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = user["Id"]
+            .as_str()
+            .unwrap();
+
+        let resp = server
+            .get(&format!("/users/{}/items", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[
+                (
+                    "parentId",
+                    collection
+                        .id
+                        .to_string()
+                        .as_str(),
+                ),
+                ("includeItemTypes", "Series"),
+            ])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0)
+                > 0,
+            "series query on series collection must return items"
+        );
+    }
+
+    // No includeItemTypes filter on a series collection should still return series.
+    #[tokio::test]
+    async fn test_no_include_item_types_returns_collection_default() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let collection =
+            insert_smart_collection(db, "Shows", db::CollectionMediaKind::Series).await;
+        insert_media(db, "The Wire", db::MediaKind::Series, "tt0306414").await;
+
+        let user: serde_json::Value = server
+            .get("/users/me")
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await
+            .json();
+        let user_id = user["Id"]
+            .as_str()
+            .unwrap();
+
+        let resp = server
+            .get(&format!("/users/{}/items", user_id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .add_query_params(&[(
+                "parentId",
+                collection
+                    .id
+                    .to_string()
+                    .as_str(),
+            )])
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        assert!(
+            body["TotalRecordCount"]
+                .as_i64()
+                .unwrap_or(0)
+                > 0,
+            "unfiltered query on series collection must return series"
+        );
+    }
 }
