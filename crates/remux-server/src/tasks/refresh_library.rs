@@ -21,7 +21,7 @@ impl Task for RefreshLibraryTask {
         "Refresh Library"
     }
     fn description(&self) -> &str {
-        "Imports catalogs, scans addon sources, and updates the media library index."
+        "Imports enabled addon catalogs into the library AND refreshes metadata for items already in the library. For metadata-only refreshes, prefer `RefreshAllMeta` (skips the network-heavy catalog fetch)."
     }
     fn short_description(&self) -> &str {
         "Syncs all addon catalogs into your library"
