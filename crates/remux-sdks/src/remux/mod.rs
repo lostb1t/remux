@@ -2927,6 +2927,7 @@ pub struct BaseItemDto {
     pub artist_count: Option<i64>,
     pub music_video_count: Option<i64>,
     pub lock_data: Option<bool>,
+    #[default(Some(true))]
     pub enable_media_source_display: Option<bool>,
     pub width: Option<i64>,
     pub height: Option<i64>,
