@@ -113,6 +113,21 @@ pub static JS: &str = r#"
     if (form && !form._remuxLoaded) form.classList.add('hide');
   }
 
+  function findPlayButton(page) {
+    var container = page && page.closest('.detailPagePrimaryContainer');
+    return container ? container.querySelector('.btnPlay') : null;
+  }
+
+  function hidePlayButton(page) {
+    var btn = findPlayButton(page);
+    if (btn) btn.classList.add('hide');
+  }
+
+  function showPlayButton(page) {
+    var btn = findPlayButton(page);
+    if (btn) btn.classList.remove('hide');
+  }
+
   function renderTracksForSource(page, mediaSources, selectedSourceId) {
     var source = null;
     for (var i = 0; i < mediaSources.length; i++) {
@@ -235,7 +250,10 @@ pub static JS: &str = r#"
           var page = getDetailsPage();
           if (!page) return;
 
-          if (isMovieOrEpisode) showSpinner(page);
+          if (isMovieOrEpisode) {
+            hidePlayButton(page);
+            showSpinner(page);
+          }
 
           var sourcesUrl = baseUrl + sep + 'Fields=MediaSources';
           self.getJSON(sourcesUrl).then(function (full) {
@@ -244,9 +262,10 @@ pub static JS: &str = r#"
             if (!page2) return;
             removeSpinner(page2);
             var ms = full && full.MediaSources;
-            if (ms && ms.length) {
+            if (ms && ms.length && full.LocationType !== 'Virtual') {
               renderAsyncTrackSelections(page2, ms);
               attachSourceChangeHandler(page2);
+              showPlayButton(page2);
             }
           }).catch(function () {
             var page3 = getDetailsPage();
