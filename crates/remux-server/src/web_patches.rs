@@ -295,7 +295,6 @@ pub static JS: &str = r#"
         if (SDK_RE.test(p.pathname) && !p.searchParams.has('Fields')) {
           p.searchParams.set('Fields', 'ChildCount');
           var rewritten = p.toString();
-          console.log('[remux] XHR rewrite ->', rewritten);
           var args = Array.prototype.slice.call(arguments);
           args[1] = rewritten;
           return _open.apply(this, args);

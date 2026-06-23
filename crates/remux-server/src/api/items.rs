@@ -1658,10 +1658,11 @@ pub async fn item(
             }
         }
     }
-    if media
-        .sources
-        .as_ref()
-        .is_none_or(|s| s.is_empty())
+    if want_streams
+        && media
+            .sources
+            .as_ref()
+            .is_none_or(|s| s.is_empty())
         && !matches!(
             media.kind,
             db::MediaKind::TvChannel | db::MediaKind::TvProgram
