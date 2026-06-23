@@ -1,3 +1,26 @@
+# [0.10.0](https://github.com/lostb1t/remux/compare/v0.9.0...v0.10.0) (2026-06-23)
+
+
+### Bug Fixes
+
+* apply release filter to nextup ([#35](https://github.com/lostb1t/remux/issues/35)) ([#38](https://github.com/lostb1t/remux/issues/38)) ([78472b3](https://github.com/lostb1t/remux/commit/78472b33ab47374035940ef08cd89d42638ec586))
+* hide recent theatrical-only movies until digital release confirmed ([e4f7eb1](https://github.com/lostb1t/remux/commit/e4f7eb1bbf414fe112af21dae0285c453ce8d698))
+* **hls:** serve ffmpeg playlist for resumed ts-hls ([#43](https://github.com/lostb1t/remux/issues/43)) ([66c1ed1](https://github.com/lostb1t/remux/commit/66c1ed14e41b5b2e52fb99fb35ca1e64245f010b))
+* **images:** proxy external image URLs instead of redirecting ([6076c56](https://github.com/lostb1t/remux/commit/6076c56e64e9527c818ec65309037722465f3504))
+* override collection sort when SortName appears anywhere in sort list ([c1231d4](https://github.com/lostb1t/remux/commit/c1231d42790d345d141bc498d37e82af6e4d0788))
+* prevent squash migration from re-running on every restart ([#36](https://github.com/lostb1t/remux/issues/36)) ([7c80a12](https://github.com/lostb1t/remux/commit/7c80a124c592bd5c1dc7de5585beeb8d464f06b2))
+* return empty when includeItemTypes doesn't match collection content type ([a7f0d5b](https://github.com/lostb1t/remux/commit/a7f0d5b9e550c646b5ac069758f3d463a5fa6830))
+
+
+### Features
+
+* intro support ([#32](https://github.com/lostb1t/remux/issues/32)) ([#39](https://github.com/lostb1t/remux/issues/39)) ([ba23b31](https://github.com/lostb1t/remux/commit/ba23b310be9719d3f9c941e81f3e25137ad9ac28))
+
+
+### Performance Improvements
+
+* **images:** use sized TMDB image variants and populate ImageTags.Thumb ([9f6c4a5](https://github.com/lostb1t/remux/commit/9f6c4a540c9e23be011125291a6edb7fd33e0c11))
+
 # [0.9.0](https://github.com/lostb1t/remux/compare/v0.8.0...v0.9.0) (2026-06-21)
 
 
