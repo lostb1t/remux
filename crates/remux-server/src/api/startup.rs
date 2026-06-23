@@ -97,21 +97,51 @@ pub async fn post_startup_user(
     Json(body): Json<api::StartupUser>,
 ) -> Result<impl IntoResponse> {
     require_wizard_incomplete(&state).await?;
-    if let (Some(name), Some(password)) = (body.name, body.password) {
-        let mut user = crate::db::User::new_with_password(
-            String::new(),
-            name.into_inner(),
-            &password,
-            None,
-        )?;
-        user.is_admin = true;
-        user.save_by_username(
-            &state
-                .ctx
-                .db,
-        )
-        .await?;
+    let name = body
+        .name
+        .ok_or_else(|| {
+            anyhow::anyhow!("name is required")
+                .context_bad_request(
+                    "Missing required field 'Name'. StartupUser expects PascalCase keys: {Name, Password, PasswordConfirm}.",
+                )
+        })?
+        .into_inner();
+    let password = body
+        .password
+        .ok_or_else(|| {
+            anyhow::anyhow!("password is required")
+                .context_bad_request(
+                    "Missing required field 'Password'. StartupUser expects PascalCase keys: {Name, Password, PasswordConfirm}.",
+                )
+        })?;
+    if password.is_empty() {
+        return Err(anyhow::anyhow!("password is empty")
+            .context_bad_request("Password must not be empty."));
     }
+    // Optional confirmation check — only enforce when the client supplied it.
+    // Some scripted clients omit PasswordConfirm; rejecting them silently broke
+    // the wizard before this fix. Compare only when present.
+    if let Some(confirm) = body.password_confirm.as_deref() {
+        if confirm != password {
+            return Err(anyhow::anyhow!("passwords do not match")
+                .context_bad_request(
+                    "PasswordConfirm does not match Password.",
+                ));
+        }
+    }
+    let mut user = crate::db::User::new_with_password(
+        String::new(),
+        name,
+        &password,
+        None,
+    )?;
+    user.is_admin = true;
+    user.save_by_username(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -145,4 +175,105 @@ pub async fn post_startup_complete(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::integration_test::TestGuard;
+    use crate::{Config, init_app_with_ctx};
+    use serde_json::json;
+
+    /// Like `new_test_server_with_config` but does **not** POST `/startup/complete`,
+    /// so the wizard stays open and validation errors on `/startup/user` are reachable.
+    async fn new_wizard_open_server() -> (axum_test::TestServer, TestGuard) {
+        let (app, ctx) = init_app_with_ctx(Config {
+            database_url: Some("sqlite::memory:".into()),
+            torrent_http_port: None,
+            disable_dht: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let server = axum_test::TestServer::builder()
+            .save_cookies()
+            .mock_transport()
+            .build(app)
+            .unwrap();
+        (server, TestGuard(ctx))
+    }
+
+    /// Lowercase JSON keys silently deserialized to `None` before the fix,
+    /// so `POST /startup/user` returned 204 without creating any user.
+    /// The fix requires PascalCase keys and now returns 400 when fields
+    /// are missing.
+    #[tokio::test]
+    async fn startup_user_rejects_lowercase_json() {
+        let (server, _ctx) = new_wizard_open_server().await;
+        let resp = server
+            .post("/startup/user")
+            .json(&json!({ "name": "admin", "password": "secret123" }))
+            .await;
+        // Before the fix: HTTP 204 + no user created. After: HTTP 400.
+        resp.assert_status_bad_request();
+    }
+
+    #[tokio::test]
+    async fn startup_user_rejects_missing_name() {
+        let (server, _ctx) = new_wizard_open_server().await;
+        let resp = server
+            .post("/startup/user")
+            .json(&json!({ "Password": "secret123" }))
+            .await;
+        resp.assert_status_bad_request();
+    }
+
+    #[tokio::test]
+    async fn startup_user_rejects_missing_password() {
+        let (server, _ctx) = new_wizard_open_server().await;
+        let resp = server
+            .post("/startup/user")
+            .json(&json!({ "Name": "admin" }))
+            .await;
+        resp.assert_status_bad_request();
+    }
+
+    #[tokio::test]
+    async fn startup_user_rejects_empty_password() {
+        let (server, _ctx) = new_wizard_open_server().await;
+        let resp = server
+            .post("/startup/user")
+            .json(&json!({
+                "Name": "admin",
+                "Password": "",
+            }))
+            .await;
+        resp.assert_status_bad_request();
+    }
+
+    #[tokio::test]
+    async fn startup_user_rejects_mismatched_password_confirm() {
+        let (server, _ctx) = new_wizard_open_server().await;
+        let resp = server
+            .post("/startup/user")
+            .json(&json!({
+                "Name": "admin",
+                "Password": "secret123",
+                "PasswordConfirm": "different",
+            }))
+            .await;
+        resp.assert_status_bad_request();
+    }
+
+    #[tokio::test]
+    async fn startup_user_accepts_valid_pascal_case_payload() {
+        let (server, _ctx) = new_wizard_open_server().await;
+        let resp = server
+            .post("/startup/user")
+            .json(&json!({
+                "Name": "admin",
+                "Password": "secret123",
+            }))
+            .await;
+        resp.assert_status_no_content();
+    }
 }
