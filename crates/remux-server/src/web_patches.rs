@@ -266,35 +266,39 @@ pub static JS: &str = r#"
         var type = item && item.Type;
         var isMovieOrEpisode = (type === 'Movie' || type === 'Episode');
 
-        setTimeout(function () {
-          if (_pendingItemId !== capturedId) return;
-          var page = getDetailsPage();
-          if (!page) return;
-
-          if (isMovieOrEpisode) {
-            disablePlayButton(page);
-            showSpinner(page);
-          }
-
+        if (isMovieOrEpisode) {
+          // Start sources fetch immediately — don't wait for the DOM.
           var sourcesUrl = baseUrl + sep + 'Fields=MediaSources';
-          self.getJSON(sourcesUrl).then(function (full) {
+          var sourcesFetch = self.getJSON(sourcesUrl);
+
+          // Show spinner once the DOM has painted.
+          setTimeout(function () {
             if (_pendingItemId !== capturedId) return;
-            var page2 = getDetailsPage();
-            if (!page2) return;
-            removeSpinner(page2);
+            var page = getDetailsPage();
+            if (page) showSpinner(page);
+          }, 0);
+
+          sourcesFetch.then(function (full) {
+            if (_pendingItemId !== capturedId) return;
             var ms = full && full.MediaSources;
-            if (ms && ms.length && full.LocationType !== 'Virtual') {
-              renderAsyncTrackSelections(page2, ms);
-              attachSourceChangeHandler(page2);
-              enablePlayButton(page2);
-            } else {
-              showNoStreams(page2);
-            }
+            // Poll until the details page element is in the DOM.
+            (function apply() {
+              var page = getDetailsPage();
+              if (!page) { setTimeout(apply, 50); return; }
+              removeSpinner(page);
+              if (ms && ms.length && full.LocationType !== 'Virtual') {
+                renderAsyncTrackSelections(page, ms);
+                attachSourceChangeHandler(page);
+                enablePlayButton(page);
+              } else {
+                showNoStreams(page);
+              }
+            }());
           }).catch(function () {
-            var page3 = getDetailsPage();
-            if (page3) removeSpinner(page3);
+            var page = getDetailsPage();
+            if (page) removeSpinner(page);
           });
-        }, 0);
+        }
 
         return item;
       });
