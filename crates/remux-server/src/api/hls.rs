@@ -517,7 +517,7 @@ fn should_serve_ffmpeg_variant_playlist(
     use_fmp4: bool,
     start_time_secs: u32,
 ) -> bool {
-    is_live || use_fmp4 || start_time_secs > 0
+    is_live || use_fmp4
 }
 
 async fn variant_hls_video_inner(
@@ -649,7 +649,9 @@ mod tests {
         assert!(!super::should_serve_ffmpeg_variant_playlist(
             false, false, 0
         ));
-        assert!(super::should_serve_ffmpeg_variant_playlist(false, false, 1));
+        assert!(!super::should_serve_ffmpeg_variant_playlist(
+            false, false, 1
+        ));
         assert!(super::should_serve_ffmpeg_variant_playlist(false, true, 0));
         assert!(super::should_serve_ffmpeg_variant_playlist(true, false, 0));
     }
