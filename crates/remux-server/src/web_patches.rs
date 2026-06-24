@@ -9,6 +9,18 @@ pub static CSS: &str = r##"
   @keyframes remux-spin {
     to { transform: rotate(360deg); }
   }
+
+  /* ── Play button: disabled by default, enabled when streams arrive ── */
+  .detailPagePrimaryContainer .btnPlay {
+    opacity: 0.4;
+    pointer-events: none;
+    cursor: default;
+  }
+  .detailPagePrimaryContainer.remux-streams-ready .btnPlay {
+    opacity: 1;
+    pointer-events: auto;
+    cursor: pointer;
+  }
 "##;
 
 /// JS injected before `</body>` of every HTML response.
@@ -127,25 +139,14 @@ pub static JS: &str = r#"
     form.classList.remove('hide');
   }
 
-  function findPlayButton(page) {
-    var container = page && page.closest('.detailPagePrimaryContainer');
-    return container ? container.querySelector('.btnPlay') : null;
-  }
-
   function disablePlayButton(page) {
-    var btn = findPlayButton(page);
-    if (!btn) return;
-    btn.setAttribute('disabled', 'disabled');
-    btn.style.opacity = '0.4';
-    btn.style.pointerEvents = 'none';
+    var container = page && page.closest('.detailPagePrimaryContainer');
+    if (container) container.classList.remove('remux-streams-ready');
   }
 
   function enablePlayButton(page) {
-    var btn = findPlayButton(page);
-    if (!btn) return;
-    btn.removeAttribute('disabled');
-    btn.style.opacity = '';
-    btn.style.pointerEvents = '';
+    var container = page && page.closest('.detailPagePrimaryContainer');
+    if (container) container.classList.add('remux-streams-ready');
   }
 
   function renderTracksForSource(page, mediaSources, selectedSourceId) {
