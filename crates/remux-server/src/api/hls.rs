@@ -386,6 +386,11 @@ pub async fn master_hls_video(
                 .await
                 .source_video_codec
                 .clone(),
+            source_audio_codec: session
+                .read()
+                .await
+                .source_audio_codec
+                .clone(),
             hardware_acceleration_type: encoding_opts
                 .hardware_acceleration_type
                 .unwrap_or_default(),
@@ -961,6 +966,11 @@ async fn hls_segment_inner(
                             .read()
                             .await
                             .source_video_codec
+                            .clone(),
+                        source_audio_codec: session
+                            .read()
+                            .await
+                            .source_audio_codec
                             .clone(),
                         hardware_acceleration_type: encoding_opts
                             .hardware_acceleration_type
