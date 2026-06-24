@@ -211,7 +211,19 @@ pub static JS: &str = r#"
     window._remuxCurrentMediaSources = mediaSources;
     form._remuxMediaSources = mediaSources;
     form._remuxLoaded = true;
-    form.classList.remove('hide');
+
+    // Hide the whole panel when there are no meaningful choices:
+    // single version, at most one audio track, and no subtitles.
+    var source = mediaSources[0];
+    var streams = source.MediaStreams || [];
+    var hasChoice = mediaSources.length > 1
+      || streams.filter(function (s) { return s.Type === 'Audio'; }).length > 1
+      || streams.some(function (s) { return s.Type === 'Subtitle'; });
+    if (hasChoice) {
+      form.classList.remove('hide');
+    } else {
+      form.classList.add('hide');
+    }
   }
 
   // Adds a second change listener that re-renders stream dropdowns when the user picks
@@ -271,11 +283,15 @@ pub static JS: &str = r#"
           var sourcesUrl = baseUrl + sep + 'Fields=MediaSources';
           var sourcesFetch = self.getJSON(sourcesUrl);
 
-          // Show spinner once the DOM has painted.
+          // Show spinner once the DOM has painted — but skip if streams are already loaded
+          // (e.g. playbackmanager calling getItem to fetch MediaStreams on play).
           setTimeout(function () {
             if (_pendingItemId !== capturedId) return;
             var page = getDetailsPage();
-            if (page) showSpinner(page);
+            if (!page) return;
+            var form = page.querySelector('.trackSelections');
+            if (form && form._remuxLoaded) return;
+            showSpinner(page);
           }, 0);
 
           sourcesFetch.then(function (full) {
@@ -285,6 +301,9 @@ pub static JS: &str = r#"
             (function apply() {
               var page = getDetailsPage();
               if (!page) { setTimeout(apply, 50); return; }
+              var form = page.querySelector('.trackSelections');
+              // Already rendered by a prior fetch; nothing to do.
+              if (form && form._remuxLoaded) return;
               removeSpinner(page);
               if (ms && ms.length && full.LocationType !== 'Virtual') {
                 renderAsyncTrackSelections(page, ms);
@@ -296,7 +315,10 @@ pub static JS: &str = r#"
             }());
           }).catch(function () {
             var page = getDetailsPage();
-            if (page) removeSpinner(page);
+            if (page) {
+              var form = page.querySelector('.trackSelections');
+              if (!form || !form._remuxLoaded) removeSpinner(page);
+            }
           });
         }
 
