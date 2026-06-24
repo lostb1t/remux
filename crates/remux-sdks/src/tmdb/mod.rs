@@ -234,7 +234,7 @@ pub struct Network {
     pub origin_country: String,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ProductionCompany {
     pub id: u64,
     pub logo_path: Option<String>,
@@ -242,7 +242,7 @@ pub struct ProductionCompany {
     pub origin_country: String,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ProductionCountry {
     pub iso_3166_1: String,
     pub name: String,

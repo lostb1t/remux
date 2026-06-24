@@ -2731,6 +2731,10 @@ pub enum FilterRule {
         op: SetOp,
         values: Vec<String>,
     },
+    OriginalLanguage {
+        op: SetOp,
+        values: Vec<String>,
+    },
     /// Matches items that belong to the given catalog collection.
     Catalog {
         catalog_id: Uuid,
@@ -2797,6 +2801,7 @@ pub struct BaseItemDto {
     pub name: Option<String>,
     pub original_title: Option<String>,
     pub original_title_sortable: Option<String>,
+    pub original_language: Option<String>,
     pub etag: Option<Uuid>,
     pub source_type: Option<String>,
     pub playlist_item_id: Option<String>,
@@ -4392,6 +4397,44 @@ impl Endpoint for GetCertificationSuggestions {
 
     fn path(&self) -> String {
         "/items/certifications".into()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+}
+
+/// Fetch distinct production country names from the local media DB, optionally filtered.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GetCountrySuggestions {
+    #[serde(rename = "SearchTerm", skip_serializing_if = "String::is_empty")]
+    pub search_term: String,
+}
+
+impl Endpoint for GetCountrySuggestions {
+    type Output = Vec<String>;
+
+    fn path(&self) -> String {
+        "/items/countries".into()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        self
+    }
+}
+
+/// Fetch distinct original_language codes from the local media DB, optionally filtered.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GetLanguageSuggestions {
+    #[serde(rename = "SearchTerm", skip_serializing_if = "String::is_empty")]
+    pub search_term: String,
+}
+
+impl Endpoint for GetLanguageSuggestions {
+    type Output = Vec<String>;
+
+    fn path(&self) -> String {
+        "/items/languages".into()
     }
 
     fn query_params(&self) -> impl serde::Serialize + '_ {

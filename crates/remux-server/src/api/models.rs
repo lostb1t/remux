@@ -149,6 +149,7 @@ impl Into<MediaType> for db::MediaKind {
             db::MediaKind::MusicGenre => MediaType::MusicGenre,
             db::MediaKind::Person => MediaType::Person,
             db::MediaKind::Studio => MediaType::Studio,
+            db::MediaKind::Country => MediaType::Studio,
             db::MediaKind::TvChannel => MediaType::TvChannel,
             db::MediaKind::TvProgram => MediaType::Program,
             db::MediaKind::Track => MediaType::Audio,
@@ -791,14 +792,36 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 .and_utc()
                 .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         ),
-        production_locations: (media.kind == db::MediaKind::Person)
-            .then(|| {
-                media
-                    .country
-                    .clone()
-                    .map(|c| vec![c])
-            })
-            .flatten(),
+        original_language: media
+            .original_language
+            .clone(),
+        production_locations: {
+            let from_relations: Vec<String> = media
+                .relations
+                .as_ref()
+                .map(|rels| {
+                    rels.iter()
+                        .filter(|(_, m)| m.kind == db::MediaKind::Country)
+                        .map(|(_, m)| {
+                            m.title
+                                .clone()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !from_relations.is_empty() {
+                Some(from_relations)
+            } else {
+                (media.kind == db::MediaKind::Person)
+                    .then(|| {
+                        media
+                            .country
+                            .clone()
+                            .map(|c| vec![c])
+                    })
+                    .flatten()
+            }
+        },
         ..Default::default()
     };
 

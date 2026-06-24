@@ -124,6 +124,7 @@ pub enum MediaKind {
     Person,
     Studio,
     Genre,
+    Country,
     MusicGenre,
     Collection,
     // purely here for jf
@@ -215,7 +216,7 @@ impl Into<sdks::remux::MediaKind> for MediaKind {
             MediaKind::Folder => sdks::remux::MediaKind::Folder,
             MediaKind::Genre | MediaKind::MusicGenre => sdks::remux::MediaKind::Genre,
             MediaKind::Person => sdks::remux::MediaKind::Person,
-            MediaKind::Studio => sdks::remux::MediaKind::Studio,
+            MediaKind::Studio | MediaKind::Country => sdks::remux::MediaKind::Studio,
             MediaKind::Stream => sdks::remux::MediaKind::Stream,
             MediaKind::TvChannel => sdks::remux::MediaKind::TvChannel,
             MediaKind::TvProgram => sdks::remux::MediaKind::TvProgram,
@@ -1093,6 +1094,8 @@ pub struct Media {
     pub certification_age: Option<i32>,
     /// ISO 3166-1 alpha-2 country code (e.g. "US", "GB").
     pub country: Option<String>,
+    /// BCP 47 language tag of the original language (e.g. "en", "fr").
+    pub original_language: Option<String>,
     #[sqlx(skip)]
     pub images: MediaImages,
     pub status: Option<MediaStatus>,
@@ -1566,9 +1569,10 @@ impl Media {
             external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
             live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id,
             collection_smart_filter, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
-            collection_source, collection_default_sort, collection_default_sort_order
+            collection_source, collection_default_sort, collection_default_sort_order,
+            original_language
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44)
         ON CONFLICT (id) DO UPDATE SET
             title = excluded.title,
             kind = excluded.kind,
@@ -1609,7 +1613,8 @@ impl Media {
             custom_name = excluded.custom_name,
             status = COALESCE(excluded.status, media.status),
             refreshed_at = COALESCE(excluded.refreshed_at, media.refreshed_at),
-            program_kind = excluded.program_kind
+            program_kind = excluded.program_kind,
+            original_language = COALESCE(excluded.original_language, media.original_language)
         "#,
         )
         .bind(self.id)
@@ -1655,6 +1660,7 @@ impl Media {
         .bind(&self.collection_source)
         .bind(sqlx::types::Json(&self.collection_default_sort))
         .bind(sqlx::types::Json(&self.collection_default_sort_order))
+        .bind(&self.original_language)
         .execute(db)
         .await?;
 
@@ -1706,7 +1712,8 @@ impl Media {
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
-                collection_source, collection_default_sort, collection_default_sort_order
+                collection_source, collection_default_sort, collection_default_sort_order,
+                original_language
             )",
         );
             for item in chunk {
@@ -1760,7 +1767,8 @@ impl Media {
                     .push_bind(&item.collection_latest_sort_digital)
                     .push_bind(&item.collection_source)
                     .push_bind(sqlx::types::Json(&item.collection_default_sort))
-                    .push_bind(sqlx::types::Json(&item.collection_default_sort_order));
+                    .push_bind(sqlx::types::Json(&item.collection_default_sort_order))
+                    .push_bind(&item.original_language);
             });
 
             query_builder.push(" ON CONFLICT DO NOTHING");
@@ -1814,7 +1822,8 @@ impl Media {
                 rating_critic, rating_audience, description, trailers, stream_info, probe_data, promoted, collection_kind, collection_media_kind,
                 external_ids, external_ratings, created_at, updated_at, certification, certification_age, parent_idx,
                 live_start, live_end, tvg_id, channel_number, enabled, sort_order, custom_name, digital_released_at, status, refreshed_at, grandparent_id, country, program_kind, collection_latest_auto_unplayed, collection_latest_sort_digital,
-                collection_source, collection_default_sort, collection_default_sort_order
+                collection_source, collection_default_sort, collection_default_sort_order,
+                original_language
             )",
         );
 
@@ -1867,7 +1876,8 @@ impl Media {
                     .push_bind(&item.collection_latest_sort_digital)
                     .push_bind(&item.collection_source)
                     .push_bind(sqlx::types::Json(&item.collection_default_sort))
-                    .push_bind(sqlx::types::Json(&item.collection_default_sort_order));
+                    .push_bind(sqlx::types::Json(&item.collection_default_sort_order))
+                    .push_bind(&item.original_language);
             });
 
             query_builder.push(
@@ -1904,7 +1914,8 @@ impl Media {
                 enabled = CASE WHEN media.id IS NOT NULL THEN media.enabled ELSE excluded.enabled END,
                 sort_order = CASE WHEN media.id IS NOT NULL THEN media.sort_order ELSE excluded.sort_order END,
                 custom_name = media.custom_name,
-                program_kind = excluded.program_kind",
+                program_kind = excluded.program_kind,
+                original_language = COALESCE(excluded.original_language, media.original_language)",
             );
 
             query_builder
@@ -2967,6 +2978,8 @@ impl Media {
                             MediaKind::Genre
                                 | MediaKind::MusicGenre
                                 | MediaKind::Person
+                                | MediaKind::Studio
+                                | MediaKind::Country
                         ) {
                             continue;
                         }
@@ -5269,11 +5282,36 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                         .first()
                         .map(|s| s.as_str())
                         .unwrap_or(""));
-                    format!("lower(country) = lower('{v}')")
+                    format!(
+                        "media.id IN (SELECT mr.left_media_id FROM media_relations mr \
+                         WHERE mr.right_media_id IN \
+                         (SELECT id FROM media WHERE kind = 'country' AND lower(title) = lower('{v}')))"
+                    )
                 }
                 SetOp::In | SetOp::NotIn => {
                     let list = in_list(values)?;
-                    format!("lower(country) IN ({list})")
+                    format!(
+                        "media.id IN (SELECT mr.left_media_id FROM media_relations mr \
+                         WHERE mr.right_media_id IN \
+                         (SELECT id FROM media WHERE kind = 'country' AND lower(title) IN ({list})))"
+                    )
+                }
+            };
+            Some((sql, negated))
+        }
+        R::OriginalLanguage { op, values } => {
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            let sql = match op {
+                SetOp::Is | SetOp::IsNot => {
+                    let v = esc(values
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or(""));
+                    format!("lower(original_language) = lower('{v}')")
+                }
+                SetOp::In | SetOp::NotIn => {
+                    let list = in_list(values)?;
+                    format!("lower(original_language) IN ({list})")
                 }
             };
             Some((sql, negated))

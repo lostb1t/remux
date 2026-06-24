@@ -230,6 +230,11 @@ pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: b
         replace,
     );
     merge_option(&mut target.country, &source.country, replace);
+    merge_option(
+        &mut target.original_language,
+        &source.original_language,
+        replace,
+    );
     merge_option(&mut target.trailers, &source.trailers, replace);
     merge_option(
         &mut target.digital_released_at,
