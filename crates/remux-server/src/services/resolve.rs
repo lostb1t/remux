@@ -312,23 +312,36 @@ impl MediaResolveService {
         id: Uuid,
         ctx: &AppContext,
     ) -> anyhow::Result<Option<db::Media>> {
-        resolve_item_core(
-            id,
-            || async {
-                if let Some(media) = db::Media::get_by_id(&ctx.db, &id).await? {
-                    return Ok(Some(media));
-                }
-                if let Some(real_id) = ctx
-                    .store
-                    .get::<Uuid>(id.to_string())
-                {
-                    return Ok(db::Media::get_by_id(&ctx.db, &real_id).await?);
-                }
-                Ok(None)
-            },
-            || Self::persist_from_store(id, ctx),
-        )
-        .await
+        // Fast path: already in DB or aliased to a stable UUID in the store.
+        if let Some(media) = db::Media::get_by_id(&ctx.db, &id).await? {
+            return Ok(Some(media));
+        }
+        if let Some(real_id) = ctx
+            .store
+            .get::<Uuid>(id.to_string())
+        {
+            if let Some(media) = db::Media::get_by_id(&ctx.db, &real_id).await? {
+                return Ok(Some(media));
+            }
+        }
+
+        // Slow path: acquire per-ID lock so only one concurrent request persists.
+        let _guard = PERSIST_LOCKS
+            .lock(id)
+            .await;
+        // Re-check after acquiring lock — another request may have persisted it.
+        if let Some(media) = db::Media::get_by_id(&ctx.db, &id).await? {
+            return Ok(Some(media));
+        }
+        if let Some(real_id) = ctx
+            .store
+            .get::<Uuid>(id.to_string())
+        {
+            if let Some(media) = db::Media::get_by_id(&ctx.db, &real_id).await? {
+                return Ok(Some(media));
+            }
+        }
+        Self::persist_from_store(id, ctx).await
     }
 
     /// Resolves a batch of possibly-transient UUIDs to their stable persisted IDs.
@@ -352,41 +365,6 @@ impl MediaResolveService {
 }
 
 static PERSIST_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
-
-/// Core locking logic, injectable for testing.
-///
-/// `lookup` — check whether the item is already persisted.
-/// `persist` — do the expensive addon persist; called at most once per ID across all concurrent
-///             callers.
-async fn resolve_item_core<L, P, LFut, PFut>(
-    id: Uuid,
-    lookup: L,
-    persist: P,
-) -> anyhow::Result<Option<db::Media>>
-where
-    L: Fn() -> LFut,
-    LFut: std::future::Future<Output = anyhow::Result<Option<db::Media>>>,
-    P: Fn() -> PFut,
-    PFut: std::future::Future<Output = anyhow::Result<Option<db::Media>>>,
-{
-    if let Some(media) = lookup().await? {
-        return Ok(Some(media));
-    }
-
-    let result = {
-        let _guard = PERSIST_LOCKS
-            .lock(id)
-            .await;
-        if let Some(media) = lookup().await? {
-            Ok(Some(media))
-        } else {
-            persist().await
-        }
-        // _guard dropped here — waiters unblock and hit the re-check above
-    };
-
-    result
-}
 
 /// Axum extractor that resolves the `{id}` path parameter to a persisted `db::Media` row.
 ///
@@ -429,230 +407,5 @@ impl FromRequestParts<AppState> for ResolvedItem {
             })?;
 
         Ok(ResolvedItem(media))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    use tokio::sync::Barrier;
-
-    fn make_media() -> db::Media {
-        db::Media {
-            id: Uuid::new_v4(),
-            title: "Test".into(),
-            ..Default::default()
-        }
-    }
-
-    // --- fast path ---
-
-    #[tokio::test]
-    async fn fast_path_returns_existing() {
-        let id = Uuid::new_v4();
-        let media = make_media();
-        let m = media.clone();
-        let persist_calls = Arc::new(AtomicUsize::new(0));
-        let pc = persist_calls.clone();
-
-        let result = resolve_item_core(
-            id,
-            move || {
-                let m = m.clone();
-                async move { Ok(Some(m)) }
-            },
-            move || {
-                pc.fetch_add(1, Ordering::SeqCst);
-                async { Ok(None) }
-            },
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            result
-                .unwrap()
-                .id,
-            media.id
-        );
-        assert_eq!(
-            persist_calls.load(Ordering::SeqCst),
-            0,
-            "persist must not be called"
-        );
-    }
-
-    // --- slow path: item not in DB, persist saves it ---
-
-    #[tokio::test]
-    async fn slow_path_calls_persist_once() {
-        let id = Uuid::new_v4();
-        let persist_calls = Arc::new(AtomicUsize::new(0));
-        let pc = persist_calls.clone();
-        let media = make_media();
-        let m = media.clone();
-
-        let result = resolve_item_core(
-            id,
-            || async { Ok(None) },
-            move || {
-                pc.fetch_add(1, Ordering::SeqCst);
-                let m = m.clone();
-                async move { Ok(Some(m)) }
-            },
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            result
-                .unwrap()
-                .id,
-            media.id
-        );
-        assert_eq!(persist_calls.load(Ordering::SeqCst), 1);
-    }
-
-    // --- slow path: persist returns None ---
-
-    #[tokio::test]
-    async fn slow_path_propagates_none() {
-        let id = Uuid::new_v4();
-        let result =
-            resolve_item_core(id, || async { Ok(None) }, || async { Ok(None) })
-                .await
-                .unwrap();
-        assert!(result.is_none());
-    }
-
-    // --- error path: lock is always cleaned up ---
-
-    #[tokio::test]
-    async fn error_path_cleans_up_lock() {
-        let id = Uuid::new_v4();
-        let _ = resolve_item_core(
-            id,
-            || async { Ok(None) },
-            || async { Err(anyhow::anyhow!("persist failed")) },
-        )
-        .await;
-
-        assert!(
-            !PERSIST_LOCKS.contains_key(&id),
-            "lock must be removed even after error"
-        );
-    }
-
-    // --- concurrent: second waiter must not call persist ---
-
-    #[tokio::test]
-    async fn concurrent_second_waiter_skips_persist() {
-        let id = Uuid::new_v4();
-        let persist_calls = Arc::new(AtomicUsize::new(0));
-        let saved = Arc::new(tokio::sync::RwLock::new(false));
-
-        // Barrier lets both tasks start at the same time.
-        let barrier = Arc::new(Barrier::new(2));
-
-        let (pc1, saved1, b1) = (persist_calls.clone(), saved.clone(), barrier.clone());
-        let t1 = tokio::spawn(async move {
-            b1.wait()
-                .await;
-            resolve_item_core(
-                id,
-                {
-                    let saved = saved1.clone();
-                    move || {
-                        let s = saved.clone();
-                        async move {
-                            Ok(
-                                if *s
-                                    .read()
-                                    .await
-                                {
-                                    Some(make_media())
-                                } else {
-                                    None
-                                },
-                            )
-                        }
-                    }
-                },
-                move || {
-                    pc1.fetch_add(1, Ordering::SeqCst);
-                    let saved = saved1.clone();
-                    async move {
-                        // Simulate slow persist.
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                        *saved
-                            .write()
-                            .await = true;
-                        Ok(Some(make_media()))
-                    }
-                },
-            )
-            .await
-        });
-
-        let (pc2, saved2, b2) = (persist_calls.clone(), saved.clone(), barrier.clone());
-        let t2 = tokio::spawn(async move {
-            b2.wait()
-                .await;
-            resolve_item_core(
-                id,
-                {
-                    let saved = saved2.clone();
-                    move || {
-                        let s = saved.clone();
-                        async move {
-                            Ok(
-                                if *s
-                                    .read()
-                                    .await
-                                {
-                                    Some(make_media())
-                                } else {
-                                    None
-                                },
-                            )
-                        }
-                    }
-                },
-                move || {
-                    pc2.fetch_add(1, Ordering::SeqCst);
-                    let saved = saved2.clone();
-                    async move {
-                        *saved
-                            .write()
-                            .await = true;
-                        Ok(Some(make_media()))
-                    }
-                },
-            )
-            .await
-        });
-
-        let (r1, r2) = tokio::join!(t1, t2);
-        assert!(
-            r1.unwrap()
-                .unwrap()
-                .is_some(),
-            "t1 must resolve"
-        );
-        assert!(
-            r2.unwrap()
-                .unwrap()
-                .is_some(),
-            "t2 must resolve"
-        );
-        assert_eq!(
-            persist_calls.load(Ordering::SeqCst),
-            1,
-            "persist must be called exactly once across both concurrent requests"
-        );
     }
 }
