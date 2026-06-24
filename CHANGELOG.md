@@ -1,3 +1,15 @@
+## [0.10.1](https://github.com/lostb1t/remux/compare/v0.10.0...v0.10.1) (2026-06-24)
+
+
+### Bug Fixes
+
+* **hls:** use EXT-X-START for resumed TS-HLS instead of ffmpeg playlist ([#51](https://github.com/lostb1t/remux/issues/51)) ([8ca8fd3](https://github.com/lostb1t/remux/commit/8ca8fd33150d82711b0e7a723117902ad8633165))
+
+
+### Performance Improvements
+
+* load streams async on item details page for web ([#47](https://github.com/lostb1t/remux/issues/47)) ([9fcbd8d](https://github.com/lostb1t/remux/commit/9fcbd8d69fb45d727f368c7493fe46e0d9374acc))
+
 # [0.10.0](https://github.com/lostb1t/remux/compare/v0.9.0...v0.10.0) (2026-06-23)
 
 
