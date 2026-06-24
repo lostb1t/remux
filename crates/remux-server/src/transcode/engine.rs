@@ -806,10 +806,18 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     if ffmpeg_video_codec == "copy" {
         if is_hevc_copy {
             args.extend(["-tag:v".into(), "hvc1".into()]);
-            // fMP4 stores HEVC in HVCC format natively — no hevc_mp4toannexb needed.
-            // Strip embedded Dolby Vision RPU NALs so VideoToolbox treats this as
-            // plain HDR10 rather than Dolby Vision (avoids black video on some devices).
-            args.extend(["-bsf:v".into(), "dovi_rpu=strip=1".into()]);
+            // Strip embedded Dolby Vision RPU NALs only when the source is actually DoVi;
+            // dovi_rpu only supports hevc/av1 and will crash ffmpeg on any other codec.
+            let is_dovi = matches!(
+                params.source_video_range_type,
+                Some(VideoRangeType::Dovi)
+                    | Some(VideoRangeType::DoviWithHdr10)
+                    | Some(VideoRangeType::DoviWithHlg)
+                    | Some(VideoRangeType::DoviWithSdr)
+            );
+            if is_dovi {
+                args.extend(["-bsf:v".into(), "dovi_rpu=strip=1".into()]);
+            }
         }
     } else if is_hw {
         // HW encoders use bitrate control; CRF/preset/profile flags don't apply.
@@ -2152,15 +2160,33 @@ mod tests {
             Some("init.mp4")
         );
         assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
-        // Dolby Vision strip bsf
+        // No DoVi range type → dovi_rpu must NOT be injected (would crash on non-HEVC/AV1)
         assert!(
-            args.windows(2)
+            !args
+                .windows(2)
                 .any(|w| w[0] == "-bsf:v" && w[1].contains("dovi_rpu"))
         );
         // Segments use .m4s extension
         assert!(
             args.iter()
                 .any(|a| a.contains("segment_") && a.ends_with(".m4s"))
+        );
+    }
+
+    #[test]
+    fn hls_hevc_dovi_copy_strips_rpu() {
+        let dir = PathBuf::from("/tmp/test_hevc_dovi");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            source_video_codec: Some("hevc".into()),
+            source_video_range_type: Some(VideoRangeType::DoviWithHdr10),
+            ..default_hls(dir)
+        });
+        assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-bsf:v" && w[1].contains("dovi_rpu")),
+            "dovi_rpu bsf must be present for DoVi HEVC copy"
         );
     }
 
