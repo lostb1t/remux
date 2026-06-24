@@ -1708,6 +1708,7 @@ pub fn generate_variant_playlist(
     let runtime_ticks = session.runtime_ticks;
     let segment_length = session.segment_length;
     let play_session_id = &session.id;
+    let start_time_secs = session.start_time_secs;
     let use_fmp4 = session.use_fmp4();
     // fMP4 segments require HLS version 7; standard TS segments need version 6.
     let version = if use_fmp4 { 7u32 } else { 6u32 };
@@ -1763,6 +1764,12 @@ pub fn generate_variant_playlist(
     buf.push_str(&format!("#EXT-X-VERSION:{}\n", version));
     buf.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", target_duration));
     buf.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
+    if start_time_secs > 0 {
+        buf.push_str(&format!(
+            "#EXT-X-START:TIME-OFFSET={:.6},PRECISE=YES\n",
+            start_time_secs as f64
+        ));
+    }
     if use_fmp4 {
         buf.push_str(&format!(
             "#EXT-X-MAP:URI=\"init.mp4?PlaySessionId={}\"\n",
@@ -1912,7 +1919,9 @@ pub fn generate_master_playlist(session: &TranscodeSession) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use remux_sdks::remux::TranscodeReasons;
     use std::path::PathBuf;
+    use uuid::Uuid;
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -2240,6 +2249,50 @@ mod tests {
         let args = build_hls_args(&default_hls(dir));
         assert_eq!(arg_after(&args, "-start_number"), Some("0"));
         assert!(!args_contains(&args, "-ss"));
+    }
+
+    #[test]
+    fn resumed_vod_playlist_advertises_start_offset_and_full_seek_map() {
+        let session = TranscodeSession {
+            id: "play-session".into(),
+            item_id: Uuid::nil(),
+            media_source_id: Uuid::nil(),
+            output_dir: PathBuf::from("/tmp/test_playlist"),
+            input_url: "http://example.invalid/video".into(),
+            state: TranscodeState::Running,
+            state_tx: Arc::new(tokio::sync::watch::channel(TranscodeState::Running).0),
+            created_at: std::time::Instant::now(),
+            video_codec: "copy".into(),
+            audio_codec: "aac".into(),
+            audio_stream_index: None,
+            subtitle_stream_index: None,
+            burn_subtitle: false,
+            segment_length: 6,
+            transcode_reasons: TranscodeReasons::default(),
+            kill_tx: None,
+            wait_done: Arc::new(tokio::sync::Notify::new()),
+            last_segment_index: Arc::new(AtomicU32::new(0)),
+            start_time_secs: 30,
+            playback_offset_secs: Arc::new(AtomicU32::new(0)),
+            runtime_ticks: 120i64
+                .to_ticks(TickUnit::Seconds)
+                .unwrap(),
+            is_live: false,
+            source_video_codec: Some("h264".into()),
+            source_audio_codec: Some("aac".into()),
+            source_video_profile: None,
+            source_video_level: None,
+            source_video_range_type: None,
+            source_video_width: None,
+            source_video_height: None,
+            source_frame_rate: None,
+        };
+
+        let playlist = generate_variant_playlist(&session, "");
+
+        assert!(playlist.contains("#EXT-X-START:TIME-OFFSET=30.000000,PRECISE=YES"));
+        assert!(playlist.contains("segment_00000.ts?PlaySessionId=play-session&runtimeTicks=0&actualSegmentLengthTicks=60000000"));
+        assert!(playlist.contains("segment_00005.ts?PlaySessionId=play-session&runtimeTicks=300000000&actualSegmentLengthTicks=60000000"));
     }
 
     #[test]
