@@ -1469,9 +1469,11 @@ pub async fn item(
                 .is_empty()
         })
         .cloned();
-    if media.kind == db::MediaKind::Stream {
+    if want_streams && media.kind == db::MediaKind::Stream {
         media.sources = Some(vec![media.clone()]);
-    } else if matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode) {
+    } else if want_streams
+        && matches!(media.kind, db::MediaKind::Movie | db::MediaKind::Episode)
+    {
         let raw = media
             .streams(
                 &state
@@ -1501,7 +1503,7 @@ pub async fn item(
                 &session.user,
             )
             .await?;
-    } else if media.kind == db::MediaKind::Track {
+    } else if want_streams && media.kind == db::MediaKind::Track {
         let raw = media
             .streams(
                 &state
@@ -1656,10 +1658,11 @@ pub async fn item(
             }
         }
     }
-    if media
-        .sources
-        .as_ref()
-        .is_none_or(|s| s.is_empty())
+    if want_streams
+        && media
+            .sources
+            .as_ref()
+            .is_none_or(|s| s.is_empty())
         && !matches!(
             media.kind,
             db::MediaKind::TvChannel | db::MediaKind::TvProgram
@@ -1668,34 +1671,6 @@ pub async fn item(
         base_item.location_type = api::LocationType::Virtual;
         base_item.path = None;
         base_item.can_download = Some(false);
-    }
-
-    //let enable_subtitles_detail = crate::db::Settings::get_config(&state.ctx.db)
-    //    .await
-    //    .ok()
-    //    .and_then(|c| c.enable_subtitles_detail)
-    //    .unwrap_or(true);
-    let enable_subtitles_detail = true;
-    if enable_subtitles_detail {
-        if let Some(ref mut sources) = base_item.media_sources {
-            if !sources.is_empty() {
-                let sub_langs = server_config
-                    .subtitle_languages
-                    .clone()
-                    .unwrap_or_default();
-                super::subtitles::inject_external_subtitles(
-                    &state.ctx,
-                    &media,
-                    sources,
-                    media.id,
-                    &session
-                        .device
-                        .access_token,
-                    sub_langs,
-                )
-                .await;
-            }
-        }
     }
 
     apply_permissions(&mut base_item, &session.user);
