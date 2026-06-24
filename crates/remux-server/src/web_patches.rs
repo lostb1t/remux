@@ -108,9 +108,23 @@ pub static JS: &str = r#"
   function removeSpinner(page) {
     var el = page.querySelector('.remux-sources-loading');
     if (el && el.parentNode) el.parentNode.removeChild(el);
+    var noStreams = page.querySelector('.remux-no-streams');
+    if (noStreams && noStreams.parentNode) noStreams.parentNode.removeChild(noStreams);
     // re-hide the form if sources haven't arrived yet
     var form = page.querySelector('.trackSelections');
     if (form && !form._remuxLoaded) form.classList.add('hide');
+  }
+
+  function showNoStreams(page) {
+    removeSpinner(page);
+    var form = page.querySelector('.trackSelections');
+    if (!form) return;
+    var msg = document.createElement('div');
+    msg.className = 'remux-no-streams';
+    msg.style.cssText = 'color:rgba(255,255,255,0.5);font-size:0.85em;text-align:center;padding:0.4em 0;';
+    msg.textContent = 'No streams available';
+    form.insertBefore(msg, form.firstChild);
+    form.classList.remove('hide');
   }
 
   function findPlayButton(page) {
@@ -118,14 +132,20 @@ pub static JS: &str = r#"
     return container ? container.querySelector('.btnPlay') : null;
   }
 
-  function hidePlayButton(page) {
+  function disablePlayButton(page) {
     var btn = findPlayButton(page);
-    if (btn) btn.classList.add('hide');
+    if (!btn) return;
+    btn.setAttribute('disabled', 'disabled');
+    btn.style.opacity = '0.4';
+    btn.style.pointerEvents = 'none';
   }
 
-  function showPlayButton(page) {
+  function enablePlayButton(page) {
     var btn = findPlayButton(page);
-    if (btn) btn.classList.remove('hide');
+    if (!btn) return;
+    btn.removeAttribute('disabled');
+    btn.style.opacity = '';
+    btn.style.pointerEvents = '';
   }
 
   function renderTracksForSource(page, mediaSources, selectedSourceId) {
@@ -251,7 +271,7 @@ pub static JS: &str = r#"
           if (!page) return;
 
           if (isMovieOrEpisode) {
-            hidePlayButton(page);
+            disablePlayButton(page);
             showSpinner(page);
           }
 
@@ -265,7 +285,9 @@ pub static JS: &str = r#"
             if (ms && ms.length && full.LocationType !== 'Virtual') {
               renderAsyncTrackSelections(page2, ms);
               attachSourceChangeHandler(page2);
-              showPlayButton(page2);
+              enablePlayButton(page2);
+            } else {
+              showNoStreams(page2);
             }
           }).catch(function () {
             var page3 = getDetailsPage();
