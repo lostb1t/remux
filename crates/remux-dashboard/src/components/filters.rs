@@ -3,8 +3,9 @@ use dioxus::prelude::*;
 use remux_sdks::{
     remux::{
         FilterMatchMode, FilterRule, GetAddonCatalogs, GetCertificationSuggestions,
-        GetCountries, GetLocalSuggestions, GetParentalRatings, GetTagSuggestions,
-        JellyfinAuth, ListAddons, NumericOp, ParentalRating, SetOp,
+        GetCountrySuggestions, GetLanguageSuggestions, GetLocalSuggestions,
+        GetParentalRatings, GetTagSuggestions, JellyfinAuth, ListAddons, NumericOp,
+        ParentalRating, SetOp,
     },
     RestClient,
 };
@@ -17,6 +18,7 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
         | FilterRule::Tag { values, .. }
         | FilterRule::Studio { values, .. }
         | FilterRule::Country { values, .. }
+        | FilterRule::OriginalLanguage { values, .. }
         | FilterRule::Person { values, .. } => values.clone(),
         _ => vec![],
     }
@@ -25,7 +27,13 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
 fn is_set_field(key: &str) -> bool {
     matches!(
         key,
-        "genre" | "certification" | "tag" | "studio" | "country" | "person"
+        "genre"
+            | "certification"
+            | "tag"
+            | "studio"
+            | "country"
+            | "original_language"
+            | "person"
     )
 }
 
@@ -82,30 +90,27 @@ async fn fetch_suggestions(
             Err(_) => vec![],
         },
         "country" => match client
-            .execute(GetCountries)
+            .execute(GetCountrySuggestions {
+                search_term: query.into(),
+            })
             .await
         {
-            Ok(countries) => {
-                let q = query.to_lowercase();
-                countries
-                    .into_iter()
-                    .filter(|c| {
-                        c.name
-                            .to_lowercase()
-                            .contains(&q)
-                            || c.two_letter_iso_region_name
-                                .to_lowercase()
-                                .contains(&q)
-                    })
-                    .map(|c| {
-                        (
-                            format!("{} ({})", c.name, c.two_letter_iso_region_name),
-                            c.two_letter_iso_region_name,
-                        )
-                    })
-                    .take(25)
-                    .collect()
-            }
+            Ok(names) => names
+                .into_iter()
+                .map(|n| (n.clone(), n))
+                .collect(),
+            Err(_) => vec![],
+        },
+        "original_language" => match client
+            .execute(GetLanguageSuggestions {
+                search_term: query.into(),
+            })
+            .await
+        {
+            Ok(langs) => langs
+                .into_iter()
+                .map(|l| (l.clone(), l))
+                .collect(),
             Err(_) => vec![],
         },
         _ => vec![],
@@ -124,6 +129,7 @@ fn field_label(key: &str) -> &'static str {
         "studio" => "Studio",
         "has_trailer" => "Has Trailer",
         "country" => "Country",
+        "original_language" => "Original Language",
         "person" => "Person",
         "catalog" => "Catalog",
         _ => "",
@@ -146,7 +152,8 @@ fn value_placeholder(field_key: &str) -> &'static str {
         "rating_audience" | "rating_critic" => "7.5",
         "parental_rating" => "13",
         "certification" => "PG-13",
-        "country" => "US",
+        "country" => "United States of America",
+        "original_language" => "en",
         _ => "Action, Horror",
     }
 }
@@ -212,6 +219,11 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
         FilterRule::Country { op, values } => {
             ("country".into(), set_op_str(op), values.join(", "))
         }
+        FilterRule::OriginalLanguage { op, values } => (
+            "original_language".into(),
+            set_op_str(op),
+            values.join(", "),
+        ),
         FilterRule::Person { op, values } => {
             ("person".into(), set_op_str(op), values.join(", "))
         }
@@ -289,6 +301,10 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
             values: set_values(),
         },
         "country" => FilterRule::Country {
+            op: set_op,
+            values: set_values(),
+        },
+        "original_language" => FilterRule::OriginalLanguage {
             op: set_op,
             values: set_values(),
         },
@@ -688,8 +704,9 @@ pub fn FilterRuleRow(
                 option { value: "tag",             selected: field_val == "tag",             { field_label("tag") } }
                 option { value: "studio",          selected: field_val == "studio",          { field_label("studio") } }
                 option { value: "has_trailer",     selected: field_val == "has_trailer",     { field_label("has_trailer") } }
-                option { value: "country",         selected: field_val == "country",         { field_label("country") } }
-                option { value: "person",          selected: field_val == "person",          { field_label("person") } }
+                option { value: "country",            selected: field_val == "country",            { field_label("country") } }
+                option { value: "original_language", selected: field_val == "original_language", { field_label("original_language") } }
+                option { value: "person",             selected: field_val == "person",             { field_label("person") } }
                 option { value: "catalog",         selected: field_val == "catalog",         { field_label("catalog") } }
             }
             if !hide_operator {

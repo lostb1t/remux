@@ -565,6 +565,62 @@ fn build_genre_relations(
         .collect()
 }
 
+fn build_studio_relations(
+    left_media_id: uuid::Uuid,
+    companies: &[sdks::tmdb::ProductionCompany],
+) -> Vec<(db::MediaRelation, db::Media)> {
+    companies
+        .iter()
+        .map(|company| {
+            let name = &company.name;
+            let studio_id =
+                common::stable_media_uuid(&db::MediaKind::Studio, &name.to_lowercase());
+            (
+                db::MediaRelation {
+                    left_media_id,
+                    right_media_id: studio_id,
+                    ..Default::default()
+                },
+                db::Media {
+                    id: studio_id,
+                    title: name.clone(),
+                    kind: db::MediaKind::Studio,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect()
+}
+
+fn build_location_relations(
+    left_media_id: uuid::Uuid,
+    countries: &[sdks::tmdb::ProductionCountry],
+) -> Vec<(db::MediaRelation, db::Media)> {
+    countries
+        .iter()
+        .map(|country| {
+            let name = &country.name;
+            let country_id = common::stable_media_uuid(
+                &db::MediaKind::Country,
+                &name.to_lowercase(),
+            );
+            (
+                db::MediaRelation {
+                    left_media_id,
+                    right_media_id: country_id,
+                    ..Default::default()
+                },
+                db::Media {
+                    id: country_id,
+                    title: name.clone(),
+                    kind: db::MediaKind::Country,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect()
+}
+
 fn is_404(e: &anyhow::Error) -> bool {
     matches!(
         e.downcast_ref::<ClientError>(),
@@ -734,6 +790,11 @@ async fn fetch_tmdb_meta(
                     certification,
                     certification_age,
                     external_ids: external_ids,
+                    original_language: Some(
+                        movie_details
+                            .original_language
+                            .clone(),
+                    ),
                     ..Default::default()
                 };
                 if let Some(url) = tmdb_image(
@@ -764,6 +825,12 @@ async fn fetch_tmdb_meta(
                 }
                 if let Some(credits) = &movie_details.credits {
                     relations.extend(build_person_relations(media.id, credits));
+                }
+                if let Some(companies) = &movie_details.production_companies {
+                    relations.extend(build_studio_relations(media.id, companies));
+                }
+                if let Some(countries) = &movie_details.production_countries {
+                    relations.extend(build_location_relations(media.id, countries));
                 }
                 if !relations.is_empty() {
                     patch.relations = Some(relations);
@@ -886,6 +953,11 @@ async fn fetch_tmdb_meta(
                     certification_age,
                     country,
                     external_ids: external_ids,
+                    original_language: Some(
+                        tv_details
+                            .original_language
+                            .clone(),
+                    ),
                     ..Default::default()
                 };
                 if let Some(url) = tmdb_image(
@@ -916,6 +988,12 @@ async fn fetch_tmdb_meta(
                 }
                 if let Some(credits) = &tv_details.credits {
                     relations.extend(build_person_relations(media.id, credits));
+                }
+                if let Some(companies) = &tv_details.production_companies {
+                    relations.extend(build_studio_relations(media.id, companies));
+                }
+                if let Some(countries) = &tv_details.production_countries {
+                    relations.extend(build_location_relations(media.id, countries));
                 }
                 if let Some(creators) = &tv_details.created_by {
                     for (i, creator) in creators

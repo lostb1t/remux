@@ -32,6 +32,8 @@ pub struct Movie {
     pub imdb_id: Option<String>,
     pub original_language: String,
     pub genres: Option<Vec<super::Genre>>,
+    pub production_companies: Option<Vec<super::ProductionCompany>>,
+    pub production_countries: Option<Vec<super::ProductionCountry>>,
     pub external_ids: Option<super::ExternalIds>,
     pub credits: Option<super::Credits>,
     pub images: Option<super::Images>,

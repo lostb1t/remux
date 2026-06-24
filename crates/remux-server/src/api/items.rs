@@ -1115,6 +1115,98 @@ pub async fn items_certifications(
     Ok(Json(values))
 }
 
+/// List distinct production countries from media_relations, optionally filtered by search_term
+#[get("/items/countries")]
+pub async fn items_countries(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Query(q): Query<api::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    let values: Vec<String> = match q
+        .search_term
+        .as_deref()
+    {
+        Some(s) if !s.is_empty() => {
+            let pattern = format!("%{}%", s.to_lowercase());
+            sqlx::query(
+                "SELECT DISTINCT title FROM media \
+                 WHERE kind = 'country' AND lower(title) LIKE ? \
+                 ORDER BY title LIMIT 25",
+            )
+            .bind(&pattern)
+            .fetch_all(&state.ctx.db)
+            .await?
+            .iter()
+            .map(|r| {
+                use sqlx::Row;
+                r.get::<String, _>(0)
+            })
+            .collect()
+        }
+        _ => sqlx::query(
+            "SELECT DISTINCT title FROM media WHERE kind = 'country' ORDER BY title LIMIT 50",
+        )
+        .fetch_all(&state.ctx.db)
+        .await?
+        .iter()
+        .map(|r| {
+            use sqlx::Row;
+            r.get::<String, _>(0)
+        })
+        .collect(),
+    };
+    Ok(Json(values))
+}
+
+/// List distinct original_language codes from media, optionally filtered by search_term
+#[get("/items/languages")]
+pub async fn items_languages(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+    Query(q): Query<api::GetItemsQuery>,
+) -> Result<impl IntoResponse> {
+    let values: Vec<String> = match q
+        .search_term
+        .as_deref()
+    {
+        Some(s) if !s.is_empty() => {
+            let pattern = format!("%{}%", s.to_lowercase());
+            sqlx::query(
+                "SELECT DISTINCT original_language FROM media \
+                 WHERE original_language IS NOT NULL AND lower(original_language) LIKE ? \
+                 ORDER BY original_language LIMIT 25",
+            )
+            .bind(&pattern)
+            .fetch_all(&state.ctx.db)
+            .await?
+            .iter()
+            .map(|r| {
+                use sqlx::Row;
+                r.get::<String, _>(0)
+            })
+            .collect()
+        }
+        _ => sqlx::query(
+            "SELECT DISTINCT original_language FROM media \
+             WHERE original_language IS NOT NULL \
+             ORDER BY original_language LIMIT 50",
+        )
+        .fetch_all(
+            &state
+                .ctx
+                .db,
+        )
+        .await?
+        .iter()
+        .map(|r| {
+            use sqlx::Row;
+            r.get::<String, _>(0)
+        })
+        .collect(),
+    };
+    Ok(Json(values))
+}
+
 /// Trigger a full library refresh (re-imports all enabled catalogs)
 #[post("/library/refresh")]
 pub async fn library_refresh(
