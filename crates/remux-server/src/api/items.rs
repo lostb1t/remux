@@ -1522,12 +1522,21 @@ pub async fn item(
     let show_ungrouped = server_config
         .stream_groups_show_ungrouped
         .unwrap_or(true);
+    // Search results carry transient UUIDs that map to stable DB UUIDs via the store.
+    // Resolve that mapping upfront so the single get_by_filter below loads the correct
+    // record (including user_state) in one query.
+    let lookup_id = state
+        .ctx
+        .store
+        .get::<Uuid>(id.to_string())
+        .unwrap_or(id);
+
     let mut media = match db::Media::get_by_filter(
         &state
             .ctx
             .db,
         &db::MediaFilter {
-            id: Some(vec![id]),
+            id: Some(vec![lookup_id]),
             include_user_state: true,
             include_child_count: true,
             user_id: Some(
@@ -1545,7 +1554,31 @@ pub async fn item(
     {
         Some(m) => m,
         None => match MediaResolveService::resolve_item(id, &state.ctx).await? {
-            Some(m) => m,
+            Some(m) => {
+                // resolve_item persisted the item and returned it via get_by_id —
+                // no user_state loaded. Fetch once more with the stable UUID.
+                db::Media::get_by_filter(
+                    &state
+                        .ctx
+                        .db,
+                    &db::MediaFilter {
+                        id: Some(vec![m.id]),
+                        include_user_state: true,
+                        include_child_count: true,
+                        user_id: Some(
+                            session
+                                .user
+                                .id,
+                        ),
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .records
+                .into_iter()
+                .next()
+                .unwrap_or(m)
+            }
             None => return Ok(None),
         },
     };
