@@ -90,7 +90,7 @@ pub static JS: &str = r#"
 // respond faster. For Movie/Episode a spinner appears while a second getItem call
 // retrieves MediaSources and populates the track-selection UI.
 (function () {
-  var _pendingItemId = null;
+  var _videoNavCount = 0; // increments each time a video item page is entered
 
   function escHtml(s) {
     return String(s)
@@ -101,8 +101,21 @@ pub static JS: &str = r#"
   }
 
   function getDetailsPage() {
-    var ts = document.querySelector('.trackSelections');
-    return ts ? ts.closest('.detailPagePrimaryContent') : null;
+    // Jellyfin caches views: multiple .trackSelections may exist in the DOM
+    // (one per cached view). Use offsetParent to find the visible one.
+    var all = document.querySelectorAll('.trackSelections');
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].offsetParent !== null) return all[i].closest('.detailPagePrimaryContent');
+    }
+    return null;
+  }
+
+  function getVisiblePrimaryContainer() {
+    var all = document.querySelectorAll('.detailPagePrimaryContainer');
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].offsetParent !== null) return all[i];
+    }
+    return null;
   }
 
   function showSpinner(page) {
@@ -267,53 +280,91 @@ pub static JS: &str = r#"
 
     proto.getItem = function (userId, itemId) {
       var self = this;
-      _pendingItemId = itemId;
       var capturedId = itemId;
-      // Ask server to skip stream loading for the initial fetch.
+      // Strip dashes so we can match against both UUID formats in the URL.
+      var capturedIdNoDash = itemId.replace(/-/g, '');
       var baseUrl = self.getUrl('Users/' + userId + '/Items/' + itemId);
       var sep = baseUrl.indexOf('?') >= 0 ? '&' : '?';
       var fastUrl = baseUrl + sep + 'Fields=ChildCount';
 
+      // True when the current URL belongs to this item's detail page.
+      // Related-item fetches (next-up cards, season metadata, previews) have IDs
+      // that do not appear in the URL, so this returns false for them.
+      function isCurrentPage() {
+        var h = location.href;
+        return h.indexOf(capturedId) !== -1 || h.indexOf(capturedIdNoDash) !== -1;
+      }
+
       return self.getJSON(fastUrl).then(function (item) {
         var type = item && item.Type;
         var isMovieOrEpisode = (type === 'Movie' || type === 'Episode');
+        // Skip everything for related-item fetches — only process the item whose
+        // ID is reflected in the current page URL.
+        if (!isCurrentPage()) return item;
 
-        if (isMovieOrEpisode) {
-          // Start sources fetch immediately — don't wait for the DOM.
+        // Shared helper: enable the play button on the VISIBLE primary container.
+        // Jellyfin caches old views in the DOM (hidden), so querySelector('.detailPagePrimaryContainer')
+        // may return a hidden old view's container. We use offsetParent to find the visible one.
+        function watchAndEnable() {
+          var seen = new WeakSet();
+          function tryEnable() {
+            if (!isCurrentPage()) { wObs.disconnect(); return; }
+            var c = getVisiblePrimaryContainer();
+            if (c && !seen.has(c)) { seen.add(c); c.classList.add('remux-streams-ready'); }
+          }
+          var wObs = new MutationObserver(function () { tryEnable(); });
+          wObs.observe(document.body, { childList: true, subtree: true });
+          tryEnable();
+          setTimeout(function () { wObs.disconnect(); }, 5000);
+        }
+
+        if (!isMovieOrEpisode) {
+          // Non-video (Series, Season, etc.): enable play button immediately.
+          watchAndEnable();
+        } else {
+          // Video (Movie/Episode): load streams, then enable play button.
+          var capturedNav = ++_videoNavCount;
           var sourcesUrl = baseUrl + sep + 'Fields=MediaSources';
           var sourcesFetch = self.getJSON(sourcesUrl);
 
-          // Show spinner once the DOM has painted — but skip if streams are already loaded
-          // (e.g. playbackmanager calling getItem to fetch MediaStreams on play).
           setTimeout(function () {
-            if (_pendingItemId !== capturedId) return;
+            if (!isCurrentPage()) return;
             var page = getDetailsPage();
             if (!page) return;
             var form = page.querySelector('.trackSelections');
-            if (form && form._remuxLoaded) return;
+            if (form && form._remuxNavCount === capturedNav) return;
             showSpinner(page);
           }, 0);
 
           sourcesFetch.then(function (full) {
-            if (_pendingItemId !== capturedId) return;
+            if (!isCurrentPage()) return;
             var ms = full && full.MediaSources;
-            // Poll until the details page element is in the DOM.
+            var streamsReady = ms && ms.length && full.LocationType !== 'Virtual';
+
+            if (streamsReady) {
+              // Enable the play button as soon as streams are confirmed.
+              watchAndEnable();
+            }
+
+            // Best-effort: render the audio/subtitle track selector UI.
             (function apply() {
+              if (!isCurrentPage()) return;
               var page = getDetailsPage();
               if (!page) { setTimeout(apply, 50); return; }
               var form = page.querySelector('.trackSelections');
-              // Already rendered by a prior fetch; nothing to do.
-              if (form && form._remuxLoaded) return;
+              if (form && form._remuxNavCount === capturedNav) return;
               removeSpinner(page);
-              if (ms && ms.length && full.LocationType !== 'Virtual') {
+              if (streamsReady) {
                 renderAsyncTrackSelections(page, ms);
                 attachSourceChangeHandler(page);
-                enablePlayButton(page);
+                var f = page.querySelector('.trackSelections');
+                if (f) f._remuxNavCount = capturedNav;
               } else {
                 showNoStreams(page);
               }
             }());
           }).catch(function () {
+            if (!isCurrentPage()) return;
             var page = getDetailsPage();
             if (page) {
               var form = page.querySelector('.trackSelections');

@@ -365,9 +365,8 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         is_movie: (media.kind == db::MediaKind::Movie
             || matches!(media.program_kind, Some(db::ProgramKind::Movie)))
         .then_some(true),
-        is_series: (media.kind == db::MediaKind::Series
-            || matches!(media.program_kind, Some(db::ProgramKind::Series)))
-        .then_some(true),
+        is_series: matches!(media.program_kind, Some(db::ProgramKind::Series))
+            .then_some(true),
         is_news: media
             .program_kind
             .as_ref()
@@ -393,7 +392,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
             .map(|d| d.year() as i64),
         community_rating: media
             .rating_audience
-            .clone(),
+            .map(|r| (r * 10.0).round() / 10.0),
         critic_rating: media
             .rating_critic
             .clone(),
@@ -785,11 +784,12 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 .collection_default_sort_order
                 .clone(),
         }),
+        enable_media_source_display: Some(true),
         date_created: Some(
             media
                 .created_at
                 .and_utc()
-                .to_rfc3339(),
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         ),
         production_locations: (media.kind == db::MediaKind::Person)
             .then(|| {
