@@ -1,3 +1,11 @@
+## [0.10.2](https://github.com/lostb1t/remux/compare/v0.10.1...v0.10.2) (2026-06-24)
+
+
+### Bug Fixes
+
+* **web:** fix stream loading flicker on playback ([e0e4cc0](https://github.com/lostb1t/remux/commit/e0e4cc06b55ab658562cab67b5fe8ed822701e22))
+* **web:** race conditions in async stream handling ([5fd3f2f](https://github.com/lostb1t/remux/commit/5fd3f2ff6f1d79f1032b6671031a4ddf0497a1bc))
+
 ## [0.10.1](https://github.com/lostb1t/remux/compare/v0.10.0...v0.10.1) (2026-06-24)
 
 
