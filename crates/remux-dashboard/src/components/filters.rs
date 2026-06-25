@@ -961,14 +961,15 @@ fn FilterGroupRow(
             // Rules inside this group
             div { style: "display:flex;flex-direction:column;gap:0",
                 for (idx, rule) in rules.read().iter().enumerate() {
-                    if idx > 0 {
-                        div { style: "height:1px;background:var(--border);margin:6px 0;opacity:0.5" }
-                    }
-                    FilterRuleRow {
-                        key: "{idx}",
-                        idx,
-                        rule: rule.clone(),
-                        rules,
+                    div { key: "{idx}",
+                        if idx > 0 {
+                            div { style: "height:1px;background:var(--border);margin:6px 0;opacity:0.5" }
+                        }
+                        FilterRuleRow {
+                            idx,
+                            rule: rule.clone(),
+                            rules,
+                        }
                     }
                 }
             }
