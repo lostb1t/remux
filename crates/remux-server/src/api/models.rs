@@ -169,7 +169,7 @@ pub fn db_media_kind_to_collection_type(
     match kind {
         db::CollectionMediaKind::Movie => Some(CollectionType::Movies),
         db::CollectionMediaKind::Series => Some(CollectionType::Tvshows),
-        db::CollectionMediaKind::Mixed => None,
+        db::CollectionMediaKind::Mixed => Some(CollectionType::Mixed),
         db::CollectionMediaKind::Music => Some(CollectionType::Music),
         db::CollectionMediaKind::Collection => Some(CollectionType::Boxsets),
         db::CollectionMediaKind::Playlist => Some(CollectionType::Playlists),

@@ -143,11 +143,11 @@ impl ItemsQueryResultBuilder {
                 }
             }
         };
-        if let Some(ref override_type) = self.mixed_collection_type {
-            for item in &mut items {
-                if item.collection_type == Some(api::CollectionType::Mixed) {
-                    item.collection_type = Some(override_type.clone());
-                }
+        for item in &mut items {
+            if item.collection_type == Some(api::CollectionType::Mixed) {
+                item.collection_type = self
+                    .mixed_collection_type
+                    .clone();
             }
         }
         ItemsQueryResult {
