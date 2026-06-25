@@ -169,6 +169,7 @@ pub fn db_media_kind_to_collection_type(
     match kind {
         db::CollectionMediaKind::Movie => CollectionType::Movies,
         db::CollectionMediaKind::Series => CollectionType::Tvshows,
+        db::CollectionMediaKind::Mixed => CollectionType::Mixed,
         db::CollectionMediaKind::Music => CollectionType::Music,
         db::CollectionMediaKind::Collection => CollectionType::Boxsets,
         db::CollectionMediaKind::Playlist => CollectionType::Playlists,
@@ -1032,10 +1033,6 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
                 .map(db_media_kind_to_collection_type)
                 .unwrap_or(CollectionType::Unknown),
         );
-        item.collection_kind = media
-            .collection_kind
-            .as_ref()
-            .map(|k| k.to_string());
         if media.promoted {
             item.type_ = MediaType::CollectionFolder;
             item.display_preferences_id = Some(
