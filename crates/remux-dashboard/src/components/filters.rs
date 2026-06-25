@@ -20,7 +20,7 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
         | FilterRule::Country { values, .. }
         | FilterRule::OriginalLanguage { values, .. }
         | FilterRule::Person { values, .. } => values.clone(),
-        FilterRule::Catalog { catalog_ids } => catalog_ids
+        FilterRule::Catalog { catalog_ids, .. } => catalog_ids
             .iter()
             .map(|id| id.to_string())
             .collect(),
@@ -182,7 +182,7 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "parental_rating" | "has_trailer" | "catalog" => vec![],
+        "parental_rating" | "has_trailer" => vec![],
         _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
@@ -201,14 +201,14 @@ fn value_placeholder(field_key: &str) -> &'static str {
 
 fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
     match rule {
-        FilterRule::Catalog { catalog_ids } => {
+        FilterRule::Catalog { op, catalog_ids } => {
             let val = catalog_ids
                 .iter()
                 .filter(|id| !id.is_nil())
                 .map(|id| id.to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            ("catalog".into(), "is".into(), val)
+            ("catalog".into(), set_op_str(op), val)
         }
         FilterRule::Year { op, value } => {
             let op_str = match op {
@@ -358,6 +358,7 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
             value: value_str == "true",
         },
         "catalog" => FilterRule::Catalog {
+            op: set_op,
             catalog_ids: value_str
                 .split(", ")
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
@@ -536,7 +537,7 @@ pub fn ChipInput(
     };
 
     rsx! {
-        div { style: "position:relative;flex:1.5",
+        div { style: "position:relative;flex:2 1 130px;min-width:130px",
             div { class: "chip-input",
                 for (ci, chip) in values.iter().enumerate() {
                     {
@@ -546,7 +547,7 @@ pub fn ChipInput(
                         let op = op_val.clone();
                         rsx! {
                             span { class: "chip", key: "{ci}",
-                                "{chip_display}"
+                                span { class: "chip-label", title: "{chip_display}", "{chip_display}" }
                                 button {
                                     r#type: "button",
                                     class: "chip-remove",
@@ -704,7 +705,7 @@ pub fn FilterRuleRow(
     let is_trailer = field_val == "has_trailer";
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
-    let hide_operator = is_trailer || is_parental_rating || is_catalog;
+    let hide_operator = is_trailer || is_parental_rating;
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -753,11 +754,16 @@ pub fn FilterRuleRow(
             .collect()
     };
 
+    let field_style = if hide_operator {
+        "flex:1 1 100%;min-width:110px"
+    } else {
+        "flex:1 1 110px;min-width:110px"
+    };
     rsx! {
-        div { style: "display:flex;align-items:center;gap:6px",
+        div { style: "display:flex;align-items:flex-start;gap:6px;flex-wrap:wrap",
             select {
                 class: "select-input",
-                style: "flex:1.2",
+                style: "{field_style}",
                 value: "{field_val}",
                 onchange: move |e| {
                     let new_field = e.value();
@@ -782,7 +788,7 @@ pub fn FilterRuleRow(
             if !hide_operator {
                 select {
                     class: "select-input",
-                    style: "flex:1",
+                    style: "flex:1 1 80px;min-width:80px",
                     value: "{op_val}",
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
@@ -797,7 +803,7 @@ pub fn FilterRuleRow(
             if is_catalog {
                 ChipInput {
                     field_key: "catalog".to_string(),
-                    op_val: "is".to_string(),
+                    op_val: op_val.clone(),
                     values: rule_values(&rule),
                     idx,
                     rules,
@@ -806,7 +812,7 @@ pub fn FilterRuleRow(
             } else if is_trailer {
                 select {
                     class: "select-input",
-                    style: "flex:1",
+                    style: "flex:2 1 130px;min-width:130px",
                     value: "{value_val}",
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
@@ -819,7 +825,7 @@ pub fn FilterRuleRow(
             } else if is_parental_rating {
                 select {
                     class: "select-input",
-                    style: "flex:1.5",
+                    style: "flex:2 1 130px;min-width:130px",
                     value: "{value_val}",
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
@@ -846,7 +852,7 @@ pub fn FilterRuleRow(
             } else {
                 input {
                     class: "field-input",
-                    style: "flex:1.5",
+                    style: "flex:2 1 130px;min-width:130px",
                     r#type: "text",
                     placeholder: value_placeholder(&fv2),
                     value: "{vv2}",
@@ -953,8 +959,11 @@ fn FilterGroupRow(
             }
 
             // Rules inside this group
-            div { style: "display:flex;flex-direction:column;gap:6px",
+            div { style: "display:flex;flex-direction:column;gap:0",
                 for (idx, rule) in rules.read().iter().enumerate() {
+                    if idx > 0 {
+                        div { style: "height:1px;background:var(--border);margin:6px 0;opacity:0.5" }
+                    }
                     FilterRuleRow {
                         key: "{idx}",
                         idx,

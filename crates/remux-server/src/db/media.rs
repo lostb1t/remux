@@ -2824,7 +2824,7 @@ impl Media {
                                 .iter()
                                 .flat_map(|cf| cf.groups.iter().flat_map(|g| g.rules.iter()))
                                 .find_map(|r| {
-                                    if let sdks::remux::FilterRule::Catalog { catalog_ids } = r {
+                                    if let sdks::remux::FilterRule::Catalog { catalog_ids, .. } = r {
                                         Some(catalog_ids.iter().map(|id| id.simple().to_string()).collect())
                                     } else {
                                         None
@@ -5436,7 +5436,7 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             };
             Some((sql, negated))
         }
-        R::Catalog { catalog_ids } if !catalog_ids.is_empty() => {
+        R::Catalog { op, catalog_ids } if !catalog_ids.is_empty() => {
             let in_clause = catalog_ids
                 .iter()
                 .map(|id| format!("X'{}'", id.simple()))
@@ -5447,7 +5447,8 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
                  WHERE mr.right_media_id = media.id AND mr.role = 'catalog' \
                  AND mr.left_media_id IN ({in_clause}))"
             );
-            Some((sql, false))
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            Some((sql, negated))
         }
         R::Catalog { .. } => None,
     }

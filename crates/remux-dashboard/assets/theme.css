@@ -1575,6 +1575,9 @@ html, body {
   border-radius: var(--radius-sm);
   cursor: text;
   transition: border-color var(--transition), box-shadow var(--transition);
+  /* Clip chips that would otherwise push the container wider.
+     Safe to do here because the dropdown is rendered outside .chip-input. */
+  overflow: hidden;
 }
 
 .chip-input:focus-within {
@@ -1593,7 +1596,14 @@ html, body {
   font-family: var(--font-mono);
   font-size: .72rem;
   color: var(--primary);
+  max-width: 100%;
+}
+
+.chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .chip-remove {

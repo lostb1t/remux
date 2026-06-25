@@ -2674,9 +2674,10 @@ pub enum NumericOp {
 }
 
 /// Operators for text/set fields (Genre, Tag, Studio, etc.).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SetOp {
+    #[default]
     Is,
     IsNot,
     In,
@@ -2735,8 +2736,10 @@ pub enum FilterRule {
         op: SetOp,
         values: Vec<String>,
     },
-    /// Matches items that belong to any of the given catalog collections.
+    /// Matches items that belong to (or don't belong to) any of the given catalog collections.
     Catalog {
+        #[serde(default)]
+        op: SetOp,
         catalog_ids: Vec<Uuid>,
     },
 }
