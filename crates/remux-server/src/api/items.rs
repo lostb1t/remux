@@ -548,6 +548,9 @@ pub async fn get_items(
                 match kind {
                     db::CollectionMediaKind::Movie => vec![db::MediaKind::Movie],
                     db::CollectionMediaKind::Series => vec![db::MediaKind::Series],
+                    db::CollectionMediaKind::Mixed => {
+                        vec![db::MediaKind::Movie, db::MediaKind::Series]
+                    }
                     db::CollectionMediaKind::Music => vec![
                         db::MediaKind::Track,
                         db::MediaKind::Album,
@@ -2128,6 +2131,7 @@ fn parse_collection_type(s: &str) -> Option<db::CollectionMediaKind> {
     match s {
         "movies" => Some(db::CollectionMediaKind::Movie),
         "tvshows" => Some(db::CollectionMediaKind::Series),
+        "mixed" => Some(db::CollectionMediaKind::Mixed),
         "music" => Some(db::CollectionMediaKind::Music),
         "collections" => Some(db::CollectionMediaKind::Collection),
         "playlists" => Some(db::CollectionMediaKind::Playlist),
@@ -2177,6 +2181,11 @@ pub async fn genres(
                 Some(db::CollectionMediaKind::Series) => {
                     vec![db::MediaKind::Series, db::MediaKind::Episode]
                 }
+                Some(db::CollectionMediaKind::Mixed) => vec![
+                    db::MediaKind::Movie,
+                    db::MediaKind::Series,
+                    db::MediaKind::Episode,
+                ],
                 _ => vec![
                     db::MediaKind::Movie,
                     db::MediaKind::Series,

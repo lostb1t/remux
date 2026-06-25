@@ -334,6 +334,7 @@ pub enum CollectionMediaKind {
     #[default]
     Movie,
     Series,
+    Mixed,
     Music,
     Collection,
     Playlist,

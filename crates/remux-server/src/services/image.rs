@@ -368,6 +368,9 @@ async fn find_backdrop_url(
             let kinds = match &collection.collection_media_kind {
                 Some(db::CollectionMediaKind::Movie) => vec![db::MediaKind::Movie],
                 Some(db::CollectionMediaKind::Series) => vec![db::MediaKind::Series],
+                Some(db::CollectionMediaKind::Mixed) => {
+                    vec![db::MediaKind::Movie, db::MediaKind::Series]
+                }
                 Some(db::CollectionMediaKind::Music) => {
                     vec![db::MediaKind::Album, db::MediaKind::Artist]
                 }

@@ -2891,8 +2891,6 @@ pub struct BaseItemDto {
     pub artist_items: Option<Vec<NameIdPair>>,
     pub album: Option<String>,
     pub collection_type: Option<CollectionType>,
-    pub collection_kind: Option<String>,
-    pub collection_catalog_filter: Option<Vec<String>>,
     pub display_order: Option<String>,
     pub album_id: Option<String>,
     pub album_primary_image_tag: Option<String>,
@@ -3615,6 +3613,8 @@ pub enum CollectionType {
     Movies,
     #[serde(rename = "tvshows")]
     Tvshows,
+    #[serde(rename = "mixed")]
+    Mixed,
     #[serde(rename = "music")]
     Music,
     #[serde(rename = "musicvideos")]

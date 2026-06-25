@@ -92,6 +92,7 @@ pub fn CollectionsPage(app_state: AppState) -> Element {
                                         Some(ct) => match ct {
                                             remux_sdks::remux::CollectionType::Movies  => "Movies",
                                             remux_sdks::remux::CollectionType::Tvshows => "Shows",
+                                            remux_sdks::remux::CollectionType::Mixed   => "Mixed",
                                             remux_sdks::remux::CollectionType::Music   => "Music",
                                             remux_sdks::remux::CollectionType::Boxsets => "Collections",
                                             _ => "Unknown",
@@ -269,6 +270,7 @@ pub fn CollectionForm(
             .map(|ct| match ct {
                 remux_sdks::remux::CollectionType::Movies => "movies".to_string(),
                 remux_sdks::remux::CollectionType::Tvshows => "tvshows".to_string(),
+                remux_sdks::remux::CollectionType::Mixed => "mixed".to_string(),
                 remux_sdks::remux::CollectionType::Music => "music".to_string(),
                 remux_sdks::remux::CollectionType::Boxsets => "collections".to_string(),
                 _ => "movies".to_string(),
@@ -580,6 +582,7 @@ pub fn CollectionForm(
                     onchange: move |e| col_type.set(e.value()),
                     option { value: "movies",      "Movies"      }
                     option { value: "tvshows",     "TV Shows"    }
+                    option { value: "mixed",       "Mixed (Movies & Shows)" }
                     option { value: "music",       "Music"       }
                     option { value: "collections", "Collections" }
                 }
