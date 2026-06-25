@@ -236,6 +236,7 @@ impl From<sdks::remux::MediaKind> for MediaKind {
         match k {
             sdks::remux::MediaKind::Movie => MediaKind::Movie,
             sdks::remux::MediaKind::Series => MediaKind::Series,
+            sdks::remux::MediaKind::Mixed => MediaKind::Collection,
             sdks::remux::MediaKind::Season => MediaKind::Season,
             sdks::remux::MediaKind::Episode => MediaKind::Episode,
             sdks::remux::MediaKind::Collection => MediaKind::Collection,

@@ -27,7 +27,7 @@ use axum_anyhow::ApiResult as Result;
 use remux_sdks::remux::Username;
 
 use super::{
-    items::{item, items, items_flat},
+    items::{ItemsQueryResultBuilder, item, items, items_flat},
     mock_items,
     shows::livetv_view_item,
 };
@@ -984,9 +984,12 @@ pub async fn userviews(
     }
 
     let count = items.len() as i64;
+    let result = ItemsQueryResultBuilder::with_dtos(session, items, count)
+        .with_client_patches()
+        .build();
     Ok(Json(api::BaseItemDtoQueryResult {
-        items,
-        total_record_count: count,
+        items: result.items,
+        total_record_count: result.total_count,
         ..Default::default()
     }))
 }

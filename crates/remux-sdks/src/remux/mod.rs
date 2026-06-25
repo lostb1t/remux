@@ -2621,6 +2621,7 @@ pub enum MediaKind {
     #[default]
     Movie,
     Series,
+    Mixed,
     Season,
     Episode,
     Collection,

@@ -53,6 +53,8 @@ pub struct ItemsQueryResultBuilder {
     session: auth::AuthSession,
     apply_permissions: bool,
     hide_sources: bool,
+    /// Per-client override for CollectionType::Mixed. None = leave as Mixed.
+    mixed_collection_type: Option<api::CollectionType>,
 }
 
 impl ItemsQueryResultBuilder {
@@ -67,6 +69,7 @@ impl ItemsQueryResultBuilder {
             session,
             apply_permissions: false,
             hide_sources: false,
+            mixed_collection_type: None,
         }
     }
 
@@ -81,6 +84,7 @@ impl ItemsQueryResultBuilder {
             session,
             apply_permissions: false,
             hide_sources: false,
+            mixed_collection_type: None,
         }
     }
 
@@ -90,16 +94,22 @@ impl ItemsQueryResultBuilder {
     }
 
     pub fn with_client_patches(mut self) -> Self {
-        self.hide_sources = self
+        let client = &self
             .session
             .device
-            .app_name
-            == "Plezy";
+            .app_name;
+        self.hide_sources = client == "Plezy";
+        self.mixed_collection_type = if client.contains("Swiftfin") {
+            // Swiftfin's SDK has no "mixed" case; homevideos is accepted and shows a home row.
+            Some(api::CollectionType::Homevideos)
+        } else {
+            None
+        };
         self
     }
 
     pub fn build(self) -> ItemsQueryResult {
-        let items = match self.items {
+        let mut items: Vec<api::BaseItemDto> = match self.items {
             ItemsSource::Raw(media) => media
                 .into_iter()
                 .map(|m| {
@@ -133,6 +143,13 @@ impl ItemsQueryResultBuilder {
                 }
             }
         };
+        if let Some(ref override_type) = self.mixed_collection_type {
+            for item in &mut items {
+                if item.collection_type == Some(api::CollectionType::Mixed) {
+                    item.collection_type = Some(override_type.clone());
+                }
+            }
+        }
         ItemsQueryResult {
             items,
             total_count: self.total_count,

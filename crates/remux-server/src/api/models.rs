@@ -169,11 +169,7 @@ pub fn db_media_kind_to_collection_type(
     match kind {
         db::CollectionMediaKind::Movie => Some(CollectionType::Movies),
         db::CollectionMediaKind::Series => Some(CollectionType::Tvshows),
-        // "mixed" is not a valid CollectionType in the Jellyfin API spec, so clients
-        // (Swiftfin, Streamyfin) cannot decode it. "homevideos" is the closest valid
-        // type that (a) clients accept, (b) appears in home-screen "Latest" rows, and
-        // (c) uses supportedItemTypes = all kinds — correct for a mixed collection.
-        db::CollectionMediaKind::Mixed => Some(CollectionType::Homevideos),
+        db::CollectionMediaKind::Mixed => None,
         db::CollectionMediaKind::Music => Some(CollectionType::Music),
         db::CollectionMediaKind::Collection => Some(CollectionType::Boxsets),
         db::CollectionMediaKind::Playlist => Some(CollectionType::Playlists),

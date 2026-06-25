@@ -261,6 +261,29 @@ pub fn CollectionForm(
             .unwrap_or(false)
     });
     let mut col_type = use_signal(|| {
+        // Prefer the Remux namespace's CollectionMediaKind — it's the canonical source
+        // and round-trips correctly for mixed (CollectionType is omitted for mixed).
+        if let Some(mk) = existing
+            .as_ref()
+            .and_then(|f| {
+                f.remux
+                    .as_ref()
+            })
+            .and_then(|r| {
+                r.collection_media_kind
+                    .as_ref()
+            })
+        {
+            return match mk {
+                remux_sdks::remux::MediaKind::Movie => "movies".to_string(),
+                remux_sdks::remux::MediaKind::Series => "tvshows".to_string(),
+                remux_sdks::remux::MediaKind::Mixed => "mixed".to_string(),
+                remux_sdks::remux::MediaKind::Track => "music".to_string(),
+                remux_sdks::remux::MediaKind::Collection => "collections".to_string(),
+                _ => "movies".to_string(),
+            };
+        }
+        // Fallback: infer from CollectionType (covers non-remux legacy items)
         existing
             .as_ref()
             .and_then(|f| {
@@ -270,7 +293,6 @@ pub fn CollectionForm(
             .map(|ct| match ct {
                 remux_sdks::remux::CollectionType::Movies => "movies".to_string(),
                 remux_sdks::remux::CollectionType::Tvshows => "tvshows".to_string(),
-                remux_sdks::remux::CollectionType::Mixed => "mixed".to_string(),
                 remux_sdks::remux::CollectionType::Music => "music".to_string(),
                 remux_sdks::remux::CollectionType::Boxsets => "collections".to_string(),
                 _ => "movies".to_string(),
