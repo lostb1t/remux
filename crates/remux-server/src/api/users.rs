@@ -2246,6 +2246,7 @@ mod e2e_tests {
                 imdb: Some(series_imdb.clone()),
                 ..Default::default()
             },
+            digital_released_at: Some(past),
             ..Default::default()
         };
         series
@@ -2579,5 +2580,337 @@ mod e2e_tests {
                 .unwrap()
                 .unwrap_or(0);
         assert_eq!(s2_count, 0, "unreleased season must remain unplayed");
+    }
+
+    /// When a season is marked played with the filter active, an episode whose
+    /// `digital_released_at` AND `released_at` are both NULL (anime, no TVDB air date)
+    /// must NOT be marked played. Currently fails because the NULL date falls back to
+    /// `'1900-01-01'` in `push_release_date_filter`, treating the episode as released.
+    #[tokio::test]
+    async fn null_air_date_episode_not_marked_played_when_season_marked() {
+        use chrono::Utc;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let cfg = api::ServerConfiguration {
+            filter_by_digital_release_date: true,
+            digital_release_buffer_days: 0,
+            ..Default::default()
+        };
+        db::Settings::set_config(db, &cfg)
+            .await
+            .unwrap();
+
+        let now = Utc::now().naive_utc();
+
+        let series_imdb =
+            db::NonEmptyString::try_new("tt_null_s_001".to_string()).unwrap();
+
+        let mut series = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Series,
+                external_ids: db::ExternalIds {
+                    imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: None,
+                episode: None,
+            }),
+            title: "NullDateSeries".to_string(),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut season = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Season,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: None,
+            }),
+            title: "Season 1".to_string(),
+            kind: db::MediaKind::Season,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(series.id),
+            idx: Some(1),
+            ..Default::default()
+        };
+        season
+            .save(db)
+            .await
+            .unwrap();
+
+        let make_ep =
+            |n: u32, digital_released_at: Option<chrono::NaiveDateTime>| db::Media {
+                id: uuid::Uuid::from(&db::MediaIdRaw {
+                    kind: db::MediaKind::Episode,
+                    external_ids: db::ExternalIds {
+                        series_imdb: Some(series_imdb.clone()),
+                        ..Default::default()
+                    },
+                    season: Some(1),
+                    episode: Some(n.into()),
+                }),
+                title: format!("Ep{n}"),
+                kind: db::MediaKind::Episode,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                grandparent_id: Some(series.id),
+                parent_id: Some(season.id),
+                parent_idx: Some(1),
+                idx: Some(n as i64),
+                digital_released_at,
+                ..Default::default()
+            };
+
+        // ep1: released (past date)
+        let mut ep1 = make_ep(1, Some(now - chrono::Duration::days(7)));
+        ep1.save(db)
+            .await
+            .unwrap();
+
+        // ep2: no air date at all — anime series where TVDB has no release date
+        let mut ep2 = make_ep(2, None);
+        ep2.save(db)
+            .await
+            .unwrap();
+
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+
+        server
+            .post(&format!("/users/{}/playeditems/{}", user.id, season.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        let ep1_count: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(play_count, 0) FROM user_media_state WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(user.id)
+        .bind(ep1.id)
+        .fetch_optional(db)
+        .await
+        .unwrap()
+        .unwrap_or(0);
+        assert!(ep1_count > 0, "released episode must be marked played");
+
+        // ep2 has no air date — must be treated as unreleased and stay unplayed.
+        let ep2_count: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(play_count, 0) FROM user_media_state WHERE user_id = ? AND media_id = ?",
+        )
+        .bind(user.id)
+        .bind(ep2.id)
+        .fetch_optional(db)
+        .await
+        .unwrap()
+        .unwrap_or(0);
+        assert_eq!(
+            ep2_count, 0,
+            "null-date episode (no TVDB air date) must not be marked played"
+        );
+    }
+
+    /// With the release-date filter active, an episode with no air date (NULL
+    /// `digital_released_at` and `released_at`) must not contribute to the series'
+    /// `unplayed_item_count`. Currently fails because the NULL date collapses to
+    /// `'1900-01-01'`, passing the threshold and being counted as unplayed.
+    #[tokio::test]
+    async fn null_air_date_episode_excluded_from_unplayed_count() {
+        use chrono::Utc;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let cfg = api::ServerConfiguration {
+            filter_by_digital_release_date: true,
+            digital_release_buffer_days: 0,
+            ..Default::default()
+        };
+        db::Settings::set_config(db, &cfg)
+            .await
+            .unwrap();
+
+        let now = Utc::now().naive_utc();
+        let series_imdb =
+            db::NonEmptyString::try_new("tt_null_uc_001".to_string()).unwrap();
+
+        let mut series = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Series,
+                external_ids: db::ExternalIds {
+                    imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: None,
+                episode: None,
+            }),
+            title: "NullDateCountSeries".to_string(),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            digital_released_at: Some(now - chrono::Duration::days(365)),
+            ..Default::default()
+        };
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut season = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Season,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: None,
+            }),
+            title: "Season 1".to_string(),
+            kind: db::MediaKind::Season,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(series.id),
+            idx: Some(1),
+            ..Default::default()
+        };
+        season
+            .save(db)
+            .await
+            .unwrap();
+
+        // ep1: released (past date)
+        let mut ep1 = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Episode,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: Some(1),
+            }),
+            title: "S1E1".to_string(),
+            kind: db::MediaKind::Episode,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(season.id),
+            parent_idx: Some(1),
+            idx: Some(1),
+            digital_released_at: Some(now - chrono::Duration::days(7)),
+            ..Default::default()
+        };
+        ep1.save(db)
+            .await
+            .unwrap();
+
+        // ep2: no air date at all — anime, TVDB has no release date
+        let mut ep2 = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Episode,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: Some(2),
+            }),
+            title: "S1E2".to_string(),
+            kind: db::MediaKind::Episode,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(season.id),
+            parent_idx: Some(1),
+            idx: Some(2),
+            digital_released_at: None,
+            released_at: None,
+            ..Default::default()
+        };
+        ep2.save(db)
+            .await
+            .unwrap();
+
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+
+        // Mark ep1 (the only released episode) as played via the API.
+        server
+            .post(&format!("/users/{}/playeditems/{}", user.id, ep1.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        // Fetch the series with the filter active — unplayed_item_count must be 0.
+        let threshold = cfg
+            .release_date_threshold()
+            .unwrap();
+        let results = db::Media::get_by_filter(
+            db,
+            &db::MediaFilter {
+                id: Some(vec![series.id]),
+                include_user_state: true,
+                user_id: Some(user.id),
+                digital_released_before: Some(threshold),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let series_record = results
+            .records
+            .into_iter()
+            .find(|m| m.id == series.id)
+            .expect("series must be in result");
+
+        assert_eq!(
+            series_record.unplayed_item_count,
+            Some(0),
+            "null-date episode must not be counted as unplayed when the release-date filter is active"
+        );
     }
 }

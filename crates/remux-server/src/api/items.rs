@@ -2708,6 +2708,7 @@ mod tests {
             external_ids: ext,
             created_at: now,
             updated_at: now,
+            released_at: Some(now - chrono::Duration::days(365)),
             ..Default::default()
         };
         m.save(db)

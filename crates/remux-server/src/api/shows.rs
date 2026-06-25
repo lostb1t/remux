@@ -173,7 +173,7 @@ pub async fn shows_nextup(
     ep_qb
         .push_bind(grandparent_id)
         .push(" AND kind = 'episode'");
-    push_release_date_filter(&mut ep_qb, release_threshold);
+    push_release_date_filter(&mut ep_qb, "media", release_threshold);
     ep_qb.push(" ORDER BY COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC");
     let episodes: Vec<db::Media> = ep_qb
         .build_query_as()
@@ -366,7 +366,7 @@ async fn shows_nextup_all(
         }
     }
     ep_qb.push(") AND kind = 'episode'");
-    push_release_date_filter(&mut ep_qb, release_threshold);
+    push_release_date_filter(&mut ep_qb, "media", release_threshold);
     ep_qb.push(
         " ORDER BY grandparent_id, COALESCE(parent_idx, 9999) ASC, COALESCE(idx, 9999) ASC",
     );
@@ -1376,6 +1376,163 @@ mod test {
             items.len(),
             0,
             "NextUp must not return unreleased episode Ep2; got: {:?}",
+            items
+        );
+    }
+
+    /// An episode with no air date (`digital_released_at = NULL`, `released_at = NULL`)
+    /// must not appear in Next Up for its series. Anime series on TVDB often have upcoming
+    /// seasons with no scheduled air date. Currently fails because `push_episode_date_filter`
+    /// falls back to `'1900-01-01'` for NULL dates, treating them as already released.
+    #[tokio::test]
+    async fn nextup_excludes_null_air_date_episode() {
+        use crate::integration_test::{auth_header_with_token, authenticated_server};
+        use chrono::Utc;
+        use http::header::HeaderValue;
+
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let db = &guard
+            .0
+            .db;
+
+        let now = Utc::now().naive_utc();
+
+        let series_imdb =
+            db::NonEmptyString::try_new("tt_null_nup_001".to_string()).unwrap();
+
+        let mut series = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Series,
+                external_ids: db::ExternalIds {
+                    imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: None,
+                episode: None,
+            }),
+            title: "NullDateNextUpSeries".to_string(),
+            kind: db::MediaKind::Series,
+            external_ids: db::ExternalIds {
+                imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        series
+            .save(db)
+            .await
+            .unwrap();
+
+        let mut season = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Season,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: None,
+            }),
+            title: "Season 1".to_string(),
+            kind: db::MediaKind::Season,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(series.id),
+            idx: Some(1),
+            ..Default::default()
+        };
+        season
+            .save(db)
+            .await
+            .unwrap();
+
+        // ep1: released and played
+        let mut ep1 = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Episode,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: Some(1),
+            }),
+            title: "Ep1".to_string(),
+            kind: db::MediaKind::Episode,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(season.id),
+            parent_idx: Some(1),
+            idx: Some(1),
+            digital_released_at: Some(now - chrono::Duration::days(7)),
+            ..Default::default()
+        };
+        ep1.save(db)
+            .await
+            .unwrap();
+
+        // ep2: no air date — upcoming anime episode with no scheduled release
+        let mut ep2 = db::Media {
+            id: uuid::Uuid::from(&db::MediaIdRaw {
+                kind: db::MediaKind::Episode,
+                external_ids: db::ExternalIds {
+                    series_imdb: Some(series_imdb.clone()),
+                    ..Default::default()
+                },
+                season: Some(1),
+                episode: Some(2),
+            }),
+            title: "Ep2 (no air date)".to_string(),
+            kind: db::MediaKind::Episode,
+            external_ids: db::ExternalIds {
+                series_imdb: Some(series_imdb.clone()),
+                ..Default::default()
+            },
+            grandparent_id: Some(series.id),
+            parent_id: Some(season.id),
+            parent_idx: Some(1),
+            idx: Some(2),
+            digital_released_at: None,
+            released_at: None,
+            ..Default::default()
+        };
+        ep2.save(db)
+            .await
+            .unwrap();
+
+        let user: db::User = sqlx::query_as("SELECT * FROM users LIMIT 1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+
+        // Mark ep1 as fully watched.
+        insert_state(db, user.id, ep1.id, 1, 0, Some(now), Some(now)).await;
+
+        // Query series-scoped Next Up — ep2 must not appear (NULL date = unreleased).
+        let resp = server
+            .get(&format!("/shows/nextup?SeriesId={}", series.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .await;
+
+        let body: serde_json::Value = resp.json();
+        let items = body["Items"]
+            .as_array()
+            .unwrap();
+
+        assert_eq!(
+            items.len(),
+            0,
+            "null-date episode must not appear in Next Up; got: {:?}",
             items
         );
     }

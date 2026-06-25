@@ -2336,65 +2336,66 @@ impl Media {
         // here rather than in the main query. The main query then contains only
         // `WHERE media.id IN (ids)` which forces SQLite to use individual PK lookups
         // (O(n_ids)) instead of scanning the entire kind-filtered media table (O(total_media)).
-        let resumable_ids: Option<Vec<uuid::Uuid>> =
-            if let Some(usf) = &filter.user_state {
-                if usf.resumable == Some(true) {
-                    let ids: Vec<uuid::Uuid> = if let Some(user_id) = &usf.user_id {
-                        // Drive from user_media_state (small, indexed by user_id) and
-                        // check media conditions via a correlated EXISTS so SQLite does
-                        // one PK lookup per in-progress item instead of materialising
-                        // the entire kind/date-filtered media set.
-                        let mut pre_qb = sqlx::QueryBuilder::new(
-                            "SELECT media_id FROM user_media_state \
+        let resumable_ids: Option<Vec<uuid::Uuid>> = if let Some(usf) =
+            &filter.user_state
+        {
+            if usf.resumable == Some(true) {
+                let ids: Vec<uuid::Uuid> = if let Some(user_id) = &usf.user_id {
+                    // Drive from user_media_state (small, indexed by user_id) and
+                    // check media conditions via a correlated EXISTS so SQLite does
+                    // one PK lookup per in-progress item instead of materialising
+                    // the entire kind/date-filtered media set.
+                    let mut pre_qb = sqlx::QueryBuilder::new(
+                        "SELECT media_id FROM user_media_state \
                          WHERE user_id = ",
-                        );
-                        pre_qb.push_bind(user_id);
-                        pre_qb.push(" AND playback_position > 0 AND play_count = 0");
-                        let needs_media_filter = filter
-                            .kind
-                            .as_ref()
-                            .map(|k| !k.is_empty())
-                            .unwrap_or(false)
-                            || filter
-                                .digital_released_before
-                                .is_some();
-                        if needs_media_filter {
-                            pre_qb.push(
-                                " AND EXISTS (SELECT 1 FROM media \
+                    );
+                    pre_qb.push_bind(user_id);
+                    pre_qb.push(" AND playback_position > 0 AND play_count = 0");
+                    let needs_media_filter = filter
+                        .kind
+                        .as_ref()
+                        .map(|k| !k.is_empty())
+                        .unwrap_or(false)
+                        || filter
+                            .digital_released_before
+                            .is_some();
+                    if needs_media_filter {
+                        pre_qb.push(
+                            " AND EXISTS (SELECT 1 FROM media \
                              WHERE id = media_id AND 1=1",
-                            );
-                            if let Some(kinds) = &filter.kind {
-                                if !kinds.is_empty() {
-                                    pre_qb.push(" AND kind IN (");
-                                    let mut sep = pre_qb.separated(", ");
-                                    for k in kinds {
-                                        sep.push_bind(k);
-                                    }
-                                    pre_qb.push(")");
+                        );
+                        if let Some(kinds) = &filter.kind {
+                            if !kinds.is_empty() {
+                                pre_qb.push(" AND kind IN (");
+                                let mut sep = pre_qb.separated(", ");
+                                for k in kinds {
+                                    sep.push_bind(k);
                                 }
+                                pre_qb.push(")");
                             }
-                            if let Some(&threshold) = filter
-                                .digital_released_before
-                                .as_ref()
-                            {
-                                push_release_date_filter(&mut pre_qb, threshold);
-                            }
-                            pre_qb.push(")");
                         }
-                        pre_qb
-                            .build_query_scalar::<uuid::Uuid>()
-                            .fetch_all(db)
-                            .await?
-                    } else {
-                        vec![]
-                    };
-                    Some(ids)
+                        if let Some(&threshold) = filter
+                            .digital_released_before
+                            .as_ref()
+                        {
+                            push_release_date_filter(&mut pre_qb, "media", threshold);
+                        }
+                        pre_qb.push(")");
+                    }
+                    pre_qb
+                        .build_query_scalar::<uuid::Uuid>()
+                        .fetch_all(db)
+                        .await?
                 } else {
-                    None
-                }
+                    vec![]
+                };
+                Some(ids)
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
         for qb in [&mut count_qb, &mut records_qb] {
             if is_genre_scope_query {
@@ -2738,7 +2739,7 @@ impl Media {
                 .as_ref()
             {
                 if resumable_ids.is_none() {
-                    push_release_date_filter(qb, threshold);
+                    push_release_date_filter(qb, "media", threshold);
                 }
             }
 
@@ -3383,16 +3384,7 @@ impl Media {
                     qb.push_bind(user_id);
                     qb.push(" AND ums.play_count > 0)");
                     if let Some(t) = filter.digital_released_before {
-                        qb.push(
-                            " AND COALESCE(\
-                               e.digital_released_at, \
-                               e.released_at, \
-                               (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = e.parent_id), \
-                               (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = e.grandparent_id), \
-                               '1900-01-01 00:00:00'\
-                             ) <= ",
-                        );
-                        qb.push_bind(t);
+                        push_release_date_filter(&mut qb, "e", t);
                     }
                     qb.push(" GROUP BY e.grandparent_id");
 
@@ -4344,7 +4336,7 @@ async fn count_unplayed_children(
     qb.push_bind(user_id);
     qb.push(" AND ums.play_count > 0)");
     if let Some(t) = threshold {
-        push_release_date_filter(&mut qb, t);
+        push_release_date_filter(&mut qb, "media", t);
     }
     qb.build_query_scalar()
         .fetch_one(db)
@@ -4398,10 +4390,9 @@ async fn count_unplayed_released_seasons(
     if let Some(t) = threshold {
         qb.push(
             " AND EXISTS (\
-               SELECT 1 FROM media e WHERE e.parent_id = s.id AND e.kind = 'episode' \
-               AND COALESCE(e.digital_released_at, e.released_at, '1900-01-01 00:00:00') <= ",
+               SELECT 1 FROM media e WHERE e.parent_id = s.id AND e.kind = 'episode'",
         );
-        qb.push_bind(t);
+        push_release_date_filter(&mut qb, "e", t);
         qb.push(")");
     }
     qb.build_query_scalar()
@@ -4438,7 +4429,7 @@ async fn child_episode_ids(
     qb.push_bind(parent_id);
     qb.push(" AND kind = 'episode'");
     if let Some(t) = threshold {
-        push_release_date_filter(&mut qb, t);
+        push_release_date_filter(&mut qb, "media", t);
     }
     qb.build_query_scalar()
         .fetch_all(db)
@@ -4458,10 +4449,9 @@ async fn child_season_ids(
         // Only seasons that have at least one released episode.
         qb.push(
             " AND EXISTS (\
-               SELECT 1 FROM media e WHERE e.parent_id = media.id AND e.kind = 'episode' \
-               AND COALESCE(e.digital_released_at, e.released_at, '1900-01-01 00:00:00') <= ",
+               SELECT 1 FROM media e WHERE e.parent_id = media.id AND e.kind = 'episode'",
         );
-        qb.push_bind(t);
+        push_release_date_filter(&mut qb, "e", t);
         qb.push(")");
     }
     qb.build_query_scalar()
@@ -4480,7 +4470,7 @@ async fn grandchild_episode_ids(
     qb.push_bind(grandparent_id);
     qb.push(" AND kind = 'episode'");
     if let Some(t) = threshold {
-        push_release_date_filter(&mut qb, t);
+        push_release_date_filter(&mut qb, "media", t);
     }
     qb.build_query_scalar()
         .fetch_all(db)
@@ -4591,37 +4581,35 @@ pub async fn reconcile_series_played_state(db: &SqlitePool, series_id: Uuid) {
         .await
         .release_date_threshold();
 
-    // Build the release-date guard appended to episode subqueries.
-    // When the filter is enabled, only released episodes count as "unplayed".
-    let release_guard = threshold.map(|t| {
-        format!(
-            " AND COALESCE(e.digital_released_at, e.released_at, '1900-01-01 00:00:00') <= '{}'",
-            t.format("%Y-%m-%d %H:%M:%S")
-        )
-    });
-    let release_guard = release_guard
-        .as_deref()
-        .unwrap_or("");
-
     // Users who have the series played but have at least one unplayed released episode.
-    let stale_users: Vec<Uuid> = sqlx::query_scalar(&format!(
+    let mut qb = sqlx::QueryBuilder::new(
         "SELECT ums.user_id \
          FROM user_media_state ums \
-         WHERE ums.media_id = ? AND ums.play_count > 0 \
+         WHERE ums.media_id = ",
+    );
+    qb.push_bind(series_id);
+    qb.push(
+        " AND ums.play_count > 0 \
          AND EXISTS (\
            SELECT 1 FROM media e \
-           WHERE e.grandparent_id = ? AND e.kind = 'episode'{release_guard} \
-           AND NOT EXISTS (\
-             SELECT 1 FROM user_media_state u2 \
-             WHERE u2.media_id = e.id AND u2.user_id = ums.user_id AND u2.play_count > 0\
-           )\
-         )"
-    ))
-    .bind(series_id)
-    .bind(series_id)
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+           WHERE e.grandparent_id = ",
+    );
+    qb.push_bind(series_id);
+    qb.push(" AND e.kind = 'episode'");
+    if let Some(t) = threshold {
+        push_release_date_filter(&mut qb, "e", t);
+    }
+    qb.push(
+        " AND NOT EXISTS (\
+           SELECT 1 FROM user_media_state u2 \
+           WHERE u2.media_id = e.id AND u2.user_id = ums.user_id AND u2.play_count > 0\
+         ))",
+    );
+    let stale_users: Vec<Uuid> = qb
+        .build_query_scalar()
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
 
     for user_id in stale_users {
         // Unmark the series.
@@ -4636,27 +4624,40 @@ pub async fn reconcile_series_played_state(db: &SqlitePool, series_id: Uuid) {
         .ok();
 
         // Unmark any seasons that are played but contain unplayed released episodes.
-        let stale_seasons: Vec<Uuid> = sqlx::query_scalar(&format!(
+        let mut qb = sqlx::QueryBuilder::new(
             "SELECT s.id FROM media s \
-             WHERE s.parent_id = ? AND s.kind = 'season' \
+             WHERE s.parent_id = ",
+        );
+        qb.push_bind(series_id);
+        qb.push(
+            " AND s.kind = 'season' \
              AND EXISTS (\
-               SELECT 1 FROM user_media_state ums WHERE ums.media_id = s.id \
-               AND ums.user_id = ? AND ums.play_count > 0\
+               SELECT 1 FROM user_media_state ums \
+               WHERE ums.media_id = s.id AND ums.user_id = ",
+        );
+        qb.push_bind(user_id);
+        qb.push(
+            " AND ums.play_count > 0\
              ) \
              AND EXISTS (\
-               SELECT 1 FROM media e WHERE e.parent_id = s.id AND e.kind = 'episode'{release_guard} \
-               AND NOT EXISTS (\
-                 SELECT 1 FROM user_media_state u2 \
-                 WHERE u2.media_id = e.id AND u2.user_id = ? AND u2.play_count > 0\
-               )\
-             )"
-        ))
-        .bind(series_id)
-        .bind(user_id)
-        .bind(user_id)
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
+               SELECT 1 FROM media e \
+               WHERE e.parent_id = s.id AND e.kind = 'episode'",
+        );
+        if let Some(t) = threshold {
+            push_release_date_filter(&mut qb, "e", t);
+        }
+        qb.push(
+            " AND NOT EXISTS (\
+               SELECT 1 FROM user_media_state u2 \
+               WHERE u2.media_id = e.id AND u2.user_id = ",
+        );
+        qb.push_bind(user_id);
+        qb.push(" AND u2.play_count > 0))");
+        let stale_seasons: Vec<Uuid> = qb
+            .build_query_scalar()
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
 
         for season_id in stale_seasons {
             sqlx::query(
@@ -5177,7 +5178,11 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
     Ok(media_instances)
 }
 
+/// Return the release-date WHERE fragment for use in raw `format!` SQL strings.
 /// Push the release-date WHERE condition onto a query builder, binding `threshold`.
+///
+/// `alias` is the table alias for the media row (e.g. `"media"` for an unaliased
+/// table, `"e"` when episodes are selected as `media e`).
 ///
 /// Priority order:
 /// 1. `digital_released_at` — explicit digital/streaming release date.
@@ -5185,25 +5190,25 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
 ///    Recent theatrical-only releases have no confirmed digital date yet.
 /// 3. `released_at` older than a year — falls back to theatrical as a proxy.
 /// 4. Parent then grandparent dates — episodes inherit series premiere when no item date.
-/// 5. `'1900-01-01'` sentinel — items with no date at any level (live/sports) always pass.
+/// 5. No date at any level → excluded (NULL comparison is falsy in SQLite). Since TMDB
+///    is always queried for metadata, any item without a resolvable date is treated as
+///    not yet released.
 pub fn push_release_date_filter(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+    alias: &str,
     threshold: NaiveDateTime,
 ) {
-    // media.parent_id / media.grandparent_id are qualified with the outer table name so
-    // SQLite resolves them against the outer row, not against the inner alias `p`.
-    qb.push(
+    let a = format!("{alias}.");
+    qb.push(format!(
         " AND CASE \
-            WHEN digital_released_at IS NOT NULL THEN digital_released_at \
-            WHEN released_at IS NOT NULL AND datetime(released_at) > datetime('now', '-1 year') THEN NULL \
+            WHEN {a}digital_released_at IS NOT NULL THEN {a}digital_released_at \
+            WHEN {a}released_at IS NOT NULL AND datetime({a}released_at) > datetime('now', '-1 year') THEN NULL \
             ELSE COALESCE(\
-              released_at, \
-              (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.parent_id), \
-              (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.grandparent_id), \
-              '1900-01-01 00:00:00'\
+              {a}released_at, \
+              (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = {a}parent_id)\
             ) \
-          END <= ",
-    )
+          END <= "
+    ))
     .push_bind(threshold);
 }
 
