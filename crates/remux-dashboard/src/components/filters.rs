@@ -20,6 +20,10 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
         | FilterRule::Country { values, .. }
         | FilterRule::OriginalLanguage { values, .. }
         | FilterRule::Person { values, .. } => values.clone(),
+        FilterRule::Catalog { catalog_ids } => catalog_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
         _ => vec![],
     }
 }
@@ -113,6 +117,43 @@ async fn fetch_suggestions(
                 .collect(),
             Err(_) => vec![],
         },
+        "catalog" => {
+            let Ok(addons) = client
+                .execute(ListAddons)
+                .await
+            else {
+                return vec![];
+            };
+            let q_lower = query.to_lowercase();
+            let mut results = vec![];
+            for addon in addons {
+                if !addon.enabled {
+                    continue;
+                }
+                let Ok(catalogs) = client
+                    .execute(GetAddonCatalogs { id: addon.id })
+                    .await
+                else {
+                    continue;
+                };
+                for cat in catalogs {
+                    if !cat.enabled {
+                        continue;
+                    }
+                    let Some(cid) = cat.collection_id else {
+                        continue;
+                    };
+                    let label = format!("{} — {}", addon.name, cat.name);
+                    if label
+                        .to_lowercase()
+                        .contains(&q_lower)
+                    {
+                        results.push((label, cid.to_string()));
+                    }
+                }
+            }
+            results
+        }
         _ => vec![],
     }
 }
@@ -160,12 +201,13 @@ fn value_placeholder(field_key: &str) -> &'static str {
 
 fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
     match rule {
-        FilterRule::Catalog { catalog_id } => {
-            let val = if catalog_id.is_nil() {
-                String::new()
-            } else {
-                catalog_id.to_string()
-            };
+        FilterRule::Catalog { catalog_ids } => {
+            let val = catalog_ids
+                .iter()
+                .filter(|id| !id.is_nil())
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             ("catalog".into(), "is".into(), val)
         }
         FilterRule::Year { op, value } => {
@@ -316,7 +358,10 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
             value: value_str == "true",
         },
         "catalog" => FilterRule::Catalog {
-            catalog_id: Uuid::parse_str(value_str).unwrap_or(Uuid::nil()),
+            catalog_ids: value_str
+                .split(", ")
+                .filter_map(|s| Uuid::parse_str(s.trim()).ok())
+                .collect(),
         },
         _ => FilterRule::Genre {
             op: set_op,
@@ -434,6 +479,10 @@ pub fn ChipInput(
     values: Vec<String>,
     idx: usize,
     rules: Signal<Vec<FilterRule>>,
+    /// A signal of (display_label, value) pairs for looking up human-readable chip labels.
+    /// ChipInput subscribes to this signal directly, so it re-renders when the data loads.
+    #[props(default)]
+    value_labels: Option<Signal<Vec<(String, String)>>>,
 ) -> Element {
     let app_state = use_context::<AppState>();
     let mut input_text: Signal<String> = use_signal(String::new);
@@ -464,12 +513,34 @@ pub fn ChipInput(
         });
     });
 
+    // Build display map before rsx! so subscriptions are tracked at component scope.
+    // 1. Start with externally-provided labels (signal read → ChipInput subscribes directly).
+    // 2. Extend with label_cache (dropdown selections override external labels).
+    let chip_labels = {
+        let mut m: std::collections::HashMap<String, String> =
+            if let Some(vl) = value_labels {
+                // (label, value) pairs — invert to (value, label) for lookup
+                vl.read()
+                    .iter()
+                    .map(|(label, value)| (value.clone(), label.clone()))
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
+        m.extend(
+            label_cache
+                .read()
+                .clone(),
+        );
+        m
+    };
+
     rsx! {
         div { style: "position:relative;flex:1.5",
             div { class: "chip-input",
                 for (ci, chip) in values.iter().enumerate() {
                     {
-                        let chip_display = label_cache.read().get(chip).cloned().unwrap_or(chip.clone());
+                        let chip_display = chip_labels.get(chip).cloned().unwrap_or(chip.clone());
                         let mut v = values.clone();
                         let fk = field_key.clone();
                         let op = op_val.clone();
@@ -606,9 +677,6 @@ pub fn FilterRuleRow(
             };
             let mut options = vec![];
             for addon in addons {
-                if !addon.enabled {
-                    continue;
-                }
                 let Ok(catalogs) = client
                     .execute(GetAddonCatalogs { id: addon.id })
                     .await
@@ -616,11 +684,13 @@ pub fn FilterRuleRow(
                     continue;
                 };
                 for cat in catalogs {
-                    if !cat.enabled {
-                        continue;
-                    }
                     if let Some(cid) = cat.collection_id {
-                        let label = format!("{} — {}", addon.name, cat.name);
+                        let disabled = !addon.enabled || !cat.enabled;
+                        let label = if disabled {
+                            format!("{} — {} (disabled)", addon.name, cat.name)
+                        } else {
+                            format!("{} — {}", addon.name, cat.name)
+                        };
                         options.push((label, cid.to_string()));
                     }
                 }
@@ -725,28 +795,13 @@ pub fn FilterRuleRow(
                 }
             }
             if is_catalog {
-                select {
-                    class: "select-input",
-                    style: "flex:1.5",
-                    value: "{value_val}",
-                    onchange: move |e| {
-                        if let Some(row) = rules.write().get_mut(idx) {
-                            *row = raw_to_rule("catalog", "", &e.value());
-                        }
-                    },
-                    option {
-                        value: "",
-                        disabled: true,
-                        selected: value_val.is_empty(),
-                        "Select catalog…"
-                    }
-                    for (label, combined) in catalog_options.read().iter() {
-                        option {
-                            value: "{combined}",
-                            selected: value_val == *combined,
-                            "{label}"
-                        }
-                    }
+                ChipInput {
+                    field_key: "catalog".to_string(),
+                    op_val: "is".to_string(),
+                    values: rule_values(&rule),
+                    idx,
+                    rules,
+                    value_labels: Some(catalog_options),
                 }
             } else if is_trailer {
                 select {

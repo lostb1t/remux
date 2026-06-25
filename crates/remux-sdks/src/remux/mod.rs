@@ -2735,9 +2735,9 @@ pub enum FilterRule {
         op: SetOp,
         values: Vec<String>,
     },
-    /// Matches items that belong to the given catalog collection.
+    /// Matches items that belong to any of the given catalog collections.
     Catalog {
-        catalog_id: Uuid,
+        catalog_ids: Vec<Uuid>,
     },
 }
 
@@ -2770,6 +2770,27 @@ where
     let raw: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
     Ok(raw
         .into_iter()
+        .map(|mut v| {
+            // Migrate old single-UUID format: {"field":"catalog","catalog_id":"..."} → catalog_ids:[...]
+            if v.get("field")
+                .and_then(|f| f.as_str())
+                == Some("catalog")
+            {
+                if let Some(old_id) = v
+                    .get("catalog_id")
+                    .cloned()
+                {
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.remove("catalog_id");
+                        obj.insert(
+                            "catalog_ids".into(),
+                            serde_json::Value::Array(vec![old_id]),
+                        );
+                    }
+                }
+            }
+            v
+        })
         .filter_map(|v| serde_json::from_value::<FilterRule>(v).ok())
         .collect())
 }

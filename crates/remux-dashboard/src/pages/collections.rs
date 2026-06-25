@@ -496,6 +496,7 @@ pub fn CollectionForm(
             .clone();
         spawn(async move {
             let result = if let Some(id) = item_id {
+                // Edit existing collection
                 let patch = client
                     .execute(PatchItem {
                         item_id: id.clone(),
@@ -529,7 +530,8 @@ pub fn CollectionForm(
                 }
                 patch
             } else {
-                client
+                // Create new collection, then patch extra fields the create endpoint doesn't accept
+                let info = match client
                     .execute(CreateVirtualFolder {
                         payload: CreateVirtualFolderPayload {
                             name,
@@ -540,7 +542,45 @@ pub fn CollectionForm(
                         },
                     })
                     .await
-                    .map(|_| ())
+                {
+                    Ok(info) => info,
+                    Err(e) => return err.set(Some(e.user_message())),
+                };
+                let Some(new_id) = info.item_id else {
+                    return on_done.call(());
+                };
+                let patch = client
+                    .execute(PatchItem {
+                        item_id: new_id.clone(),
+                        payload: PatchItemPayload {
+                            name: None,
+                            collection_type: None,
+                            collection_kind: None,
+                            smart_filter: smart_filter_payload,
+                            promoted: None,
+                            tags: Some(current_tags),
+                            sort_order: None,
+                            latest_auto_unplayed: Some(auto_unplayed),
+                            latest_sort_digital: Some(sort_digital),
+                            collection_default_sort: default_sort_payload,
+                            collection_default_sort_order: default_sort_order_payload,
+                        },
+                    })
+                    .await;
+                if patch.is_ok() {
+                    if let Some(bytes) = pending_bytes {
+                        let ct = crate::state::detect_image_content_type(&bytes);
+                        let _ = client
+                            .execute(remux_sdks::remux::UploadItemImage {
+                                item_id: new_id,
+                                image_type: "Primary".to_string(),
+                                bytes,
+                                content_type: ct,
+                            })
+                            .await;
+                    }
+                }
+                patch
             };
             match result {
                 Ok(_) => on_done.call(()),

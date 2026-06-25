@@ -2819,17 +2819,27 @@ impl Media {
                             format!("(sort_order IS NULL), COALESCE(sort_order, channel_number, 999999) {dir}, title COLLATE NOCASE")
                         }
                         api::ItemSortBy::CatalogOrder => {
-                            let src = filter.filter_rules.iter().find_map(|r| {
-                                if let sdks::remux::FilterRule::Catalog { catalog_id } = r {
-                                    Some(catalog_id.simple().to_string())
-                                } else {
-                                    None
-                                }
-                            });
-                            if let Some(cid_hex) = src {
+                            let catalog_ids: Vec<String> = filter
+                                .filter_rules
+                                .iter()
+                                .find_map(|r| {
+                                    if let sdks::remux::FilterRule::Catalog { catalog_ids } = r {
+                                        Some(catalog_ids.iter().map(|id| id.simple().to_string()).collect())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_default();
+                            if !catalog_ids.is_empty() {
+                                let in_clause = catalog_ids
+                                    .iter()
+                                    .map(|hex| format!("X'{hex}'"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
                                 format!(
-                                    "COALESCE((SELECT mr.weight FROM media_relations mr \
-                                     WHERE mr.right_media_id = media.id AND mr.role = 'catalog' AND mr.left_media_id = X'{cid_hex}'), 999999) ASC"
+                                    "COALESCE((SELECT MIN(mr.weight) FROM media_relations mr \
+                                     WHERE mr.right_media_id = media.id AND mr.role = 'catalog' \
+                                     AND mr.left_media_id IN ({in_clause})), 999999) ASC"
                                 )
                             } else {
                                 format!("title COLLATE NOCASE {dir}")
@@ -5421,16 +5431,20 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             };
             Some((sql, negated))
         }
-        R::Catalog { catalog_id } => {
-            let cid_hex = catalog_id
-                .simple()
-                .to_string();
+        R::Catalog { catalog_ids } if !catalog_ids.is_empty() => {
+            let in_clause = catalog_ids
+                .iter()
+                .map(|id| format!("X'{}'", id.simple()))
+                .collect::<Vec<_>>()
+                .join(", ");
             let sql = format!(
                 "EXISTS (SELECT 1 FROM media_relations mr \
-                 WHERE mr.right_media_id = media.id AND mr.role = 'catalog' AND mr.left_media_id = X'{cid_hex}')"
+                 WHERE mr.right_media_id = media.id AND mr.role = 'catalog' \
+                 AND mr.left_media_id IN ({in_clause}))"
             );
             Some((sql, false))
         }
+        R::Catalog { .. } => None,
     }
 }
 
