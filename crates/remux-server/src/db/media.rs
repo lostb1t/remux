@@ -996,10 +996,10 @@ pub struct MediaFilter {
     pub sort_order: Vec<api::SortOrder>,
     /// For TvProgram queries: order by the parent channel's sort_order / channel_number.
     pub sort_by_channel_order: bool,
-    /// Structured filter rules (from smart collections). Evaluated with `filter_match`.
-    pub filter_rules: Vec<remux_sdks::remux::FilterRule>,
-    /// Whether all rules must match (AND) or any rule (OR). Defaults to All.
-    pub filter_match: remux_sdks::remux::FilterMatchMode,
+    /// Structured filter from a smart collection (groups of rules).
+    pub filter_rules: Option<remux_sdks::remux::CollectionFilter>,
+    /// Structured filter from user policy (applied separately, never on containers).
+    pub policy_filter: Option<remux_sdks::remux::CollectionFilter>,
     /// Filter TvChannels by country code (ISO 3166-1 alpha-2, case-insensitive).
     pub country_filter: Option<String>,
     /// Filter TvChannels by group (M3U group-title / Xtream category).
@@ -2741,11 +2741,11 @@ impl Media {
                 }
             }
 
-            if !filter
-                .filter_rules
-                .is_empty()
-            {
-                apply_filter_rules(qb, &filter.filter_rules, &filter.filter_match);
+            if let Some(ref f) = filter.filter_rules {
+                apply_filter_rules(qb, f);
+            }
+            if let Some(ref f) = filter.policy_filter {
+                apply_filter_rules(qb, f);
             }
         }
         // Apply ORDER BY driven by the sort_by field, with per-kind fallbacks.
@@ -2819,17 +2819,28 @@ impl Media {
                             format!("(sort_order IS NULL), COALESCE(sort_order, channel_number, 999999) {dir}, title COLLATE NOCASE")
                         }
                         api::ItemSortBy::CatalogOrder => {
-                            let src = filter.filter_rules.iter().find_map(|r| {
-                                if let sdks::remux::FilterRule::Catalog { catalog_id } = r {
-                                    Some(catalog_id.simple().to_string())
-                                } else {
-                                    None
-                                }
-                            });
-                            if let Some(cid_hex) = src {
+                            let catalog_ids: Vec<String> = filter
+                                .filter_rules
+                                .iter()
+                                .flat_map(|cf| cf.groups.iter().flat_map(|g| g.rules.iter()))
+                                .find_map(|r| {
+                                    if let sdks::remux::FilterRule::Catalog { catalog_ids, .. } = r {
+                                        Some(catalog_ids.iter().map(|id| id.simple().to_string()).collect())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_default();
+                            if !catalog_ids.is_empty() {
+                                let in_clause = catalog_ids
+                                    .iter()
+                                    .map(|hex| format!("X'{hex}'"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
                                 format!(
-                                    "COALESCE((SELECT mr.weight FROM media_relations mr \
-                                     WHERE mr.right_media_id = media.id AND mr.role = 'catalog' AND mr.left_media_id = X'{cid_hex}'), 999999) ASC"
+                                    "COALESCE((SELECT MIN(mr.weight) FROM media_relations mr \
+                                     WHERE mr.right_media_id = media.id AND mr.role = 'catalog' \
+                                     AND mr.left_media_id IN ({in_clause})), 999999) ASC"
                                 )
                             } else {
                                 format!("title COLLATE NOCASE {dir}")
@@ -3815,31 +3826,14 @@ impl Media {
                     .sort_order
                     .clone()
                     .unwrap_or_default(),
-                filter_rules: {
-                    let mut rules = smart_filter
-                        .map(|sf| {
-                            sf.rules
-                                .clone()
-                        })
-                        .unwrap_or_default();
-                    // Content filter rules must not apply to container queries — only
-                    // to content (movies, episodes, etc.). See CLAUDE.md.
-                    if !targeting_containers {
-                        if let Some(pf) = user_policy_filter {
-                            rules.extend(
-                                pf.rules
-                                    .clone(),
-                            );
-                        }
-                    }
-                    rules
+                filter_rules: smart_filter.cloned(),
+                // Content filter rules must not apply to container queries — only
+                // to content (movies, episodes, etc.). See CLAUDE.md.
+                policy_filter: if !targeting_containers {
+                    user_policy_filter.cloned()
+                } else {
+                    None
                 },
-                filter_match: smart_filter
-                    .map(|sf| {
-                        sf.match_mode
-                            .clone()
-                    })
-                    .unwrap_or_default(),
                 artist_ids: filter
                     .artist_ids
                     .clone()
@@ -3868,9 +3862,13 @@ impl Media {
                 .is_empty()
         {
             if let Some(pf) = user_policy_filter {
-                if !pf
-                    .rules
-                    .is_empty()
+                if pf
+                    .groups
+                    .iter()
+                    .any(|g| {
+                        !g.rules
+                            .is_empty()
+                    })
                 {
                     let container_ids: Vec<uuid::Uuid> = result
                         .records
@@ -3887,7 +3885,7 @@ impl Media {
                     qb.push(
                         ") AND kind NOT IN ('collection', 'folder', 'playlist', 'tv_channel')",
                     );
-                    apply_filter_rules(&mut qb, &pf.rules, &pf.match_mode);
+                    apply_filter_rules(&mut qb, pf);
                     qb.push(" GROUP BY parent_id");
 
                     if let Ok(rows) = qb
@@ -5146,44 +5144,61 @@ pub fn push_release_date_filter(
 /// - `has_trailer` — json_array_length check
 pub fn apply_filter_rules(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
-    rules: &[remux_sdks::remux::FilterRule],
-    match_mode: &remux_sdks::remux::FilterMatchMode,
+    filter: &remux_sdks::remux::CollectionFilter,
 ) {
     use remux_sdks::remux::FilterMatchMode;
 
-    if rules.is_empty() {
+    let non_empty: Vec<_> = filter
+        .groups
+        .iter()
+        .filter(|g| {
+            !g.rules
+                .is_empty()
+        })
+        .collect();
+
+    if non_empty.is_empty() {
         return;
     }
 
-    let is_any = *match_mode == FilterMatchMode::Any;
-    if is_any {
-        qb.push(" AND (");
-    }
+    let group_sep = match filter.match_mode {
+        FilterMatchMode::All => " AND ",
+        FilterMatchMode::Any => " OR ",
+    };
 
-    let mut first = true;
-    for rule in rules {
-        if let Some((sql, negated)) = filter_rule_to_sql(rule) {
-            if is_any {
-                if !first {
-                    qb.push(" OR ");
+    qb.push(" AND (");
+    let mut first_group = true;
+    for group in non_empty {
+        if !first_group {
+            qb.push(group_sep);
+        }
+        first_group = false;
+
+        let rule_sep = match group.match_mode {
+            FilterMatchMode::All => " AND ",
+            FilterMatchMode::Any => " OR ",
+        };
+
+        qb.push("(");
+        let mut first_rule = true;
+        for rule in &group.rules {
+            if let Some((sql, negated)) = filter_rule_to_sql(rule) {
+                if !first_rule {
+                    qb.push(rule_sep);
                 }
-            } else {
-                qb.push(" AND ");
-            }
-            first = false;
-            if negated {
-                qb.push("NOT (");
-            }
-            qb.push(sql);
-            if negated {
-                qb.push(")");
+                first_rule = false;
+                if negated {
+                    qb.push("NOT (");
+                }
+                qb.push(sql);
+                if negated {
+                    qb.push(")");
+                }
             }
         }
-    }
-
-    if is_any && !first {
         qb.push(")");
     }
+    qb.push(")");
 }
 
 /// Translate one `FilterRule` into a raw SQL fragment.
@@ -5421,16 +5436,21 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             };
             Some((sql, negated))
         }
-        R::Catalog { catalog_id } => {
-            let cid_hex = catalog_id
-                .simple()
-                .to_string();
+        R::Catalog { op, catalog_ids } if !catalog_ids.is_empty() => {
+            let in_clause = catalog_ids
+                .iter()
+                .map(|id| format!("X'{}'", id.simple()))
+                .collect::<Vec<_>>()
+                .join(", ");
             let sql = format!(
                 "EXISTS (SELECT 1 FROM media_relations mr \
-                 WHERE mr.right_media_id = media.id AND mr.role = 'catalog' AND mr.left_media_id = X'{cid_hex}')"
+                 WHERE mr.right_media_id = media.id AND mr.role = 'catalog' \
+                 AND mr.left_media_id IN ({in_clause}))"
             );
-            Some((sql, false))
+            let negated = matches!(op, SetOp::IsNot | SetOp::NotIn);
+            Some((sql, negated))
         }
+        R::Catalog { .. } => None,
     }
 }
 

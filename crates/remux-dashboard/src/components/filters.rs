@@ -2,10 +2,10 @@ use crate::state::AppState;
 use dioxus::prelude::*;
 use remux_sdks::{
     remux::{
-        FilterMatchMode, FilterRule, GetAddonCatalogs, GetCertificationSuggestions,
-        GetCountrySuggestions, GetLanguageSuggestions, GetLocalSuggestions,
-        GetParentalRatings, GetTagSuggestions, JellyfinAuth, ListAddons, NumericOp,
-        ParentalRating, SetOp,
+        FilterGroup, FilterMatchMode, FilterRule, GetAddonCatalogs,
+        GetCertificationSuggestions, GetCountrySuggestions, GetLanguageSuggestions,
+        GetLocalSuggestions, GetParentalRatings, GetTagSuggestions, JellyfinAuth,
+        ListAddons, NumericOp, ParentalRating, SetOp,
     },
     RestClient,
 };
@@ -20,6 +20,10 @@ fn rule_values(rule: &FilterRule) -> Vec<String> {
         | FilterRule::Country { values, .. }
         | FilterRule::OriginalLanguage { values, .. }
         | FilterRule::Person { values, .. } => values.clone(),
+        FilterRule::Catalog { catalog_ids, .. } => catalog_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
         _ => vec![],
     }
 }
@@ -113,6 +117,43 @@ async fn fetch_suggestions(
                 .collect(),
             Err(_) => vec![],
         },
+        "catalog" => {
+            let Ok(addons) = client
+                .execute(ListAddons)
+                .await
+            else {
+                return vec![];
+            };
+            let q_lower = query.to_lowercase();
+            let mut results = vec![];
+            for addon in addons {
+                if !addon.enabled {
+                    continue;
+                }
+                let Ok(catalogs) = client
+                    .execute(GetAddonCatalogs { id: addon.id })
+                    .await
+                else {
+                    continue;
+                };
+                for cat in catalogs {
+                    if !cat.enabled {
+                        continue;
+                    }
+                    let Some(cid) = cat.collection_id else {
+                        continue;
+                    };
+                    let label = format!("{} — {}", addon.name, cat.name);
+                    if label
+                        .to_lowercase()
+                        .contains(&q_lower)
+                    {
+                        results.push((label, cid.to_string()));
+                    }
+                }
+            }
+            results
+        }
         _ => vec![],
     }
 }
@@ -141,7 +182,7 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "parental_rating" | "has_trailer" | "catalog" => vec![],
+        "parental_rating" | "has_trailer" => vec![],
         _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
@@ -160,13 +201,14 @@ fn value_placeholder(field_key: &str) -> &'static str {
 
 fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
     match rule {
-        FilterRule::Catalog { catalog_id } => {
-            let val = if catalog_id.is_nil() {
-                String::new()
-            } else {
-                catalog_id.to_string()
-            };
-            ("catalog".into(), "is".into(), val)
+        FilterRule::Catalog { op, catalog_ids } => {
+            let val = catalog_ids
+                .iter()
+                .filter(|id| !id.is_nil())
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            ("catalog".into(), set_op_str(op), val)
         }
         FilterRule::Year { op, value } => {
             let op_str = match op {
@@ -316,7 +358,11 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
             value: value_str == "true",
         },
         "catalog" => FilterRule::Catalog {
-            catalog_id: Uuid::parse_str(value_str).unwrap_or(Uuid::nil()),
+            op: set_op,
+            catalog_ids: value_str
+                .split(", ")
+                .filter_map(|s| Uuid::parse_str(s.trim()).ok())
+                .collect(),
         },
         _ => FilterRule::Genre {
             op: set_op,
@@ -434,6 +480,10 @@ pub fn ChipInput(
     values: Vec<String>,
     idx: usize,
     rules: Signal<Vec<FilterRule>>,
+    /// A signal of (display_label, value) pairs for looking up human-readable chip labels.
+    /// ChipInput subscribes to this signal directly, so it re-renders when the data loads.
+    #[props(default)]
+    value_labels: Option<Signal<Vec<(String, String)>>>,
 ) -> Element {
     let app_state = use_context::<AppState>();
     let mut input_text: Signal<String> = use_signal(String::new);
@@ -464,18 +514,40 @@ pub fn ChipInput(
         });
     });
 
+    // Build display map before rsx! so subscriptions are tracked at component scope.
+    // 1. Start with externally-provided labels (signal read → ChipInput subscribes directly).
+    // 2. Extend with label_cache (dropdown selections override external labels).
+    let chip_labels = {
+        let mut m: std::collections::HashMap<String, String> =
+            if let Some(vl) = value_labels {
+                // (label, value) pairs — invert to (value, label) for lookup
+                vl.read()
+                    .iter()
+                    .map(|(label, value)| (value.clone(), label.clone()))
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
+        m.extend(
+            label_cache
+                .read()
+                .clone(),
+        );
+        m
+    };
+
     rsx! {
-        div { style: "position:relative;flex:1.5",
+        div { style: "position:relative;flex:2 1 130px;min-width:130px",
             div { class: "chip-input",
                 for (ci, chip) in values.iter().enumerate() {
                     {
-                        let chip_display = label_cache.read().get(chip).cloned().unwrap_or(chip.clone());
+                        let chip_display = chip_labels.get(chip).cloned().unwrap_or(chip.clone());
                         let mut v = values.clone();
                         let fk = field_key.clone();
                         let op = op_val.clone();
                         rsx! {
                             span { class: "chip", key: "{ci}",
-                                "{chip_display}"
+                                span { class: "chip-label", title: "{chip_display}", "{chip_display}" }
                                 button {
                                     r#type: "button",
                                     class: "chip-remove",
@@ -606,9 +678,6 @@ pub fn FilterRuleRow(
             };
             let mut options = vec![];
             for addon in addons {
-                if !addon.enabled {
-                    continue;
-                }
                 let Ok(catalogs) = client
                     .execute(GetAddonCatalogs { id: addon.id })
                     .await
@@ -616,11 +685,13 @@ pub fn FilterRuleRow(
                     continue;
                 };
                 for cat in catalogs {
-                    if !cat.enabled {
-                        continue;
-                    }
                     if let Some(cid) = cat.collection_id {
-                        let label = format!("{} — {}", addon.name, cat.name);
+                        let disabled = !addon.enabled || !cat.enabled;
+                        let label = if disabled {
+                            format!("{} — {} (disabled)", addon.name, cat.name)
+                        } else {
+                            format!("{} — {}", addon.name, cat.name)
+                        };
                         options.push((label, cid.to_string()));
                     }
                 }
@@ -634,7 +705,7 @@ pub fn FilterRuleRow(
     let is_trailer = field_val == "has_trailer";
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
-    let hide_operator = is_trailer || is_parental_rating || is_catalog;
+    let hide_operator = is_trailer || is_parental_rating;
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -683,11 +754,16 @@ pub fn FilterRuleRow(
             .collect()
     };
 
+    let field_style = if hide_operator {
+        "flex:1 1 100%;min-width:110px"
+    } else {
+        "flex:1 1 110px;min-width:110px"
+    };
     rsx! {
-        div { style: "display:flex;align-items:center;gap:6px",
+        div { style: "display:flex;align-items:flex-start;gap:6px;flex-wrap:wrap",
             select {
                 class: "select-input",
-                style: "flex:1.2",
+                style: "{field_style}",
                 value: "{field_val}",
                 onchange: move |e| {
                     let new_field = e.value();
@@ -712,7 +788,7 @@ pub fn FilterRuleRow(
             if !hide_operator {
                 select {
                     class: "select-input",
-                    style: "flex:1",
+                    style: "flex:1 1 80px;min-width:80px",
                     value: "{op_val}",
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
@@ -725,33 +801,18 @@ pub fn FilterRuleRow(
                 }
             }
             if is_catalog {
-                select {
-                    class: "select-input",
-                    style: "flex:1.5",
-                    value: "{value_val}",
-                    onchange: move |e| {
-                        if let Some(row) = rules.write().get_mut(idx) {
-                            *row = raw_to_rule("catalog", "", &e.value());
-                        }
-                    },
-                    option {
-                        value: "",
-                        disabled: true,
-                        selected: value_val.is_empty(),
-                        "Select catalog…"
-                    }
-                    for (label, combined) in catalog_options.read().iter() {
-                        option {
-                            value: "{combined}",
-                            selected: value_val == *combined,
-                            "{label}"
-                        }
-                    }
+                ChipInput {
+                    field_key: "catalog".to_string(),
+                    op_val: op_val.clone(),
+                    values: rule_values(&rule),
+                    idx,
+                    rules,
+                    value_labels: Some(catalog_options),
                 }
             } else if is_trailer {
                 select {
                     class: "select-input",
-                    style: "flex:1",
+                    style: "flex:2 1 130px;min-width:130px",
                     value: "{value_val}",
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
@@ -764,7 +825,7 @@ pub fn FilterRuleRow(
             } else if is_parental_rating {
                 select {
                     class: "select-input",
-                    style: "flex:1.5",
+                    style: "flex:2 1 130px;min-width:130px",
                     value: "{value_val}",
                     onchange: move |e| {
                         if let Some(row) = rules.write().get_mut(idx) {
@@ -791,7 +852,7 @@ pub fn FilterRuleRow(
             } else {
                 input {
                     class: "field-input",
-                    style: "flex:1.5",
+                    style: "flex:2 1 130px;min-width:130px",
                     r#type: "text",
                     placeholder: value_placeholder(&fv2),
                     value: "{vv2}",
@@ -818,46 +879,97 @@ pub fn FilterRuleRow(
     }
 }
 
+// ── Group editor ─────────────────────────────────────────────────────────────
+
 #[component]
-pub fn FilterRuleEditor(
-    match_mode: Signal<FilterMatchMode>,
-    rules: Signal<Vec<FilterRule>>,
+fn FilterGroupRow(
+    group_idx: usize,
+    group: FilterGroup,
+    groups: Signal<Vec<FilterGroup>>,
 ) -> Element {
     let default_new_rule = FilterRule::Genre {
         op: SetOp::In,
         values: vec![],
     };
+    let can_delete = groups
+        .read()
+        .len()
+        > 1;
+
+    // Proxy signals so FilterRuleRow can mutate the group's rules via the groups signal.
+    let mut rules: Signal<Vec<FilterRule>> = {
+        let g = group.clone();
+        use_signal(move || {
+            g.rules
+                .clone()
+        })
+    };
+    let mut group_match: Signal<FilterMatchMode> = {
+        let m = group
+            .match_mode
+            .clone();
+        use_signal(move || m)
+    };
+
+    // Sync local signals back into the parent `groups` signal when they change.
+    use_effect(move || {
+        let r = rules
+            .read()
+            .clone();
+        let m = group_match
+            .read()
+            .clone();
+        let mut gs = groups.write();
+        if let Some(g) = gs.get_mut(group_idx) {
+            g.rules = r;
+            g.match_mode = m;
+        }
+    });
+
     rsx! {
         div {
-            style: "background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--info);border-radius:8px;padding:12px 14px",
-            div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px",
-                label { class: "field-label", style: "margin:0", "Media Filters" }
-                div { style: "display:flex;align-items:center;gap:8px",
-                    span { style: "font-size:0.8rem;color:var(--text-muted)", "Match" }
+            style: "border:1px solid var(--border);border-radius:6px;padding:10px 12px;background:var(--bg-alt, var(--bg));display:flex;flex-direction:column;gap:6px",
+
+            // Group header: match mode selector + remove button
+            div { style: "display:flex;align-items:center;justify-content:space-between",
+                div { style: "display:flex;align-items:center;gap:6px",
+                    span { style: "font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em", "Match" }
                     select {
                         class: "select-input",
                         style: "padding:2px 6px;font-size:0.8rem",
-                        value: if *match_mode.read() == FilterMatchMode::All { "all" } else { "any" },
+                        value: if *group_match.read() == FilterMatchMode::All { "all" } else { "any" },
                         onchange: move |e| {
-                            match_mode.set(if e.value() == "any" {
-                                FilterMatchMode::Any
-                            } else {
-                                FilterMatchMode::All
-                            });
+                            group_match.set(if e.value() == "any" { FilterMatchMode::Any } else { FilterMatchMode::All });
                         },
                         option { value: "all", "All (AND)" }
                         option { value: "any", "Any (OR)" }
                     }
                 }
+                if can_delete {
+                    button {
+                        r#type: "button",
+                        class: "btn btn-ghost",
+                        style: "font-size:0.75rem;color:var(--text-muted);padding:2px 6px",
+                        onclick: move |_| {
+                            groups.write().remove(group_idx);
+                        },
+                        "✕ Remove group"
+                    }
+                }
             }
 
-            div { style: "display:flex;flex-direction:column;gap:6px",
+            // Rules inside this group
+            div { style: "display:flex;flex-direction:column;gap:0",
                 for (idx, rule) in rules.read().iter().enumerate() {
-                    FilterRuleRow {
-                        key: "{idx}",
-                        idx,
-                        rule: rule.clone(),
-                        rules,
+                    div { key: "{idx}",
+                        if idx > 0 {
+                            div { style: "height:1px;background:var(--border);margin:6px 0;opacity:0.5" }
+                        }
+                        FilterRuleRow {
+                            idx,
+                            rule: rule.clone(),
+                            rules,
+                        }
                     }
                 }
             }
@@ -865,11 +977,71 @@ pub fn FilterRuleEditor(
             button {
                 r#type: "button",
                 class: "btn btn-ghost",
-                style: "margin-top:8px;font-size:0.85rem",
+                style: "font-size:0.82rem;align-self:flex-start;margin-top:2px",
                 onclick: move |_| {
                     rules.write().push(default_new_rule.clone());
                 },
-                "+ Add Filter"
+                "+ Add rule"
+            }
+        }
+    }
+}
+
+// ── Top-level editor ──────────────────────────────────────────────────────────
+
+#[component]
+pub fn FilterRuleEditor(
+    match_mode: Signal<FilterMatchMode>,
+    groups: Signal<Vec<FilterGroup>>,
+) -> Element {
+    let has_multiple = groups
+        .read()
+        .len()
+        > 1;
+    rsx! {
+        div {
+            style: "background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--info);border-radius:8px;padding:12px 14px",
+
+            // Header: title + group combiner (only shown when >1 group)
+            div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:10px",
+                label { class: "field-label", style: "margin:0", "Media Filters" }
+                if has_multiple {
+                    div { style: "display:flex;align-items:center;gap:6px",
+                        span { style: "font-size:0.8rem;color:var(--text-muted)", "Combine groups" }
+                        select {
+                            class: "select-input",
+                            style: "padding:2px 6px;font-size:0.8rem",
+                            value: if *match_mode.read() == FilterMatchMode::All { "all" } else { "any" },
+                            onchange: move |e| {
+                                match_mode.set(if e.value() == "any" { FilterMatchMode::Any } else { FilterMatchMode::All });
+                            },
+                            option { value: "all", "AND" }
+                            option { value: "any", "OR" }
+                        }
+                    }
+                }
+            }
+
+            // Groups
+            div { style: "display:flex;flex-direction:column;gap:8px",
+                for (idx, group) in groups.read().iter().cloned().enumerate() {
+                    FilterGroupRow {
+                        key: "{idx}",
+                        group_idx: idx,
+                        group,
+                        groups,
+                    }
+                }
+            }
+
+            button {
+                r#type: "button",
+                class: "btn btn-ghost",
+                style: "margin-top:10px;font-size:0.85rem",
+                onclick: move |_| {
+                    groups.write().push(FilterGroup::default());
+                },
+                "+ Add group"
             }
         }
     }

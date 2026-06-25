@@ -2674,9 +2674,10 @@ pub enum NumericOp {
 }
 
 /// Operators for text/set fields (Genre, Tag, Studio, etc.).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SetOp {
+    #[default]
     Is,
     IsNot,
     In,
@@ -2735,9 +2736,11 @@ pub enum FilterRule {
         op: SetOp,
         values: Vec<String>,
     },
-    /// Matches items that belong to the given catalog collection.
+    /// Matches items that belong to (or don't belong to) any of the given catalog collections.
     Catalog {
-        catalog_id: Uuid,
+        #[serde(default)]
+        op: SetOp,
+        catalog_ids: Vec<Uuid>,
     },
 }
 
@@ -2750,15 +2753,25 @@ pub enum FilterMatchMode {
     Any,
 }
 
-/// The filter config stored on a smart collection.
-/// Deserialised directly into `MediaFilter.filter_rules` / `filter_match` at query time.
+/// A group of filter rules combined with their own AND/OR match mode.
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FilterGroup {
+    #[serde(default)]
+    pub match_mode: FilterMatchMode,
+    #[serde(default, deserialize_with = "deserialize_filter_rules")]
+    pub rules: Vec<FilterRule>,
+}
+
+/// The filter config stored on a smart collection or user policy.
+/// Groups are combined with the top-level `match_mode` (AND/OR between groups).
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CollectionFilter {
     #[serde(default)]
     pub match_mode: FilterMatchMode,
-    #[serde(default, deserialize_with = "deserialize_filter_rules")]
-    pub rules: Vec<FilterRule>,
+    #[serde(default)]
+    pub groups: Vec<FilterGroup>,
 }
 
 fn deserialize_filter_rules<'de, D>(
@@ -2770,6 +2783,27 @@ where
     let raw: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
     Ok(raw
         .into_iter()
+        .map(|mut v| {
+            // Compat: old rows stored a single UUID as catalog_id instead of catalog_ids:[...]
+            if v.get("field")
+                .and_then(|f| f.as_str())
+                == Some("catalog")
+            {
+                if let Some(old_id) = v
+                    .get("catalog_id")
+                    .cloned()
+                {
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.remove("catalog_id");
+                        obj.insert(
+                            "catalog_ids".into(),
+                            serde_json::Value::Array(vec![old_id]),
+                        );
+                    }
+                }
+            }
+            v
+        })
         .filter_map(|v| serde_json::from_value::<FilterRule>(v).ok())
         .collect())
 }
