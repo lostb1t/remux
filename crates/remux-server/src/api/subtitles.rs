@@ -255,7 +255,7 @@ pub async fn subtitles_stream(
                 .position(|idx| *idx == stream_index)
                 .map(|ordinal| format!("0:s:{}", ordinal))
         })
-        .unwrap_or_else(|| format!("0:{stream_index}"));
+        .context_not_found("subtitle stream not found")?;
 
     let is_passthrough =
         matches!(output_format.as_str(), "ass" | "ssa" | "sup" | "pgssub");
