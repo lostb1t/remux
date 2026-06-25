@@ -2750,15 +2750,25 @@ pub enum FilterMatchMode {
     Any,
 }
 
-/// The filter config stored on a smart collection.
-/// Deserialised directly into `MediaFilter.filter_rules` / `filter_match` at query time.
+/// A group of filter rules combined with their own AND/OR match mode.
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FilterGroup {
+    #[serde(default)]
+    pub match_mode: FilterMatchMode,
+    #[serde(default, deserialize_with = "deserialize_filter_rules")]
+    pub rules: Vec<FilterRule>,
+}
+
+/// The filter config stored on a smart collection or user policy.
+/// Groups are combined with the top-level `match_mode` (AND/OR between groups).
 #[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CollectionFilter {
     #[serde(default)]
     pub match_mode: FilterMatchMode,
-    #[serde(default, deserialize_with = "deserialize_filter_rules")]
-    pub rules: Vec<FilterRule>,
+    #[serde(default)]
+    pub groups: Vec<FilterGroup>,
 }
 
 fn deserialize_filter_rules<'de, D>(

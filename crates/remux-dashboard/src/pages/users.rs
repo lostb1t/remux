@@ -1,8 +1,8 @@
 use crate::{components::*, pages::streams::StreamFilterEditor, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
-    AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterMatchMode,
-    FilterRule, GetUsers, StreamFilter, StreamRule, UpdateUser, UpdateUserPolicy,
+    AdminSetPassword, CollectionFilter, CreateUser, DeleteUser, FilterGroup,
+    FilterMatchMode, GetUsers, StreamFilter, StreamRule, UpdateUser, UpdateUserPolicy,
     UserDto,
 };
 
@@ -199,7 +199,7 @@ pub fn UserForm(
             })
             .unwrap_or(FilterMatchMode::All)
     });
-    let fr_rules: Signal<Vec<FilterRule>> = use_signal(|| {
+    let fr_groups: Signal<Vec<FilterGroup>> = use_signal(|| {
         existing
             .as_ref()
             .and_then(|u| {
@@ -208,10 +208,10 @@ pub fn UserForm(
                     .as_ref()
             })
             .map(|f| {
-                f.rules
+                f.groups
                     .clone()
             })
-            .unwrap_or_default()
+            .unwrap_or_else(|| vec![FilterGroup::default()])
     });
     let sf_stream_match: Signal<FilterMatchMode> = use_signal(|| {
         existing
@@ -285,7 +285,7 @@ pub fn UserForm(
             .clone();
         let admin = *is_admin.peek();
         let user_dto = existing.clone();
-        let rules_snapshot = fr_rules
+        let groups_snapshot = fr_groups
             .peek()
             .clone();
         let match_snapshot = fr_match
@@ -303,13 +303,19 @@ pub fn UserForm(
         saving.set(true);
         err.set(None);
         spawn(async move {
-            let filter_rules = if rules_snapshot.is_empty() {
-                None
-            } else {
+            let has_rules = groups_snapshot
+                .iter()
+                .any(|g| {
+                    !g.rules
+                        .is_empty()
+                });
+            let filter_rules = if has_rules {
                 Some(CollectionFilter {
                     match_mode: match_snapshot,
-                    rules: rules_snapshot,
+                    groups: groups_snapshot,
                 })
+            } else {
+                None
             };
             let stream_filter = if stream_rules_snapshot.is_empty() {
                 None
@@ -481,7 +487,7 @@ pub fn UserForm(
 
             FilterRuleEditor {
                 match_mode: fr_match,
-                rules: fr_rules,
+                groups: fr_groups,
             }
 
             div { style: "margin-top:10px",

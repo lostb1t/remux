@@ -2,10 +2,10 @@ use crate::state::AppState;
 use dioxus::prelude::*;
 use remux_sdks::{
     remux::{
-        FilterMatchMode, FilterRule, GetAddonCatalogs, GetCertificationSuggestions,
-        GetCountrySuggestions, GetLanguageSuggestions, GetLocalSuggestions,
-        GetParentalRatings, GetTagSuggestions, JellyfinAuth, ListAddons, NumericOp,
-        ParentalRating, SetOp,
+        FilterGroup, FilterMatchMode, FilterRule, GetAddonCatalogs,
+        GetCertificationSuggestions, GetCountrySuggestions, GetLanguageSuggestions,
+        GetLocalSuggestions, GetParentalRatings, GetTagSuggestions, JellyfinAuth,
+        ListAddons, NumericOp, ParentalRating, SetOp,
     },
     RestClient,
 };
@@ -873,39 +873,86 @@ pub fn FilterRuleRow(
     }
 }
 
+// ── Group editor ─────────────────────────────────────────────────────────────
+
 #[component]
-pub fn FilterRuleEditor(
-    match_mode: Signal<FilterMatchMode>,
-    rules: Signal<Vec<FilterRule>>,
+fn FilterGroupRow(
+    group_idx: usize,
+    group: FilterGroup,
+    groups: Signal<Vec<FilterGroup>>,
 ) -> Element {
     let default_new_rule = FilterRule::Genre {
         op: SetOp::In,
         values: vec![],
     };
+    let can_delete = groups
+        .read()
+        .len()
+        > 1;
+
+    // Proxy signals so FilterRuleRow can mutate the group's rules via the groups signal.
+    let mut rules: Signal<Vec<FilterRule>> = {
+        let g = group.clone();
+        use_signal(move || {
+            g.rules
+                .clone()
+        })
+    };
+    let mut group_match: Signal<FilterMatchMode> = {
+        let m = group
+            .match_mode
+            .clone();
+        use_signal(move || m)
+    };
+
+    // Sync local signals back into the parent `groups` signal when they change.
+    use_effect(move || {
+        let r = rules
+            .read()
+            .clone();
+        let m = group_match
+            .read()
+            .clone();
+        let mut gs = groups.write();
+        if let Some(g) = gs.get_mut(group_idx) {
+            g.rules = r;
+            g.match_mode = m;
+        }
+    });
+
     rsx! {
         div {
-            style: "background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--info);border-radius:8px;padding:12px 14px",
-            div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:8px",
-                label { class: "field-label", style: "margin:0", "Media Filters" }
-                div { style: "display:flex;align-items:center;gap:8px",
-                    span { style: "font-size:0.8rem;color:var(--text-muted)", "Match" }
+            style: "border:1px solid var(--border);border-radius:6px;padding:10px 12px;background:var(--bg-alt, var(--bg));display:flex;flex-direction:column;gap:6px",
+
+            // Group header: match mode selector + remove button
+            div { style: "display:flex;align-items:center;justify-content:space-between",
+                div { style: "display:flex;align-items:center;gap:6px",
+                    span { style: "font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em", "Match" }
                     select {
                         class: "select-input",
                         style: "padding:2px 6px;font-size:0.8rem",
-                        value: if *match_mode.read() == FilterMatchMode::All { "all" } else { "any" },
+                        value: if *group_match.read() == FilterMatchMode::All { "all" } else { "any" },
                         onchange: move |e| {
-                            match_mode.set(if e.value() == "any" {
-                                FilterMatchMode::Any
-                            } else {
-                                FilterMatchMode::All
-                            });
+                            group_match.set(if e.value() == "any" { FilterMatchMode::Any } else { FilterMatchMode::All });
                         },
                         option { value: "all", "All (AND)" }
                         option { value: "any", "Any (OR)" }
                     }
                 }
+                if can_delete {
+                    button {
+                        r#type: "button",
+                        class: "btn btn-ghost",
+                        style: "font-size:0.75rem;color:var(--text-muted);padding:2px 6px",
+                        onclick: move |_| {
+                            groups.write().remove(group_idx);
+                        },
+                        "✕ Remove group"
+                    }
+                }
             }
 
+            // Rules inside this group
             div { style: "display:flex;flex-direction:column;gap:6px",
                 for (idx, rule) in rules.read().iter().enumerate() {
                     FilterRuleRow {
@@ -920,11 +967,71 @@ pub fn FilterRuleEditor(
             button {
                 r#type: "button",
                 class: "btn btn-ghost",
-                style: "margin-top:8px;font-size:0.85rem",
+                style: "font-size:0.82rem;align-self:flex-start;margin-top:2px",
                 onclick: move |_| {
                     rules.write().push(default_new_rule.clone());
                 },
-                "+ Add Filter"
+                "+ Add rule"
+            }
+        }
+    }
+}
+
+// ── Top-level editor ──────────────────────────────────────────────────────────
+
+#[component]
+pub fn FilterRuleEditor(
+    match_mode: Signal<FilterMatchMode>,
+    groups: Signal<Vec<FilterGroup>>,
+) -> Element {
+    let has_multiple = groups
+        .read()
+        .len()
+        > 1;
+    rsx! {
+        div {
+            style: "background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--info);border-radius:8px;padding:12px 14px",
+
+            // Header: title + group combiner (only shown when >1 group)
+            div { style: "display:flex;align-items:center;justify-content:space-between;margin-bottom:10px",
+                label { class: "field-label", style: "margin:0", "Media Filters" }
+                if has_multiple {
+                    div { style: "display:flex;align-items:center;gap:6px",
+                        span { style: "font-size:0.8rem;color:var(--text-muted)", "Combine groups" }
+                        select {
+                            class: "select-input",
+                            style: "padding:2px 6px;font-size:0.8rem",
+                            value: if *match_mode.read() == FilterMatchMode::All { "all" } else { "any" },
+                            onchange: move |e| {
+                                match_mode.set(if e.value() == "any" { FilterMatchMode::Any } else { FilterMatchMode::All });
+                            },
+                            option { value: "all", "AND" }
+                            option { value: "any", "OR" }
+                        }
+                    }
+                }
+            }
+
+            // Groups
+            div { style: "display:flex;flex-direction:column;gap:8px",
+                for (idx, group) in groups.read().iter().cloned().enumerate() {
+                    FilterGroupRow {
+                        key: "{idx}",
+                        group_idx: idx,
+                        group,
+                        groups,
+                    }
+                }
+            }
+
+            button {
+                r#type: "button",
+                class: "btn btn-ghost",
+                style: "margin-top:10px;font-size:0.85rem",
+                onclick: move |_| {
+                    groups.write().push(FilterGroup::default());
+                },
+                "+ Add group"
             }
         }
     }

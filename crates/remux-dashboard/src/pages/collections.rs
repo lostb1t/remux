@@ -2,7 +2,7 @@ use crate::{components::*, state::AppState};
 use dioxus::prelude::*;
 use remux_sdks::remux::{
     BaseItemDto, CollectionFilter, CreateVirtualFolder, CreateVirtualFolderPayload,
-    DeleteVirtualFolder, FilterMatchMode, FilterRule, GetItems, GetItemsQuery,
+    DeleteVirtualFolder, FilterGroup, FilterMatchMode, GetItems, GetItemsQuery,
     ItemSortBy, MediaType, PatchItem, PatchItemPayload, SortOrder,
 };
 
@@ -309,7 +309,7 @@ pub fn CollectionForm(
             })
             .unwrap_or(FilterMatchMode::All)
     });
-    let sf_rules: Signal<Vec<FilterRule>> = use_signal(|| {
+    let sf_groups: Signal<Vec<FilterGroup>> = use_signal(|| {
         existing
             .as_ref()
             .and_then(|f| {
@@ -321,10 +321,10 @@ pub fn CollectionForm(
                     .as_ref()
             })
             .map(|sf| {
-                sf.rules
+                sf.groups
                     .clone()
             })
-            .unwrap_or_default()
+            .unwrap_or_else(|| vec![FilterGroup::default()])
     });
     let tags: Signal<Vec<String>> = use_signal(|| {
         existing
@@ -458,7 +458,7 @@ pub fn CollectionForm(
                 match_mode: sf_match
                     .peek()
                     .clone(),
-                rules: sf_rules
+                groups: sf_groups
                     .peek()
                     .clone(),
             })
@@ -748,7 +748,7 @@ pub fn CollectionForm(
             }
 
             if (col_kind.read().as_str() == "smart" || col_kind.read().as_str() == "catalog") && col_type.read().as_str() != "collections" {
-                FilterRuleEditor { match_mode: sf_match, rules: sf_rules }
+                FilterRuleEditor { match_mode: sf_match, groups: sf_groups }
 
                 div { class: "field",
                     label { class: "field-label", "Default Sort Override" }
@@ -760,7 +760,7 @@ pub fn CollectionForm(
                             value: "{default_sort}",
                             onchange: move |e| default_sort.set(e.value()),
                             option { value: "", selected: default_sort.read().is_empty(), "— None —" }
-                            if sf_rules.read().iter().any(|r| matches!(r, FilterRule::Catalog { .. })) {
+                            if sf_groups.read().iter().flat_map(|g| g.rules.iter()).any(|r| matches!(r, remux_sdks::remux::FilterRule::Catalog { .. })) {
                                 option { value: "CatalogOrder", selected: *default_sort.read() == "CatalogOrder", "Catalog Order" }
                             }
                             option { value: "SortName",           selected: *default_sort.read() == "SortName",           "Name" }

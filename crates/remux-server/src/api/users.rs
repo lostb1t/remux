@@ -927,8 +927,12 @@ pub async fn userviews(
                 .as_ref()
         })
         .filter(|pf| {
-            !pf.rules
-                .is_empty()
+            pf.groups
+                .iter()
+                .any(|g| {
+                    !g.rules
+                        .is_empty()
+                })
         })
     {
         let mut to_remove = Vec::new();
@@ -942,7 +946,7 @@ pub async fn userviews(
             );
 
             // apply user rules
-            db::apply_filter_rules(&mut qb, &pf.rules, &pf.match_mode);
+            db::apply_filter_rules(&mut qb, pf);
 
             // limit to 1 match (we only care if it exists)
             qb.push(" LIMIT 1");
