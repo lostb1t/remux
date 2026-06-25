@@ -25,6 +25,7 @@ pub fn livetv_view_item() -> api::BaseItemDto {
     api::BaseItemDto {
         id: livetv_view_id(),
         name: Some("Live TV".to_string()),
+        server_id: crate::common::server_id(),
         type_: api::MediaType::UserView,
         collection_type: Some(api::CollectionType::Livetv),
         is_folder: true,

@@ -165,14 +165,18 @@ impl Into<MediaType> for db::MediaKind {
 
 pub fn db_media_kind_to_collection_type(
     kind: db::CollectionMediaKind,
-) -> CollectionType {
+) -> Option<CollectionType> {
     match kind {
-        db::CollectionMediaKind::Movie => CollectionType::Movies,
-        db::CollectionMediaKind::Series => CollectionType::Tvshows,
-        db::CollectionMediaKind::Mixed => CollectionType::Mixed,
-        db::CollectionMediaKind::Music => CollectionType::Music,
-        db::CollectionMediaKind::Collection => CollectionType::Boxsets,
-        db::CollectionMediaKind::Playlist => CollectionType::Playlists,
+        db::CollectionMediaKind::Movie => Some(CollectionType::Movies),
+        db::CollectionMediaKind::Series => Some(CollectionType::Tvshows),
+        // "mixed" is not a valid CollectionType in the Jellyfin API spec, so clients
+        // (Swiftfin, Streamyfin) cannot decode it. "homevideos" is the closest valid
+        // type that (a) clients accept, (b) appears in home-screen "Latest" rows, and
+        // (c) uses supportedItemTypes = all kinds — correct for a mixed collection.
+        db::CollectionMediaKind::Mixed => Some(CollectionType::Homevideos),
+        db::CollectionMediaKind::Music => Some(CollectionType::Music),
+        db::CollectionMediaKind::Collection => Some(CollectionType::Boxsets),
+        db::CollectionMediaKind::Playlist => Some(CollectionType::Playlists),
     }
 }
 
@@ -297,16 +301,9 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         overview: media
             .description
             .clone(),
-        play_access: matches!(
-            media.kind,
-            db::MediaKind::Movie
-                | db::MediaKind::Episode
-                | db::MediaKind::Track
-                | db::MediaKind::TvChannel
-                | db::MediaKind::TvProgram
-                | db::MediaKind::Intro
-        )
-        .then(|| "Full".to_string()),
+        play_access: Some("Full".to_string()),
+        can_delete: Some(false),
+        can_download: Some(false),
         has_lyrics: (media.kind == db::MediaKind::Track).then_some(true),
         type_,
         parent_id: media
@@ -1026,13 +1023,10 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
     }
 
     if media.kind == db::MediaKind::Collection {
-        item.collection_type = Some(
-            media
-                .collection_media_kind
-                .clone()
-                .map(db_media_kind_to_collection_type)
-                .unwrap_or(CollectionType::Unknown),
-        );
+        item.collection_type = media
+            .collection_media_kind
+            .clone()
+            .and_then(db_media_kind_to_collection_type);
         if media.promoted {
             item.type_ = MediaType::CollectionFolder;
             item.display_preferences_id = Some(

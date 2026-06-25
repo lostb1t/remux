@@ -1940,7 +1940,7 @@ fn media_to_virtual_folder(m: db::Media) -> api::VirtualFolderInfo {
     let collection_type = m
         .collection_media_kind
         .clone()
-        .map(api::db_media_kind_to_collection_type);
+        .and_then(api::db_media_kind_to_collection_type);
     api::VirtualFolderInfo {
         name: Some(
             m.title
