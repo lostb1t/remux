@@ -783,7 +783,7 @@ pub fn FilterRuleRow(
                 option { value: "country",            selected: field_val == "country",            { field_label("country") } }
                 option { value: "original_language", selected: field_val == "original_language", { field_label("original_language") } }
                 option { value: "person",             selected: field_val == "person",             { field_label("person") } }
-                option { value: "catalog",         selected: field_val == "catalog",         { field_label("catalog") } }
+                option { value: "catalog", selected: field_val == "catalog", { field_label("catalog") } }
             }
             if !hide_operator {
                 select {

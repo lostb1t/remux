@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
-    CatalogAddon, CatalogInfo, MediaKind, MetaAddon, ResourceType, SearchAddon,
-    TreeAddon,
+    CatalogAddon, CatalogInfo, MediaKind, MetaAddon, MetricSnapshot, MetricValue,
+    MetricsAddon, ResourceType, SearchAddon, TreeAddon,
 };
 use crate::{
     AppContext, api, common, db, sdks,
@@ -58,7 +58,8 @@ impl AddonPreset for TmdbPreset {
             meta: Some(addon.clone()),
             search: Some(addon.clone()),
             tree: Some(addon.clone()),
-            catalog: Some(addon),
+            catalog: Some(addon.clone()),
+            metrics: Some(addon),
             ..Default::default()
         })
     }
@@ -69,6 +70,8 @@ inventory::submit! {
 }
 
 pub struct TmdbAddon {}
+
+const TMDB_POPULARITY_MAX: f64 = 1_000.0;
 
 fn tmdb_image(path: Option<&str>, kind: db::ImageKind) -> Option<String> {
     let size = match kind {
@@ -277,6 +280,62 @@ impl CatalogAddon for TmdbAddon {
         };
 
         Ok(Some(stream))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MetricsAddon
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl MetricsAddon for TmdbAddon {
+    async fn metric(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Option<MetricSnapshot>> {
+        let Some(tmdb_id) = media
+            .external_ids
+            .tmdb
+        else {
+            return Ok(None);
+        };
+        let config = crate::db::Settings::get_config(&ctx.db).await?;
+        let client = tmdb_client(
+            config.get_tmdb_key(),
+            &ctx.config
+                .tmdb_base_url,
+        )?;
+        let today = chrono::Utc::now().date_naive();
+
+        let popularity: Option<f64> = match media.kind {
+            db::MediaKind::Movie => client
+                .execute(sdks::tmdb::MovieEndpoint {
+                    id: tmdb_id,
+                    language: None,
+                    append_to_response: vec![],
+                })
+                .await
+                .ok()
+                .and_then(|m| m.popularity),
+            db::MediaKind::Series => client
+                .execute(sdks::tmdb::SeriesEndpoint {
+                    id: tmdb_id,
+                    language: None,
+                    append_to_response: vec![],
+                })
+                .await
+                .ok()
+                .map(|s| s.popularity),
+            _ => return Ok(None),
+        };
+
+        Ok(popularity.map(|p| MetricSnapshot {
+            source: "tmdb".to_string(),
+            external_id: format!("tmdb:{}", tmdb_id),
+            value: MetricValue::from_raw(p, TMDB_POPULARITY_MAX),
+            date: today,
+        }))
     }
 }
 
@@ -1222,6 +1281,14 @@ async fn fetch_tmdb_meta(
                     .await
                     .ok();
                 patch.tags = watch_provider_tags(providers.as_ref(), &metadata_country);
+                patch.pending_popularity = movie_details
+                    .popularity
+                    .map(|p| {
+                        (
+                            format!("tmdb:{}", tmdb_id),
+                            MetricValue::from_raw(p, TMDB_POPULARITY_MAX),
+                        )
+                    });
                 return Ok(Some(patch));
             }
         }
@@ -1434,6 +1501,10 @@ async fn fetch_tmdb_meta(
                     .await
                     .ok();
                 patch.tags = watch_provider_tags(providers.as_ref(), &metadata_country);
+                patch.pending_popularity = Some((
+                    format!("tmdb:{}", tmdb_id),
+                    MetricValue::from_raw(tv_details.popularity, TMDB_POPULARITY_MAX),
+                ));
                 return Ok(Some(patch));
             }
         }

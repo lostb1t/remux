@@ -406,7 +406,7 @@ pub fn CollectionForm(
             })
             .and_then(|v| v.first())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| "Ascending".to_string())
+            .unwrap_or_else(|| "Descending".to_string())
     });
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
@@ -790,6 +790,12 @@ pub fn CollectionForm(
                             option { value: "DigitalReleaseDate", selected: *default_sort.read() == "DigitalReleaseDate", "Digital Release Date" }
                             option { value: "DateCreated",        selected: *default_sort.read() == "DateCreated",        "Date Added" }
                             option { value: "CommunityRating",    selected: *default_sort.read() == "CommunityRating",    "Community Rating" }
+                            option { value: "PopularityDay",      selected: *default_sort.read() == "PopularityDay",      "Popularity (Today)" }
+                            option { value: "PopularityWeek",     selected: *default_sort.read() == "PopularityWeek",     "Popularity (This Week)" }
+                            option { value: "PopularityMonth",    selected: *default_sort.read() == "PopularityMonth",    "Popularity (This Month)" }
+                            option { value: "PopularityAllTime",  selected: *default_sort.read() == "PopularityAllTime",  "Popularity (All Time)" }
+                            option { value: "TrendingWeek",       selected: *default_sort.read() == "TrendingWeek",       "Trending (7 days)" }
+                            option { value: "TrendingMonth",      selected: *default_sort.read() == "TrendingMonth",      "Trending (30 days)" }
                             option { value: "Random",             selected: *default_sort.read() == "Random",             "Random" }
                         }
                         if !default_sort.read().is_empty() && *default_sort.read() != "Random" {

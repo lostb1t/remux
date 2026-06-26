@@ -236,6 +236,56 @@ pub(crate) async fn save_pending_tags(ctx: &AppContext, items: &[db::Media]) {
     }
 }
 
+pub(crate) async fn save_pending_popularity(ctx: &AppContext, items: &[db::Media]) {
+    let today = chrono::Utc::now().date_naive();
+    for item in items {
+        let Some((ref ext_id, value)) = item.pending_popularity else {
+            continue;
+        };
+        if let Err(e) = sqlx::query(
+            "INSERT INTO popularity_raw (source, external_id, value, date) \
+             VALUES ('tmdb', ?, ?, ?) \
+             ON CONFLICT DO UPDATE SET value = excluded.value",
+        )
+        .bind(ext_id)
+        .bind(value.get())
+        .bind(&today)
+        .execute(&ctx.db)
+        .await
+        {
+            warn!(id = %item.id, error = %e, "failed to write popularity_raw");
+        }
+    }
+}
+
+pub(crate) async fn bulk_insert_snapshots(
+    ctx: &AppContext,
+    snapshots: &[MetricSnapshot],
+) -> Result<()> {
+    if snapshots.is_empty() {
+        return Ok(());
+    }
+    for chunk in snapshots.chunks(400) {
+        let mut qb = sqlx::QueryBuilder::new(
+            "INSERT INTO popularity_raw (source, external_id, value, date) ",
+        );
+        qb.push_values(chunk, |mut b, s| {
+            b.push_bind(&s.source)
+                .push_bind(&s.external_id)
+                .push_bind(
+                    s.value
+                        .get(),
+                )
+                .push_bind(&s.date);
+        });
+        qb.push(" ON CONFLICT DO UPDATE SET value = excluded.value");
+        qb.build()
+            .execute(&ctx.db)
+            .await?;
+    }
+    Ok(())
+}
+
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     use remux_utils::merge_option;
 
@@ -600,6 +650,52 @@ pub trait LyricAddon: Send + Sync {
     async fn lyric_get_by_id(&self, id: &str) -> Result<Option<LyricDto>>;
 }
 
+/// A single popularity snapshot emitted by a `MetricsAddon`.
+/// Popularity score normalized to \[0.0, 100.0\].
+///
+/// All `MetricsAddon` implementations must emit values in this range.
+/// Use `MetricValue::from_raw(raw, source_max)` to normalize a raw source value.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct MetricValue(f64);
+
+impl MetricValue {
+    /// Normalize a raw source value: `(raw / source_max) * 100`, clamped to \[0, 100\].
+    pub fn from_raw(raw: f64, source_max: f64) -> Self {
+        Self(((raw / source_max) * 100.0).clamp(0.0, 100.0))
+    }
+
+    /// Construct from an already-normalized value, clamping to \[0, 100\].
+    pub fn from_normalized(v: f64) -> Self {
+        Self(v.clamp(0.0, 100.0))
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+/// Each addon computes the `value` internally from its own source data.
+/// Values must be in \[0.0, 100.0\]; use `MetricValue::from_raw` to normalize.
+#[derive(Debug, Clone)]
+pub struct MetricSnapshot {
+    pub source: String,
+    pub external_id: String,
+    pub value: MetricValue,
+    pub date: chrono::NaiveDate,
+}
+
+#[async_trait]
+pub trait MetricsAddon: Send + Sync {
+    /// Fetch a popularity metric for a single media item.
+    /// Returns `None` if this addon has no data for the item.
+    /// Values in `MetricSnapshot.value` must be in \[0.0, 100.0\].
+    async fn metric(
+        &self,
+        media: &db::Media,
+        ctx: &AppContext,
+    ) -> Result<Option<MetricSnapshot>>;
+}
+
 // ---------------------------------------------------------------------------
 // AddonCapabilities — produced by AddonPreset::from_cfg
 // ---------------------------------------------------------------------------
@@ -617,6 +713,7 @@ pub struct AddonCapabilities {
     pub segment: Option<Arc<dyn SegmentAddon>>,
     pub lyric: Option<Arc<dyn LyricAddon>>,
     pub index: Option<Arc<dyn IndexAddon>>,
+    pub metrics: Option<Arc<dyn MetricsAddon>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -982,6 +1079,103 @@ impl AddonService {
             .collect()
     }
 
+    pub fn metrics_addons(&self) -> Vec<AddonRuntime> {
+        self.inner
+            .load()
+            .iter()
+            .filter(|r| {
+                r.metrics
+                    .is_some()
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub async fn snapshot_all_metrics(
+        &self,
+        ctx: &AppContext,
+        progress: ProgressReporter,
+    ) -> Result<()> {
+        use futures::stream::{self, StreamExt as _};
+
+        let addons = self.metrics_addons();
+        if addons.is_empty() {
+            progress.set(100.0);
+            return Ok(());
+        }
+
+        let config = db::Settings::get_config_or_default(&ctx.db).await;
+        let concurrency = (config.meta_concurrency as usize).max(1);
+        const PAGE: u32 = 250;
+
+        let mut offset = 0u32;
+        let mut processed = 0usize;
+        let mut total = 0usize;
+
+        loop {
+            let result = db::Media::get_by_filter(
+                &ctx.db,
+                &db::MediaFilter {
+                    kind: Some(vec![db::MediaKind::Movie, db::MediaKind::Series]),
+                    limit: Some(PAGE),
+                    offset: Some(offset),
+                    total_count: offset == 0,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            if offset == 0 {
+                total = result.total_count;
+            }
+
+            let batch = result.records;
+            if batch.is_empty() {
+                break;
+            }
+            let batch_len = batch.len();
+
+            let snapshots: Vec<MetricSnapshot> = stream::iter(batch)
+                .flat_map(|item| {
+                    let addons = addons.clone();
+                    stream::iter(
+                        addons
+                            .into_iter()
+                            .map(move |r| (item.clone(), r)),
+                    )
+                })
+                .map(|(item, runtime)| {
+                    let addon = runtime
+                        .metrics
+                        .as_ref()
+                        .unwrap()
+                        .clone();
+                    async move {
+                        addon
+                            .metric(&item, ctx)
+                            .await
+                            .ok()
+                            .flatten()
+                    }
+                })
+                .buffer_unordered(concurrency)
+                .filter_map(|s| async move { s })
+                .collect()
+                .await;
+
+            if !snapshots.is_empty() {
+                bulk_insert_snapshots(ctx, &snapshots).await?;
+            }
+
+            processed += batch_len;
+            progress.report(processed, total.max(1));
+            offset += PAGE;
+        }
+
+        progress.set(100.0);
+        Ok(())
+    }
+
     /// Returns `(addon, catalogs)` pairs for every catalog-capable addon that could
     /// produce any of `kinds`, with each addon's catalog list already filtered down to
     /// catalogs whose own `media_kind` is one of `kinds`. Addons are pre-filtered via
@@ -1324,6 +1518,7 @@ impl AddonService {
                     Ok(_) => {
                         save_pending_relations(ctx, &items).await;
                         save_pending_tags(ctx, &items).await;
+                        save_pending_popularity(ctx, &items).await;
                     }
                     Err(e) => {
                         error!(error = %e, "failed to upsert media batch");
@@ -1337,6 +1532,7 @@ impl AddonService {
                 Ok(_) => {
                     save_pending_relations(ctx, &batch).await;
                     save_pending_tags(ctx, &batch).await;
+                    save_pending_popularity(ctx, &batch).await;
                 }
                 Err(e) => {
                     error!(error = %e, "failed to upsert final media batch");
