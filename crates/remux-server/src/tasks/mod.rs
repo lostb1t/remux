@@ -26,9 +26,8 @@ mod purge_media;
 mod refresh_all_meta;
 mod refresh_iptv;
 mod refresh_library;
-mod rollup_popularity;
+mod refresh_popularity;
 mod series_sync;
-mod snapshot_metrics;
 
 pub use crate::common::ProgressReporter;
 use clean_transcode_folder::CleanTranscodeFolderTask;
@@ -40,9 +39,8 @@ use purge_media::PurgeMediaTask;
 use refresh_all_meta::RefreshAllMetaTask;
 use refresh_iptv::RefreshIptvTask;
 use refresh_library::RefreshLibraryTask;
-use rollup_popularity::RollupPopularityTask;
+use refresh_popularity::RefreshPopularityTask;
 use series_sync::SeriesSyncTask;
-use snapshot_metrics::SnapshotMetricsTask;
 
 // --- Task status ---
 
@@ -287,10 +285,7 @@ impl TaskService {
             .register_task(Arc::new(RefreshIptvTask))
             .await?;
         service
-            .register_task(Arc::new(SnapshotMetricsTask))
-            .await?;
-        service
-            .register_task(Arc::new(RollupPopularityTask))
+            .register_task(Arc::new(RefreshPopularityTask))
             .await?;
 
         let triggers = db::TaskTrigger::get_all(

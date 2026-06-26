@@ -1,29 +1,29 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{error, info};
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::AppContext;
 
-pub struct RollupPopularityTask;
+pub struct RefreshPopularityTask;
 
 #[async_trait]
-impl Task for RollupPopularityTask {
+impl Task for RefreshPopularityTask {
     fn key(&self) -> &str {
-        "RollupPopularity"
+        "RefreshPopularity"
     }
 
     fn name(&self) -> &str {
-        "Roll Up Popularity Stats"
+        "Refresh Popularity Data"
     }
 
     fn description(&self) -> &str {
-        "Aggregates daily popularity snapshots into weekly, monthly, yearly, and all-time buckets, then prunes the raw data."
+        "Fetches the latest popularity score for every item in your library and updates the historical trend data used for sorting by popularity."
     }
 
     fn short_description(&self) -> &str {
-        "Rolls up popularity snapshots into aggregated buckets"
+        "Updates popularity scores and trend history"
     }
 
     fn category(&self) -> &str {
@@ -36,9 +36,50 @@ impl Task for RollupPopularityTask {
         _tasks: Arc<TaskService>,
         progress: ProgressReporter,
     ) -> Result<()> {
+        // --- Phase 1: fetch fresh scores from all metrics addons (0–60%) ---
+        let addons = ctx
+            .addons
+            .metrics_addons();
+
+        if !addons.is_empty() {
+            let total = addons.len();
+            for (i, runtime) in addons
+                .iter()
+                .enumerate()
+            {
+                let sub = progress
+                    .scaled(0.0, 60.0)
+                    .step(i, total);
+                let addon = runtime
+                    .metrics
+                    .as_ref()
+                    .unwrap();
+
+                info!(addon = %runtime.row.name, "fetching popularity scores");
+                match addon
+                    .snapshot_metrics(&ctx, sub)
+                    .await
+                {
+                    Ok(snapshots) => {
+                        let count = snapshots.len();
+                        if let Err(e) = bulk_insert_snapshots(&ctx, &snapshots).await {
+                            error!(addon = %runtime.row.name, error = %e, "failed to write popularity scores");
+                        } else {
+                            info!(addon = %runtime.row.name, count, "popularity scores written");
+                        }
+                    }
+                    Err(e) => {
+                        error!(addon = %runtime.row.name, error = %e, "failed to fetch popularity scores");
+                    }
+                }
+            }
+        }
+
+        progress.set(60.0);
+
+        // --- Phase 2: roll up into trend buckets (60–100%) ---
         let db = &ctx.db;
 
-        // --- raw → daily ---
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
              (source, external_id, period, period_key, avg, min, max, sample_count) \
@@ -49,15 +90,11 @@ impl Task for RollupPopularityTask {
         )
         .execute(db)
         .await?;
-        info!("popularity: raw → daily done");
-        progress.set(10.0);
-
         sqlx::query("DELETE FROM popularity_raw WHERE date < date('now', '-2 days')")
             .execute(db)
             .await?;
-        progress.set(15.0);
+        progress.set(68.0);
 
-        // --- daily → weekly ---
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
              (source, external_id, period, period_key, avg, min, max, sample_count) \
@@ -68,18 +105,14 @@ impl Task for RollupPopularityTask {
         )
         .execute(db)
         .await?;
-        info!("popularity: daily → weekly done");
-        progress.set(30.0);
-
         sqlx::query(
             "DELETE FROM popularity_agg \
              WHERE period = 'daily' AND period_key < date('now', '-14 days')",
         )
         .execute(db)
         .await?;
-        progress.set(35.0);
+        progress.set(76.0);
 
-        // --- weekly → monthly ---
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
              (source, external_id, period, period_key, avg, min, max, sample_count) \
@@ -90,18 +123,14 @@ impl Task for RollupPopularityTask {
         )
         .execute(db)
         .await?;
-        info!("popularity: weekly → monthly done");
-        progress.set(55.0);
-
         sqlx::query(
             "DELETE FROM popularity_agg \
              WHERE period = 'weekly' AND period_key < date('now', '-56 days')",
         )
         .execute(db)
         .await?;
-        progress.set(60.0);
+        progress.set(84.0);
 
-        // --- monthly → yearly ---
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
              (source, external_id, period, period_key, avg, min, max, sample_count) \
@@ -112,18 +141,14 @@ impl Task for RollupPopularityTask {
         )
         .execute(db)
         .await?;
-        info!("popularity: monthly → yearly done");
-        progress.set(80.0);
-
         sqlx::query(
             "DELETE FROM popularity_agg \
              WHERE period = 'monthly' AND period_key < date('now', '-730 days')",
         )
         .execute(db)
         .await?;
-        progress.set(85.0);
+        progress.set(92.0);
 
-        // --- all-time ---
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
              (source, external_id, period, period_key, avg, min, max, sample_count) \
@@ -134,9 +159,34 @@ impl Task for RollupPopularityTask {
         )
         .execute(db)
         .await?;
-        info!("popularity: all-time updated");
 
+        info!("popularity data refresh complete");
         progress.set(100.0);
         Ok(())
     }
+}
+
+async fn bulk_insert_snapshots(
+    ctx: &AppContext,
+    snapshots: &[crate::addons::MetricSnapshot],
+) -> Result<()> {
+    if snapshots.is_empty() {
+        return Ok(());
+    }
+    for chunk in snapshots.chunks(400) {
+        let mut qb = sqlx::QueryBuilder::new(
+            "INSERT INTO popularity_raw (source, external_id, value, date) ",
+        );
+        qb.push_values(chunk, |mut b, s| {
+            b.push_bind(&s.source)
+                .push_bind(&s.external_id)
+                .push_bind(s.value)
+                .push_bind(&s.date);
+        });
+        qb.push(" ON CONFLICT DO UPDATE SET value = excluded.value");
+        qb.build()
+            .execute(&ctx.db)
+            .await?;
+    }
+    Ok(())
 }
