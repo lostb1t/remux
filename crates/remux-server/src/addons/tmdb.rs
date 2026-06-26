@@ -330,9 +330,12 @@ impl MetricsAddon for TmdbAddon {
             _ => return Ok(None),
         };
 
+        let external_id = format!("tmdb:{}", tmdb_id);
         Ok(popularity.map(|p| MetricSnapshot {
             source: "tmdb".to_string(),
-            external_id: format!("tmdb:{}", tmdb_id),
+            media_id: Some(media.id),
+            media_raw: Some(external_id.clone()),
+            external_id,
             value: MetricValue::from_raw(p, TMDB_POPULARITY_MAX),
             date: today,
         }))

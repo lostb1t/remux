@@ -47,8 +47,8 @@ impl Task for RefreshPopularityTask {
 
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
-             (source, external_id, period, period_key, avg, min, max, sample_count) \
-             SELECT source, external_id, 'daily', date, \
+             (source, external_id, media_id, media_raw, period, period_key, avg, min, max, sample_count) \
+             SELECT source, external_id, MAX(media_id), MAX(media_raw), 'daily', date, \
                     AVG(value), MIN(value), MAX(value), COUNT(*) \
              FROM popularity_raw \
              GROUP BY source, external_id, date",
@@ -63,8 +63,8 @@ impl Task for RefreshPopularityTask {
         // --- trend_week: today / 7 days ago ratio ---
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
-             (source, external_id, period, period_key, avg, min, max, sample_count) \
-             SELECT n.source, n.external_id, 'trend_week', date('now'), \
+             (source, external_id, media_id, media_raw, period, period_key, avg, min, max, sample_count) \
+             SELECT n.source, n.external_id, n.media_id, n.media_raw, 'trend_week', date('now'), \
                     CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
                     CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
                     CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
@@ -81,8 +81,8 @@ impl Task for RefreshPopularityTask {
         // --- trend_month: today / 30 days ago ratio ---
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
-             (source, external_id, period, period_key, avg, min, max, sample_count) \
-             SELECT n.source, n.external_id, 'trend_month', date('now'), \
+             (source, external_id, media_id, media_raw, period, period_key, avg, min, max, sample_count) \
+             SELECT n.source, n.external_id, n.media_id, n.media_raw, 'trend_month', date('now'), \
                     CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
                     CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
                     CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
@@ -107,8 +107,9 @@ impl Task for RefreshPopularityTask {
 
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
-             (source, external_id, period, period_key, avg, min, max, sample_count) \
-             SELECT source, external_id, 'weekly', strftime('%Y-W%W', period_key), \
+             (source, external_id, media_id, media_raw, period, period_key, avg, min, max, sample_count) \
+             SELECT source, external_id, MAX(media_id), MAX(media_raw), \
+                    'weekly', strftime('%Y-W%W', period_key), \
                     AVG(avg), MIN(min), MAX(max), SUM(sample_count) \
              FROM popularity_agg WHERE period = 'daily' \
              GROUP BY source, external_id, strftime('%Y-W%W', period_key)",
@@ -125,8 +126,9 @@ impl Task for RefreshPopularityTask {
 
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
-             (source, external_id, period, period_key, avg, min, max, sample_count) \
-             SELECT source, external_id, 'monthly', strftime('%Y-%m', period_key), \
+             (source, external_id, media_id, media_raw, period, period_key, avg, min, max, sample_count) \
+             SELECT source, external_id, MAX(media_id), MAX(media_raw), \
+                    'monthly', strftime('%Y-%m', period_key), \
                     AVG(avg), MIN(min), MAX(max), SUM(sample_count) \
              FROM popularity_agg WHERE period = 'weekly' \
              GROUP BY source, external_id, strftime('%Y-%m', period_key)",
@@ -143,8 +145,9 @@ impl Task for RefreshPopularityTask {
 
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
-             (source, external_id, period, period_key, avg, min, max, sample_count) \
-             SELECT source, external_id, 'yearly', strftime('%Y', period_key), \
+             (source, external_id, media_id, media_raw, period, period_key, avg, min, max, sample_count) \
+             SELECT source, external_id, MAX(media_id), MAX(media_raw), \
+                    'yearly', strftime('%Y', period_key), \
                     AVG(avg), MIN(min), MAX(max), SUM(sample_count) \
              FROM popularity_agg WHERE period = 'monthly' \
              GROUP BY source, external_id, strftime('%Y', period_key)",
@@ -161,8 +164,8 @@ impl Task for RefreshPopularityTask {
 
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
-             (source, external_id, period, period_key, avg, min, max, sample_count) \
-             SELECT source, external_id, 'all', 'all', \
+             (source, external_id, media_id, media_raw, period, period_key, avg, min, max, sample_count) \
+             SELECT source, external_id, MAX(media_id), MAX(media_raw), 'all', 'all', \
                     AVG(avg), MIN(min), MAX(max), SUM(sample_count) \
              FROM popularity_agg WHERE period = 'monthly' \
              GROUP BY source, external_id",

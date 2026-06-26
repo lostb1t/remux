@@ -243,10 +243,14 @@ pub(crate) async fn save_pending_popularity(ctx: &AppContext, items: &[db::Media
             continue;
         };
         if let Err(e) = sqlx::query(
-            "INSERT INTO popularity_raw (source, external_id, value, date) \
-             VALUES ('tmdb', ?, ?, ?) \
-             ON CONFLICT DO UPDATE SET value = excluded.value",
+            "INSERT INTO popularity_raw (source, external_id, media_id, media_raw, value, date) \
+             VALUES ('tmdb', ?, ?, ?, ?, ?) \
+             ON CONFLICT DO UPDATE SET value = excluded.value, \
+             media_id = COALESCE(excluded.media_id, popularity_raw.media_id), \
+             media_raw = COALESCE(excluded.media_raw, popularity_raw.media_raw)",
         )
+        .bind(ext_id)
+        .bind(item.id)
         .bind(ext_id)
         .bind(value.get())
         .bind(&today)
@@ -267,18 +271,24 @@ pub(crate) async fn bulk_insert_snapshots(
     }
     for chunk in snapshots.chunks(400) {
         let mut qb = sqlx::QueryBuilder::new(
-            "INSERT INTO popularity_raw (source, external_id, value, date) ",
+            "INSERT INTO popularity_raw (source, external_id, media_id, media_raw, value, date) ",
         );
         qb.push_values(chunk, |mut b, s| {
             b.push_bind(&s.source)
                 .push_bind(&s.external_id)
+                .push_bind(s.media_id)
+                .push_bind(&s.media_raw)
                 .push_bind(
                     s.value
                         .get(),
                 )
                 .push_bind(&s.date);
         });
-        qb.push(" ON CONFLICT DO UPDATE SET value = excluded.value");
+        qb.push(
+            " ON CONFLICT DO UPDATE SET value = excluded.value, \
+             media_id = COALESCE(excluded.media_id, popularity_raw.media_id), \
+             media_raw = COALESCE(excluded.media_raw, popularity_raw.media_raw)",
+        );
         qb.build()
             .execute(&ctx.db)
             .await?;
@@ -682,6 +692,8 @@ pub struct MetricSnapshot {
     pub external_id: String,
     pub value: MetricValue,
     pub date: chrono::NaiveDate,
+    pub media_id: Option<uuid::Uuid>,
+    pub media_raw: Option<String>,
 }
 
 #[async_trait]
