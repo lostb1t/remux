@@ -1,4 +1,4 @@
-use super::{FilterResult, QueryBuilderExt};
+use super::{FilterResult, QueryBuilderExt, Settings};
 use crate::{
     OptionExt, ResultExt,
     api::{ScrollDirection, SortOrder},
@@ -580,8 +580,9 @@ impl UserMediaState {
         // propagates to the parent season / series.
         if let Some(runtime) = runtime_seconds {
             if runtime > 0 && position_seconds >= (runtime * 90 / 100) {
+                let server_config = Settings::get_config_or_default(db).await;
                 media
-                    .mark_played(db, user, true)
+                    .mark_played(db, user, true, server_config.release_date_threshold())
                     .await?;
                 // Reset playback position now that the item is fully watched.
                 sqlx::query(

@@ -20,6 +20,7 @@ use crate::{
     common::{TickUnit, ToRunTimeTicks},
     db,
     db::auth,
+    services::MediaResolveService,
     transcode::session::TranscodeSession,
 };
 
@@ -693,14 +694,15 @@ pub async fn user_mark_played(
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
+    let server_config = db::Settings::get_config_or_default(
         &state
             .ctx
             .db,
-        &id,
     )
-    .await?
-    .context_not_found("not found")?;
+    .await;
     let ms = media
         .mark_played(
             &state
@@ -708,6 +710,7 @@ pub async fn user_mark_played(
                 .db,
             &session.user,
             true,
+            server_config.release_date_threshold(),
         )
         .await?;
     Ok(Json(api::db_state_to_dto(ms, &media)).into_response())
@@ -719,14 +722,9 @@ pub async fn user_unmark_played(
     session: auth::AuthSession,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let media = db::Media::get_by_id(
-        &state
-            .ctx
-            .db,
-        &id,
-    )
-    .await?
-    .context_not_found("not found")?;
+    let media = MediaResolveService::resolve_item(id, &state.ctx)
+        .await?
+        .context_not_found("not found")?;
     let ms = media
         .mark_unplayed(
             &state

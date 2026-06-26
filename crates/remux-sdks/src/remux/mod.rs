@@ -398,7 +398,7 @@ pub struct AioUrl(String);
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "PascalCase", default)]
 pub struct ServerConfiguration {
     #[default(Some(false))]
     pub enable_metrics: Option<bool>,
@@ -685,6 +685,16 @@ impl ServerConfiguration {
             .as_deref()
             .filter(|k| !k.is_empty())
             .unwrap_or(Self::DEFAULT_TMDB_KEY)
+    }
+
+    pub fn release_date_threshold(&self) -> Option<NaiveDateTime> {
+        if !self.filter_by_digital_release_date {
+            return None;
+        }
+        Some(
+            Utc::now().naive_utc()
+                + chrono::Duration::days(self.digital_release_buffer_days),
+        )
     }
 }
 

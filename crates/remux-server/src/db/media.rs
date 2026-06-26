@@ -2377,7 +2377,12 @@ impl Media {
                                 .digital_released_before
                                 .as_ref()
                             {
-                                push_release_date_filter(&mut pre_qb, threshold);
+                                push_release_date_filter(
+                                    &mut pre_qb,
+                                    "media",
+                                    threshold,
+                                    true,
+                                );
                             }
                             pre_qb.push(")");
                         }
@@ -2738,7 +2743,16 @@ impl Media {
                 .as_ref()
             {
                 if resumable_ids.is_none() {
-                    push_release_date_filter(qb, threshold);
+                    let season_only = filter
+                        .kind
+                        .as_ref()
+                        .map(|k| {
+                            !k.is_empty()
+                                && k.iter()
+                                    .all(|k| matches!(k, MediaKind::Season))
+                        })
+                        .unwrap_or(false);
+                    push_release_date_filter(qb, "media", threshold, !season_only);
                 }
             }
 
@@ -3381,7 +3395,11 @@ impl Media {
                            AND ums.user_id = ",
                     );
                     qb.push_bind(user_id);
-                    qb.push(" AND ums.play_count > 0) GROUP BY e.grandparent_id");
+                    qb.push(" AND ums.play_count > 0)");
+                    if let Some(t) = filter.digital_released_before {
+                        push_release_date_filter(&mut qb, "e", t, true);
+                    }
+                    qb.push(" GROUP BY e.grandparent_id");
 
                     match qb
                         .build()
@@ -3730,7 +3748,7 @@ impl Media {
                     )
                 });
         let digital_released_before = release_date_applies
-            .then(|| release_date_threshold(server_config))
+            .then(|| server_config.and_then(|c| c.release_date_threshold()))
             .flatten();
 
         let user_policy_filter = user_policy.and_then(|p| {
@@ -4010,6 +4028,7 @@ impl Media {
         db: &SqlitePool,
         user: &super::User,
         recursive: bool,
+        release_threshold: Option<chrono::NaiveDateTime>,
     ) -> Result<super::UserMediaState> {
         let now = Local::now().naive_local();
         let state = self
@@ -4023,101 +4042,50 @@ impl Media {
         match self.kind {
             MediaKind::Episode => {
                 if let Some(season_id) = self.parent_id {
-                    let unplayed: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM media e \
-                         WHERE e.parent_id = ? AND e.kind = 'episode' \
-                         AND NOT EXISTS (\
-                           SELECT 1 FROM user_media_state ums \
-                           WHERE ums.media_id = e.id \
-                           AND ums.user_id = ? \
-                           AND ums.play_count > 0\
-                         )",
+                    let unplayed = count_unplayed_children(
+                        db,
+                        season_id,
+                        MediaKind::Episode,
+                        user.id,
+                        release_threshold,
                     )
-                    .bind(season_id)
-                    .bind(user.id)
-                    .fetch_one(db)
-                    .await
-                    .unwrap_or(1);
-
+                    .await;
                     if unplayed == 0 {
                         if let Ok(Some(season)) = Self::get_by_id(db, &season_id).await
                         {
                             season
                                 .apply_played(db, user, now)
                                 .await?;
-
-                            if let Some(series_id) = season.parent_id {
-                                let unplayed_seasons: i64 = sqlx::query_scalar(
-                                    "SELECT COUNT(*) FROM media s \
-                                     WHERE s.parent_id = ? AND s.kind = 'season' \
-                                     AND NOT EXISTS (\
-                                       SELECT 1 FROM user_media_state ums \
-                                       WHERE ums.media_id = s.id \
-                                       AND ums.user_id = ? \
-                                       AND ums.play_count > 0\
-                                     )",
-                                )
-                                .bind(series_id)
-                                .bind(user.id)
-                                .fetch_one(db)
-                                .await
-                                .unwrap_or(1);
-
-                                if unplayed_seasons == 0 {
-                                    if let Ok(Some(series)) =
-                                        Self::get_by_id(db, &series_id).await
-                                    {
-                                        series
-                                            .apply_played(db, user, now)
-                                            .await?;
-                                    }
-                                }
-                            }
+                            cascade_played_to_series(
+                                db,
+                                user,
+                                &season,
+                                now,
+                                release_threshold,
+                            )
+                            .await?;
                         }
                     }
                 }
             }
 
             MediaKind::Season => {
-                let episode_ids = child_episode_ids(db, self.id).await;
+                let episode_ids =
+                    child_episode_ids(db, self.id, release_threshold).await;
                 bulk_mark_played(db, user.id, &episode_ids, now).await;
-
-                if let Some(series_id) = self.parent_id {
-                    let unplayed_seasons: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM media s \
-                         WHERE s.parent_id = ? AND s.kind = 'season' \
-                         AND NOT EXISTS (\
-                           SELECT 1 FROM user_media_state ums \
-                           WHERE ums.media_id = s.id \
-                           AND ums.user_id = ? \
-                           AND ums.play_count > 0\
-                         )",
-                    )
-                    .bind(series_id)
-                    .bind(user.id)
-                    .fetch_one(db)
-                    .await
-                    .unwrap_or(1);
-
-                    if unplayed_seasons == 0 {
-                        if let Ok(Some(series)) = Self::get_by_id(db, &series_id).await
-                        {
-                            series
-                                .apply_played(db, user, now)
-                                .await?;
-                        }
-                    }
-                }
+                cascade_played_to_series(db, user, self, now, release_threshold)
+                    .await?;
             }
 
             MediaKind::Series => {
-                let season_ids = child_season_ids(db, self.id).await;
+                let season_ids = child_season_ids(db, self.id, release_threshold).await;
                 bulk_mark_played(db, user.id, &season_ids, now).await;
-                let episode_ids = grandchild_episode_ids(db, self.id).await;
+                let episode_ids =
+                    grandchild_episode_ids(db, self.id, release_threshold).await;
                 bulk_mark_played(db, user.id, &episode_ids, now).await;
             }
 
-            _ => {} // other kinds: no propagation
+            _ => {}
         }
 
         Ok(state)
@@ -4139,55 +4107,24 @@ impl Media {
 
         match self.kind {
             MediaKind::Episode => {
-                if let Some(season_id) = self.parent_id {
-                    if let Ok(Some(season)) = Self::get_by_id(db, &season_id).await {
-                        let ss = super::UserMediaState::get_or_new(db, user, &season)
-                            .await?;
-                        if ss.play_count > 0 {
-                            season
-                                .apply_unplayed(db, user)
-                                .await?;
-                        }
-                    }
-                }
-                if let Some(series_id) = self.grandparent_id {
-                    if let Ok(Some(series)) = Self::get_by_id(db, &series_id).await {
-                        let ss = super::UserMediaState::get_or_new(db, user, &series)
-                            .await?;
-                        if ss.play_count > 0 {
-                            series
-                                .apply_unplayed(db, user)
-                                .await?;
-                        }
-                    }
-                }
+                unplay_parent_if_played(db, user, self.parent_id).await?;
+                unplay_parent_if_played(db, user, self.grandparent_id).await?;
             }
 
             MediaKind::Season => {
-                let episode_ids = child_episode_ids(db, self.id).await;
+                let episode_ids = child_episode_ids(db, self.id, None).await;
                 bulk_mark_unplayed(db, user.id, &episode_ids).await;
-
-                if let Some(series_id) = self.parent_id {
-                    if let Ok(Some(series)) = Self::get_by_id(db, &series_id).await {
-                        let ss = super::UserMediaState::get_or_new(db, user, &series)
-                            .await?;
-                        if ss.play_count > 0 {
-                            series
-                                .apply_unplayed(db, user)
-                                .await?;
-                        }
-                    }
-                }
+                unplay_parent_if_played(db, user, self.parent_id).await?;
             }
 
             MediaKind::Series => {
-                let season_ids = child_season_ids(db, self.id).await;
+                let season_ids = child_season_ids(db, self.id, None).await;
                 bulk_mark_unplayed(db, user.id, &season_ids).await;
-                let episode_ids = grandchild_episode_ids(db, self.id).await;
+                let episode_ids = grandchild_episode_ids(db, self.id, None).await;
                 bulk_mark_unplayed(db, user.id, &episode_ids).await;
             }
 
-            _ => {} // other kinds: no propagation
+            _ => {}
         }
 
         Ok(state)
@@ -4391,30 +4328,167 @@ impl Media {
     }
 }
 
-async fn child_episode_ids(db: &SqlitePool, parent_id: Uuid) -> Vec<Uuid> {
-    sqlx::query_scalar("SELECT id FROM media WHERE parent_id = ? AND kind = 'episode'")
-        .bind(parent_id)
+async fn count_unplayed_children(
+    db: &SqlitePool,
+    parent_id: Uuid,
+    kind: MediaKind,
+    user_id: Uuid,
+    threshold: Option<chrono::NaiveDateTime>,
+) -> i64 {
+    let mut qb =
+        sqlx::QueryBuilder::new("SELECT COUNT(*) FROM media WHERE parent_id = ");
+    qb.push_bind(parent_id);
+    qb.push(" AND kind = ");
+    qb.push_bind(kind.to_string());
+    qb.push(
+        " AND NOT EXISTS (\
+           SELECT 1 FROM user_media_state ums \
+           WHERE ums.media_id = media.id \
+           AND ums.user_id = ",
+    );
+    qb.push_bind(user_id);
+    qb.push(" AND ums.play_count > 0)");
+    if let Some(t) = threshold {
+        push_release_date_filter(&mut qb, "media", t, true);
+    }
+    qb.build_query_scalar()
+        .fetch_one(db)
+        .await
+        .unwrap_or(1)
+}
+
+async fn cascade_played_to_series(
+    db: &SqlitePool,
+    user: &super::User,
+    season: &Media,
+    now: chrono::NaiveDateTime,
+    release_threshold: Option<chrono::NaiveDateTime>,
+) -> anyhow::Result<()> {
+    if let Some(series_id) = season.parent_id {
+        let unplayed =
+            count_unplayed_released_seasons(db, series_id, user.id, release_threshold)
+                .await;
+        if unplayed == 0 {
+            if let Ok(Some(series)) = Media::get_by_id(db, &series_id).await {
+                series
+                    .apply_played(db, user, now)
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Count seasons under `series_id` that are unplayed.
+/// When `threshold` is Some, only seasons with at least one released episode are
+/// counted — seasons where all episodes are unreleased (upcoming seasons) are excluded
+/// so they don't block cascading to the series.
+async fn count_unplayed_released_seasons(
+    db: &SqlitePool,
+    series_id: Uuid,
+    user_id: Uuid,
+    threshold: Option<chrono::NaiveDateTime>,
+) -> i64 {
+    let mut qb =
+        sqlx::QueryBuilder::new("SELECT COUNT(*) FROM media s WHERE s.parent_id = ");
+    qb.push_bind(series_id);
+    qb.push(" AND s.kind = 'season'");
+    qb.push(
+        " AND NOT EXISTS (\
+           SELECT 1 FROM user_media_state ums \
+           WHERE ums.media_id = s.id AND ums.user_id = ",
+    );
+    qb.push_bind(user_id);
+    qb.push(" AND ums.play_count > 0)");
+    if let Some(t) = threshold {
+        qb.push(
+            " AND EXISTS (\
+               SELECT 1 FROM media e WHERE e.parent_id = s.id AND e.kind = 'episode'",
+        );
+        push_release_date_filter(&mut qb, "e", t, true);
+        qb.push(")");
+    }
+    qb.build_query_scalar()
+        .fetch_one(db)
+        .await
+        .unwrap_or(1)
+}
+
+async fn unplay_parent_if_played(
+    db: &SqlitePool,
+    user: &super::User,
+    parent_id: Option<Uuid>,
+) -> anyhow::Result<()> {
+    let Some(id) = parent_id else {
+        return Ok(());
+    };
+    if let Ok(Some(parent)) = Media::get_by_id(db, &id).await {
+        let ss = super::UserMediaState::get_or_new(db, user, &parent).await?;
+        if ss.play_count > 0 {
+            parent
+                .apply_unplayed(db, user)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn child_episode_ids(
+    db: &SqlitePool,
+    parent_id: Uuid,
+    threshold: Option<chrono::NaiveDateTime>,
+) -> Vec<Uuid> {
+    let mut qb = sqlx::QueryBuilder::new("SELECT id FROM media WHERE parent_id = ");
+    qb.push_bind(parent_id);
+    qb.push(" AND kind = 'episode'");
+    if let Some(t) = threshold {
+        push_release_date_filter(&mut qb, "media", t, true);
+    }
+    qb.build_query_scalar()
         .fetch_all(db)
         .await
         .unwrap_or_default()
 }
 
-async fn child_season_ids(db: &SqlitePool, parent_id: Uuid) -> Vec<Uuid> {
-    sqlx::query_scalar("SELECT id FROM media WHERE parent_id = ? AND kind = 'season'")
-        .bind(parent_id)
+async fn child_season_ids(
+    db: &SqlitePool,
+    parent_id: Uuid,
+    threshold: Option<chrono::NaiveDateTime>,
+) -> Vec<Uuid> {
+    let mut qb = sqlx::QueryBuilder::new("SELECT id FROM media WHERE parent_id = ");
+    qb.push_bind(parent_id);
+    qb.push(" AND kind = 'season'");
+    if let Some(t) = threshold {
+        // Only seasons that have at least one released episode.
+        qb.push(
+            " AND EXISTS (\
+               SELECT 1 FROM media e WHERE e.parent_id = media.id AND e.kind = 'episode'",
+        );
+        push_release_date_filter(&mut qb, "e", t, true);
+        qb.push(")");
+    }
+    qb.build_query_scalar()
         .fetch_all(db)
         .await
         .unwrap_or_default()
 }
 
-async fn grandchild_episode_ids(db: &SqlitePool, grandparent_id: Uuid) -> Vec<Uuid> {
-    sqlx::query_scalar(
-        "SELECT id FROM media WHERE grandparent_id = ? AND kind = 'episode'",
-    )
-    .bind(grandparent_id)
-    .fetch_all(db)
-    .await
-    .unwrap_or_default()
+async fn grandchild_episode_ids(
+    db: &SqlitePool,
+    grandparent_id: Uuid,
+    threshold: Option<chrono::NaiveDateTime>,
+) -> Vec<Uuid> {
+    let mut qb =
+        sqlx::QueryBuilder::new("SELECT id FROM media WHERE grandparent_id = ");
+    qb.push_bind(grandparent_id);
+    qb.push(" AND kind = 'episode'");
+    if let Some(t) = threshold {
+        push_release_date_filter(&mut qb, "media", t, true);
+    }
+    qb.build_query_scalar()
+        .fetch_all(db)
+        .await
+        .unwrap_or_default()
 }
 
 /// Bulk-upsert `user_media_state` rows for `media_ids` as played (play_count = 1, played_at = `now`).
@@ -4511,28 +4585,44 @@ async fn bulk_mark_unplayed(db: &SqlitePool, user_id: Uuid, media_ids: &[Uuid]) 
 }
 
 /// After importing episodes for a series, ensure users who had the series marked played
-/// still have a consistent state. If new episodes exist that aren't yet played, clear the
-/// played flag on the series (and any affected seasons) for those users.
+/// still have a consistent state. If new (released) episodes exist that aren't yet played,
+/// clear the played flag on the series (and any affected seasons) for those users.
+/// Unreleased episodes are excluded from the staleness check — they should not cause the
+/// series to be unmarked when the user has watched everything available.
 pub async fn reconcile_series_played_state(db: &SqlitePool, series_id: Uuid) {
-    // Users who have the series played but have at least one unplayed episode.
-    let stale_users: Vec<Uuid> = sqlx::query_scalar(
+    let threshold = super::Settings::get_config_or_default(db)
+        .await
+        .release_date_threshold();
+
+    // Users who have the series played but have at least one unplayed released episode.
+    let mut qb = sqlx::QueryBuilder::new(
         "SELECT ums.user_id \
          FROM user_media_state ums \
-         WHERE ums.media_id = ? AND ums.play_count > 0 \
+         WHERE ums.media_id = ",
+    );
+    qb.push_bind(series_id);
+    qb.push(
+        " AND ums.play_count > 0 \
          AND EXISTS (\
            SELECT 1 FROM media e \
-           WHERE e.grandparent_id = ? AND e.kind = 'episode' \
-           AND NOT EXISTS (\
-             SELECT 1 FROM user_media_state u2 \
-             WHERE u2.media_id = e.id AND u2.user_id = ums.user_id AND u2.play_count > 0\
-           )\
-         )",
-    )
-    .bind(series_id)
-    .bind(series_id)
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+           WHERE e.grandparent_id = ",
+    );
+    qb.push_bind(series_id);
+    qb.push(" AND e.kind = 'episode'");
+    if let Some(t) = threshold {
+        push_release_date_filter(&mut qb, "e", t, true);
+    }
+    qb.push(
+        " AND NOT EXISTS (\
+           SELECT 1 FROM user_media_state u2 \
+           WHERE u2.media_id = e.id AND u2.user_id = ums.user_id AND u2.play_count > 0\
+         ))",
+    );
+    let stale_users: Vec<Uuid> = qb
+        .build_query_scalar()
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
 
     for user_id in stale_users {
         // Unmark the series.
@@ -4546,28 +4636,41 @@ pub async fn reconcile_series_played_state(db: &SqlitePool, series_id: Uuid) {
         .await
         .ok();
 
-        // Unmark any seasons that are played but contain unplayed episodes.
-        let stale_seasons: Vec<Uuid> = sqlx::query_scalar(
+        // Unmark any seasons that are played but contain unplayed released episodes.
+        let mut qb = sqlx::QueryBuilder::new(
             "SELECT s.id FROM media s \
-             WHERE s.parent_id = ? AND s.kind = 'season' \
+             WHERE s.parent_id = ",
+        );
+        qb.push_bind(series_id);
+        qb.push(
+            " AND s.kind = 'season' \
              AND EXISTS (\
-               SELECT 1 FROM user_media_state ums WHERE ums.media_id = s.id \
-               AND ums.user_id = ? AND ums.play_count > 0\
+               SELECT 1 FROM user_media_state ums \
+               WHERE ums.media_id = s.id AND ums.user_id = ",
+        );
+        qb.push_bind(user_id);
+        qb.push(
+            " AND ums.play_count > 0\
              ) \
              AND EXISTS (\
-               SELECT 1 FROM media e WHERE e.parent_id = s.id AND e.kind = 'episode' \
-               AND NOT EXISTS (\
-                 SELECT 1 FROM user_media_state u2 \
-                 WHERE u2.media_id = e.id AND u2.user_id = ? AND u2.play_count > 0\
-               )\
-             )",
-        )
-        .bind(series_id)
-        .bind(user_id)
-        .bind(user_id)
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
+               SELECT 1 FROM media e \
+               WHERE e.parent_id = s.id AND e.kind = 'episode'",
+        );
+        if let Some(t) = threshold {
+            push_release_date_filter(&mut qb, "e", t, true);
+        }
+        qb.push(
+            " AND NOT EXISTS (\
+               SELECT 1 FROM user_media_state u2 \
+               WHERE u2.media_id = e.id AND u2.user_id = ",
+        );
+        qb.push_bind(user_id);
+        qb.push(" AND u2.play_count > 0))");
+        let stale_seasons: Vec<Uuid> = qb
+            .build_query_scalar()
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
 
         for season_id in stale_seasons {
             sqlx::query(
@@ -5088,48 +5191,54 @@ pub fn stremio_meta_to_medias(meta: sdks::stremio::Meta) -> Result<Vec<Media>> {
     Ok(media_instances)
 }
 
-/// Compute the `digital_released_before` threshold from server config.
-///
-/// Returns `None` when the feature is disabled or config is unavailable.
-pub fn release_date_threshold(
-    config: Option<&api::ServerConfiguration>,
-) -> Option<NaiveDateTime> {
-    if config.map(|c| c.filter_by_digital_release_date) == Some(false) {
-        return None;
-    }
-    let buffer = config
-        .map(|c| c.digital_release_buffer_days)
-        .unwrap_or(0);
-    Some(Utc::now().naive_utc() + Duration::days(buffer))
-}
-
+/// Return the release-date WHERE fragment for use in raw `format!` SQL strings.
 /// Push the release-date WHERE condition onto a query builder, binding `threshold`.
 ///
-/// Priority order:
-/// 1. `digital_released_at` — explicit digital/streaming release date.
-/// 2. If no digital date but `released_at` is within the past year → `NULL` (hidden).
-///    Recent theatrical-only releases have no confirmed digital date yet.
-/// 3. `released_at` older than a year — falls back to theatrical as a proxy.
-/// 4. Parent then grandparent dates — episodes inherit series premiere when no item date.
-/// 5. `'1900-01-01'` sentinel — items with no date at any level (live/sports) always pass.
+/// `alias` is the table alias for the media row (e.g. `"media"` for an unaliased
+/// table, `"e"` when episodes are selected as `media e`).
+///
+/// Appends a WHERE condition that hides items whose resolved release date is after `threshold`.
+///
+/// Resolution priority (CASE expression):
+/// 1. `digital_released_at` — explicit digital/streaming date; used as-is.
+/// 2. `released_at` within the past year → NULL (hidden). A recent theatrical release
+///    with no digital date confirmed is still considered unreleased digitally.
+/// 3. ELSE — depends on `use_parent_fallback`:
+///    - `true`  (episodes, series, movies): fall back to the parent row's dates via a
+///      correlated subquery. This lets undated episodes of old series (e.g. a 1990s
+///      show imported from Jellyfin with no per-episode air dates) inherit the series
+///      premiere and be treated as released rather than silently disappearing.
+///    - `false` (seasons): no parent fallback. A season with no own dates returns NULL
+///      from the CASE, which fails `<= threshold` and is hidden. This is intentional:
+///      TVDB often lists upcoming seasons before scheduling them, and we must not let
+///      such a season inherit the series' past premiere date and slip through the filter.
+///
+/// In all cases a NULL result from the CASE is falsy in SQLite (`NULL <= x` = NULL),
+/// so items that cannot resolve any date are excluded.
 pub fn push_release_date_filter(
     qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+    alias: &str,
     threshold: NaiveDateTime,
+    use_parent_fallback: bool,
 ) {
-    // media.parent_id / media.grandparent_id are qualified with the outer table name so
-    // SQLite resolves them against the outer row, not against the inner alias `p`.
-    qb.push(
+    let a = format!("{alias}.");
+    let else_expr = if use_parent_fallback {
+        format!(
+            "COALESCE(\
+              {a}released_at, \
+              (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = {a}parent_id)\
+            )"
+        )
+    } else {
+        format!("{a}released_at")
+    };
+    qb.push(format!(
         " AND CASE \
-            WHEN digital_released_at IS NOT NULL THEN digital_released_at \
-            WHEN released_at IS NOT NULL AND datetime(released_at) > datetime('now', '-1 year') THEN NULL \
-            ELSE COALESCE(\
-              released_at, \
-              (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.parent_id), \
-              (SELECT COALESCE(p.digital_released_at, p.released_at) FROM media p WHERE p.id = media.grandparent_id), \
-              '1900-01-01 00:00:00'\
-            ) \
-          END <= ",
-    )
+            WHEN {a}digital_released_at IS NOT NULL THEN {a}digital_released_at \
+            WHEN {a}released_at IS NOT NULL AND datetime({a}released_at) > datetime('now', '-1 year') THEN NULL \
+            ELSE {else_expr} \
+          END <= "
+    ))
     .push_bind(threshold);
 }
 
