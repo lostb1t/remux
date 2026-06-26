@@ -406,7 +406,7 @@ pub fn CollectionForm(
             })
             .and_then(|v| v.first())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| "Ascending".to_string())
+            .unwrap_or_else(|| "Descending".to_string())
     });
     let mut saving = use_signal(|| false);
     let mut err = use_signal(|| Option::<String>::None);
