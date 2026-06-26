@@ -199,6 +199,43 @@ pub(crate) async fn save_pending_relations(ctx: &AppContext, items: &[db::Media]
     }
 }
 
+/// Persist `provider:` tags collected from meta addons. Only `provider:`-prefixed
+/// tags are touched — user-set tags with other prefixes are left intact.
+pub(crate) async fn save_pending_tags(ctx: &AppContext, items: &[db::Media]) {
+    for item in items {
+        let provider_tags: Vec<&String> = item
+            .tags
+            .iter()
+            .filter(|t| t.starts_with("provider:"))
+            .collect();
+        if provider_tags.is_empty() {
+            continue;
+        }
+        if let Err(e) = sqlx::query(
+            "DELETE FROM media_tags WHERE media_id = ? AND tag LIKE 'provider:%'",
+        )
+        .bind(item.id)
+        .execute(&ctx.db)
+        .await
+        {
+            warn!(id = %item.id, error = %e, "failed to clear provider tags");
+            continue;
+        }
+        for tag in provider_tags {
+            if let Err(e) = sqlx::query(
+                "INSERT OR IGNORE INTO media_tags (media_id, tag) VALUES (?, ?)",
+            )
+            .bind(item.id)
+            .bind(tag)
+            .execute(&ctx.db)
+            .await
+            {
+                warn!(id = %item.id, %tag, error = %e, "failed to insert provider tag");
+            }
+        }
+    }
+}
+
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     use remux_utils::merge_option;
 
@@ -294,6 +331,21 @@ fn apply_meta(media: &mut db::Media, mut patch: db::Media, replace: bool) {
         merge_vec(&mut imgs.backdrop, patch_images.backdrop, replace);
         merge_vec(&mut imgs.logo, patch_images.logo, replace);
         merge_vec(&mut imgs.thumb, patch_images.thumb, replace);
+    }
+
+    if !patch
+        .tags
+        .is_empty()
+    {
+        media
+            .tags
+            .extend(std::mem::take(&mut patch.tags));
+        media
+            .tags
+            .sort_unstable();
+        media
+            .tags
+            .dedup();
     }
 
     merge_media(media, &patch, replace);
@@ -1271,6 +1323,7 @@ impl AddonService {
                 match db::Media::upsert(&ctx.db, &items).await {
                     Ok(_) => {
                         save_pending_relations(ctx, &items).await;
+                        save_pending_tags(ctx, &items).await;
                     }
                     Err(e) => {
                         error!(error = %e, "failed to upsert media batch");
@@ -1283,6 +1336,7 @@ impl AddonService {
             match db::Media::upsert(&ctx.db, &batch).await {
                 Ok(_) => {
                     save_pending_relations(ctx, &batch).await;
+                    save_pending_tags(ctx, &batch).await;
                 }
                 Err(e) => {
                     error!(error = %e, "failed to upsert final media batch");

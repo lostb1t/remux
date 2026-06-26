@@ -388,4 +388,61 @@ impl Endpoint for PersonDetailsEndpoint {
     }
 }
 
+/// A single streaming/rental/purchase provider entry.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct WatchProvider {
+    pub provider_id: i64,
+    pub provider_name: String,
+}
+
+/// Per-country availability from `/watch/providers`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct WatchProviderCountry {
+    #[serde(default)]
+    pub flatrate: Vec<WatchProvider>,
+    #[serde(default)]
+    pub rent: Vec<WatchProvider>,
+    #[serde(default)]
+    pub buy: Vec<WatchProvider>,
+}
+
+/// Response for `/movie/{id}/watch/providers` and `/tv/{id}/watch/providers`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct WatchProvidersResponse {
+    pub id: i64,
+    /// Keys are ISO 3166-1 alpha-2 country codes.
+    #[serde(default)]
+    pub results: std::collections::HashMap<String, WatchProviderCountry>,
+}
+
+/// `GET /movie/{movie_id}/watch/providers`
+#[derive(Debug, Clone, Serialize)]
+pub struct MovieWatchProvidersEndpoint {
+    #[serde(skip)]
+    pub movie_id: i64,
+}
+
+impl Endpoint for MovieWatchProvidersEndpoint {
+    type Output = WatchProvidersResponse;
+
+    fn path(&self) -> String {
+        format!("movie/{}/watch/providers", self.movie_id)
+    }
+}
+
+/// `GET /tv/{series_id}/watch/providers`
+#[derive(Debug, Clone, Serialize)]
+pub struct TvWatchProvidersEndpoint {
+    #[serde(skip)]
+    pub series_id: i64,
+}
+
+impl Endpoint for TvWatchProvidersEndpoint {
+    type Output = WatchProvidersResponse;
+
+    fn path(&self) -> String {
+        format!("tv/{}/watch/providers", self.series_id)
+    }
+}
+
 //https://files.tmdb.org/p/exports/movie_ids_05_15_2024.json.gz

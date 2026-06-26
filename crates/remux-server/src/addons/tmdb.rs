@@ -639,6 +639,56 @@ fn is_404(e: &anyhow::Error) -> bool {
     )
 }
 
+/// Extract unique provider names from a watch/providers response for the given
+/// country (falls back to "US", then to the first available country). Returns
+/// tags of the form `"provider:Name"` covering flatrate, rent, and buy entries.
+fn watch_provider_tags(
+    resp: Option<&sdks::tmdb::WatchProvidersResponse>,
+    country: &str,
+) -> Vec<String> {
+    let Some(resp) = resp else { return vec![] };
+
+    let pick = resp
+        .results
+        .get(&country.to_uppercase())
+        .or_else(|| {
+            resp.results
+                .get("US")
+        })
+        .or_else(|| {
+            resp.results
+                .values()
+                .next()
+        });
+
+    let Some(entry) = pick else { return vec![] };
+
+    let mut names: Vec<String> = entry
+        .flatrate
+        .iter()
+        .chain(
+            entry
+                .rent
+                .iter(),
+        )
+        .chain(
+            entry
+                .buy
+                .iter(),
+        )
+        .map(|p| {
+            p.provider_name
+                .clone()
+        })
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+        .into_iter()
+        .map(|n| format!("provider:{}", n))
+        .collect()
+}
+
 async fn fetch_tmdb_meta(
     media: &db::Media,
     ctx: &AppContext,
@@ -846,6 +896,14 @@ async fn fetch_tmdb_meta(
                 if !relations.is_empty() {
                     patch.relations = Some(relations);
                 }
+                let providers = client
+                    .execute(
+                        sdks::tmdb::MovieWatchProvidersEndpoint { movie_id: tmdb_id }
+                            .with_cache(Duration::from_secs(86400)),
+                    )
+                    .await
+                    .ok();
+                patch.tags = watch_provider_tags(providers.as_ref(), &metadata_country);
                 return Ok(Some(patch));
             }
         }
@@ -1050,6 +1108,14 @@ async fn fetch_tmdb_meta(
                 if !relations.is_empty() {
                     patch.relations = Some(relations);
                 }
+                let providers = client
+                    .execute(
+                        sdks::tmdb::TvWatchProvidersEndpoint { series_id: tmdb_id }
+                            .with_cache(Duration::from_secs(86400)),
+                    )
+                    .await
+                    .ok();
+                patch.tags = watch_provider_tags(providers.as_ref(), &metadata_country);
                 return Ok(Some(patch));
             }
         }
