@@ -73,7 +73,7 @@ inventory::submit! {
 
 pub struct TmdbAddon {}
 
-const TMDB_POPULARITY_MAX: f64 = 10_000.0;
+const TMDB_POPULARITY_MAX: f64 = 1_000.0;
 
 fn tmdb_image(path: Option<&str>, kind: db::ImageKind) -> Option<String> {
     let size = match kind {
