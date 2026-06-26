@@ -274,6 +274,9 @@ pub struct TranscodeParams {
     /// Codec of the source video stream (e.g. "hevc", "h264"), used to apply
     /// codec-specific output flags such as `-tag:v hvc1` for HEVC in HLS.
     pub source_video_codec: Option<String>,
+    /// Codec of the source audio stream (e.g. "aac", "ac3"), used to apply
+    /// codec-specific bitstream filters such as `aac_adtstoasc` when copying.
+    pub source_audio_codec: Option<String>,
     pub hardware_acceleration_type: HardwareAccelerationType,
     /// VAAPI render device path.
     pub vaapi_device: String,
@@ -325,6 +328,7 @@ impl Default for TranscodeParams {
             subtitle_height: None,
             encoding_preset: None,
             source_video_codec: None,
+            source_audio_codec: None,
             hardware_acceleration_type: HardwareAccelerationType::None,
             vaapi_device: "/dev/dri/renderD128".to_string(),
             vaapi_driver: String::new(),
@@ -806,10 +810,18 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
     if ffmpeg_video_codec == "copy" {
         if is_hevc_copy {
             args.extend(["-tag:v".into(), "hvc1".into()]);
-            // fMP4 stores HEVC in HVCC format natively — no hevc_mp4toannexb needed.
-            // Strip embedded Dolby Vision RPU NALs so VideoToolbox treats this as
-            // plain HDR10 rather than Dolby Vision (avoids black video on some devices).
-            args.extend(["-bsf:v".into(), "dovi_rpu=strip=1".into()]);
+            // Strip embedded Dolby Vision RPU NALs only when the source is actually DoVi;
+            // dovi_rpu only supports hevc/av1 and will crash ffmpeg on any other codec.
+            let is_dovi = matches!(
+                params.source_video_range_type,
+                Some(VideoRangeType::Dovi)
+                    | Some(VideoRangeType::DoviWithHdr10)
+                    | Some(VideoRangeType::DoviWithHlg)
+                    | Some(VideoRangeType::DoviWithSdr)
+            );
+            if is_dovi {
+                args.extend(["-bsf:v".into(), "dovi_rpu=strip=1".into()]);
+            }
         }
     } else if is_hw {
         // HW encoders use bitrate control; CRF/preset/profile flags don't apply.
@@ -873,7 +885,18 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     // Audio codec
     args.extend(["-c:a".into(), ffmpeg_audio_codec.into()]);
-    if ffmpeg_audio_codec != "copy" {
+    if ffmpeg_audio_codec == "copy" {
+        // AAC streams from IPTV sources often use ADTS framing, which is not
+        // valid inside MP4/fMP4 containers. Apply the reframing filter when copying.
+        if matches!(
+            params
+                .source_audio_codec
+                .as_deref(),
+            Some("aac") | Some("aac_fixed") | Some("aac_latm")
+        ) {
+            args.extend(["-bsf:a".into(), "aac_adtstoasc".into()]);
+        }
+    } else {
         let audio_bitrate = params
             .audio_bitrate
             .unwrap_or(128_000);
@@ -1258,6 +1281,7 @@ pub struct ProgressiveTranscodeParams {
     pub subtitle_height: Option<u32>,
     pub encoding_preset: Option<EncodingPreset>,
     pub source_video_codec: Option<String>,
+    pub source_audio_codec: Option<String>,
     pub hardware_acceleration_type: HardwareAccelerationType,
     pub vaapi_device: String,
     /// VAAPI driver name (e.g. "iHD" for Intel). Empty string means auto-detect.
@@ -1601,7 +1625,16 @@ pub(crate) fn build_progressive_args(
 
     // Audio
     args.extend(["-c:a".into(), ffmpeg_audio_codec.into()]);
-    if ffmpeg_audio_codec != "copy" {
+    if ffmpeg_audio_codec == "copy" {
+        if matches!(
+            params
+                .source_audio_codec
+                .as_deref(),
+            Some("aac") | Some("aac_fixed") | Some("aac_latm")
+        ) {
+            args.extend(["-bsf:a".into(), "aac_adtstoasc".into()]);
+        }
+    } else {
         if let Some(bitrate) = params.audio_bitrate {
             args.extend(["-b:a".into(), bitrate.to_string()]);
         }
@@ -2107,6 +2140,7 @@ mod tests {
             subtitle_height: None,
             encoding_preset: None,
             source_video_codec: None,
+            source_audio_codec: None,
             hardware_acceleration_type: HardwareAccelerationType::None,
             vaapi_device: "/dev/dri/renderD128".into(),
             vaapi_driver: String::new(),
@@ -2161,15 +2195,80 @@ mod tests {
             Some("init.mp4")
         );
         assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
-        // Dolby Vision strip bsf
+        // No DoVi range type → dovi_rpu must NOT be injected (would crash on non-HEVC/AV1)
         assert!(
-            args.windows(2)
+            !args
+                .windows(2)
                 .any(|w| w[0] == "-bsf:v" && w[1].contains("dovi_rpu"))
         );
         // Segments use .m4s extension
         assert!(
             args.iter()
                 .any(|a| a.contains("segment_") && a.ends_with(".m4s"))
+        );
+    }
+
+    #[test]
+    fn hls_hevc_dovi_copy_strips_rpu() {
+        let dir = PathBuf::from("/tmp/test_hevc_dovi");
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "copy".into(),
+            source_video_codec: Some("hevc".into()),
+            source_video_range_type: Some(VideoRangeType::DoviWithHdr10),
+            ..default_hls(dir)
+        });
+        assert_eq!(arg_after(&args, "-tag:v"), Some("hvc1"));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-bsf:v" && w[1].contains("dovi_rpu")),
+            "dovi_rpu bsf must be present for DoVi HEVC copy"
+        );
+    }
+
+    #[test]
+    fn hls_aac_copy_adds_adtstoasc() {
+        let dir = PathBuf::from("/tmp/test_aac_copy");
+        let args = build_hls_args(&TranscodeParams {
+            audio_codec: "copy".into(),
+            source_audio_codec: Some("aac".into()),
+            ..default_hls(dir)
+        });
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-bsf:a" && w[1] == "aac_adtstoasc"),
+            "aac_adtstoasc bsf must be present when copying AAC audio"
+        );
+    }
+
+    #[test]
+    fn hls_aac_transcode_no_adtstoasc() {
+        let dir = PathBuf::from("/tmp/test_aac_transcode");
+        let args = build_hls_args(&TranscodeParams {
+            audio_codec: "aac".into(),
+            source_audio_codec: Some("aac".into()),
+            ..default_hls(dir)
+        });
+        assert!(
+            !args
+                .windows(2)
+                .any(|w| w[0] == "-bsf:a"),
+            "aac_adtstoasc must NOT be added when re-encoding audio"
+        );
+    }
+
+    #[test]
+    fn hls_non_aac_copy_no_adtstoasc() {
+        let dir = PathBuf::from("/tmp/test_ac3_copy");
+        let args = build_hls_args(&TranscodeParams {
+            audio_codec: "copy".into(),
+            source_audio_codec: Some("ac3".into()),
+            ..default_hls(dir)
+        });
+        assert!(
+            !args
+                .windows(2)
+                .any(|w| w[0] == "-bsf:a"),
+            "aac_adtstoasc must NOT be added for non-AAC audio"
         );
     }
 

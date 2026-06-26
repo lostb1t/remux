@@ -1344,6 +1344,14 @@ async fn videos_stream_inner(
     let source_video_range_type = source_video_stream
         .as_ref()
         .and_then(|s| s.video_range_type);
+    let source_audio_codec = media
+        .probe_data
+        .as_ref()
+        .and_then(|p| p.audio_stream())
+        .and_then(|s| {
+            s.codec
+                .clone()
+        });
     let params = crate::transcode::engine::ProgressiveTranscodeParams {
         input_url: url,
         container: container.clone(),
@@ -1383,6 +1391,7 @@ async fn videos_stream_inner(
         subtitle_height: None,
         encoding_preset: encoding_opts.encoding_preset,
         source_video_codec,
+        source_audio_codec,
         hardware_acceleration_type: encoding_opts
             .hardware_acceleration_type
             .unwrap_or_default(),
