@@ -23,3 +23,6 @@ CREATE INDEX IF NOT EXISTS idx_pop_agg_lookup
 
 CREATE INDEX IF NOT EXISTS idx_pop_raw_date
     ON popularity_raw(source, date);
+
+INSERT OR IGNORE INTO task_triggers (id, task_id, kind, time_limit_hours, cron) VALUES
+    ('default-refreshpopularity-daily', 'RefreshPopularity', 'DailyTrigger', NULL, '0 0 3 * * *');
