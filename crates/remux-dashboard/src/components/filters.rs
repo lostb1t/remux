@@ -173,6 +173,7 @@ fn field_label(key: &str) -> &'static str {
         "original_language" => "Original Language",
         "person" => "Person",
         "catalog" => "Catalog",
+        "popularity" => "Popularity",
         _ => "",
     }
 }
@@ -182,7 +183,7 @@ fn ops_for_field(field_key: &str) -> Vec<(&'static str, &'static str)> {
         "year" | "rating_audience" | "rating_critic" => {
             vec![("eq", "is"), ("not_eq", "is not"), ("gt", ">"), ("lt", "<")]
         }
-        "parental_rating" | "has_trailer" => vec![],
+        "parental_rating" | "has_trailer" | "popularity" => vec![],
         _ => vec![("is", "is"), ("is_not", "is not")],
     }
 }
@@ -271,6 +272,22 @@ fn rule_to_raw(rule: &FilterRule) -> (String, String, String) {
         }
         FilterRule::HasTrailer { value } => {
             ("has_trailer".into(), String::new(), value.to_string())
+        }
+        FilterRule::Popularity {
+            source,
+            period,
+            min,
+            max,
+        } => {
+            let mut parts =
+                vec![format!("source:{}", source), format!("period:{}", period)];
+            if let Some(v) = min {
+                parts.push(format!("min:{}", v));
+            }
+            if let Some(v) = max {
+                parts.push(format!("max:{}", v));
+            }
+            ("popularity".into(), String::new(), parts.join("|"))
         }
     }
 }
@@ -364,6 +381,33 @@ fn raw_to_rule(field: &str, op: &str, value_str: &str) -> FilterRule {
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect(),
         },
+        "popularity" => {
+            let mut source = "tmdb".to_string();
+            let mut period = "weekly".to_string();
+            let mut min = None;
+            let mut max = None;
+            for part in value_str.split('|') {
+                if let Some(v) = part.strip_prefix("source:") {
+                    source = v.to_string();
+                } else if let Some(v) = part.strip_prefix("period:") {
+                    period = v.to_string();
+                } else if let Some(v) = part.strip_prefix("min:") {
+                    min = v
+                        .parse()
+                        .ok();
+                } else if let Some(v) = part.strip_prefix("max:") {
+                    max = v
+                        .parse()
+                        .ok();
+                }
+            }
+            FilterRule::Popularity {
+                source,
+                period,
+                min,
+                max,
+            }
+        }
         _ => FilterRule::Genre {
             op: set_op,
             values: set_values(),
@@ -641,6 +685,89 @@ pub fn ChipInput(
 }
 
 #[component]
+fn PopularityRuleInput(
+    idx: usize,
+    source: String,
+    period: String,
+    min: Option<f64>,
+    max: Option<f64>,
+    rules: Signal<Vec<FilterRule>>,
+) -> Element {
+    let min_s = min
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let max_s = max
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+
+    let src1 = source.clone();
+    let src2 = source.clone();
+    let per1 = period.clone();
+    let per2 = period.clone();
+    let per3 = period.clone();
+
+    rsx! {
+        select {
+            class: "select-input",
+            style: "flex:1 1 100px;min-width:100px",
+            value: "{period}",
+            onchange: move |e| {
+                if let Some(row) = rules.write().get_mut(idx) {
+                    *row = FilterRule::Popularity {
+                        source: src1.clone(),
+                        period: e.value(),
+                        min,
+                        max,
+                    };
+                }
+            },
+            option { value: "weekly",  selected: period == "weekly",  "This Week" }
+            option { value: "monthly", selected: period == "monthly", "This Month" }
+            option { value: "all",     selected: period == "all",     "All Time" }
+        }
+        input {
+            class: "field-input",
+            style: "flex:1 1 70px;min-width:70px",
+            r#type: "number",
+            placeholder: "Min",
+            value: "{min_s}",
+            oninput: move |e| {
+                if let Some(row) = rules.write().get_mut(idx) {
+                    *row = FilterRule::Popularity {
+                        source: src2.clone(),
+                        period: per1.clone(),
+                        min: e.value().parse().ok(),
+                        max,
+                    };
+                }
+            },
+        }
+        input {
+            class: "field-input",
+            style: "flex:1 1 70px;min-width:70px",
+            r#type: "number",
+            placeholder: "Max",
+            value: "{max_s}",
+            oninput: move |e| {
+                if let Some(row) = rules.write().get_mut(idx) {
+                    *row = FilterRule::Popularity {
+                        source: source.clone(),
+                        period: per2.clone(),
+                        min,
+                        max: e.value().parse().ok(),
+                    };
+                }
+            },
+        }
+        // source shown as static text since 'tmdb' is the only source for now
+        span {
+            style: "font-size:11px;color:var(--text-muted);align-self:center",
+            "via {per3}"
+        }
+    }
+}
+
+#[component]
 pub fn FilterRuleRow(
     idx: usize,
     rule: FilterRule,
@@ -705,7 +832,8 @@ pub fn FilterRuleRow(
     let is_trailer = field_val == "has_trailer";
     let is_parental_rating = field_val == "parental_rating";
     let is_catalog = field_val == "catalog";
-    let hide_operator = is_trailer || is_parental_rating;
+    let is_popularity = field_val == "popularity";
+    let hide_operator = is_trailer || is_parental_rating || is_popularity;
 
     let fv1 = field_val.clone();
     let fv2 = field_val.clone();
@@ -783,7 +911,8 @@ pub fn FilterRuleRow(
                 option { value: "country",            selected: field_val == "country",            { field_label("country") } }
                 option { value: "original_language", selected: field_val == "original_language", { field_label("original_language") } }
                 option { value: "person",             selected: field_val == "person",             { field_label("person") } }
-                option { value: "catalog",         selected: field_val == "catalog",         { field_label("catalog") } }
+                option { value: "catalog",     selected: field_val == "catalog",     { field_label("catalog") } }
+                option { value: "popularity", selected: field_val == "popularity", { field_label("popularity") } }
             }
             if !hide_operator {
                 select {
@@ -800,7 +929,18 @@ pub fn FilterRuleRow(
                     }
                 }
             }
-            if is_catalog {
+            if is_popularity {
+                if let FilterRule::Popularity { source, period, min, max } = &rule {
+                    PopularityRuleInput {
+                        idx,
+                        source: source.clone(),
+                        period: period.clone(),
+                        min: *min,
+                        max: *max,
+                        rules,
+                    }
+                }
+            } else if is_catalog {
                 ChipInput {
                     field_key: "catalog".to_string(),
                     op_val: op_val.clone(),
