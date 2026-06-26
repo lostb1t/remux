@@ -6,12 +6,12 @@ use axum::{
 };
 use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
-use remux_macros::{api_query, get};
+use remux_macros::{get, query};
 use uuid::Uuid;
 
 use crate::{AppState, api, db, db::auth::AuthSession};
 
-#[api_query]
+#[query]
 #[derive(Debug)]
 pub struct InstantMixQuery {
     pub user_id: Option<Uuid>,

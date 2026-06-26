@@ -7,7 +7,7 @@ use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
 use chrono::Utc;
 use http::StatusCode;
-use remux_macros::{api_query, delete, get, post};
+use remux_macros::{delete, get, post, query};
 use serde::Deserialize;
 use serde_json::json;
 use serde_with::{DurationSeconds, serde_as};
@@ -200,7 +200,7 @@ pub async fn report_playback_stopped(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-#[api_query]
+#[query]
 pub struct PingQuery {
     pub play_session_id: String,
 }
@@ -260,7 +260,7 @@ pub async fn sessions_capabilities_full_by_id(
 }
 
 #[serde_as]
-#[api_query]
+#[query]
 #[derive(Default)]
 struct SessionsQuery {
     #[serde(rename = "activeWithinSeconds", alias = "ActiveWithinSeconds")]
@@ -741,7 +741,7 @@ pub async fn user_unmark_played(
 /// Creates a transcode session and returns a master.m3u8 playlist.
 // ── Session remote control ──────────────────────────────────────────────────
 
-#[api_query]
+#[query]
 #[derive(Default)]
 struct RemotePlayQuery {
     item_ids: remux_sdks::CommaSeparatedList<Uuid>,
@@ -753,14 +753,14 @@ struct RemotePlayQuery {
     start_index: Option<i32>,
 }
 
-#[api_query]
+#[query]
 #[derive(Default)]
 struct RemotePlaystateQuery {
     seek_position_ticks: Option<i64>,
     controlling_user_id: Option<String>,
 }
 
-#[api_query]
+#[query]
 #[derive(Default)]
 struct RemoteViewingQuery {
     item_type: Option<String>,
@@ -768,7 +768,7 @@ struct RemoteViewingQuery {
     item_name: Option<String>,
 }
 
-#[api_query]
+#[query]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct RemoteFullCommand {
     name: Option<String>,
@@ -776,7 +776,7 @@ struct RemoteFullCommand {
     arguments: Option<std::collections::HashMap<String, String>>,
 }
 
-#[api_query]
+#[query]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct RemoteMessageBody {
     header: Option<String>,

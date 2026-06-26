@@ -8,7 +8,7 @@ use axum::{
 use axum_extra::extract::Query;
 use http::StatusCode;
 use itertools::Itertools;
-use remux_macros::{api_query, delete, get, patch, post};
+use remux_macros::{delete, get, patch, post, query};
 use serde::Deserialize;
 use tracing::{debug, error, info, trace, warn};
 use uuid::{Uuid, uuid};
@@ -1302,7 +1302,7 @@ pub async fn items_intros(
     crate::api::intro::get_intros_inner(state, session, id).await
 }
 
-#[api_query]
+#[query]
 #[derive(Debug, Default)]
 pub struct RemoteImagesQuery {
     #[serde(rename = "type", alias = "Type")]
@@ -2102,7 +2102,7 @@ pub async fn update_virtual_folder(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[api_query]
+#[query]
 #[derive(Debug)]
 struct DeleteVirtualFolderQuery {
     name: String,
@@ -2314,7 +2314,7 @@ pub async fn items_metadata_editor(
     Ok(Json(api::MetadataEditorInfo::default()))
 }
 
-#[api_query]
+#[query]
 #[derive(Debug, Default)]
 struct GetSimilarItemsQuery {
     pub user_id: Option<Uuid>,
@@ -2582,7 +2582,7 @@ fn warm_providers_cache(ctx: &crate::AppContext, media: &db::Media) {
     });
 }
 
-#[api_query]
+#[query]
 #[derive(Default)]
 pub struct SegmentQuery {
     #[serde(rename = "includeSegmentTypes", default)]

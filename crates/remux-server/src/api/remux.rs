@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Duration, Utc};
-use remux_macros::{api_query, delete, get, post};
+use remux_macros::{delete, get, post, query};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 const CACHE_KEY_PREFIX: &str = "remux:cache:";
 
-#[api_query]
+#[query]
 #[derive(Debug, Default)]
 pub struct NamespaceQuery {
     #[serde(default)]

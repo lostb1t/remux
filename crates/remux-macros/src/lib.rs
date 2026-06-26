@@ -214,14 +214,14 @@ impl syn::parse::Parse for RouteArgs {
 /// injects `#[derive(serde::Deserialize)]` if not already present.
 ///
 /// ```ignore
-/// #[api_query]
+/// #[query]
 /// pub struct AddItemsQuery {
 ///     #[serde(default)]
 ///     pub ids: CommaSeparatedList<Uuid>,
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn api_query(_args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn query(_args: TokenStream, input: TokenStream) -> TokenStream {
     let mut item = parse_macro_input!(input as ItemStruct);
 
     // Check whether Deserialize is already derived so we don't add it twice.
@@ -323,4 +323,24 @@ fn query_field_aliases(snake: &str) -> Vec<String> {
     variants.dedup();
     variants.retain(|v| v != snake);
     variants
+}
+
+/// Bundles the standard DTO boilerplate onto a struct:
+/// `#[serde_with::skip_serializing_none]`, `Debug + Clone + Serialize + Deserialize +
+/// default2::Default`, and `#[serde(rename_all = "PascalCase", default)]`.
+///
+/// `default2::Default` is included because `#[serde(default)]` requires `Default::default()`
+/// on the struct. Field-level `#[default(...)]` annotations work without a separate derive.
+///
+/// Add extra derives (`PartialEq`, `Hash`, etc.) as a separate `#[derive(...)]` above `#[dto]`.
+#[proc_macro_attribute]
+pub fn dto(_args: TokenStream, input: TokenStream) -> TokenStream {
+    let input = proc_macro2::TokenStream::from(input);
+    quote! {
+        #[serde_with::skip_serializing_none]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, default2::Default)]
+        #[serde(rename_all = "PascalCase", default)]
+        #input
+    }
+    .into()
 }

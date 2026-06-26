@@ -1,6 +1,7 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use http::{HeaderValue, Method};
 use nutype::nutype;
+use remux_macros::dto;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_alias::serde_alias;
 use serde_aux::prelude::*;
@@ -396,9 +397,7 @@ pub struct Username(String);
 )]
 pub struct AioUrl(String);
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
-#[serde(rename_all = "PascalCase", default)]
+#[dto]
 pub struct ServerConfiguration {
     #[default(Some(false))]
     pub enable_metrics: Option<bool>,

@@ -245,7 +245,7 @@ pub async fn remote_search_apply(
 
 // ── Subtitle remote search ──────────────────────────────────────────────────
 
-#[remux_macros::api_query]
+#[remux_macros::query]
 #[derive(Debug, Default)]
 pub struct SubtitleSearchQuery {
     pub is_perfect_match: Option<bool>,

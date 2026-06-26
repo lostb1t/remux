@@ -14,7 +14,7 @@ use chrono::Utc;
 use futures_util::{StreamExt, TryStreamExt};
 use headers;
 use http::{Response, StatusCode};
-use remux_macros::{api_query, delete, get, post};
+use remux_macros::{delete, get, post, query};
 use serde::Deserialize;
 use serde_json::json;
 use serde_with::{DurationSeconds, serde_as};
@@ -2928,7 +2928,7 @@ pub async fn playback_bitratetest_sized(
         .unwrap())
 }
 
-#[api_query]
+#[query]
 pub struct BitrateTestQuery {
     pub size: Option<u64>,
 }

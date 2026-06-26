@@ -1048,7 +1048,7 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
 
 // ── Remote Search DTOs ──────────────────────────────────────────────────────
 
-#[remux_macros::api_query]
+#[remux_macros::query]
 #[derive(Debug, Clone, Default)]
 pub struct ItemLookupInfo {
     pub name: Option<String>,
@@ -1056,7 +1056,7 @@ pub struct ItemLookupInfo {
     pub provider_ids: Option<std::collections::HashMap<String, String>>,
 }
 
-#[remux_macros::api_query]
+#[remux_macros::query]
 #[derive(Debug, Clone, Default)]
 pub struct RemoteSearchQuery {
     pub search_info: Option<ItemLookupInfo>,
@@ -1065,7 +1065,7 @@ pub struct RemoteSearchQuery {
     pub include_disabled_providers: Option<bool>,
 }
 
-#[remux_macros::api_query]
+#[remux_macros::query]
 #[derive(Debug, Clone, Default)]
 pub struct ApplySearchResultRequest {
     pub name: Option<String>,

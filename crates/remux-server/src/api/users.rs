@@ -10,7 +10,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use http::StatusCode;
-use remux_macros::{api_query, delete, get, post};
+use remux_macros::{delete, get, post, query};
 use serde::Deserialize;
 use sqlx::Row;
 use uuid::Uuid;
@@ -57,7 +57,7 @@ pub async fn user_configuration_update(
 /// The URL-rewrite middleware lowercases all non-file paths, so the registered
 /// route is `/users/configuration`.  Auth is via session (same as the canonical
 /// `/users/{user_id}/configuration` route above).
-#[api_query]
+#[query]
 #[derive(Debug, Default)]
 struct UserConfigurationQuery {
     user_id: Option<Uuid>,

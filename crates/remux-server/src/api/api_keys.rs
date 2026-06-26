@@ -4,7 +4,7 @@ use axum::{
     response::IntoResponse,
 };
 use http::StatusCode;
-use remux_macros::{api_query, delete, get, post};
+use remux_macros::{delete, get, post, query};
 
 use crate::{
     AppState, api,
@@ -12,7 +12,7 @@ use crate::{
 };
 use axum_anyhow::{ApiResult as Result, IntoApiError};
 
-#[api_query]
+#[query]
 pub struct CreateKeyQuery {
     pub app: String,
 }

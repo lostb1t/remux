@@ -8,7 +8,7 @@ use axum_anyhow::ApiResult as Result;
 use axum_extra::extract::Query;
 use chrono::{Duration, Utc};
 use http::StatusCode;
-use remux_macros::{api_query, delete, get, patch, post};
+use remux_macros::{delete, get, patch, post, query};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -101,7 +101,7 @@ pub async fn livetv_guide_info(
 // GET /livetv/channels
 // --------------------------------------------------------------------------
 
-#[api_query]
+#[query]
 #[derive(Debug, Default)]
 pub struct GetChannelsQuery {
     pub start_index: Option<u32>,
@@ -168,7 +168,7 @@ pub async fn livetv_channel(
 // GET /livetv/programs/recommended
 // --------------------------------------------------------------------------
 
-#[api_query]
+#[query]
 #[derive(Debug, Default)]
 pub struct GetRecommendedQuery {
     #[serde(rename = "limit", alias = "Limit")]
@@ -218,7 +218,7 @@ pub async fn livetv_programs_recommended(
 // GET /livetv/programs
 // --------------------------------------------------------------------------
 
-#[api_query]
+#[query]
 #[derive(Debug, Default)]
 pub struct GetProgramsQuery {
     /// Accepts both repeated params (`channelIds=a&channelIds=b`) and a
@@ -456,7 +456,7 @@ pub async fn livetv_timers(_session: AuthSession) -> Result<impl IntoResponse> {
 // GET /livetv/timers/defaults
 // --------------------------------------------------------------------------
 
-#[api_query]
+#[query]
 pub struct TimerDefaultsQuery {
     #[serde(rename = "programId")]
     program_id: Option<Uuid>,
@@ -665,7 +665,7 @@ pub async fn livetv_add_tuner_host(
 // DELETE /livetv/tunerhosts  (stub)
 // --------------------------------------------------------------------------
 
-#[api_query]
+#[query]
 #[derive(Debug)]
 pub struct DeleteTunerQuery {
     pub id: Uuid,
@@ -770,7 +770,7 @@ pub async fn remux_save_epg_source(
 // DELETE /remux/iptv/epgsources  (?id=...)
 // --------------------------------------------------------------------------
 
-#[api_query]
+#[query]
 #[derive(Debug)]
 pub struct DeleteEpgQuery {
     pub id: Uuid,
@@ -796,7 +796,7 @@ pub async fn remux_delete_epg_source(
 // GET /remux/iptv/channels  (all channels, including disabled)
 // --------------------------------------------------------------------------
 
-#[api_query]
+#[query]
 #[derive(Debug, Default)]
 pub struct GetAllChannelsQuery {
     pub limit: Option<u32>,

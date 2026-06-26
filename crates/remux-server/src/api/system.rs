@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http::StatusCode;
-use remux_macros::{api_query, get, post, route};
+use remux_macros::{get, post, query, route};
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
@@ -404,12 +404,12 @@ pub async fn quickconnect_initiate(
     }))
 }
 
-#[api_query]
+#[query]
 pub struct QuickConnectSecretQuery {
     pub secret: String,
 }
 
-#[api_query]
+#[query]
 pub struct QuickConnectCodeQuery {
     pub code: String,
 }

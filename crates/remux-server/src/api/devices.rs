@@ -4,13 +4,13 @@ use axum::{
     response::IntoResponse,
 };
 use http::StatusCode;
-use remux_macros::{api_query, delete, get};
+use remux_macros::{delete, get, query};
 use uuid::Uuid;
 
 use crate::{AppState, api, db::auth};
 use axum_anyhow::ApiResult as Result;
 
-#[api_query]
+#[query]
 struct DeleteDeviceQuery {
     id: String,
 }
@@ -32,7 +32,7 @@ pub async fn delete_device(
 }
 
 /// Query parameters for devices endpoint
-#[api_query]
+#[query]
 pub struct GetDevicesQuery {
     pub user_id: Option<uuid::Uuid>,
 }

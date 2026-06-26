@@ -1,13 +1,13 @@
 use axum::{Json, extract::State, response::IntoResponse};
 use axum_extra::extract::Query;
-use remux_macros::{api_query, get, post};
+use remux_macros::{get, post, query};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::{AppState, api, db, db::auth};
 use axum_anyhow::ApiResult as Result;
 
-#[api_query]
+#[query]
 #[derive(Debug)]
 pub struct MusicSearchQuery {
     pub q: Option<String>,

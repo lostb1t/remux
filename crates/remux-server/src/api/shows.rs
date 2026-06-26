@@ -6,7 +6,7 @@ use axum::{
     response::IntoResponse,
 };
 use axum_extra::extract::Query;
-use remux_macros::{api_query, get};
+use remux_macros::{get, query};
 use uuid::Uuid;
 
 use crate::{
@@ -514,7 +514,7 @@ pub async fn shows_upcoming(
 // GET /shows/recommendations
 // --------------------------------------------------------------------------
 
-#[api_query]
+#[query]
 #[derive(Debug, Default)]
 pub struct GetShowRecommendationsQuery {
     pub user_id: Option<Uuid>,
