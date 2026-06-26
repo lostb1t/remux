@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::info;
 
 use super::{ProgressReporter, Task, TaskService};
 use crate::AppContext;
@@ -37,44 +37,9 @@ impl Task for RefreshPopularityTask {
         progress: ProgressReporter,
     ) -> Result<()> {
         // --- Phase 1: fetch fresh scores from all metrics addons (0–60%) ---
-        let addons = ctx
-            .addons
-            .metrics_addons();
-
-        if !addons.is_empty() {
-            let total = addons.len();
-            for (i, runtime) in addons
-                .iter()
-                .enumerate()
-            {
-                let sub = progress
-                    .scaled(0.0, 60.0)
-                    .step(i, total);
-                let addon = runtime
-                    .metrics
-                    .as_ref()
-                    .unwrap();
-
-                info!(addon = %runtime.row.name, "fetching popularity scores");
-                match addon
-                    .snapshot_metrics(&ctx, sub)
-                    .await
-                {
-                    Ok(snapshots) => {
-                        let count = snapshots.len();
-                        if let Err(e) = bulk_insert_snapshots(&ctx, &snapshots).await {
-                            error!(addon = %runtime.row.name, error = %e, "failed to write popularity scores");
-                        } else {
-                            info!(addon = %runtime.row.name, count, "popularity scores written");
-                        }
-                    }
-                    Err(e) => {
-                        error!(addon = %runtime.row.name, error = %e, "failed to fetch popularity scores");
-                    }
-                }
-            }
-        }
-
+        ctx.addons
+            .snapshot_all_metrics(&ctx, progress.scaled(0.0, 60.0))
+            .await?;
         progress.set(60.0);
 
         // --- Phase 2: roll up into trend buckets (60–100%) ---
@@ -209,32 +174,4 @@ impl Task for RefreshPopularityTask {
         progress.set(100.0);
         Ok(())
     }
-}
-
-async fn bulk_insert_snapshots(
-    ctx: &AppContext,
-    snapshots: &[crate::addons::MetricSnapshot],
-) -> Result<()> {
-    if snapshots.is_empty() {
-        return Ok(());
-    }
-    for chunk in snapshots.chunks(400) {
-        let mut qb = sqlx::QueryBuilder::new(
-            "INSERT INTO popularity_raw (source, external_id, value, date) ",
-        );
-        qb.push_values(chunk, |mut b, s| {
-            b.push_bind(&s.source)
-                .push_bind(&s.external_id)
-                .push_bind(
-                    s.value
-                        .get(),
-                )
-                .push_bind(&s.date);
-        });
-        qb.push(" ON CONFLICT DO UPDATE SET value = excluded.value");
-        qb.build()
-            .execute(&ctx.db)
-            .await?;
-    }
-    Ok(())
 }

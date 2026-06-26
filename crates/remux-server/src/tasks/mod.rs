@@ -23,6 +23,7 @@ mod clear_image_cache;
 mod jellyfin_import;
 mod purge_iptv;
 mod purge_media;
+mod purge_metrics;
 mod refresh_all_meta;
 mod refresh_iptv;
 mod refresh_library;
@@ -36,6 +37,7 @@ use clear_image_cache::ClearImageCacheTask;
 use jellyfin_import::JellyfinImportTask;
 use purge_iptv::PurgeIptvTask;
 use purge_media::PurgeMediaTask;
+use purge_metrics::PurgeMetricsTask;
 use refresh_all_meta::RefreshAllMetaTask;
 use refresh_iptv::RefreshIptvTask;
 use refresh_library::RefreshLibraryTask;
@@ -286,6 +288,9 @@ impl TaskService {
             .await?;
         service
             .register_task(Arc::new(RefreshPopularityTask))
+            .await?;
+        service
+            .register_task(Arc::new(PurgeMetricsTask))
             .await?;
 
         let triggers = db::TaskTrigger::get_all(

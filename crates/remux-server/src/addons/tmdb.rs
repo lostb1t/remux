@@ -11,9 +11,7 @@ use super::{
     MetricsAddon, ResourceType, SearchAddon, TreeAddon,
 };
 use crate::{
-    AppContext, api, common,
-    common::ProgressReporter,
-    db, sdks,
+    AppContext, api, common, db, sdks,
     sdks::{CachedEndpoint, ClientError},
 };
 
@@ -291,79 +289,53 @@ impl CatalogAddon for TmdbAddon {
 
 #[async_trait]
 impl MetricsAddon for TmdbAddon {
-    async fn snapshot_metrics(
+    async fn metric(
         &self,
+        media: &db::Media,
         ctx: &AppContext,
-        progress: ProgressReporter,
-    ) -> Result<Vec<MetricSnapshot>> {
-        use futures::stream::{self, StreamExt as _};
-
+    ) -> Result<Option<MetricSnapshot>> {
+        let Some(tmdb_id) = media
+            .external_ids
+            .tmdb
+        else {
+            return Ok(None);
+        };
         let config = crate::db::Settings::get_config(&ctx.db).await?;
         let client = tmdb_client(
             config.get_tmdb_key(),
             &ctx.config
                 .tmdb_base_url,
         )?;
-        let concurrency = (config.meta_concurrency as usize).max(1);
         let today = chrono::Utc::now().date_naive();
 
-        // Fetch all (tmdb_id, kind) pairs from the library.
-        let rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT CAST(json_extract(external_ids, '$.tmdb') AS INTEGER), kind \
-             FROM media \
-             WHERE kind IN ('movie', 'series') \
-             AND json_extract(external_ids, '$.tmdb') IS NOT NULL",
-        )
-        .fetch_all(&ctx.db)
-        .await?;
-
-        let total = rows.len();
-        let snapshots: Vec<MetricSnapshot> = stream::iter(
-            rows.into_iter()
-                .enumerate(),
-        )
-        .map(|(i, (tmdb_id, kind))| {
-            let client = client.clone();
-            let today = today.clone();
-            let progress = progress.clone();
-            async move {
-                progress.report(i, total.max(1));
-                let popularity: Option<f64> = if kind == "movie" {
-                    client
-                        .execute(sdks::tmdb::MovieEndpoint {
-                            id: tmdb_id,
-                            language: None,
-                            append_to_response: vec![],
-                        })
-                        .await
-                        .ok()
-                        .and_then(|m| m.popularity)
-                } else {
-                    client
-                        .execute(sdks::tmdb::SeriesEndpoint {
-                            id: tmdb_id,
-                            language: None,
-                            append_to_response: vec![],
-                        })
-                        .await
-                        .ok()
-                        .map(|s| s.popularity)
-                };
-                popularity.map(|p| MetricSnapshot {
-                    source: "tmdb".to_string(),
-                    external_id: format!("tmdb:{}", tmdb_id),
-                    value: MetricValue::from_raw(p, TMDB_POPULARITY_MAX),
-                    date: today,
+        let popularity: Option<f64> = match media.kind {
+            db::MediaKind::Movie => client
+                .execute(sdks::tmdb::MovieEndpoint {
+                    id: tmdb_id,
+                    language: None,
+                    append_to_response: vec![],
                 })
-            }
-        })
-        .buffer_unordered(concurrency)
-        .filter_map(|s| async move { s })
-        .collect()
-        .await;
+                .await
+                .ok()
+                .and_then(|m| m.popularity),
+            db::MediaKind::Series => client
+                .execute(sdks::tmdb::SeriesEndpoint {
+                    id: tmdb_id,
+                    language: None,
+                    append_to_response: vec![],
+                })
+                .await
+                .ok()
+                .map(|s| s.popularity),
+            _ => return Ok(None),
+        };
 
-        progress.set(100.0);
-        Ok(snapshots)
+        Ok(popularity.map(|p| MetricSnapshot {
+            source: "tmdb".to_string(),
+            external_id: format!("tmdb:{}", tmdb_id),
+            value: MetricValue::from_raw(p, TMDB_POPULARITY_MAX),
+            date: today,
+        }))
     }
 }
 

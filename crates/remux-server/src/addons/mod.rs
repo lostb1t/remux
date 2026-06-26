@@ -258,6 +258,34 @@ pub(crate) async fn save_pending_popularity(ctx: &AppContext, items: &[db::Media
     }
 }
 
+pub(crate) async fn bulk_insert_snapshots(
+    ctx: &AppContext,
+    snapshots: &[MetricSnapshot],
+) -> Result<()> {
+    if snapshots.is_empty() {
+        return Ok(());
+    }
+    for chunk in snapshots.chunks(400) {
+        let mut qb = sqlx::QueryBuilder::new(
+            "INSERT INTO popularity_raw (source, external_id, value, date) ",
+        );
+        qb.push_values(chunk, |mut b, s| {
+            b.push_bind(&s.source)
+                .push_bind(&s.external_id)
+                .push_bind(
+                    s.value
+                        .get(),
+                )
+                .push_bind(&s.date);
+        });
+        qb.push(" ON CONFLICT DO UPDATE SET value = excluded.value");
+        qb.build()
+            .execute(&ctx.db)
+            .await?;
+    }
+    Ok(())
+}
+
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     use remux_utils::merge_option;
 
@@ -658,11 +686,14 @@ pub struct MetricSnapshot {
 
 #[async_trait]
 pub trait MetricsAddon: Send + Sync {
-    async fn snapshot_metrics(
+    /// Fetch a popularity metric for a single media item.
+    /// Returns `None` if this addon has no data for the item.
+    /// Values in `MetricSnapshot.value` must be in \[0.0, 100.0\].
+    async fn metric(
         &self,
+        media: &db::Media,
         ctx: &AppContext,
-        progress: ProgressReporter,
-    ) -> Result<Vec<MetricSnapshot>>;
+    ) -> Result<Option<MetricSnapshot>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1089,91 @@ impl AddonService {
             })
             .cloned()
             .collect()
+    }
+
+    pub async fn snapshot_all_metrics(
+        &self,
+        ctx: &AppContext,
+        progress: ProgressReporter,
+    ) -> Result<()> {
+        use futures::stream::{self, StreamExt as _};
+
+        let addons = self.metrics_addons();
+        if addons.is_empty() {
+            progress.set(100.0);
+            return Ok(());
+        }
+
+        let config = db::Settings::get_config_or_default(&ctx.db).await;
+        let concurrency = (config.meta_concurrency as usize).max(1);
+        const PAGE: u32 = 250;
+
+        let mut offset = 0u32;
+        let mut processed = 0usize;
+        let mut total = 0usize;
+
+        loop {
+            let result = db::Media::get_by_filter(
+                &ctx.db,
+                &db::MediaFilter {
+                    kind: Some(vec![db::MediaKind::Movie, db::MediaKind::Series]),
+                    limit: Some(PAGE),
+                    offset: Some(offset),
+                    total_count: offset == 0,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            if offset == 0 {
+                total = result.total_count;
+            }
+
+            let batch = result.records;
+            if batch.is_empty() {
+                break;
+            }
+            let batch_len = batch.len();
+
+            let snapshots: Vec<MetricSnapshot> = stream::iter(batch)
+                .flat_map(|item| {
+                    let addons = addons.clone();
+                    stream::iter(
+                        addons
+                            .into_iter()
+                            .map(move |r| (item.clone(), r)),
+                    )
+                })
+                .map(|(item, runtime)| {
+                    let addon = runtime
+                        .metrics
+                        .as_ref()
+                        .unwrap()
+                        .clone();
+                    async move {
+                        addon
+                            .metric(&item, ctx)
+                            .await
+                            .ok()
+                            .flatten()
+                    }
+                })
+                .buffer_unordered(concurrency)
+                .filter_map(|s| async move { s })
+                .collect()
+                .await;
+
+            if !snapshots.is_empty() {
+                bulk_insert_snapshots(ctx, &snapshots).await?;
+            }
+
+            processed += batch_len;
+            progress.report(processed, total.max(1));
+            offset += PAGE;
+        }
+
+        progress.set(100.0);
+        Ok(())
     }
 
     /// Returns `(addon, catalogs)` pairs for every catalog-capable addon that could
