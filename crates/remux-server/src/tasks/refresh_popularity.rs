@@ -19,7 +19,7 @@ impl Task for RefreshPopularityTask {
     }
 
     fn description(&self) -> &str {
-        "Fetches the latest popularity score for every item in your library and updates the historical trend data used for sorting by popularity."
+        "Fetches the latest popularity score for every item in your library and updates the historical trend data used for sorting by popularity. Run this task daily for accurate trending results."
     }
 
     fn short_description(&self) -> &str {
