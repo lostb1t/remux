@@ -2872,6 +2872,15 @@ impl Media {
                                 dir
                             )
                         }
+                        api::ItemSortBy::PopularityDay => {
+                            format!(
+                                "COALESCE((SELECT pa.avg FROM popularity_agg pa \
+                                 WHERE pa.external_id = 'tmdb:' || CAST(json_extract(media.external_ids, '$.tmdb') AS TEXT) \
+                                 AND pa.source = 'tmdb' AND pa.period = 'daily' \
+                                 AND pa.period_key = date('now')), 0) {}",
+                                dir
+                            )
+                        }
                         api::ItemSortBy::PopularityWeek => {
                             format!(
                                 "COALESCE((SELECT pa.avg FROM popularity_agg pa \

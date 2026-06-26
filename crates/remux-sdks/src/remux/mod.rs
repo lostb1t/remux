@@ -3318,6 +3318,7 @@ pub enum ItemSortBy {
     ChannelOrder,
     CatalogOrder,
     PopularityAllTime,
+    PopularityDay,
     PopularityWeek,
     PopularityMonth,
 }

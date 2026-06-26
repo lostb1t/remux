@@ -790,6 +790,7 @@ pub fn CollectionForm(
                             option { value: "DigitalReleaseDate", selected: *default_sort.read() == "DigitalReleaseDate", "Digital Release Date" }
                             option { value: "DateCreated",        selected: *default_sort.read() == "DateCreated",        "Date Added" }
                             option { value: "CommunityRating",    selected: *default_sort.read() == "CommunityRating",    "Community Rating" }
+                            option { value: "PopularityDay",      selected: *default_sort.read() == "PopularityDay",      "Popularity (Today)" }
                             option { value: "PopularityWeek",     selected: *default_sort.read() == "PopularityWeek",     "Popularity (This Week)" }
                             option { value: "PopularityMonth",    selected: *default_sort.read() == "PopularityMonth",    "Popularity (This Month)" }
                             option { value: "PopularityAllTime",  selected: *default_sort.read() == "PopularityAllTime",  "Popularity (All Time)" }
