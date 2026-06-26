@@ -120,7 +120,10 @@ impl MetaAddon for TmdbAddon {
 #[async_trait]
 impl SearchAddon for TmdbAddon {
     async fn search_supports(&self, kind: &db::MediaKind) -> bool {
-        matches!(kind, db::MediaKind::Person)
+        matches!(
+            kind,
+            db::MediaKind::Person | db::MediaKind::Movie | db::MediaKind::Series
+        )
     }
 
     async fn search(
@@ -130,10 +133,18 @@ impl SearchAddon for TmdbAddon {
         limit: usize,
         ctx: &AppContext,
     ) -> Result<Option<Vec<db::Media>>> {
-        if !matches!(kind, db::MediaKind::Person) {
-            return Ok(None);
+        match kind {
+            db::MediaKind::Person => {
+                Ok(Some(search_tmdb_person(query, limit, ctx).await?))
+            }
+            db::MediaKind::Movie => {
+                Ok(Some(search_tmdb_movie(query, limit, ctx).await?))
+            }
+            db::MediaKind::Series => {
+                Ok(Some(search_tmdb_series(query, limit, ctx).await?))
+            }
+            _ => Ok(None),
         }
-        Ok(Some(search_tmdb_person(query, limit, ctx).await?))
     }
 }
 
@@ -1487,6 +1498,115 @@ async fn search_tmdb_person(
                 ..Default::default()
             };
             if let Some(url) = profile_url {
+                media.set_image(db::ImageKind::Primary, url);
+            }
+            media
+        })
+        .collect();
+
+    Ok(media)
+}
+
+async fn search_tmdb_movie(
+    query: &str,
+    limit: usize,
+    ctx: &AppContext,
+) -> Result<Vec<db::Media>> {
+    let config = crate::db::Settings::get_config(&ctx.db).await?;
+    let client = tmdb_client(
+        config.get_tmdb_key(),
+        &ctx.config
+            .tmdb_base_url,
+    )?;
+
+    let resp = client
+        .execute(sdks::tmdb::SearchMovieEndpoint {
+            query: query.to_string(),
+            year: None,
+        })
+        .await?;
+
+    let media = resp
+        .results
+        .into_iter()
+        .take(limit)
+        .map(|m| {
+            let id = common::stable_media_uuid(
+                &db::MediaKind::Movie,
+                &format!("tmdb:{}", m.id),
+            );
+            let mut media = db::Media {
+                id,
+                title: m.title,
+                kind: db::MediaKind::Movie,
+                released_at: m
+                    .release_date
+                    .and_then(|d| d.and_hms_opt(0, 0, 0)),
+                external_ids: db::ExternalIds {
+                    tmdb: Some(m.id),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            if let Some(url) = tmdb_image(
+                m.poster_path
+                    .as_deref(),
+                db::ImageKind::Primary,
+            ) {
+                media.set_image(db::ImageKind::Primary, url);
+            }
+            media
+        })
+        .collect();
+
+    Ok(media)
+}
+
+async fn search_tmdb_series(
+    query: &str,
+    limit: usize,
+    ctx: &AppContext,
+) -> Result<Vec<db::Media>> {
+    let config = crate::db::Settings::get_config(&ctx.db).await?;
+    let client = tmdb_client(
+        config.get_tmdb_key(),
+        &ctx.config
+            .tmdb_base_url,
+    )?;
+
+    let resp = client
+        .execute(sdks::tmdb::SearchTvEndpoint {
+            query: query.to_string(),
+        })
+        .await?;
+
+    let media = resp
+        .results
+        .into_iter()
+        .take(limit)
+        .map(|s| {
+            let id = common::stable_media_uuid(
+                &db::MediaKind::Series,
+                &format!("tmdb:{}", s.id),
+            );
+            let mut media = db::Media {
+                id,
+                title: s.name,
+                kind: db::MediaKind::Series,
+                released_at: s
+                    .first_air_date
+                    .and_then(|d| d.and_hms_opt(0, 0, 0)),
+                external_ids: db::ExternalIds {
+                    tmdb: Some(s.id),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            if let Some(url) = tmdb_image(
+                s.poster_path
+                    .as_deref(),
+                db::ImageKind::Primary,
+            ) {
                 media.set_image(db::ImageKind::Primary, url);
             }
             media
