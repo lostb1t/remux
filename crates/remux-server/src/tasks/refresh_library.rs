@@ -6,7 +6,10 @@ use uuid::Uuid;
 
 use super::{
     ProgressReporter, Task, TaskService,
-    catalog_import_shared::{import_catalog_items, remove_stale_catalog_memberships},
+    catalog_import_shared::{
+        import_catalog_items, prune_orphaned_playlists,
+        remove_stale_catalog_memberships,
+    },
 };
 use crate::{AppContext, db};
 
@@ -54,6 +57,7 @@ impl Task for RefreshLibraryTask {
             db::MediaKind::Artist,
             db::MediaKind::Album,
             db::MediaKind::Track,
+            db::MediaKind::Playlist,
         ];
         let addons = ctx
             .addons
@@ -148,6 +152,13 @@ impl Task for RefreshLibraryTask {
             }
         }
 
+        // Must run before remove_stale_catalog_memberships below.
+        prune_orphaned_playlists(
+            &ctx.db,
+            &valid_collection_ids,
+            &domain_collection_ids,
+        )
+        .await;
         remove_stale_catalog_memberships(
             &ctx.db,
             &valid_collection_ids,

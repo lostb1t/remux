@@ -164,6 +164,11 @@ pub struct SearchArtist {
 pub struct Playlist {
     pub id: u64,
     pub title: String,
+    /// Playlist artwork (Deezer `picture_xl`).
+    #[serde(default)]
+    pub picture_xl: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub tracks: DeezerList<PlaylistTrack>,
 }

@@ -69,8 +69,24 @@ where
                     | db::MediaKind::TvChannel
                     | db::MediaKind::Album
                     | db::MediaKind::Track
+                    | db::MediaKind::Playlist
             )
         });
+
+        // A playlist carries its tracks in `relations`, which take(max) above
+        // can't reach — truncate to honor max_items.
+        for item in items.iter_mut() {
+            if item.kind == db::MediaKind::Playlist {
+                if let Some(rels) = item
+                    .relations
+                    .as_mut()
+                {
+                    if rels.len() > max {
+                        rels.truncate(max);
+                    }
+                }
+            }
+        }
 
         // Partition: only new items need meta-batch processing.
         let existing_ids: HashSet<Uuid> = if items.is_empty() {
@@ -133,6 +149,26 @@ where
         if !existing_tv_channels.is_empty() {
             if let Err(e) = db::Media::upsert(&ctx.db, &existing_tv_channels).await {
                 warn!(catalog = media_id, error = %e, "failed to refresh existing tv channels");
+            }
+        }
+
+        // Rebuild existing playlist track memberships each refresh.
+        let existing_playlists: Vec<db::Media> = existing_items
+            .iter()
+            .filter(|m| m.kind == db::MediaKind::Playlist)
+            .cloned()
+            .collect();
+        if !existing_playlists.is_empty() {
+            if let Err(e) = ctx
+                .addons
+                .process_meta_batch(existing_playlists, ctx, false)
+                .await
+            {
+                warn!(
+                    catalog = media_id,
+                    error = %e,
+                    "failed to refresh existing playlists"
+                );
             }
         }
 
@@ -324,6 +360,66 @@ pub async fn remove_stale_catalog_memberships(
         .await
         {
             warn!(collection = %collection_id, error = %e, "failed to remove stale catalog membership");
+        }
+    }
+}
+
+/// Delete `Playlist` media whose addon catalog left `valid_collection_ids`.
+/// Run BEFORE `remove_stale_catalog_memberships` — it needs the catalog
+/// membership row to locate the orphans.
+pub async fn prune_orphaned_playlists(
+    db: &sqlx::SqlitePool,
+    valid_collection_ids: &HashSet<Uuid>,
+    domain_collection_ids: &HashSet<Uuid>,
+) {
+    let stale: Vec<Uuid> = domain_collection_ids
+        .iter()
+        .filter(|id| !valid_collection_ids.contains(*id))
+        .copied()
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+
+    const STALE_CHUNK: usize = 500;
+    let mut orphan_ids: Vec<Uuid> = Vec::new();
+    for chunk in stale.chunks(STALE_CHUNK) {
+        let mut qb = sqlx::QueryBuilder::new(
+            "SELECT DISTINCT m.id FROM media m \
+             JOIN media_relations r ON r.right_media_id = m.id \
+             WHERE r.role = 'catalog' AND m.kind = 'playlist' AND r.left_media_id IN (",
+        );
+        let mut sep = qb.separated(", ");
+        for id in chunk {
+            sep.push_bind(id);
+        }
+        qb.push(")");
+        match qb
+            .build_query_scalar::<Uuid>()
+            .fetch_all(db)
+            .await
+        {
+            Ok(v) => orphan_ids.extend(v),
+            Err(e) => {
+                warn!(error = %e, "failed to find orphaned playlists for cleanup");
+                return;
+            }
+        }
+    }
+    if orphan_ids.is_empty() {
+        return;
+    }
+
+    info!(count = orphan_ids.len(), "pruning orphaned addon playlists");
+    for id in &orphan_ids {
+        // Track memberships hang off `left_media_id` (no FK), so drop them
+        // explicitly; the catalog membership (left = collection_id) is cleared
+        // by remove_stale_catalog_memberships below.
+        if let Err(e) = db::MediaRelation::delete_by_left_id(db, id).await {
+            warn!(playlist = %id, error = %e, "failed to delete playlist relations");
+        }
+        if let Err(e) = db::Media::delete(db, id).await {
+            warn!(playlist = %id, error = %e, "failed to delete playlist media");
         }
     }
 }
