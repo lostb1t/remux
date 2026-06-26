@@ -1547,8 +1547,14 @@ mod test {
             .0
             .db;
 
-        // No need to set filter_by_digital_release_date — the filter always applies
-        // to content queries regardless of the toggle (same as shows_nextup).
+        let cfg = api::ServerConfiguration {
+            filter_by_digital_release_date: true,
+            digital_release_buffer_days: 0,
+            ..Default::default()
+        };
+        db::Settings::set_config(db, &cfg)
+            .await
+            .unwrap();
         let now = Utc::now().naive_utc();
         let past = now - chrono::Duration::days(30);
         let future = now + chrono::Duration::days(30);
