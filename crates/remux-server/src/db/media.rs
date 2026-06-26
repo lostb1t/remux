@@ -5590,38 +5590,6 @@ fn filter_rule_to_sql(rule: &remux_sdks::remux::FilterRule) -> Option<(String, b
             Some((sql, negated))
         }
         R::Catalog { .. } => None,
-        R::Popularity {
-            source,
-            period,
-            min,
-            max,
-        } => {
-            let source = esc(source);
-            let period_str = esc(period);
-            let period_key_expr = match period.as_str() {
-                "weekly" => "strftime('%Y-W%W', 'now')".to_string(),
-                "monthly" => "strftime('%Y-%m', 'now')".to_string(),
-                _ => "'all'".to_string(),
-            };
-            let mut conditions = vec![
-                format!("pa.source = '{source}'"),
-                format!("pa.period = '{period_str}'"),
-                format!("pa.period_key = {period_key_expr}"),
-            ];
-            if let Some(min) = min {
-                conditions.push(format!("pa.avg >= {min}"));
-            }
-            if let Some(max) = max {
-                conditions.push(format!("pa.avg <= {max}"));
-            }
-            let where_clause = conditions.join(" AND ");
-            let ext_id_expr = "CAST('tmdb:' || CAST(json_extract(media.external_ids, '$.tmdb') AS TEXT) AS TEXT)";
-            let sql = format!(
-                "EXISTS (SELECT 1 FROM popularity_agg pa \
-                 WHERE pa.external_id = {ext_id_expr} AND {where_clause})"
-            );
-            Some((sql, false))
-        }
     }
 }
 
