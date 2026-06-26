@@ -3321,6 +3321,8 @@ pub enum ItemSortBy {
     PopularityDay,
     PopularityWeek,
     PopularityMonth,
+    TrendingWeek,
+    TrendingMonth,
 }
 
 #[derive(

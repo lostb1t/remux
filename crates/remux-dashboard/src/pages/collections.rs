@@ -794,6 +794,8 @@ pub fn CollectionForm(
                             option { value: "PopularityWeek",     selected: *default_sort.read() == "PopularityWeek",     "Popularity (This Week)" }
                             option { value: "PopularityMonth",    selected: *default_sort.read() == "PopularityMonth",    "Popularity (This Month)" }
                             option { value: "PopularityAllTime",  selected: *default_sort.read() == "PopularityAllTime",  "Popularity (All Time)" }
+                            option { value: "TrendingWeek",       selected: *default_sort.read() == "TrendingWeek",       "Trending (7 days)" }
+                            option { value: "TrendingMonth",      selected: *default_sort.read() == "TrendingMonth",      "Trending (30 days)" }
                             option { value: "Random",             selected: *default_sort.read() == "Random",             "Random" }
                         }
                         if !default_sort.read().is_empty() && *default_sort.read() != "Random" {

@@ -2897,6 +2897,20 @@ impl Media {
                                0) DESC"
                                 .to_string()
                         }
+                        api::ItemSortBy::TrendingWeek => {
+                            "COALESCE(\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.external_id = 'tmdb:' || CAST(json_extract(media.external_ids, '$.tmdb') AS TEXT) AND pa.source = 'tmdb' AND pa.period = 'trend_week' AND pa.period_key = date('now')),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.external_id = 'tmdb:' || CAST(json_extract(media.external_ids, '$.tmdb') AS TEXT) AND pa.source = 'tmdb' AND pa.period = 'trend_week' ORDER BY pa.period_key DESC LIMIT 1),\
+                               0) DESC"
+                                .to_string()
+                        }
+                        api::ItemSortBy::TrendingMonth => {
+                            "COALESCE(\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.external_id = 'tmdb:' || CAST(json_extract(media.external_ids, '$.tmdb') AS TEXT) AND pa.source = 'tmdb' AND pa.period = 'trend_month' AND pa.period_key = date('now')),\
+                               (SELECT pa.avg FROM popularity_agg pa WHERE pa.external_id = 'tmdb:' || CAST(json_extract(media.external_ids, '$.tmdb') AS TEXT) AND pa.source = 'tmdb' AND pa.period = 'trend_month' ORDER BY pa.period_key DESC LIMIT 1),\
+                               0) DESC"
+                                .to_string()
+                        }
                         // Default fallback
                         _ => format!("title COLLATE NOCASE {}", dir),
                     };

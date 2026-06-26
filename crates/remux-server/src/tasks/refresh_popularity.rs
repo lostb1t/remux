@@ -95,6 +95,51 @@ impl Task for RefreshPopularityTask {
             .await?;
         progress.set(68.0);
 
+        // --- trend_week: today / 7 days ago ratio ---
+        sqlx::query(
+            "INSERT OR REPLACE INTO popularity_agg \
+             (source, external_id, period, period_key, avg, min, max, sample_count) \
+             SELECT n.source, n.external_id, 'trend_week', date('now'), \
+                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
+                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
+                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
+                    1 \
+             FROM popularity_agg n \
+             LEFT JOIN popularity_agg o \
+                 ON o.external_id = n.external_id AND o.source = n.source \
+                 AND o.period = 'daily' AND o.period_key = date('now', '-7 days') \
+             WHERE n.period = 'daily' AND n.period_key = date('now')",
+        )
+        .execute(db)
+        .await?;
+
+        // --- trend_month: today / 30 days ago ratio ---
+        sqlx::query(
+            "INSERT OR REPLACE INTO popularity_agg \
+             (source, external_id, period, period_key, avg, min, max, sample_count) \
+             SELECT n.source, n.external_id, 'trend_month', date('now'), \
+                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
+                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
+                    CASE WHEN o.avg > 0 THEN n.avg / o.avg ELSE n.avg END, \
+                    1 \
+             FROM popularity_agg n \
+             LEFT JOIN popularity_agg o \
+                 ON o.external_id = n.external_id AND o.source = n.source \
+                 AND o.period = 'daily' AND o.period_key = date('now', '-30 days') \
+             WHERE n.period = 'daily' AND n.period_key = date('now')",
+        )
+        .execute(db)
+        .await?;
+
+        sqlx::query(
+            "DELETE FROM popularity_agg \
+             WHERE period IN ('trend_week', 'trend_month') \
+             AND period_key < date('now', '-2 days')",
+        )
+        .execute(db)
+        .await?;
+        progress.set(72.0);
+
         sqlx::query(
             "INSERT OR REPLACE INTO popularity_agg \
              (source, external_id, period, period_key, avg, min, max, sample_count) \
