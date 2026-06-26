@@ -38,6 +38,7 @@ pub struct Movie {
     pub credits: Option<super::Credits>,
     pub images: Option<super::Images>,
     pub release_dates: Option<MovieReleaseDates>,
+    pub popularity: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -101,6 +102,7 @@ pub struct MovieSearchResult {
     #[serde(default, deserialize_with = "crate::deserialize_option_naive_date")]
     pub release_date: Option<NaiveDate>,
     pub poster_path: Option<String>,
+    pub popularity: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

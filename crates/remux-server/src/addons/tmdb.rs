@@ -7,11 +7,13 @@ use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
-    CatalogAddon, CatalogInfo, MediaKind, MetaAddon, ResourceType, SearchAddon,
-    TreeAddon,
+    CatalogAddon, CatalogInfo, MediaKind, MetaAddon, MetricSnapshot, MetricsAddon,
+    ResourceType, SearchAddon, TreeAddon,
 };
 use crate::{
-    AppContext, api, common, db, sdks,
+    AppContext, api, common,
+    common::ProgressReporter,
+    db, sdks,
     sdks::{CachedEndpoint, ClientError},
 };
 
@@ -58,7 +60,8 @@ impl AddonPreset for TmdbPreset {
             meta: Some(addon.clone()),
             search: Some(addon.clone()),
             tree: Some(addon.clone()),
-            catalog: Some(addon),
+            catalog: Some(addon.clone()),
+            metrics: Some(addon),
             ..Default::default()
         })
     }
@@ -277,6 +280,90 @@ impl CatalogAddon for TmdbAddon {
         };
 
         Ok(Some(stream))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MetricsAddon
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl MetricsAddon for TmdbAddon {
+    async fn snapshot_metrics(
+        &self,
+        ctx: &AppContext,
+        progress: ProgressReporter,
+    ) -> Result<Vec<MetricSnapshot>> {
+        use futures::stream::{self, StreamExt as _};
+
+        let config = crate::db::Settings::get_config(&ctx.db).await?;
+        let client = tmdb_client(
+            config.get_tmdb_key(),
+            &ctx.config
+                .tmdb_base_url,
+        )?;
+        let concurrency = (config.meta_concurrency as usize).max(1);
+        let today = chrono::Utc::now()
+            .format("%Y-%m-%d")
+            .to_string();
+
+        // Fetch all (tmdb_id, kind) pairs from the library.
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT CAST(json_extract(external_ids, '$.tmdb') AS INTEGER), kind \
+             FROM media \
+             WHERE kind IN ('movie', 'series') \
+             AND json_extract(external_ids, '$.tmdb') IS NOT NULL",
+        )
+        .fetch_all(&ctx.db)
+        .await?;
+
+        let total = rows.len();
+        let snapshots: Vec<MetricSnapshot> = stream::iter(
+            rows.into_iter()
+                .enumerate(),
+        )
+        .map(|(i, (tmdb_id, kind))| {
+            let client = client.clone();
+            let today = today.clone();
+            let progress = progress.clone();
+            async move {
+                progress.report(i, total.max(1));
+                let popularity: Option<f64> = if kind == "movie" {
+                    client
+                        .execute(sdks::tmdb::MovieEndpoint {
+                            id: tmdb_id,
+                            language: None,
+                            append_to_response: vec![],
+                        })
+                        .await
+                        .ok()
+                        .and_then(|m| m.popularity)
+                } else {
+                    client
+                        .execute(sdks::tmdb::SeriesEndpoint {
+                            id: tmdb_id,
+                            language: None,
+                            append_to_response: vec![],
+                        })
+                        .await
+                        .ok()
+                        .map(|s| s.popularity)
+                };
+                popularity.map(|value| MetricSnapshot {
+                    source: "tmdb".to_string(),
+                    external_id: format!("tmdb:{}", tmdb_id),
+                    value,
+                    date: today,
+                })
+            }
+        })
+        .buffer_unordered(concurrency)
+        .filter_map(|s| async move { s })
+        .collect()
+        .await;
+
+        progress.set(100.0);
+        Ok(snapshots)
     }
 }
 
@@ -1222,6 +1309,9 @@ async fn fetch_tmdb_meta(
                     .await
                     .ok();
                 patch.tags = watch_provider_tags(providers.as_ref(), &metadata_country);
+                patch.pending_popularity = movie_details
+                    .popularity
+                    .map(|p| (format!("tmdb:{}", tmdb_id), p));
                 return Ok(Some(patch));
             }
         }
@@ -1434,6 +1524,8 @@ async fn fetch_tmdb_meta(
                     .await
                     .ok();
                 patch.tags = watch_provider_tags(providers.as_ref(), &metadata_country);
+                patch.pending_popularity =
+                    Some((format!("tmdb:{}", tmdb_id), tv_details.popularity));
                 return Ok(Some(patch));
             }
         }

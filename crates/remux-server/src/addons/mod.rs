@@ -236,6 +236,30 @@ pub(crate) async fn save_pending_tags(ctx: &AppContext, items: &[db::Media]) {
     }
 }
 
+pub(crate) async fn save_pending_popularity(ctx: &AppContext, items: &[db::Media]) {
+    let today = chrono::Utc::now()
+        .format("%Y-%m-%d")
+        .to_string();
+    for item in items {
+        let Some((ref ext_id, value)) = item.pending_popularity else {
+            continue;
+        };
+        if let Err(e) = sqlx::query(
+            "INSERT INTO popularity_raw (source, external_id, value, date) \
+             VALUES ('tmdb', ?, ?, ?) \
+             ON CONFLICT DO UPDATE SET value = excluded.value",
+        )
+        .bind(ext_id)
+        .bind(value)
+        .bind(&today)
+        .execute(&ctx.db)
+        .await
+        {
+            warn!(id = %item.id, error = %e, "failed to write popularity_raw");
+        }
+    }
+}
+
 pub(crate) fn merge_media(target: &mut db::Media, source: &db::Media, replace: bool) {
     use remux_utils::merge_option;
 
@@ -600,6 +624,25 @@ pub trait LyricAddon: Send + Sync {
     async fn lyric_get_by_id(&self, id: &str) -> Result<Option<LyricDto>>;
 }
 
+/// A single popularity snapshot emitted by a `MetricsAddon`.
+/// Each addon computes the `value` internally from its own source data.
+#[derive(Debug, Clone)]
+pub struct MetricSnapshot {
+    pub source: String,      // 'tmdb' | 'trakt'
+    pub external_id: String, // 'tmdb:603'
+    pub value: f64,
+    pub date: String, // YYYY-MM-DD
+}
+
+#[async_trait]
+pub trait MetricsAddon: Send + Sync {
+    async fn snapshot_metrics(
+        &self,
+        ctx: &AppContext,
+        progress: ProgressReporter,
+    ) -> Result<Vec<MetricSnapshot>>;
+}
+
 // ---------------------------------------------------------------------------
 // AddonCapabilities — produced by AddonPreset::from_cfg
 // ---------------------------------------------------------------------------
@@ -617,6 +660,7 @@ pub struct AddonCapabilities {
     pub segment: Option<Arc<dyn SegmentAddon>>,
     pub lyric: Option<Arc<dyn LyricAddon>>,
     pub index: Option<Arc<dyn IndexAddon>>,
+    pub metrics: Option<Arc<dyn MetricsAddon>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -982,6 +1026,18 @@ impl AddonService {
             .collect()
     }
 
+    pub fn metrics_addons(&self) -> Vec<AddonRuntime> {
+        self.inner
+            .load()
+            .iter()
+            .filter(|r| {
+                r.metrics
+                    .is_some()
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Returns `(addon, catalogs)` pairs for every catalog-capable addon that could
     /// produce any of `kinds`, with each addon's catalog list already filtered down to
     /// catalogs whose own `media_kind` is one of `kinds`. Addons are pre-filtered via
@@ -1324,6 +1380,7 @@ impl AddonService {
                     Ok(_) => {
                         save_pending_relations(ctx, &items).await;
                         save_pending_tags(ctx, &items).await;
+                        save_pending_popularity(ctx, &items).await;
                     }
                     Err(e) => {
                         error!(error = %e, "failed to upsert media batch");
@@ -1337,6 +1394,7 @@ impl AddonService {
                 Ok(_) => {
                     save_pending_relations(ctx, &batch).await;
                     save_pending_tags(ctx, &batch).await;
+                    save_pending_popularity(ctx, &batch).await;
                 }
                 Err(e) => {
                     error!(error = %e, "failed to upsert final media batch");

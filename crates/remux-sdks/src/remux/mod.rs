@@ -2752,6 +2752,13 @@ pub enum FilterRule {
         op: SetOp,
         catalog_ids: Vec<Uuid>,
     },
+    /// Matches items whose popularity score (from the given source and period) is within range.
+    Popularity {
+        source: String,
+        period: String,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
 }
 
 /// Whether all rules must match (AND) or any rule must match (OR).
@@ -3317,6 +3324,9 @@ pub enum ItemSortBy {
     SearchScore,
     ChannelOrder,
     CatalogOrder,
+    PopularityAllTime,
+    PopularityWeek,
+    PopularityMonth,
 }
 
 #[derive(
