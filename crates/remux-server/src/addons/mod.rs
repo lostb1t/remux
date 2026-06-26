@@ -248,7 +248,7 @@ pub(crate) async fn save_pending_popularity(ctx: &AppContext, items: &[db::Media
              ON CONFLICT DO UPDATE SET value = excluded.value",
         )
         .bind(ext_id)
-        .bind(value)
+        .bind(value.get())
         .bind(&today)
         .execute(&ctx.db)
         .await
@@ -623,12 +623,36 @@ pub trait LyricAddon: Send + Sync {
 }
 
 /// A single popularity snapshot emitted by a `MetricsAddon`.
+/// Popularity score normalized to \[0.0, 100.0\].
+///
+/// All `MetricsAddon` implementations must emit values in this range.
+/// Use `MetricValue::from_raw(raw, source_max)` to normalize a raw source value.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct MetricValue(f64);
+
+impl MetricValue {
+    /// Normalize a raw source value: `(raw / source_max) * 100`, clamped to \[0, 100\].
+    pub fn from_raw(raw: f64, source_max: f64) -> Self {
+        Self(((raw / source_max) * 100.0).clamp(0.0, 100.0))
+    }
+
+    /// Construct from an already-normalized value, clamping to \[0, 100\].
+    pub fn from_normalized(v: f64) -> Self {
+        Self(v.clamp(0.0, 100.0))
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
 /// Each addon computes the `value` internally from its own source data.
+/// Values must be in \[0.0, 100.0\]; use `MetricValue::from_raw` to normalize.
 #[derive(Debug, Clone)]
 pub struct MetricSnapshot {
     pub source: String,
     pub external_id: String,
-    pub value: f64,
+    pub value: MetricValue,
     pub date: chrono::NaiveDate,
 }
 

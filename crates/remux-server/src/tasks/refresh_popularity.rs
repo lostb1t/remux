@@ -225,7 +225,10 @@ async fn bulk_insert_snapshots(
         qb.push_values(chunk, |mut b, s| {
             b.push_bind(&s.source)
                 .push_bind(&s.external_id)
-                .push_bind(s.value)
+                .push_bind(
+                    s.value
+                        .get(),
+                )
                 .push_bind(&s.date);
         });
         qb.push(" ON CONFLICT DO UPDATE SET value = excluded.value");

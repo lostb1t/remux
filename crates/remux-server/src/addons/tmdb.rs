@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
-    CatalogAddon, CatalogInfo, MediaKind, MetaAddon, MetricSnapshot, MetricsAddon,
-    ResourceType, SearchAddon, TreeAddon,
+    CatalogAddon, CatalogInfo, MediaKind, MetaAddon, MetricSnapshot, MetricValue,
+    MetricsAddon, ResourceType, SearchAddon, TreeAddon,
 };
 use crate::{
     AppContext, api, common,
@@ -72,6 +72,8 @@ inventory::submit! {
 }
 
 pub struct TmdbAddon {}
+
+const TMDB_POPULARITY_MAX: f64 = 10_000.0;
 
 fn tmdb_image(path: Option<&str>, kind: db::ImageKind) -> Option<String> {
     let size = match kind {
@@ -347,10 +349,10 @@ impl MetricsAddon for TmdbAddon {
                         .ok()
                         .map(|s| s.popularity)
                 };
-                popularity.map(|value| MetricSnapshot {
+                popularity.map(|p| MetricSnapshot {
                     source: "tmdb".to_string(),
                     external_id: format!("tmdb:{}", tmdb_id),
-                    value,
+                    value: MetricValue::from_raw(p, TMDB_POPULARITY_MAX),
                     date: today,
                 })
             }
@@ -1309,7 +1311,12 @@ async fn fetch_tmdb_meta(
                 patch.tags = watch_provider_tags(providers.as_ref(), &metadata_country);
                 patch.pending_popularity = movie_details
                     .popularity
-                    .map(|p| (format!("tmdb:{}", tmdb_id), p));
+                    .map(|p| {
+                        (
+                            format!("tmdb:{}", tmdb_id),
+                            MetricValue::from_raw(p, TMDB_POPULARITY_MAX),
+                        )
+                    });
                 return Ok(Some(patch));
             }
         }
@@ -1522,8 +1529,10 @@ async fn fetch_tmdb_meta(
                     .await
                     .ok();
                 patch.tags = watch_provider_tags(providers.as_ref(), &metadata_country);
-                patch.pending_popularity =
-                    Some((format!("tmdb:{}", tmdb_id), tv_details.popularity));
+                patch.pending_popularity = Some((
+                    format!("tmdb:{}", tmdb_id),
+                    MetricValue::from_raw(tv_details.popularity, TMDB_POPULARITY_MAX),
+                ));
                 return Ok(Some(patch));
             }
         }

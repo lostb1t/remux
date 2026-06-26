@@ -1118,7 +1118,8 @@ pub struct Media {
     pub tags: Vec<String>,
     /// Set by TMDB meta fetch; written to `popularity_raw` by `save_pending_popularity`.
     #[sqlx(skip)]
-    pub pending_popularity: Option<(String, f64)>,
+    #[serde(skip)]
+    pub pending_popularity: Option<(String, crate::addons::MetricValue)>,
     #[sqlx(skip)]
     pub child_count: Option<i64>,
     #[sqlx(skip)]
