@@ -1,12 +1,14 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::{sync::Arc, time::Duration};
+use futures::{Stream, StreamExt};
+use std::{pin::Pin, sync::Arc, time::Duration};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::{
     AddonCapabilities, AddonKind, AddonMetadata, AddonPreset, AddonPresetRegistration,
-    MediaKind, MetaAddon, ResourceType, SearchAddon, TreeAddon,
+    CatalogAddon, CatalogInfo, MediaKind, MetaAddon, ResourceType, SearchAddon,
+    TreeAddon,
 };
 use crate::{
     AppContext, api, common, db, sdks,
@@ -32,6 +34,7 @@ impl AddonPreset for TmdbPreset {
             supported_resources: vec![
                 AddonMetadata::simple_resource(ResourceType::Meta),
                 AddonMetadata::simple_resource(ResourceType::Search),
+                AddonMetadata::simple_resource(ResourceType::Catalog),
             ],
             supported_types: vec![
                 MediaKind::Movie,
@@ -54,7 +57,8 @@ impl AddonPreset for TmdbPreset {
             kind: Some(addon.clone()),
             meta: Some(addon.clone()),
             search: Some(addon.clone()),
-            tree: Some(addon),
+            tree: Some(addon.clone()),
+            catalog: Some(addon),
             ..Default::default()
         })
     }
@@ -146,6 +150,320 @@ impl SearchAddon for TmdbAddon {
             _ => Ok(None),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// CatalogAddon
+// ---------------------------------------------------------------------------
+
+struct CatalogDef {
+    id: &'static str,
+    name: &'static str,
+    kind: db::MediaKind,
+    collection_kind: db::CollectionMediaKind,
+}
+
+const TMDB_CATALOGS: &[CatalogDef] = &[
+    CatalogDef {
+        id: "popular_movies",
+        name: "Popular Movies",
+        kind: db::MediaKind::Movie,
+        collection_kind: db::CollectionMediaKind::Movie,
+    },
+    CatalogDef {
+        id: "popular_tv",
+        name: "Popular TV Shows",
+        kind: db::MediaKind::Series,
+        collection_kind: db::CollectionMediaKind::Series,
+    },
+    CatalogDef {
+        id: "top_rated_movies",
+        name: "Top Rated Movies",
+        kind: db::MediaKind::Movie,
+        collection_kind: db::CollectionMediaKind::Movie,
+    },
+    CatalogDef {
+        id: "top_rated_tv",
+        name: "Top Rated TV Shows",
+        kind: db::MediaKind::Series,
+        collection_kind: db::CollectionMediaKind::Series,
+    },
+    CatalogDef {
+        id: "trending_movies_week",
+        name: "Trending Movies This Week",
+        kind: db::MediaKind::Movie,
+        collection_kind: db::CollectionMediaKind::Movie,
+    },
+    CatalogDef {
+        id: "trending_tv_week",
+        name: "Trending TV This Week",
+        kind: db::MediaKind::Series,
+        collection_kind: db::CollectionMediaKind::Series,
+    },
+];
+
+#[async_trait]
+impl CatalogAddon for TmdbAddon {
+    async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
+        Ok(TMDB_CATALOGS
+            .iter()
+            .map(|c| CatalogInfo {
+                media_kind: Some(
+                    c.kind
+                        .clone(),
+                ),
+                collection_media_kind: Some(
+                    c.collection_kind
+                        .clone(),
+                ),
+                default_enabled: false,
+                default_max_items: Some(100),
+                ..CatalogInfo::new(c.id, c.name)
+            })
+            .collect())
+    }
+
+    async fn catalog_stream(
+        &self,
+        ctx: &AppContext,
+        local_id: &str,
+    ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>> {
+        let config = crate::db::Settings::get_config(&ctx.db).await?;
+        let client = tmdb_client(
+            config.get_tmdb_key(),
+            &ctx.config
+                .tmdb_base_url,
+        )?;
+
+        let stream: Pin<Box<dyn Stream<Item = db::Media> + Send>> = match local_id {
+            "popular_movies" => Box::pin(discover_movie_stream(
+                client,
+                sdks::tmdb::DiscoverQuery {
+                    sort_by: Some("popularity.desc".into()),
+                    ..Default::default()
+                },
+            )),
+            "popular_tv" => Box::pin(discover_tv_stream(
+                client,
+                sdks::tmdb::DiscoverQuery {
+                    sort_by: Some("popularity.desc".into()),
+                    ..Default::default()
+                },
+            )),
+            "top_rated_movies" => Box::pin(discover_movie_stream(
+                client,
+                sdks::tmdb::DiscoverQuery {
+                    sort_by: Some("vote_average.desc".into()),
+                    vote_count_gte: Some(300),
+                    ..Default::default()
+                },
+            )),
+            "top_rated_tv" => Box::pin(discover_tv_stream(
+                client,
+                sdks::tmdb::DiscoverQuery {
+                    sort_by: Some("vote_average.desc".into()),
+                    vote_count_gte: Some(300),
+                    ..Default::default()
+                },
+            )),
+            "trending_movies_week" => Box::pin(trending_movie_stream(
+                client,
+                sdks::tmdb::TrendingWindow::Week,
+            )),
+            "trending_tv_week" => {
+                Box::pin(trending_tv_stream(client, sdks::tmdb::TrendingWindow::Week))
+            }
+            _ => return Ok(None),
+        };
+
+        Ok(Some(stream))
+    }
+}
+
+fn movie_result_to_stub(m: sdks::tmdb::MovieSearchResult) -> db::Media {
+    let id =
+        common::stable_media_uuid(&db::MediaKind::Movie, &format!("tmdb:{}", m.id));
+    let mut media = db::Media {
+        id,
+        title: m.title,
+        kind: db::MediaKind::Movie,
+        released_at: m
+            .release_date
+            .and_then(|d| d.and_hms_opt(0, 0, 0)),
+        external_ids: db::ExternalIds {
+            tmdb: Some(m.id),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    if let Some(url) = tmdb_image(
+        m.poster_path
+            .as_deref(),
+        db::ImageKind::Primary,
+    ) {
+        media.set_image(db::ImageKind::Primary, url);
+    }
+    media
+}
+
+fn series_result_to_stub(s: sdks::tmdb::SeriesSearchResult) -> db::Media {
+    let id =
+        common::stable_media_uuid(&db::MediaKind::Series, &format!("tmdb:{}", s.id));
+    let mut media = db::Media {
+        id,
+        title: s.name,
+        kind: db::MediaKind::Series,
+        released_at: s
+            .first_air_date
+            .and_then(|d| d.and_hms_opt(0, 0, 0)),
+        external_ids: db::ExternalIds {
+            tmdb: Some(s.id),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    if let Some(url) = tmdb_image(
+        s.poster_path
+            .as_deref(),
+        db::ImageKind::Primary,
+    ) {
+        media.set_image(db::ImageKind::Primary, url);
+    }
+    media
+}
+
+fn discover_movie_stream(
+    client: sdks::RestClient<sdks::BearerAuth>,
+    query: sdks::tmdb::DiscoverQuery,
+) -> impl Stream<Item = db::Media> + Send {
+    futures::stream::unfold(
+        (client, query, Some(1u32)),
+        |(client, query, maybe_page)| async move {
+            let page = maybe_page?;
+            let page_query = sdks::tmdb::DiscoverQuery {
+                page: Some(page),
+                ..query.clone()
+            };
+            let resp = client
+                .execute(sdks::tmdb::DiscoverMovieEndpoint { query: page_query })
+                .await
+                .ok()?;
+            if resp
+                .results
+                .is_empty()
+            {
+                return None;
+            }
+            let items: Vec<db::Media> = resp
+                .results
+                .into_iter()
+                .map(movie_result_to_stub)
+                .collect();
+            let next = (page < resp.total_pages).then_some(page + 1);
+            Some((futures::stream::iter(items), (client, query, next)))
+        },
+    )
+    .flatten()
+}
+
+fn discover_tv_stream(
+    client: sdks::RestClient<sdks::BearerAuth>,
+    query: sdks::tmdb::DiscoverQuery,
+) -> impl Stream<Item = db::Media> + Send {
+    futures::stream::unfold(
+        (client, query, Some(1u32)),
+        |(client, query, maybe_page)| async move {
+            let page = maybe_page?;
+            let page_query = sdks::tmdb::DiscoverQuery {
+                page: Some(page),
+                ..query.clone()
+            };
+            let resp = client
+                .execute(sdks::tmdb::DiscoverTvEndpoint { query: page_query })
+                .await
+                .ok()?;
+            if resp
+                .results
+                .is_empty()
+            {
+                return None;
+            }
+            let items: Vec<db::Media> = resp
+                .results
+                .into_iter()
+                .map(series_result_to_stub)
+                .collect();
+            let next = (page < resp.total_pages).then_some(page + 1);
+            Some((futures::stream::iter(items), (client, query, next)))
+        },
+    )
+    .flatten()
+}
+
+fn trending_movie_stream(
+    client: sdks::RestClient<sdks::BearerAuth>,
+    window: sdks::tmdb::TrendingWindow,
+) -> impl Stream<Item = db::Media> + Send {
+    futures::stream::unfold(
+        (client, Some(1u32)),
+        move |(client, maybe_page)| async move {
+            let page = maybe_page?;
+            let resp = client
+                .execute(sdks::tmdb::TrendingMovieEndpoint {
+                    window,
+                    page: Some(page),
+                })
+                .await
+                .ok()?;
+            if resp
+                .results
+                .is_empty()
+            {
+                return None;
+            }
+            let items: Vec<db::Media> = resp
+                .results
+                .into_iter()
+                .map(movie_result_to_stub)
+                .collect();
+            let next = (page < resp.total_pages).then_some(page + 1);
+            Some((futures::stream::iter(items), (client, next)))
+        },
+    )
+    .flatten()
+}
+
+fn trending_tv_stream(
+    client: sdks::RestClient<sdks::BearerAuth>,
+    window: sdks::tmdb::TrendingWindow,
+) -> impl Stream<Item = db::Media> + Send {
+    futures::stream::unfold(
+        (client, Some(1u32)),
+        move |(client, maybe_page)| async move {
+            let page = maybe_page?;
+            let resp = client
+                .execute(sdks::tmdb::TrendingTvEndpoint {
+                    window,
+                    page: Some(page),
+                })
+                .await
+                .ok()?;
+            if resp
+                .results
+                .is_empty()
+            {
+                return None;
+            }
+            let items: Vec<db::Media> = resp
+                .results
+                .into_iter()
+                .map(series_result_to_stub)
+                .collect();
+            let next = (page < resp.total_pages).then_some(page + 1);
+            Some((futures::stream::iter(items), (client, next)))
+        },
+    )
+    .flatten()
 }
 
 // ---------------------------------------------------------------------------
@@ -1584,48 +1902,18 @@ async fn search_tmdb_movie(
         &ctx.config
             .tmdb_base_url,
     )?;
-
     let resp = client
         .execute(sdks::tmdb::SearchMovieEndpoint {
             query: query.to_string(),
             year: None,
         })
         .await?;
-
-    let media = resp
+    Ok(resp
         .results
         .into_iter()
         .take(limit)
-        .map(|m| {
-            let id = common::stable_media_uuid(
-                &db::MediaKind::Movie,
-                &format!("tmdb:{}", m.id),
-            );
-            let mut media = db::Media {
-                id,
-                title: m.title,
-                kind: db::MediaKind::Movie,
-                released_at: m
-                    .release_date
-                    .and_then(|d| d.and_hms_opt(0, 0, 0)),
-                external_ids: db::ExternalIds {
-                    tmdb: Some(m.id),
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            if let Some(url) = tmdb_image(
-                m.poster_path
-                    .as_deref(),
-                db::ImageKind::Primary,
-            ) {
-                media.set_image(db::ImageKind::Primary, url);
-            }
-            media
-        })
-        .collect();
-
-    Ok(media)
+        .map(movie_result_to_stub)
+        .collect())
 }
 
 async fn search_tmdb_series(
@@ -1639,47 +1927,17 @@ async fn search_tmdb_series(
         &ctx.config
             .tmdb_base_url,
     )?;
-
     let resp = client
         .execute(sdks::tmdb::SearchTvEndpoint {
             query: query.to_string(),
         })
         .await?;
-
-    let media = resp
+    Ok(resp
         .results
         .into_iter()
         .take(limit)
-        .map(|s| {
-            let id = common::stable_media_uuid(
-                &db::MediaKind::Series,
-                &format!("tmdb:{}", s.id),
-            );
-            let mut media = db::Media {
-                id,
-                title: s.name,
-                kind: db::MediaKind::Series,
-                released_at: s
-                    .first_air_date
-                    .and_then(|d| d.and_hms_opt(0, 0, 0)),
-                external_ids: db::ExternalIds {
-                    tmdb: Some(s.id),
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            if let Some(url) = tmdb_image(
-                s.poster_path
-                    .as_deref(),
-                db::ImageKind::Primary,
-            ) {
-                media.set_image(db::ImageKind::Primary, url);
-            }
-            media
-        })
-        .collect();
-
-    Ok(media)
+        .map(series_result_to_stub)
+        .collect())
 }
 
 // ---------------------------------------------------------------------------

@@ -264,7 +264,7 @@ pub struct PaginatedResponse<T> {
     pub total_results: u32,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct DiscoverQuery {
     // Common parameters
     pub language: Option<String>,
@@ -287,6 +287,10 @@ pub struct DiscoverQuery {
     pub with_networks: Option<String>,
     pub with_companies: Option<String>,
     pub with_origin_country: Option<String>,
+    #[serde(rename = "vote_count.gte")]
+    pub vote_count_gte: Option<u32>,
+    #[serde(rename = "vote_average.gte")]
+    pub vote_average_gte: Option<f32>,
 
     // Movie-specific parameters
     pub region: Option<String>,
@@ -385,6 +389,112 @@ impl Endpoint for PersonDetailsEndpoint {
 
     fn path(&self) -> String {
         format!("person/{}", self.person_id)
+    }
+}
+
+/// `GET /discover/movie`
+#[derive(Debug, Clone)]
+pub struct DiscoverMovieEndpoint {
+    pub query: DiscoverQuery,
+}
+
+impl Endpoint for DiscoverMovieEndpoint {
+    type Output = PaginatedResponse<movie::MovieSearchResult>;
+
+    fn path(&self) -> String {
+        "discover/movie".to_string()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        &self.query
+    }
+}
+
+/// `GET /discover/tv`
+#[derive(Debug, Clone)]
+pub struct DiscoverTvEndpoint {
+    pub query: DiscoverQuery,
+}
+
+impl Endpoint for DiscoverTvEndpoint {
+    type Output = PaginatedResponse<series::SeriesSearchResult>;
+
+    fn path(&self) -> String {
+        "discover/tv".to_string()
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        &self.query
+    }
+}
+
+/// Time window for TMDB trending endpoints.
+#[derive(Debug, Clone, Copy)]
+pub enum TrendingWindow {
+    Day,
+    Week,
+}
+
+impl TrendingWindow {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Week => "week",
+        }
+    }
+}
+
+/// `GET /trending/movie/{window}`
+#[derive(Debug, Clone)]
+pub struct TrendingMovieEndpoint {
+    pub window: TrendingWindow,
+    pub page: Option<u32>,
+}
+
+impl Endpoint for TrendingMovieEndpoint {
+    type Output = PaginatedResponse<movie::MovieSearchResult>;
+
+    fn path(&self) -> String {
+        format!(
+            "trending/movie/{}",
+            self.window
+                .as_str()
+        )
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        [(
+            "page",
+            self.page
+                .map(|p| p.to_string()),
+        )]
+    }
+}
+
+/// `GET /trending/tv/{window}`
+#[derive(Debug, Clone)]
+pub struct TrendingTvEndpoint {
+    pub window: TrendingWindow,
+    pub page: Option<u32>,
+}
+
+impl Endpoint for TrendingTvEndpoint {
+    type Output = PaginatedResponse<series::SeriesSearchResult>;
+
+    fn path(&self) -> String {
+        format!(
+            "trending/tv/{}",
+            self.window
+                .as_str()
+        )
+    }
+
+    fn query_params(&self) -> impl serde::Serialize + '_ {
+        [(
+            "page",
+            self.page
+                .map(|p| p.to_string()),
+        )]
     }
 }
 
