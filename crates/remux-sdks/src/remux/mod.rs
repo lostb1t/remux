@@ -3560,6 +3560,11 @@ impl VideoRangeType {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TaskRemuxExt {
+    pub destructive: bool,
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
@@ -3579,6 +3584,8 @@ pub struct TaskInfo {
     pub last_execution_date: Option<String>,
     pub can_be_terminated: Option<bool>,
     pub can_be_deleted: Option<bool>,
+    #[serde(rename = "remux")]
+    pub remux: Option<TaskRemuxExt>,
 }
 
 #[skip_serializing_none]

@@ -428,6 +428,36 @@ pub fn TasksCard(
 }
 
 #[component]
+fn DestructiveConfirmModal(
+    task_name: String,
+    on_confirm: EventHandler,
+    on_cancel: EventHandler,
+) -> Element {
+    rsx! {
+        div { class: "modal-backdrop",
+            div { class: "modal",
+                h2 { class: "modal-title", "This action is destructive" }
+                p {
+                    "Running \"{task_name}\" will permanently delete data from the database. This cannot be undone."
+                }
+                FormActions {
+                    Button {
+                        variant: ButtonVariant::Ghost,
+                        onclick: move |_| on_cancel.call(()),
+                        "Cancel"
+                    }
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        onclick: move |_| on_confirm.call(()),
+                        "Run anyway"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 pub fn TaskPageRow(
     task: TaskInfo,
     app_state: AppState,
@@ -435,15 +465,27 @@ pub fn TaskPageRow(
     on_edit: EventHandler<TaskInfo>,
     #[props(default = true)] show_category: bool,
 ) -> Element {
+    let mut pending_confirm = use_signal(|| false);
+
+    let is_destructive = task
+        .remux
+        .as_ref()
+        .map(|r| r.destructive)
+        .unwrap_or(false);
+    let task_name = task
+        .name
+        .clone();
     let start_id = task
         .id
         .clone();
+    let start_id_confirm = start_id.clone();
     let stop_id = task
         .id
         .clone();
     let c_start = app_state
         .client
         .clone();
+    let c_start_confirm = c_start.clone();
     let c_stop = app_state
         .client
         .clone();
@@ -455,12 +497,16 @@ pub fn TaskPageRow(
             show_category,
             on_click: move |_| on_edit.call(task_for_edit.clone()),
             on_start: move |_| {
-                let id = start_id.clone();
-                let c = c_start.clone();
-                spawn(async move {
-                    let _ = c.execute(StartTask { task_id: id }).await;
-                    on_refresh.call(());
-                });
+                if is_destructive {
+                    pending_confirm.set(true);
+                } else {
+                    let id = start_id.clone();
+                    let c = c_start.clone();
+                    spawn(async move {
+                        let _ = c.execute(StartTask { task_id: id }).await;
+                        on_refresh.call(());
+                    });
+                }
             },
             on_stop: move |_| {
                 let id = stop_id.clone();
@@ -470,6 +516,21 @@ pub fn TaskPageRow(
                     on_refresh.call(());
                 });
             },
+        }
+        if *pending_confirm.read() {
+            DestructiveConfirmModal {
+                task_name: task_name.clone(),
+                on_confirm: move |_| {
+                    pending_confirm.set(false);
+                    let id = start_id_confirm.clone();
+                    let c = c_start_confirm.clone();
+                    spawn(async move {
+                        let _ = c.execute(StartTask { task_id: id }).await;
+                        on_refresh.call(());
+                    });
+                },
+                on_cancel: move |_| pending_confirm.set(false),
+            }
         }
     }
 }

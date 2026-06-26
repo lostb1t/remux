@@ -29,6 +29,9 @@ impl Task for PurgeMetricsTask {
     fn category(&self) -> &str {
         "Metrics"
     }
+    fn destructive(&self) -> bool {
+        true
+    }
 
     async fn run(
         &self,

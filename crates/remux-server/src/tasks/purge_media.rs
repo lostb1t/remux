@@ -26,6 +26,9 @@ impl Task for PurgeMediaTask {
     fn category(&self) -> &str {
         "Maintenance"
     }
+    fn destructive(&self) -> bool {
+        true
+    }
 
     async fn run(
         &self,

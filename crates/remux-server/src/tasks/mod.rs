@@ -69,6 +69,9 @@ pub trait Task: Send + Sync + 'static {
     fn category(&self) -> &str {
         "System"
     }
+    fn destructive(&self) -> bool {
+        false
+    }
 
     async fn run(
         &self,

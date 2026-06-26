@@ -213,6 +213,9 @@ fn task_info(
         is_enabled: Some(true),
         can_be_terminated: Some(true),
         can_be_deleted: Some(false),
+        remux: Some(api::TaskRemuxExt {
+            destructive: task.destructive(),
+        }),
     }
 }
 

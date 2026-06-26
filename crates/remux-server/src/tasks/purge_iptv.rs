@@ -24,6 +24,9 @@ impl Task for PurgeIptvTask {
     fn category(&self) -> &str {
         "Live TV"
     }
+    fn destructive(&self) -> bool {
+        true
+    }
 
     async fn run(
         &self,
