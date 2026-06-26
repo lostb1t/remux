@@ -398,7 +398,7 @@ pub struct AioUrl(String);
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "PascalCase", default)]
 pub struct ServerConfiguration {
     #[default(Some(false))]
     pub enable_metrics: Option<bool>,
@@ -445,7 +445,6 @@ pub struct ServerConfiguration {
     #[default(Some(0_i64))]
     pub p2p_download_speed_kbps: Option<i64>,
     #[default(true)]
-    #[serde(default = "default_true")]
     pub filter_by_digital_release_date: bool,
     #[default(0_i64)]
     pub digital_release_buffer_days: i64,
