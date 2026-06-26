@@ -303,9 +303,7 @@ impl MetricsAddon for TmdbAddon {
                 .tmdb_base_url,
         )?;
         let concurrency = (config.meta_concurrency as usize).max(1);
-        let today = chrono::Utc::now()
-            .format("%Y-%m-%d")
-            .to_string();
+        let today = chrono::Utc::now().date_naive();
 
         // Fetch all (tmdb_id, kind) pairs from the library.
         let rows: Vec<(i64, String)> = sqlx::query_as(

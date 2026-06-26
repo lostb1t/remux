@@ -237,9 +237,7 @@ pub(crate) async fn save_pending_tags(ctx: &AppContext, items: &[db::Media]) {
 }
 
 pub(crate) async fn save_pending_popularity(ctx: &AppContext, items: &[db::Media]) {
-    let today = chrono::Utc::now()
-        .format("%Y-%m-%d")
-        .to_string();
+    let today = chrono::Utc::now().date_naive();
     for item in items {
         let Some((ref ext_id, value)) = item.pending_popularity else {
             continue;
@@ -628,10 +626,10 @@ pub trait LyricAddon: Send + Sync {
 /// Each addon computes the `value` internally from its own source data.
 #[derive(Debug, Clone)]
 pub struct MetricSnapshot {
-    pub source: String,      // 'tmdb' | 'trakt'
-    pub external_id: String, // 'tmdb:603'
+    pub source: String,
+    pub external_id: String,
     pub value: f64,
-    pub date: String, // YYYY-MM-DD
+    pub date: chrono::NaiveDate,
 }
 
 #[async_trait]
