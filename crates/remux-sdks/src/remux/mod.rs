@@ -1976,7 +1976,7 @@ pub struct MediaSourceInfo {
     pub supports_external_stream: Option<bool>,
     #[default(true)]
     pub supports_probing: bool,
-    #[default(false)]
+    #[default(true)]
     pub supports_transcoding: bool,
     //  pub timestamp: Option<TransportStreamTimestamp>,
     pub transcoding_container: Option<String>,

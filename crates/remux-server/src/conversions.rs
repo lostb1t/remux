@@ -192,9 +192,6 @@ impl From<db::Media> for api::MediaSourceInfo {
             e_tag: client_id,
             path,
             protocol,
-            supports_transcoding: is_stub,
-            supports_direct_stream: true,
-            supports_direct_play: true,
             is_remote,
             name: Some(
                 source
