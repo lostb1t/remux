@@ -239,43 +239,62 @@ impl CatalogAddon for TmdbAddon {
         )?;
 
         let stream: Pin<Box<dyn Stream<Item = db::Media> + Send>> = match local_id {
-            "popular_movies" => Box::pin(discover_movie_stream(
+            "popular_movies" => Box::pin(with_imdb_resolved(
+                discover_movie_stream(
+                    client.clone(),
+                    sdks::tmdb::DiscoverQuery {
+                        sort_by: Some("popularity.desc".into()),
+                        ..Default::default()
+                    },
+                ),
                 client,
-                sdks::tmdb::DiscoverQuery {
-                    sort_by: Some("popularity.desc".into()),
-                    ..Default::default()
-                },
+                false,
             )),
-            "popular_tv" => Box::pin(discover_tv_stream(
+            "popular_tv" => Box::pin(with_imdb_resolved(
+                discover_tv_stream(
+                    client.clone(),
+                    sdks::tmdb::DiscoverQuery {
+                        sort_by: Some("popularity.desc".into()),
+                        ..Default::default()
+                    },
+                ),
                 client,
-                sdks::tmdb::DiscoverQuery {
-                    sort_by: Some("popularity.desc".into()),
-                    ..Default::default()
-                },
+                true,
             )),
-            "top_rated_movies" => Box::pin(discover_movie_stream(
+            "top_rated_movies" => Box::pin(with_imdb_resolved(
+                discover_movie_stream(
+                    client.clone(),
+                    sdks::tmdb::DiscoverQuery {
+                        sort_by: Some("vote_average.desc".into()),
+                        vote_count_gte: Some(300),
+                        ..Default::default()
+                    },
+                ),
                 client,
-                sdks::tmdb::DiscoverQuery {
-                    sort_by: Some("vote_average.desc".into()),
-                    vote_count_gte: Some(300),
-                    ..Default::default()
-                },
+                false,
             )),
-            "top_rated_tv" => Box::pin(discover_tv_stream(
+            "top_rated_tv" => Box::pin(with_imdb_resolved(
+                discover_tv_stream(
+                    client.clone(),
+                    sdks::tmdb::DiscoverQuery {
+                        sort_by: Some("vote_average.desc".into()),
+                        vote_count_gte: Some(300),
+                        ..Default::default()
+                    },
+                ),
                 client,
-                sdks::tmdb::DiscoverQuery {
-                    sort_by: Some("vote_average.desc".into()),
-                    vote_count_gte: Some(300),
-                    ..Default::default()
-                },
+                true,
             )),
-            "trending_movies_week" => Box::pin(trending_movie_stream(
+            "trending_movies_week" => Box::pin(with_imdb_resolved(
+                trending_movie_stream(client.clone(), sdks::tmdb::TrendingWindow::Week),
                 client,
-                sdks::tmdb::TrendingWindow::Week,
+                false,
             )),
-            "trending_tv_week" => {
-                Box::pin(trending_tv_stream(client, sdks::tmdb::TrendingWindow::Week))
-            }
+            "trending_tv_week" => Box::pin(with_imdb_resolved(
+                trending_tv_stream(client.clone(), sdks::tmdb::TrendingWindow::Week),
+                client,
+                true,
+            )),
             _ => return Ok(None),
         };
 
@@ -392,6 +411,29 @@ fn series_result_to_stub(s: sdks::tmdb::SeriesSearchResult) -> db::Media {
         media.set_image(db::ImageKind::Primary, url);
     }
     media
+}
+
+/// Wraps a catalog stub stream and resolves the IMDB ID for each item inline,
+/// recomputing the stable UUID from the IMDB ID. Items that cannot be resolved
+/// are dropped (no IMDB ID = no canonical identity).
+fn with_imdb_resolved(
+    stream: impl Stream<Item = db::Media> + Send + 'static,
+    client: sdks::RestClient<sdks::BearerAuth>,
+    is_tv: bool,
+) -> impl Stream<Item = db::Media> + Send {
+    stream
+        .map(move |mut stub| {
+            let c = client.clone();
+            async move {
+                let imdb = resolve_imdb_from_ids(&stub.external_ids, is_tv, &c).await?;
+                stub.id = common::stable_media_uuid(&stub.kind, imdb.as_str());
+                stub.external_ids
+                    .imdb = Some(imdb);
+                Some(stub)
+            }
+        })
+        .buffer_unordered(10)
+        .filter_map(futures::future::ready)
 }
 
 fn discover_movie_stream(

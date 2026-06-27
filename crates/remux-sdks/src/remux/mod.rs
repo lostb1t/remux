@@ -427,6 +427,7 @@ pub struct ServerConfiguration {
     pub enable_automatic_updates: Option<bool>,
     #[default(Some("/transcodes".to_string()))]
     pub transcoding_temp_path: Option<String>,
+    #[default(Some(250_i64))]
     pub catalog_max_items: Option<i64>,
     /// Number of items to process concurrently during metadata fetch (default: 4).
     #[default(4_i64)]

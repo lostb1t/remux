@@ -72,7 +72,27 @@ async fn prepare_squash(pool: &SqlitePool) -> Result<()> {
                 .execute(pool)
                 .await?;
         }
-        Some(_) => {}
+        Some(_) => {
+            // The squash migration may be edited (e.g. to update seed data).
+            // Patch the stored checksum to match the current file so sqlx
+            // accepts it without re-executing the migration.
+            if let Some(m) = sqlx::migrate!("./migrations")
+                .migrations
+                .iter()
+                .find(|m| m.version == SQUASH_VERSION)
+            {
+                sqlx::query(
+                    "UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?",
+                )
+                .bind(
+                    m.checksum
+                        .as_ref(),
+                )
+                .bind(SQUASH_VERSION)
+                .execute(pool)
+                .await?;
+            }
+        }
     }
     Ok(())
 }

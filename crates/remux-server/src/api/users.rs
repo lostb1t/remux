@@ -882,10 +882,10 @@ pub async fn userviews(
 
     let mut libraries = library_result?.records;
     libraries.sort_by(|a, b| {
-        a.idx
+        a.sort_order
             .unwrap_or(i64::MAX)
             .cmp(
-                &b.idx
+                &b.sort_order
                     .unwrap_or(i64::MAX),
             )
             .then_with(|| {
