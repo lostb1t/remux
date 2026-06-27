@@ -544,6 +544,42 @@ async fn streams_metadata(state: &AppState, id: Uuid) -> AnyResult<StreamsRespon
     Ok(StreamsResponse { streams: result })
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct MetricsStatusResponse {
+    pub daily_days: i64,
+    pub daily_window: i64,
+    pub last_updated_days_ago: Option<i64>,
+    pub item_count: i64,
+}
+
+#[get("/remux/metrics/status")]
+pub async fn remux_metrics_status(
+    State(state): State<AppState>,
+    _session: auth::AuthSession,
+) -> Result<impl IntoResponse> {
+    let row = sqlx::query_as::<_, (i64, Option<i64>, i64)>(
+        "SELECT COUNT(DISTINCT period_key), \
+                CAST(julianday('now') - julianday(MAX(period_key)) AS INTEGER), \
+                COUNT(DISTINCT external_id) \
+         FROM popularity_agg \
+         WHERE period = 'daily' AND period_key >= date('now', '-14 days')",
+    )
+    .fetch_one(
+        &state
+            .ctx
+            .db,
+    )
+    .await?;
+
+    Ok(Json(MetricsStatusResponse {
+        daily_days: row.0,
+        daily_window: 14,
+        last_updated_days_ago: row.1,
+        item_count: row.2,
+    }))
+}
+
 #[get("/remux/streams/{id}")]
 pub async fn remux_streams(
     State(state): State<AppState>,

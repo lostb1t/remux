@@ -4850,6 +4850,26 @@ impl Endpoint for GetItemCounts {
     }
 }
 
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub struct MetricsStatus {
+    pub daily_days: i64,
+    pub daily_window: i64,
+    pub last_updated_days_ago: Option<i64>,
+    pub item_count: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetMetricsStatus;
+
+impl Endpoint for GetMetricsStatus {
+    type Output = MetricsStatus;
+    fn path(&self) -> String {
+        "/remux/metrics/status".into()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GetCurrentUser;
 
