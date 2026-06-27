@@ -1220,7 +1220,7 @@ impl AddonService {
                     .filter(|c| {
                         c.media_kind
                             .as_ref()
-                            .is_some_and(|mk| kinds.contains(mk))
+                            .is_some_and(|mk| kind_in_type_list(mk, kinds))
                     })
                     .collect(),
                 Err(e) => {
