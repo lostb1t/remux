@@ -5,6 +5,7 @@ pub mod introdb;
 pub mod remux;
 pub mod stremio;
 pub mod tmdb;
+pub mod trakt;
 
 use http::{HeaderMap, HeaderValue, Method, header};
 use itertools::Itertools;

@@ -35,6 +35,7 @@ impl AddonPreset for TmdbPreset {
                 AddonMetadata::simple_resource(ResourceType::Meta),
                 AddonMetadata::simple_resource(ResourceType::Search),
                 AddonMetadata::simple_resource(ResourceType::Catalog),
+                AddonMetadata::simple_resource(ResourceType::Metrics),
             ],
             supported_types: vec![
                 MediaKind::Movie,
