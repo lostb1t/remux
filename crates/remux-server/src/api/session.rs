@@ -310,15 +310,25 @@ pub async fn get_sessions(
             });
 
         // Load full media from DB if there's an active playback session.
+        // Use get_by_filter so preload_parents runs and db_media_to_item can
+        // populate series_name / season_name for episodes.
         let mut media = if let Some(ps) = ps {
-            db::Media::get_by_id(
+            db::Media::get_by_filter(
                 &state
                     .ctx
                     .db,
-                &ps.item_id,
+                &db::MediaFilter {
+                    id: Some(vec![ps.item_id]),
+                    ..Default::default()
+                },
             )
             .await
             .ok()
+            .map(|r| {
+                r.records
+                    .into_iter()
+                    .next()
+            })
             .flatten()
         } else {
             None
