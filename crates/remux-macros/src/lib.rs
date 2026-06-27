@@ -338,7 +338,7 @@ pub fn dto(_args: TokenStream, input: TokenStream) -> TokenStream {
     let input = proc_macro2::TokenStream::from(input);
     quote! {
         #[serde_with::skip_serializing_none]
-        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, default2::Default)]
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, default2::Default)]
         #[serde(rename_all = "PascalCase", default)]
         #input
     }

@@ -327,18 +327,14 @@ pub struct QueryResult<T> {
     pub start_index: i32,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct BrandingOptions {
     pub login_disclaimer: Option<String>,
     pub custom_css: Option<String>,
     pub splashscreen_enabled: Option<bool>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct QuickConnectResult {
     pub secret: String,
     pub code: String,
@@ -351,9 +347,7 @@ pub struct QuickConnectResult {
     pub app_version: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct AuthenticateWithQuickConnect {
     #[serde(alias = "secret", default)]
     pub secret: String,
@@ -517,9 +511,7 @@ pub enum EncodingPreset {
     Slowest,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, default2::Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct EncodingOptions {
     #[default(Some(EncodingPreset::Ultrafast))]
     pub encoding_preset: Option<EncodingPreset>,
@@ -592,7 +584,7 @@ pub enum IntroOrder {
     Sequential,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct IntroTriggers {
     pub movies: bool,
@@ -614,9 +606,7 @@ fn default_intro_skip_resume() -> bool {
     true
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct IntroOptions {
     /// Absolute path to folder of intro video files. None = disabled.
     pub intro_dir: Option<String>,
@@ -629,26 +619,19 @@ pub struct IntroOptions {
 }
 
 // --- Jellyfin import models (used to consume a remote Jellyfin server) ---
-
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct JellyfinUserPolicy {
     pub is_administrator: Option<bool>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct JellyfinUserDto {
     pub id: Option<String>,
     pub name: Option<String>,
     pub policy: Option<JellyfinUserPolicy>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct JellyfinUserData {
     pub play_count: Option<i64>,
     pub playback_position_ticks: Option<i64>,
@@ -657,9 +640,7 @@ pub struct JellyfinUserData {
     pub is_favorite: Option<bool>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct JellyfinItem {
     pub id: Option<String>,
     pub name: Option<String>,
@@ -714,9 +695,7 @@ pub struct StartupUser {
     pub password_confirm: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct LocalizationOption {
     pub name: String,
     pub value: String,
@@ -811,9 +790,7 @@ impl<'de> serde::Deserialize<'de> for AuthenticateUserByName {
     }
 }
 
-#[skip_serializing_none]
-#[derive(Default, Deserialize, Serialize, Clone, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct AuthenticationResult {
     pub access_token: Option<String>,
     pub server_id: String,
@@ -823,9 +800,7 @@ pub struct AuthenticationResult {
 
 pub type AuthenticateUserByNameResult = AuthenticationResult;
 
-#[skip_serializing_none]
-#[derive(Default, Deserialize, Serialize, Clone, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct PublicSystemInfo {
     pub id: String,
     pub local_address: String,
@@ -837,16 +812,14 @@ pub struct PublicSystemInfo {
     pub operating_system: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct CastReceiverApplication {
     pub id: String,
     pub name: String,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, default2::Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct SystemInfo {
     pub operating_system_display_name: Option<String>,
     pub product_name: String,
@@ -884,9 +857,7 @@ pub struct SystemInfo {
     pub cast_receiver_applications: Vec<CastReceiverApplication>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct VirtualFolderInfo {
     pub name: Option<String>,
     pub locations: Vec<String>,
@@ -986,9 +957,7 @@ pub struct UpdateVirtualFolderPayload {
     pub collection_max_items: Option<i64>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct PatchItemPayload {
     pub name: Option<String>,
     pub collection_type: Option<String>,
@@ -1003,9 +972,7 @@ pub struct PatchItemPayload {
     pub collection_default_sort_order: Option<Vec<SortOrder>>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct FolderStorageInfo {
     pub path: Option<String>,
     pub free_space: Option<i64>,
@@ -1014,18 +981,14 @@ pub struct FolderStorageInfo {
     pub device_id: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct LibraryStorageInfo {
     pub id: Option<String>,
     pub name: Option<String>,
     pub folders: Option<Vec<FolderStorageInfo>>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct SystemStorageInfo {
     pub program_data_folder: Option<FolderStorageInfo>,
     pub web_folder: Option<FolderStorageInfo>,
@@ -1037,9 +1000,7 @@ pub struct SystemStorageInfo {
     pub libraries: Option<Vec<LibraryStorageInfo>>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct ItemCounts {
     pub movie_count: i32,
     pub series_count: i32,
@@ -1055,9 +1016,7 @@ pub struct ItemCounts {
     pub item_count: i32,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct DeviceInfo {
     pub name: Option<String>,
     pub custom_name: Option<String>,
@@ -1071,9 +1030,7 @@ pub struct DeviceInfo {
     pub icon_url: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct LibraryOptions {
     pub enable_photos: Option<bool>,
     pub enable_realtime_monitor: Option<bool>,
@@ -1682,9 +1639,7 @@ pub struct ImageQuery {
     pub format: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Default, Deserialize, Serialize, Clone, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct BaseItemDtoQueryResult {
     #[serde(default)] // Always serialize, even if empty
     pub items: Vec<BaseItemDto>,
@@ -1710,9 +1665,7 @@ impl BaseItemDtoQueryResult {
     }
 }
 
-#[skip_serializing_none]
-#[derive(Default, Deserialize, Serialize, Clone, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct ThemeMediaResult {
     pub owner_id: String,
     #[serde(default)]
@@ -1745,9 +1698,7 @@ pub enum RecommendationType {
     HasLikedActor,
 }
 
-#[skip_serializing_none]
-#[derive(Default, Deserialize, Serialize, Clone, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct RecommendationDto {
     pub category_id: Option<Uuid>,
     pub recommendation_type: RecommendationType,
@@ -1902,9 +1853,7 @@ impl TranscodeReasons {
     }
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct TranscodingInfo {
     pub audio_codec: Option<String>,
     pub video_codec: Option<String>,
@@ -1921,9 +1870,7 @@ pub struct TranscodingInfo {
     pub transcode_reasons: TranscodeReasons,
 }
 
-#[skip_serializing_none]
-#[derive(default2::Default, Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct MediaSourceInfo {
     pub analyze_duration_ms: Option<i64>,
     pub bitrate: Option<i64>,
@@ -1996,9 +1943,7 @@ pub struct MediaSourceInfo {
     pub transcoding_reasons: TranscodeReasons,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct MediaSourceRemuxInfo {
     pub provider_info: Option<serde_json::Value>,
 }
@@ -2023,7 +1968,7 @@ impl MediaSourceInfo {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum PlaybackErrorCode {
     NotAllowed,
@@ -2031,18 +1976,14 @@ pub enum PlaybackErrorCode {
     RateLimitExceeded,
 }
 
-#[skip_serializing_none]
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct PlaybackInfoResponse {
     pub error_code: Option<PlaybackErrorCode>,
     pub media_sources: Vec<MediaSourceInfo>,
     pub play_session_id: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Default, Deserialize, Serialize, Clone, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct QueryFiltersLegacy {
     pub genres: Option<Vec<String>>,
     pub official_ratings: Option<Vec<String>>,
@@ -2061,9 +2002,7 @@ pub struct MetadataEditorInfo {
     pub content_type_options: Vec<serde_json::Value>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, default2::Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct UserConfiguration {
     pub audio_language_preference: Option<String>,
     #[default(true)]
@@ -2234,7 +2173,7 @@ pub enum ImageType {
 }
 
 #[skip_serializing_none]
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 pub struct UserDto {
     pub configuration: Option<UserConfiguration>,
@@ -2294,9 +2233,7 @@ pub enum SyncPlayUserAccessType {
     None,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Clone, default2::Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct UserPolicy {
     pub is_administrator: bool,
     #[default(true)]
@@ -2427,9 +2364,7 @@ pub struct UpdateUserPassword {
     pub reset_password: Option<bool>,
 }
 
-#[skip_serializing_none]
-#[derive(Default, Deserialize, PartialEq, Serialize, Clone, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct MediaStream {
     pub aspect_ratio: Option<String>,
     pub audio_spatial_format: Option<String>,
@@ -2502,9 +2437,7 @@ pub struct MediaStream {
     pub width: Option<i64>,
 }
 
-#[skip_serializing_none]
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct ImageTags {
     pub primary: Option<String>,
     pub logo: Option<String>,
@@ -2512,9 +2445,7 @@ pub struct ImageTags {
     pub backdrop: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct ImageBlurHashes {
     pub backdrop: Option<HashMap<String, String>>,
     pub primary: Option<HashMap<String, String>>,
@@ -2522,18 +2453,14 @@ pub struct ImageBlurHashes {
 }
 
 // todo: should be an hashmap
-#[skip_serializing_none]
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct ProviderIds {
     pub imdb: Option<String>,
     pub tmdb: Option<String>,
     pub tvdb: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct UserItemDataDto {
     pub rating: Option<f32>,
     #[default(false)]
@@ -2818,9 +2745,7 @@ where
         .collect())
 }
 
-#[skip_serializing_none]
-#[derive(Default, Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct RemuxInfo {
     pub collection_kind: Option<RemuxCollectionKind>,
     pub collection_media_kind: Option<MediaKind>,
@@ -2835,9 +2760,7 @@ pub struct RemuxInfo {
     pub collection_default_sort_order: Option<Vec<SortOrder>>,
 }
 
-#[skip_serializing_none]
-#[derive(default2::Default, Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct BaseItemDto {
     pub id: Uuid,
     #[default("remux".to_string())]
@@ -3014,9 +2937,7 @@ pub struct BaseItemDto {
     pub remux: Option<RemuxInfo>,
 }
 
-#[skip_serializing_none]
-#[derive(Default, Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct BaseItemPerson {
     pub id: Uuid,
     pub name: String,
@@ -3026,17 +2947,13 @@ pub struct BaseItemPerson {
     pub primary_image_tag: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Default, Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct NameIdPair {
     pub id: Uuid,
     pub name: String,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, default2::Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct PlayerStateInfo {
     pub position_ticks: Option<i64>,
     pub can_seek: bool,
@@ -3053,9 +2970,7 @@ pub struct PlayerStateInfo {
     pub playback_order: String,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct ClientCapabilitiesDto {
     pub playable_media_types: Vec<String>,
     pub supported_commands: Vec<String>,
@@ -3063,7 +2978,7 @@ pub struct ClientCapabilitiesDto {
     pub supports_persistent_identifier: bool,
 }
 
-#[derive(Debug, Clone, default2::Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, default2::Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct SessionInfoDto {
     pub play_state: Option<PlayerStateInfo>,
@@ -3102,9 +3017,7 @@ pub struct SessionInfoDto {
     pub supported_commands: Vec<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
+#[dto]
 pub struct PlaybackInfo {
     /// Optional event kind; when absent (legacy payloads) this will be None.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3153,7 +3066,7 @@ pub type PlaybackProgressInfo = PlaybackInfo;
 #[deprecated(note = "Use PlaybackInfo instead")]
 pub type PlaybackStopInfo = PlaybackInfo;
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct QueueItem {
     pub id: Uuid,
@@ -3565,9 +3478,7 @@ pub struct TaskRemuxExt {
     pub destructive: bool,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct TaskInfo {
     pub name: String,
     pub state: Option<String>,
@@ -3588,9 +3499,7 @@ pub struct TaskInfo {
     pub remux: Option<TaskRemuxExt>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct TaskResult {
     pub status: Option<String>,
     pub name: Option<String>,
@@ -3631,9 +3540,7 @@ impl TryFrom<String> for TaskTriggerInfoType {
     }
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct TaskTriggerInfo {
     pub r#type: Option<String>,
     pub time_of_day_ticks: Option<i64>,
@@ -3642,9 +3549,7 @@ pub struct TaskTriggerInfo {
     pub max_runtime_ticks: Option<i64>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct TaskQueryResult {
     pub items: Vec<TaskInfo>,
     pub total_record_count: i64,
@@ -3757,9 +3662,7 @@ pub struct AuthenticationInfo {
     pub is_active: Option<bool>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct SearchHint {
     pub item_id: Uuid,
     pub name: Option<String>,
@@ -3795,17 +3698,13 @@ pub struct UtcTimeResponse {
     pub response_transmission_time: DateTime<Utc>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct QueryFilters {
     pub genres: Option<Vec<NameIdPair>>,
     pub tags: Option<Vec<String>>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct ExternalIdInfo {
     pub name: String,
     pub key: String,
@@ -3814,9 +3713,7 @@ pub struct ExternalIdInfo {
     pub url_format_string: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct RemoteImageInfo {
     pub provider_name: Option<String>,
     pub url: Option<String>,
@@ -3827,9 +3724,7 @@ pub struct RemoteImageInfo {
     pub height: Option<i64>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct RemoteImageResult {
     pub images: Option<Vec<RemoteImageInfo>>,
     pub total_record_count: i64,
@@ -3847,9 +3742,7 @@ pub struct SearchHintsQuery {
     pub include_item_types: Option<Vec<MediaType>>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct TunerHostInfo {
     pub id: Option<String>,
     pub url: Option<String>,
@@ -3870,9 +3763,7 @@ pub struct EpgSourceInfo {
     pub url: SourceUrl,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct ChannelEditorItem {
     pub id: String,
     pub name: String,
@@ -3898,34 +3789,26 @@ pub struct BulkChannelRequest {
     pub search: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct IptvChannelsResult {
     pub items: Vec<ChannelEditorItem>,
     pub total_record_count: usize,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Default, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct ExternalUrl {
     pub name: Option<String>,
     pub url: Option<String>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct LyricLine {
     pub text: String,
     /// Start time in ticks (100-nanosecond units). None for unsynced lyrics.
     pub start: Option<i64>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct LyricMetadata {
     pub artist: Option<String>,
     pub album: Option<String>,
@@ -3970,13 +3853,13 @@ pub enum MediaSegmentType {
     Intro = 5,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Segment {
     pub start_ticks: i64,
     pub end_ticks: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MediaSegments {
     pub intro: Option<Segment>,
     pub outro: Option<Segment>,
@@ -4850,9 +4733,7 @@ impl Endpoint for GetItemCounts {
     }
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "PascalCase")]
+#[dto]
 pub struct MetricsStatus {
     pub daily_days: i64,
     pub daily_window: i64,
