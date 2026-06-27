@@ -353,6 +353,18 @@ impl AddonKind for OpendalAddon {
 #[async_trait]
 impl CatalogAddon for OpendalAddon {
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
+        // "episode" addons yield Series-level catalog items (one per show, not per
+        // episode), so media_kind must be Series — otherwise catalogs_for_kinds
+        // filters this catalog out because Episode is not in LIBRARY_KINDS.
+        let media_kind = match self
+            .media_kind
+            .as_str()
+        {
+            "episode" => Some(db::MediaKind::Series),
+            other => other
+                .parse()
+                .ok(),
+        };
         Ok(vec![CatalogInfo {
             provider_catalog_id: "files".to_string(),
             name: "files".to_string(),
@@ -363,10 +375,7 @@ impl CatalogAddon for OpendalAddon {
                     .as_str()
                     .into(),
             ),
-            media_kind: self
-                .media_kind
-                .parse()
-                .ok(),
+            media_kind,
         }])
     }
 
@@ -3599,6 +3608,38 @@ mod tests {
             other => panic!("expected Local descriptor, got {other:?}"),
         };
         assert_eq!(path, url, "stream path must be the URL from the .strm file");
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: episode catalog_list must report media_kind=Series, not Episode,
+    // so catalogs_for_kinds(LIBRARY_KINDS) does not filter the catalog out.
+    // Issue #59: Series library does not discover local media.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn episode_catalog_list_reports_series_media_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+        let (addon, _) = make_local_addon(ctx, dir.path(), "episode").await;
+
+        let catalogs = addon
+            .catalog_list(ctx)
+            .await
+            .unwrap();
+        assert_eq!(catalogs.len(), 1);
+        let info = &catalogs[0];
+        assert_eq!(
+            info.media_kind,
+            Some(db::MediaKind::Series),
+            "episode addon must report media_kind=Series so catalogs_for_kinds includes it"
+        );
+        assert_eq!(
+            info.collection_media_kind,
+            Some(db::CollectionMediaKind::Series),
+        );
     }
 
     // -----------------------------------------------------------------------
