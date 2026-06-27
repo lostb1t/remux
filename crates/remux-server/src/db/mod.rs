@@ -122,10 +122,22 @@ async fn vacuum_if_needed(pool: &SqlitePool) -> Result<()> {
     if freelist > 500 {
         info!(
             freelist_pages = freelist,
-            "vacuuming database to apply auto_vacuum mode and reclaim freed pages"
+            "vacuuming database to reclaim freed pages"
         );
+        let mut conn = pool
+            .acquire()
+            .await?;
+        // VACUUM's internal sort operations use temp storage. The pool uses
+        // temp_store=memory for query performance, but that causes OOM on large
+        // databases during VACUUM. Switch to file-backed temp for this operation.
+        sqlx::query("PRAGMA temp_store = 1")
+            .execute(&mut *conn)
+            .await?;
         sqlx::query("VACUUM")
-            .execute(pool)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("PRAGMA temp_store = 2")
+            .execute(&mut *conn)
             .await?;
     }
     Ok(())
