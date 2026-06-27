@@ -958,22 +958,7 @@ impl DeezerAddon {
     // --- Catalog (playlist) ---
 
     async fn fetch_playlist(&self, playlist_id: &str) -> Result<dz::Playlist> {
-        match self
-            .client
-            .execute(
-                dz::PlaylistEndpoint {
-                    id: playlist_id.to_string(),
-                }
-                .with_cache(PLAYLIST_CACHE_TTL),
-            )
-            .await
-        {
-            Ok(dz::DeezerResult::Ok(p)) => Ok(p),
-            Ok(dz::DeezerResult::Err { error }) => {
-                Err(anyhow!("Deezer playlist error: {}", error))
-            }
-            Err(e) => Err(anyhow!("Deezer playlist {} HTTP error: {}", playlist_id, e)),
-        }
+        fetch_deezer_playlist(&self.client, playlist_id).await
     }
 }
 
@@ -1002,21 +987,15 @@ impl CatalogAddon for DeezerAddon {
         .map(|id| {
             let client = client.clone();
             async move {
-                let name = match client
-                    .execute(
-                        dz::PlaylistEndpoint { id: id.clone() }
-                            .with_cache(PLAYLIST_CACHE_TTL),
-                    )
-                    .await
-                {
-                    Ok(dz::DeezerResult::Ok(p))
+                let name = match fetch_deezer_playlist(&client, &id).await {
+                    Ok(p)
                         if !p
                             .title
                             .is_empty() =>
                     {
                         p.title
                     }
-                    _ => format!("Deezer playlist {id}"),
+                    _ => default_playlist_name(&id),
                 };
                 CatalogInfo {
                     media_kind: Some(db::MediaKind::Playlist),
@@ -1162,6 +1141,31 @@ impl SearchAddon for DeezerAddon {
 // Free helpers
 // ---------------------------------------------------------------------------
 
+async fn fetch_deezer_playlist(
+    client: &sdks::RestClient<sdks::NoAuth>,
+    playlist_id: &str,
+) -> Result<dz::Playlist> {
+    match client
+        .execute(
+            dz::PlaylistEndpoint {
+                id: playlist_id.to_string(),
+            }
+            .with_cache(PLAYLIST_CACHE_TTL),
+        )
+        .await
+    {
+        Ok(dz::DeezerResult::Ok(p)) => Ok(p),
+        Ok(dz::DeezerResult::Err { error }) => {
+            Err(anyhow!("Deezer playlist error: {}", error))
+        }
+        Err(e) => Err(anyhow!("Deezer playlist {} HTTP error: {}", playlist_id, e)),
+    }
+}
+
+fn default_playlist_name(id: &str) -> String {
+    format!("Deezer playlist {id}")
+}
+
 fn extract_playlist_id(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -1224,7 +1228,11 @@ fn build_playlist_media(playlist: &dz::Playlist) -> db::Media {
             .title
             .is_empty()
         {
-            format!("Deezer playlist {}", playlist.id)
+            default_playlist_name(
+                &playlist
+                    .id
+                    .to_string(),
+            )
         } else {
             playlist
                 .title
