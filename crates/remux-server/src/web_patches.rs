@@ -401,6 +401,41 @@ pub static JS: &str = r#"
 
 }());
 
+// Strip "Recently Added in " prefix from homescreen section titles, leaving only the library name.
+(function () {
+  var PREFIX = 'Recently Added in ';
+
+  function clean(el) {
+    var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
+    var node;
+    while ((node = walker.nextNode())) {
+      if (node.nodeValue && node.nodeValue.indexOf(PREFIX) === 0) {
+        node.nodeValue = node.nodeValue.slice(PREFIX.length);
+      }
+    }
+  }
+
+  function processRoot(root) {
+    if (!root.querySelectorAll) return;
+    var els = root.querySelectorAll('.sectionTitle, .sectionTitleLink');
+    for (var i = 0; i < els.length; i++) clean(els[i]);
+    if (root.classList && (root.classList.contains('sectionTitle') || root.classList.contains('sectionTitleLink'))) {
+      clean(root);
+    }
+  }
+
+  new MutationObserver(function (mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      var added = mutations[i].addedNodes;
+      for (var j = 0; j < added.length; j++) {
+        if (added[j].nodeType === 1) processRoot(added[j]);
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+
+  processRoot(document.body);
+}());
+
 // Intercept XHR to add Fields=ChildCount to the @jellyfin/sdk shadow call
 // /Items/{uuid}?userId=... Use explicit _open.call() so the rewritten URL
 // is guaranteed to reach the native implementation.
