@@ -297,6 +297,57 @@ pub async fn master_hls_video(
             s.codec
                 .clone()
         });
+        let burn_subtitle =
+            q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode);
+        let text_subtitle_si = if burn_subtitle {
+            q.subtitle_stream_index
+                .and_then(|sub_idx| {
+                    resolved_media
+                        .probe_data
+                        .as_ref()
+                        .and_then(|probe| {
+                            let stream = probe
+                                .media_streams
+                                .iter()
+                                .find(|s| s.index == sub_idx as i64)?;
+                            let is_text = stream.is_text_subtitle_stream
+                                || matches!(
+                                    stream
+                                        .codec
+                                        .as_deref()
+                                        .unwrap_or(""),
+                                    "subrip"
+                                        | "srt"
+                                        | "ass"
+                                        | "ssa"
+                                        | "webvtt"
+                                        | "mov_text"
+                                        | "text"
+                                );
+                            if !is_text {
+                                return None;
+                            }
+                            let mut sub_indexes: Vec<i64> = probe
+                                .media_streams
+                                .iter()
+                                .filter(|s| {
+                                    matches!(
+                                        s.type_,
+                                        Some(crate::api::MediaStreamType::Subtitle)
+                                    )
+                                })
+                                .map(|s| s.index)
+                                .collect();
+                            sub_indexes.sort_unstable();
+                            let ordinal = sub_indexes
+                                .iter()
+                                .position(|&i| i == sub_idx as i64)?;
+                            Some(ordinal as i64)
+                        })
+                })
+        } else {
+            None
+        };
         let session = TranscodeSession::new(
             play_session_id.clone(),
             id,
@@ -309,7 +360,8 @@ pub async fn master_hls_video(
                 .map(|v| v as i32),
             q.subtitle_stream_index
                 .map(|v| v as i32),
-            q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode),
+            burn_subtitle,
+            text_subtitle_si,
             segment_length,
             // Parse reasons from query param (set by playbackinfo on the transcoding URL)
             q.transcode_reasons
@@ -332,88 +384,6 @@ pub async fn master_hls_video(
             .ctx
             .sessions
             .attach_transcode(&play_session_id, session.clone());
-
-        // Pre-extract text subtitles before transcoding so burn-in can use the
-        // subtitles= lavfi filter with a local file path instead of the source URL.
-        let burn_subtitle =
-            q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode);
-        let subtitle_path = if burn_subtitle {
-            q.subtitle_stream_index
-                .and_then(|sub_idx| {
-                    resolved_media
-                        .probe_data
-                        .as_ref()
-                        .and_then(|probe| {
-                            // Check codec to decide if this is a text subtitle.
-                            let stream = probe
-                                .media_streams
-                                .iter()
-                                .find(|s| s.index == sub_idx as i64)?;
-                            let codec = stream
-                                .codec
-                                .as_deref()
-                                .unwrap_or("");
-                            let is_text = stream.is_text_subtitle_stream
-                                || matches!(
-                                    codec,
-                                    "subrip"
-                                        | "srt"
-                                        | "ass"
-                                        | "ssa"
-                                        | "webvtt"
-                                        | "mov_text"
-                                        | "text"
-                                );
-                            if !is_text {
-                                return None;
-                            }
-                            // Compute map_spec: ordinal position of this index among subtitle streams.
-                            let mut sub_indexes: Vec<i64> = probe
-                                .media_streams
-                                .iter()
-                                .filter(|s| {
-                                    matches!(
-                                        s.type_,
-                                        Some(crate::api::MediaStreamType::Subtitle)
-                                    )
-                                })
-                                .map(|s| s.index)
-                                .collect();
-                            sub_indexes.sort_unstable();
-                            let ordinal = sub_indexes
-                                .iter()
-                                .position(|&i| i == sub_idx as i64)?;
-                            Some((format!("0:s:{ordinal}"), sub_idx as i64))
-                        })
-                })
-                .map(|(map_spec, stream_index)| {
-                    let data_dir = state
-                        .ctx
-                        .config
-                        .data_dir
-                        .clone();
-                    let input_url_clone = input_url.clone();
-                    let msid = media_source_id;
-                    async move {
-                        crate::api::subtitles::extract_subtitle_to_cache(
-                            &data_dir,
-                            &input_url_clone,
-                            &map_spec,
-                            msid,
-                            stream_index,
-                        )
-                        .await
-                        .ok()
-                    }
-                })
-        } else {
-            None
-        };
-        let subtitle_path = if let Some(fut) = subtitle_path {
-            fut.await
-        } else {
-            None
-        };
 
         // Start transcoding in background
         let session_clone = session.clone();
@@ -459,7 +429,7 @@ pub async fn master_hls_video(
                 .subtitle_stream_index
                 .map(|v| v as i32),
             burn_subtitle,
-            subtitle_path,
+            text_subtitle_si,
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: encoding_opts.encoding_preset,
@@ -973,7 +943,7 @@ async fn hls_segment_inner(
                     let audio_stream_index = s.audio_stream_index;
                     let subtitle_stream_index = s.subtitle_stream_index;
                     let burn_subtitle = s.burn_subtitle;
-                    let session_msid = s.media_source_id;
+                    let text_subtitle_si = s.text_subtitle_si;
                     drop(s);
 
                     // Kill running FFmpeg and clean up stale segments (params
@@ -1044,18 +1014,7 @@ async fn hls_segment_inner(
                         audio_stream_index,
                         subtitle_stream_index,
                         burn_subtitle,
-                        subtitle_path: subtitle_stream_index
-                            .filter(|_| burn_subtitle)
-                            .and_then(|si| {
-                                let p = state
-                                    .ctx
-                                    .config
-                                    .data_dir
-                                    .join("subtitle-cache")
-                                    .join(format!("{session_msid}_{si}.srt"));
-                                p.exists()
-                                    .then_some(p)
-                            }),
+                        text_subtitle_si,
                         subtitle_width: None,
                         subtitle_height: None,
                         encoding_preset: encoding_opts.encoding_preset,

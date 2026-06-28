@@ -30,6 +30,7 @@ pub struct TranscodeSession {
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub burn_subtitle: bool,
+    pub text_subtitle_si: Option<i64>,
     pub segment_length: u32,
     pub transcode_reasons: TranscodeReasons,
     /// Kill channel and done notifier for the ffmpeg subprocess.
@@ -77,6 +78,7 @@ impl TranscodeSession {
         audio_stream_index: Option<i32>,
         subtitle_stream_index: Option<i32>,
         burn_subtitle: bool,
+        text_subtitle_si: Option<i64>,
         segment_length: u32,
         transcode_reasons: TranscodeReasons,
         runtime_ticks: i64,
@@ -106,6 +108,7 @@ impl TranscodeSession {
             audio_stream_index,
             subtitle_stream_index,
             burn_subtitle,
+            text_subtitle_si,
             segment_length,
             transcode_reasons,
             kill_tx: None,

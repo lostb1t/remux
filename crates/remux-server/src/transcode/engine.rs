@@ -266,9 +266,11 @@ pub struct TranscodeParams {
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub burn_subtitle: bool,
-    /// Pre-extracted subtitle file for text subtitle burn-in (SRT/ASS).
-    /// When set, the `subtitles=` lavfi filter is used instead of the bitmap overlay.
-    pub subtitle_path: Option<PathBuf>,
+    /// Ordinal index (0-based among subtitle streams) for text subtitle burn-in.
+    /// When set, the `subtitles=INPUT_URL:si=N` lavfi filter is used so FFmpeg
+    /// reads the subtitle directly from the source — no extraction needed.
+    /// For image subtitles (PGS/DVD) leave this None and use `subtitle_stream_index`.
+    pub text_subtitle_si: Option<i64>,
     /// Native dimensions of the subtitle bitmap (PGS canvas size), used to
     /// scale the subtitle to match the output video resolution.
     pub subtitle_width: Option<u32>,
@@ -327,7 +329,7 @@ impl Default for TranscodeParams {
             audio_stream_index: None,
             subtitle_stream_index: None,
             burn_subtitle: false,
-            subtitle_path: None,
+            text_subtitle_si: None,
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: None,
@@ -569,7 +571,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 .subtitle_stream_index
                 .is_some()
                 || params
-                    .subtitle_path
+                    .text_subtitle_si
                     .is_some())
             && base == "copy"
         {
@@ -677,13 +679,12 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
 
     // Stream mapping
     if params.burn_subtitle {
-        if let Some(ref sub_path) = params.subtitle_path {
-            // Text subtitle (SRT/ASS): use the `subtitles=` lavfi filter.
-            // The subtitle was pre-extracted to a local cache file before this
-            // transcode started, so the path is always local (no URL escaping issues
-            // beyond filesystem special chars).
-            let path_str = sub_path.to_string_lossy();
-            let escaped = path_str
+        if let Some(si) = params.text_subtitle_si {
+            // Text subtitle (SRT/ASS): use the `subtitles=` lavfi filter, pointing
+            // directly at the source URL with the ordinal subtitle stream index.
+            // FFmpeg reads it from the same input — no extraction needed.
+            let escaped = params
+                .input_url
                 .replace('\\', "\\\\")
                 .replace(':', "\\:")
                 .replace('\'', "\\'");
@@ -696,7 +697,7 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
                 .unwrap_or_default();
             args.extend([
                 "-vf".into(),
-                format!("{scale_part}subtitles='{escaped}'{hw_part}"),
+                format!("{scale_part}subtitles='{escaped}':si={si}{hw_part}"),
             ]);
             args.extend(["-map".into(), "0:v:0".into()]);
             if let Some(audio_idx) = params.audio_stream_index {
@@ -1312,9 +1313,9 @@ pub struct ProgressiveTranscodeParams {
     pub audio_stream_index: Option<i32>,
     pub subtitle_stream_index: Option<i32>,
     pub burn_subtitle: bool,
-    /// Pre-extracted subtitle file for text subtitle burn-in (SRT/ASS).
-    /// When set, the `subtitles=` lavfi filter is used instead of the bitmap overlay.
-    pub subtitle_path: Option<PathBuf>,
+    /// Ordinal index (0-based among subtitle streams) for text subtitle burn-in.
+    /// See `TranscodeParams::text_subtitle_si`.
+    pub text_subtitle_si: Option<i64>,
     pub subtitle_width: Option<u32>,
     pub subtitle_height: Option<u32>,
     pub encoding_preset: Option<EncodingPreset>,
@@ -1369,7 +1370,7 @@ pub(crate) fn build_progressive_args(
                 .subtitle_stream_index
                 .is_some()
                 || params
-                    .subtitle_path
+                    .text_subtitle_si
                     .is_some())
             && base == "copy"
         {
@@ -1484,10 +1485,10 @@ pub(crate) fn build_progressive_args(
     };
 
     if params.burn_subtitle {
-        if let Some(ref sub_path) = params.subtitle_path {
-            // Text subtitle (SRT/ASS): subtitles= lavfi filter on pre-extracted file.
-            let path_str = sub_path.to_string_lossy();
-            let escaped = path_str
+        if let Some(si) = params.text_subtitle_si {
+            // Text subtitle (SRT/ASS): subtitles= lavfi filter pointing at the source URL.
+            let escaped = params
+                .input_url
                 .replace('\\', "\\\\")
                 .replace(':', "\\:")
                 .replace('\'', "\\'");
@@ -1501,7 +1502,7 @@ pub(crate) fn build_progressive_args(
                 .unwrap_or_default();
             args.extend([
                 "-vf".into(),
-                format!("{scale_part}subtitles='{escaped}'{hw_part}"),
+                format!("{scale_part}subtitles='{escaped}':si={si}{hw_part}"),
             ]);
             args.extend(["-map".into(), "0:v:0".into()]);
             if let Some(audio_idx) = params.audio_stream_index {
@@ -2203,7 +2204,7 @@ mod tests {
             audio_stream_index: None,
             subtitle_stream_index: None,
             burn_subtitle: false,
-            subtitle_path: None,
+            text_subtitle_si: None,
             subtitle_width: None,
             subtitle_height: None,
             encoding_preset: None,
@@ -2434,6 +2435,7 @@ mod tests {
             audio_stream_index: None,
             subtitle_stream_index: None,
             burn_subtitle: false,
+            text_subtitle_si: None,
             segment_length: 6,
             transcode_reasons: TranscodeReasons::default(),
             kill_tx: None,
@@ -2809,29 +2811,25 @@ mod tests {
         assert!(fc.contains("overlay"), "fc: {fc}");
     }
 
-    // ── Text subtitle burn-in (subtitle_path) ─────────────────────────────────
+    // ── Text subtitle burn-in (text_subtitle_si) ──────────────────────────────
 
     #[test]
     fn hls_text_subtitle_burn_uses_vf_subtitles_filter() {
         let dir = PathBuf::from("/tmp/test_text_sub");
-        let sub_path = PathBuf::from("/tmp/sub-cache/abc_14.srt");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx264".into(),
             burn_subtitle: true,
-            subtitle_path: Some(sub_path),
+            text_subtitle_si: Some(0),
             ..default_hls(dir)
         });
 
-        // Must use -vf with subtitles= filter, not filter_complex
+        // Must use -vf with subtitles= pointing at input URL, not filter_complex
         let vf = arg_after(&args, "-vf").expect("-vf missing");
         assert!(
             vf.contains("subtitles="),
             "-vf should contain subtitles= filter: {vf}"
         );
-        assert!(
-            vf.contains("abc_14.srt"),
-            "-vf should reference the srt path: {vf}"
-        );
+        assert!(vf.contains(":si=0"), "-vf should include :si=0: {vf}");
         assert!(
             !args_contains(&args, "-filter_complex"),
             "text subtitle burn must not use -filter_complex"
@@ -2841,33 +2839,29 @@ mod tests {
     #[test]
     fn hls_text_subtitle_burn_forces_reencode_from_copy() {
         let dir = PathBuf::from("/tmp/test_text_sub_copy");
-        let sub_path = PathBuf::from("/tmp/sub-cache/abc_14.srt");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "copy".into(),
             burn_subtitle: true,
-            subtitle_path: Some(sub_path),
+            text_subtitle_si: Some(1),
             ..default_hls(dir)
         });
 
-        // copy → libx264 forced when subtitle_path is set
         assert_eq!(arg_after(&args, "-c:v"), Some("libx264"));
     }
 
     #[test]
     fn hls_text_subtitle_burn_with_scale_prefix() {
         let dir = PathBuf::from("/tmp/test_text_sub_scale");
-        let sub_path = PathBuf::from("/tmp/sub-cache/abc_14.srt");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx264".into(),
             burn_subtitle: true,
-            subtitle_path: Some(sub_path),
+            text_subtitle_si: Some(0),
             max_width: Some(1280),
             max_height: Some(720),
             ..default_hls(dir)
         });
 
         let vf = arg_after(&args, "-vf").expect("-vf missing");
-        // scale filter comes before subtitles=
         let scale_pos = vf
             .find("scale=")
             .expect("scale= missing in -vf");
@@ -2881,32 +2875,30 @@ mod tests {
     }
 
     #[test]
-    fn hls_text_subtitle_path_escapes_special_chars() {
+    fn hls_text_subtitle_url_escapes_colon() {
+        // default_hls input_url is "http://localhost/test.mkv" — the colon in
+        // "http:" must be escaped for the lavfi subtitles= option string.
         let dir = PathBuf::from("/tmp/test_text_sub_escape");
-        // Path with colon and space (Windows-style drive letter is the canonical colon case)
-        let sub_path = PathBuf::from("/tmp/sub cache/abc:14.srt");
         let args = build_hls_args(&TranscodeParams {
             video_codec: "libx264".into(),
             burn_subtitle: true,
-            subtitle_path: Some(sub_path),
+            text_subtitle_si: Some(0),
             ..default_hls(dir)
         });
 
         let vf = arg_after(&args, "-vf").expect("-vf missing");
-        // Colon must be escaped for lavfi
         assert!(
             vf.contains("\\:"),
-            "colon must be escaped in lavfi path: {vf}"
+            "colon in URL must be escaped for lavfi: {vf}"
         );
     }
 
     #[test]
     fn progressive_text_subtitle_burn_uses_vf_subtitles_filter() {
-        let sub_path = PathBuf::from("/tmp/sub-cache/prog_14.srt");
         let args = build_progressive_args(&ProgressiveTranscodeParams {
             video_codec: "libx264".into(),
             burn_subtitle: true,
-            subtitle_path: Some(sub_path),
+            text_subtitle_si: Some(0),
             ..default_progressive()
         });
 
@@ -2915,6 +2907,7 @@ mod tests {
             vf.contains("subtitles="),
             "-vf should contain subtitles= filter: {vf}"
         );
+        assert!(vf.contains(":si=0"), "-vf should include :si=0: {vf}");
         assert!(
             !args_contains(&args, "-filter_complex"),
             "text subtitle burn must not use -filter_complex"
@@ -2923,11 +2916,10 @@ mod tests {
 
     #[test]
     fn progressive_text_subtitle_burn_forces_reencode_from_copy() {
-        let sub_path = PathBuf::from("/tmp/sub-cache/prog_14.srt");
         let args = build_progressive_args(&ProgressiveTranscodeParams {
             video_codec: "copy".into(),
             burn_subtitle: true,
-            subtitle_path: Some(sub_path),
+            text_subtitle_si: Some(0),
             ..default_progressive()
         });
 
