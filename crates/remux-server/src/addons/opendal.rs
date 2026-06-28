@@ -1369,13 +1369,41 @@ async fn scan_addon(
                     let episode = parsed
                         .episode()
                         .map(|e| e as i64);
-                    let year = parsed
-                        .year()
-                        .map(|y| y as i64);
-                    let clean_title = parsed
+
+                    // When the filename starts with the episode code (e.g. "S01E07 - Title"),
+                    // hunch finds no title before it and returns None. In that case the series
+                    // folder name is the authoritative source; using the stem would store the
+                    // episode title (or the whole filename) as the series name.
+                    let (clean_title, year) = match parsed
                         .title()
-                        .unwrap_or(stem.as_str())
-                        .to_string();
+                        .filter(|t| !t.is_empty())
+                    {
+                        Some(t) => {
+                            let year = parsed
+                                .year()
+                                .map(|y| y as i64);
+                            (t.to_string(), year)
+                        }
+                        None if path_components.len() >= 2 => {
+                            let series_dir = path_components[0];
+                            let dir_parsed = hunch::hunch(series_dir);
+                            let title = dir_parsed
+                                .title()
+                                .filter(|t| !t.is_empty())
+                                .unwrap_or(series_dir)
+                                .to_string();
+                            let year = dir_parsed
+                                .year()
+                                .map(|y| y as i64);
+                            (title, year)
+                        }
+                        _ => {
+                            let year = parsed
+                                .year()
+                                .map(|y| y as i64);
+                            (stem.clone(), year)
+                        }
+                    };
 
                     let existing_imdb =
                         fetch_existing_imdb(ctx, addon.id, &path).await?;
@@ -3687,6 +3715,77 @@ mod tests {
         assert_eq!(
             count, 0,
             "stale video row must be pruned after file is deleted"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Regression: episode files whose filename starts with "S01E07 - Episode Title"
+    // must store the *series* name (from the parent directory) as their title,
+    // not the episode title extracted from the filename.
+    //
+    // Reproduces: user report where "Wallace & Gromit's Cracking Contraptions"
+    // appeared as "S01E07 - The 525 CrackerVac" in the catalog.
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn opendal_episode_title_comes_from_series_dir_not_filename() {
+        // File that starts with SxxExx — hunch parses nothing useful as a series
+        // title from the filename alone; the series name lives in the parent dir.
+        let rel_path = "Wallace & Gromit's Cracking Contraptions (2002) [imdbid-tt0103584]/\
+                        Season 01/\
+                        S01E07 - The 525 CrackerVac [DVD][AC3 2.0][h265].mkv";
+
+        let dir = tempfile::tempdir().unwrap();
+        write_files(&dir.path(), &[(rel_path, b"fake")]);
+
+        let (_, guard) = new_test_server()
+            .await
+            .unwrap();
+        let ctx = &guard.0;
+
+        let (addon, db_addon) = make_local_addon(ctx, dir.path(), "episode").await;
+        addon
+            .refresh_index(ctx, &db_addon, noop_progress())
+            .await
+            .unwrap();
+
+        let row: Option<(Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT title, season, episode FROM opendal_files \
+             WHERE addon_id = ? AND media_kind = 'episode' AND imdb_id = 'tt0103584'",
+        )
+        .bind(db_addon.id)
+        .fetch_optional(&ctx.db)
+        .await
+        .unwrap();
+
+        let (title, season, episode) = row.expect(
+            "expected one opendal_files row for imdbid-tt0103584 — file was not indexed",
+        );
+
+        assert_eq!(season, Some(1), "season must be 1");
+        assert_eq!(episode, Some(7), "episode must be 7");
+
+        let title = title.unwrap_or_default();
+        // The series directory is the source of truth for the title.
+        // It must NOT contain the episode-filename portion ("The 525 CrackerVac")
+        // and must contain the actual series name.
+        assert!(
+            !title
+                .to_lowercase()
+                .contains("crackvac")
+                && !title
+                    .to_lowercase()
+                    .contains("crackervac")
+                && !title
+                    .to_lowercase()
+                    .contains("s01e07"),
+            "title must not be the episode filename; got: {title:?}"
+        );
+        assert!(
+            title
+                .to_lowercase()
+                .contains("wallace"),
+            "title must contain the series name from the directory; got: {title:?}"
         );
     }
 }
