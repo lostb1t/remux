@@ -20,6 +20,7 @@ use crate::{
 };
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
+const PLAYLIST_CACHE_TTL: Duration = Duration::from_secs(3600);
 
 fn parse_release_date(s: &str) -> Option<NaiveDateTime> {
     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
@@ -59,6 +60,7 @@ impl AddonPreset for DeezerPreset {
                 MediaKind::Track,
                 MediaKind::Album,
                 MediaKind::Artist,
+                MediaKind::Playlist,
             ],
             options: vec![AddonOption {
                 id: "playlists".to_string(),
@@ -955,85 +957,8 @@ impl DeezerAddon {
 
     // --- Catalog (playlist) ---
 
-    async fn fetch_playlist_stream(
-        &self,
-        _ctx: &AppContext,
-        playlist_id: &str,
-    ) -> Result<Pin<Box<dyn Stream<Item = db::Media> + Send>>> {
-        let playlist = match self
-            .client
-            .execute(dz::PlaylistEndpoint {
-                id: playlist_id.to_string(),
-            })
-            .await
-        {
-            Ok(dz::DeezerResult::Ok(p)) => p,
-            Ok(dz::DeezerResult::Err { error }) => {
-                return Err(anyhow!("Deezer playlist error: {}", error));
-            }
-            Err(e) => {
-                return Err(anyhow!(
-                    "Deezer playlist {} HTTP error: {}",
-                    playlist_id,
-                    e
-                ));
-            }
-        };
-
-        let items: Vec<db::Media> = playlist
-            .tracks
-            .data
-            .into_iter()
-            .map(|track| {
-                let released_at = track
-                    .album
-                    .release_date
-                    .as_deref()
-                    .and_then(parse_release_date);
-                let mut media = db::Media {
-                    id: common::stable_media_uuid(
-                        &db::MediaKind::Track,
-                        &track
-                            .id
-                            .to_string(),
-                    ),
-                    title: track.title,
-                    kind: db::MediaKind::Track,
-                    runtime: Some(track.duration as i64),
-                    released_at,
-                    description: Some(format!(
-                        "by {}",
-                        track
-                            .artist
-                            .name
-                    )),
-                    external_ids: db::ExternalIds {
-                        deezer_track: Some(track.id as i64),
-                        deezer_album: Some(
-                            track
-                                .album
-                                .id as i64,
-                        ),
-                        deezer_artist: Some(
-                            track
-                                .artist
-                                .id as i64,
-                        ),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-                if let Some(url) = track
-                    .album
-                    .cover_xl
-                {
-                    media.set_image(db::ImageKind::Primary, url);
-                }
-                media
-            })
-            .collect();
-
-        Ok(Box::pin(futures::stream::iter(items)))
+    async fn fetch_playlist(&self, playlist_id: &str) -> Result<dz::Playlist> {
+        fetch_deezer_playlist(&self.client, playlist_id).await
     }
 }
 
@@ -1051,19 +976,42 @@ impl AddonKind for DeezerAddon {
 #[async_trait]
 impl CatalogAddon for DeezerAddon {
     async fn catalog_list(&self, _ctx: &AppContext) -> Result<Vec<CatalogInfo>> {
-        Ok(self
-            .playlists()
-            .iter()
-            .map(|id| CatalogInfo {
-                media_kind: Some(db::MediaKind::Track),
-                ..CatalogInfo::new(id.clone(), format!("Deezer playlist {id}"))
-            })
-            .collect())
+        let client = self
+            .client
+            .clone();
+        let infos: Vec<CatalogInfo> = stream::iter(
+            self.playlists()
+                .iter()
+                .cloned(),
+        )
+        .map(|id| {
+            let client = client.clone();
+            async move {
+                let name = match fetch_deezer_playlist(&client, &id).await {
+                    Ok(p)
+                        if !p
+                            .title
+                            .is_empty() =>
+                    {
+                        p.title
+                    }
+                    _ => default_playlist_name(&id),
+                };
+                CatalogInfo {
+                    media_kind: Some(db::MediaKind::Playlist),
+                    ..CatalogInfo::new(id, name)
+                }
+            }
+        })
+        .buffered(8)
+        .collect()
+        .await;
+        Ok(infos)
     }
 
     async fn catalog_stream(
         &self,
-        ctx: &AppContext,
+        _ctx: &AppContext,
         local_id: &str,
     ) -> Result<Option<Pin<Box<dyn Stream<Item = db::Media> + Send>>>> {
         if !self
@@ -1073,10 +1021,14 @@ impl CatalogAddon for DeezerAddon {
         {
             return Ok(None);
         }
-        Ok(Some(
-            self.fetch_playlist_stream(ctx, local_id)
-                .await?,
-        ))
+        // Tracks ride in `relations` (role = Playlist); the import pipeline's
+        // save_pending_relations links them as playlist members.
+        let playlist = self
+            .fetch_playlist(local_id)
+            .await?;
+        Ok(Some(Box::pin(stream::iter(vec![build_playlist_media(
+            &playlist,
+        )]))))
     }
 }
 
@@ -1189,6 +1141,31 @@ impl SearchAddon for DeezerAddon {
 // Free helpers
 // ---------------------------------------------------------------------------
 
+async fn fetch_deezer_playlist(
+    client: &sdks::RestClient<sdks::NoAuth>,
+    playlist_id: &str,
+) -> Result<dz::Playlist> {
+    match client
+        .execute(
+            dz::PlaylistEndpoint {
+                id: playlist_id.to_string(),
+            }
+            .with_cache(PLAYLIST_CACHE_TTL),
+        )
+        .await
+    {
+        Ok(dz::DeezerResult::Ok(p)) => Ok(p),
+        Ok(dz::DeezerResult::Err { error }) => {
+            Err(anyhow!("Deezer playlist error: {}", error))
+        }
+        Err(e) => Err(anyhow!("Deezer playlist {} HTTP error: {}", playlist_id, e)),
+    }
+}
+
+fn default_playlist_name(id: &str) -> String {
+    format!("Deezer playlist {id}")
+}
+
 fn extract_playlist_id(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -1213,6 +1190,125 @@ fn extract_playlist_id(input: &str) -> Option<String> {
                 None
             }
         })
+}
+
+fn build_playlist_media(playlist: &dz::Playlist) -> db::Media {
+    let playlist_uuid = common::stable_media_uuid(
+        &db::MediaKind::Playlist,
+        &playlist
+            .id
+            .to_string(),
+    );
+    let relations: Vec<(db::MediaRelation, db::Media)> = playlist
+        .tracks
+        .data
+        .iter()
+        .enumerate()
+        .map(|(i, track)| {
+            let track_media = playlist_track_to_media(track);
+            let relation = db::MediaRelation {
+                relation_id: Uuid::new_v5(
+                    &playlist_uuid,
+                    track_media
+                        .id
+                        .as_bytes(),
+                ),
+                left_media_id: playlist_uuid,
+                right_media_id: track_media.id,
+                weight: Some(i as i64),
+                role: Some(db::RelationRole::Playlist),
+                ..Default::default()
+            };
+            (relation, track_media)
+        })
+        .collect();
+    let mut media = db::Media {
+        id: playlist_uuid,
+        title: if playlist
+            .title
+            .is_empty()
+        {
+            default_playlist_name(
+                &playlist
+                    .id
+                    .to_string(),
+            )
+        } else {
+            playlist
+                .title
+                .clone()
+        },
+        kind: db::MediaKind::Playlist,
+        collection_media_kind: Some(db::CollectionMediaKind::Music),
+        description: playlist
+            .description
+            .clone(),
+        external_ids: db::ExternalIds {
+            deezer_playlist: Some(playlist.id as i64),
+            ..Default::default()
+        },
+        relations: Some(relations),
+        refreshed_at: Some(chrono::Utc::now().naive_utc()),
+        ..Default::default()
+    };
+    if let Some(url) = playlist
+        .picture_xl
+        .clone()
+    {
+        media.set_image(db::ImageKind::Primary, url);
+    }
+    media
+}
+
+fn playlist_track_to_media(track: &dz::PlaylistTrack) -> db::Media {
+    let released_at = track
+        .album
+        .release_date
+        .as_deref()
+        .and_then(parse_release_date);
+    let mut media = db::Media {
+        id: common::stable_media_uuid(
+            &db::MediaKind::Track,
+            &track
+                .id
+                .to_string(),
+        ),
+        title: track
+            .title
+            .clone(),
+        kind: db::MediaKind::Track,
+        runtime: Some(track.duration as i64),
+        released_at,
+        description: Some(format!(
+            "by {}",
+            track
+                .artist
+                .name
+        )),
+        external_ids: db::ExternalIds {
+            deezer_track: Some(track.id as i64),
+            deezer_album: Some(
+                track
+                    .album
+                    .id as i64,
+            ),
+            deezer_artist: Some(
+                track
+                    .artist
+                    .id as i64,
+            ),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    if let Some(url) = track
+        .album
+        .cover_xl
+        .clone()
+    {
+        media.set_image(db::ImageKind::Primary, url);
+    }
+    media
 }
 
 fn track_to_result(t: dz::SearchTrack) -> db::Media {
@@ -1321,4 +1417,160 @@ fn album_to_result(a: dz::SearchAlbum) -> db::Media {
         album.set_image(db::ImageKind::Primary, url);
     }
     album
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_playlist() -> dz::Playlist {
+        dz::Playlist {
+            id: 123456,
+            title: "Summer Mix".into(),
+            picture_xl: Some("https://e.deezer.com/cover.jpg".into()),
+            description: Some("Best of summer".into()),
+            tracks: dz::DeezerList {
+                data: vec![
+                    dz::PlaylistTrack {
+                        id: 10,
+                        title: "Track A".into(),
+                        duration: 200,
+                        artist: dz::ArtistRef {
+                            id: 1,
+                            name: "Artist X".into(),
+                        },
+                        album: dz::PlaylistTrackAlbum {
+                            id: 100,
+                            cover_xl: Some("https://e.deezer.com/a.jpg".into()),
+                            release_date: Some("2021-05-01".into()),
+                        },
+                    },
+                    dz::PlaylistTrack {
+                        id: 20,
+                        title: "Track B".into(),
+                        duration: 250,
+                        artist: dz::ArtistRef {
+                            id: 2,
+                            name: "Artist Y".into(),
+                        },
+                        album: dz::PlaylistTrackAlbum::default(),
+                    },
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn build_playlist_media_yields_playlist_with_ordered_track_relations() {
+        let playlist = sample_playlist();
+        let media = build_playlist_media(&playlist);
+
+        assert_eq!(media.kind, db::MediaKind::Playlist);
+        assert_eq!(media.title, "Summer Mix");
+        assert_eq!(
+            media.collection_media_kind,
+            Some(db::CollectionMediaKind::Music)
+        );
+        assert_eq!(
+            media
+                .external_ids
+                .deezer_playlist,
+            Some(123456)
+        );
+        assert_eq!(
+            media.get_image(db::ImageKind::Primary),
+            Some("https://e.deezer.com/cover.jpg")
+        );
+
+        let relations = media
+            .relations
+            .as_ref()
+            .expect("playlist carries its tracks as relations");
+        assert_eq!(relations.len(), 2);
+
+        // Ordered playlist memberships linking each track back to the playlist.
+        for (rel, _) in relations {
+            assert_eq!(rel.left_media_id, media.id);
+            assert_eq!(rel.role, Some(db::RelationRole::Playlist));
+        }
+        assert_eq!(
+            relations[0]
+                .0
+                .weight,
+            Some(0)
+        );
+        assert_eq!(
+            relations[1]
+                .0
+                .weight,
+            Some(1)
+        );
+        assert_eq!(
+            relations[0]
+                .0
+                .right_media_id,
+            relations[0]
+                .1
+                .id
+        );
+        assert_eq!(
+            relations[1]
+                .0
+                .right_media_id,
+            relations[1]
+                .1
+                .id
+        );
+
+        // Tracks are stable-keyed by their Deezer track id and keep album refs.
+        assert_eq!(
+            relations[0]
+                .1
+                .kind,
+            db::MediaKind::Track
+        );
+        assert_eq!(
+            relations[0]
+                .1
+                .external_ids
+                .deezer_track,
+            Some(10)
+        );
+        assert_eq!(
+            relations[0]
+                .1
+                .external_ids
+                .deezer_album,
+            Some(100)
+        );
+        assert_eq!(
+            relations[1]
+                .1
+                .external_ids
+                .deezer_track,
+            Some(20)
+        );
+    }
+
+    #[test]
+    fn build_playlist_media_falls_back_to_id_when_title_missing() {
+        let mut playlist = sample_playlist();
+        playlist.title = String::new();
+        let media = build_playlist_media(&playlist);
+        assert_eq!(media.title, "Deezer playlist 123456");
+    }
+
+    #[test]
+    fn extract_playlist_id_accepts_bare_and_url_forms() {
+        assert_eq!(extract_playlist_id("12345"), Some("12345".to_string()));
+        assert_eq!(
+            extract_playlist_id("https://www.deezer.com/playlist/12345"),
+            Some("12345".to_string())
+        );
+        assert_eq!(extract_playlist_id("  98765  "), Some("98765".to_string()));
+        assert_eq!(extract_playlist_id("not-a-playlist"), None);
+        assert_eq!(extract_playlist_id(""), None);
+    }
 }

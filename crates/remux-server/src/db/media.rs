@@ -748,6 +748,7 @@ pub struct ExternalIds {
     pub deezer_artist: Option<i64>,
     pub deezer_album: Option<i64>,
     pub deezer_track: Option<i64>,
+    pub deezer_playlist: Option<i64>,
     pub youtube_id: Option<String>,
     pub iptv_source_id: Option<String>,
     pub iptv_group: Option<String>,
@@ -900,6 +901,7 @@ impl ExternalIds {
         merge_option(&mut self.deezer_artist, &source.deezer_artist, replace);
         merge_option(&mut self.deezer_album, &source.deezer_album, replace);
         merge_option(&mut self.deezer_track, &source.deezer_track, replace);
+        merge_option(&mut self.deezer_playlist, &source.deezer_playlist, replace);
         merge_option(&mut self.youtube_id, &source.youtube_id, replace);
         merge_option(&mut self.iptv_source_id, &source.iptv_source_id, replace);
         merge_option(&mut self.iptv_group, &source.iptv_group, replace);
